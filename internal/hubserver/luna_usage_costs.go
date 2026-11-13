@@ -5,14 +5,16 @@ import (
 	"math"
 	"strconv"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
-func readLunaCostObservations(ctx context.Context, query nativeQueryer, organization string, projects []string, window usageWindow) ([]attributedCostObservation, error) {
-	encoded, err := sqlList(projects)
+func readLunaCostObservations(ctx context.Context, query hubapi.NativeQueryer, organization string, projects []string, window usageWindow) ([]attributedCostObservation, error) {
+	encoded, err := hubapi.SQLList(projects)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := querySQL(ctx, query, `SELECT project_id,turn_id,provider,model,occurred_at,input,cached_input,output,price_id,cost_usd FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<? AND (? OR project_id IN (SELECT value FROM sql_rows(?))) ORDER BY project_id,occurred_at,turn_id`, organization, window.From.UnixMicro(), window.To.UnixMicro(), projects == nil, encoded)
+	rows, err := hubapi.QuerySQL(ctx, query, `SELECT project_id,turn_id,provider,model,occurred_at,input,cached_input,output,price_id,cost_usd FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<? AND (? OR project_id IN (SELECT value FROM sql_rows(?))) ORDER BY project_id,occurred_at,turn_id`, organization, window.From.UnixMicro(), window.To.UnixMicro(), projects == nil, encoded)
 	if err != nil {
 		return nil, err
 	}

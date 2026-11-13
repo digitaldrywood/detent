@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -263,7 +264,7 @@ func TestPostgresMemberMutationRoutesPreserveCurrentAuthority(t *testing.T) {
 	}}
 	uncertain := f.request(t, owner, http.MethodPut, base+"/"+targetMember.MembershipID+"/role", map[string]string{"role": "viewer"})
 	requireNativeStatus(t, uncertain, http.StatusConflict)
-	var failure apiErrorResponse
+	var failure hubapi.APIErrorResponse
 	decodeHubResponse(t, uncertain, &failure)
 	if failure.Code != "idempotency_in_progress" || failure.Message != mutation.ErrUncertain.Error() {
 		t.Fatalf("post-provider uncertainty = %+v", failure)

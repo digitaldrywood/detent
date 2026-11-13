@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -72,7 +73,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	workerCredential := accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: workerID, Name: "Example worker", Hash: "example-worker-hash", Scope: "worker", NativeOnly: true, ProjectAccess: "all", Kind: "service", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	binding := runnerauth.NewBinding()
 	workerIdentity := runnerauth.Identity{Binding: binding, Scope: "projects", OrganizationID: f.project.OrganizationID, ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim}, ExpiresAt: time.Now().UTC().Add(time.Hour)}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: workerID, Hash: workerCredential.Hash, Scope: apiScopeWorker, NativeOnly: true, Runner: workerIdentity}}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{ID: workerID, Hash: workerCredential.Hash, Scope: hubapi.APIScopeWorker, NativeOnly: true, Runner: workerIdentity}}
 	authorityCalls := 0
 	deniedAuthorityCall := 0
 	f.service.config.ConversationWorkerAuthority = conversationWorkerAuthorityFunc(func(_ context.Context, _ tenantstore.Reader, identity ConversationWorkerIdentity) error {
@@ -154,7 +155,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.commandPostConversation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: apiScopeOperator}}, linked.ID, conversation.Command{Key: "pg-bind-control", Kind: conversation.CommandMessage, Text: "Example pending instruction"}); err != nil {
+	if _, err := f.service.commandPostConversation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator}}, linked.ID, conversation.Command{Key: "pg-bind-control", Kind: conversation.CommandMessage, Text: "Example pending instruction"}); err != nil {
 		t.Fatal(err)
 	}
 	identity := conversationWorkerIdentity{LeaseID: "lease-pg-worker", FencingToken: 1, AttemptID: "attempt-pg-worker"}
@@ -199,7 +200,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	if futureRenewal == nil {
 		t.Fatal("future-dated lease renewal was accepted")
 	}
-	var futureRefusal *nativeError
+	var futureRefusal *hubapi.NativeError
 	if !errors.As(futureRenewal, &futureRefusal) || futureRefusal.Code != "stale_execution" {
 		t.Fatalf("future renewal did not reach lease validation: %v", futureRenewal)
 	}
@@ -386,7 +387,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		t.Fatal(err)
 	}
 
-	if _, err := f.service.commandPostConversation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: apiScopeOperator}}, linked.ID, conversation.Command{Key: "pg-control", Kind: conversation.CommandMessage, Text: "Example instruction"}); err != nil {
+	if _, err := f.service.commandPostConversation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator}}, linked.ID, conversation.Command{Key: "pg-control", Kind: conversation.CommandMessage, Text: "Example instruction"}); err != nil {
 		t.Fatal(err)
 	}
 	controls := callConversationWorkerRoute(t, router.controls, scope, http.MethodGet, "/controls?after=0&wait=0", "", linked.ID, nil, identity)
@@ -606,8 +607,8 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		t.Fatal(err)
 	}
 	f.service.config.now = func() time.Time { return nextLease.RenewedAt }
-	nextIdentity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(nextLease.LeaseID), FencingToken: tracker.FencingToken(nextLease.FencingToken), AttemptID: newNativeID("attempt")}
-	nextRunID := newNativeID("run")
+	nextIdentity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(nextLease.LeaseID), FencingToken: tracker.FencingToken(nextLease.FencingToken), AttemptID: hubapi.NewID("attempt")}
+	nextRunID := hubapi.NewID("run")
 	nextBindBody := map[string]any{"lease_id": nextIdentity.LeaseID, "fencing_token": nextIdentity.FencingToken, "attempt_id": nextIdentity.AttemptID, "run_id": nextRunID, "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
 	takeover := callConversationWorkerRoute(t, router.bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", nextBindBody, nextIdentity)
 	if takeover.Code != http.StatusOK {
@@ -664,7 +665,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 			want      bool
 		}{
 			{attemptID: nextIdentity.AttemptID, want: true},
-			{attemptID: newNativeID("attempt")},
+			{attemptID: hubapi.NewID("attempt")},
 		} {
 			record := conversationRecordFromStore(unstarted)
 			record.Execution.Owner.AttemptID = test.attemptID
@@ -738,15 +739,15 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}
 
 	if origin == conversationOriginWorker {
-		ownerScope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: apiScopeOperator}}
+		ownerScope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator}}
 		testPGConversationContinuation(t, f.service, repository, scope, ownerScope, issue, linked.ID, nextIdentity)
 	}
 
 	reporterScope := nativeScope{
 		organization: f.project.OrganizationID,
 		project:      f.project.ID,
-		credential: apiCredential{
-			ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: apiScopeOperator,
+		credential: hubapi.APICredential{
+			ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator,
 			HostedRole: "reporter",
 		},
 		sourceActor: &tracker.Actor{Kind: "human", PrincipalID: f.ownerID},
@@ -957,8 +958,8 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 		}
 		originalAttempt := identity.AttemptID
 		_, err = service.commandPostConversation(t.Context(), ownerScope, conversationID, conversation.Command{Key: key + "-active", Kind: conversation.CommandContinue, Expected: conversation.Expected{AttemptID: identity.AttemptID}})
-		var refusal *nativeError
-		if !errors.As(err, &refusal) || refusal.status != http.StatusConflict || refusal.Code != "stale_execution" {
+		var refusal *hubapi.NativeError
+		if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict || refusal.Code != "stale_execution" {
 			t.Fatalf("active Continue = %v", err)
 		}
 		if acknowledged {

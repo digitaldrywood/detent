@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"io/fs"
 	"log/slog"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -60,7 +62,7 @@ func (s *Service) MaintainHealthPage(ctx context.Context, organization tracker.O
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		owner, ok := r.(healthstore.PageMaintainer)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		candidate, err = owner.NextHealthPage(ctx)
@@ -75,7 +77,7 @@ func (s *Service) MaintainHealthPage(ctx context.Context, organization tracker.O
 	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		owner, ok := w.(healthstore.PageMaintainer)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		return owner.AdvanceHealthPage(ctx, candidate)
 	})
@@ -96,7 +98,7 @@ func (s *Service) MaintainHealthPage(ctx context.Context, organization tracker.O
 	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		owner, ok := w.(healthstore.PageMaintainer)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		published, err = owner.PublishHealthPage(ctx, candidate, evidence)
@@ -146,7 +148,7 @@ func (s *Service) maintainHealthSources(ctx context.Context, organization tracke
 		return corestore.ErrInvalidPage
 	}
 	if s.runDetailStore() == nil {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	ctx = detailbatch.WithStore(ctx, hubmaintenance.LimitDetails(s.runDetailStore()))
 
@@ -205,7 +207,7 @@ func (s *Service) maintainHealthRunner(ctx context.Context, organization tracker
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(runnerstore.UpdateProjectionPageReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		page, err := owner.RunnerUpdateProjectionPage(ctx, *after, 1)
 		if err != nil {
@@ -317,7 +319,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 	var selectedQuestions []healthstore.QuestionSource
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return healthProjectSource{}, workItemStorageUnavailable()
+		return healthProjectSource{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		var err error
@@ -331,7 +333,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 		if runnerID == "" {
 			owner, ok := reader.(healthstore.ScheduledReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			scheduled, err = owner.HealthScheduledHistory(ctx, project.Core.ID, now)
 			if err != nil {
@@ -343,7 +345,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 			}
 			transitions, ok := reader.(eventstore.WorkflowTransitionReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			for _, candidate := range candidates.Items {
 				row, err := transitions.LatestSchedulerDecision(ctx, project.Core.ID, candidate.WorkItemID)
@@ -359,7 +361,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 		}
 		capacityOwner, ok := reader.(runnerstore.RuntimeCapacityReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		capacity, err = capacityOwner.RuntimeCapacitySnapshot(ctx, runnerstore.RuntimeCapacityQuery{ProjectID: project.Core.ID, RunnerID: runnerID, At: now})
 		if err != nil {
@@ -372,7 +374,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 			}
 			admissionOwner, ok := reader.(runnerstore.AdmissionReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			admissions, err = admissionOwner.RunnerAdmissionObservations(ctx, project.Core.ID, ids)
 			if err != nil {
@@ -382,7 +384,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 		from := now.Add(-healthBaselineWindow - healthLongWindow)
 		diagnosticOwner, ok := reader.(diagnosticstore.Reader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		diagnostics, err = diagnosticOwner.DiagnosticsSnapshot(ctx, []tracker.ProjectID{project.Core.ID}, from, now, now, "")
 		if err != nil {
@@ -390,7 +392,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 		}
 		residenceOwner, ok := reader.(eventstore.AnalyticsResidenceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		residence, err = residenceOwner.ReadAnalyticsResidencePage(ctx, eventstore.AnalyticsResidenceQuery{ProjectID: project.Core.ID, From: from, To: now, Live: true, Limit: 1000})
 		if err != nil {
@@ -403,7 +405,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 			}
 			costOwner, ok := reader.(reportstore.CompletionCostReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			costs, err = costOwner.ReadCompletionCosts(ctx, reportstore.CompletionCostQuery{Items: requested, CurrentTo: now, PriorTo: now.Add(-healthLongWindow)})
 			if err != nil && !errors.Is(err, reportstore.ErrPopulationExceeded) {
@@ -419,7 +421,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 			}
 			sourceOwner, ok := reader.(healthstore.SourceReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			selectedQuestions, err = sourceOwner.HealthSourceQuestions(ctx, "", "", corestore.MaxPageSize)
 		}
@@ -535,7 +537,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 			landing := data.Runtime.Landing
 			owner, ok := reader.(eventstore.VersionLandingReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			row, err := owner.VersionLanding(ctx, landing.ChangeID, landing.VersionID)
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -846,7 +848,7 @@ func (s *Service) publishHealthSourceBaselines(ctx context.Context, organization
 	if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(healthstore.SourceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		rows, err := owner.HealthSourceBaselines(ctx, project)
 		if err != nil {
@@ -893,7 +895,7 @@ func (s *Service) maintainHealthWaitItems(ctx context.Context, organization trac
 	var items []healthstore.ItemSource
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		var project projectstore.Record
@@ -951,7 +953,7 @@ func (s *Service) maintainHealthWaitItems(ctx context.Context, organization trac
 		}
 		owner, ok := reader.(healthstore.SourceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		items, err = owner.HealthSourceItems(ctx, cursor.project, cursor.state, cursor.id, limit)
 		if err != nil {
@@ -998,7 +1000,7 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 	found := false
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		var err error
@@ -1036,7 +1038,7 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 		}
 		transitions, ok := reader.(eventstore.WorkflowTransitionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		transition, err = transitions.LatestWorkflowTransition(ctx, reference.ProjectID, item.NativeID)
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -1049,7 +1051,7 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 		if err == nil {
 			questionOwner, ok := reader.(healthstore.SourceReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			questions, err = questionOwner.HealthSourceConversationQuestions(ctx, conversationRecord.ID, "", corestore.MaxPageSize)
 			if len(questions) == corestore.MaxPageSize {
@@ -1191,7 +1193,7 @@ func (s *Service) maintainHealthQuestions(ctx context.Context, organization trac
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(healthstore.SourceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		rows, err = owner.HealthSourceQuestions(ctx, *afterConversation, *afterQuestion, limit)
@@ -1252,7 +1254,7 @@ func readHealthDependencySource(ctx context.Context, reader tenantstore.Reader, 
 	}
 	transitions, ok := reader.(eventstore.WorkflowTransitionReader)
 	if !ok {
-		return out, false, workItemStorageUnavailable()
+		return out, false, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	page, err := reader.WorkItemPage(ctx, project.Core.ID, corestore.Cursor{}, corestore.MaxPageSize)
 	if err != nil {
@@ -1266,7 +1268,7 @@ func readHealthDependencySource(ctx context.Context, reader tenantstore.Reader, 
 	}
 	gated, held, listed := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, item := range items {
-		state := states[valueOrEmpty(item.WorkflowStateName)]
+		state := states[hubapi.ValueOrEmpty(item.WorkflowStateName)]
 		if item.Archived || state.Terminal || !state.Dispatchable {
 			continue
 		}
@@ -1401,7 +1403,7 @@ func (s *Service) maintainHealthProjectWait(ctx context.Context, organization tr
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(healthstore.SourceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		questions, err = owner.HealthSourceQuestions(ctx, cursor.conversation, cursor.question, limit)

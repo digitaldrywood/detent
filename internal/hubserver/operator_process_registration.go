@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -19,11 +20,11 @@ func registerSessionWorkerProcess(ctx context.Context, w tenantstore.Writer, sco
 		RegisterSessionWorkerProcess(context.Context, postgres.ProcessReceipt, time.Time) (postgres.ProcessReceipt, error)
 	})
 	if !ok {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	clock, ok := w.(runnersession.Reader)
 	if !ok {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	at, err := clock.RunnerSessionTime(ctx)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -31,7 +32,7 @@ func (s *Service) prepareRecordedRecoveryTenant(ctx context.Context, scope nativ
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(eventstore.WorkflowTransitionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		bound, err := r.LeasePolicy(ctx, attempt.LeaseID)
 		if err != nil {
@@ -92,7 +93,7 @@ func (s *Service) authorizeRecordedRecoveryTenant(ctx context.Context, w tenants
 	if err != nil {
 		return err
 	}
-	if credential.OrganizationID != scope.organization || credential.Scope != string(apiScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, now) {
+	if credential.OrganizationID != scope.organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, now) {
 		return runnerUnauthorized()
 	}
 	identity, err := w.RunnerIdentityByCredential(ctx, credential.ID)
@@ -111,7 +112,7 @@ func (s *Service) authorizeRecordedRecoveryTenant(ctx context.Context, w tenants
 	}
 	writer, ok := w.(leasestore.RecordedRecoveryWriter)
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	recovery.Now = now
 	return writer.AuthorizeRecordedRecovery(ctx, recovery)

@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -65,7 +66,7 @@ func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope 
 	if descriptor.ID != "" {
 		workflow, err = config.ApplyNativePolicy(workflow, descriptor)
 		if err != nil {
-			return revision, found, policyMismatch(err.Error())
+			return revision, found, hubapi.PolicyMismatch(err.Error())
 		}
 	}
 	target := workflow.Config.BacklogAdmission.TargetState
@@ -87,7 +88,7 @@ func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope 
 		reporterContract := config.IssueContract{Sections: reporterContracts[plan.issue.Type]}
 		missing := reporterSectionsMissing(reporterContract.Evaluate(nativeContractIssue(plan.issue)).Missing, plan.issue.ReportContext)
 		if len(missing) > 0 {
-			return revision, found, nativePublicInvalid("Add or complete these required Reporter sections: " + strings.Join(missing, ", "))
+			return revision, found, hubapi.NativePublicInvalid("Add or complete these required Reporter sections: " + strings.Join(missing, ", "))
 		}
 	}
 	if strings.EqualFold(plan.issue.State, "Triage") {
@@ -97,11 +98,11 @@ func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope 
 		return revision, found, nil
 	}
 	if plan.issue.IssueContract != nil && plan.issue.IssueContract.ReleaseDelivery != nil {
-		return revision, found, workItemStorageUnavailable()
+		return revision, found, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	evaluation := contract.Evaluate(nativeContractIssue(plan.issue))
 	if len(evaluation.Missing) > 0 {
-		return revision, found, nativeWorkflowInvalid(strings.Join([]string{"Add or complete these required issue sections", strings.Join(evaluation.Missing, ", ")}, ": ") + ". File into Backlog/Triage to draft it first.")
+		return revision, found, hubapi.NativeWorkflowInvalid(strings.Join([]string{"Add or complete these required issue sections", strings.Join(evaluation.Missing, ", ")}, ": ") + ". File into Backlog/Triage to draft it first.")
 	}
 	return revision, found, nil
 }
@@ -164,7 +165,7 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 
 func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope, request tracker.CreateIssue) *nativeScheduledRepair {
 	origin, machine := issueorigin.Parse(request.Body)
-	if !machine || origin.Kind != "doctor" || origin.Instance != "github-actions" || scope.credential.Scope == apiScopeWorker || request.GitHubIssueURL != "" || request.Provenance != nil || s.config.ImportBackend == nil {
+	if !machine || origin.Kind != "doctor" || origin.Instance != "github-actions" || scope.credential.Scope == hubapi.APIScopeWorker || request.GitHubIssueURL != "" || request.Provenance != nil || s.config.ImportBackend == nil {
 		return nil
 	}
 	evidence := gate.ParseScheduledEvidence(request.Body)

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
@@ -53,7 +54,7 @@ func seedArchiveIssues(t *testing.T, service *Service, scope nativeScope, count 
 			t.Fatal(err)
 		}
 		now := service.config.now().UTC().Truncate(time.Microsecond)
-		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Number: int(number), Revision: 1, Profile: "native"}, Title: fmt.Sprintf("Seed %d", index), Body: nativeContractTestBody, State: state, Actor: actor, Labels: []string{}, Assignees: []string{}, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, IssueContract: &issuecontract.State{ConfirmedSections: config.IssueContractSectionDigests(nativeContractTestBody)}}
+		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: int(number), Revision: 1, Profile: "native"}, Title: fmt.Sprintf("Seed %d", index), Body: nativeContractTestBody, State: state, Actor: actor, Labels: []string{}, Assignees: []string{}, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, IssueContract: &issuecontract.State{ConfirmedSections: config.IssueContractSectionDigests(nativeContractTestBody)}}
 		for _, configured := range project.States {
 			if configured.Name == state {
 				issue.Terminal = configured.Terminal
@@ -70,7 +71,7 @@ func seedArchiveIssues(t *testing.T, service *Service, scope nativeScope, count 
 		if err != nil {
 			t.Fatal(err)
 		}
-		event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID, Type: "issue.created", SchemaVersion: 1, Actor: actor, RecordedAt: now, Data: tracker.CollaborationData{Revision: 1}}))
+		event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID, Type: "issue.created", SchemaVersion: 1, Actor: actor, RecordedAt: now, Data: tracker.CollaborationData{Revision: 1}}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -249,7 +250,7 @@ func TestHostedIssueAllowanceBoundaries(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			hostedTestPlans(t, f.service, map[string]int64{"unarchived_issues": 3})
-			scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
+			scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
 			seedArchiveIssues(t, f.service, scope, count, "Todo")
 			seedArchiveIssues(t, f.service, scope, 2, "Done")
 			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "Allocation", State: "Todo"})
@@ -281,7 +282,7 @@ func TestHostedIssueArchiveAndDowngrade(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	config := hostedTestPlans(t, f.service, map[string]int64{"unarchived_issues": 2})
-	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
+	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
 	issues := seedArchiveIssues(t, f.service, scope, 2, "Todo")
 	issuePath := func(issue tracker.NativeIssue) string { return f.base + "/work-items/" + string(issue.WorkItemID) }
 	action := func(issue tracker.NativeIssue, op, key string, want int) tracker.NativeIssue {
@@ -337,7 +338,7 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	hostedTestPlans(t, f.service, map[string]int64{"unarchived_issues": 5})
-	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
+	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
 	issues := seedArchiveIssues(t, f.service, scope, 4, "Todo")
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(issues[0].WorkItemID)+"/archive", archiveRequest(issues[0], "archive"))
 	requireNativeStatus(t, response, http.StatusOK)
@@ -380,7 +381,7 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 func TestNativeArchiveSelfHostedNoQuota(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
 	seedArchiveIssues(t, f.service, scope, 201, "Done")
 	issue := f.create(t, "Beyond hosted allowance")
 	for _, op := range []string{"archive", "restore"} {
@@ -442,7 +443,7 @@ func TestHostedIssueAllowanceAcrossProjects(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	hostedTestPlans(t, f.service, map[string]int64{"unarchived_issues": 1})
-	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
+	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
 	seedArchiveIssues(t, f.service, scope, 2, "Done")
 	usage, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,7 +21,7 @@ func readNativeRunReplaySnapshot(ctx context.Context, r tenantstore.Reader, scop
 	attempts := make([]leasestore.Attempt, len(events))
 	reader, ok := r.(nativeRunEventReader)
 	if !ok {
-		return nil, nativeRunEventStorageUnavailable()
+		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	for i, event := range events {
 		row, err := reader.RunEvent(ctx, scope.project, tracker.NativeWorkItemID(item), nativeAttemptHistoryID(event.Type, event.Data))

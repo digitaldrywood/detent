@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -501,7 +502,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			request.NotDuplicateOf = []int{issue.Number}
 			foreignOrg := org + "_foreign"
 			seedStartupOrganization(t, repository, foreignOrg)
-			foreignScope := nativeScope{organization: foreignOrg, project: project, credential: apiCredential{ID: credential, Scope: apiScopeOperator}}
+			foreignScope := nativeScope{organization: foreignOrg, project: project, credential: hubapi.APICredential{ID: credential, Scope: hubapi.APIScopeOperator}}
 			if _, err := service.prepareWorkItemDuplicateConfirmation(t.Context(), foreignScope, request); !errors.Is(err, receiptstore.ErrExpired) {
 				t.Fatalf("cross-tenant challenge accepted: %v", err)
 			}

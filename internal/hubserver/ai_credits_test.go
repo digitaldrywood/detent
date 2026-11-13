@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -211,8 +212,8 @@ func TestAICreditCheckoutSessionDoesNotRegressWebhookPayment(t *testing.T) {
 		}
 		return service.billing.creditEvent(ctx, "evt_checkout_race", "checkout.session.completed")
 	}
-	if _, err := service.checkoutCredits(t.Context(), func(context.Context) (apiCredential, error) {
-		return apiCredential{Hosted: &auth.HostedIdentity{Subject: "user_browser_owner"}}, nil
+	if _, err := service.checkoutCredits(t.Context(), func(context.Context) (hubapi.APICredential, error) {
+		return hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: "user_browser_owner"}}, nil
 	}, "price_credit", "checkout-race"); err != nil {
 		t.Fatal(err)
 	}

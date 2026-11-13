@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -44,7 +45,7 @@ func boardRecordSelection(scope nativeScope, params url.Values) (viewstore.Board
 		selection.Archived = new(true)
 	case "all":
 	default:
-		return selection, nativePublicInvalid("archived must be true, false or all")
+		return selection, hubapi.NativePublicInvalid("archived must be true, false or all")
 	}
 	switch params.Get("open") {
 	case "":
@@ -53,7 +54,7 @@ func boardRecordSelection(scope nativeScope, params url.Values) (viewstore.Board
 	case "false":
 		selection.Terminal = new(true)
 	default:
-		return selection, nativePublicInvalid("open must be true or false")
+		return selection, hubapi.NativePublicInvalid("open must be true or false")
 	}
 	for _, value := range params["priority"] {
 		if value == "" {
@@ -61,7 +62,7 @@ func boardRecordSelection(scope nativeScope, params url.Values) (viewstore.Board
 		}
 		priority, err := strconv.Atoi(value)
 		if err != nil || priority < 0 || priority > 3 {
-			return selection, nativePublicInvalid("priority must be between zero and three")
+			return selection, hubapi.NativePublicInvalid("priority must be between zero and three")
 		}
 		selection.Priorities = append(selection.Priorities, priority)
 	}
@@ -72,7 +73,7 @@ func boardRecordSelection(scope nativeScope, params url.Values) (viewstore.Board
 		if value := params.Get(bound.name); value != "" {
 			at, err := time.Parse(time.RFC3339Nano, value)
 			if err != nil {
-				return selection, nativePublicInvalid("Completion window bounds must be RFC3339 timestamps")
+				return selection, hubapi.NativePublicInvalid("Completion window bounds must be RFC3339 timestamps")
 			}
 			*bound.value = &at
 		}
@@ -84,7 +85,7 @@ func boardRecordSelection(scope nativeScope, params url.Values) (viewstore.Board
 		if value := params.Get(bound.name); value != "" {
 			at, err := time.Parse(time.RFC3339Nano, value)
 			if err != nil {
-				return selection, nativePublicInvalid("Date filters must be RFC3339 timestamps")
+				return selection, hubapi.NativePublicInvalid("Date filters must be RFC3339 timestamps")
 			}
 			*bound.value = &at
 		}
@@ -117,12 +118,12 @@ func (s *Service) readBoardRecordsFor(ctx context.Context, scope nativeScope, pa
 
 func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, params url.Values, legacy, compact, lanes bool) (tracker.NativeIssuePage, error) {
 	if value, present := params["archive_url"]; present && (len(value) != 1 || value[0] != "true" && value[0] != "false") {
-		return tracker.NativeIssuePage{}, nativePublicInvalid("archive_url supports true or false")
+		return tracker.NativeIssuePage{}, hubapi.NativePublicInvalid("archive_url supports true or false")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
-		return tracker.NativeIssuePage{}, workItemStorageUnavailable()
+		return tracker.NativeIssuePage{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var page tracker.NativeIssuePage
 	var compatible bool
@@ -144,7 +145,7 @@ func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, pa
 			}
 			return nil
 		}); err != nil {
-			return projectRecordError(err)
+			return hubapi.ProjectRecordError(err)
 		}
 		if compatible {
 			return nil
@@ -175,7 +176,7 @@ func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, pa
 func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope, params url.Values, legacy, compact, lanes bool) (tracker.NativeIssuePage, error) {
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
-		return page, workItemStorageUnavailable()
+		return page, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if _, err := nativeIssuePickerRequested(params); err != nil {
 		return page, err
@@ -184,19 +185,19 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	includeWork := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
 	includeSummary := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "summary" })
 	if includeSummary && includeWork {
-		return page, nativePublicInvalid("summary cannot include work")
+		return page, hubapi.NativePublicInvalid("summary cannot include work")
 	}
 	if includeBoard {
 		page.Cards = []tracker.NativeBoardCard{}
 		if params.Get("include") != "board" {
-			return page, nativePublicInvalid("board cannot include other projections")
+			return page, hubapi.NativePublicInvalid("board cannot include other projections")
 		}
 		if params.Has("created_after") || params.Has("created_before") || params.Has("updated_after") {
-			return page, nativePublicInvalid("Date filters require an issue list projection")
+			return page, hubapi.NativePublicInvalid("Date filters require an issue list projection")
 		}
 	}
 	if sort := params.Get("sort"); sort != "" && sort != "closed" {
-		return page, nativePublicInvalid("sort supports closed")
+		return page, hubapi.NativePublicInvalid("sort supports closed")
 	}
 	selection, err := boardRecordSelection(scope, params)
 	if err != nil {
@@ -205,13 +206,13 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	selection.SearchText = strings.TrimSpace(params.Get("q"))
 	selection.SearchRanked = !includeBoard && selection.SearchText != ""
 	if len(selection.SearchText) > searchstore.MaxQueryTextBytes {
-		return page, nativePublicInvalid("Search query is too long")
+		return page, hubapi.NativePublicInvalid("Search query is too long")
 	}
 	selectedWindow, err := nativeShippedWindow(params.Get("completed_window"))
 	if err != nil {
 		return page, err
 	}
-	path, maximum := "/api/v2/organizations/"+url.PathEscape(string(scope.organization))+"/projects/"+url.PathEscape(string(scope.project))+"/work-items", maxAPIPageLimit
+	path, maximum := "/api/v2/organizations/"+url.PathEscape(string(scope.organization))+"/projects/"+url.PathEscape(string(scope.project))+"/work-items", hubapi.MaxAPIPageLimit
 	if includeBoard {
 		path, maximum = "/board/"+string(scope.project), 2000
 	}
@@ -227,7 +228,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 			cursorParams.Set("include", strings.Join(includes, ","))
 		}
 	}
-	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, cursorParams, maximum, defaultAPIPageLimit)
+	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, cursorParams, maximum, hubapi.DefaultAPIPageLimit)
 	if err != nil {
 		return page, err
 	}
@@ -263,7 +264,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 			BoardModelPages(context.Context, viewstore.BoardSelection, *viewstore.BoardSelection, accessstore.Authority) (viewstore.BoardModelPage, error)
 		})
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var work *viewstore.BoardSelection
 		if includeWork {
@@ -283,10 +284,10 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 		return s.authorizeBoardModel(ctx, reader, scope, &snapshot)
 	})
 	if err != nil {
-		return page, projectRecordError(err)
+		return page, hubapi.ProjectRecordError(err)
 	}
 	if selection.AfterSequence != nil && *selection.AfterSequence != snapshot.Sequence {
-		return page, nativePublicInvalid("Work list order changed; restart the query")
+		return page, hubapi.NativePublicInvalid("Work list order changed; restart the query")
 	}
 	page.ProjectionPending, page.ProjectionOldestPendingAt = snapshot.Pending, snapshot.OldestPendingAt
 	page.ChangeSequence = snapshot.Sequence
@@ -568,16 +569,16 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}, Total: -1}
 	ctx = s.runDetailContext(ctx)
 	ctx = context.WithValue(ctx, runtimeAdmissionPageKey{}, &runtimeAdmissionPage{})
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	allowed := map[string]bool{"limit": true, "cursor": true, "queue_scope": true, "readiness": true, "sort": true, "state": true, "label": true, "assignee": true, "priority": true, "repository": true}
 	for name, values := range params {
 		multi := name == "state" || name == "label" || name == "assignee" || name == "priority" || name == "repository"
 		if !allowed[name] || len(values) == 0 || len(values) > 32 || !multi && len(values) != 1 || len(strings.Join(values, "\x00")) > 4096 {
-			return page, nativePublicInvalid("Query contains an unsupported field or value")
+			return page, hubapi.NativePublicInvalid("Query contains an unsupported field or value")
 		}
 	}
-	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, "/api/v2/organizations/"+string(scope.organization)+"/projects/"+string(scope.project)+"/work-items", params, corestore.MaxPageSize, defaultAPIPageLimit)
+	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, "/api/v2/organizations/"+string(scope.organization)+"/projects/"+string(scope.project)+"/work-items", params, corestore.MaxPageSize, hubapi.DefaultAPIPageLimit)
 	if err != nil {
 		return page, err
 	}
@@ -586,25 +587,25 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 	if params.Get("queue_scope") == "project" || params.Get("queue_scope") == string(scope.project) {
 		query.Scope = string(scope.project)
 	} else if value := params.Get("queue_scope"); value != "" && value != "fleet" {
-		return page, nativePublicInvalid("queue_scope supports fleet or project")
+		return page, hubapi.NativePublicInvalid("queue_scope supports fleet or project")
 	}
 	switch params.Get("sort") {
 	case "", "priority":
 	case "identifier":
 		query.IdentifierOrder = true
 	default:
-		return page, nativePublicInvalid("sort supports priority or identifier")
+		return page, hubapi.NativePublicInvalid("sort supports priority or identifier")
 	}
 	readiness := params.Get("readiness")
 	if readiness != "" && readiness != "ready" && readiness != "waiting" {
-		return page, nativePublicInvalid("readiness supports ready or waiting")
+		return page, hubapi.NativePublicInvalid("readiness supports ready or waiting")
 	}
 	for _, value := range params["priority"] {
 		priority, ok := map[string]int64{"urgent": 0, "high": 1, "normal": 2, "low": 3, "unset": -1}[value]
 		if !ok {
 			parsed, err := strconv.ParseInt(value, 10, 64)
 			if err != nil || parsed < 0 || parsed > 3 {
-				return page, nativePublicInvalid("priority is invalid")
+				return page, hubapi.NativePublicInvalid("priority is invalid")
 			}
 			priority = parsed
 		}
@@ -616,16 +617,16 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 	if cursor.After != "" {
 		var envelope hubsecrets.Envelope
 		if json.Unmarshal([]byte(cursor.After), &envelope) != nil || s.config.SecretKeys == nil {
-			return page, nativePublicInvalid("Queue cursor is invalid")
+			return page, hubapi.NativePublicInvalid("Queue cursor is invalid")
 		}
 		raw, err := s.config.SecretKeys.Open(envelope, []byte(cursor.Scope))
 		if err != nil {
-			return page, nativePublicInvalid("Queue cursor is invalid")
+			return page, hubapi.NativePublicInvalid("Queue cursor is invalid")
 		}
 		err = json.Unmarshal(raw, &query.After)
 		clear(raw)
 		if err != nil || query.After.WorkItemID == "" || query.After.Stage < 0 || query.After.Stage > 1 {
-			return page, nativePublicInvalid("Queue cursor is invalid")
+			return page, hubapi.NativePublicInvalid("Queue cursor is invalid")
 		}
 		if query.After.Stage == 1 {
 			query.IdentifierOrder, query.Unqueued = true, true
@@ -641,7 +642,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 	selectedRows := map[tracker.NativeWorkItemID]selected{}
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return page, workItemStorageUnavailable()
+		return page, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
@@ -684,7 +685,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 		}
 		batch, ok := r.(tenantstore.ClaimPreviewPlanRowsReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		metadata, err := batch.ClaimPreviewPlanRows(ctx, scope.project, candidates)
 		if err != nil {
@@ -700,7 +701,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 			if source.Item.NativeID != candidates[index].WorkItemID || source.Item.Revision != candidates[index].Revision {
 				return corestore.ErrRevisionConflict
 			}
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(source.Item.ActorPrincipalID)}) {
+			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(source.Item.ActorPrincipalID)}) {
 				continue
 			}
 			selectedRows[source.Item.NativeID] = selected{row: matched[index], item: source.Item, version: source.Version}
@@ -708,7 +709,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 		return nil
 	})
 	if err != nil {
-		return page, projectRecordError(err)
+		return page, hubapi.ProjectRecordError(err)
 	}
 	more := len(rows) > corestore.MaxPageSize || fallbackPending
 	budgetExhausted, lookahead, byteClipped := more, false, false
@@ -760,7 +761,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 		}
 		if size+len(encoded) > operatortool.MaxResultBytes {
 			if len(page.Items) == 0 {
-				return page, nativePublicInvalid("A single issue exceeds the page budget; use work_bulk_export")
+				return page, hubapi.NativePublicInvalid("A single issue exceeds the page budget; use work_bulk_export")
 			}
 			more, byteClipped = true, true
 			break
@@ -784,7 +785,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 			}
 			batch, ok := r.(tenantstore.ClaimPreviewPlanRowsReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			candidates := make([]claimstore.Candidate, 0, len(page.Items))
 			for _, issue := range page.Items {
@@ -795,7 +796,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 			return err
 		})
 		if err != nil {
-			return page, projectRecordError(err)
+			return page, hubapi.ProjectRecordError(err)
 		}
 		if len(current) != len(page.Items) {
 			return page, corestore.ErrRevisionConflict
@@ -803,7 +804,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 		kept := page.Items[:0]
 		for index, issue := range page.Items {
 			row := current[index]
-			if row.Item.NativeID == "" && errors.Is(row.Err, corestore.ErrNotFound) || row.Item.NativeID == issue.WorkItemID && (row.Item.Revision != int64(issue.Revision) || row.Item.Archived || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.Item.ActorPrincipalID)})) {
+			if row.Item.NativeID == "" && errors.Is(row.Err, corestore.ErrNotFound) || row.Item.NativeID == issue.WorkItemID && (row.Item.Revision != int64(issue.Revision) || row.Item.Archived || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.Item.ActorPrincipalID)})) {
 				page.Partial = true
 				continue
 			}
@@ -846,7 +847,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 			return page, err
 		}
 		if len(page.NextCursor) > 4096 {
-			return page, nativePublicInvalid("Queue cursor exceeds its page bound")
+			return page, hubapi.NativePublicInvalid("Queue cursor exceeds its page bound")
 		}
 	}
 	return page, nil

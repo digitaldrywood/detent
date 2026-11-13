@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -43,10 +44,10 @@ func hubFleetRequirement(name string) operatortool.Requirement {
 	}
 	return operatortool.Requirement{Scope: apikey.ScopeAdmin, ResourceKind: "runners"}
 }
-func currentHubOperator(ctx context.Context) (apiCredential, error) {
-	resolve, ok := ctx.Value(hubOperatorResolverKey{}).(func(context.Context) (apiCredential, error))
+func currentHubOperator(ctx context.Context) (hubapi.APICredential, error) {
+	resolve, ok := ctx.Value(hubOperatorResolverKey{}).(func(context.Context) (hubapi.APICredential, error))
 	if !ok {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	return resolve(ctx)
 }
@@ -268,7 +269,7 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 				ObservedAt time.Time          `json:"observed_at"`
 			}{projected, more, s.config.now()}
 		case operatortool.GitHubRequestCounts:
-			if s.config.Hosted != nil || credential.NativeOnly || credential.Scope != apiScopeAdmin {
+			if s.config.Hosted != nil || credential.NativeOnly || credential.Scope != hubapi.APIScopeAdmin {
 				return operatortool.Result{}, operatortool.ErrAccessDenied
 			}
 			counts := []GitHubRequestCount{}
@@ -326,7 +327,7 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		return e.actionResult(ctx, prior)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
-	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: r.ProjectID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: newNativeID("mcp")}
+	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: r.ProjectID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: hubapi.NewID("mcp")}
 	defer func() {
 		s.config.Logger.InfoContext(ctx, "operator mutation request", "principal_id", m.PrincipalID, "organization_id", m.OrganizationID, "action", m.Action, "correlation_id", m.CorrelationID)
 	}()
@@ -380,21 +381,21 @@ func safeHubOperatorError(err error) error {
 	if errors.As(err, &conflict) {
 		return err
 	}
-	var problem *nativeError
+	var problem *hubapi.NativeError
 	if errors.As(err, &problem) && problem.Code == "revision_conflict" {
 		message := "Resource has changed; read its current revision before retrying"
-		if problem.publicMessage {
+		if problem.PublicMessage {
 			message = problem.Message
 		}
 		return &operatortool.ConflictError{Code: problem.Code, Message: message, CurrentRevision: int64(problem.CurrentRevision)}
 	}
-	if errors.As(err, &problem) && problem.Code == "invalid_request" && problem.publicMessage {
+	if errors.As(err, &problem) && problem.Code == "invalid_request" && problem.PublicMessage {
 		return &operatortool.RequestError{Code: problem.Code, Message: problem.Message}
 	}
 	if errors.As(err, &problem) && problem.Code == "idempotency_conflict" {
 		return &operatortool.ConflictError{Code: problem.Code, Message: "The request_id was already used with different content"}
 	}
-	if errors.As(err, &problem) && problem.status == http.StatusUnprocessableEntity && problem.publicMessage {
+	if errors.As(err, &problem) && problem.Status == http.StatusUnprocessableEntity && problem.PublicMessage {
 		return &operatortool.RequestError{Code: problem.Code, Message: problem.Message}
 	}
 	if errors.Is(err, mutation.ErrConflict) {
@@ -409,7 +410,7 @@ func safeHubOperatorError(err error) error {
 	return fmt.Errorf("%w: %w", errHubOperatorUnavailable, err)
 }
 func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments json.RawMessage) (chatpkg.Action, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var r hubFleetRequest
 	if operatortool.DecodeArguments(arguments, &r) != nil {
@@ -448,7 +449,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		a.MaterialChange = true
 	case operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.RevokeRunnerIdentity:
 		runner, err := e.service.readRunnerRouting(ctx, nativeScope{organization: tracker.OrganizationID(org), credential: credential}, r.RunnerID)
-		if errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
+		if errors.Is(err, sql.ErrNoRows) || hubapi.IsNativeNotFound(err) {
 			return a, &operatortool.RequestError{Code: "not_found", Message: "runner_id: no runner with this ID exists in this organization"}
 		}
 		if err != nil {
@@ -523,7 +524,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 			return a, errHubOperatorUnavailable
 		}
 		a.IssueID, a.Identifier = r.EnrollmentID, r.EnrollmentID
-		a.CurrentState = formatHubTime(enrollment.ExpiresAt)
+		a.CurrentState = hubapi.FormatHubTime(enrollment.ExpiresAt)
 
 	case operatortool.CreateRunnerEnrollment:
 		if !r.Enrollment.Valid() && !r.Enrollment.Unbound() || !runnerauth.ValidOperations(r.Enrollment.Operations) {
@@ -697,7 +698,7 @@ func (e hubFleetExecutor) AuditAction(ctx context.Context, a chatpkg.Action, out
 
 // Keep these reads on the same deployment and credential boundary as the
 // dashboard routes. Hosted browsers cannot access the legacy instance APIs.
-func (s *Service) hubFleetReadPermitted(name string, credential apiCredential) bool {
+func (s *Service) hubFleetReadPermitted(name string, credential hubapi.APICredential) bool {
 	switch name {
 	case operatortool.Activity, operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports:
 		return s.config.Hosted != nil && s.database != nil

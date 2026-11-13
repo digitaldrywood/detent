@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -25,22 +26,22 @@ type scheduledValidationRecord struct {
 func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
 	report := request.ScheduledValidation
 	if report == nil || !report.Valid() || request.ScheduledFailure != nil || request.ChallengeToken != "" || len(request.NotDuplicateOf) != 0 || request.Type != "" || request.ReportContext != nil || request.Title != "" || request.Body != "" || request.State != "" || request.Priority != nil || len(request.Labels) != 0 || len(request.Assignees) != 0 || request.Provenance != nil || request.GitHubIssueURL != "" {
-		return nil, nativePublicInvalid("Invalid scheduled validation report")
+		return nil, hubapi.NativePublicInvalid("Invalid scheduled validation report")
 	}
-	if scope.credential.Scope == apiScopeWorker || scope.credential.HostedRole == "reporter" {
-		return nil, &nativeError{Code: "insufficient_scope", Message: "Scheduled reporting requires operator authority", status: http.StatusForbidden, publicMessage: true}
+	if scope.credential.Scope == hubapi.APIScopeWorker || scope.credential.HostedRole == "reporter" {
+		return nil, &hubapi.NativeError{Code: "insufficient_scope", Message: "Scheduled reporting requires operator authority", Status: http.StatusForbidden, PublicMessage: true}
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if s.config.TenantRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	scope.action = ""
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +55,7 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeSco
 		receipt, err := r.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if receipt.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			previous = &receipt
 			return nil
@@ -71,11 +72,11 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeSco
 			repository = project.Settings.Repository
 		}
 		if project.Core.Profile != "native" || !strings.EqualFold(repository, report.Repository) {
-			return nativePublicInvalid("Scheduled validation repository does not match the project")
+			return hubapi.NativePublicInvalid("Scheduled validation repository does not match the project")
 		}
 		owner, ok := r.(healthstore.ScheduledReportReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		retained, err := owner.HealthScheduledReport(ctx, scope.project, report.Repository, report.RunID, report.RunAttempt)
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -85,13 +86,13 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeSco
 			return err
 		}
 		if retained.ScheduledValidationReport != *report {
-			return nativePublicInvalid("Scheduled validation run already has a different report")
+			return hubapi.NativePublicInvalid("Scheduled validation run already has a different report")
 		}
 		planned = retained
 		return nil
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	if previous != nil {
@@ -116,7 +117,7 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeSco
 		stored, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if stored.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			previous = &stored
 			return nil
@@ -131,17 +132,17 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeSco
 		}
 		owner, ok := w.(healthstore.ScheduledWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		retained, err := owner.RecordHealthScheduledReport(ctx, planned)
 		if errors.Is(err, corestore.ErrRevisionConflict) {
-			return nativePublicInvalid("Scheduled validation run already has a different report")
+			return hubapi.NativePublicInvalid("Scheduled validation run already has a different report")
 		}
 		if err != nil {
 			return err
 		}
 		if !retained.RecordedAt.Equal(planned.RecordedAt) {
-			return nativeConflict(0)
+			return hubapi.NativeConflict(0)
 		}
 		if scope.credential.Hosted != nil {
 			audit := projectRecordActor(scope).Audit
@@ -155,7 +156,7 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeSco
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if previous != nil {
 		return content.Receipt(ctx, *previous)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -16,7 +17,7 @@ const nativeVerificationReopenState = "Todo"
 
 func (s *Service) verifyNativeIssue(c echo.Context) error {
 	var request tracker.VerifyFix
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.verifyNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
@@ -27,12 +28,12 @@ func (s *Service) verifyNativeIssue(c echo.Context) error {
 }
 
 func nativeVerificationInvalid(message string) error {
-	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
+	return &hubapi.NativeError{Code: "invalid_request", Message: message, Status: http.StatusUnprocessableEntity, PublicMessage: true}
 }
 
 func nativeVerificationAnswerer(scope nativeScope, issue tracker.NativeIssue) bool {
 	actor := scope.actor()
-	if scope.credential.Scope == apiScopeWorker || actor.Kind != "human" || actor.PrincipalID == "" {
+	if scope.credential.Scope == hubapi.APIScopeWorker || actor.Kind != "human" || actor.PrincipalID == "" {
 		return false
 	}
 	if actor.PrincipalID == issue.Actor.PrincipalID {
@@ -60,9 +61,9 @@ func (s *Service) verifyNativeIssueCommand(ctx context.Context, scope nativeScop
 		return nil, nativeVerificationInvalid("Comment must be at most 64 KiB")
 	}
 	if request.ExpectedRevision < 0 {
-		return nil, nativePublicInvalid("Expected revision must be positive")
+		return nil, hubapi.NativePublicInvalid("Expected revision must be positive")
 	}
-	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/verification"), Item: item, Feature: "collaboration"}
+	options := hubapi.NativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/verification"), Item: item, Feature: "collaboration"}
 	result, err := s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
 	if err == nil && request.Result == tracker.VerifyResultNotFixed && s.wakeSpriteRunnersAfter != nil {
 		s.wakeSpriteRunnersAfter(scope, result)

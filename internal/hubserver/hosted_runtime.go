@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 func (s *Service) hostedBillingConfig() *HostedBillingConfig {
@@ -25,7 +27,7 @@ func (s *Service) reloadHostedRuntime(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
 	}
 	var update HostedRuntimeUpdate
-	if err := decodeAPIJSON(c, &update); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &update); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := s.applyHostedRuntime(c.Request().Context(), &update); err != nil {
@@ -55,7 +57,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
 	if update.Reason == "" || len(update.Reason) > 500 {
-		return nativePublicInvalid("A bounded reload reason is required")
+		return hubapi.NativePublicInvalid("A bounded reload reason is required")
 	}
 	plans := defaultHostedPlans(s.config.Hosted)
 	if !update.Plans.IsZero() {
@@ -69,7 +71,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 	}
 	if !plans.IsZero() {
 		if err := plans.Validate(); err != nil {
-			return nativePublicInvalid("Reloaded entitlement configuration is invalid")
+			return hubapi.NativePublicInvalid("Reloaded entitlement configuration is invalid")
 		}
 	}
 	var config *HostedBillingConfig
@@ -78,15 +80,15 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 		next.Prices = slices.Clone(update.Prices)
 		config = &next
 		if err := config.Validate(&plans); err != nil {
-			return nativePublicInvalid("Reloaded billing prices are invalid")
+			return hubapi.NativePublicInvalid("Reloaded billing prices are invalid")
 		}
 	} else if len(update.Prices) != 0 {
-		return nativePublicInvalid("Enabling billing requires a restart")
+		return hubapi.NativePublicInvalid("Enabling billing requires a restart")
 	}
 	actor := s.config.Hosted.EntitlementAdministrator
 	if update.StageID != "" {
 		if _, err := uuid.Parse(update.StageID); err != nil || !s.hostedShared() {
-			return nativePublicInvalid("Runtime preparation requires a shared entry and a publication identity")
+			return hubapi.NativePublicInvalid("Runtime preparation requires a shared entry and a publication identity")
 		}
 	}
 	update.Plans = &plans

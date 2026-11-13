@@ -3,9 +3,11 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"log/slog"
 	"strconv"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -53,7 +55,7 @@ func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker
 		}
 		owner, ok := w.(viewstore.WorkItemPageBackfiller)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		complete, err = owner.BackfillWorkItemPages(ctx)
@@ -73,7 +75,7 @@ func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		reader, ok := r.(viewstore.WorkItemPageReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		candidate, err = reader.NextWorkItemPageCandidate(ctx)
@@ -135,7 +137,7 @@ func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker
 		cursorErr := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 			writer, ok := w.(viewstore.WorkItemPageWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			if err := backfill(w); err != nil {
 				return err
@@ -165,7 +167,7 @@ func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker
 		err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 			writer, ok := w.(viewstore.RelationshipPageWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			return writer.PublishRelationshipPage(ctx, candidate, records, relations.Next)
 		})
@@ -195,7 +197,7 @@ func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker
 	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		writer, ok := w.(viewstore.WorkItemPageWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		return writer.PublishWorkItemPage(ctx, candidate, itemPage, commentPage)
 	})

@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -65,7 +66,7 @@ func TestProgressLeaseValidationDoesNotDeadlockClaim(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		writer := &progressLeaseOrderWriter{issue: make(chan struct{}, 1), lease: make(chan struct{}, 1), issueWait: make(chan struct{})}
 		writer.lease <- struct{}{}
-		owner := nativeProgressOwner{service: &Service{config: Config{now: time.Now}}, scope: nativeScope{credential: apiCredential{Scope: apiScopeWorker}}}
+		owner := nativeProgressOwner{service: &Service{config: Config{now: time.Now}}, scope: nativeScope{credential: hubapi.APICredential{Scope: hubapi.APIScopeWorker}}}
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
@@ -166,7 +167,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 	}
 	appendHistory := func(t *testing.T, issue tracker.NativeIssue, eventType string) {
 		t.Helper()
-		raw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID, AggregateType: "issue", Type: eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: f.service.config.now()})
+		raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID, AggregateType: "issue", Type: eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: f.service.config.now()})
 		if err != nil {
 			t.Fatal(err)
 		}

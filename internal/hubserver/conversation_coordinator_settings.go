@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -133,7 +134,7 @@ func (t *coordinatorToolset) settingsTool(ctx context.Context, record conversati
 	}
 	s := t.coordinator.server
 	var fields map[string]json.RawMessage
-	if len(call.Arguments) > coordinatorToolArgumentBytes || json.Unmarshal(call.Arguments, &fields) != nil || fields == nil {
+	if len(call.Arguments) > hubapi.CoordinatorToolArgumentBytes || json.Unmarshal(call.Arguments, &fields) != nil || fields == nil {
 		return nil, operatortool.ErrInvalidArguments
 	}
 	for _, key := range []string{"project_id", "request_id"} {

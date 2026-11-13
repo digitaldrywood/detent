@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -177,7 +178,7 @@ func independentRepairReview(version tracker.ChangeVersion, now time.Time) track
 	base := failureattribution.Observation{Command: "check-input", HeadSHA: version.BaseSHA, ExitCode: 1, Output: diagnostic, Complete: true}
 	result := &gate.ValidatorResult{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "rework", Findings: []gate.Finding{{Severity: "p1", Body: diagnostic, CheckCommand: base.Command, CheckDiagnostic: diagnostic}}, Commands: []gate.CommandResult{{Command: base.Command, HeadSHA: version.HeadSHA, ExitCode: 1, Output: diagnostic, FinishedAt: now, BaseReproduction: &base}}}
 	gate.NormalizeAttribution(result)
-	return tracker.ChangeReview{ID: newNativeID("review"), VersionID: version.ID, Decision: "changes_requested", Body: "Independent source failure", Validator: result, CreatedAt: now}
+	return tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version.ID, Decision: "changes_requested", Body: "Independent source failure", Validator: result, CreatedAt: now}
 }
 
 func TestIndependentFailureRepairDependency(t *testing.T) {

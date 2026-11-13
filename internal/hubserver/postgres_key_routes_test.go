@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -147,7 +148,7 @@ func TestPostgresKeyRoutesPreserveTenantAndCurrentAuthority(t *testing.T) {
 	requireNativeStatus(t, call("first", "other", "get_native_project", map[string]any{"project_id": "project_org_other"}, nil), http.StatusForbidden)
 	requireNativeStatus(t, call("first", "other", "list_projects", map[string]any{}, func(c *cloudassert.Claims) { c.Audience = "org_other" }), http.StatusUnauthorized)
 	requireNativeStatus(t, call("first", "other", operatortool.BillingCheckout, map[string]any{}, nil), http.StatusForbidden)
-	memberCredential := apiCredential{Hosted: &auth.HostedIdentity{Subject: "first"}, HostedRole: "member"}
+	memberCredential := hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: "first"}, HostedRole: "member"}
 	t.Run("runner authority without repository", func(t *testing.T) {
 		unavailable := &Service{config: service.config}
 		unavailable.config.TenantRepository = nil

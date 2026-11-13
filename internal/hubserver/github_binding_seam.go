@@ -6,13 +6,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/githubbinding"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *Service) githubBindingService(scope nativeScope) *githubbinding.Service {
@@ -34,19 +35,19 @@ func (s *Service) githubBindingService(scope nativeScope) *githubbinding.Service
 	})
 }
 
-func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeScope, options nativeCommandOptions, request bindNativeRepositoryRequest) (json.RawMessage, error) {
+func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeScope, options hubapi.NativeCommandOptions, request bindNativeRepositoryRequest) (json.RawMessage, error) {
 	raw, err := s.githubBindingService(scope).Bind(ctx, s.featureScope(scope), options.OperationID, request)
-	return raw, fromFeatureError(err)
+	return raw, hubapi.FromFeatureError(err)
 }
 
 type bindNativeRepositoryRequest = githubbinding.Request
 
 func (s *Service) bindNativeRepository(c echo.Context) error {
 	var request bindNativeRepositoryRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	result, err := s.bindNativeRepositoryCommand(c.Request().Context(), nativeRequestScope(c), nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Feature: hostedMutationFeature(c)}, request)
+	result, err := s.bindNativeRepositoryCommand(c.Request().Context(), nativeRequestScope(c), hubapi.NativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Feature: hostedMutationFeature(c)}, request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -56,12 +57,12 @@ func (s *Service) bindNativeRepository(c echo.Context) error {
 func validCheckoutRepository(repository string) bool {
 	return runnerstore.ValidCheckoutRepository(repository)
 }
-func (s *Service) verifiedProjectCheckout(ctx context.Context, _ nativeQueryer, scope nativeScope, repository string, now time.Time) (bool, error) {
+func (s *Service) verifiedProjectCheckout(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope, repository string, now time.Time) (bool, error) {
 	return s.githubBindingService(scope).VerifiedCheckout(ctx, s.featureScope(scope), repository, now)
 }
 func validateRunnerCheckoutReport(scope nativeScope, report *string) error {
-	return fromFeatureError(githubbinding.ValidateCheckoutReport(scope.credential.Runner.RunnerID, report))
+	return hubapi.FromFeatureError(githubbinding.ValidateCheckoutReport(scope.credential.Runner.RunnerID, report))
 }
 func repositoryBindingRefusal(code, message string) error {
-	return fromFeatureError(githubbinding.Refusal(code, message))
+	return hubapi.FromFeatureError(githubbinding.Refusal(code, message))
 }

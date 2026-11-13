@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -34,39 +35,39 @@ func isProjectRecordCommand(input any) bool {
 
 func (s *Service) authorizeProjectRecord(ctx context.Context, scope nativeScope, write bool) error {
 	if s.config.AccessRepository == nil {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, write) })
 }
 
-func (s *Service) authorizeProjectRecordWith(ctx context.Context, query nativeQueryer, scope nativeScope, write bool) error {
+func (s *Service) authorizeProjectRecordWith(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, write bool) error {
 	if scope.credential.Runner.RunnerID != "" && scope.credential.Runner.OrganizationID != scope.organization {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	if s.config.Hosted != nil && string(scope.organization) != s.config.Hosted.OrganizationID {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	if scope.project == "" {
-		if scope.credential.Scope != apiScopeAdmin && (scope.credential.Hosted == nil || scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin") {
-			return nativeNotFound()
+		if scope.credential.Scope != hubapi.APIScopeAdmin && (scope.credential.Hosted == nil || scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin") {
+			return hubapi.NativeNotFound()
 		}
 		var exists bool
 		if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM organizations WHERE id=?)", scope.organization).Scan(&exists); err != nil {
 			return err
 		}
 		if !exists {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		return nil
 	}
-	condition, args := scope.credential.projectAccessSQL("p.organization_id", "p.id", "1")
+	condition, args := scope.credential.ProjectAccessSQL("p.organization_id", "p.id", "1")
 	args = append([]any{scope.organization, scope.project}, args...)
 	var allowed bool
 	if err := query.QueryRowContext(ctx, "WITH p AS (SELECT ? AS organization_id,? AS id) SELECT ("+condition+") FROM p", args...).Scan(&allowed); err != nil {
 		return err
 	}
 	if !allowed {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	if scope.credential.Hosted != nil {
 		if err := s.requireHostedProject(ctx, query, scope, write); err != nil {
@@ -82,7 +83,7 @@ func (projectAccessAuthority) Rollback() error { return nil }
 
 func (s *Service) beginProjectRecordAuthority(ctx context.Context, scope nativeScope) (interface{ Rollback() error }, error) {
 	if s.config.AccessRepository == nil {
-		return nil, nativeNotFound()
+		return nil, hubapi.NativeNotFound()
 	}
 	if scope.credential.Hosted != nil {
 		if _, _, err := s.hostedMutationIdentity(ctx, scope.credential); err != nil {
@@ -94,7 +95,7 @@ func (s *Service) beginProjectRecordAuthority(ctx context.Context, scope nativeS
 
 func (s *Service) recheckProjectRecordMutation(ctx context.Context, scope nativeScope) error {
 	if s.config.TenantRepository != nil && s.config.AccessRepository == nil {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	if s.config.AccessRepository != nil {
 		if scope.credential.Hosted != nil {
@@ -105,7 +106,7 @@ func (s *Service) recheckProjectRecordMutation(ctx context.Context, scope native
 			if membership.ID != scope.credential.HostedMembership {
 				return accessstore.ErrDenied
 			}
-			scope.credential.HostedRole = lesserHostedRole(scope.credential.HostedRole, membership.Role.Slug)
+			scope.credential.HostedRole = hubapi.LesserHostedRole(scope.credential.HostedRole, membership.Role.Slug)
 		}
 		return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, true) })
 	}
@@ -116,28 +117,6 @@ func (s *Service) recheckProjectRecordMutation(ctx context.Context, scope native
 	return tx.Rollback()
 }
 
-func projectRecordError(err error) error {
-	if errors.Is(err, corestore.ErrInvalidRelationship) {
-		return nativePublicInvalid("Relationship type, operation, or endpoints are invalid")
-	}
-	if errors.Is(err, corestore.ErrDependencyCycle) {
-		return nativePublicInvalid("Dependencies cannot form a cycle")
-	}
-	if errors.Is(err, corestore.ErrNotFound) {
-		return nativeNotFound()
-	}
-	if errors.Is(err, ErrProjectParticipants) {
-		return &nativeError{Code: "not_ready", Message: "Project lifecycle storage is unavailable", status: http.StatusServiceUnavailable, publicMessage: true}
-	}
-	if errors.Is(err, projectstore.ErrStateInUse) {
-		return nativeWorkflowInvalid("Workflow states used by work items cannot be removed")
-	}
-	if errors.Is(err, projectstore.ErrActiveWork) {
-		return nativePublicInvalid("Finish or cancel active work before deleting this project")
-	}
-	return err
-}
-
 type authorizedProjectRecord struct {
 	projectstore.Record
 	organizationModels *policystore.OrganizationModels
@@ -145,7 +124,7 @@ type authorizedProjectRecord struct {
 
 func (s *Service) readAuthorizedProjectRecord(ctx context.Context, scope nativeScope, write bool, includeModels bool) (authorizedProjectRecord, error) {
 	if s.config.AccessRepository == nil {
-		return authorizedProjectRecord{}, nativeNotFound()
+		return authorizedProjectRecord{}, hubapi.NativeNotFound()
 	}
 	var result authorizedProjectRecord
 	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
@@ -176,7 +155,7 @@ func (s *Service) readAuthorizedProjectRecord(ctx context.Context, scope nativeS
 		}
 		return nil
 	})
-	return result, projectRecordError(err)
+	return result, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) readProjectRecord(ctx context.Context, scope nativeScope) (projectstore.Record, error) {
@@ -186,7 +165,7 @@ func (s *Service) readProjectRecord(ctx context.Context, scope nativeScope) (pro
 		result, err = r.ProjectRecord(ctx, scope.project)
 		return err
 	})
-	return result, projectRecordError(err)
+	return result, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) projectRecordWorkflow(ctx context.Context, record projectstore.Record) (string, error) {
@@ -236,11 +215,11 @@ func (s *Service) projectRecordNative(ctx context.Context, record projectstore.R
 	return project, err
 }
 
-func (s *Service) executeProjectRecordMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any) (json.RawMessage, error) {
+func (s *Service) executeProjectRecordMutation(ctx context.Context, scope nativeScope, options hubapi.NativeCommandOptions, command tracker.Mutation, input any) (json.RawMessage, error) {
 	hashInput := input
 	if request, ok := input.(operatortool.HostedProjectCreateInput); ok {
 		if s.config.Hosted == nil || scope.credential.Hosted == nil || !request.GrantAccess {
-			return nil, nativeNotFound()
+			return nil, hubapi.NativeNotFound()
 		}
 		states := HostedProjectStates()
 		if request.States != nil {
@@ -253,21 +232,21 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 	}
 
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if (scope.credential.Hosted != nil || s.config.Hosted != nil) && s.config.ProjectParticipants == nil {
 		switch input.(type) {
 		case createNativeProjectRequest, deleteCloudProjectRequest:
-			return nil, projectRecordError(ErrProjectParticipants)
+			return nil, hubapi.ProjectRecordError(hubapi.ErrProjectParticipants)
 		}
 	}
 	if s.config.AccessRepository == nil {
-		return nil, nativeNotFound()
+		return nil, hubapi.NativeNotFound()
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	hash, err := nativeCommandHash(hashInput)
+	hash, err := hubapi.CommandHash(hashInput)
 	if err != nil {
 		return nil, err
 	}
@@ -302,12 +281,12 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 		return nil
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	if replay {
 		if receipt.RequestHash != hash {
-			return nil, nativeConflict(0)
+			return nil, hubapi.NativeConflict(0)
 		}
 		return content.Receipt(ctx, receipt)
 	}
@@ -346,7 +325,7 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 		previous, err := w.Receipt(ctx, scope.credential.ID, options.OperationID, command.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			existing = &previous
 			return nil
@@ -372,7 +351,7 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 			}
 		case deleteCloudProjectRequest:
 			if s.config.ProjectParticipants == nil {
-				return ErrProjectParticipants
+				return hubapi.ErrProjectParticipants
 			}
 			err = s.config.ProjectParticipants.RetireProject(ctx, w, projectRecordActor(scope), current, s.config.now())
 			if err == nil {
@@ -390,7 +369,7 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 						return err
 					}
 				} else if current.Settings.Repository != "" || current.Settings.CheckoutRepository != "" {
-					return ErrProjectParticipants
+					return hubapi.ErrProjectParticipants
 				}
 			}
 			_, err = w.UpdateProjectRecord(ctx, planned)
@@ -422,7 +401,7 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 			})
 			if replayErr == nil {
 				if committed.RequestHash != hash {
-					return nil, nativeConflict(0)
+					return nil, hubapi.NativeConflict(0)
 				}
 				return content.Receipt(ctx, committed)
 			}
@@ -441,10 +420,10 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope native
 				case cloudContentSettingsRequest:
 					revision = fresh.Core.ContentSettingsRevision
 				}
-				return nil, nativeConflict(tracker.Revision(revision))
+				return nil, hubapi.NativeConflict(tracker.Revision(revision))
 			}
 		}
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if existing != nil {
 		return content.Receipt(ctx, *existing)
@@ -457,14 +436,14 @@ func (s *Service) planProjectRecordMutation(ctx context.Context, scope nativeSco
 	case bindArtifactServiceRequest:
 		binding := request.Binding
 		if !artifact.ValidID(binding.ServiceID, "service") || !artifact.ValidOrigin(binding.Origin) || !slices.Contains([]string{"customer", "hosted"}, binding.Mode) || binding.Mode == "hosted" && !binding.HostedOptIn || binding.PublisherTokenID == "" {
-			return current, nil, nativePublicInvalid("Invalid artifact service binding")
+			return current, nil, hubapi.NativePublicInvalid("Invalid artifact service binding")
 		}
 		binding.PublisherTokenID = ""
 		return current, binding, nil
 
 	case cloudContentSettingsRequest:
 		if int64(request.ExpectedRevision) != current.Core.ContentSettingsRevision {
-			return current, nil, nativeConflict(tracker.Revision(current.Core.ContentSettingsRevision))
+			return current, nil, hubapi.NativeConflict(tracker.Revision(current.Core.ContentSettingsRevision))
 		}
 		current.Settings.RequireVisualAttachments = request.RequireVisualAttachments
 		return current, projectsettings.Content{Revision: request.ExpectedRevision + 1, RequireVisualAttachments: request.RequireVisualAttachments}, nil
@@ -472,13 +451,13 @@ func (s *Service) planProjectRecordMutation(ctx context.Context, scope nativeSco
 		return s.planProjectRecordModel(ctx, current, request)
 	case createNativeProjectRequest:
 		if strings.TrimSpace(request.Name) == "" || len(request.Name) > 200 {
-			return current, nil, nativePublicInvalid("Project name is required and limited to 200 bytes")
+			return current, nil, hubapi.NativePublicInvalid("Project name is required and limited to 200 bytes")
 		}
 		states := nativeTriageStates(request.States)
 		if err := validateNativeStates(states); err != nil {
 			return current, nil, err
 		}
-		identity, err := nativeCommandHash([]string{string(scope.organization), scope.credential.ID, "create_project", request.IdempotencyKey})
+		identity, err := hubapi.CommandHash([]string{string(scope.organization), scope.credential.ID, "create_project", request.IdempotencyKey})
 		if err != nil {
 			return current, nil, err
 		}
@@ -504,17 +483,17 @@ func (s *Service) planProjectRecordMutation(ctx context.Context, scope nativeSco
 		return record, tracker.NativeProject{OrganizationID: record.Core.OrganizationID, ID: record.Core.ID, Name: record.Core.Name, Slug: record.Core.Slug, Profile: record.Core.Profile, States: record.States, RequireDependencies: record.Core.RequireDependencies}, nil
 	case renameProjectRequest:
 		if current.Core.Profile != "native" {
-			return current, nil, nativeInvalid("Project name is externally owned")
+			return current, nil, hubapi.NativeInvalid("Project name is externally owned")
 		}
-		if scope.credential.Hosted == nil && scope.credential.Scope != apiScopeAdmin {
-			return current, nil, nativeNotFound()
+		if scope.credential.Hosted == nil && scope.credential.Scope != hubapi.APIScopeAdmin {
+			return current, nil, hubapi.NativeNotFound()
 		}
 		name := strings.TrimSpace(request.Name)
 		if name == "" || len(name) > 200 || request.ExpectedRevision <= 0 {
-			return current, nil, &nativeError{Code: "invalid_request", Message: "A project name of at most 200 bytes and a positive expected revision are required", status: http.StatusBadRequest, publicMessage: true}
+			return current, nil, &hubapi.NativeError{Code: "invalid_request", Message: "A project name of at most 200 bytes and a positive expected revision are required", Status: http.StatusBadRequest, PublicMessage: true}
 		}
 		if current.Settings.Revision != int64(request.ExpectedRevision) {
-			return current, nil, nativeConflict(tracker.Revision(current.Settings.Revision))
+			return current, nil, hubapi.NativeConflict(tracker.Revision(current.Settings.Revision))
 		}
 		current.Core.Name = name
 	case updateProjectIntegrationRequest:
@@ -525,16 +504,16 @@ func (s *Service) planProjectRecordMutation(ctx context.Context, scope nativeSco
 		}
 	case deleteCloudProjectRequest:
 		if s.config.Hosted == nil || scope.credential.Hosted == nil {
-			return current, nil, nativeNotFound()
+			return current, nil, hubapi.NativeNotFound()
 		}
 		if request.ConfirmName != current.Core.Name {
-			return current, nil, nativePublicInvalid("Confirm the current project name before deleting it")
+			return current, nil, hubapi.NativePublicInvalid("Confirm the current project name before deleting it")
 		}
 		return current, struct {
 			ProjectID tracker.ProjectID `json:"project_id"`
 		}{scope.project}, nil
 	default:
-		return current, nil, nativeInvalid("Unsupported project command")
+		return current, nil, hubapi.NativeInvalid("Unsupported project command")
 	}
 	result := projectIntegrationRecord(current)
 	result.Revision++

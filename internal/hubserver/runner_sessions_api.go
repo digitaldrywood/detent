@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -45,7 +46,7 @@ func (s *Service) runnerSessionRead(ctx context.Context, scope nativeScope, id i
 		}
 		reader, ok := r.(runnersession.Reader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		if lookup == nil {
@@ -62,7 +63,7 @@ func (s *Service) runnerSessionRead(ctx context.Context, scope nativeScope, id i
 					return err
 				}
 				if source.IssueID != item.ID {
-					return nativeNotFound()
+					return hubapi.NativeNotFound()
 				}
 				attemptID = source.ID
 			} else if lookup.CurrentAttempt || lookup.Lookup.WorkAttemptID > 0 {
@@ -96,8 +97,8 @@ func (s *Service) runnerSessionRead(ctx context.Context, scope nativeScope, id i
 			return err
 		}
 		item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(record.IssueID))
-		if err == nil && !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
-			return nativeNotFound()
+		if err == nil && !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+			return hubapi.NativeNotFound()
 		}
 		return err
 	})
@@ -105,11 +106,11 @@ func (s *Service) runnerSessionRead(ctx context.Context, scope nativeScope, id i
 }
 
 func (s *Service) getRunnerSession(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	id, err := strconv.ParseInt(c.Param("session"), 10, 64)
 	if err != nil || id < 1 {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	record, err := s.runnerSessionRead(ctx, nativeRequestScope(c), id, nil)
 	if err != nil {
@@ -124,10 +125,10 @@ func (s *Service) getRunnerSession(c echo.Context) error {
 
 func (s *Service) findRunnerSession(c echo.Context) error {
 	var lookup runnersession.ResumeLookup
-	if err := decodeAPIJSON(c, &lookup); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &lookup); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	record, err := s.runnerSessionRead(ctx, nativeRequestScope(c), 0, &lookup)
 	if err != nil {
@@ -152,7 +153,7 @@ func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, 
 	if lock {
 		locker, ok := r.(leasestore.FencedLeaseLocker)
 		if !ok {
-			return leasestore.Attempt{}, policystore.Revision{}, nativeRunEventStorageUnavailable()
+			return leasestore.Attempt{}, policystore.Revision{}, hubapi.NativeRunEventStorageUnavailable()
 		}
 		lease, err = locker.LockLease(ctx, string(request.LeaseID))
 	} else {
@@ -167,7 +168,7 @@ func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, 
 	}
 	clock, ok := r.(runnersession.Reader)
 	if !ok {
-		return leasestore.Attempt{}, policystore.Revision{}, nativeRunEventStorageUnavailable()
+		return leasestore.Attempt{}, policystore.Revision{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	now, err := clock.RunnerSessionTime(ctx)
 	if err != nil {
@@ -210,11 +211,11 @@ func runnerSessionProcessAuthority(key string) string {
 
 func (s *Service) mutateRunnerSession(c echo.Context) error {
 	var request runnersession.Mutation
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if request.Key == "" || len(request.Key) > 128 || request.LeaseID == "" || request.FencingToken < 1 || request.Policy != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("session mutation requires a key and execution fence"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("session mutation requires a key and execution fence"))
 	}
 	count := 0
 	for _, present := range []bool{request.Start != nil, request.Finish != nil, request.Identity != nil, request.Provider != nil, request.Resume != nil, request.Progress != nil, request.Phase != nil, request.Profile != nil, request.Usage != nil, request.Worker != nil, request.Reaped != nil} {
@@ -223,16 +224,16 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 		}
 	}
 	if count != 1 || request.Profile != nil && request.Phase != nil || request.Progress != nil && request.Progress.LastProgressAt.IsZero() {
-		return s.nativeAPIError(c, nativePublicInvalid("one typed session mutation is required"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("one typed session mutation is required"))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
 	var record runnersession.Record
 	var snapshot runnersession.Snapshot
 	if request.Start != nil {
 		if request.SessionID != 0 || request.ExpectedRevision != 0 || request.Start.StartedAt.IsZero() || request.Start.IssueID == "" || len(request.ProcessKey) < 32 {
-			return s.nativeAPIError(c, nativePublicInvalid("new session requires an issue, start time and process key"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("new session requires an issue, start time and process key"))
 		}
 		record = runnersession.Record{Organization: scope.organization, Project: scope.project, IssueID: request.Start.IssueID, StartKey: request.Key, StartedAt: request.Start.StartedAt, Revision: 1}
 		snapshot.Start, snapshot.Identity = *request.Start, request.Start.RuntimeIdentity
@@ -251,7 +252,7 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 			}
 			reader, ok := r.(runnersession.Reader)
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			var err error
 			record, err = reader.RunnerSession(ctx, scope.project, request.SessionID)
@@ -288,7 +289,7 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 	}
 	duplicate, err := runnersession.ApplyFinalization(&snapshot, request)
 	if err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid(err.Error()))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid(err.Error()))
 	}
 	if duplicate {
 		err := s.writeNativeRunCommand(ctx, scope, command, func(ctx context.Context, w tenantstore.Writer) error {
@@ -301,7 +302,7 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 			}
 			reader, ok := w.(runnersession.Reader)
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			current, err := reader.RunnerSession(ctx, scope.project, record.ID)
 			if err != nil {
@@ -342,7 +343,7 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 		reserved := request.Worker.PID == 0 && request.Worker.GroupID == 0 && request.Worker.StartedAt.IsZero() && request.Worker.CleanupRoot != "" && request.Worker.CleanupPath != ""
 		started := request.Worker.PID > 0 && request.Worker.GroupID > 0 && !request.Worker.StartedAt.IsZero()
 		if !reserved && !started {
-			return s.nativeAPIError(c, nativePublicInvalid("worker process requires PID, group and start identity"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("worker process requires PID, group and start identity"))
 		}
 		snapshot.Worker = request.Worker
 		snapshot.Reaped = nil
@@ -355,7 +356,7 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 	}
 	if request.Reaped != nil {
 		if snapshot.Worker == nil || request.Reaped.ReapedAt.IsZero() {
-			return s.nativeAPIError(c, nativePublicInvalid("process reap requires a registered process and timestamp"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("process reap requires a registered process and timestamp"))
 		}
 		snapshot.Reaped = request.Reaped
 		record.WorkerReapedAt = &request.Reaped.ReapedAt
@@ -365,7 +366,7 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 	}
 	if request.Finish != nil {
 		if request.Finish.CompletedAt.IsZero() {
-			return s.nativeAPIError(c, nativePublicInvalid("session finish requires completion time"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("session finish requires completion time"))
 		}
 		snapshot.Finish = request.Finish
 		record.CompletedAt = &request.Finish.CompletedAt
@@ -424,7 +425,7 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 		}
 		writer, ok := w.(runnersession.Writer)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		if request.Start != nil {
 			record, err = writer.CreateRunnerSession(ctx, record, runnersession.History{Key: request.Key, Reference: historyRef})
@@ -445,15 +446,15 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 }
 
 func (s *Service) getRunnerSessionHistory(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	id, err := strconv.ParseInt(c.Param("session"), 10, 64)
 	if err != nil || id < 1 {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	revision, err := strconv.ParseInt(c.Param("revision"), 10, 64)
 	if err != nil || revision < 1 {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	scope := nativeRequestScope(c)
 	if _, err := s.runnerSessionRead(ctx, scope, id, nil); err != nil {
@@ -466,7 +467,7 @@ func (s *Service) getRunnerSessionHistory(c echo.Context) error {
 		}
 		reader, ok := r.(runnersession.Reader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		entries, err = reader.RunnerSessionHistory(ctx, scope.project, id, revision-1, 1)
@@ -476,7 +477,7 @@ func (s *Service) getRunnerSessionHistory(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if len(entries) != 1 || entries[0].Revision != revision {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), entries[0].Reference)
 	if err != nil {
@@ -486,7 +487,7 @@ func (s *Service) getRunnerSessionHistory(c echo.Context) error {
 }
 
 func (s *Service) getRunnerSessionProcesses(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
 	if scope.credential.Runner.RunnerID == "" {
@@ -499,7 +500,7 @@ func (s *Service) getRunnerSessionProcesses(c echo.Context) error {
 		}
 		reader, ok := r.(runnersession.Reader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		records, err = reader.RunnerSessionProcesses(ctx, scope.project, string(scope.credential.Runner.MachineID), c.QueryParam("attempt"), 200)
@@ -543,7 +544,7 @@ func (s *Service) verifyRunnerSessionFinalization(ctx context.Context, scope nat
 		}
 		reader, ok := r.(runnersession.Reader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		current, err := reader.RunnerSession(ctx, scope.project, record.ID)
 		if err != nil {

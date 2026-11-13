@@ -6,6 +6,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -40,8 +41,8 @@ func (s *Service) coordinatorProposalAgent(ctx context.Context, action chat.Acti
 // withCoordinatorAgent attributes application writes made under ctx to the
 // agent acting for the credential's principal.
 func withCoordinatorAgent(ctx context.Context, agent string) context.Context {
-	if resolve, ok := ctx.Value(hubOperatorResolverKey{}).(func(context.Context) (apiCredential, error)); ok {
-		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(ctx context.Context) (apiCredential, error) {
+	if resolve, ok := ctx.Value(hubOperatorResolverKey{}).(func(context.Context) (hubapi.APICredential, error)); ok {
+		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(ctx context.Context) (hubapi.APICredential, error) {
 			credential, err := resolve(ctx)
 			credential.Agent = agent
 			return credential, err

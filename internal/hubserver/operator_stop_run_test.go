@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -347,7 +348,7 @@ func TestHostedStopRunAuthority(t *testing.T) {
 				if scenario.scope != "" {
 					issuer := f.issuer(t)
 					expires := time.Now().Add(time.Hour)
-					key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "stop-client", Scope: apiScopeOperator, KeyScope: scenario.scope, Issuer: &issuer, ProjectIDs: []string{string(f.project)}, ProjectAccess: hostedProjectsSelected, ExpiresAt: &expires})
+					key, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "stop-client", Scope: hubapi.APIScopeOperator, KeyScope: scenario.scope, Issuer: &issuer, ProjectIDs: []string{string(f.project)}, ProjectAccess: hubapi.HostedProjectsSelected, ExpiresAt: &expires})
 					if err != nil {
 						t.Fatal(err)
 					}

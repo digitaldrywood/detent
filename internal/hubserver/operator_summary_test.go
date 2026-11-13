@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
@@ -59,7 +60,7 @@ func updateOperatorSummaryFixtureIssue(t *testing.T, service *Service, scope nat
 
 func appendOperatorSummaryFixtureTransition(t *testing.T, service *Service, scope nativeScope, id tracker.NativeWorkItemID, data tracker.CollaborationData, at time.Time) {
 	t.Helper()
-	row, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: id, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, RecordedAt: at, Data: data}))
+	row, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: id, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, RecordedAt: at, Data: data}))
 	if err != nil {
 		t.Fatal(err)
 	}

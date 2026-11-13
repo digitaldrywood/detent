@@ -6,6 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/changerules"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -36,23 +37,23 @@ func nativeChangeLandingClaimable(state string, detail *tracker.ChangeDetail) bo
 func (s *Service) landChange(c echo.Context) error { return s.landChangeRecord(c) }
 
 func validateChangeVersion(input tracker.ChangeVersionInput) error {
-	return fromFeatureError(changerules.ValidateVersion(input))
+	return hubapi.FromFeatureError(changerules.ValidateVersion(input))
 }
 func validateChangeVersionEvidence(scope nativeScope, item string, request tracker.PublishChangeVersion) error {
-	return fromFeatureError(changerules.ValidateVersionEvidence(scope.organization, scope.project, item, request))
+	return hubapi.FromFeatureError(changerules.ValidateVersionEvidence(scope.organization, scope.project, item, request))
 }
 func securityAuditRejection(message, field string) error {
-	return fromFeatureError(changerules.SecurityAuditRejection(message, field))
+	return hubapi.FromFeatureError(changerules.SecurityAuditRejection(message, field))
 }
 func securityAuditEvaluationField(evaluation securityaudit.Evaluation) string {
 	return changerules.SecurityAuditEvaluationField(evaluation)
 }
 
 func validateReleasePick(r tracker.AssociateReleasePick) error {
-	return fromFeatureError(changerules.ValidateReleasePick(r))
+	return hubapi.FromFeatureError(changerules.ValidateReleasePick(r))
 }
 func validatePreparedReleasePick(r tracker.ReleasePickInput, revision tracker.Revision) error {
-	return fromFeatureError(changerules.ValidatePreparedReleasePick(r, revision))
+	return hubapi.FromFeatureError(changerules.ValidatePreparedReleasePick(r, revision))
 }
 func sameReleasePickDelivery(prior, next tracker.ReleasePickInput) bool {
 	return changerules.SameReleasePickDelivery(prior, next)

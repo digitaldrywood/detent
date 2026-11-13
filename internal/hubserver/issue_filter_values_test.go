@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -162,7 +163,7 @@ func TestIssueFilterValues(t *testing.T) {
 	assertMatches(true)
 	for index, values := range [][]string{{"Replacement"}, {}} {
 		request := tracker.UpdateIssue{
-			Mutation:         tracker.Mutation{IdempotencyKey: newNativeID("filter_update")},
+			Mutation:         tracker.Mutation{IdempotencyKey: hubapi.NewID("filter_update")},
 			ExpectedRevision: entries[0].issue.Revision + tracker.Revision(index), Labels: &values, Assignees: &values,
 		}
 		response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(entries[0].issue.WorkItemID), f.token, request)
@@ -186,7 +187,7 @@ func TestIssueFilterValues(t *testing.T) {
 }
 
 func syncNativeIssueFixtureFacts(t *testing.T, q interface {
-	nativeQueryer
+	hubapi.NativeQueryer
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, items ...tracker.NativeWorkItemID) {
 	t.Helper()

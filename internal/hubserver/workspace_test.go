@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -73,7 +74,7 @@ func workspaceFixtureOn(t *testing.T, f nativeFixture) workspaceFixture {
 		t.Fatal(err)
 	}
 	ownerID := credential.ID
-	token := tokenResponse{ID: newNativeID("credential"), Token: newNativeID("token")}
+	token := hubapi.TokenResponse{ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}
 	now := service.config.now().UTC().Truncate(time.Microsecond)
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: "operator-workspace-other", Hash: apikey.HashToken(token.Token), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -94,7 +95,7 @@ func workspaceFixtureOn(t *testing.T, f nativeFixture) workspaceFixture {
 // a shared one would replay the first workspace instead of opening a second.
 func (f workspaceFixture) post(t *testing.T, token string, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
-	filled := map[string]any{"idempotency_key": newNativeID("wsk")}
+	filled := map[string]any{"idempotency_key": hubapi.NewID("wsk")}
 	maps.Copy(filled, body)
 	return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/workspaces", token, filled)
 }
@@ -186,16 +187,16 @@ func (f workspaceFixture) attempt(t *testing.T, name string, running bool) strin
 	worker := runner.redemption.Credential
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker,
 		tracker.NativeClaim{PolicyID: f.policy, WorkItemID: subject.WorkItemID, MachineID: runner.binding.MachineID,
-			SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
+			SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2,
 			Capabilities: []string{"native_issues", "scoped_collaboration"}})
 	requireNativeStatus(t, response, http.StatusOK)
 	var lease tracker.NativeLease
 	decodeHubResponse(t, response, &lease)
-	attempt, run := newNativeID("attempt"), newNativeID("run")
+	attempt, run := hubapi.NewID("attempt"), hubapi.NewID("run")
 	identity := &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}
 	path := f.base + "/work-items/" + string(subject.WorkItemID) + "/events"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, tracker.NativeRunEvent{
-		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1,
+		Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("start")}, Type: "run.started", SchemaVersion: 1,
 		Data: tracker.NativeRunData{Sequence: 1, Identity: identity, LeaseID: lease.ID, FencingToken: lease.FencingToken,
 			RunID: run, AttemptID: attempt, PolicyID: f.policy},
 	}), http.StatusOK)
@@ -203,7 +204,7 @@ func (f workspaceFixture) attempt(t *testing.T, name string, running bool) strin
 		return attempt
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, tracker.NativeRunEvent{
-		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
+		Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1,
 		Data: tracker.NativeRunData{Sequence: 2, Identity: identity, LeaseID: lease.ID, FencingToken: lease.FencingToken,
 			RunID: run, AttemptID: attempt, PolicyID: f.policy, Outcome: "succeeded"},
 	}), http.StatusOK)
@@ -324,7 +325,7 @@ func TestWorkspaceRequestCreatesSessionAndDispatchItem(t *testing.T) {
 		// The label selects the runner's hold-open mode, so a tracker writer
 		// who could set it would park a runner on any issue indefinitely.
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token,
-			tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("label")}, Title: "Smuggled",
+			tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("label")}, Title: "Smuggled",
 				State: "Todo", Labels: []string{workspaceItemLabel}})
 		requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
 	})
@@ -360,7 +361,7 @@ func TestWorkspaceRequestRefusals(t *testing.T) {
 		first := f.opened(t, f.token, map[string]any{"attempt_id": attempt})
 		response := f.post(t, f.token, map[string]any{"attempt_id": attempt})
 		requireNativeCode(t, response, http.StatusConflict, "workspace_exists")
-		var failure nativeError
+		var failure hubapi.NativeError
 		decodeHubResponse(t, response, &failure)
 		// The client's next move is to use the workspace it already has, so
 		// the refusal has to name it.
@@ -419,7 +420,7 @@ func TestWorkspaceOpenLimitsNameTheScopeReached(t *testing.T) {
 func requireWorkspaceLimit(t *testing.T, response *httptest.ResponseRecorder, scope string, limit int) {
 	t.Helper()
 	requireNativeCode(t, response, http.StatusUnprocessableEntity, "workspace_limit")
-	var failure nativeError
+	var failure hubapi.NativeError
 	decodeHubResponse(t, response, &failure)
 	if failure.Details["scope"] != scope {
 		t.Fatalf("details = %#v, want scope %s", failure.Details, scope)
@@ -558,7 +559,7 @@ func (f *workspaceRunnerFixture) claim(t *testing.T, item string) tracker.Native
 	t.Helper()
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential,
 		tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(item), MachineID: f.runner.binding.MachineID,
-			SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
+			SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2,
 			// The workspace lane declares the workspace capability; without it
 			// the hub's candidate query excludes workspace items entirely.
 			Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}})
@@ -636,7 +637,7 @@ func TestWorkspaceWorkerBind(t *testing.T) {
 		session, _ := f.requested(t)
 		// Without this check any runner holding any lease in the project
 		// could bind any workspace.
-		claimed := f.ordinaryClaim(t, string(f.issue.WorkItemID), newNativeID("session"))
+		claimed := f.ordinaryClaim(t, string(f.issue.WorkItemID), hubapi.NewID("session"))
 		requireNativeStatus(t, claimed, http.StatusOK)
 		var elsewhere tracker.NativeLease
 		decodeHubResponse(t, claimed, &elsewhere)
@@ -1282,7 +1283,7 @@ func TestWorkspaceItemsAreNotOrdinaryWork(t *testing.T) {
 	}
 	if reclaimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential,
 		tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(item), MachineID: f.runner.binding.MachineID,
-			SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
+			SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2,
 			Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}); reclaimed.Code == http.StatusOK {
 		t.Fatalf("the workspace lane claimed a closed workspace item: %s", reclaimed.Body.String())
 	}
@@ -1508,14 +1509,14 @@ func TestWorkspaceClaimable(t *testing.T) {
 					owner = prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 					owner.enroll(t)
 				}
-				lease := nativeAttemptFixtureLease(t, owner, f.issue, newNativeID("retained-session"))
+				lease := nativeAttemptFixtureLease(t, owner, f.issue, hubapi.NewID("retained-session"))
 				start := nativeStartedEvent(lease)
-				start.IdempotencyKey = newNativeID("start")
+				start.IdempotencyKey = hubapi.NewID("start")
 				attempt = start.Data.AttemptID
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", owner.redemption.Credential, start), http.StatusOK)
 				if test.finished {
 					finish := start
-					finish.IdempotencyKey, finish.Type, finish.Data.Sequence, finish.Data.Outcome = newNativeID("finish"), "run.finished", 2, "succeeded"
+					finish.IdempotencyKey, finish.Type, finish.Data.Sequence, finish.Data.Outcome = hubapi.NewID("finish"), "run.finished", 2, "succeeded"
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", owner.redemption.Credential, finish), http.StatusOK)
 				}
 				if test.expired {
@@ -1531,7 +1532,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 					}
 				}
 			}
-			request := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(item), MachineID: f.runner.binding.MachineID, SessionID: newNativeID("workspace-claim"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+			request := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(item), MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("workspace-claim"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
 			preview := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", f.runner.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: request})
 			requireNativeStatus(t, preview, http.StatusOK)
 			var page tracker.NativeCapacityPage
@@ -1607,13 +1608,13 @@ func TestWorkspaceClaimable(t *testing.T) {
 			other := f.create(t, "Healthy workspace subject")
 			good := f.opened(t, f.token, map[string]any{"work_item_id": string(other.WorkItemID)})
 			badItem, goodItem := f.item(t, bad.ID), f.item(t, good.ID)
-			lease := nativeAttemptFixtureLease(t, f.runner, f.issue, newNativeID("source-session"))
+			lease := nativeAttemptFixtureLease(t, f.runner, f.issue, hubapi.NewID("source-session"))
 			start := nativeStartedEvent(lease)
-			start.IdempotencyKey = newNativeID("source-start")
+			start.IdempotencyKey = hubapi.NewID("source-start")
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.runner.redemption.Credential, start), http.StatusOK)
 			attachedAttempt := start.Data.AttemptID
 			if test.wantHealthy && test.source == "attempt" {
-				attachedAttempt = newNativeID("missing-attempt")
+				attachedAttempt = hubapi.NewID("missing-attempt")
 			}
 			if test.wantHealthy && test.source == "attempt_runner" {
 				if _, err := admin.ExecContext(t.Context(), "DELETE FROM runner_lease_assignments WHERE organization_id=$1 AND lease_id=$2", f.project.OrganizationID, string(lease.ID)); err != nil {
@@ -1662,7 +1663,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 				}
 				return
 			}
-			request := tracker.NativeClaim{PolicyID: f.policy, MachineID: f.runner.binding.MachineID, SessionID: newNativeID("lane"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}, LabelInclude: []string{workspaceItemLabel}}
+			request := tracker.NativeClaim{PolicyID: f.policy, MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("lane"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}, LabelInclude: []string{workspaceItemLabel}}
 			preview := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", f.runner.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: request, Limit: 100})
 			requireNativeStatus(t, preview, http.StatusOK)
 			var page tracker.NativeCapacityPage
@@ -1728,7 +1729,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		request := tracker.NativeClaim{PolicyID: f.policy, MachineID: f.runner.binding.MachineID, SessionID: newNativeID("uncrowded-workspace"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+		request := tracker.NativeClaim{PolicyID: f.policy, MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("uncrowded-workspace"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			query := nativeTenantCandidateQuery(nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, request, "", f.service.config.now())
 			query.WorkspaceLane, query.Limit = false, nativeClaimCandidatePageSize
@@ -1751,7 +1752,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 		if len(page.Items) != 1 || page.Items[0].WorkItemID != item {
 			t.Fatalf("ordinary population displaced workspace preview: %+v", page)
 		}
-		requireNativeStatus(t, f.ordinaryClaim(t, "", newNativeID("ordinary-poll")), http.StatusOK)
+		requireNativeStatus(t, f.ordinaryClaim(t, "", hubapi.NewID("ordinary-poll")), http.StatusOK)
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential, request)
 		requireNativeStatus(t, response, http.StatusOK)
 		var lease tracker.NativeLease
@@ -1805,7 +1806,7 @@ func TestWorkspaceTerminalIsolationIsEnforced(t *testing.T) {
 		item := f.item(t, session.ID)
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential,
 			tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(item), MachineID: f.runner.binding.MachineID,
-				SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
+				SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2,
 				Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}})
 		if response.Code == http.StatusOK {
 			t.Fatalf("a user-isolation runner claimed a terminal workspace in a container organization: %s", response.Body.String())
@@ -1873,7 +1874,7 @@ func TestWorkspaceUnbindReleasesTheLease(t *testing.T) {
 			secondItem := f.item(t, second.ID)
 			held := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential,
 				tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(secondItem), MachineID: f.runner.binding.MachineID,
-					SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
+					SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2,
 					Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}})
 			if held.Code == http.StatusOK {
 				t.Fatal("a capacity-one runner holding a workspace claimed a second one")
@@ -1967,7 +1968,7 @@ func TestWorkspaceClaimTakesCapacityNotAProviderReservation(t *testing.T) {
 	failure := requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims",
 		f.runner.redemption.Credential, tracker.NativeClaim{PolicyID: f.policy,
 			WorkItemID: tracker.NativeWorkItemID(f.item(t, second.ID)), MachineID: f.runner.binding.MachineID,
-			SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
+			SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2,
 			Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}),
 		http.StatusConflict, "runner_capacity")
 	if failure.Message == "" {
@@ -2041,13 +2042,13 @@ func TestWorkspaceCloseEndsItsDispatchItem(t *testing.T) {
 			}
 			// Terminal is what a person reading the board sees; the candidate
 			// query reads dispatchable. Neither lane reaches it again.
-			if claimed := f.ordinaryClaim(t, item, newNativeID("ordinary")); claimed.Code == http.StatusOK {
+			if claimed := f.ordinaryClaim(t, item, hubapi.NewID("ordinary")); claimed.Code == http.StatusOK {
 				t.Fatalf("the issue lane claimed a closed workspace item: %s", claimed.Body.String())
 			}
 			if claimed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims",
 				f.runner.redemption.Credential, tracker.NativeClaim{PolicyID: f.policy,
 					WorkItemID: tracker.NativeWorkItemID(item), MachineID: f.runner.binding.MachineID,
-					SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2,
+					SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2,
 					Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability},
 				}); claimed.Code == http.StatusOK {
 				t.Fatalf("the workspace lane claimed a closed workspace item: %s", claimed.Body.String())

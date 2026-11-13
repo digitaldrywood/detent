@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -31,7 +32,7 @@ func TestEntryKeyFilingPreservesPolicyMismatchPostgres(t *testing.T) {
 				c.Key = &apikey.KeyAuthority{ID: "key_" + org, CredentialBinding: strings.Repeat("c", 64), Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "all"}}
 			})
 			requireNativeStatus(t, response, http.StatusConflict)
-			var result apiErrorResponse
+			var result hubapi.APIErrorResponse
 			decodeHubResponse(t, response, &result)
 			if result.Code != "policy_mismatch" || result.Message != "Inspect get_project_policy and refresh the approved policy inputs before submitting this operation" {
 				t.Fatalf("policy refusal = %+v", result)

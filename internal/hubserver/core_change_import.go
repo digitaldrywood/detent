@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -436,7 +437,7 @@ func importCoreReleaseDeliveries(ctx context.Context, tx *coreNeutralImport, tar
 				record.RepositoryID = &repositoryID.Int64
 			}
 			record.VersionID = versionID.String
-			record.AssociatedAt, err = parseTimeValue(associatedAt)
+			record.AssociatedAt, err = hubapi.ParseTimeValue(associatedAt)
 			if err != nil || record.AssociatedAt.IsZero() {
 				return errors.Join(eventstore.ErrInvalidRecord, err)
 			}

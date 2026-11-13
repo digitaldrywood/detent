@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -54,7 +55,7 @@ func (s *Service) archiveClosedNativeIssuesTenant(ctx context.Context, organizat
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(attachmentstore.StorageArchiveReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		after, err = owner.StorageArchiveScanCursor(ctx)
@@ -69,12 +70,12 @@ func (s *Service) archiveClosedNativeIssuesTenant(ctx context.Context, organizat
 	}
 	var failures error
 	advance := func(next attachmentstore.StorageArchiveCursor) error {
-		checkpoint, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubReadTimeout)
+		checkpoint, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
 		defer cancel()
 		err := s.config.TenantRepository.WriteTenant(checkpoint, organization, corestore.Background, func(w tenantstore.Writer) error {
 			owner, ok := w.(attachmentstore.StorageArchiveWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			changed, err := owner.AdvanceStorageArchiveScan(checkpoint, after, next)
 			if err == nil && !changed {
@@ -137,7 +138,7 @@ func (s *Service) publishStorageArchive(ctx context.Context, organization tracke
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(attachmentstore.StorageArchiveReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		snapshot, err = owner.StorageArchiveSnapshot(ctx, stamp, before, issueStorageArchiveBatch)
@@ -158,7 +159,7 @@ func (s *Service) publishStorageArchive(ctx context.Context, organization tracke
 		return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
 			owner, ok := writer.(attachmentstore.StorageArchiveWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			_, err := owner.PublishStorageArchive(ctx, publication, before)
 			return err
@@ -306,7 +307,7 @@ func (s *Service) retireStorageArchiveSections(ctx context.Context, organization
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(attachmentstore.StorageArchiveReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		after, err = owner.StorageArchiveRetirementCursor(ctx)
@@ -323,7 +324,7 @@ func (s *Service) retireStorageArchiveSections(ctx context.Context, organization
 		return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 			owner, ok := w.(attachmentstore.StorageArchiveWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			changed, err := owner.AdvanceStorageArchiveRetirement(ctx, after, next)
 			if err == nil && !changed {
@@ -344,7 +345,7 @@ func (s *Service) retireStorageArchiveSections(ctx context.Context, organization
 		err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
 			owner, ok := writer.(attachmentstore.StorageArchiveWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			var err error
 			result, err = owner.RetireStorageArchiveSection(ctx, section, now.Add(-issueStorageArchiveAge), remaining)

@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -131,9 +132,9 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	}
 	scope.project = record.ProjectID
 	var args coordinatorActionArguments
-	limit := coordinatorToolArgumentBytes
+	limit := hubapi.CoordinatorToolArgumentBytes
 	if call.Name == "update_project_integration" {
-		limit = coordinatorWorkflowArgumentBytes
+		limit = hubapi.CoordinatorWorkflowArgumentBytes
 	}
 	if err := decodeCoordinatorArgumentsWithLimit(call.Arguments, &args, limit); err != nil {
 		return nil, err
@@ -179,25 +180,25 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 			return nil, operatortool.ErrInvalidArguments
 		}
 		if (args.RepositoryEnabled != nil || args.Intake != nil || args.Projection != nil) && !*current.GitHubTransportAvailable {
-			return nil, nativePublicInvalid("Hub GitHub integration is unavailable. Associate the runner checkout in project setup and approve the runner's repository policy with GitHub PR landing enabled.")
+			return nil, hubapi.NativePublicInvalid("Hub GitHub integration is unavailable. Associate the runner checkout in project setup and approve the runner's repository policy with GitHub PR landing enabled.")
 		}
 		input := operatortool.IntegrationInput{WorkflowMarkdown: args.WorkflowMarkdown, ExpectedRevision: current.Revision, Intake: current.Intake, Projection: current.Projection, RepositoryEnabled: current.RepositoryEnabled}
 		if args.WorkflowMarkdown != nil {
 			if current.Authority["workflow"] == "repository" {
-				return nil, nativeWorkflowInvalid("Workflow is controlled by the repository; propose a reviewed definition change, then approve its trusted policy revision and verify runner adoption")
+				return nil, hubapi.NativeWorkflowInvalid("Workflow is controlled by the repository; propose a reviewed definition change, then approve its trusted policy revision and verify runner adoption")
 			}
 			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(*args.WorkflowMarkdown)})
 			if err != nil {
-				return nil, nativeWorkflowInvalid(err.Error())
+				return nil, hubapi.NativeWorkflowInvalid(err.Error())
 			}
 			if workflow.Config.Tracker.Kind != workflowconfig.TrackerHubNative {
-				return nil, nativeWorkflowInvalid("Cloud workflow must use tracker.kind hub_native")
+				return nil, hubapi.NativeWorkflowInvalid("Cloud workflow must use tracker.kind hub_native")
 			}
 			if err := workflow.Config.Validate(); err != nil {
-				return nil, nativeWorkflowInvalid(err.Error())
+				return nil, hubapi.NativeWorkflowInvalid(err.Error())
 			}
 			if err := workflow.Config.ValidateNativeWorkflow(); err != nil {
-				return nil, nativeWorkflowInvalid(err.Error())
+				return nil, hubapi.NativeWorkflowInvalid(err.Error())
 			}
 		}
 		if current.Intake == "automatic" {
@@ -237,7 +238,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 			return nil, err
 		}
 		if current.Profile != "native" {
-			return nil, nativePublicInvalid("Chat changes require a native issue")
+			return nil, hubapi.NativePublicInvalid("Chat changes require a native issue")
 		}
 		action.IssueID, action.Identifier, action.CurrentState, action.Revision = args.WorkItemID, args.WorkItemID, current.State, int64(current.Revision)
 		request := coordinatorWorkArguments{WorkArguments: operatortool.WorkArguments{ProjectID: action.ProjectID, Identifier: args.WorkItemID, ExpectedRevision: int64(current.Revision), Title: args.Title, Body: args.Body, Labels: args.Labels, Priority: args.Priority}}
@@ -326,7 +327,7 @@ func (t *coordinatorToolset) submitCoordinatorAction(ctx context.Context, record
 		action.RequestID = coordinatorActionRequestID(t.state.users[len(t.state.users)-1].ID, call)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
-	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: action.ProjectID, ResourceID: action.IssueID, Action: call.Name, Source: "chat", CorrelationID: newNativeID("luna")}
+	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: action.ProjectID, ResourceID: action.IssueID, Action: call.Name, Source: "chat", CorrelationID: hubapi.NewID("luna")}
 	var err error
 	action.Mutation, err = action.Mutation.Bind(action.RequestID, action.Arguments)
 	if err != nil {
@@ -488,7 +489,7 @@ func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Ac
 		return nil, operatortool.ErrAccessDenied
 	}
 	if !coordinatorHandles(record) {
-		return nil, nativePublicInvalid("This chat is linked; request the change in a project chat")
+		return nil, hubapi.NativePublicInvalid("This chat is linked; request the change in a project chat")
 	}
 	return ctx, nil
 }
@@ -501,7 +502,7 @@ func (t *coordinatorToolset) postActionRefusal(ctx context.Context, name string,
 func coordinatorActionError(err error) error {
 	var request *operatortool.RequestError
 	if errors.As(err, &request) {
-		return &nativeError{Code: cmp.Or(request.Code, "invalid_request"), Message: request.Message, status: http.StatusUnprocessableEntity, publicMessage: true}
+		return &hubapi.NativeError{Code: cmp.Or(request.Code, "invalid_request"), Message: request.Message, Status: http.StatusUnprocessableEntity, PublicMessage: true}
 	}
 	var conflict *operatortool.ConflictError
 	if errors.As(err, &conflict) {
@@ -511,10 +512,10 @@ func coordinatorActionError(err error) error {
 		} else if message == "" {
 			message = "The item changed after this was proposed. Ask for a fresh proposal."
 		}
-		return &nativeError{Code: conflict.Code, Message: message, CurrentRevision: tracker.Revision(conflict.CurrentRevision), status: http.StatusConflict, publicMessage: true}
+		return &hubapi.NativeError{Code: conflict.Code, Message: message, CurrentRevision: tracker.Revision(conflict.CurrentRevision), Status: http.StatusConflict, PublicMessage: true}
 	}
-	var native *nativeError
-	if errors.As(fromFeatureError(err), &native) {
+	var native *hubapi.NativeError
+	if errors.As(hubapi.FromFeatureError(err), &native) {
 		return errors.New(native.Message)
 	}
 	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.Is(err, mutation.ErrConflict) || errors.Is(err, errCoordinatorToolArguments) || errors.Is(err, errCoordinatorProjectUnreadable) {
@@ -560,12 +561,12 @@ func (s *Service) publishCoordinatorDecision(ctx context.Context, action chat.Ac
 
 func (s *Service) postConversationAction(c echo.Context) error {
 	var action chat.Action
-	if err := decodeAPIJSON(c, &action); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &action); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	record, err := s.readPGConversation(readCtx, scope, c.Param("conversation"))
 	if err != nil {
@@ -580,7 +581,7 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	identity := operatortool.ConnectionIdentity(ctx)
 	action.ConversationID, action.OrganizationID = record.ID, string(scope.organization)
 	action.ID = action.RequestID
-	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: action.ProjectID, ResourceID: action.IssueID, Action: string(action.Kind), Source: "chat", CorrelationID: newNativeID("luna")}
+	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: action.ProjectID, ResourceID: action.IssueID, Action: string(action.Kind), Source: "chat", CorrelationID: hubapi.NewID("luna")}
 	action.Mutation, err = action.Mutation.Bind(action.RequestID, action.Arguments)
 	if err != nil {
 		return s.invalidAPIRequest(c, err)

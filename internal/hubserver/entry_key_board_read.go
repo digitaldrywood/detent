@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 
 	"github.com/labstack/echo/v4"
 
@@ -18,12 +19,12 @@ import (
 )
 
 type entryBoardReadKey struct{}
-type entryBoardRead struct{ credential apiCredential }
+type entryBoardRead struct{ credential hubapi.APICredential }
 
-func entryBoardCredential(ctx context.Context) (apiCredential, bool) {
+func entryBoardCredential(ctx context.Context) (hubapi.APICredential, bool) {
 	read, ok := ctx.Value(entryBoardReadKey{}).(*entryBoardRead)
 	if !ok {
-		return apiCredential{}, false
+		return hubapi.APICredential{}, false
 	}
 	return read.credential, true
 }
@@ -58,7 +59,7 @@ func (s *Service) entryKeyReadAuthority(next echo.HandlerFunc) echo.HandlerFunc 
 			}
 			c.Set(hostedSharedClaimsKey, claims)
 		}
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 		defer cancel()
 		c.SetRequest(c.Request().WithContext(ctx))
 		read := func() error {

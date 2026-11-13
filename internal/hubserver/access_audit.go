@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -24,7 +25,7 @@ func (s *Service) recordAccessAudit(ctx context.Context, identity *auth.HostedId
 	return s.accessWrite(ctx, row.OrganizationID, func(w tenantstore.Writer) error { _, err := w.RecordAccessAudit(ctx, *row); return err })
 }
 
-func (s *Service) prepareWorkItemMutationAudit(ctx context.Context, scope nativeScope, options nativeCommandOptions) (*accessstore.Audit, error) {
+func (s *Service) prepareWorkItemMutationAudit(ctx context.Context, scope nativeScope, options hubapi.NativeCommandOptions) (*accessstore.Audit, error) {
 	identity := scope.credential.Hosted
 	if identity == nil {
 		return nil, nil
@@ -35,7 +36,7 @@ func (s *Service) prepareWorkItemMutationAudit(ctx context.Context, scope native
 	case ok:
 		metadata.ActorKind, metadata.PrincipalID, metadata.ViaKey = actor.Kind, actor.PrincipalID, actor.ViaKey
 	case actor.ViaKey != "":
-		metadata = mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.organization), ProjectID: string(scope.project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: newNativeID("api")}
+		metadata = mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.organization), ProjectID: string(scope.project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: hubapi.NewID("api")}
 	default:
 		return nil, nil
 	}

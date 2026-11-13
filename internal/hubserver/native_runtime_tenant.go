@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -37,7 +38,7 @@ type nativeRuntimeTenantSnapshot struct {
 
 func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
 	if len(admission) > 1 {
-		return tracker.NativeRuntimeEvidence{}, nativeRunEventStorageUnavailable()
+		return tracker.NativeRuntimeEvidence{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	if attemptID == "" {
 		row, version, err := s.readWorkItemRecord(ctx, scope, item)
@@ -66,16 +67,16 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		return evidence, nil
 	}
 	var localAttemptID int64
-	if !validNativeID(attemptID, "attempt") {
+	if !hubapi.ValidID(attemptID, "attempt") {
 		local, err := strconv.ParseInt(attemptID, 10, 64)
 		if err != nil || local <= 0 {
-			return tracker.NativeRuntimeEvidence{}, nativePublicInvalid("Invalid attempt identity")
+			return tracker.NativeRuntimeEvidence{}, hubapi.NativePublicInvalid("Invalid attempt identity")
 		}
 		localAttemptID = local
 	}
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok || s.runDetailStoreFor(ctx) == nil {
-		return tracker.NativeRuntimeEvidence{}, nativeRunEventStorageUnavailable()
+		return tracker.NativeRuntimeEvidence{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var snapshot nativeRuntimeTenantSnapshot
 	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -93,8 +94,8 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{Kind: stringValue(row.ActorKind), PrincipalID: stringValue(row.ActorPrincipalID)}) {
-			return nativeNotFound()
+		if !scope.reporterOwns(tracker.Actor{Kind: hubapi.StringValue(row.ActorKind), PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+			return hubapi.NativeNotFound()
 		}
 		version, err := r.CollaborationVersion(ctx, item, row.Revision)
 		if err != nil {
@@ -103,18 +104,18 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		if localAttemptID > 0 {
 			matches, err := r.LocalAttemptMatches(ctx, scope.project, row.NativeID, localAttemptID)
 			if errors.Is(err, leasestore.ErrLocalAttemptCoverageUnknown) {
-				return nativePublicInvalid("Historical local attempt coverage is incomplete; select native_attempt_id")
+				return hubapi.NativePublicInvalid("Historical local attempt coverage is incomplete; select native_attempt_id")
 			}
 			if err != nil {
 				return err
 			}
 			switch len(matches) {
 			case 0:
-				return nativeNotFound()
+				return hubapi.NativeNotFound()
 			case 1:
 				attemptID = matches[0]
 			default:
-				return nativePublicInvalid("Local attempt identity is ambiguous; select native_attempt_id")
+				return hubapi.NativePublicInvalid("Local attempt identity is ambiguous; select native_attempt_id")
 			}
 		}
 		attempt, err := r.Attempt(ctx, attemptID)
@@ -122,14 +123,14 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 			return err
 		}
 		if attempt.OrganizationID != scope.organization || attempt.IssueID != row.ID {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		lease, err := r.Lease(ctx, attempt.LeaseID)
 		if err != nil {
 			return err
 		}
 		if lease.OrganizationID != scope.organization || lease.IssueID != row.ID || lease.FencingToken != attempt.FencingToken {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		event, err := r.LatestRunEvent(ctx, scope.project, attempt.ID)
 		if err != nil {
@@ -143,7 +144,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 			return err
 		}
 		if leasePolicy.OrganizationID != scope.organization || leasePolicy.ProjectID != scope.project || leasePolicy.LeaseID != tracker.LeaseID(lease.LeaseID) || leasePolicy.PolicyID == "" {
-			return policyMismatch("Lease policy is missing or outside the authorized project")
+			return hubapi.PolicyMismatch("Lease policy is missing or outside the authorized project")
 		}
 		attemptPolicy, err := r.ProjectPolicyRevision(ctx, scope.project, leasePolicy.PolicyID)
 		if err != nil {
@@ -213,7 +214,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 				return bindingErr
 			}
 			if currentBinding.OrganizationID != scope.organization || currentBinding.ProjectID != scope.project || currentBinding.LeaseID != tracker.LeaseID(activeLease.LeaseID) || currentBinding.PolicyID == "" {
-				return policyMismatch("Current lease policy is missing or outside the authorized project")
+				return hubapi.PolicyMismatch("Current lease policy is missing or outside the authorized project")
 			}
 			snapshot.currentPolicyBinding = &currentBinding
 			reservation, reservationErr := r.ProviderReservation(ctx, tracker.LeaseID(activeLease.LeaseID))
@@ -228,7 +229,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		return nil
 	})
 	if err != nil {
-		return tracker.NativeRuntimeEvidence{}, projectRecordError(err)
+		return tracker.NativeRuntimeEvidence{}, hubapi.ProjectRecordError(err)
 	}
 	issue, err := s.hydrateWorkItemRecord(ctx, snapshot.item, snapshot.version)
 	if err != nil {
@@ -244,7 +245,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		return tracker.NativeRuntimeEvidence{}, err
 	}
 	if attempt.PolicyID == "" || attempt.PolicyID != snapshot.leasePolicy.PolicyID {
-		return tracker.NativeRuntimeEvidence{}, policyMismatch("Attempt policy does not match its fenced lease")
+		return tracker.NativeRuntimeEvidence{}, hubapi.PolicyMismatch("Attempt policy does not match its fenced lease")
 	}
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	boundPolicy, err := content.ProjectPolicy(ctx, snapshot.attemptPolicy)
@@ -252,7 +253,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		return tracker.NativeRuntimeEvidence{}, err
 	}
 	if err := boundPolicy.Validate(); err != nil || boundPolicy.ID != attempt.PolicyID {
-		return tracker.NativeRuntimeEvidence{}, policyMismatch("Attempt policy reference is invalid")
+		return tracker.NativeRuntimeEvidence{}, hubapi.PolicyMismatch("Attempt policy reference is invalid")
 	}
 	if snapshot.policyFound {
 		currentPolicy, err := content.ProjectPolicy(ctx, snapshot.currentPolicy)

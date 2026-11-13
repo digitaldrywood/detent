@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -53,7 +54,7 @@ func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope na
 		}
 		batch, ok := r.(tenantstore.WorkItemRelationshipBatchReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		facts, err := batch.WorkItemRelationshipFacts(ctx, scope.project, []tracker.NativeWorkItemID{issue.WorkItemID})
 		if err != nil {
@@ -88,7 +89,7 @@ func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope na
 			}
 		}
 		visible := authorizedProjects[relation.RelatedProjectID]
-		visible = visible && scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(relation.ActorPrincipalID)})
+		visible = visible && scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
 		if !visible {
 			if relation.Type == "dependency" {
 				switch relation.Direction {
@@ -185,14 +186,14 @@ func (s *Service) readRelationshipPageModel(ctx context.Context, scope nativeSco
 		params.Set("cursor", request.Cursor)
 	}
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(string(item.WorkItemID)) + "/relationships"
-	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, maxAPIPageLimit, defaultAPIPageLimit)
+	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, hubapi.MaxAPIPageLimit, hubapi.DefaultAPIPageLimit)
 	if err != nil {
 		return page, err
 	}
 	after := corestore.RelationshipCursor{}
 	if cursor.After != "" {
 		if err := json.Unmarshal([]byte(cursor.After), &after); err != nil {
-			return page, nativePublicInvalid("Relationship cursor is invalid")
+			return page, hubapi.NativePublicInvalid("Relationship cursor is invalid")
 		}
 	}
 	if err := s.authorizeCommentWorkItem(ctx, scope, string(item.WorkItemID)); err != nil {
@@ -203,7 +204,7 @@ func (s *Service) readRelationshipPageModel(ctx context.Context, scope nativeSco
 		var err error
 		reader, ok := r.(viewstore.RelationshipPageReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		records, err = reader.RelationshipPageRecords(ctx, scope.project, item.WorkItemID, after, limit)
 		return err
@@ -225,7 +226,7 @@ func (s *Service) readRelationshipPageModel(ctx context.Context, scope nativeSco
 		if !record.TargetExists {
 			continue
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(relation.ActorPrincipalID)}) {
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)}) {
 			continue
 		}
 		if scope.credential.EntryKey != nil && !scope.credential.EntryKey.Allows(string(relation.RelatedProjectID)) {
@@ -318,7 +319,7 @@ func (s *Service) relationshipProjectAccess(ctx context.Context, scope nativeSco
 			target := scope
 			target.project = project
 			err := s.authorizeAccessScope(ctx, r, target, false)
-			if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || isNativeNotFound(err) {
+			if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || hubapi.IsNativeNotFound(err) {
 				continue
 			}
 			if err != nil {
@@ -336,14 +337,14 @@ func (s *Service) GetWorkItemRelationships(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := validateNativeQuery(params); err != nil {
+	if err := hubapi.ValidateNativeQuery(params); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	limit := 0
 	if raw := params.Get("limit"); raw != "" {
 		limit, err = strconv.Atoi(raw)
-		if err != nil || limit < 1 || limit > maxAPIPageLimit {
-			return s.nativeAPIError(c, nativePublicInvalid("Page limit is invalid"))
+		if err != nil || limit < 1 || limit > hubapi.MaxAPIPageLimit {
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Page limit is invalid"))
 		}
 	}
 	scope := nativeRequestScope(c)
@@ -375,14 +376,14 @@ func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope 
 		params.Set("cursor", request.Cursor)
 	}
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(string(item.WorkItemID)) + "/relationships"
-	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, maxAPIPageLimit, defaultAPIPageLimit)
+	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, hubapi.MaxAPIPageLimit, hubapi.DefaultAPIPageLimit)
 	if err != nil {
 		return page, err
 	}
 	after := corestore.RelationshipCursor{}
 	if cursor.After != "" {
 		if err := json.Unmarshal([]byte(cursor.After), &after); err != nil {
-			return page, nativePublicInvalid("Relationship cursor is invalid")
+			return page, hubapi.NativePublicInvalid("Relationship cursor is invalid")
 		}
 	}
 	var relations corestore.RelationshipPage
@@ -392,7 +393,7 @@ func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope 
 		return err
 	})
 	if err != nil {
-		return page, projectRecordError(err)
+		return page, hubapi.ProjectRecordError(err)
 	}
 	projectVisible := map[tracker.ProjectID]bool{}
 	for _, relation := range relations.Items {
@@ -403,7 +404,7 @@ func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope 
 		return page, err
 	}
 	for _, relation := range relations.Items {
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(relation.ActorPrincipalID)}) {
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)}) {
 			continue
 		}
 		if scope.credential.EntryKey != nil && !scope.credential.EntryKey.Allows(string(relation.RelatedProjectID)) {

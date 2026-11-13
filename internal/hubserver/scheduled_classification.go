@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -45,7 +46,7 @@ func (s *Service) readCIClassification(ctx context.Context, scope nativeScope, i
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(policystore.ScheduledReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		result, err = owner.ReadScheduledDecision(ctx, scope.project, input)
@@ -55,14 +56,14 @@ func (s *Service) readCIClassification(ctx context.Context, scope nativeScope, i
 		return result, false, nil
 	}
 	if errors.Is(err, corestore.ErrRevisionConflict) {
-		return result, false, nativePublicInvalid("CI classification commit differs from retained failure")
+		return result, false, hubapi.NativePublicInvalid("CI classification commit differs from retained failure")
 	}
 	return result, err == nil, err
 }
 
 func (s *Service) scheduledRepository(ctx context.Context, scope nativeScope) (string, error) {
 	if s.config.TenantRepository == nil {
-		return "", workItemStorageUnavailable()
+		return "", hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var repository string
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -79,20 +80,20 @@ func (s *Service) scheduledRepository(ctx context.Context, scope nativeScope) (s
 		}
 		return nil
 	})
-	return repository, projectRecordError(err)
+	return repository, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) classifyScheduledFailure(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	if scope.credential.HostedRole == "reporter" {
-		return s.nativeAPIError(c, &nativeError{Code: "insufficient_scope", status: http.StatusForbidden})
+		return s.nativeAPIError(c, &hubapi.NativeError{Code: "insufficient_scope", Status: http.StatusForbidden})
 	}
 	var input progresscheck.CIFailure
-	if err := decodeAPIJSON(c, &input); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &input); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := input.Validate(); err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid or oversized CI classification evidence"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid or oversized CI classification evidence"))
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), time.Minute)
 	defer cancel()
@@ -101,7 +102,7 @@ func (s *Service) classifyScheduledFailure(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if !strings.EqualFold(repository, input.Repository) {
-		return s.nativeAPIError(c, nativePublicInvalid("CI classification repository differs from project"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("CI classification repository differs from project"))
 	}
 	input.Repository = repository
 	result, found, err := s.readCIClassification(ctx, scope, input)
@@ -121,7 +122,7 @@ func (s *Service) classifyScheduledFailure(c echo.Context) error {
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		owner, ok := w.(policystore.ScheduledWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		return owner.StoreScheduledDecision(ctx, scope.project, input, result, s.config.now().UTC())
 	})

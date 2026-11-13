@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -20,19 +21,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) hostedAdministrator(c echo.Context) (apiCredential, error) {
+func (s *Service) hostedAdministrator(c echo.Context) (hubapi.APICredential, error) {
 	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status >= http.StatusInternalServerError {
-			return apiCredential{}, errors.Join(tenantauth.ErrUnavailable, err)
+			return hubapi.APICredential{}, errors.Join(tenantauth.ErrUnavailable, err)
 		}
-		return apiCredential{}, err
+		return hubapi.APICredential{}, err
 	}
 	if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
-		return apiCredential{}, auth.ErrHostedIdentity
+		return hubapi.APICredential{}, auth.ErrHostedIdentity
 	}
 	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "administration", c.Request().Method+" "+c.Path(), "", 0); err != nil {
-		return apiCredential{}, err
+		return hubapi.APICredential{}, err
 	}
 	return credential, nil
 }
@@ -47,22 +48,22 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 			return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 		}
 		if err != nil || credential.Hosted == nil || c.Param("organization") != s.config.Hosted.OrganizationID {
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 		switch {
 		case c.Path() == "/api/v2/organizations/:organization/usage/monthly" && c.Request().Method == http.MethodGet:
 			if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
-				return s.nativeAPIError(c, nativeNotFound())
+				return s.nativeAPIError(c, hubapi.NativeNotFound())
 			}
 			if err := s.requireHostedUsageGrants(c.Request().Context(), credential); err != nil {
 				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 					return s.nativeAPIError(c, operatorAuthorizationError(err))
 				}
-				return s.nativeAPIError(c, nativeNotFound())
+				return s.nativeAPIError(c, hubapi.NativeNotFound())
 			}
 		case c.Path() == "/api/v2/organizations/:organization/projects" && c.Request().Method == http.MethodPost:
 			if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
-				return s.nativeAPIError(c, nativeNotFound())
+				return s.nativeAPIError(c, hubapi.NativeNotFound())
 			}
 		case c.Path() == "/api/v2/organizations/:organization/runners/:runner/routing":
 			if c.Request().Method == http.MethodGet {
@@ -81,9 +82,9 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 					return s.nativeAPIError(c, operatorAuthorizationError(err))
 				}
 				if c.Request().Method == http.MethodGet {
-					return s.nativeAPIError(c, nativeNotFound())
+					return s.nativeAPIError(c, hubapi.NativeNotFound())
 				}
-				return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: err.Error()})
+				return c.JSON(http.StatusNotFound, hubapi.APIErrorResponse{Code: "not_found", Message: err.Error()})
 			}
 			credential.ManageRunners = true
 		case strings.HasPrefix(c.Path(), enrollmentBase) || strings.HasPrefix(c.Path(), runnerBase) || c.Path() == "/api/v2/organizations/:organization/machines/:machine/routing":
@@ -91,11 +92,11 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 					return s.nativeAPIError(c, operatorAuthorizationError(err))
 				}
-				return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: err.Error()})
+				return c.JSON(http.StatusNotFound, hubapi.APIErrorResponse{Code: "not_found", Message: err.Error()})
 			}
 			credential.ManageRunners = true
 		default:
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 		c.Set("hub_api_credential", credential)
 		if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "administration", c.Request().Method+" "+c.Path(), "", 0); err != nil {
@@ -105,8 +106,8 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 	}
 }
 
-func (s *Service) requireHostedUsageGrants(ctx context.Context, credential apiCredential) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) requireHostedUsageGrants(ctx context.Context, credential hubapi.APICredential) error {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if credential.Hosted == nil {
 		return operatortool.ErrAccessDenied
@@ -126,16 +127,16 @@ func (s *Service) requireHostedUsageGrants(ctx context.Context, credential apiCr
 	return nil
 }
 
-func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCredential) bool {
+func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential hubapi.APICredential) bool {
 	if s.config.Hosted == nil {
-		return credential.Scope == apiScopeAdmin && !credential.NativeOnly
+		return credential.Scope == hubapi.APIScopeAdmin && !credential.NativeOnly
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	return s.requireHostedRunnerAdministration(ctx, credential) == nil
 }
 
-func (s *Service) requireHostedRunnerAdministration(ctx context.Context, credential apiCredential) error {
+func (s *Service) requireHostedRunnerAdministration(ctx context.Context, credential hubapi.APICredential) error {
 	if credential.EntryKey != nil && (credential.EntryKey.Access != "all" || len(credential.EntryKey.BlockedProjects) > 0) {
 		return operatortool.ErrAccessDenied
 	}
@@ -158,7 +159,7 @@ func runnerManagementProjects(runner runnerauth.Runner) []tracker.ProjectID {
 	return projects
 }
 
-func (s *Service) requireHostedRunnerProjects(ctx context.Context, credential apiCredential, projects []tracker.ProjectID) error {
+func (s *Service) requireHostedRunnerProjects(ctx context.Context, credential hubapi.APICredential, projects []tracker.ProjectID) error {
 	refusal := fmt.Errorf("%w: Runner changes need manage_runner on every allowed project and every project with running work; ask an owner or admin", operatortool.ErrAccessDenied)
 	if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" && credential.HostedRole != "member" {
 		return refusal
@@ -242,7 +243,7 @@ func (s *Service) requireHostedRunnerProjects(ctx context.Context, credential ap
 
 func (s *Service) inviteHostedMember(c echo.Context) error {
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	credential, err := s.hostedAdministrator(c)
 	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
@@ -277,7 +278,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
-func (s *Service) hostedManagedMemberFor(ctx context.Context, credential apiCredential, id string, removingOwner bool) (auth.Membership, error) {
+func (s *Service) hostedManagedMemberFor(ctx context.Context, credential hubapi.APICredential, id string, removingOwner bool) (auth.Membership, error) {
 	members, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
 	if err != nil {
 		return auth.Membership{}, errors.Join(tenantauth.ErrUnavailable, err)
@@ -365,7 +366,7 @@ func (s *Service) changeHostedGrant(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
-func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, user, project string, write, runner, revoke bool) (resultErr error) {
+func (s *Service) hostedGrant(ctx context.Context, credential hubapi.APICredential, user, project string, write, runner, revoke bool) (resultErr error) {
 
 	return s.changeAccessGrant(ctx, credential, user, project, write, runner, revoke)
 }
@@ -402,7 +403,7 @@ func (s *Service) createHostedProject(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/projects/"+project))
 }
 
-func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
+func (s *Service) createHostedProjectRecord(ctx context.Context, credential hubapi.APICredential, name string, states []tracker.NativeState) (project string, resultErr error) {
 
 	return s.createHostedTenantProject(ctx, credential, name, states)
 }

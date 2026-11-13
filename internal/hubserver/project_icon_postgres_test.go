@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projecticon"
@@ -35,13 +36,13 @@ func TestPostgresProjectIconReplay(t *testing.T) {
 	if err := png.Encode(&imageBytes, image.NewNRGBA(image.Rect(0, 0, 64, 64))); err != nil {
 		t.Fatal(err)
 	}
-	service.echo.GET(nativeBase+"/local-projects", func(c echo.Context) error {
+	service.echo.GET(hubapi.NativeBase+"/local-projects", func(c echo.Context) error {
 		projects, err := service.localAppProjects(c.Request().Context(), nativeRequestScope(c).credential)
 		if err != nil {
 			return service.nativeAPIError(c, err)
 		}
 		return c.JSON(http.StatusOK, projects)
-	}, service.requireNativeScope(apiScopeOperator, apiScopeAdmin))
+	}, service.requireNativeScope(hubapi.APIScopeOperator, hubapi.APIScopeAdmin))
 	service.registerNativeRoutes(service.echo)
 	service.registerOperatorTools(service.echo)
 	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))

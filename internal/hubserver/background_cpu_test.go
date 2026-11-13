@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 type backgroundCPUQuery struct {
@@ -14,25 +16,25 @@ type backgroundCPUQuery struct {
 }
 
 type backgroundCPUReader struct {
-	nativeQueryer
+	hubapi.NativeQueryer
 	queries []backgroundCPUQuery
 }
 
 func (r *backgroundCPUReader) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
 	r.queries = append(r.queries, backgroundCPUQuery{statement, args})
-	return r.nativeQueryer.QueryContext(ctx, statement, args...)
+	return r.NativeQueryer.QueryContext(ctx, statement, args...)
 }
 
 func (r *backgroundCPUReader) QueryRowContext(ctx context.Context, statement string, args ...any) *sql.Row {
 	r.queries = append(r.queries, backgroundCPUQuery{statement, args})
-	return r.nativeQueryer.QueryRowContext(ctx, statement, args...)
+	return r.NativeQueryer.QueryRowContext(ctx, statement, args...)
 }
 
 func (r *backgroundCPUReader) plans(t *testing.T) string {
 	t.Helper()
 	var plans []string
 	for _, query := range r.queries {
-		rows, err := r.nativeQueryer.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+query.statement, query.args...)
+		rows, err := r.NativeQueryer.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+query.statement, query.args...)
 		if err != nil {
 			t.Fatal(err)
 		}

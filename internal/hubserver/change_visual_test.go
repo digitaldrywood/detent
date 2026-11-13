@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -254,7 +255,7 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
-					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 					defer cancel()
 					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(cleanup, "DROP TRIGGER refuse_visual_publication ON "+table+"; DROP FUNCTION refuse_visual_publication()"); err != nil {
 						t.Error(err)

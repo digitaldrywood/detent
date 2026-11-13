@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -80,7 +81,7 @@ func (s *Service) applyWorkItemGrowth(ctx context.Context, w tenantstore.Writer,
 		if delta < 0 {
 			used, err := w.CollaborationBytes(ctx)
 			if errors.Is(err, corestore.ErrNotFound) {
-				return attachmentAccountingUnavailable()
+				return hubapi.AttachmentAccountingUnavailable()
 			}
 			if err != nil {
 				return err
@@ -89,7 +90,7 @@ func (s *Service) applyWorkItemGrowth(ctx context.Context, w tenantstore.Writer,
 		}
 		usage, err := w.AdjustCollaborationBytes(ctx, delta, limit)
 		if errors.Is(err, corestore.ErrNotFound) {
-			return attachmentAccountingUnavailable()
+			return hubapi.AttachmentAccountingUnavailable()
 		}
 		if err != nil {
 			return err

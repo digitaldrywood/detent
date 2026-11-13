@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -128,7 +129,7 @@ func TestTenantVersionRoutesWithoutLegacyDatabase(t *testing.T) {
 				scope := nativeScope{organization: tracker.OrganizationID(org), project: "project", credential: credential}
 				for _, comment := range []string{"", "comment_project"} {
 					_, err := service.readVersion(t.Context(), scope, "item_project", comment, 1)
-					if principal == "example-owner" && err != nil || principal != "example-owner" && !isNativeNotFound(err) {
+					if principal == "example-owner" && err != nil || principal != "example-owner" && !hubapi.IsNativeNotFound(err) {
 						t.Fatalf("reporter %s comment %q: %v", principal, comment, err)
 					}
 				}

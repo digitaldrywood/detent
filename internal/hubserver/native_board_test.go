@@ -21,6 +21,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -652,7 +653,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			}
 			originalVersion := f.detail(t).Change.CurrentVersion
 			version = f.detail(t).Versions[0]
-			version.ID, version.Number = newNativeID("version"), version.Number+1
+			version.ID, version.Number = hubapi.NewID("version"), version.Number+1
 			version.PolicyID, version.Policy = descriptor.ID, descriptor
 			raw, err = json.Marshal(version)
 			if err != nil {
@@ -680,7 +681,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 				defer cancel()
 				if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 					change, err := w.LockChange(ctx, f.change.ID)

@@ -7,13 +7,14 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/localboard"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) importLocalBoard(c echo.Context) error {
 	var request localboard.Request
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		var oversized *http.MaxBytesError
 		if !errors.As(err, &oversized) {
 			err = errors.New("invalid local board request")
@@ -22,7 +23,7 @@ func (s *Service) importLocalBoard(c echo.Context) error {
 	}
 	scope := nativeRequestScope(c)
 	if err := localboard.Validate(request.Record); err != nil {
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
 	}
 	if err := validateNativeContent(request.Record.Title, request.Record.Body, nil, nil, request.Record.Priority); err != nil {
 		return s.nativeAPIError(c, err)
@@ -47,5 +48,5 @@ func localBoardState(states []tracker.NativeState, source string) (string, bool,
 			}
 		}
 	}
-	return "", false, nativePublicInvalid("Local board import requires a nondispatchable nonterminal fallback state")
+	return "", false, hubapi.NativePublicInvalid("Local board import requires a nondispatchable nonterminal fallback state")
 }

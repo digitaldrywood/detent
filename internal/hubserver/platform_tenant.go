@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
 	"github.com/labstack/echo/v4"
@@ -74,7 +75,7 @@ func (s *Service) platformTenantMembers(c echo.Context) error {
 	if err != nil {
 		return s.internalAPIError(c, "members_unavailable", "Members are unavailable", err)
 	}
-	result, err := s.hostedMembersFor(ctx, apiCredential{Hosted: &auth.HostedIdentity{OrganizationID: provider}, HostedRole: "owner"})
+	result, err := s.hostedMembersFor(ctx, hubapi.APICredential{Hosted: &auth.HostedIdentity{OrganizationID: provider}, HostedRole: "owner"})
 	if err != nil {
 		return s.internalAPIError(c, "members_unavailable", "Members are unavailable", err)
 	}
@@ -91,7 +92,7 @@ func (s *Service) platformTenantMembers(c echo.Context) error {
 }
 
 func (s *Service) platformTenantRunners(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	type runner struct {
 		ID     string `json:"id"`
@@ -115,7 +116,7 @@ func (s *Service) platformTenantRunners(c echo.Context) error {
 }
 
 func (s *Service) platformTenantProjects(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	type project struct {
 		ID   string `json:"id"`

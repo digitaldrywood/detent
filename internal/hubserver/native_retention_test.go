@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -41,12 +42,12 @@ func TestNativeRetention(t *testing.T) {
 			if index == 0 {
 				decision = "changes_requested"
 			}
-			reviews = append(reviews, tracker.ChangeReview{ID: newNativeID("review"), VersionID: first.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-one"}, Decision: decision, CreatedAt: f.service.config.now()})
+			reviews = append(reviews, tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: first.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-one"}, Decision: decision, CreatedAt: f.service.config.now()})
 		}
 		for _, version := range []string{first.ID, second.ID} {
 			reviews = append(reviews,
-				tracker.ChangeReview{ID: newNativeID("review"), VersionID: version, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-one"}, Decision: "approved", CreatedAt: f.service.config.now()},
-				tracker.ChangeReview{ID: newNativeID("review"), VersionID: version, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-two"}, Decision: "changes_requested", CreatedAt: f.service.config.now()})
+				tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-one"}, Decision: "approved", CreatedAt: f.service.config.now()},
+				tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-two"}, Decision: "changes_requested", CreatedAt: f.service.config.now()})
 		}
 		appendRetentionReviewEvidence(t, f, reviews)
 		assertReviews := func(version string, expected map[string]string) {
@@ -95,7 +96,7 @@ func TestNativeRetention(t *testing.T) {
 			assertReviews(version, map[string]string{"reviewer-one": "approved", "reviewer-two": "changes_requested"})
 		}
 		for _, update := range []struct{ actor, decision string }{{"reviewer-two", "approved"}, {"reviewer-one", "changes_requested"}} {
-			appendRetentionReviewEvidence(t, f, []tracker.ChangeReview{{ID: newNativeID("review"), VersionID: first.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: update.actor}, Decision: update.decision, CreatedAt: f.service.config.now()}})
+			appendRetentionReviewEvidence(t, f, []tracker.ChangeReview{{ID: hubapi.NewID("review"), VersionID: first.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: update.actor}, Decision: update.decision, CreatedAt: f.service.config.now()}})
 			selected := readRetentionReviewEvidence(t, f, first.ID)
 			if !slices.ContainsFunc(selected, func(review tracker.ChangeReview) bool {
 				return review.Actor.PrincipalID == update.actor && review.Decision == update.decision
@@ -125,7 +126,7 @@ func TestNativeRetention(t *testing.T) {
 		const budget = corestore.MaxPageSize
 		reviews := make([]tracker.ChangeReview, 0, budget*3+2)
 		for range budget*3 + 2 {
-			reviews = append(reviews, tracker.ChangeReview{ID: newNativeID("review"), VersionID: version.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, Decision: "commented", CreatedAt: f.service.config.now()})
+			reviews = append(reviews, tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, Decision: "commented", CreatedAt: f.service.config.now()})
 		}
 		appendRetentionReviewEvidence(t, f, reviews)
 		content := eventstore.NewContent(f.service.runDetailStore())
@@ -149,7 +150,7 @@ func TestNativeRetention(t *testing.T) {
 		if count := unknown(); count != 0 {
 			t.Fatalf("unknown=%d, want 0", count)
 		}
-		first := appendRetentionReviewEvidence(t, f, []tracker.ChangeReview{{ID: newNativeID("review"), VersionID: version.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, Decision: "approved", CreatedAt: f.service.config.now()}})[0]
+		first := appendRetentionReviewEvidence(t, f, []tracker.ChangeReview{{ID: hubapi.NewID("review"), VersionID: version.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, Decision: "approved", CreatedAt: f.service.config.now()}})[0]
 		ref, err := content.PreparePayload(t.Context(), f.project.OrganizationID, []byte(`{"version_id":42}`))
 		if err != nil {
 			t.Fatal(err)
@@ -253,7 +254,7 @@ func TestNativeRetention(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: actor}, RecordedAt: now, Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt"}}}))
+		event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: actor}, RecordedAt: now, Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt"}}}))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -13,6 +13,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -21,8 +22,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-var errProjectServiceUnavailable = errors.New("project operation is unavailable")
 
 type hubProjectExecutor struct{ service *Service }
 
@@ -108,7 +107,7 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		}
 		if !d.Annotations.ReadOnly {
 			connection := operatortool.CurrentConnection(ctx)
-			metadata, err := (mutation.Metadata{PrincipalID: connection.Identity.PrincipalID, OrganizationID: connection.Identity.OrganizationID, ProjectID: r.ProjectID, Action: call.Name, Source: "mcp", CorrelationID: newNativeID("mcp"), Confirmation: "none"}).Bind(r.RequestID, call.Arguments)
+			metadata, err := (mutation.Metadata{PrincipalID: connection.Identity.PrincipalID, OrganizationID: connection.Identity.OrganizationID, ProjectID: r.ProjectID, Action: call.Name, Source: "mcp", CorrelationID: hubapi.NewID("mcp"), Confirmation: "none"}).Bind(r.RequestID, call.Arguments)
 			if err != nil {
 				return result, operatortool.ErrInvalidArguments
 			}
@@ -135,7 +134,7 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		return e.read(ctx, call)
 	}
 	connection := operatortool.CurrentConnection(ctx)
-	m := mutation.Metadata{PrincipalID: connection.Identity.PrincipalID, OrganizationID: connection.Identity.OrganizationID, Action: call.Name, Source: "mcp", CorrelationID: newNativeID("mcp"), Confirmation: "none"}
+	m := mutation.Metadata{PrincipalID: connection.Identity.PrincipalID, OrganizationID: connection.Identity.OrganizationID, Action: call.Name, Source: "mcp", CorrelationID: hubapi.NewID("mcp"), Confirmation: "none"}
 	defer func() {
 		outcome := "submitted"
 		if resultErr != nil {
@@ -300,11 +299,11 @@ func projectToolError(err error) error {
 	if errors.Is(err, accessstore.ErrDenied) {
 		return operatortool.ErrAccessDenied
 	}
-	var failure *nativeError
-	if errors.As(err, &failure) && (failure.status == 401 || failure.status == 403 || failure.status == 404) {
+	var failure *hubapi.NativeError
+	if errors.As(err, &failure) && (failure.Status == 401 || failure.Status == 403 || failure.Status == 404) {
 		return operatortool.ErrAccessDenied
 	}
-	if errors.As(err, &failure) && failure.status == http.StatusUnprocessableEntity && failure.publicMessage {
+	if errors.As(err, &failure) && failure.Status == http.StatusUnprocessableEntity && failure.PublicMessage {
 		return &operatortool.RequestError{Code: failure.Code, Message: failure.Message}
 	}
 	if errors.As(err, &failure) && (failure.Code == "revision_conflict" || failure.Code == "idempotency_conflict") {
@@ -375,7 +374,7 @@ func (e hubProjectExecutor) connectionRead(ctx context.Context, call operatortoo
 	}
 	action, ok := e.service.operatorChat.Action(c.ID, request.ActionID)
 	if !ok {
-		return operatortool.Result{}, errProjectServiceUnavailable
+		return operatortool.Result{}, hubapi.ErrProjectServiceUnavailable
 	}
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(string(action.Kind), false), ProjectID: action.ProjectID}); err != nil {
 		return operatortool.Result{}, err
@@ -479,7 +478,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		scope.project, scope.requireHostedAdmin = tracker.ProjectID(r.ProjectID), true
 		request := projectSpriteAllocationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, DesiredCount: r.Input.DesiredCount}
-		options := nativeCommandOptions{OperationID: projectOperationID(scope, "PUT", "/sprite-pool/allocation"), Feature: "collaboration"}
+		options := hubapi.NativeCommandOptions{OperationID: projectOperationID(scope, "PUT", "/sprite-pool/allocation"), Feature: "collaboration"}
 		if mode == projectCommandReplay {
 			raw, _, err := s.nativeCommandReplay(ctx, scope, options.OperationID, r.RequestID, request)
 			return raw, err
@@ -492,7 +491,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		return raw, nil
 	case "create_native_project":
 		if s.config.Hosted != nil {
-			return nil, errProjectServiceUnavailable
+			return nil, hubapi.ErrProjectServiceUnavailable
 		}
 		r, err := projectCommandInput[operatortool.ProjectCreateInput](call.Arguments)
 		if err != nil {
@@ -506,7 +505,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		input = request
 	case "create_hosted_project":
 		if s.config.Hosted == nil || scope.credential.Hosted == nil {
-			return nil, errProjectServiceUnavailable
+			return nil, hubapi.ErrProjectServiceUnavailable
 		}
 		r, err := projectCommandInput[operatortool.HostedProjectCreateInput](call.Arguments)
 		if err != nil {
@@ -636,14 +635,14 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Policy configuration is invalid or its digest does not match the descriptor"}
 		}
 		if s.config.TenantRepository == nil {
-			return nil, workItemStorageUnavailable()
+			return nil, hubapi.NativeWorkItemStorageUnavailable()
 		}
 		scope.project = tracker.ProjectID(r.ProjectID)
 		if mode == projectCommandPreview {
 			return nil, nil
 		}
 		change := policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy}
-		hash, err := nativeCommandHash(struct {
+		hash, err := hubapi.CommandHash(struct {
 			Change           policy.Change
 			RepositoryPolicy bool
 		}{change, r.Input.RepositoryPolicy})
@@ -731,14 +730,14 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if r.Input.Source == "runner_checkout" {
 			suffix, feature = "/onboarding/repository", "collaboration"
 		}
-		options := nativeCommandOptions{OperationID: projectOperationID(scope, "POST", suffix), Feature: feature}
+		options := hubapi.NativeCommandOptions{OperationID: projectOperationID(scope, "POST", suffix), Feature: feature}
 		if mode == projectCommandReplay {
 			raw, _, err := s.nativeCommandReplay(ctx, scope, options.OperationID, r.RequestID, request)
 			return raw, err
 		}
 		result, err := s.bindNativeRepositoryCommand(ctx, scope, options, request)
 		if request.Source == "runner_checkout" {
-			var refusal *nativeError
+			var refusal *hubapi.NativeError
 			if errors.As(err, &refusal) && refusal.Code == "revision_conflict" {
 				return nil, &operatortool.ConflictError{Code: refusal.Code, Message: "Repository binding changed; refresh project integration and retry with its current revision", CurrentRevision: int64(refusal.CurrentRevision)}
 			}
@@ -765,7 +764,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		return s.advanceGitHubImportCommand(ctx, scope, r.Input.ImportID, r.Input.ExpectedRevision, r.RequestID)
 	default:
-		return nil, errProjectServiceUnavailable
+		return nil, hubapi.ErrProjectServiceUnavailable
 	}
 	if mode == projectCommandPreview {
 		return nil, nil
@@ -791,7 +790,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 			return nil, err
 		}
-		return nil, &nativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", status: http.StatusGone, publicMessage: true}
+		return nil, &hubapi.NativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", Status: http.StatusGone, PublicMessage: true}
 	}
 	if call.Name == "remove_project_secret" {
 		return s.tenantReceiptMutation(ctx, scope, operation, tracker.Mutation{IdempotencyKey: requestID}, input, projectSecretStatus{Kind: flySpritesToken}, func(w tenantstore.Writer) error {
@@ -805,7 +804,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return w.DeleteAccessSecret(ctx, scope.project, flySpritesToken, s.accessSecretAudit(scope, "remove", old.Envelope.Version))
 		})
 	}
-	return s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: operation, Feature: feature, Item: resourceID, RequireLease: call.Name == "project_native_summary"}, tracker.Mutation{IdempotencyKey: requestID}, input, nil)
+	return s.executeNativeMutation(ctx, scope, hubapi.NativeCommandOptions{OperationID: operation, Feature: feature, Item: resourceID, RequireLease: call.Name == "project_native_summary"}, tracker.Mutation{IdempotencyKey: requestID}, input, nil)
 }
 func projectOperationID(scope nativeScope, method, suffix string) string {
 	path := "/api/v2/organizations/" + string(scope.organization) + "/projects"
@@ -819,7 +818,7 @@ func safeProjectCommandResult(name string, raw json.RawMessage) (json.RawMessage
 	if name == "approve_project_policy" {
 		var approval policy.Approval
 		if json.Unmarshal(raw, &approval) != nil {
-			return nil, errProjectServiceUnavailable
+			return nil, hubapi.ErrProjectServiceUnavailable
 		}
 		approval.History, approval.HistoryNext = nil, ""
 		return json.Marshal(approval)
@@ -827,7 +826,7 @@ func safeProjectCommandResult(name string, raw json.RawMessage) (json.RawMessage
 	if name == "command_git_hub_batch" {
 		var view githubBatchView
 		if json.Unmarshal(raw, &view) != nil {
-			return nil, errProjectServiceUnavailable
+			return nil, hubapi.ErrProjectServiceUnavailable
 		}
 		page, err := boundedProjectBatch(view, operatortool.ProjectReadRequest{Limit: 200})
 		if err != nil {
@@ -840,7 +839,7 @@ func safeProjectCommandResult(name string, raw json.RawMessage) (json.RawMessage
 	}
 	var job GitHubImport
 	if err := json.Unmarshal(raw, &job); err != nil {
-		return nil, errProjectServiceUnavailable
+		return nil, hubapi.ErrProjectServiceUnavailable
 	}
 	if job.LastError != "" {
 		job.LastError = "Import transport is unavailable"
@@ -854,7 +853,7 @@ func (e hubProjectExecutor) authorizeCreatedProjectResult(ctx context.Context, n
 	}
 	var project tracker.NativeProject
 	if json.Unmarshal(raw, &project) != nil || project.ID == "" {
-		return errProjectServiceUnavailable
+		return hubapi.ErrProjectServiceUnavailable
 	}
 	_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(project.ID)})
 	return err

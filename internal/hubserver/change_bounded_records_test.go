@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -732,21 +733,21 @@ func boundedChangeSpool(t *testing.T, source *memoryRunDetails) *eventstore.Cont
 	return eventstore.NewContent(spool)
 }
 
-func seedChangeReadCredential(t *testing.T, repository tenantstore.Repository, project tracker.ProjectID) tokenResponse {
+func seedChangeReadCredential(t *testing.T, repository tenantstore.Repository, project tracker.ProjectID) serverapi.TokenResponse {
 	t.Helper()
 	token, err := apikey.GenerateToken()
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := newNativeID("credential")
+	id := serverapi.NewID("credential")
 	hash := apikey.HashToken(token)
 	now := time.Now().UTC()
 	expires := now.Add(time.Hour)
 	binding := runnerauth.NewBinding()
-	enrollmentID := newNativeID("enrollment")
+	enrollmentID := serverapi.NewID("enrollment")
 	operations := []string{runnerauth.Read}
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: id, Name: "Example read credential", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", KeyScope: "read", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: id, Name: "Example read credential", Hash: hash, Fingerprint: serverapi.TokenFingerprint(hash), Scope: "worker", KeyScope: "read", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_security", TokenID: id, ProjectID: project}); err != nil {
@@ -765,5 +766,5 @@ func seedChangeReadCredential(t *testing.T, repository tenantstore.Repository, p
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return tokenResponse{ID: id, Token: token}
+	return serverapi.TokenResponse{ID: id, Token: token}
 }

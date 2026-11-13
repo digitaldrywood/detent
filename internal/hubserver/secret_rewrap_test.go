@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -113,7 +114,7 @@ func secretRewrapFixture(t *testing.T) (nativeFixture, []accessstore.Secret, []*
 			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: "project", Name: "Example secret project", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
 				return err
 			}
-			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: org, ID: newNativeID("hub"), CursorKey: cursor}); err != nil {
+			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: org, ID: hubapi.NewID("hub"), CursorKey: cursor}); err != nil {
 				return err
 			}
 			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: 1, RecordedAt: now})
@@ -552,7 +553,7 @@ func TestProjectSecretRewrapDeletion(t *testing.T) {
 	f := newOperatorSecurityFixture(t)
 	var original []accessstore.Secret
 	for _, name := range []string{"First secret project", "Second secret project"} {
-		project := tracker.ProjectID(newNativeID("prj"))
+		project := tracker.ProjectID(hubapi.NewID("prj"))
 		now := f.service.config.now().UTC().Truncate(time.Microsecond)
 		envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD("org_security", project, flySpritesToken))
 		if err != nil {

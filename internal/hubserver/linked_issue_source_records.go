@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -31,7 +32,7 @@ func (s *Service) readLinkedIssueSourceRecord(ctx context.Context, organization 
 		return tracker.LinkedIssueSource{}, false, nil
 	}
 	if err != nil {
-		return tracker.LinkedIssueSource{}, false, projectRecordError(err)
+		return tracker.LinkedIssueSource{}, false, hubapi.ProjectRecordError(err)
 	}
 	result, err := s.hydrateLinkedIssueSourceRecord(ctx, organization, record)
 	if err != nil {
@@ -69,21 +70,21 @@ func requireLinkedIssueLease(ctx context.Context, r tenantstore.Reader, scope na
 		return tracker.ErrStaleFencingToken
 	}
 	if scope.credential.Runner.RunnerID == "" || string(scope.credential.Runner.MachineID) != lease.MachineID {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	identity, err := r.RunnerForLease(ctx, string(mutation.LeaseID))
 	if err != nil {
 		return err
 	}
 	if identity.RunnerID != scope.credential.Runner.RunnerID || identity.TokenID != scope.credential.ID {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
 	if err != nil {
 		return err
 	}
 	if !allowed {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	return nil
 }
@@ -150,7 +151,7 @@ func validateLinkedIssueSnapshot(snapshot tracker.GitHubIssueSnapshot) error {
 			return err
 		}
 		if len(comment.Body) > 64<<10 || seen[comment.Provenance.ExternalID] {
-			return nativePublicInvalid("Intake discussion contains an oversized or duplicate comment")
+			return hubapi.NativePublicInvalid("Intake discussion contains an oversized or duplicate comment")
 		}
 		seen[comment.Provenance.ExternalID] = true
 	}
@@ -214,19 +215,19 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 
 func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope, itemID tracker.NativeWorkItemID, operation string, request tracker.GitHubIntake) (json.RawMessage, error) {
 	ctx = isolateContentContext(s.runDetailContext(ctx))
-	if scope.credential.Scope != apiScopeWorker && scope.credential.Scope != apiScopeAdmin && scope.credential.Scope != apiScopeOperator {
-		return nil, nativeNotFound()
+	if scope.credential.Scope != hubapi.APIScopeWorker && scope.credential.Scope != hubapi.APIScopeAdmin && scope.credential.Scope != hubapi.APIScopeOperator {
+		return nil, hubapi.NativeNotFound()
 	}
 	if s.config.AccessRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	if scope.credential.Scope != apiScopeWorker {
+	if scope.credential.Scope != hubapi.APIScopeWorker {
 		scope.requireHostedAdmin = true
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +245,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 	}
 	canonical, _, _, err := tracker.ParseGitHubIssueURL(request.Snapshot.URL)
 	if err != nil {
-		return nil, nativePublicInvalid("Intake source URL is invalid")
+		return nil, hubapi.NativePublicInvalid("Intake source URL is invalid")
 	}
 	if err := validateLinkedIssueSnapshot(request.Snapshot); err != nil {
 		return nil, err
@@ -272,20 +273,20 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 		if err != nil {
 			return err
 		}
-		if scope.credential.Scope == apiScopeWorker {
+		if scope.credential.Scope == hubapi.APIScopeWorker {
 			return requireLinkedIssueLease(ctx, r, scope, row, request.Mutation, now)
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	issue, err := s.hydrateWorkItemRecord(ctx, row, version)
 	if err != nil {
 		return nil, err
 	}
 	if issue.LinkedSource == nil || issue.LinkedSource.URL != canonical {
-		return nil, nativePublicInvalid("Intake source does not match the linked issue")
+		return nil, hubapi.NativePublicInvalid("Intake source does not match the linked issue")
 	}
 	originalIssue := issue
 	stale := false
@@ -325,7 +326,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 			continue
 		}
 		if !errors.Is(lookupErr, corestore.ErrNotFound) {
-			return nil, projectRecordError(lookupErr)
+			return nil, hubapi.ProjectRecordError(lookupErr)
 		}
 		commentPlan, err := s.prepareLinkedIssueComment(ctx, scope, itemID, imported, row.EventSequence+1+int64(len(newComments)), now)
 		if err != nil {
@@ -392,7 +393,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 		return nil, err
 	}
 	if s.database.plans() != nil && s.database.billingRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
@@ -411,7 +412,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 		prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if prior.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			return corestore.ErrSerializationFailure
 		}
@@ -437,7 +438,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 		if current.Revision != row.Revision || current.EventSequence != row.EventSequence {
 			return corestore.ErrSerializationFailure
 		}
-		if scope.credential.Scope == apiScopeWorker {
+		if scope.credential.Scope == hubapi.APIScopeWorker {
 			if err := requireLinkedIssueLease(ctx, w, scope, current, request.Mutation, s.config.now()); err != nil {
 				return err
 			}
@@ -496,7 +497,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 		if trustedBeforeCommit && !scope.scheduledRepair.trustedLinkedImport() && errors.Is(err, corestore.ErrSerializationFailure) {
 			return s.applyLinkedIssueRecord(ctx, scope, itemID, operation, request)
 		}
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	return response, nil
 }

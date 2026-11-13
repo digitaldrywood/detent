@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -15,29 +16,29 @@ import (
 
 func (s *Service) attributeScheduledFailure(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
 	if s.config.TenantRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	failure := request.ScheduledFailure
-	if scope.credential.Scope == apiScopeWorker || scope.credential.HostedRole == "reporter" {
-		return nil, &nativeError{Code: "insufficient_scope", Message: "Scheduled reporting requires operator authority", status: http.StatusForbidden, publicMessage: true}
+	if scope.credential.Scope == hubapi.APIScopeWorker || scope.credential.HostedRole == "reporter" {
+		return nil, &hubapi.NativeError{Code: "insufficient_scope", Message: "Scheduled reporting requires operator authority", Status: http.StatusForbidden, PublicMessage: true}
 	}
 	if failure == nil || len(failure.PreviousGreenSHA) != 40 || len(request.Body) == 0 || len(request.Body) > 32<<10 || request.ScheduledValidation != nil || request.State != "" || request.Title != "" || request.Type != "" || request.ReportContext != nil || len(request.Assignees) != 0 || request.ChallengeToken != "" || len(request.NotDuplicateOf) != 0 || request.Priority != nil || len(request.Labels) != 0 || request.Provenance != nil || request.GitHubIssueURL != "" {
-		return nil, nativePublicInvalid("Invalid scheduled failure attribution")
+		return nil, hubapi.NativePublicInvalid("Invalid scheduled failure attribution")
 	}
 	for _, ch := range failure.PreviousGreenSHA {
 		if !strings.ContainsRune("0123456789abcdef", ch) {
-			return nil, nativePublicInvalid("Invalid scheduled failure base")
+			return nil, hubapi.NativePublicInvalid("Invalid scheduled failure base")
 		}
 	}
 	scope.action = ""
-	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/scheduled-failures"), Feature: "collaboration"}
+	options := hubapi.NativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/scheduled-failures"), Feature: "collaboration"}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +51,7 @@ func (s *Service) attributeScheduledFailure(ctx context.Context, scope nativeSco
 	}
 	evidence := failure.Evidence
 	if !strings.EqualFold(repository, evidence.Repository) || len(gate.ParseScheduledEvidence(evidence.Stamp())) != 1 {
-		return nil, nativePublicInvalid("Invalid scheduled failure evidence")
+		return nil, hubapi.NativePublicInvalid("Invalid scheduled failure evidence")
 	}
 	var item string
 	if s.config.ImportBackend != nil {
@@ -63,7 +64,7 @@ func (s *Service) attributeScheduledFailure(ctx context.Context, scope nativeSco
 					readErr := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 						owner, ok := r.(policystore.ScheduledReader)
 						if !ok {
-							return workItemStorageUnavailable()
+							return hubapi.NativeWorkItemStorageUnavailable()
 						}
 						items, err := owner.ScheduledLandedWorkItems(ctx, scope.project, sha)
 						if err != nil {

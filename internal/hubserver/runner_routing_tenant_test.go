@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -1158,7 +1159,7 @@ func TestPostgresRunnerHostChangeWithoutLegacyDatabase(t *testing.T) {
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
-			scope := nativeScope{organization: org, credential: apiCredential{ID: "admin", Hash: apikey.HashToken(string(org)), Scope: apiScopeAdmin}}
+			scope := nativeScope{organization: org, credential: serverapi.APICredential{ID: "admin", Hash: apikey.HashToken(string(org)), Scope: serverapi.APIScopeAdmin}}
 			for _, tc := range []struct {
 				name, machine, token string
 				revision             int64

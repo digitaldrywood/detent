@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -25,7 +26,7 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: func() time.Time { return now }}}
 	service.conversations = &conversationService{Server: service.conversationServer(), Store: &conversationStore{Contents: objects}, Broker: newNotificationBroker().Broker, Coordinator: &recordingWaker{}}
 	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org_removal", Name: "Example", Slug: "example"})
-	scope := nativeScope{organization: "org_removal", project: "prj_removal", credential: apiCredential{ID: "test_hub_admin", Scope: apiScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
+	scope := nativeScope{organization: "org_removal", project: "prj_removal", credential: hubapi.APICredential{ID: "test_hub_admin", Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
 	payload, err := json.Marshal(conversationRecordContent{Execution: conversation.Execution{Status: conversation.ExecutionIdle}, Preferences: conversation.Preferences{Model: "example-model", ReasoningEffort: "auto", Access: "auto"}})
 	if err != nil {
 		t.Fatal(err)
@@ -84,8 +85,8 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 			} {
 				record, err := read.call()
 				if !test.allowed {
-					var denied *nativeError
-					if !errors.As(err, &denied) || denied.status != http.StatusNotFound {
+					var denied *hubapi.NativeError
+					if !errors.As(err, &denied) || denied.Status != http.StatusNotFound {
 						t.Fatalf("%s different audience error = %v", read.name, err)
 					}
 					continue
@@ -115,12 +116,12 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 			}
 			if !test.allowed {
 				_, err := service.commandPatchConversationPG(t.Context(), scope, id, conversationPatchRequest{}, "Updated")
-				var denied *nativeError
-				if !errors.As(err, &denied) || denied.status != http.StatusNotFound {
+				var denied *hubapi.NativeError
+				if !errors.As(err, &denied) || denied.Status != http.StatusNotFound {
 					t.Fatalf("patch different audience error = %v", err)
 				}
 				stream := &conversationStream{Response: echo.NewResponse(httptest.NewRecorder(), echo.New())}
-				if _, err := service.replayPGConversationEvents(t.Context(), scope, stream, id, 0, 1); !errors.As(err, &denied) || denied.status != http.StatusNotFound {
+				if _, err := service.replayPGConversationEvents(t.Context(), scope, stream, id, 0, 1); !errors.As(err, &denied) || denied.Status != http.StatusNotFound {
 					t.Fatalf("replay different audience error = %v", err)
 				}
 			}

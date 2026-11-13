@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -525,7 +526,7 @@ func prepareCoreWorkItemImport(ctx context.Context, tx *coreNeutralImport, objec
 	pendingVersions := make(map[eventstore.CollaborationVersionKey][]byte)
 	pendingEvents := make(map[string][]byte)
 	reference := coreGitHubReferenceEvidence{}
-	provider, node := stringValue(item.ProvenanceProvider), stringValue(item.ProvenanceExternalID)
+	provider, node := hubapi.StringValue(item.ProvenanceProvider), hubapi.StringValue(item.ProvenanceExternalID)
 	if row.SourceProvider.Valid {
 		provider = row.SourceProvider.String
 	}

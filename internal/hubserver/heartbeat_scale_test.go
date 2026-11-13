@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -76,7 +77,7 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 			return err
 		}
 		credential.ID, credential.Name, credential.Hash = "credential_3", "Example runner 3", apikey.HashToken(token)
-		credential.Fingerprint = tokenFingerprint(credential.Hash)
+		credential.Fingerprint = hubapi.TokenFingerprint(credential.Hash)
 		if err := w.CreateAccessCredential(t.Context(), credential); err != nil {
 			return fmt.Errorf("create scale runner credential: %w", err)
 		}

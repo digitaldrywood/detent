@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -49,7 +50,7 @@ func (s *Service) nativePublishedReviewAwaiting(ctx context.Context, scope nativ
 		return false, nil
 	}
 	source := attempt.Checkpoint
-	if source == nil || source.WorktreeState != "clean" && source.WorktreeState != "unpushed" || !validCommitID(source.HeadSHA) || source.EffectState == "pending" || source.EffectState == "ambiguous" {
+	if source == nil || source.WorktreeState != "clean" && source.WorktreeState != "unpushed" || !hubapi.ValidCommitID(source.HeadSHA) || source.EffectState == "pending" || source.EffectState == "ambiguous" {
 		return false, nil
 	}
 	finalization := attempt.Finalization

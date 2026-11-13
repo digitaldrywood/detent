@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -25,10 +26,10 @@ func (s *Service) changeReviewPolicyRecord(ctx context.Context, scope nativeScop
 		return err
 	})
 	if err != nil {
-		return tracker.ChangeReviewPolicy{}, projectRecordError(err)
+		return tracker.ChangeReviewPolicy{}, hubapi.ProjectRecordError(err)
 	}
 	approved, err := hydrateChangeSummaryPolicy(ctx, eventstore.NewContent(s.runDetailStore()), scope, rows)
-	return approved.ReviewPolicy, projectRecordError(err)
+	return approved.ReviewPolicy, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) currentChangePolicyRows(ctx context.Context, scope nativeScope) (currentChangePolicyRows, error) {
@@ -51,13 +52,13 @@ func (s *Service) approveChangeReviewPolicyRecord(c echo.Context, request tracke
 
 func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, scope nativeScope, operation string, request tracker.ApproveChangeReviewPolicy) (json.RawMessage, error) {
 	if request.Policy.PolicyID == "" {
-		return nil, nativePublicInvalid("An approved repository policy identity is required")
+		return nil, hubapi.NativePublicInvalid("An approved repository policy identity is required")
 	}
 	ctx = isolateContentContext(s.runDetailContext(ctx))
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -86,24 +87,24 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	approval, err := hydrateChangeSummaryPolicy(ctx, content, scope, rows)
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if request.Policy.PolicyID != approval.Policy.ID {
-		return nil, policyMismatch("Review policy must name the current repository policy")
+		return nil, hubapi.PolicyMismatch("Review policy must name the current repository policy")
 	}
 	current, currentStored = rows.Review, rows.hasReview
 	oldRules = approval.ReviewPolicy
 	if oldRules.ID != request.ExpectedID && (request.ExpectedID != "" || !followsRepositoryGate(oldRules)) {
-		return nil, policyMismatch("Review policy changed; supply its current identity")
+		return nil, hubapi.PolicyMismatch("Review policy changed; supply its current identity")
 	}
 	rules := request.Policy
 	rules.ID = changerequest.PolicyID(rules)
 	if err := changerequest.ValidatePolicy(rules, approval.Policy); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, hubapi.NativeInvalid(err.Error())
 	}
 	if err := s.validateReviewPolicyPrincipals(ctx, scope, rules, now); err != nil {
 		return nil, err
@@ -136,22 +137,22 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 			return err
 		}
 		if projectPolicy.OrganizationID != rows.Project.OrganizationID || projectPolicy.ProjectID != rows.Project.ProjectID || projectPolicy.PolicyID != rows.Project.PolicyID || projectPolicy.ApprovedBy != rows.Project.ApprovedBy || !projectPolicy.ApprovedAt.Equal(rows.Project.ApprovedAt) || projectPolicy.PolicyID != request.Policy.PolicyID {
-			return policyMismatch("Approved repository policy changed during review-policy update")
+			return hubapi.PolicyMismatch("Approved repository policy changed during review-policy update")
 		}
 		currentReview, currentErr := w.ReviewPolicy(ctx, scope.project)
 		if rows.hasReview {
 			if currentErr != nil || currentReview.ReviewPolicyID != rows.Review.ReviewPolicyID || currentReview.Revision != rows.Review.Revision || currentReview.PolicyRevisionID != rows.Review.PolicyRevisionID {
-				return policyMismatch("Review policy changed during update")
+				return hubapi.PolicyMismatch("Review policy changed during update")
 			}
 		} else if currentErr == nil || !errors.Is(currentErr, corestore.ErrNotFound) {
-			return policyMismatch("Review policy changed during update")
+			return hubapi.PolicyMismatch("Review policy changed during update")
 		}
 		if err := s.validateReviewPolicyPrincipalsIn(ctx, w, scope, rules, now); err != nil {
 			return err
 		}
 		if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 			if prior.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			return corestore.ErrSerializationFailure
 		} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -176,7 +177,7 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 		return nil, err
 	}
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	select {
 	case s.boardRefresh <- struct{}{}:
@@ -195,13 +196,13 @@ func (s *Service) validateReviewPolicyPrincipalsIn(ctx context.Context, r tenant
 	for _, check := range rules.RequiredChecks {
 		credential, err := r.AccessCredential(ctx, check.PrincipalID)
 		if err != nil || credential.RevokedAt != nil || credential.CreatedAt.After(now) || credential.ExpiresAt != nil && !now.Before(*credential.ExpiresAt) {
-			return nativePublicInvalid("Expected CI principals must have an active project grant")
+			return hubapi.NativePublicInvalid("Expected CI principals must have an active project grant")
 		}
-		if check.Source == "independent" && credential.Scope == string(apiScopeWorker) {
-			return nativePublicInvalid("Independent validation requires an operator credential")
+		if check.Source == "independent" && credential.Scope == string(hubapi.APIScopeWorker) {
+			return hubapi.NativePublicInvalid("Independent validation requires an operator credential")
 		}
 		if _, err := r.AccessTokenGrant(ctx, check.PrincipalID, scope.project); err != nil {
-			return nativePublicInvalid("Expected CI principals must have an active project grant")
+			return hubapi.NativePublicInvalid("Expected CI principals must have an active project grant")
 		}
 	}
 	return nil

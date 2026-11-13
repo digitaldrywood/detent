@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/githuboutbound"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -19,7 +20,7 @@ func (s *Service) githubOutboundService() *githuboutbound.Service {
 		Jitter: s.config.jitter, NewLeaseID: s.config.newLeaseID, Logger: s.config.Logger,
 		OutboxPollInterval: s.config.OutboxPollInterval, OutboxProcessingTimeout: s.config.OutboxProcessingTimeout,
 		OutboxBaseBackoff: s.config.OutboxBaseBackoff, OutboxMaxBackoff: s.config.OutboxMaxBackoff,
-		Disabled: ErrOutboxDisabled, Unavailable: ErrPostgresFeatureUnavailable,
+		Disabled: ErrOutboxDisabled, Unavailable: hubapi.ErrPostgresFeatureUnavailable,
 		SplitRepository: splitRepositoryFullName, Process: s.ProcessOutbox,
 		NewTimer: func(delay time.Duration) githuboutbound.Timer {
 			timer := s.config.newOutboxTimer(delay)

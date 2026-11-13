@@ -9,10 +9,11 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readLinkedIssueSourceProjection(ctx context.Context, query nativeQueryer, id string, compact bool) (*tracker.LinkedIssueSource, error) {
+func readLinkedIssueSourceProjection(ctx context.Context, query hubapi.NativeQueryer, id string, compact bool) (*tracker.LinkedIssueSource, error) {
 	var source tracker.LinkedIssueSource
 	var raw sql.NullString
 	snapshotColumn := "snapshot_json"
@@ -43,21 +44,21 @@ const linkedIssueRepositoryMismatch = "GitHub issue must belong to this native p
 
 func validateLinkedIssueRepository(integration ProjectIntegration, repository string) error {
 	if integration.Profile == "native" && integration.Repository == "" && integration.CheckoutRepository == "" {
-		return nativePublicInvalid(linkedIssueRepositoryRequired)
+		return hubapi.NativePublicInvalid(linkedIssueRepositoryRequired)
 	}
 	if integration.Profile != "native" || (!strings.EqualFold(repository, integration.Repository) && !strings.EqualFold(repository, integration.CheckoutRepository)) {
-		return nativePublicInvalid(linkedIssueRepositoryMismatch)
+		return hubapi.NativePublicInvalid(linkedIssueRepositoryMismatch)
 	}
 	return nil
 }
 
 func (s *Service) intakeLinkedIssue(c echo.Context) error {
 	var request tracker.GitHubIntake
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if s.config.TenantRepository == nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
 	return s.intakeLinkedIssueRecord(c, request)
 }

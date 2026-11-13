@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -54,14 +55,14 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 			return fmt.Errorf("create access tenant: %w", err)
 		}
 		personalHash := apikey.HashToken("personal_user_token")
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: first.ID, ID: "personal-first", Name: "Personal key", Hash: personalHash, Fingerprint: tokenFingerprint(personalHash), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: "user_example", MembershipID: "membership_example", KeyScope: string(apikey.ScopeAdmin), ProjectAccess: "selected", Kind: "personal"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: first.ID, ID: "personal-first", Name: "Personal key", Hash: personalHash, Fingerprint: hubapi.TokenFingerprint(personalHash), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: "user_example", MembershipID: "membership_example", KeyScope: string(apikey.ScopeAdmin), ProjectAccess: "selected", Kind: "personal"}); err != nil {
 			return fmt.Errorf("create personal credential: %w", err)
 		}
 		if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: first.ID, UserID: "user_example", Email: "user@example.test", MembershipID: "membership_example", Role: "admin", Active: true, PrincipalID: "personal-first", NotifyIssues: true, CreatedAt: now, UpdatedAt: now}); err != nil {
 			return fmt.Errorf("create hosted member: %w", err)
 		}
 		expires := now.Add(time.Hour)
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: first.ID, ID: "runner-first", Name: "Runner", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: first.ID, ID: "runner-first", Name: "Runner", Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return fmt.Errorf("create access credential: %w", err)
 		}
 		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: first.ID, ID: "enrollment_example", RunnerID: "runner_0000000000000000000000000000e001", MachineID: "machine_0000000000000000000000000000e001", TokenHash: apikey.HashToken("enrollment_secret"), Scope: "projects", Operations: []string{"read", "claim"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "tenant-admin"}); err != nil {
@@ -89,7 +90,7 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	request := func(path, organization string) (apiCredential, int, error) {
+	request := func(path, organization string) (hubapi.APICredential, int, error) {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set(echo.HeaderAuthorization, "Bearer "+credential)
 		req.Header.Set("X-Detent-Organization", organization)
@@ -191,7 +192,7 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 			succeeded++
 			winningToken = result.replacement
 		} else {
-			var nativeErr *nativeError
+			var nativeErr *hubapi.NativeError
 			if errors.As(result.err, &nativeErr) && nativeErr.Code == "unauthorized" {
 				unauthorized++
 			} else {
@@ -306,13 +307,13 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization.ID, ProviderID: "provider_example", AllocationGeneration: 1}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "admin", Name: "Example admin", Hash: adminHash, Fingerprint: tokenFingerprint(adminHash), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now, Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "admin", Name: "Example admin", Hash: adminHash, Fingerprint: hubapi.TokenFingerprint(adminHash), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now, Kind: "service"}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "credential_example", Name: "Example runner", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "credential_example", Name: "Example runner", Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: "worker", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "credential_example_two", Name: "Example runner two", Hash: secondHash, Fingerprint: tokenFingerprint(secondHash), Scope: "worker", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "credential_example_two", Name: "Example runner two", Hash: secondHash, Fingerprint: hubapi.TokenFingerprint(secondHash), Scope: "worker", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
 		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization.ID, ID: "enrollment_example", RunnerID: "runner_0000000000000000000000000000e001", MachineID: "machine_0000000000000000000000000000e001", TokenHash: apikey.HashToken("example_enrollment_secret"), Scope: "organization", Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-admin"}); err != nil {
@@ -577,7 +578,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	recommendationScope := nativeScope{organization: organization.ID, credential: apiCredential{ID: "admin", Hash: adminHash, Scope: apiScopeAdmin}}
+	recommendationScope := nativeScope{organization: organization.ID, credential: hubapi.APICredential{ID: "admin", Hash: adminHash, Scope: hubapi.APIScopeAdmin}}
 	recommendationRunner, err := service.readRunnerRouting(t.Context(), recommendationScope, "runner_0000000000000000000000000000e001")
 	if err != nil {
 		t.Fatal(err)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -190,7 +191,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 					return operatortool.Result{}, hubSafeChangeError(resolveErr)
 				}
 				if definition.Annotations.ReadOnly || scope.credential.HostedRole == "reporter" {
-					return operatortool.Result{}, safeWorkReadError(resolveErr)
+					return operatortool.Result{}, hubapi.SafeWorkReadError(resolveErr)
 				}
 				return operatortool.Result{}, hubSafeChangeError(resolveErr)
 			}
@@ -250,7 +251,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			}
 			page, readErr := e.service.nativeWorkComments(ctx, scope, request.Identifier, request.Limit, request.Cursor)
 			if readErr != nil {
-				return operatortool.Result{}, safeWorkReadError(readErr)
+				return operatortool.Result{}, hubapi.SafeWorkReadError(readErr)
 			}
 			raw, err = json.Marshal(page)
 		} else {
@@ -311,8 +312,8 @@ func operatorNativeConflict(err error) error {
 	if errors.As(err, &projected) {
 		return projected
 	}
-	var failure *nativeError
-	if !errors.As(err, &failure) || failure.status != http.StatusConflict {
+	var failure *hubapi.NativeError
+	if !errors.As(err, &failure) || failure.Status != http.StatusConflict {
 		return nil
 	}
 	switch failure.Code {
@@ -335,8 +336,8 @@ func safeNativeWorkError(err error) error {
 	if errors.Is(err, receiptstore.ErrExpired) {
 		err = commandResponseExpired()
 	}
-	var refusal *nativeError
-	if errors.As(err, &refusal) && refusal.publicMessage {
+	var refusal *hubapi.NativeError
+	if errors.As(err, &refusal) && refusal.PublicMessage {
 		return &operatortool.RequestError{Code: refusal.Code, Message: refusal.Message}
 	}
 	if safe := hubSafeChangeError(err); !errors.Is(safe, operatortool.ErrServiceUnavailable) {

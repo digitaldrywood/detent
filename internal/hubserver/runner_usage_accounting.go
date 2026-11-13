@@ -7,13 +7,14 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) accountRunnerUsage(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
 	var source leasestore.Attempt
@@ -30,7 +31,7 @@ func (s *Service) accountRunnerUsage(c echo.Context) error {
 			return err
 		}
 		if source.IssueID != item.ID {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		return nil
 	})
@@ -50,7 +51,7 @@ func (s *Service) accountRunnerUsage(c echo.Context) error {
 		}
 		owner, ok := w.(leasestore.RunnerUsageWriter)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		return owner.AccountRunnerTokenUsage(ctx, source, stored.Usage)
 	})

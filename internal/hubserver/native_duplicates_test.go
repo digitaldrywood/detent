@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -291,7 +292,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 			if test.state == "Triage" {
 				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 				var refusal struct {
-					apiErrorResponse
+					hubapi.APIErrorResponse
 					duplicateChallenge
 				}
 				decodeHubResponse(t, response, &refusal)
@@ -314,7 +315,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 			var challenge duplicateChallenge
 			decodeHubResponse(t, response, &challenge)
 			if test.challenge {
-				var failure apiErrorResponse
+				var failure hubapi.APIErrorResponse
 				decodeHubResponse(t, response, &failure)
 				if failure.Code != "possible_duplicates" || failure.Message == "" {
 					t.Fatalf("challenge omitted API error contract: %s", response.Body.String())
@@ -922,7 +923,7 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 			if change != "challenge enabled" && len(search.matches) != 1 {
 				t.Fatalf("matches=%+v", search.matches)
 			}
-			prepared, _, err := f.service.prepareWorkItemRecordMutation(t.Context(), scope, nativeCommandOptions{OperationID: nativeIssueCreationOperation(scope), Feature: "collaboration"}, request.Mutation, request, "")
+			prepared, _, err := f.service.prepareWorkItemRecordMutation(t.Context(), scope, hubapi.NativeCommandOptions{OperationID: nativeIssueCreationOperation(scope), Feature: "collaboration"}, request.Mutation, request, "")
 			if err != nil || prepared.write == nil {
 				t.Fatalf("prepare current duplicate filing: %v", err)
 			}

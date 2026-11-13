@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -35,9 +36,9 @@ type runnerSettings struct {
 }
 
 func (s *Service) getRunnerRouting(c echo.Context) error {
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	r, err := s.readRunnerRouting(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"))
 	if err != nil {
@@ -56,16 +57,16 @@ type runnerProposedRankReader interface {
 }
 
 func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runnerID string) (runnerauth.Runner, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	credential := scope.credential
-	if credential.Hosted == nil && (credential.Runner.RunnerID != "" && (credential.Runner.RunnerID != runnerID || credential.Runner.OrganizationID != scope.organization) || credential.Runner.RunnerID == "" && (credential.Scope != apiScopeAdmin || credential.NativeOnly)) {
-		return runnerauth.Runner{}, nativeNotFound()
+	if credential.Hosted == nil && (credential.Runner.RunnerID != "" && (credential.Runner.RunnerID != runnerID || credential.Runner.OrganizationID != scope.organization) || credential.Runner.RunnerID == "" && (credential.Scope != hubapi.APIScopeAdmin || credential.NativeOnly)) {
+		return runnerauth.Runner{}, hubapi.NativeNotFound()
 	}
 
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return runnerauth.Runner{}, nativeRunEventStorageUnavailable()
+		return runnerauth.Runner{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var runner runnerauth.Runner
 	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -79,7 +80,7 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 			if err != nil {
 				return err
 			}
-			if current.OrganizationID != scope.organization || current.Scope != string(apiScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, now) || !runnerIdentityMatchesHeldLease(identity, scope.organization, runnerID, credential.ID, credential.Runner.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Read) {
+			if current.OrganizationID != scope.organization || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, now) || !runnerIdentityMatchesHeldLease(identity, scope.organization, runnerID, credential.ID, credential.Runner.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Read) {
 				return accessstore.ErrDenied
 			}
 		} else {
@@ -91,7 +92,7 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 				return err
 			}
 			if credential.Hosted == nil {
-				if current.Scope != string(apiScopeAdmin) || current.NativeOnly {
+				if current.Scope != string(hubapi.APIScopeAdmin) || current.NativeOnly {
 					return accessstore.ErrDenied
 				}
 			} else {
@@ -99,14 +100,14 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 				if err != nil {
 					return err
 				}
-				credential.HostedRole = lesserHostedRole(member.Role, credential.HostedRole)
+				credential.HostedRole = hubapi.LesserHostedRole(member.Role, credential.HostedRole)
 				credential.HostedKeyScope = apikey.Scope(current.KeyScope)
-				credential.HostedProjectAccess = hostedProjectAccess(current.ProjectAccess)
+				credential.HostedProjectAccess = hubapi.HostedProjectAccess(current.ProjectAccess)
 			}
 		}
 		routingReader, ok := reader.(runnerstore.RoutingReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		record, err := routingReader.RunnerRoutingRecord(ctx, runnerID, now)
 		if err != nil {
@@ -119,13 +120,13 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 		runner = runnerFromRoutingRecord(record, now, urgent)
 		ranks, ok := reader.(runnerProjectRankReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		runner.ProjectRanks, err = ranks.RunnerProjectSchedulingRanks(ctx, runnerID, runnerstore.MaxRunnerProjectList)
 		return err
 	})
 	if err != nil {
-		return runnerauth.Runner{}, projectRecordError(err)
+		return runnerauth.Runner{}, hubapi.ProjectRecordError(err)
 	}
 
 	projects := runnerManagementProjects(runner)
@@ -147,14 +148,14 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 			}
 		}
 	}
-	organizationAdmin := runner.Scope == "organization" && (credential.HostedRole == "owner" || credential.HostedRole == "admin") && (credential.HostedKeyScope == "" || credential.HostedProjectAccess == hostedProjectsAll)
+	organizationAdmin := runner.Scope == "organization" && (credential.HostedRole == "owner" || credential.HostedRole == "admin") && (credential.HostedKeyScope == "" || credential.HostedProjectAccess == hubapi.HostedProjectsAll)
 	if credential.Hosted != nil && !organizationAdmin {
 		allowed, err := s.appAllRunnerGrants(ctx, credential, projects...)
 		if err != nil {
 			return runnerauth.Runner{}, err
 		}
 		if !allowed {
-			return runnerauth.Runner{}, nativeNotFound()
+			return runnerauth.Runner{}, hubapi.NativeNotFound()
 		}
 	}
 	return runner, nil
@@ -204,10 +205,10 @@ func (request runnerRoutingRequest) effective(current runnerauth.Routing) runner
 
 func (s *Service) updateRunnerRouting(c echo.Context) error {
 	var request runnerRoutingRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
 		return s.nativeAPIError(c, runnerUnauthorized())
 	}
@@ -220,16 +221,16 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 }
 
 func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeScope, resource string, request runnerRoutingRequest) (any, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if len(request.IdempotencyKey) > 128 || scope.credential.Runner.RunnerID != "" {
-		return nil, nativeInvalid("Invalid runner routing command")
+		return nil, hubapi.NativeInvalid("Invalid runner routing command")
 	}
 	current, err := s.readRunnerRouting(ctx, scope, resource)
 	if err != nil {
 		return nil, err
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -268,12 +269,12 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	if receipt.CommandKey != "" {
 		if receipt.RequestHash != hash {
-			return nil, nativeConflict(0)
+			return nil, hubapi.NativeConflict(0)
 		}
 		return s.readRunnerRoutingReceipt(ctx, scope, resource, receipt, content)
 	}
@@ -283,15 +284,15 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		change.ProjectRanks = current.ProjectRankOverrides
 	}
 	if err := change.Validate(); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, hubapi.NativeInvalid(err.Error())
 	}
 	if !maps.Equal(change.ProjectCapacityLimits, current.ProjectCapacityLimits) && strings.TrimSpace(request.IdempotencyKey) == "" {
-		return nil, nativeInvalid("Project capacity updates require an idempotency key")
+		return nil, hubapi.NativeInvalid("Project capacity updates require an idempotency key")
 	}
 	projects = append(projects, change.ProjectIDs...)
 	for project := range change.ProjectCapacityLimits {
 		if !change.AllowsProject(project) {
-			return nil, nativeInvalid("Project capacity limits require existing runner project access")
+			return nil, hubapi.NativeInvalid("Project capacity limits require existing runner project access")
 		}
 		projects = append(projects, project)
 	}
@@ -304,7 +305,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		return nil, corestore.ErrInvalidPage
 	}
 	if identity.Revision != change.ExpectedRevision || current.Revision != identity.Revision {
-		return nil, nativeConflict(tracker.Revision(identity.Revision))
+		return nil, hubapi.NativeConflict(tracker.Revision(identity.Revision))
 	}
 	if change.CapacityLimit != current.CapacityLimit {
 		change.CapacityRequest = nil
@@ -328,14 +329,14 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 
 		ranks, ok := reader.(runnerProposedRankReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		responseRanks, err = ranks.RunnerProposedSchedulingRanks(ctx, identity, runnerstore.MaxRunnerProjectList)
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	previousRouting := current.Routing
 	dispatchChanged := previousRouting.Scope != change.Scope || !slices.Equal(previousRouting.ProjectIDs, change.ProjectIDs) || previousRouting.State != change.State || !slices.Equal(previousRouting.Tags, change.Tags) || previousRouting.CapacityLimit != change.CapacityLimit || !maps.Equal(previousRouting.ProjectCapacityLimits, change.ProjectCapacityLimits) || !maps.Equal(current.ProjectRankOverrides, change.ProjectRanks) || previousRouting.MachineUse != change.MachineUse || previousRouting.IsolationTier != change.IsolationTier || !slices.Equal(previousRouting.HostServices, change.HostServices) || previousRouting.Availability.Timezone != change.Availability.Timezone || !slices.Equal(previousRouting.Availability.Windows, change.Availability.Windows) || !maps.Equal(previousRouting.Availability.WindowSlots, change.Availability.WindowSlots) || previousRouting.Availability.HardDeadline != change.Availability.HardDeadline
@@ -366,7 +367,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 			previous, err := writer.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
 			if err == nil {
 				if previous.RequestHash != hash {
-					return nativeConflict(0)
+					return hubapi.NativeConflict(0)
 				}
 				receipt = previous
 				return nil
@@ -426,7 +427,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		return nil
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if wroteRouting && dispatchChanged {
 		s.notifications.notify(dispatchNotificationKey(scope.organization))
@@ -439,10 +440,10 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 
 func (s *Service) updateRunnerHost(c echo.Context) error {
 	var change runnerauth.HostChange
-	if err := decodeAPIJSON(c, &change); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &change); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
 		return s.nativeAPIError(c, runnerUnauthorized())
 	}
@@ -457,9 +458,9 @@ func (s *Service) updateRunnerHost(c echo.Context) error {
 func (s *Service) updateRunnerHostCommand(ctx context.Context, scope nativeScope, resource string, change runnerauth.HostChange) (any, error) {
 	change.DisplayName = strings.TrimSpace(change.DisplayName)
 	if change.DisplayName == "" || len(change.DisplayName) > 200 || strings.ContainsAny(change.DisplayName, "\r\n\x00") || change.Capacity < 0 || change.Capacity > 10000 {
-		return nil, nativePublicInvalid("Host name and a capacity between 0 and 10000 are required")
+		return nil, hubapi.NativePublicInvalid("Host name and a capacity between 0 and 10000 are required")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.requireRunnerAdministrationTenant(ctx, w, scope); err != nil {
@@ -467,7 +468,7 @@ func (s *Service) updateRunnerHostCommand(ctx context.Context, scope nativeScope
 		}
 		revision, err := w.UpdateRunnerHost(ctx, resource, change)
 		if errors.Is(err, corestore.ErrRevisionConflict) {
-			return nativeConflict(tracker.Revision(revision))
+			return hubapi.NativeConflict(tracker.Revision(revision))
 		}
 		if err != nil {
 			return err
@@ -486,7 +487,7 @@ func (s *Service) updateRunnerHostCommand(ctx context.Context, scope nativeScope
 
 func (s *Service) requireRunnerAdministrationTenant(ctx context.Context, reader tenantstore.Reader, scope nativeScope) error {
 	credential := scope.credential
-	if credential.Runner.RunnerID != "" || credential.Hosted == nil && (credential.NativeOnly || credential.Scope != apiScopeAdmin) {
+	if credential.Runner.RunnerID != "" || credential.Hosted == nil && (credential.NativeOnly || credential.Scope != hubapi.APIScopeAdmin) {
 		return accessstore.ErrDenied
 	}
 	if err := s.authorizeAccessScope(ctx, reader, scope, true); err != nil {
@@ -506,7 +507,7 @@ func (s *Service) requireRunnerAdministrationTenant(ctx context.Context, reader 
 		if err != nil {
 			return err
 		}
-		credential.HostedRole = lesserHostedRole(member.Role, credential.HostedRole)
+		credential.HostedRole = hubapi.LesserHostedRole(member.Role, credential.HostedRole)
 	}
 	allowed, err := s.appAllRunnerGrantsWith(ctx, reader, credential, nil)
 	if err != nil {
@@ -555,15 +556,15 @@ func runnerFromRoutingRecord(record runnerstore.RoutingRecord, now time.Time, ur
 }
 
 func (s *Service) listRunnerRouting(c echo.Context) error {
-	limit, err := parsePageLimit(c.QueryParam("limit"))
+	limit, err := hubapi.ParsePageLimit(c.QueryParam("limit"))
 	if err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Page limit is invalid"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Page limit is invalid"))
 	}
 	offset := 0
 	if value := c.QueryParam("offset"); value != "" {
 		offset, err = strconv.Atoi(value)
 		if err != nil || offset < 0 || offset > 100000 {
-			return s.nativeAPIError(c, nativePublicInvalid("Page offset is invalid"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Page offset is invalid"))
 		}
 	}
 	result, err := s.listRunnerRoutingData(c.Request().Context(), tracker.OrganizationID(c.Param("organization")), limit+1, offset)
@@ -572,7 +573,7 @@ func (s *Service) listRunnerRouting(c echo.Context) error {
 	}
 	if len(result) > limit {
 		if c.QueryParam("limit") == "" {
-			return s.nativeAPIError(c, nativePublicInvalid("Fleet requires pagination; specify limit and follow X-Next-Offset"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Fleet requires pagination; specify limit and follow X-Next-Offset"))
 		}
 		result = result[:limit]
 		c.Response().Header().Set("X-Next-Offset", strconv.Itoa(offset+limit))
@@ -581,17 +582,17 @@ func (s *Service) listRunnerRouting(c echo.Context) error {
 }
 
 func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracker.OrganizationID, limit, offset int) ([]runnerauth.Runner, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return nil, nativeRunEventStorageUnavailable()
+		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	result := []runnerauth.Runner{}
 	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		fleet, ok := reader.(runnerstore.RoutingPageReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		now := s.config.now()
 		records, err := fleet.RunnerRoutingRecords(ctx, limit, offset, now)
@@ -607,17 +608,17 @@ func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracke
 		}
 		return nil
 	})
-	return result, projectRecordError(err)
+	return result, hubapi.ProjectRecordError(err)
 }
 
 func runnerExcluded(exclusions []runnerauth.Exclusion) error {
 	if len(exclusions) == 0 {
 		return nil
 	}
-	return &nativeError{Code: exclusions[0].Code, Message: exclusions[0].Message, status: http.StatusConflict}
+	return &hubapi.NativeError{Code: exclusions[0].Code, Message: exclusions[0].Message, Status: http.StatusConflict}
 }
 
-func requireLeaseRunner(ctx context.Context, tx nativeQueryer, lease tracker.LeaseID, scope nativeScope) error {
+func requireLeaseRunner(ctx context.Context, tx hubapi.NativeQueryer, lease tracker.LeaseID, scope nativeScope) error {
 	var count int
 	query := `SELECT count(*) FROM leases l JOIN issues i ON i.id = l.issue_id JOIN machines m ON m.id = l.machine_id
 WHERE l.lease_id = ? AND i.organization_id = ? AND i.project_id = ? AND m.organization_id = ? AND m.token_id = ?`
@@ -630,14 +631,14 @@ JOIN runner_identities r ON r.id = lr.runner_id WHERE l.lease_id = ? AND i.organ
 		return err
 	}
 	if count != 1 {
-		return nativeNotFoundAt("lease_runner_credential")
+		return hubapi.NativeNotFoundAt("lease_runner_credential")
 	}
 	return nil
 }
 
 func (s *Service) validateRunnerLease(c echo.Context) error {
 	var request tracker.NativeLeaseMutation
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	runner, err := s.validateRunnerLeaseTenant(c.Request().Context(), nativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken)

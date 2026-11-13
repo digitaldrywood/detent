@@ -22,6 +22,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -453,7 +454,7 @@ func TestWorkspaceLaneClaimsWhatTheClientOpens(t *testing.T) {
 
 func (f *workspaceLaneFixture) action(t *testing.T, body map[string]any) workspacesession.Action {
 	t.Helper()
-	body["idempotency_key"] = newNativeID("actkey")
+	body["idempotency_key"] = hubapi.NewID("actkey")
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/actions", f.token, body)
 	requireNativeStatus(t, response, http.StatusCreated)
 	var authored workspacesession.Action
@@ -506,7 +507,7 @@ func TestWorkspaceLaneRunsProjectActions(t *testing.T) {
 
 	build := f.action(t, map[string]any{"name": "Build", "command": "echo built > build-ran"})
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/actions/"+build.ID+"/runs", f.token,
-		map[string]any{"idempotency_key": newNativeID("runkey"), "workspace_id": id})
+		map[string]any{"idempotency_key": hubapi.NewID("runkey"), "workspace_id": id})
 	requireNativeStatus(t, response, http.StatusAccepted)
 	if run := f.awaitRun(t, build, true); run.Status != workspacesession.RunSucceeded {
 		t.Fatalf("dispatched run = %+v, want succeeded", run)

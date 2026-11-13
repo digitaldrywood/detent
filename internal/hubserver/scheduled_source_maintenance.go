@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -32,7 +33,7 @@ func (s *Service) ScheduledSourceMaintenanceFeature() hubmaintenance.Feature {
 			BackfillScheduledSourcesAfter(context.Context, tracker.OrganizationID, *eventstore.Content, int, postgres.ScheduledSourceCursor) (int, postgres.ScheduledSourceCursor, error)
 		})
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		value, _ := states.LoadOrStore(tenant.Organization, &state{})
 		current := value.(*state)

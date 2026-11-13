@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -30,10 +31,10 @@ func (s *Service) hostedSecretStatus(c echo.Context) error {
 		var err error
 		limit, err = strconv.Atoi(raw)
 		if err != nil || limit < 1 || limit > 200 {
-			return s.nativeAPIError(c, nativePublicInvalid("Invalid secret status page limit"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid secret status page limit"))
 		}
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	status := HostedSecretStatus{OrganizationID: scope.organization, Counts: []SecretVersionCount{}, Problems: []SecretRowProblem{}}
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -59,7 +60,7 @@ func (s *Service) hostedSecretStatus(c echo.Context) error {
 			}
 			status.Counts[index].Count++
 			if problem := secretStatusProblem(s.config.SecretKeys, row); problem != "" {
-				status.Problems = append(status.Problems, SecretRowProblem{OrganizationID: string(row.OrganizationID), ProjectID: string(row.ProjectID), Kind: row.Kind, MasterKeyVersion: row.Envelope.Version, UpdatedAt: formatHubTime(row.UpdatedAt), Problem: problem})
+				status.Problems = append(status.Problems, SecretRowProblem{OrganizationID: string(row.OrganizationID), ProjectID: string(row.ProjectID), Kind: row.Kind, MasterKeyVersion: row.Envelope.Version, UpdatedAt: hubapi.FormatHubTime(row.UpdatedAt), Problem: problem})
 			}
 		}
 		if len(rows) == limit {
@@ -83,8 +84,8 @@ func (s *Service) hostedSecretStatusAuthority(next echo.HandlerFunc) echo.Handle
 			}
 			return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", nil)
 		}
-		if credential.Scope != apiScopeAdmin || credential.Hosted != nil && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
-			return s.nativeAPIError(c, nativeNotFound())
+		if credential.Scope != hubapi.APIScopeAdmin || credential.Hosted != nil && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 		c.Set("native_scope", nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential, requireHostedAdmin: true})
 		c.Response().Header().Set("Cache-Control", "no-store")

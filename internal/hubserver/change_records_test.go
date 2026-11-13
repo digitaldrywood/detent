@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -528,7 +529,7 @@ func TestChangeReviewPolicyUsesSelectedTenantPolicyAndReceipt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: member.PrincipalID, Scope: apiScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
+	scope := nativeScope{organization: "org_security", project: f.project, credential: serverapi.APICredential{ID: member.PrincipalID, Scope: serverapi.APIScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
 	reference, summary, found, err := f.service.selectedLatestChangeSummary(t.Context(), scope, string(item.WorkItemID), f.service.config.now())
 	if err != nil || !found || reference.ChangeID != change.ID || reference.VersionID != "" || summary.Status != "draft" {
 		t.Fatalf("latest selected Change = %+v, %+v, found=%v, err=%v", reference, summary, found, err)
@@ -587,7 +588,7 @@ func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: organization, project: project, credential: apiCredential{ID: principal.ID, Hash: principal.Hash, Scope: apiScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
+	scope := nativeScope{organization: organization, project: project, credential: serverapi.APICredential{ID: principal.ID, Hash: principal.Hash, Scope: serverapi.APIScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
 	policy := hubTestPolicy()
 	input := changeTestInput()
 	bundle := changeTestSource(t, &input)
@@ -1010,14 +1011,14 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		descriptor, reviewPolicy = next, defaultChangeReviewPolicy(next)
 	}
 	service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
-	attemptID, runID, leaseID := newNativeID("attempt"), newNativeID("run"), newNativeID("lease")
+	attemptID, runID, leaseID := serverapi.NewID("attempt"), serverapi.NewID("run"), serverapi.NewID("lease")
 	var lease leasestore.Lease
 	workerToken, err := apikey.GenerateToken()
 	if err != nil {
 		t.Fatal(err)
 	}
 	binding := runnerauth.NewBinding()
-	workerID, runnerID := newNativeID("credential"), binding.RunnerID
+	workerID, runnerID := serverapi.NewID("credential"), binding.RunnerID
 	workerHash := apikey.HashToken(workerToken)
 	now := service.config.now()
 	expires := now.Add(time.Hour)
@@ -1029,13 +1030,13 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: orgID, ID: string(binding.MachineID), Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: orgID, ID: workerID, Name: "Source runner", Hash: workerHash, Fingerprint: tokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: orgID, ID: workerID, Name: "Source runner", Hash: workerHash, Fingerprint: serverapi.TokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: orgID, TokenID: workerID, ProjectID: projectID}); err != nil {
 			return err
 		}
-		enrollmentID := newNativeID("enrollment")
+		enrollmentID := serverapi.NewID("enrollment")
 		operations := []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}
 		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: orgID, ID: enrollmentID, RunnerID: runnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken("example-source-enrollment"), Scope: "projects", ProjectIDs: []tracker.ProjectID{projectID}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-owner"}); err != nil {
 			return err
@@ -1070,7 +1071,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: orgID, project: projectID, credential: apiCredential{ID: principal.ID, Hash: principal.Hash, Scope: apiScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
+	scope := nativeScope{organization: orgID, project: projectID, credential: serverapi.APICredential{ID: principal.ID, Hash: principal.Hash, Scope: serverapi.APIScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
 	server := httptest.NewServer(service.Handler())
 	t.Cleanup(server.Close)
 	client, err := hubapi.New(hubapi.Config{URL: server.URL, TokenSource: func() string { return workerToken }, HTTPClient: server.Client()})
@@ -1687,7 +1688,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		if err != nil {
 			return err
 		}
-		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "landing-session", LeaseID: newNativeID("lease"), TTL: time.Hour})
+		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "landing-session", LeaseID: serverapi.NewID("lease"), TTL: time.Hour})
 		if err != nil {
 			return err
 		}
@@ -1700,7 +1701,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	}
 	landingStart := start
 	landingStart.IdempotencyKey = "landing-run-start"
-	landingStart.Data.AttemptID, landingStart.Data.RunID = newNativeID("attempt"), newNativeID("run")
+	landingStart.Data.AttemptID, landingStart.Data.RunID = serverapi.NewID("attempt"), serverapi.NewID("run")
 	landingStart.Data.LeaseID, landingStart.Data.FencingToken = tracker.LeaseID(lease.LeaseID), tracker.FencingToken(lease.FencingToken)
 	landingStart.Data.Identity = &tracker.NativeExecutionIdentity{Role: "merge", Backend: "codex", Model: "example"}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", workerToken, landingStart), http.StatusOK)
@@ -1941,9 +1942,9 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		claim  tracker.NativeLandingReceipt
 		edit   func(*tracker.NativeLandingReceipt)
 	}{
-		{"unknown Change", http.StatusNotFound, landedClaim, func(l *tracker.NativeLandingReceipt) { l.ChangeID = newNativeID("change") }},
+		{"unknown Change", http.StatusNotFound, landedClaim, func(l *tracker.NativeLandingReceipt) { l.ChangeID = serverapi.NewID("change") }},
 		{"Change of another work item", http.StatusNotFound, landedClaim, func(l *tracker.NativeLandingReceipt) { l.ChangeID = foreignChange.ID }},
-		{"unknown version", http.StatusNotFound, landedClaim, func(l *tracker.NativeLandingReceipt) { l.VersionID = newNativeID("version") }},
+		{"unknown version", http.StatusNotFound, landedClaim, func(l *tracker.NativeLandingReceipt) { l.VersionID = serverapi.NewID("version") }},
 		{"waiting on another head", http.StatusUnprocessableEntity, waitingClaim, func(l *tracker.NativeLandingReceipt) { l.HeadSHA = strings.Repeat("e", 40) }},
 		{"landed before the landing owner recorded it", http.StatusUnprocessableEntity, landedClaim, func(*tracker.NativeLandingReceipt) {}},
 	} {
@@ -2295,7 +2296,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 			return err
 		}
 		cancelRevision = tracker.Revision(workItem.Revision)
-		cancelLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "cancel-session", LeaseID: newNativeID("lease"), TTL: time.Hour})
+		cancelLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "cancel-session", LeaseID: serverapi.NewID("lease"), TTL: time.Hour})
 		if err != nil {
 			return err
 		}
@@ -2308,7 +2309,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	}
 	cancelStart := landingStart
 	cancelStart.IdempotencyKey = "cancel-run-start"
-	cancelStart.Data.AttemptID, cancelStart.Data.RunID = newNativeID("attempt"), newNativeID("run")
+	cancelStart.Data.AttemptID, cancelStart.Data.RunID = serverapi.NewID("attempt"), serverapi.NewID("run")
 	cancelStart.Data.LeaseID, cancelStart.Data.FencingToken = tracker.LeaseID(cancelLease.LeaseID), tracker.FencingToken(cancelLease.FencingToken)
 	requireStep("run event", cancelStart.IdempotencyKey, 1, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, cancelStart))
 	cancelEcho := cancelStart

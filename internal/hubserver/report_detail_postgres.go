@@ -9,29 +9,30 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) hostedReportsDetailPostgres(c echo.Context, credential apiCredential) error {
+func (s *Service) hostedReportsDetailPostgres(c echo.Context, credential hubapi.APICredential) error {
 	ctx := c.Request().Context()
 	params := c.QueryParams()
 	project := params.Get("project")
 	if params.Get("scope") != "" || project == "" {
-		return s.nativeAPIError(c, nativePublicInvalid("Project report scope requires a project"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Project report scope requires a project"))
 	}
 	projects, found, err := s.reportsReadableProjects(ctx, credential, project)
 	if err != nil {
 		return s.usageCredentialError(c, err)
 	}
 	if !found {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	if project != reportsAllProjects {
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: projects[0]}); err != nil {
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 	}
 	w, err := reportsWindow(params, s.config.now())
@@ -44,15 +45,15 @@ func (s *Service) hostedReportsDetailPostgres(c echo.Context, credential apiCred
 	}
 	compare := params.Get("compare")
 	if compare != "" && compare != "prior" && compare != "off" {
-		return s.nativeAPIError(c, nativePublicInvalid("compare must be prior or off"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("compare must be prior or off"))
 	}
 	selectedProjects := reportsQueryValues(params, "projects")
 	if len(selectedProjects) > reportsMaxFilterValues {
-		return s.nativeAPIError(c, nativePublicInvalid("Report project filter accepts at most 32 values"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Report project filter accepts at most 32 values"))
 	}
 	projects = filterProductivityProjects(projects, selectedProjects)
 	if len(projects) == 0 {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	report, err := s.readPostgresHostedReport(ctx, credential, projects, w, filter, compare != "off")
 	if err != nil {
@@ -62,8 +63,8 @@ func (s *Service) hostedReportsDetailPostgres(c echo.Context, credential apiCred
 	return c.JSON(http.StatusOK, report)
 }
 
-func (s *Service) readPostgresHostedReport(ctx context.Context, credential apiCredential, projects []string, w operatortool.AnalyticsWindow, filter reportsFilter, compare bool) (hostedReportsReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubapi.APICredential, projects []string, w operatortool.AnalyticsWindow, filter reportsFilter, compare bool) (hostedReportsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	prior := operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From, Bucket: w.Bucket}
 	ids := projectIDs(projects)

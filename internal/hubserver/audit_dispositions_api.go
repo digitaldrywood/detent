@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -20,16 +21,16 @@ import (
 
 func (s *Service) postAuditDisposition(c echo.Context) error {
 	var request securityaudit.DispositionCommand
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if request.RequestID == "" || len(request.RequestID) > 128 || !request.Confirm || strings.TrimSpace(request.FindingID) == "" || strings.TrimSpace(request.Evidence) == "" || len(request.Evidence) > securityaudit.MaxDispositionEvidenceBytes || request.Key.Repository == "" || request.Key.BaseSHA == "" || request.Key.HeadSHA == "" {
-		return s.nativeAPIError(c, nativePublicInvalid("confirmed disposition requires exact source, finding and bounded evidence"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("confirmed disposition requires exact source, finding and bounded evidence"))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -41,7 +42,7 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 		}
 		reader, ok := r.(eventstore.AuditDispositionReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		prior, err := reader.AuditDispositionRequest(ctx, scope.project, scope.credential.ID, request.RequestID)
 		if err == nil {
@@ -49,7 +50,7 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 				return err
 			}
 			if prior.RequestHash != hash {
-				return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
+				return &hubapi.NativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: http.StatusConflict, PublicMessage: true}
 			}
 			receipt = &prior
 			return nil
@@ -101,7 +102,7 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 		break
 	}
 	if selected == nil || run.ID < 1 {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return s.authorizeAuditDisposition(ctx, r, scope, *selected, run, false)
@@ -136,14 +137,14 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 		}
 		writer, ok := w.(eventstore.AuditDispositionWriter)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		row, err = writer.CreateAuditDisposition(ctx, row)
 		return err
 	})
 	if err != nil {
 		if errors.Is(err, corestore.ErrRevisionConflict) {
-			err = nativeConflict(0)
+			err = hubapi.NativeConflict(0)
 		}
 		return s.nativeAPIError(c, err)
 	}
@@ -163,7 +164,7 @@ func (s *Service) authorizeAuditDisposition(ctx context.Context, r tenantstore.R
 		return err
 	}
 	if change.ProjectID != scope.project || evidence.VersionID == nil {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	version, err := r.Version(ctx, change.ID, *evidence.VersionID)
 	if err != nil {
@@ -177,7 +178,7 @@ func (s *Service) authorizeAuditDisposition(ctx context.Context, r tenantstore.R
 		return tracker.ErrStaleFencingToken
 	}
 	if scope.credential.Runner.RunnerID == "" {
-		if scope.credential.Scope != apiScopeAdmin && scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
+		if scope.credential.Scope != hubapi.APIScopeAdmin && scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
 			return accessstore.ErrDenied
 		}
 		scope.requireHostedAdmin = true
@@ -185,7 +186,7 @@ func (s *Service) authorizeAuditDisposition(ctx context.Context, r tenantstore.R
 	}
 	reader, ok := r.(runnersession.Reader)
 	if !ok {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	session, err := reader.RunnerSession(ctx, scope.project, run.ID)
 	if err != nil {

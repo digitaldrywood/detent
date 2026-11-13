@@ -7,10 +7,11 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readNativeRelatedBatch(ctx context.Context, query nativeQueryer, scope nativeScope, items map[tracker.NativeWorkItemID]*tracker.NativeIssue) error {
+func readNativeRelatedBatch(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, items map[tracker.NativeWorkItemID]*tracker.NativeIssue) error {
 	if len(items) == 0 {
 		return nil
 	}
@@ -26,7 +27,7 @@ func readNativeRelatedBatch(ctx context.Context, query nativeQueryer, scope nati
 		ids = append(ids, id)
 		issue.Related = []tracker.NativeDependency{}
 	}
-	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+	condition, grantArgs := scope.credential.ProjectGrantSQL("i.organization_id", "i.project_id")
 	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
 	condition = "(" + condition + ") AND (" + visibility + ")"
 	grantArgs = append(grantArgs, visibilityArgs...)

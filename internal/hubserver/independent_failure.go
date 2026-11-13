@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -230,7 +231,7 @@ func (s *Service) checkIndependentRepairs(ctx context.Context, w tenantstore.Wri
 	if err != nil {
 		return "", err
 	}
-	if current.Revision != plan.source.current.Revision || current.Archived || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+	if current.Revision != plan.source.current.Revision || current.Archived || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 		return "", corestore.ErrSerializationFailure
 	}
 	refusal := plan.refusal

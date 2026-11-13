@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -800,7 +801,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := service.dashboardPage(t.Context(), newDashboardDelivery(service), retained); !isNativeNotFound(err) || len(retained.frames) != 0 {
+			if _, err := service.dashboardPage(t.Context(), newDashboardDelivery(service), retained); !hubapi.IsNativeNotFound(err) || len(retained.frames) != 0 {
 				t.Fatalf("revoked project stream published data: pending=%d error=%v", len(retained.frames), err)
 			}
 		})

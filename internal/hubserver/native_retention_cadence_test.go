@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -227,7 +228,7 @@ func TestNativeRetentionCompletedBackfillsAvoidWriter(t *testing.T) {
 	s := f.service
 	item := f.create(t, "historical checkpoint projection")
 	content := eventstore.NewContent(s.runDetailStore())
-	value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: item.WorkItemID, Type: "run.checkpointed", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-principal"}, RecordedAt: s.config.now()}
+	value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: item.WorkItemID, Type: "run.checkpointed", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-principal"}, RecordedAt: s.config.now()}
 	row, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, value))
 	if err != nil {
 		t.Fatal(err)

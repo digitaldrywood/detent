@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -17,17 +18,17 @@ func runnerIdentityRecord(ctx context.Context, reader tenantstore.Reader, record
 	return hubauth.RunnerIdentityRecord(ctx, reader, record)
 }
 
-func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tracker.OrganizationID, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
+func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tracker.OrganizationID, hash, renewalRunner, renewalOrganization string) (hubapi.APICredential, int, error) {
 	return s.authenticateRepositoryAPIHash(ctx, s.config.TenantRepository, organization, hash, renewalRunner, renewalOrganization)
 }
 
-func (s *Service) authenticateRepositoryAPIHash(ctx context.Context, repository tenantstore.Repository, organization tracker.OrganizationID, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
+func (s *Service) authenticateRepositoryAPIHash(ctx context.Context, repository tenantstore.Repository, organization tracker.OrganizationID, hash, renewalRunner, renewalOrganization string) (hubapi.APICredential, int, error) {
 	return nativeCredentialResult(s.requestAuth().AuthenticateRepositoryAPIHash(ctx, repository, organization, hash, renewalRunner, renewalOrganization))
 }
 
 func (s *Service) readRunnerIdentityTenant(ctx context.Context, organization tracker.OrganizationID, runnerID string) (runnerauth.Identity, error) {
 	if s.config.TenantRepository == nil {
-		return runnerauth.Identity{}, nativeRunEventStorageUnavailable()
+		return runnerauth.Identity{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var identity runnerauth.Identity
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {

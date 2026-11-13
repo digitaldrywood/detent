@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -29,7 +30,7 @@ func (s *Service) workflowCommandReplay(ctx context.Context, scope nativeScope, 
 		tracker.Transition
 		ConversationID string `json:"conversation_id,omitempty"`
 	}{Transition: transition}
-	hash, err := nativeCommandHash(payload)
+	hash, err := hubapi.CommandHash(payload)
 	if err != nil {
 		return nil, false, err
 	}
@@ -55,8 +56,8 @@ func workflowSafeError(err error) error {
 	if errors.Is(err, receiptstore.ErrExpired) {
 		return receiptstore.ErrExpired
 	}
-	var failure *nativeError
-	if errors.As(err, &failure) && failure.status == http.StatusGone && failure.Code == "idempotency_expired" {
+	var failure *hubapi.NativeError
+	if errors.As(err, &failure) && failure.Status == http.StatusGone && failure.Code == "idempotency_expired" {
 		return receiptstore.ErrExpired
 	}
 	if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrProjectScopeRequired) {

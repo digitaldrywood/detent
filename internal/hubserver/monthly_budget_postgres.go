@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -26,7 +27,7 @@ func checkMonthlyLeasePG(ctx context.Context, reader tenantstore.Reader, project
 	exposure, err := reader.BillingMonthlyLease(ctx, tracker.LeaseID(lease))
 	if err != nil {
 		if errors.Is(err, corestore.ErrNotFound) {
-			return fmt.Errorf("read monthly lease exposure: %w", errors.Join(ErrBillingBudgetUnavailable, &nativeError{Code: "storage_owner_unavailable", Message: "Monthly budget lease exposure is unavailable", status: http.StatusServiceUnavailable, publicMessage: true}))
+			return fmt.Errorf("read monthly lease exposure: %w", errors.Join(ErrBillingBudgetUnavailable, &hubapi.NativeError{Code: "storage_owner_unavailable", Message: "Monthly budget lease exposure is unavailable", Status: http.StatusServiceUnavailable, PublicMessage: true}))
 		}
 		return fmt.Errorf("read monthly lease exposure: %w", err)
 	}

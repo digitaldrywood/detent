@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -59,7 +60,7 @@ type placementSnapshot struct {
 func readPlacementPolicy(ctx context.Context, r tenantstore.Reader) (policy.Placement, int, error) {
 	owner, ok := r.(postgres.SpriteReader)
 	if !ok {
-		return policy.Placement{}, 0, workItemStorageUnavailable()
+		return policy.Placement{}, 0, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	row, err := owner.SpritePool(ctx)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -75,7 +76,7 @@ func readPlacementPolicy(ctx context.Context, r tenantstore.Reader) (policy.Plac
 func readPlacementSpriteUsage(ctx context.Context, r tenantstore.Reader, scope nativeScope, now time.Time, joining ...string) (int, error) {
 	owner, ok := r.(postgres.SpriteReader)
 	if !ok {
-		return 0, workItemStorageUnavailable()
+		return 0, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	group := ""
 	if len(joining) > 0 && joining[0] != "" {
@@ -107,7 +108,7 @@ func readSpriteMembers(ctx context.Context, owner postgres.SpriteReader) ([]post
 func readPlacementRunners(ctx context.Context, r tenantstore.Reader, scope nativeScope, now time.Time) ([]placementRunner, error) {
 	reader, ok := r.(runnerstore.RoutingPageReader)
 	if !ok {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	urgent, err := r.RunnerUrgentUpdate(ctx)
 	if err != nil {
@@ -176,7 +177,7 @@ func (s *Service) readPlacementSource(ctx context.Context, scope nativeScope, no
 	var source placementSource
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return source, workItemStorageUnavailable()
+		return source, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -210,7 +211,7 @@ func (s *Service) readPlacementSource(ctx context.Context, scope nativeScope, no
 		}
 		owner, ok := r.(postgres.SpriteReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		source.members, err = readSpriteMembers(ctx, owner)
 		if err != nil {
@@ -634,7 +635,7 @@ func (s *Service) readOrganizationPlacementSnapshot(ctx context.Context, scope n
 	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.SpriteReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		allocationAfter := tracker.ProjectID("")
 		for {

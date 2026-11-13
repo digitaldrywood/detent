@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -45,7 +46,7 @@ func (s *Service) readRetainedAttemptTenant(ctx context.Context, scope nativeSco
 	if pin == nil {
 		pin = &retainedAttemptReadPin{SourceSHA256: sha, At: s.config.now().UTC(), LeaseRenewedAt: snapshot.lease.RenewedAt, LeaseExpiresAt: snapshot.lease.ExpiresAt}
 	} else if pin.SourceSHA256 != sha || pin.At.IsZero() || pin.LeaseRenewedAt.IsZero() || !pin.LeaseExpiresAt.After(pin.LeaseRenewedAt) {
-		return tracker.NativeAttempt{}, nil, nativeConflict(0)
+		return tracker.NativeAttempt{}, nil, hubapi.NativeConflict(0)
 	}
 	snapshot.lease.RenewedAt, snapshot.lease.ExpiresAt = pin.LeaseRenewedAt, pin.LeaseExpiresAt
 	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, pin.At)

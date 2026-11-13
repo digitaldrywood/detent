@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -34,7 +35,7 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 	})
 	var live []struct {
 		name, path string
-		created    tokenResponse
+		created    hubapi.TokenResponse
 		version    tracker.ChangeVersion
 	}
 	for _, test := range []struct {
@@ -61,9 +62,9 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 			descriptor = descriptor.WithID()
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
 			reopenCredentialFixture(t, f, true)
-			response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, tokenRequest{Name: "ci-" + test.project, Scope: apiScopeOperator})
+			response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, hubapi.TokenRequest{Name: "ci-" + test.project, Scope: hubapi.APIScopeOperator})
 			requireNativeStatus(t, response, http.StatusCreated)
-			var created tokenResponse
+			var created hubapi.TokenResponse
 			decodeHubResponse(t, response, &created)
 			principal, token := created.ID, created.Token
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/tokens/"+principal+"/grants", testHubAdminToken, map[string]string{"organization_id": "org_browser_preview", "project_id": test.project}), http.StatusNoContent)
@@ -176,7 +177,7 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 			}()
 			live = append(live, struct {
 				name, path string
-				created    tokenResponse
+				created    hubapi.TokenResponse
 				version    tracker.ChangeVersion
 			}{test.name, checkPath, created, version})
 		})
@@ -204,16 +205,16 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 
 func testHostedCheckBoundaries(t *testing.T, f *browserHostedFixture, base, path, principal, token string, version tracker.ChangeVersion) {
 	t.Helper()
-	for _, scope := range []apiScope{apiScopeWorker, apiScopeOperator, apiScopeAdmin} {
+	for _, scope := range []hubapi.APIScope{hubapi.APIScopeWorker, hubapi.APIScopeOperator, hubapi.APIScopeAdmin} {
 		id := principal + "-" + string(scope)
-		created, err := parseTimeValue(testTimestamp)
+		created, err := hubapi.ParseTimeValue(testTimestamp)
 		if err != nil {
 			t.Fatal(err)
 		}
 		hash := apikey.HashToken(id)
 		organization := f.service.accessOrganization()
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: id, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: string(scope), Kind: "service", ProjectAccess: "selected", CreatedAt: created, UpdatedAt: created}); err != nil {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: id, Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: string(scope), Kind: "service", ProjectAccess: "selected", CreatedAt: created, UpdatedAt: created}); err != nil {
 				return err
 			}
 			return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: id, ProjectID: tracker.ProjectID(strings.TrimPrefix(base, "/api/v2/organizations/org_browser_preview/projects/"))})
@@ -243,7 +244,7 @@ func testHostedCheckBoundaries(t *testing.T, f *browserHostedFixture, base, path
 			response := performHubAPIRequest(t, f.service, test.method, test.path, token, changeTestResult(version))
 			if test.name == "token administration" {
 				requireNativeStatus(t, response, http.StatusForbidden)
-				var refusal apiErrorResponse
+				var refusal hubapi.APIErrorResponse
 				decodeHubResponse(t, response, &refusal)
 				if refusal.Code != "invalid_csrf" {
 					t.Fatalf("bearer-only reserved mutation refusal = %s", refusal.Code)
@@ -264,10 +265,10 @@ func testHostedCheckBoundaries(t *testing.T, f *browserHostedFixture, base, path
 				requireNativeStatus(t, response, want)
 				apiKeys := strings.Split(base, "/projects/")[0] + "/api-keys"
 				project := base[strings.LastIndex(base, "/")+1:]
-				control := hostedKeyRequest{Kind: "service", Name: "ci-key-control-" + project, Scope: apikey.ScopeRead, NeverExpires: true, ProjectAccess: hostedProjectsSelected, Projects: []string{project}}
+				control := hostedKeyRequest{Kind: "service", Name: "ci-key-control-" + project, Scope: apikey.ScopeRead, NeverExpires: true, ProjectAccess: hubapi.HostedProjectsSelected, Projects: []string{project}}
 				created := f.setupRequest(t, "owner", http.MethodPost, apiKeys, control)
 				requireNativeStatus(t, created, http.StatusCreated)
-				var probe tokenResponse
+				var probe hubapi.TokenResponse
 				decodeHubResponse(t, created, &probe)
 				defer func() {
 					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), f.service.config.ShutdownTimeout)
@@ -317,7 +318,7 @@ func testHostedCheckBoundaries(t *testing.T, f *browserHostedFixture, base, path
 						response := httptest.NewRecorder()
 						f.service.Handler().ServeHTTP(response, request)
 						requireNativeStatus(t, response, http.StatusForbidden)
-						var refusal apiErrorResponse
+						var refusal hubapi.APIErrorResponse
 						decodeHubResponse(t, response, &refusal)
 						if refusal.Code != "forbidden" {
 							t.Fatalf("actual key owner refusal = %s, want forbidden", refusal.Code)
@@ -396,10 +397,10 @@ func testHostedCheckRevocation(t *testing.T, f *browserHostedFixture, base, path
 		}, 401},
 		{"rotated", func(ctx context.Context) error {
 			return write(ctx, func(w tenantstore.Writer) error {
-				return w.RotateAccessCredential(ctx, principal, rotatedHash, tokenFingerprint(rotatedHash), at)
+				return w.RotateAccessCredential(ctx, principal, rotatedHash, hubapi.TokenFingerprint(rotatedHash), at)
 			})
 		}, func(ctx context.Context) error {
-			return cas(ctx, `UPDATE api_tokens SET token_hash=$3,token_fingerprint=$4,rotated_at=$5,updated_at=$6 WHERE organization_id=$1 AND id=$2 AND token_hash=$7 AND token_fingerprint=$8 AND rotated_at=$9 AND updated_at=$9`, organization, principal, credential.Hash, credential.Fingerprint, credential.RotatedAt, credential.UpdatedAt, rotatedHash, tokenFingerprint(rotatedHash), at)
+			return cas(ctx, `UPDATE api_tokens SET token_hash=$3,token_fingerprint=$4,rotated_at=$5,updated_at=$6 WHERE organization_id=$1 AND id=$2 AND token_hash=$7 AND token_fingerprint=$8 AND rotated_at=$9 AND updated_at=$9`, organization, principal, credential.Hash, credential.Fingerprint, credential.RotatedAt, credential.UpdatedAt, rotatedHash, hubapi.TokenFingerprint(rotatedHash), at)
 		}, 401},
 		{"expired", func(ctx context.Context) error {
 			return cas(ctx, `UPDATE api_tokens SET expires_at=$3 WHERE organization_id=$1 AND id=$2 AND expires_at IS NOT DISTINCT FROM $4`, organization, principal, at, credential.ExpiresAt)

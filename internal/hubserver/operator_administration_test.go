@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -55,7 +56,7 @@ func TestNativeCredentialAdministration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			clock.Store(now.UnixNano())
 			t.Cleanup(func() { clock.Store(now.UnixNano()) })
-			token, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "Example administration " + test.name, Scope: apiScopeAdmin, ExpiresAt: new(now.Add(time.Hour))})
+			token, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "Example administration " + test.name, Scope: hubapi.APIScopeAdmin, ExpiresAt: new(now.Add(time.Hour))})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,7 +110,7 @@ func TestNativeCredentialAdministration(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || current.ID != token.ID || current.Scope != apiScopeAdmin || current.NativeOnly {
+			if err != nil || current.ID != token.ID || current.Scope != hubapi.APIScopeAdmin || current.NativeOnly {
 				t.Fatalf("original binding was not revalidated: id=%s scope=%s native=%v error=%v", current.ID, current.Scope, current.NativeOnly, err)
 			}
 			value, err := e.App.Read(bound, operatortool.OrganizationSession, operatoradmin.Input{})
@@ -134,7 +135,7 @@ func TestNativeCredentialAdministration(t *testing.T) {
 		t.Fatalf("missing browser approver=%v", err)
 	}
 	// The existing native API still uses the extracted application commands.
-	token, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "native scoped key", Scope: apiScopeOperator})
+	token, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "native scoped key", Scope: hubapi.APIScopeOperator})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +147,7 @@ func TestNativeCredentialAdministration(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if row.OrganizationID != f.project.OrganizationID || row.ID != token.ID || !row.NativeOnly || row.Scope != string(apiScopeOperator) {
+		if row.OrganizationID != f.project.OrganizationID || row.ID != token.ID || !row.NativeOnly || row.Scope != string(hubapi.APIScopeOperator) {
 			t.Fatalf("native grant did not persist credential scope: id=%s native=%v scope=%s", row.ID, row.NativeOnly, row.Scope)
 		}
 		grant, err := r.AccessTokenGrant(t.Context(), token.ID, f.project.ID)
@@ -235,13 +236,13 @@ func TestNativeCredentialAdministration(t *testing.T) {
 						t.Fatal(err)
 					}
 					var current struct {
-						Credential tokenResponse `json:"credential"`
+						Credential hubapi.TokenResponse `json:"credential"`
 					}
 					if err := json.Unmarshal(encoded, &current); err != nil {
 						t.Fatal(err)
 					}
 					view := current.Credential
-					if err != nil || view.ID != test.id || view.Name != test.id+" "+string(scope.organization) || view.Fingerprint != "fingerprint_"+string(scope.organization) || view.Scope != apiScopeOperator || view.Kind != "service" || view.NativeOnly || view.Token != "" || !view.CreatedAt.Equal(now) || view.Grants == nil || view.Projects == nil || len(view.Grants) != wantCount || len(view.Projects) != wantCount {
+					if err != nil || view.ID != test.id || view.Name != test.id+" "+string(scope.organization) || view.Fingerprint != "fingerprint_"+string(scope.organization) || view.Scope != hubapi.APIScopeOperator || view.Kind != "service" || view.NativeOnly || view.Token != "" || !view.CreatedAt.Equal(now) || view.Grants == nil || view.Projects == nil || len(view.Grants) != wantCount || len(view.Projects) != wantCount {
 						t.Fatalf("%s tenant metadata: id=%s grants=%d projects=%d error=%v", scope.name, view.ID, len(view.Grants), len(view.Projects), err)
 					}
 					for index := range wantCount {
@@ -289,7 +290,7 @@ func TestNativeCredentialAdministration(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					page, ok := data.(operatoradmin.PageResult[tokenResponse])
+					page, ok := data.(operatoradmin.PageResult[hubapi.TokenResponse])
 					if !ok || len(page.Items) != len(test.ids) || (page.NextOffset == nil) != (test.next == 0) || page.NextOffset != nil && *page.NextOffset != test.next {
 						t.Fatalf("credential continuation=%+v want ids=%v next=%d", data, test.ids, test.next)
 					}
@@ -304,7 +305,7 @@ func TestNativeCredentialAdministration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			page, ok := data.(operatoradmin.PageResult[tokenResponse])
+			page, ok := data.(operatoradmin.PageResult[hubapi.TokenResponse])
 			if !ok || page.NextOffset != nil {
 				t.Fatalf("bounded credential fixture unexpectedly continued: %+v", data)
 			}

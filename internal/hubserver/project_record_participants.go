@@ -11,12 +11,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-var ErrProjectParticipants = errors.New("project lifecycle participants are unavailable")
 
 func projectRecordActor(scope nativeScope) tenantstore.ProjectActor {
 	actor := scope.actor()
@@ -112,7 +111,7 @@ func (p tenantProjectParticipants) RetireProject(ctx context.Context, w tenantst
 	}
 	cleaner, ok := w.(accessstore.ProjectAccessCleaner)
 	if !ok {
-		return ErrProjectParticipants
+		return hubapi.ErrProjectParticipants
 	}
 	if err := cleaner.DeleteAccessProjectGrants(ctx, record.Core.ID); err != nil {
 		return err
@@ -134,17 +133,17 @@ func (p tenantProjectParticipants) RetireProject(ctx context.Context, w tenantst
 	return err
 }
 
-func (s *Service) createHostedTenantProject(ctx context.Context, credential apiCredential, name string, states []tracker.NativeState) (string, error) {
+func (s *Service) createHostedTenantProject(ctx context.Context, credential hubapi.APICredential, name string, states []tracker.NativeState) (string, error) {
 	if states == nil {
 		states = HostedProjectStates()
 	}
-	key, err := nativeCommandHash([]string{s.config.Hosted.OrganizationID, credential.Hosted.Subject, name})
+	key, err := hubapi.CommandHash([]string{s.config.Hosted.OrganizationID, credential.Hosted.Subject, name})
 	if err != nil {
 		return "", err
 	}
 	request := createNativeProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, Name: name, States: states}
 	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}
-	raw, err := s.executeProjectRecordMutation(ctx, scope, nativeCommandOptions{OperationID: "create_hosted_project", Feature: "collaboration"}, request.Mutation, request)
+	raw, err := s.executeProjectRecordMutation(ctx, scope, hubapi.NativeCommandOptions{OperationID: "create_hosted_project", Feature: "collaboration"}, request.Mutation, request)
 	if err != nil {
 		return "", err
 	}

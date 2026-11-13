@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/usagereport"
@@ -36,17 +37,17 @@ func (s *Service) registerPlatformCreditRoutes(e *echo.Echo) {
 func (s *Service) creditHTTPDeps() credits.HTTPDeps {
 	return credits.HTTPDeps{
 		Service: s.creditsService, PlatformService: func() *credits.Service { return s.database.creditsService() }, Auth: s.requestAuth,
-		Error:          func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+		Error:          func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 		InvalidRequest: s.invalidAPIRequest, CommandFailure: s.creditCommandFailure,
 		Failure: s.hostedBillingFailure, Destination: s.hostedBillingDestination,
 		Return:      func() string { return s.hostedBillingReturn(true) },
 		ValidateKey: func(key string) error { return (hostedIdempotent{IdempotencyKey: key}).validate(true) },
 		Checkout: func(ctx context.Context, authorize func(context.Context) (hubauth.Credential, error), price, key string) (string, error) {
-			value, err := s.checkoutCredits(ctx, func(ctx context.Context) (apiCredential, error) { return creditCredential(authorize(ctx)) }, price, key)
+			value, err := s.checkoutCredits(ctx, func(ctx context.Context) (hubapi.APICredential, error) { return creditCredential(authorize(ctx)) }, price, key)
 			return value.URL, err
 		},
 		ConfigureFunding: func(ctx context.Context, authorize func(context.Context) (hubauth.Credential, error), request credits.FundingInput, key string) (credits.FundingInput, error) {
-			return s.configureCreditFunding(ctx, func(ctx context.Context) (apiCredential, error) { return creditCredential(authorize(ctx)) }, request, key)
+			return s.configureCreditFunding(ctx, func(ctx context.Context) (hubapi.APICredential, error) { return creditCredential(authorize(ctx)) }, request, key)
 		},
 		NewID: s.config.newLeaseID,
 		Audit: func(ctx context.Context, credential hubauth.Credential, c echo.Context) error {
@@ -57,20 +58,20 @@ func (s *Service) creditHTTPDeps() credits.HTTPDeps {
 	}
 }
 
-func creditCredential(value hubauth.Credential, err error) (apiCredential, error) {
+func creditCredential(value hubauth.Credential, err error) (hubapi.APICredential, error) {
 	return nativeCredential(value), err
 }
 
 func (s *Service) creditCommandFailure(c echo.Context, api bool, err error) error {
 	s.logStripeFailure(c.Request().Context(), err)
-	var failure *nativeError
+	var failure *hubapi.NativeError
 	switch {
 	case errors.Is(err, auth.ErrHostedIdentity):
 		return s.hostedBillingFailure(c, api, http.StatusForbidden, "AI credits require an organization owner without support impersonation")
 	case errors.Is(err, mutation.ErrConflict), errors.Is(err, mutation.ErrUncertain):
 		return s.hostedBillingFailure(c, api, http.StatusConflict, err.Error())
 	case errors.As(err, &failure):
-		return s.hostedBillingFailure(c, api, failure.status, failure.Message)
+		return s.hostedBillingFailure(c, api, failure.Status, failure.Message)
 	default:
 		return s.nativeAPIError(c, err)
 	}
@@ -85,7 +86,7 @@ func (s *Service) chatUsageRows(ctx context.Context, window usageWindow, project
 	}
 	buckets, err := s.database.creditsService().UsageBuckets(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), credits.Window(window), projects)
 	if err != nil {
-		return nil, fromFeatureError(err)
+		return nil, hubapi.FromFeatureError(err)
 	}
 	if len(projects) == 0 {
 		return []usageRow{}, nil
@@ -151,21 +152,21 @@ func (s *Service) readAICredits(ctx context.Context, pages ...creditPageRequest)
 		requests[i] = credits.Page(page)
 	}
 	value, err := s.creditsService().Read(ctx, requests...)
-	return value, fromFeatureError(err)
+	return value, hubapi.FromFeatureError(err)
 }
 
 func (d *database) includedAICreditsFromReader(ctx context.Context, r billingstore.Reader, at time.Time) (includedAICredits, error) {
 	value, err := d.creditsService().IncludedFromReader(ctx, r, at)
-	return includedAICredits(value), fromFeatureError(err)
+	return includedAICredits(value), hubapi.FromFeatureError(err)
 }
 
 func (d *database) applyCreditPaymentRecord(ctx context.Context, w billingstore.Writer, payment billing.CreditPayment) error {
-	return fromFeatureError(d.creditsService().ApplyPayment(ctx, w, payment))
+	return hubapi.FromFeatureError(d.creditsService().ApplyPayment(ctx, w, payment))
 }
 
 func (d *database) adjustAICredits(ctx context.Context, actor string, adjustment billing.CreditAdjustment) (int64, error) {
 	value, err := d.creditsService().Adjust(ctx, actor, adjustment)
-	return value, fromFeatureError(err)
+	return value, hubapi.FromFeatureError(err)
 }
 
 func (d *database) RecordConversationUsage(ctx context.Context, usage ConversationUsage) error {
@@ -176,16 +177,16 @@ func (d *database) RecordConversationUsage(ctx context.Context, usage Conversati
 }
 
 func (d *database) recordConversationUsagePostgres(ctx context.Context, usage ConversationUsage) error {
-	return fromFeatureError(d.creditsService().RecordUsage(ctx, credits.Usage(usage)))
+	return hubapi.FromFeatureError(d.creditsService().RecordUsage(ctx, credits.Usage(usage)))
 }
 
 func (d *database) prepareConversationUsagePostgres(ctx context.Context, usage ConversationUsage) (preparedConversationUsage, error) {
 	value, err := d.creditsService().PrepareUsage(ctx, credits.Usage(usage))
-	return value, fromFeatureError(err)
+	return value, hubapi.FromFeatureError(err)
 }
 
 func (d *database) writeConversationUsagePostgres(ctx context.Context, w tenantstore.Writer, prepared preparedConversationUsage) error {
-	return fromFeatureError(d.creditsService().WriteUsage(ctx, w, prepared))
+	return hubapi.FromFeatureError(d.creditsService().WriteUsage(ctx, w, prepared))
 }
 
 func chatBillingWindow(now time.Time, subscription billing.Snapshot) usageWindow {
@@ -193,7 +194,7 @@ func chatBillingWindow(now time.Time, subscription billing.Snapshot) usageWindow
 }
 func (d *database) chatUsageSummary(ctx context.Context, organization tracker.OrganizationID, window usageWindow, projects []string) (chatUsageSummary, error) {
 	value, err := d.creditsService().UsageSummary(ctx, organization, credits.Window(window), projects)
-	return chatUsageSummary{Range: usageWindow(value.Range), Input: value.Input, CachedInput: value.CachedInput, Output: value.Output, ReasoningOutput: value.ReasoningOutput, Tokens: value.Tokens, Turns: value.Turns, UnpricedTurns: value.UnpricedTurns, CostUSD: value.CostUSD}, fromFeatureError(err)
+	return chatUsageSummary{Range: usageWindow(value.Range), Input: value.Input, CachedInput: value.CachedInput, Output: value.Output, ReasoningOutput: value.ReasoningOutput, Tokens: value.Tokens, Turns: value.Turns, UnpricedTurns: value.UnpricedTurns, CostUSD: value.CostUSD}, hubapi.FromFeatureError(err)
 }
 func (s *Service) creditPack(id string) (HostedCreditPack, bool) {
 	value, ok := s.creditWorkerService().CreditPack(id)
@@ -212,8 +213,8 @@ func (s *Service) creditWorkerService() *credits.Service {
 	return credits.New(s.database.creditDeps(credits.Deps{Now: s.config.now, Funding: funding, NewID: s.config.newLeaseID, Binding: func(ctx context.Context) (billing.Binding, error) { return s.database.hostedBillingBinding(ctx, cfg) }, Unbound: errHostedBillingUnbound}))
 }
 func (w *hostedBillingWorker) creditEvent(ctx context.Context, id, kind string) error {
-	return fromFeatureError(w.service.creditWorkerService().Event(ctx, id, kind))
+	return hubapi.FromFeatureError(w.service.creditWorkerService().Event(ctx, id, kind))
 }
 func (w *hostedBillingWorker) autoFund(ctx context.Context) error {
-	return fromFeatureError(w.service.creditWorkerService().AutoFund(ctx))
+	return hubapi.FromFeatureError(w.service.creditWorkerService().AutoFund(ctx))
 }

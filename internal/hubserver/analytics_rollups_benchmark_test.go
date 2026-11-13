@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -219,7 +220,7 @@ func BenchmarkDiagnosticsProjectionReads(b *testing.B) {
 	}
 }
 
-func benchmarkPostgresDiagnostics(b *testing.B) (context.Context, diagnosticsPostgresFixture, *Service, apiCredential, tracker.ProjectID, time.Time) {
+func benchmarkPostgresDiagnostics(b *testing.B) (context.Context, diagnosticsPostgresFixture, *Service, hubapi.APICredential, tracker.ProjectID, time.Time) {
 	b.Helper()
 	timeout, err := time.ParseDuration(flag.Lookup("test.timeout").Value.String())
 	if err != nil || timeout <= 0 {
@@ -236,7 +237,7 @@ func benchmarkPostgresDiagnostics(b *testing.B) (context.Context, diagnosticsPos
 	if _, err := admin.ExecContext(ctx, "ALTER DATABASE "+pgx.Identifier{databaseName}.Sanitize()+" CONNECTION LIMIT 5"); err != nil {
 		b.Fatal(err)
 	}
-	name, password := newNativeID("example"), newNativeID("password")
+	name, password := hubapi.NewID("example"), hubapi.NewID("password")
 	quoted := pgx.Identifier{name}.Sanitize()
 	if _, err := admin.ExecContext(ctx, "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)); err != nil {
 		b.Fatal(err)
@@ -287,11 +288,11 @@ func benchmarkPostgresDiagnostics(b *testing.B) (context.Context, diagnosticsPos
 	if !authority.Valid() {
 		b.Fatal("invalid benchmark authority")
 	}
-	credential := apiCredential{EntryKey: authority}
+	credential := hubapi.APICredential{EntryKey: authority}
 	return ctx, diagnosticsPostgresFixture{repository: repository, admin: admin, details: details, organization: organization}, service, credential, project, now
 }
 
-func benchmarkPostgresReportFacts(b *testing.B) (context.Context, diagnosticsPostgresFixture, *Service, apiCredential, tracker.ProjectID, time.Time) {
+func benchmarkPostgresReportFacts(b *testing.B) (context.Context, diagnosticsPostgresFixture, *Service, hubapi.APICredential, tracker.ProjectID, time.Time) {
 	ctx, fixture, service, credential, project, now := benchmarkPostgresDiagnostics(b)
 	diagnosticsFixtureAttempts(ctx, b, fixture, project, "diagnostics-current", "current", 469, 469, now.Add(-2*time.Hour), now.Add(-time.Hour), tracker.NativeRunData{Outcome: "failed", TerminalFailure: &tracker.NativeTerminalFailure{Error: "Recorded diagnostic failure"}})
 	diagnosticsFixtureAttempts(ctx, b, fixture, project, "diagnostics-old", "history", 100000, 0, now.Add(-365*24*time.Hour), now.Add(-365*24*time.Hour), tracker.NativeRunData{})

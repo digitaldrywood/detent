@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -38,7 +39,7 @@ const workItemRecordBody = "## Acceptance criteria\nThe issue is served.\n## Mus
 
 func TestRunnerUnsupportedMutationsAreInvalid(t *testing.T) {
 	service := &Service{config: Config{AccessRepository: struct{ tenantstore.Repository }{}}}
-	scope := nativeScope{credential: apiCredential{Scope: apiScopeWorker}}
+	scope := nativeScope{credential: hubapi.APICredential{Scope: hubapi.APIScopeWorker}}
 	for _, test := range []struct {
 		name  string
 		input any
@@ -47,9 +48,9 @@ func TestRunnerUnsupportedMutationsAreInvalid(t *testing.T) {
 		{name: "archive issue", input: archiveIssueRequest{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := service.runWorkItemRecordMutation(t.Context(), scope, nativeCommandOptions{}, tracker.Mutation{IdempotencyKey: "unsupported"}, test.input, "", nil, nil)
-			var failure *nativeError
-			if !errors.As(err, &failure) || failure.status != http.StatusUnprocessableEntity || failure.Code != "invalid_request" {
+			_, err := service.runWorkItemRecordMutation(t.Context(), scope, hubapi.NativeCommandOptions{}, tracker.Mutation{IdempotencyKey: "unsupported"}, test.input, "", nil, nil)
+			var failure *hubapi.NativeError
+			if !errors.As(err, &failure) || failure.Status != http.StatusUnprocessableEntity || failure.Code != "invalid_request" {
 				t.Fatalf("unsupported runner mutation error=%v", err)
 			}
 		})
@@ -267,8 +268,8 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 					foreign := projectBase + "/missing-project/work-items/" + string(issue.WorkItemID)
 					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, foreign, testHubAdminToken, nil), http.StatusNotFound)
 					if repository != nil {
-						scope := nativeScope{organization: org.ID, project: project.ID, sourceActor: &tracker.Actor{Kind: "human", PrincipalID: "different-principal"}, credential: apiCredential{HostedRole: "reporter"}}
-						if _, err := service.readWorkItem(t.Context(), scope, string(issue.WorkItemID)); !isNativeNotFound(err) {
+						scope := nativeScope{organization: org.ID, project: project.ID, sourceActor: &tracker.Actor{Kind: "human", PrincipalID: "different-principal"}, credential: hubapi.APICredential{HostedRole: "reporter"}}
+						if _, err := service.readWorkItem(t.Context(), scope, string(issue.WorkItemID)); !hubapi.IsNativeNotFound(err) {
 							t.Fatalf("reporter read error=%v", err)
 						}
 						var historicalVersion eventstore.CollaborationVersion
@@ -655,7 +656,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, siblingRelated), http.StatusOK)
 	if err := repository.WriteTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		now := service.config.now()
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: firstOrganization.ID, ID: "source-only", Name: "Source-only reader", Hash: apikey.HashToken("source-only-token"), Scope: string(apiScopeOperator), NativeOnly: true, KeyScope: "read", ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: firstOrganization.ID, ID: "source-only", Name: "Source-only reader", Hash: apikey.HashToken("source-only-token"), Scope: string(hubapi.APIScopeOperator), NativeOnly: true, KeyScope: "read", ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}
 		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: firstOrganization.ID, TokenID: "source-only", ProjectID: firstProject.ID})
@@ -862,7 +863,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: organization.ID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: plan.issue.WorkItemID, Type: plan.eventType, SchemaVersion: 1, Actor: legacyScope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+					eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization.ID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: plan.issue.WorkItemID, Type: plan.eventType, SchemaVersion: 1, Actor: legacyScope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -878,7 +879,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					hash, err := nativeCommandHash(input)
+					hash, err := hubapi.CommandHash(input)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1407,8 +1408,8 @@ func TestWorkItemRecordCommentEditConflictAfterConcurrentWrite(t *testing.T) {
 			unauthorizedScope.credential.HostedRole = "reporter"
 			unauthorizedScope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "example-other-reporter"}
 			_, unauthorizedErr := service.readCommentRecords(t.Context(), unauthorizedScope, string(issue.WorkItemID), url.Values{})
-			var unauthorizedResponse *nativeError
-			if !errors.As(unauthorizedErr, &unauthorizedResponse) || unauthorizedResponse.status != http.StatusNotFound {
+			var unauthorizedResponse *hubapi.NativeError
+			if !errors.As(unauthorizedErr, &unauthorizedResponse) || unauthorizedResponse.Status != http.StatusNotFound {
 				t.Fatalf("unauthorized comment list error = %v, want not found", unauthorizedErr)
 			}
 			listed := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/comments", testHubAdminToken, nil)
@@ -1595,7 +1596,7 @@ func TestWorkItemRecordRollback(t *testing.T) {
 			}
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "rollback"}, Title: "Example issue", Body: workItemRecordBody}
 			service.config.AccessRepository = nil
-			_, err = service.executeWorkItemRecordMutation(t.Context(), nativeScope{organization: org.ID, project: project.ID, credential: credential}, nativeCommandOptions{}, request.Mutation, request, "")
+			_, err = service.executeWorkItemRecordMutation(t.Context(), nativeScope{organization: org.ID, project: project.ID, credential: credential}, hubapi.NativeCommandOptions{}, request.Mutation, request, "")
 			if err == nil {
 				t.Fatal("PostgreSQL mutation accepted missing access authority")
 			}

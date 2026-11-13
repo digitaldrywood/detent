@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -38,7 +39,7 @@ func readBillingMonthlySettings(ctx context.Context, repository tenantstore.Repo
 	return settings, err
 }
 
-func readMonthlyBudgetSettings(ctx context.Context, q nativeQueryer, scope nativeScope) (monthlyBudgetSettings, error) {
+func readMonthlyBudgetSettings(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope) (monthlyBudgetSettings, error) {
 	var settings monthlyBudgetSettings
 	var raw string
 	err := q.QueryRowContext(ctx, `SELECT revision,policy_json FROM monthly_budget_policies WHERE organization_id=? AND project_id=? ORDER BY revision DESC LIMIT 1`, scope.organization, scope.project).Scan(&settings.Revision, &raw)
@@ -97,7 +98,7 @@ func readBillingMonthlyBudgetInput(ctx context.Context, reader billingstore.Read
 	return input, nil
 }
 
-func checkMonthlyBudget(ctx context.Context, q nativeQueryer, scope nativeScope, exposure budget.CostExposure, admitted bool, now time.Time, selected ...tenantstore.Repository) (budget.MonthlyDecision, error) {
+func checkMonthlyBudget(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope, exposure budget.CostExposure, admitted bool, now time.Time, selected ...tenantstore.Repository) (budget.MonthlyDecision, error) {
 	if len(selected) > 0 && selected[0] != nil {
 		var decision budget.MonthlyDecision
 		err := selected[0].ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -160,7 +161,7 @@ func monthlyBudgetRefusal(decision budget.MonthlyDecision) string {
 	return "Monthly budget admission requires ready Todo or a durably admitted issue"
 }
 
-func monthlySpriteAllowed(ctx context.Context, _ nativeQueryer, scope nativeScope, now time.Time, selected ...tenantstore.Repository) (bool, error) {
+func monthlySpriteAllowed(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope, now time.Time, selected ...tenantstore.Repository) (bool, error) {
 	if len(selected) == 0 || selected[0] == nil {
 		return false, ErrBillingBudgetUnavailable
 	}
@@ -238,7 +239,7 @@ func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organizatio
 	}
 }
 
-func monthlyBudgetRetainsRunner(ctx context.Context, _ nativeQueryer, scope nativeScope, machine tracker.MachineID, selected ...tenantstore.Repository) (bool, error) {
+func monthlyBudgetRetainsRunner(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope, machine tracker.MachineID, selected ...tenantstore.Repository) (bool, error) {
 	if len(selected) > 0 && selected[0] != nil {
 		var retained bool
 		err := selected[0].ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {

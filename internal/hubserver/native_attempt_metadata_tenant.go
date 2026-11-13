@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -25,7 +26,7 @@ type attemptMetadataSnapshotReader struct {
 func readAttemptMetadataSnapshot(ctx context.Context, r tenantstore.Reader, scope nativeScope, item string, attempts []leasestore.Attempt, evidence bool) (tenantstore.Reader, error) {
 	reader, ok := r.(tenantstore.AttemptMetadataReader)
 	if !ok {
-		return nil, nativeRunEventStorageUnavailable()
+		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	metadata, err := reader.AttemptMetadata(ctx, scope.project, tracker.NativeWorkItemID(item), attempts, evidence)
 	if err != nil {

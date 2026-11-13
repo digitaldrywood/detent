@@ -7,17 +7,18 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 func (s *Service) checkAttachmentEvidence(c echo.Context, input *attachment.EvidenceRequest) (resultErr error) {
 	if c.Param("attempt") == "" {
 		if input != nil {
-			return nativePublicInvalid("Evidence requires its attempt endpoint")
+			return hubapi.NativePublicInvalid("Evidence requires its attempt endpoint")
 		}
 		return nil
 	}
 	if input == nil || input.AttemptID != c.Param("attempt") || strings.TrimSpace(input.Caption) == "" || len(input.Caption) > 1024 || !utf8.ValidString(input.Caption) || strings.ContainsAny(input.Caption, "\r\n\x00") || input.IdempotencyKey == "" || input.LeaseID == "" || input.FencingToken <= 0 {
-		return nativePublicInvalid("Invalid attempt evidence")
+		return hubapi.NativePublicInvalid("Invalid attempt evidence")
 	}
 	return s.checkAttachmentEvidenceTenant(c.Request().Context(), nativeRequestScope(c), *input)
 }

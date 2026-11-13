@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -23,7 +24,7 @@ func TestChangeWorkItemPriorityClears(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "priority authority")
 	service := f.service
 	organization := f.project.OrganizationID
-	project := tracker.ProjectID(newNativeID("prj"))
+	project := tracker.ProjectID(hubapi.NewID("prj"))
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		stored, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Compatible project", Profile: "github_compatible", RequireDependencies: true}, States: nativeFixtureStates()})
 		if err != nil {
@@ -51,7 +52,7 @@ func TestChangeWorkItemPriorityClears(t *testing.T) {
 	if err != nil || count != 2 {
 		t.Fatalf("retained compatible import=%d error=%v", count, err)
 	}
-	seedHubAPIToken(t, service, "priority-operator", "priority-operator-token", apiScopeOperator)
+	seedHubAPIToken(t, service, "priority-operator", "priority-operator-token", hubapi.APIScopeOperator)
 	admin := nativeAttemptTestDatabase(t, f)
 	path := "/api/v2/organizations/" + string(organization) + "/mcp"
 	readPriority := func(t *testing.T, item tracker.NativeWorkItemID) (int64, bool) {
@@ -79,7 +80,7 @@ func TestChangeWorkItemPriorityClears(t *testing.T) {
 		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			owner, ok := w.(projectstore.GitHubOutboxWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			var err error
 			outbound, err = owner.GitHubOutbound(t.Context(), key)

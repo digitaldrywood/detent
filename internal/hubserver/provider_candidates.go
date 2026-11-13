@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -20,14 +21,14 @@ import (
 
 func (s *Service) previewProviderCandidates(c echo.Context) error {
 	var request tracker.NativeCapacityPreview
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if request.Limit < 0 || request.Limit > 100 {
-		return s.nativeAPIError(c, nativePublicInvalid("Candidate limit must be between 1 and 100"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Candidate limit must be between 1 and 100"))
 	}
 	if request.LandingCapacity < 0 {
-		return s.nativeAPIError(c, nativePublicInvalid("Landing capacity must be non-negative"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Landing capacity must be non-negative"))
 	}
 	page, err := s.previewProviderCandidatesTenant(c.Request().Context(), nativeRequestScope(c), request, s.config.now().UTC())
 	if err != nil {
@@ -48,7 +49,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 	var projectPolicy policystore.Revision
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return tracker.NativeCapacityPage{}, nativeRunEventStorageUnavailable()
+		return tracker.NativeCapacityPage{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
@@ -80,7 +81,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 			return err
 		}
 		if projectPolicy.PolicyID != request.PolicyID {
-			return policyMismatch("Claim configuration changed; load the current project policy before previewing candidates")
+			return hubapi.PolicyMismatch("Claim configuration changed; load the current project policy before previewing candidates")
 		}
 		query := nativeTenantCandidateQuery(scope, request.NativeClaim, "", now)
 		query.Limit = limit
@@ -166,7 +167,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 	for _, plan := range plans {
 		v := plan.version
 		refs = append(refs, eventstore.Reference(v.PayloadObjectKey, v.PayloadSHA256, v.PayloadBytes, v.PayloadContentBytes))
-		if stringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
+		if hubapi.StringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
 			c := plan.changeRecord
 			v := plan.changeVersion
 			refs = append(refs, eventstore.Reference(c.PayloadObjectKey, c.PayloadSHA256, c.PayloadBytes, c.PayloadContentBytes), eventstore.Reference(v.PayloadObjectKey, v.PayloadSHA256, v.PayloadBytes, v.PayloadContentBytes))
@@ -207,7 +208,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 		if plan.candidate.WorkItemID == "" {
 			continue
 		}
-		if !nativeClaimIssueContractAllowed(plan) || stringsEqualFold(plan.candidate.State, "Merging") && !plan.changeReady {
+		if !nativeClaimIssueContractAllowed(plan) || hubapi.StringsEqualFold(plan.candidate.State, "Merging") && !plan.changeReady {
 			continue
 		}
 		if plan.landingPending && !plan.changeReady {

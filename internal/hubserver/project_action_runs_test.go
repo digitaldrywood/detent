@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -35,7 +36,7 @@ func (f actionFixture) execWorkspace(t *testing.T) string {
 // postRun sends one POST /actions/:action/runs with its own idempotency key.
 func (f actionFixture) postRun(t *testing.T, actionID string, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
-	filled := map[string]any{"idempotency_key": newNativeID("runkey")}
+	filled := map[string]any{"idempotency_key": hubapi.NewID("runkey")}
 	maps.Copy(filled, body)
 	return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/actions/"+actionID+"/runs", f.token, filled)
 }
@@ -119,7 +120,7 @@ func TestProjectActionRunRefusals(t *testing.T) {
 
 	t.Run("an action this project does not hold is not found", func(t *testing.T) {
 		workspace := f.execWorkspace(t)
-		requireNativeCode(t, f.postRun(t, newNativeID("action"), map[string]any{"workspace_id": workspace}),
+		requireNativeCode(t, f.postRun(t, hubapi.NewID("action"), map[string]any{"workspace_id": workspace}),
 			http.StatusNotFound, "not_found")
 	})
 
@@ -275,7 +276,7 @@ func TestProjectActionRunListing(t *testing.T) {
 
 	t.Run("an action this project does not hold has no listing", func(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet,
-			f.base+"/actions/"+newNativeID("action")+"/runs", f.token, nil), http.StatusNotFound)
+			f.base+"/actions/"+hubapi.NewID("action")+"/runs", f.token, nil), http.StatusNotFound)
 	})
 }
 
@@ -483,7 +484,7 @@ func TestWorkspaceWorkerActionRunReport(t *testing.T) {
 			workspaceWorkerIdentity: workspaceIdentity(lease), Capabilities: execCapabilities,
 			Isolation: workspacesession.IsolationContainer}), http.StatusOK)
 		requireNativeCode(t, f.workerPost(t, session.ID, "action-runs", workspaceActionRunReport{
-			WorkspaceIdentity: workspaceIdentity(lease), ActionID: newNativeID("action"),
+			WorkspaceIdentity: workspaceIdentity(lease), ActionID: hubapi.NewID("action"),
 			Status: workspacesession.RunRunning}), http.StatusNotFound, "not_found")
 	})
 

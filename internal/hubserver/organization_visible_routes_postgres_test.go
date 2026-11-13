@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -518,7 +519,7 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 	requireNativeStatus(t, request(http.MethodPut, base+"/project-rank", map[string]any{"expected_revision": rank.Revision, "project_ids": rank.ProjectIDs}), http.StatusForbidden)
 	subject, role = "user_owner", "owner"
 
-	ownerScope := nativeScope{organization: "org_startup", credential: apiCredential{ID: "credential_owner", Hash: "example", Scope: apiScopeAdmin, Hosted: &auth.HostedIdentity{Subject: "user_owner", ExpiresAt: now.Add(time.Hour)}, HostedRole: "owner", HostedMembership: "membership_owner", HostedPrincipal: "credential_owner"}}
+	ownerScope := nativeScope{organization: "org_startup", credential: hubapi.APICredential{ID: "credential_owner", Hash: "example", Scope: hubapi.APIScopeAdmin, Hosted: &auth.HostedIdentity{Subject: "user_owner", ExpiresAt: now.Add(time.Hour)}, HostedRole: "owner", HostedMembership: "membership_owner", HostedPrincipal: "credential_owner"}}
 	if err := repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.DeleteAccessProjectGrant(t.Context(), "user_owner", "project_hidden")
 	}); err != nil {

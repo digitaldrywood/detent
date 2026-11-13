@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -259,7 +260,7 @@ func readCoreQualityLanding(ctx context.Context, source *coreNeutralImport, inpu
 		return nil, eventstore.ErrInvalidRecord
 	}
 	if projected.Valid {
-		at, err := parseTimeValue(projected.String)
+		at, err := hubapi.ParseTimeValue(projected.String)
 		if err != nil || !at.Equal(landing.LandedAt) {
 			return nil, eventstore.ErrInvalidRecord
 		}

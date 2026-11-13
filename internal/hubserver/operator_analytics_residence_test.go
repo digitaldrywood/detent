@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -277,7 +278,7 @@ func seedAnalyticsResidenceIssue(t *testing.T, f nativeFixture, id, state string
 	var event eventstore.Event
 	if !unrecorded {
 		var err error
-		event, err = eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: item, Type: "issue.created", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: at, Data: tracker.CollaborationData{Revision: 1}}))
+		event, err = eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: item, Type: "issue.created", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: at, Data: tracker.CollaborationData{Revision: 1}}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -306,7 +307,7 @@ func seedAnalyticsResidenceIssue(t *testing.T, f nativeFixture, id, state string
 func appendAnalyticsResidenceTestEvent(t *testing.T, f nativeFixture, id tracker.NativeWorkItemID, event analyticsResidenceEvent) {
 	t.Helper()
 	content := eventstore.NewContent(f.service.runDetailStore())
-	row, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: id, Type: event.Kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: event.At, Data: event.Data}))
+	row, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: id, Type: event.Kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: event.At, Data: event.Data}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +356,7 @@ func readAnalyticsResidenceTestReport(t *testing.T, ctx context.Context, f nativ
 	}
 	out := nativeAnalyticsProject{ProjectID: string(scope.project), Window: window, Unavailable: []string{}}
 	for from := window.From; from.Before(window.To); from = from.Add(window.Bucket) {
-		out.Digest = append(out.Digest, nativeAnalyticsBucket{From: from, To: minTime(from.Add(window.Bucket), window.To)})
+		out.Digest = append(out.Digest, nativeAnalyticsBucket{From: from, To: hubapi.MinTime(from.Add(window.Bucket), window.To)})
 	}
 	err = f.service.projectNativeAnalyticsResidenceTenant(ctx, scope, request, &out)
 	out.PopulationCursors = paging.Next

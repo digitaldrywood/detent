@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -169,7 +170,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: org, project: "example", credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+		scope := nativeScope{organization: org, project: "example", credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 		for index := range 200 {
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
 			changeID := fmt.Sprintf("change_%03d", index)
@@ -386,7 +387,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			ordinary := service.prepareBoardPage(t.Context(), scope, records, now, true, prepared)
 			_, err = ordinary.card(t.Context(), 0)
 			ordinary.close()
-			if !isNativeNotFound(err) {
+			if !hubapi.IsNativeNotFound(err) {
 				t.Fatalf("missing ordinary Change error=%v", err)
 			}
 			reads := batchDetails.scalar.Load()
@@ -464,8 +465,8 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 		}
 		query.Set("cursor", first.NextCursor)
 		_, err = service.readBoardRecords(t.Context(), scope, query)
-		var invalid *nativeError
-		if !errors.As(err, &invalid) || invalid.status != http.StatusUnprocessableEntity || invalid.Code != "invalid_request" || invalid.Message != "Work list order changed; restart the query" {
+		var invalid *hubapi.NativeError
+		if !errors.As(err, &invalid) || invalid.Status != http.StatusUnprocessableEntity || invalid.Code != "invalid_request" || invalid.Message != "Work list order changed; restart the query" {
 			t.Fatalf("changed PostgreSQL sequence accepted: %v", err)
 		}
 		query.Del("cursor")
@@ -488,8 +489,8 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 		}
 	})
 	service := &Service{database: &database{postgres: repository}, echo: echo.New(), secretRewrapReady: make(chan struct{}), config: Config{TenantRepository: repository, AccessRepository: repository, Logger: slog.New(slog.NewTextHandler(&previewLogs, nil)), SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: details, Clock: func() time.Time { return now }}.normalized()}
-	service.echo.POST(nativeBase+"/claims/preview", service.previewProviderCandidates, service.requireNativeScope(apiScopeWorker))
-	service.echo.GET(nativeBase+"/work-items/:item", service.getNativeIssue, service.requireNativeScope(apiScopeWorker, apiScopeOperator))
+	service.echo.POST(hubapi.NativeBase+"/claims/preview", service.previewProviderCandidates, service.requireNativeScope(hubapi.APIScopeWorker))
+	service.echo.GET(hubapi.NativeBase+"/work-items/:item", service.getNativeIssue, service.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
 	if service.database.postgres == nil {
 		t.Fatal("preview fixture requires PostgreSQL")
 	}
@@ -586,7 +587,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		scope := nativeScope{organization: org, project: "example", credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+		scope := nativeScope{organization: org, project: "example", credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 		assertExact := func(t *testing.T, page tracker.NativeIssuePage) {
 			details.beforeRead = func(context.Context) error { return errors.New("page request accessed an object") }
 			defer func() { details.beforeRead = nil }()
@@ -701,15 +702,15 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			}
 			authority := tenantChangeVersionAuthority{repository: repository, content: content}
 			_, err := authority.Prepare(t.Context(), scope, tracker.ChangeRequest{OrganizationID: org, ProjectID: scope.project}, tracker.PublishChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: checkedDescriptor.ID}}, now)
-			var refusal *nativeError
-			if !errors.As(err, &refusal) || refusal.status != http.StatusConflict {
+			var refusal *hubapi.NativeError
+			if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
 				t.Fatalf("publication without required checks accepted: %v", err)
 			}
 			service.database.now = func() time.Time { return now }
 			input := changeTestInput()
 			input.PolicyID = checkedDescriptor.ID
 			_, err = service.publishChangeVersionRecordCommand(t.Context(), scope, "wi_001", "change_001", "publish_version", tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "missing-check-policy"}, ExpectedVersionID: "version_001", ChangeVersionInput: input})
-			if !errors.As(err, &refusal) || refusal.status != http.StatusConflict {
+			if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
 				t.Fatalf("publish command without required checks accepted: %v", err)
 			}
 			for index := range 2 {
@@ -846,8 +847,8 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			}},
 		} {
 			err := check.read()
-			var mismatch *nativeError
-			if !errors.As(err, &mismatch) || mismatch.Code != "policy_mismatch" || mismatch.status != http.StatusConflict {
+			var mismatch *hubapi.NativeError
+			if !errors.As(err, &mismatch) || mismatch.Code != "policy_mismatch" || mismatch.Status != http.StatusConflict {
 				t.Fatalf("%s: stale %s policy refusal=%v, want policy_mismatch", org, check.name, err)
 			}
 		}
@@ -881,7 +882,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 		tokenHash := apikey.HashToken(secret)
 		expires := now.Add(time.Hour)
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "preview_credential", Name: "Example runner", Hash: tokenHash, Fingerprint: tokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "preview_credential", Name: "Example runner", Hash: tokenHash, Fingerprint: hubapi.TokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: "preview_credential", ProjectID: "example"}); err != nil {

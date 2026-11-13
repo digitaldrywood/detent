@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -39,8 +40,8 @@ func (s *Service) readHostedRunnerNamesTenant(ctx context.Context, includeActive
 	return names, err
 }
 
-func (s *Service) readHostedFleetTenant(ctx context.Context, credential apiCredential) (hostedFleetResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) readHostedFleetTenant(ctx context.Context, credential hubapi.APICredential) (hostedFleetResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	projects, err := s.hostedReadableProjects(ctx, credential)
 	if err != nil {
@@ -75,7 +76,7 @@ func (s *Service) readHostedFleetTenant(ctx context.Context, credential apiCrede
 	return result, err
 }
 
-func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential apiCredential, projects []appBootstrapProject, selectedProject tracker.ProjectID, now time.Time) (hostedFleetResponse, []scopedProviderAccount, error) {
+func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential hubapi.APICredential, projects []appBootstrapProject, selectedProject tracker.ProjectID, now time.Time) (hostedFleetResponse, []scopedProviderAccount, error) {
 	visible := map[tracker.ProjectID]bool{}
 	manageable := map[tracker.ProjectID]bool{}
 	for _, project := range projects {
@@ -445,16 +446,16 @@ func tenantFleetProviderViews(records []runnerstore.FleetRecord, leases []runner
 	return views
 }
 
-func (s *Service) readHostedRunnerHostHistoryTenant(ctx context.Context, credential apiCredential, runnerID string, from, to time.Time) ([]runnerHostHour, error) {
+func (s *Service) readHostedRunnerHostHistoryTenant(ctx context.Context, credential hubapi.APICredential, runnerID string, from, to time.Time) ([]runnerHostHour, error) {
 	if runnerID == "" {
-		return nil, nativePublicInvalid("Runner ID is required for host history")
+		return nil, hubapi.NativePublicInvalid("Runner ID is required for host history")
 	}
 	projects, err := s.hostedReadableProjects(ctx, credential)
 	if err != nil {
 		return nil, err
 	}
 	if credential.HostedRole == "reporter" {
-		return nil, nativeNotFound()
+		return nil, hubapi.NativeNotFound()
 	}
 	err = s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.appOrganizationID()), corestore.Serving, func(r tenantstore.Reader) error {
 		total := 0
@@ -468,7 +469,7 @@ func (s *Service) readHostedRunnerHostHistoryTenant(ctx context.Context, credent
 				if project.DeletedAt == nil {
 					total++
 					if total > len(projects) {
-						return nativeNotFound()
+						return hubapi.NativeNotFound()
 					}
 				}
 			}
@@ -478,11 +479,11 @@ func (s *Service) readHostedRunnerHostHistoryTenant(ctx context.Context, credent
 			after = all[len(all)-1].ID
 		}
 		if total != len(projects) {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		identity, err := r.RunnerIdentity(ctx, runnerID)
 		if errors.Is(err, corestore.ErrNotFound) || identity.RemovedAt != nil {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		return err
 	})

@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -35,7 +36,7 @@ func (s *Service) authorizeAuditChange(ctx context.Context, r tenantstore.Reader
 	if err != nil {
 		return err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 		return corestore.ErrNotFound
 	}
 	return nil
@@ -63,7 +64,7 @@ func (s *Service) auditDispositions(ctx context.Context, scope nativeScope, id i
 		}
 		reader, ok := r.(eventstore.AuditDispositionReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		rows, err = reader.AuditDispositions(ctx, scope.project, id)
@@ -93,9 +94,9 @@ func (s *Service) auditDispositions(ctx context.Context, scope nativeScope, id i
 func (s *Service) getAuditDispositions(c echo.Context) error {
 	id, err := strconv.ParseInt(c.Param("session"), 10, 64)
 	if err != nil || id < 1 {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	value, err := s.auditDispositions(ctx, nativeRequestScope(c), id)
 	if err != nil {
@@ -105,12 +106,12 @@ func (s *Service) getAuditDispositions(c echo.Context) error {
 }
 
 func (s *Service) getAuditEvidence(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
 	pr, err := strconv.Atoi(c.QueryParam("pull_request"))
 	if err != nil || pr < 0 || c.QueryParam("repository") == "" {
-		return s.nativeAPIError(c, nativePublicInvalid("repository and pull request are required"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("repository and pull request are required"))
 	}
 	key := securityaudit.Key{Repository: c.QueryParam("repository"), PRNumber: pr, BaseSHA: c.QueryParam("base_sha"), HeadSHA: c.QueryParam("head_sha")}
 	var candidates []eventstore.Evidence
@@ -120,7 +121,7 @@ func (s *Service) getAuditEvidence(c echo.Context) error {
 		}
 		reader, ok := r.(eventstore.AuditDispositionReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		candidates, err = reader.AuditReviewCandidates(ctx, scope.project, key, 100)
@@ -153,7 +154,7 @@ func (s *Service) getAuditEvidence(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, securityaudit.Evidence{Run: run, Dispositions: dispositions})
 	}
-	return s.nativeAPIError(c, nativeNotFound())
+	return s.nativeAPIError(c, hubapi.NativeNotFound())
 }
 
 func (s *Service) readAuditDisposition(ctx context.Context, scope nativeScope, row eventstore.AuditDisposition) (securityaudit.Disposition, error) {
@@ -214,7 +215,7 @@ func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scop
 			}
 			reader, ok := r.(eventstore.AuditDispositionReader)
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			var err error
 			rows, err = reader.AuditDispositions(ctx, scope.project, run.ID)
@@ -272,7 +273,7 @@ func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scop
 func lockValidatorAuditDispositions(ctx context.Context, r tenantstore.Reader, scope nativeScope, runID int64, expected []eventstore.AuditDisposition) error {
 	reader, ok := r.(eventstore.AuditDispositionReader)
 	if !ok {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	rows, err := reader.AuditDispositions(ctx, scope.project, runID)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -70,11 +71,11 @@ func (s *Service) registerConversationWorkerRoutes(e *echo.Echo) {
 	if !ok {
 		return
 	}
-	worker := s.requireNativeScope(apiScopeWorker)
-	e.POST(nativeBase+"/work-items/:item/conversation/bind", router.bind, worker)
-	e.POST(nativeBase+"/work-items/:item/conversation/unbind", router.unbind, worker)
-	e.GET(nativeBase+"/conversations/:conversation/controls", router.controls, worker)
-	e.POST(nativeBase+"/conversations/:conversation/turn-events", router.turnEvents, worker)
+	worker := s.requireNativeScope(hubapi.APIScopeWorker)
+	e.POST(hubapi.NativeBase+"/work-items/:item/conversation/bind", router.bind, worker)
+	e.POST(hubapi.NativeBase+"/work-items/:item/conversation/unbind", router.unbind, worker)
+	e.GET(hubapi.NativeBase+"/conversations/:conversation/controls", router.controls, worker)
+	e.POST(hubapi.NativeBase+"/conversations/:conversation/turn-events", router.turnEvents, worker)
 }
 
 // Wire shapes.
@@ -197,7 +198,7 @@ func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity
 	header := c.Request().Header
 	token, err := strconv.ParseInt(strings.TrimSpace(header.Get(conversationHeaderFencingToken)), 10, 64)
 	if err != nil {
-		return conversationWorkerIdentity{}, nativePublicInvalid("A numeric fencing token header is required")
+		return conversationWorkerIdentity{}, hubapi.NativePublicInvalid("A numeric fencing token header is required")
 	}
 	identity := conversationWorkerIdentity{
 		LeaseID:      tracker.LeaseID(strings.TrimSpace(header.Get(conversationHeaderLease))),
@@ -218,14 +219,14 @@ func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity
 func (r *conversationWorkerRouter) bind(e echo.Context) error {
 	s := r.server
 	var request conversationBindRequest
-	if err := decodeAPIJSON(e, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(e, &request); err != nil {
 		return s.invalidAPIRequest(e, err)
 	}
 	if err := request.Validate(); err != nil {
 		return s.nativeAPIError(e, err)
 	}
 	if strings.TrimSpace(request.RunID) == "" {
-		return s.nativeAPIError(e, nativePublicInvalid("run_id is required"))
+		return s.nativeAPIError(e, hubapi.NativePublicInvalid("run_id is required"))
 	}
 
 	return r.bindPostgres(e, request)
@@ -234,7 +235,7 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 	s := r.server
 	var request conversationUnbindRequest
-	if err := decodeAPIJSON(e, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(e, &request); err != nil {
 		return s.invalidAPIRequest(e, err)
 	}
 	if err := request.Validate(); err != nil {
@@ -245,7 +246,7 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 		"cancelled": conversation.ExecutionInterrupted, "interrupted": conversation.ExecutionInterrupted,
 	}[request.Outcome]
 	if !ok {
-		return s.nativeAPIError(e, nativePublicInvalid("outcome must be succeeded, failed, cancelled or interrupted"))
+		return s.nativeAPIError(e, hubapi.NativePublicInvalid("outcome must be succeeded, failed, cancelled or interrupted"))
 	}
 
 	return r.unbindPostgres(e, request, status)
@@ -270,13 +271,13 @@ func conversationControlQuery(e echo.Context) (after int64, wait time.Duration, 
 	if raw := strings.TrimSpace(e.QueryParam("after")); raw != "" {
 		after, err = strconv.ParseInt(raw, 10, 64)
 		if err != nil || after < 0 {
-			return 0, 0, nativePublicInvalid("after must be a non-negative cursor")
+			return 0, 0, hubapi.NativePublicInvalid("after must be a non-negative cursor")
 		}
 	}
 	if raw := strings.TrimSpace(e.QueryParam("wait")); raw != "" {
 		seconds, err := strconv.Atoi(raw)
 		if err != nil || seconds < 0 {
-			return 0, 0, nativePublicInvalid("wait must be a number of seconds")
+			return 0, 0, hubapi.NativePublicInvalid("wait must be a number of seconds")
 		}
 		wait = min(time.Duration(seconds)*time.Second, conversationControlMaxWait)
 	}
@@ -290,18 +291,18 @@ func conversationControlQuery(e echo.Context) (after int64, wait time.Duration, 
 func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	s := r.server
 	var request conversationTurnEventsRequest
-	if err := decodeAPIJSON(e, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(e, &request); err != nil {
 		return s.invalidAPIRequest(e, err)
 	}
 	if err := request.Validate(); err != nil {
 		return s.nativeAPIError(e, err)
 	}
 	if len(request.Events) > conversationMaxTurnEvents {
-		return s.nativeAPIError(e, nativePublicInvalid("Too many events in one batch"))
+		return s.nativeAPIError(e, hubapi.NativePublicInvalid("Too many events in one batch"))
 	}
 	request.BatchKey = strings.TrimSpace(request.BatchKey)
 	if len(request.BatchKey) > conversation.MaxCommandKeyBytes {
-		return s.nativeAPIError(e, nativePublicInvalid(fmt.Sprintf("batch_key must be at most %d bytes", conversation.MaxCommandKeyBytes)))
+		return s.nativeAPIError(e, hubapi.NativePublicInvalid(fmt.Sprintf("batch_key must be at most %d bytes", conversation.MaxCommandKeyBytes)))
 	}
 	id := e.Param("conversation")
 
@@ -315,11 +316,11 @@ func conversationItemData(raw json.RawMessage) (json.RawMessage, error) {
 		return nil, nil
 	}
 	if len(raw) > conversationMaxItemDataBytes {
-		return nil, nativePublicInvalid("item data is too long")
+		return nil, hubapi.NativePublicInvalid("item data is too long")
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
-		return nil, nativePublicInvalid("item data must be a JSON object")
+		return nil, hubapi.NativePublicInvalid("item data must be a JSON object")
 	}
 	return raw, nil
 }

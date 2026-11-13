@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -46,7 +47,7 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 	defer cancel()
 	identity := operatortool.ConnectionIdentity(ctx)
 	connection := &relayConnection{
-		ID: newNativeID("relayperson"), WorkspaceID: record.ID,
+		ID: hubapi.NewID("relayperson"), WorkspaceID: record.ID,
 		PrincipalID: identity.PrincipalID, SessionID: identity.SessionID,
 		SessionHash: scope.credential.SessionHash, HostedRole: scope.credential.HostedRole,
 		Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{}),

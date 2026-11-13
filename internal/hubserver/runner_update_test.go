@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -81,7 +82,7 @@ func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
 			path := "/api/v2/organizations/org_security/runners/" + binding.RunnerID + "/update"
 			for _, keyScope := range []apikey.Scope{apikey.ScopeRead, apikey.ScopeWrite} {
 				t.Run(string(keyScope), func(t *testing.T) {
-					key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "update-reader-" + string(keyScope), Scope: apiScopeOperator, Issuer: &credential, KeyScope: keyScope, ProjectAccess: hostedProjectsAll})
+					key, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "update-reader-" + string(keyScope), Scope: hubapi.APIScopeOperator, Issuer: &credential, KeyScope: keyScope, ProjectAccess: hubapi.HostedProjectsAll})
 					if err != nil {
 						t.Fatal(err)
 					}

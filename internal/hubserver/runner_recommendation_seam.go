@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runneradvice"
@@ -43,7 +44,7 @@ func mergeHostSummary(a, b hostmetrics.Summary) (hostmetrics.Summary, bool) {
 
 func (s *Service) runnerAdviceService() *runneradvice.Service {
 	return runneradvice.New(runneradvice.Deps{
-		Repository: s.config.TenantRepository, Now: s.config.now, Auth: s.requestAuth, RecordError: projectRecordError,
+		Repository: s.config.TenantRepository, Now: s.config.now, Auth: s.requestAuth, RecordError: hubapi.ProjectRecordError,
 		ReadRouting: func(ctx context.Context, input hubauth.Input, resource string) (runnerauth.Runner, error) {
 			return s.readRunnerRouting(ctx, nativeAuthInput(input), resource)
 		},
@@ -56,11 +57,11 @@ func (s *Service) registerRunnerAdviceRoutes(e *echo.Echo) {
 	runneradvice.RegisterRoutes(e.Group(""), runneradvice.HTTPDeps{
 		Service: s.runnerAdviceService,
 		Credential: func(c echo.Context) (hubauth.Credential, bool) {
-			credential, ok := c.Get("hub_api_credential").(apiCredential)
+			credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 			return authCredential(credential), ok
 		},
 		Admin: s.requireInstanceAdmin(),
-		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 	})
 }
 
@@ -72,5 +73,5 @@ func prepareRunnerHostMetrics(raw json.RawMessage) []hostmetrics.Summary {
 
 func (s *Service) readRunnerHostHistory(ctx context.Context, organization tracker.OrganizationID, runner string, from, to time.Time) ([]runnerHostHour, error) {
 	history, err := s.runnerAdviceService().HostHistory(ctx, organization, runner, from, to)
-	return history, fromFeatureError(err)
+	return history, hubapi.FromFeatureError(err)
 }

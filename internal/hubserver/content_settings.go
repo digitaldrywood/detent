@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -16,11 +17,11 @@ type cloudContentSettingsRequest struct {
 }
 
 func (s *Service) getCloudContentSettings(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
 	if s.config.TenantRepository == nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
 	record, err := s.readProjectRecord(ctx, scope)
 	if err != nil {
@@ -31,16 +32,16 @@ func (s *Service) getCloudContentSettings(c echo.Context) error {
 
 func (s *Service) updateCloudContentSettings(c echo.Context) error {
 	var request cloudContentSettingsRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)
 	if s.config.TenantRepository == nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
-	options := nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Feature: hostedMutationFeature(c)}
+	options := hubapi.NativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Feature: hostedMutationFeature(c)}
 	raw, err := s.executeProjectRecordMutation(c.Request().Context(), scope, options, request.Mutation, request)
 	if err != nil {
 		return s.nativeAPIError(c, err)

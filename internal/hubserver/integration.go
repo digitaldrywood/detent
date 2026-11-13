@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -83,7 +84,7 @@ type updateProjectIntegrationRequest struct {
 
 func (s *Service) updateProjectIntegration(c echo.Context) error {
 	var request updateProjectIntegrationRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
@@ -98,13 +99,13 @@ func archivePeriod(raw json.RawMessage, current *int) (*int, error) {
 	}
 	var days *int
 	if err := json.Unmarshal(raw, &days); err != nil {
-		return nil, nativePublicInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
+		return nil, hubapi.NativePublicInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
 	}
 	if days != nil {
 		switch *days {
 		case 7, 14, 30, 60, 90:
 		default:
-			return nil, nativePublicInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
+			return nil, hubapi.NativePublicInvalid("Archive period must be 7, 14, 30, 60, 90 days or null")
 		}
 	}
 	return days, nil
@@ -112,26 +113,26 @@ func archivePeriod(raw json.RawMessage, current *int) (*int, error) {
 
 func (s *Service) registerIntegrationRoutes(e *echo.Echo) {
 	if s.config.Hosted == nil {
-		operator := s.requireAPIScope(apiScopeOperator)
+		operator := s.requireAPIScope(hubapi.APIScopeOperator)
 		e.GET(hostedOrganizationBase+"/model-selection", s.getOrganizationModelSelection, operator)
 		e.PUT(hostedOrganizationBase+"/model-selection", s.updateOrganizationModelSelection, operator)
 	}
 	e.GET("/api/v2/github/requests", s.githubRequestCounts, s.requireInstanceAdmin())
-	e.GET(nativeBase+"/model-selection", s.getCloudModelSelection, s.requireNativeScope(apiScopeWorker, apiScopeOperator))
-	e.PUT(nativeBase+"/model-selection", s.updateCloudModelSelection, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
-	e.GET(nativeBase+"/content-settings", s.getCloudContentSettings, s.requireNativeScope(apiScopeWorker, apiScopeOperator))
-	e.PUT(nativeBase+"/content-settings", s.updateCloudContentSettings, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
-	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
-	operator := s.requireNativeScope(apiScopeOperator)
-	admin := s.requireNativeScope(apiScopeAdmin)
-	e.GET(nativeBase+"/integration", s.getProjectIntegrationPage, s.requireAPIScope(apiScopeWorker, apiScopeOperator))
-	e.PUT(nativeBase+"/integration", s.updateProjectIntegration, admin)
-	e.POST(nativeBase+"/integration/repository", s.bindNativeRepository, admin)
-	e.POST(nativeBase+"/integration/cutover", s.cutoverProject, admin)
-	e.GET(nativeBase+"/integration/cutover", s.getCutoverReceipt, read)
-	e.POST(nativeBase+"/imports", s.startGitHubImport, operator)
-	e.GET(nativeBase+"/imports/:import", s.getGitHubImport, read)
-	e.POST(nativeBase+"/imports/:import/advance", s.advanceGitHubImport, operator)
-	e.GET(nativeBase+"/imports/:import/records", s.listGitHubImportRecords, read)
-	e.POST(nativeBase+"/work-items/:item/projection", s.projectNativeSummary, operator)
+	e.GET(hubapi.NativeBase+"/model-selection", s.getCloudModelSelection, s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
+	e.PUT(hubapi.NativeBase+"/model-selection", s.updateCloudModelSelection, s.requireNativeScope(hubapi.APIScopeOperator, hubapi.APIScopeAdmin))
+	e.GET(hubapi.NativeBase+"/content-settings", s.getCloudContentSettings, s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
+	e.PUT(hubapi.NativeBase+"/content-settings", s.updateCloudContentSettings, s.requireNativeScope(hubapi.APIScopeOperator, hubapi.APIScopeAdmin))
+	read := s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator)
+	operator := s.requireNativeScope(hubapi.APIScopeOperator)
+	admin := s.requireNativeScope(hubapi.APIScopeAdmin)
+	e.GET(hubapi.NativeBase+"/integration", s.getProjectIntegrationPage, s.requireAPIScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
+	e.PUT(hubapi.NativeBase+"/integration", s.updateProjectIntegration, admin)
+	e.POST(hubapi.NativeBase+"/integration/repository", s.bindNativeRepository, admin)
+	e.POST(hubapi.NativeBase+"/integration/cutover", s.cutoverProject, admin)
+	e.GET(hubapi.NativeBase+"/integration/cutover", s.getCutoverReceipt, read)
+	e.POST(hubapi.NativeBase+"/imports", s.startGitHubImport, operator)
+	e.GET(hubapi.NativeBase+"/imports/:import", s.getGitHubImport, read)
+	e.POST(hubapi.NativeBase+"/imports/:import/advance", s.advanceGitHubImport, operator)
+	e.GET(hubapi.NativeBase+"/imports/:import/records", s.listGitHubImportRecords, read)
+	e.POST(hubapi.NativeBase+"/work-items/:item/projection", s.projectNativeSummary, operator)
 }

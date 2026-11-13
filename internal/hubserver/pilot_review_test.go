@@ -9,6 +9,7 @@ import (
 	hubapi "github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -45,7 +46,7 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 		descriptor = descriptor.WithID()
 		requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: previous.Policy.ID, Policy: descriptor}), http.StatusOK)
 		principal := "pilot-ci-" + project
-		seedHubAPIToken(t, f.service, principal, principal+"-credential", apiScopeOperator)
+		seedHubAPIToken(t, f.service, principal, principal+"-credential", serverapi.APIScopeOperator)
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
 			return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(organization), TokenID: principal, ProjectID: tracker.ProjectID(project)})
 		}); err != nil {

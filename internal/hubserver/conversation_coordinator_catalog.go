@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -141,7 +142,7 @@ func (t *coordinatorToolset) callTool(ctx context.Context, record conversationRe
 		Name      string                     `json:"name"`
 		Arguments map[string]json.RawMessage `json:"arguments"`
 	}
-	if err := decodeCoordinatorArgumentsWithLimit(call.Arguments, &args, coordinatorWorkflowArgumentBytes); err != nil {
+	if err := decodeCoordinatorArgumentsWithLimit(call.Arguments, &args, hubapi.CoordinatorWorkflowArgumentBytes); err != nil {
 		return nil, err
 	}
 	if coordinatorCatalogExcluded(args.Name) {

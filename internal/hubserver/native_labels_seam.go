@@ -12,7 +12,7 @@ import (
 type nativeLabel = labels.Label
 
 func (s *Service) labelsService() *labels.Service {
-	return labels.New(labels.Deps{Repository: s.config.TenantRepository, RecordError: projectRecordError})
+	return labels.New(labels.Deps{Repository: s.config.TenantRepository, RecordError: hubapi.ProjectRecordError})
 }
 
 func (s *Service) registerNativeLabelRoutes(e *echo.Echo, read echo.MiddlewareFunc) {
@@ -20,12 +20,12 @@ func (s *Service) registerNativeLabelRoutes(e *echo.Echo, read echo.MiddlewareFu
 		Service:       s.labelsService,
 		Scope:         func(c echo.Context) hubapi.Scope { return s.featureScope(nativeRequestScope(c)) },
 		Read:          read,
-		ValidateQuery: validateNativeQuery,
-		Error:         func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+		ValidateQuery: hubapi.ValidateNativeQuery,
+		Error:         func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 	})
 }
 
 func (s *Service) readNativeLabels(ctx context.Context, scope nativeScope) ([]nativeLabel, error) {
 	result, err := s.labelsService().Read(ctx, s.featureScope(scope))
-	return result, fromFeatureError(err)
+	return result, hubapi.FromFeatureError(err)
 }

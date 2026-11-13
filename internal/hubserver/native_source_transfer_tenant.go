@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -16,19 +17,19 @@ import (
 
 func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeScope, item string, request sourceTransferRequest) (json.RawMessage, error) {
 	if s.config.TenantRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return s.authorizeSourceTransferTenant(ctx, r, scope) }); err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	operation := "source_recovery " + string(scope.organization) + "/" + string(scope.project) + "/" + item
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +43,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 	}
 	view, err := s.selectNativeSourceTransferTenant(ctx, scope, item, request)
 	if err != nil {
-		if previous, found, replayErr := s.workItemRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); isNativeConflict(err) && replayErr == nil && found {
+		if previous, found, replayErr := s.workItemRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash); hubapi.IsNativeConflict(err) && replayErr == nil && found {
 			return content.Receipt(ctx, previous)
 		}
 		return nil, err
@@ -89,7 +90,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 	if err != nil {
 		return nil, err
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: row.NativeID, Type: "issue.edited", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: view.Revision, Fields: []string{"recovery_runner_id"}, Operation: "source_recovery", ReasonDetail: string(raw)}})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: row.NativeID, Type: "issue.edited", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: view.Revision, Fields: []string{"recovery_runner_id"}, Operation: "source_recovery", ReasonDetail: string(raw)}})
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +121,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 				return receiptstore.ErrExpired
 			}
 			if existing.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			replay = &existing
 			return nil
@@ -129,7 +130,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 			return err
 		}
 		if current.Revision != int64(request.ExpectedRevision) || current.Revision != row.Revision || current.EventSequence != row.EventSequence || current.Archived {
-			return nativeConflict(tracker.Revision(current.Revision))
+			return hubapi.NativeConflict(tracker.Revision(current.Revision))
 		}
 		latest, err := w.LatestChange(ctx, scope.project, row.NativeID)
 		if err != nil {
@@ -143,14 +144,14 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 			return err
 		}
 		if attempt.Sequence != snapshot.attempt.Sequence || attempt.PayloadObjectKey != snapshot.attempt.PayloadObjectKey || attempt.LeaseID != snapshot.attempt.LeaseID || attempt.FencingToken != snapshot.attempt.FencingToken {
-			return nativeConflict(view.Revision - 1)
+			return hubapi.NativeConflict(view.Revision - 1)
 		}
 		if attempt.Status != "succeeded" && attempt.Status != "failed" && attempt.Status != "cancelled" {
 			return sourceRecoveryRefusal("Source execution must be terminal")
 		}
 		locker, ok := w.(leasestore.UnreleasedIssueLeaseLocker)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if _, err := locker.LockUnreleasedIssueLease(ctx, row.ID); err == nil {
 			return sourceRecoveryRefusal("Release every execution claim before transfer")
@@ -166,7 +167,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 				return err
 			}
 			if policy.PolicyID != pinned.PolicyID {
-				return nativeConflict(view.Revision - 1)
+				return hubapi.NativeConflict(view.Revision - 1)
 			}
 			if err := s.validateSourceDestinationTenant(ctx, w, scope, request.DestinationRunnerID, approval.Policy.Requirements); err != nil {
 				return err
@@ -179,7 +180,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 		}
 		writer, ok := w.(corestore.SourceRecoveryWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if err := writer.CompareAndSwapSourceRecovery(ctx, current, request.DestinationRunnerID, request.VersionID); err != nil {
 			return err
@@ -192,7 +193,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 		}
 		dispatch, ok := w.(tenantstore.DispatchWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		latestAttempt, err := w.LatestAttempt(ctx, row.ID)
 		if err != nil {
@@ -205,7 +206,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope nativeS
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if replay != nil {
 		return content.Receipt(ctx, *replay)

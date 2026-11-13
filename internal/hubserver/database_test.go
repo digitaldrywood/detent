@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -219,7 +220,7 @@ func readPostgresTestRunner(ctx context.Context, service *Service, organization 
 	err := service.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		routing, ok := reader.(runnerstore.RoutingReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		record, err := routing.RunnerRoutingRecord(ctx, runnerID, now)
 		if err != nil {
@@ -260,7 +261,7 @@ func newClockedPostgresNativeService(t *testing.T, cfg Config) *Service {
 	for _, organization := range []tracker.OrganizationID{primary, primary + "_second"} {
 		seedPostgresHubAdmin(t, service.config.TenantRepository, service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})
 		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: bytes.Repeat([]byte{0x5a}, 32)})
+			return w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: hubapi.NewID("hub"), CursorKey: bytes.Repeat([]byte{0x5a}, 32)})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -382,7 +383,7 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 				if cancelSecond != nil {
 					cancelSecond()
 				}
-				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 				defer cancel()
 				select {
 				case <-heldDone:

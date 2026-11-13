@@ -14,13 +14,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Claims) (apiCredential, int, error) {
+func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Claims) (hubapi.APICredential, int, error) {
 	return s.entryAccessKeyCredential(ctx, claims)
 }
 
@@ -327,7 +328,7 @@ func (s *Service) entryKeyCatalog(c echo.Context) error {
 }
 
 func (s *Service) entryKeyAdmin(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" || claims.Role != "owner" && claims.Role != "admin" {
@@ -351,7 +352,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		ConnectionID string          `json:"connection_id"`
 		ClientName   string          `json:"client_name,omitempty"`
 	}
-	if err := decodeAPIJSON(c, &call); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &call); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if audit := entryKeyAuditFrom(c.Request().Context()); audit != nil {
@@ -432,17 +433,17 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 			if conflict != nil {
 				revision = tracker.Revision(conflict.CurrentRevision)
 			}
-			return s.nativeAPIError(c, nativeConflict(revision))
+			return s.nativeAPIError(c, hubapi.NativeConflict(revision))
 		}
 		var request *operatortool.RequestError
 		if errors.As(err, &request) {
-			return s.refusedAPIError(c, http.StatusUnprocessableEntity, request.Code, request.Message, apiErrorResponse{Code: request.Code, Message: request.Message})
+			return s.refusedAPIError(c, http.StatusUnprocessableEntity, request.Code, request.Message, hubapi.APIErrorResponse{Code: request.Code, Message: request.Message})
 		}
 		if errors.Is(err, operatortool.ErrInvalidArguments) {
 			return s.invalidAPIRequest(c, err)
 		}
 		if errors.Is(err, chat.ErrActionNotFound) {
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 		var refusal *apikey.Refusal
 		if errors.As(err, &refusal) {
@@ -451,33 +452,6 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.Blob(http.StatusOK, echo.MIMEApplicationJSON, result.Content)
-}
-
-func (credential apiCredential) entryKeyGrantSQL(organization, project string) (string, []any) {
-	condition, args := "1=1", []any{}
-	if credential.EntryKey.Kind == "personal" {
-		condition = "EXISTS (SELECT 1 FROM hosted_project_grants h JOIN hosted_members m ON m.user_id=h.user_id JOIN api_tokens t ON t.id=m.principal_id WHERE m.active=1 AND t.revoked_at IS NULL AND h.user_id=? AND h.organization_id=" + organization + " AND h.project_id=" + project + ")"
-		args = append(args, credential.Hosted.Subject)
-	}
-	var query strings.Builder
-	query.WriteString(condition)
-	for _, selection := range []struct {
-		ids      []string
-		excluded bool
-	}{{credential.EntryKey.Projects, false}, {credential.EntryKey.BlockedProjects, true}} {
-		if len(selection.ids) == 0 {
-			continue
-		}
-		operator := " IN "
-		if selection.excluded {
-			operator = " NOT IN "
-		}
-		query.WriteString(" AND " + project + operator + "(" + strings.TrimSuffix(strings.Repeat("?,", len(selection.ids)), ",") + ")")
-		for _, id := range selection.ids {
-			args = append(args, id)
-		}
-	}
-	return query.String(), args
 }
 
 func (s *Service) entryKeyProjects(c echo.Context) error {
@@ -498,7 +472,7 @@ func (s *Service) entryKeyAudit(c echo.Context) error {
 		Owner string `json:"owner"`
 		Event string `json:"event"`
 	}
-	if err := decodeAPIJSON(c, &event); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &event); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if len(event.KeyID) > 256 || event.Owner == "" || len(event.Owner) > 256 || event.Event == "" || len(event.Event) > 128 {
@@ -533,7 +507,7 @@ func (s *Service) entryKeyContext(c echo.Context) error {
 	if err != nil || !auth.ValidOrganizationRole(local) || !auth.ValidOrganizationRole(claims.Role) {
 		return s.hostedJSONError(c, http.StatusForbidden, "Active organization membership and a valid role are required")
 	}
-	credential := apiCredential{Hosted: &auth.HostedIdentity{Subject: claims.Subject}, HostedRole: lesserHostedRole(local, claims.Role)}
+	credential := hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: claims.Subject}, HostedRole: hubapi.LesserHostedRole(local, claims.Role)}
 	projects, err := s.hostedReadableProjects(c.Request().Context(), credential)
 	if err != nil {
 		return s.nativeAPIError(c, err)

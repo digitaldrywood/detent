@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -57,7 +58,7 @@ func TestNativeReleaseStabilizationOccurrences(t *testing.T) {
 				origin = issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/digitaldrywood/detent/actions/runs/1/attempts/1", Fingerprint: issueorigin.ReleaseStabilizationFingerprint(series)}
 			}
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: string(project) + "/" + key}, Title: "Scheduled repair", Body: issueorigin.Stamp(body, origin), State: "Todo", Priority: new(1)}
-			raw, err := f.service.executeWorkItemRecordMutation(t.Context(), scope, nativeCommandOptions{OperationID: "release-stabilization-fixture", Feature: "collaboration"}, request.Mutation, request, "")
+			raw, err := f.service.executeWorkItemRecordMutation(t.Context(), scope, hubapi.NativeCommandOptions{OperationID: "release-stabilization-fixture", Feature: "collaboration"}, request.Mutation, request, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -154,9 +155,9 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 					t.Fatal(err)
 				}
 				if request.IdempotencyKey == "" {
-					request.IdempotencyKey = newNativeID("machine-report")
+					request.IdempotencyKey = hubapi.NewID("machine-report")
 				}
-				raw, err := f.service.executeWorkItemRecordMutation(t.Context(), scope, nativeCommandOptions{OperationID: "machine-defect-fixture", Feature: "collaboration"}, request.Mutation, request, "")
+				raw, err := f.service.executeWorkItemRecordMutation(t.Context(), scope, hubapi.NativeCommandOptions{OperationID: "machine-defect-fixture", Feature: "collaboration"}, request.Mutation, request, "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -501,7 +502,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential, action: operatortool.FileIssue}
 			origin := issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "completed-run", Fingerprint: issueorigin.Fingerprint("go-test:example/hub:TestFence")}
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "fence-owner"}, Title: "Completed owner", Body: issueorigin.Stamp("Problem: `go-test:example/hub:TestFence`"+issueContractTestSections, origin), State: "Done", Priority: new(1)}
-			options := nativeCommandOptions{OperationID: "machine-defect-fixture", Feature: "collaboration"}
+			options := hubapi.NativeCommandOptions{OperationID: "machine-defect-fixture", Feature: "collaboration"}
 			raw, err := f.service.executeWorkItemRecordMutation(t.Context(), scope, options, request.Mutation, request, "")
 			if err != nil {
 				t.Fatal(err)
@@ -536,8 +537,8 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			request.Body = issueorigin.Stamp("Problem: `go-test:example/hub:TestFence`"+issueContractTestSections, origin)
 			_, err = f.service.executeWorkItemRecordMutation(t.Context(), scope, options, request.Mutation, request, "")
 			f.service.config.TenantRepository = repository
-			var conflict *nativeError
-			if !mutated || !errors.As(err, &conflict) || conflict.status != http.StatusConflict {
+			var conflict *hubapi.NativeError
+			if !mutated || !errors.As(err, &conflict) || conflict.Status != http.StatusConflict {
 				t.Fatalf("candidate mutation was not fenced: mutated=%t error=%v", mutated, err)
 			}
 			if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {

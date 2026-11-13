@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -53,7 +54,7 @@ type changeReviewWorkflow struct {
 }
 
 func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, review tracker.ChangeReview, approval ChangeVersionApproval, now time.Time) (*changeReviewWorkflow, error) {
-	if scope.credential.Scope == apiScopeWorker || review.VersionID != change.CurrentVersion || review.Decision == "commented" {
+	if scope.credential.Scope == hubapi.APIScopeWorker || review.VersionID != change.CurrentVersion || review.Decision == "commented" {
 		return nil, nil
 	}
 	if review.Decision == "changes_requested" {
@@ -64,7 +65,7 @@ func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope nativeS
 		return &changeReviewWorkflow{transition: transition, evaluatedAt: now}, nil
 	}
 	if approval.Policy.Gates.SecurityAudit {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	plan := &changeReviewWorkflow{audits: map[int64][]eventstore.AuditDisposition{}, evaluatedAt: now}
 	var evidence []eventstore.Evidence
@@ -79,12 +80,12 @@ func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope nativeS
 		if err != nil {
 			return err
 		}
-		if plan.current.Revision != int64(change.Revision) || valueOrEmpty(plan.current.CurrentVersionID) != version.ID {
+		if plan.current.Revision != int64(change.Revision) || hubapi.ValueOrEmpty(plan.current.CurrentVersionID) != version.ID {
 			return corestore.ErrRevisionConflict
 		}
 		reader, ok := r.(eventstore.ChangeReviewEvidenceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		evidence, prior, err = reader.ChangeReviewEvidence(ctx, change.ID, version.ID, plan.current.EvidenceSequence, checks, review.Actor.PrincipalID)
 		return err
@@ -95,7 +96,7 @@ func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope nativeS
 	detail := tracker.ChangeDetail{Change: change, Versions: []tracker.ChangeVersion{version}}
 	content := eventstore.NewContent(s.runDetailStore())
 	for _, row := range evidence {
-		if row.OrganizationID != scope.organization || row.ChangeID != change.ID || valueOrEmpty(row.VersionID) != version.ID || row.Sequence > plan.current.EvidenceSequence {
+		if row.OrganizationID != scope.organization || row.ChangeID != change.ID || hubapi.ValueOrEmpty(row.VersionID) != version.ID || row.Sequence > plan.current.EvidenceSequence {
 			return nil, eventstore.ErrInvalidRecord
 		}
 		raw, err := content.Evidence(ctx, row)
@@ -111,7 +112,7 @@ func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope nativeS
 }
 
 func (s *Service) prepareChangeCheckWorkflow(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, check tracker.ChangeCheck, approval ChangeVersionApproval, now time.Time) (*changeReviewWorkflow, error) {
-	if scope.credential.Scope == apiScopeWorker || version.ID != change.CurrentVersion {
+	if scope.credential.Scope == hubapi.APIScopeWorker || version.ID != change.CurrentVersion {
 		return nil, nil
 	}
 	plan := &changeReviewWorkflow{audits: map[int64][]eventstore.AuditDisposition{}, evaluatedAt: now}
@@ -127,12 +128,12 @@ func (s *Service) prepareChangeCheckWorkflow(ctx context.Context, scope nativeSc
 		if err != nil {
 			return err
 		}
-		if plan.current.Revision != int64(change.Revision) || valueOrEmpty(plan.current.CurrentVersionID) != version.ID {
+		if plan.current.Revision != int64(change.Revision) || hubapi.ValueOrEmpty(plan.current.CurrentVersionID) != version.ID {
 			return corestore.ErrRevisionConflict
 		}
 		reader, ok := r.(eventstore.ChangeRecoveryReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		evidence, prior, err = reader.ChangeSummaryEvidence(ctx, change.ID, version.ID, plan.current.EvidenceSequence, checks)
 		return err
@@ -143,7 +144,7 @@ func (s *Service) prepareChangeCheckWorkflow(ctx context.Context, scope nativeSc
 	detail := tracker.ChangeDetail{Change: change, Versions: []tracker.ChangeVersion{version}}
 	content := eventstore.NewContent(s.runDetailStore())
 	for _, row := range evidence {
-		if row.OrganizationID != scope.organization || row.ChangeID != change.ID || valueOrEmpty(row.VersionID) != version.ID || row.Sequence > plan.current.EvidenceSequence {
+		if row.OrganizationID != scope.organization || row.ChangeID != change.ID || hubapi.ValueOrEmpty(row.VersionID) != version.ID || row.Sequence > plan.current.EvidenceSequence {
 			return nil, eventstore.ErrInvalidRecord
 		}
 		raw, err := content.Evidence(ctx, row)
@@ -211,7 +212,7 @@ func (s *Service) recheckChangeReviewWorkflow(ctx context.Context, w tenantstore
 	if len(p.audits) > 0 {
 		reader, ok := w.(eventstore.AuditDispositionReader)
 		if !ok {
-			return false, workItemStorageUnavailable()
+			return false, hubapi.NativeWorkItemStorageUnavailable()
 		}
 		for run, expected := range p.audits {
 			rows, err := reader.AuditDispositions(ctx, scope.project, run)
@@ -228,7 +229,7 @@ func (s *Service) recheckChangeReviewWorkflow(ctx context.Context, w tenantstore
 }
 
 func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, approval ChangeVersionApproval, rework bool, now time.Time) (*changeWorkflowTransition, error) {
-	if scope.credential.Scope == apiScopeWorker {
+	if scope.credential.Scope == hubapi.APIScopeWorker {
 		return nil, nil
 	}
 	row, snapshot, err := s.readWorkItemRecord(ctx, scope, string(change.WorkItemID))
@@ -269,7 +270,7 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 	if err := validateNativeWorkflowTransition(project.States, issue.State, target, scope.credential.Scope); err != nil {
 		return nil, err
 	}
-	p = &changeWorkflowTransition{eligible: true, plan: workItemRecordPlan{project: project, current: row, eventType: "workflow.transitioned"}, fields: workItemRecordFields{Body: stringValue(row.BodyObjectKey), Contract: row.IssueContractObjectKey, Report: row.ReportContextObjectKey}, dependencies: !rework}
+	p = &changeWorkflowTransition{eligible: true, plan: workItemRecordPlan{project: project, current: row, eventType: "workflow.transitioned"}, fields: workItemRecordFields{Body: hubapi.StringValue(row.BodyObjectKey), Contract: row.IssueContractObjectKey, Report: row.ReportContextObjectKey}, dependencies: !rework}
 	sourceIssue := issue
 	content := eventstore.NewContent(s.runDetailStore())
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -310,7 +311,7 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 			issue.LinkedSource.Status, issue.LinkedSource.Snapshot = "complete", &linked
 		}
 		if issue.LinkedSource.Status != "complete" && dispatchableProjectState(project, target) {
-			return nil, nativeWorkflowInvalid("Linked source intake must complete before executable work")
+			return nil, hubapi.NativeWorkflowInvalid("Linked source intake must complete before executable work")
 		}
 		issue.ExternalReferences = slices.DeleteFunc(slices.Clone(issue.ExternalReferences), func(ref tracker.ExternalReference) bool {
 			return ref.Provider == "github" && ref.Kind == "issue" && ref.URL == p.linked.URL
@@ -335,7 +336,7 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 	if issue.Profile == "github_compatible" && workflowLabel != "" {
 		repository, _, sourceErr := cutoverSourceReference(sourceIssue)
 		if sourceErr == nil && project.Settings.RepositoryEnabled && strings.EqualFold(repository, strings.TrimSpace(project.Settings.Repository)) {
-			key, err := nativeCommandHash(struct {
+			key, err := hubapi.CommandHash(struct {
 				Organization, Project, Change, Item, State, Policy string
 				Revision                                           int64
 			}{string(scope.organization), string(scope.project), change.ID, string(issue.WorkItemID), target, p.policy.PolicyID, int64(issue.Revision)})
@@ -456,7 +457,7 @@ func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstor
 				if row.ID != p.plan.current.ID || row.Revision != p.plan.current.Revision || row.EventSequence != p.plan.current.EventSequence || row.Archived != p.plan.current.Archived {
 					return false, corestore.ErrRevisionConflict
 				}
-			} else if !projects[row.ProjectID][stringValue(row.WorkflowStateName)] {
+			} else if !projects[row.ProjectID][hubapi.StringValue(row.WorkflowStateName)] {
 				ready = false
 			}
 		}
@@ -487,7 +488,7 @@ func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstor
 	}
 	locker, ok := w.(leasestore.UnreleasedIssueLeaseLocker)
 	if !ok {
-		return false, workItemStorageUnavailable()
+		return false, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	lease, err := locker.LockUnreleasedIssueLease(ctx, p.plan.current.ID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
@@ -544,7 +545,7 @@ func (s *Service) applyChangeWorkflowTransition(ctx context.Context, w tenantsto
 	if p.outbound != nil {
 		owner, ok := w.(projectstore.GitHubOutboxWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		return owner.EnqueueGitHubOutbound(ctx, *p.outbound)
 	}

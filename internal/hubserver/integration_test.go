@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -550,7 +551,7 @@ func TestCutoverSourceClosureAndProjectionCoalescing(t *testing.T) {
 
 func cutoverCredentialFixture(t *testing.T, f nativeFixture) (string, string) {
 	t.Helper()
-	id, token := newNativeID("credential"), newNativeID("token")
+	id, token := hubapi.NewID("credential"), hubapi.NewID("token")
 	now := f.service.config.now()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: id, Name: "Example scoped administrator", Hash: apikey.HashToken(token), Scope: "admin", KeyScope: "admin", NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {

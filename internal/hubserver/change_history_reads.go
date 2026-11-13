@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 const changeLegacyReadLimit = 100
@@ -31,7 +33,7 @@ func queryChangeLegacyRows(ctx context.Context, query interface {
 	return rows, nil
 }
 
-func queryLegacyPageRows(ctx context.Context, query nativeQueryer, statement, order string, args ...any) (*changeLegacyRows, error) {
+func queryLegacyPageRows(ctx context.Context, query hubapi.NativeQueryer, statement, order string, args ...any) (*changeLegacyRows, error) {
 	keys := strings.Split(order, ",")
 	rows := &changeLegacyRows{cursor: make([]any, len(keys))}
 	statement = strings.Replace(statement, "SELECT ", "SELECT "+order+",", 1)

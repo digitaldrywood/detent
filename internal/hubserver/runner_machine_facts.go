@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -14,7 +15,7 @@ type machineSpriteFacts struct {
 	WakeFailedAt *string `json:"sprite_wake_failed_at"`
 }
 
-func readMachineSpriteFacts(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, machine tracker.MachineID) (machineSpriteFacts, error) {
+func readMachineSpriteFacts(ctx context.Context, q hubapi.NativeQueryer, organization tracker.OrganizationID, machine tracker.MachineID) (machineSpriteFacts, error) {
 	var facts machineSpriteFacts
 	var legacy sql.NullString
 	err := q.QueryRowContext(ctx, `SELECT sprite_name,sprite_woken_at,sprite_wake_failed_at,CASE WHEN machine_facts_ready IS NULL THEN capabilities_json END FROM machines WHERE organization_id=? AND id=?`, organization, machine).Scan(&facts.Name, &facts.WokenAt, &facts.WakeFailedAt, &legacy)

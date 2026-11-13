@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -38,7 +39,7 @@ func (s *Service) nativeIssueJSON(ctx context.Context, scope nativeScope, body j
 		if scope.credential.HostedRole == "reporter" {
 			visible := []possibleDuplicate{}
 			for _, match := range challenge.PossibleDuplicates {
-				if err := s.requireReporterWorkItemRecord(ctx, scope, string(match.WorkItemID)); errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
+				if err := s.requireReporterWorkItemRecord(ctx, scope, string(match.WorkItemID)); errors.Is(err, sql.ErrNoRows) || hubapi.IsNativeNotFound(err) {
 					continue
 				} else if err != nil {
 					return nil, err
@@ -63,7 +64,7 @@ func (s *Service) nativeIssueJSON(ctx context.Context, scope nativeScope, body j
 		return nil, err
 	}
 	if !scope.reporterOwns(issue.Actor) {
-		return nil, nativeNotFound()
+		return nil, hubapi.NativeNotFound()
 	}
 	path, err := s.nativeIssueRecordBrowserPath(ctx, scope, string(issue.WorkItemID))
 	if err != nil {
@@ -81,7 +82,7 @@ func nativeActorDisplayName(principal, organization string) string {
  FROM api_tokens t WHERE t.id = ` + principal + `), '')`
 }
 
-func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
+func readNativeIssueProjection(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	var issue tracker.NativeIssue
 	var internalID tracker.WorkItemID
 	var labels, assignees, actor, displayName, created, updated, activity, externalID, contractJSON string
@@ -162,7 +163,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 			}
 		}
 		if verifiedAt.Valid {
-			at, err := parseTimeValue(verifiedAt.String)
+			at, err := hubapi.ParseTimeValue(verifiedAt.String)
 			if err != nil {
 				return issue, 0, err
 			}
@@ -207,27 +208,27 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 	issue.ExternalReferences = nativeSourceReferences(externalID, repositoryOwner, repositoryName, sourceNumber, sourceURL, importedURL, issue.Provenance)
 	if externalID != "" && issue.Provenance == nil {
 		issue.Provenance = &tracker.Provenance{Provider: "github", ExternalID: externalID, AuthorID: sourceAuthor}
-		if issue.Provenance.CreatedAt, err = parseTimeValue(sourceCreated); err != nil {
+		if issue.Provenance.CreatedAt, err = hubapi.ParseTimeValue(sourceCreated); err != nil {
 			return issue, 0, err
 		}
-		if issue.Provenance.UpdatedAt, err = parseTimeValue(sourceUpdated); err != nil {
+		if issue.Provenance.UpdatedAt, err = hubapi.ParseTimeValue(sourceUpdated); err != nil {
 			return issue, 0, err
 		}
-		if issue.Provenance.ObservedAt, err = parseTimeValue(sourceObserved); err != nil {
+		if issue.Provenance.ObservedAt, err = hubapi.ParseTimeValue(sourceObserved); err != nil {
 			return issue, 0, err
 		}
 	}
-	if issue.CreatedAt, err = parseTimeValue(created); err != nil {
+	if issue.CreatedAt, err = hubapi.ParseTimeValue(created); err != nil {
 		return issue, 0, err
 	}
-	if issue.UpdatedAt, err = parseTimeValue(updated); err != nil {
+	if issue.UpdatedAt, err = hubapi.ParseTimeValue(updated); err != nil {
 		return issue, 0, err
 	}
-	if issue.LastActivityAt, err = parseTimeValue(activity); err != nil {
+	if issue.LastActivityAt, err = hubapi.ParseTimeValue(activity); err != nil {
 		return issue, 0, err
 	}
 	if closedAt.Valid {
-		at, err := parseTimeValue(closedAt.String)
+		at, err := hubapi.ParseTimeValue(closedAt.String)
 		if err != nil {
 			return issue, 0, err
 		}
@@ -289,7 +290,7 @@ func nativeIssueChangeIncluded(value string) (bool, error) {
 		case "change":
 			included = true
 		default:
-			return false, nativePublicInvalid("include supports change")
+			return false, hubapi.NativePublicInvalid("include supports change")
 		}
 	}
 	return included, nil
@@ -297,18 +298,18 @@ func nativeIssueChangeIncluded(value string) (bool, error) {
 
 func validateNativeContent(title, body string, labels, assignees []string, priority *int) error {
 	if strings.TrimSpace(title) == "" || len(title) > 500 || len(body) > 256<<10 {
-		return nativePublicInvalid("Title must contain 1 to 500 bytes and body at most 256 KiB")
+		return hubapi.NativePublicInvalid("Title must contain 1 to 500 bytes and body at most 256 KiB")
 	}
 	if priority != nil && (*priority < 0 || *priority > 3) {
-		return nativePublicInvalid("Priority must be between 0 and 3")
+		return hubapi.NativePublicInvalid("Priority must be between 0 and 3")
 	}
 	for _, values := range [][]string{labels, assignees} {
 		if len(values) > 100 {
-			return nativePublicInvalid("At most 100 labels or assignees are supported")
+			return hubapi.NativePublicInvalid("At most 100 labels or assignees are supported")
 		}
 		for _, value := range values {
 			if strings.TrimSpace(value) == "" || len(value) > 200 {
-				return nativePublicInvalid("Labels and assignees must contain 1 to 200 bytes")
+				return hubapi.NativePublicInvalid("Labels and assignees must contain 1 to 200 bytes")
 			}
 		}
 	}
@@ -322,35 +323,35 @@ func validateNativeProvenance(scope nativeScope, provenance *tracker.Provenance)
 	if scope.sourceActor != nil && scope.sourceActor.Agent == "progress-check" && provenance.Provider == "progress-check" && strings.TrimSpace(provenance.ExternalID) != "" && len(provenance.ExternalID) <= 200 {
 		return nil
 	}
-	if scope.credential.Scope == apiScopeWorker {
-		return nativePublicInvalid("Imported provenance requires an operator")
+	if scope.credential.Scope == hubapi.APIScopeWorker {
+		return hubapi.NativePublicInvalid("Imported provenance requires an operator")
 	}
 	if provenance.Provider != "github" && provenance.Provider != "local_sqlite" && provenance.Provider != "github_local" {
-		return nativePublicInvalid("Import source is invalid")
+		return hubapi.NativePublicInvalid("Import source is invalid")
 	}
 	return validateSourceProvenance(provenance)
 }
 
 func validateImportProvenance(provenance *tracker.Provenance) error {
 	if provenance.Provider != "github" {
-		return nativePublicInvalid("GitHub import source is invalid")
+		return hubapi.NativePublicInvalid("GitHub import source is invalid")
 	}
 	return validateSourceProvenance(provenance)
 }
 
 func validateSourceProvenance(provenance *tracker.Provenance) error {
 	if strings.TrimSpace(provenance.ExternalID) == "" || len(provenance.ExternalID) > 200 || strings.TrimSpace(provenance.AuthorID) == "" || len(provenance.AuthorID) > 200 || len(provenance.AuthorDisplayName) > 200 {
-		return nativePublicInvalid("Import source and author are invalid")
+		return hubapi.NativePublicInvalid("Import source and author are invalid")
 	}
 	if provenance.CreatedAt.IsZero() || provenance.UpdatedAt.Before(provenance.CreatedAt) || provenance.ObservedAt.Before(provenance.UpdatedAt) {
-		return nativePublicInvalid("Import timestamps are invalid")
+		return hubapi.NativePublicInvalid("Import timestamps are invalid")
 	}
 	return nil
 }
 
 func (s *Service) createNativeIssue(c echo.Context) error {
 	var request tracker.CreateIssue
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.createNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), request)
@@ -363,9 +364,9 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 	}
 	if challenge.ChallengeToken != "" {
 		return s.refusedAPIError(c, http.StatusConflict, "possible_duplicates", "Possible duplicate issues found; use file_issue to confirm whether this is new", struct {
-			apiErrorResponse
+			hubapi.APIErrorResponse
 			duplicateChallenge
-		}{apiErrorResponse: apiErrorResponse{Code: "possible_duplicates", Message: "Possible duplicate issues found; use file_issue to confirm whether this is new"}, duplicateChallenge: challenge})
+		}{APIErrorResponse: hubapi.APIErrorResponse{Code: "possible_duplicates", Message: "Possible duplicate issues found; use file_issue to confirm whether this is new"}, duplicateChallenge: challenge})
 	}
 	return c.JSONBlob(http.StatusOK, result)
 }
@@ -374,14 +375,14 @@ func validateNativeIssueType(value string, required bool) error {
 	if value == "" && !required || value == "bug" || value == "change_request" {
 		return nil
 	}
-	return &nativeError{Code: "invalid_request", Message: "type must be bug or change_request", status: http.StatusUnprocessableEntity, publicMessage: true}
+	return &hubapi.NativeError{Code: "invalid_request", Message: "type must be bug or change_request", Status: http.StatusUnprocessableEntity, PublicMessage: true}
 }
 
 func validateNativeReportContext(report *tracker.ReportContext) error {
 	if report == nil || report.Validate() == nil {
 		return nil
 	}
-	return &nativeError{Code: "invalid_request", Message: tracker.ErrInvalidReportContext.Error(), status: http.StatusUnprocessableEntity, publicMessage: true}
+	return &hubapi.NativeError{Code: "invalid_request", Message: tracker.ErrInvalidReportContext.Error(), Status: http.StatusUnprocessableEntity, PublicMessage: true}
 }
 
 func reporterSectionsMissing(missing []string, report *tracker.ReportContext) []string {
@@ -405,24 +406,24 @@ func defaultNativeIssueState(states []tracker.NativeState) string {
 func validateNativeIssueState(scope nativeScope, project tracker.NativeProject, state string, machineIntake bool) error {
 	for _, candidate := range project.States {
 		if candidate.Name == state {
-			if candidate.OperatorOnly && scope.credential.Scope == apiScopeWorker && !machineIntake {
-				return nativePublicInvalid("Workflow target requires an operator")
+			if candidate.OperatorOnly && scope.credential.Scope == hubapi.APIScopeWorker && !machineIntake {
+				return hubapi.NativePublicInvalid("Workflow target requires an operator")
 			}
 			return nil
 		}
 	}
-	return nativePublicInvalid("Workflow state does not exist")
+	return hubapi.NativePublicInvalid("Workflow state does not exist")
 }
 
 func requireNativeEdit(issue tracker.NativeIssue, expected tracker.Revision) error {
 	if issue.Profile != "native" {
-		return nativePublicInvalid("Compatibility project content is externally owned")
+		return hubapi.NativePublicInvalid("Compatibility project content is externally owned")
 	}
 	if expected <= 0 {
-		return nativePublicInvalid("Expected revision must be positive")
+		return hubapi.NativePublicInvalid("Expected revision must be positive")
 	}
 	if expected != issue.Revision {
-		return nativeConflict(issue.Revision)
+		return hubapi.NativeConflict(issue.Revision)
 	}
 	return nil
 }
@@ -438,7 +439,7 @@ func nativeHumanFiled(issue tracker.NativeIssue) bool {
 
 func (s *Service) updateNativeIssue(c echo.Context) error {
 	var request tracker.UpdateIssue
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.updateNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
@@ -450,7 +451,7 @@ func (s *Service) updateNativeIssue(c echo.Context) error {
 
 func (s *Service) transitionNativeIssue(c echo.Context) error {
 	var request tracker.Transition
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.transitionNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
@@ -466,30 +467,30 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 
 func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scope nativeScope, item string, request tracker.Transition, conversationID string) (json.RawMessage, error) {
 	if conversationID != "" {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	return s.transitionNativeIssueTenant(ctx, scope, item, request)
 }
 
-func validateNativeWorkflowTransition(states []tracker.NativeState, current, target string, scope apiScope) error {
+func validateNativeWorkflowTransition(states []tracker.NativeState, current, target string, scope hubapi.APIScope) error {
 	allowed := false
 	for _, state := range states {
-		if state.Name == target && state.OperatorOnly && scope == apiScopeWorker {
-			return nativePublicInvalid("Workflow target requires an operator")
+		if state.Name == target && state.OperatorOnly && scope == hubapi.APIScopeWorker {
+			return hubapi.NativePublicInvalid("Workflow target requires an operator")
 		}
 		if state.Name == current && slices.Contains(state.Transitions, target) {
 			allowed = true
 		}
 	}
 	if !allowed {
-		return &nativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", status: http.StatusUnprocessableEntity, publicMessage: true}
+		return &hubapi.NativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", Status: http.StatusUnprocessableEntity, PublicMessage: true}
 	}
 	return nil
 }
 
 func (s *Service) changeNativeDependency(c echo.Context) error {
 	var request tracker.DependencyMutation
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.changeNativeDependencyCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
@@ -504,8 +505,8 @@ func (s *Service) requireReporterWorkItemRecord(ctx context.Context, scope nativ
 	if err != nil {
 		return err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
-		return nativeNotFound()
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+		return hubapi.NativeNotFound()
 	}
 	return nil
 }
@@ -531,5 +532,5 @@ func (s *Service) nativeIssueRecordBrowserPath(ctx context.Context, scope native
 		path = issueBrowserPath(organization.Slug, project.Slug, int(item.Number))
 		return nil
 	})
-	return path, projectRecordError(err)
+	return path, hubapi.ProjectRecordError(err)
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -61,7 +62,7 @@ func newRelayTicket() (string, error) {
 // a hosted session on a hosted hub and from an operator token elsewhere, so the
 // relay has one notion of "the person" whichever way the hub is deployed.
 type relayPrincipal struct {
-	credential apiCredential
+	credential hubapi.APICredential
 	// SessionID binds a ticket and a resumed stream. For a hosted session it
 	// is the provider's session id; for a token principal it is the token,
 	// which is the closest thing that credential has to a session.
@@ -112,9 +113,9 @@ func (s *Service) relayPrincipal(ctx context.Context, c echo.Context) (relayPrin
 		}
 		return principal, nil
 	}
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
-		return relayPrincipal{}, nativeNotFound()
+		return relayPrincipal{}, hubapi.NativeNotFound()
 	}
 	return relayPrincipal{
 		credential: credential, subject: credential.Name,
@@ -143,7 +144,7 @@ func (s *Service) requireRelayOrigin(c echo.Context) error {
 	}
 	presented, err := url.Parse(origin)
 	if err != nil || presented.Scheme != allowed.Scheme || presented.Host != allowed.Host {
-		return &nativeError{Code: "forbidden", Message: "The relay refuses this origin", status: http.StatusForbidden, publicMessage: true}
+		return &hubapi.NativeError{Code: "forbidden", Message: "The relay refuses this origin", Status: http.StatusForbidden, PublicMessage: true}
 	}
 	return nil
 }
@@ -154,7 +155,7 @@ func (s *Service) requireRelayOrigin(c echo.Context) error {
 // than write. The writes a relay can carry -- a git commit or push and a
 // terminal -- are refused per frame against the person's grant.
 func relayTicketRequest(c echo.Context) bool {
-	return c.Request().Method == http.MethodPost && c.Path() == nativeBase+"/workspaces/:workspace/relay-tickets"
+	return c.Request().Method == http.MethodPost && c.Path() == hubapi.NativeBase+"/workspaces/:workspace/relay-tickets"
 }
 
 // mintWorkspaceRelayTicket implements POST .../workspaces/:workspace/relay-tickets.
@@ -184,11 +185,11 @@ func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
 			return err
 		}
 		if workspacesession.Terminal(record.State) {
-			return nativeStaleExecution("The workspace has ended")
+			return hubapi.NativeStaleExecution("The workspace has ended")
 		}
 		owner, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		now := s.config.now().UTC()
 		_, err = owner.CreateRelayTicket(ctx, postgres.CreateRelayTicketInput{OrganizationID: scope.organization, ProjectID: scope.project, Digest: relayTicketDigest(ticket), WorkspaceID: record.ID, SessionID: principal.sessionID, PrincipalID: principal.principalID, Subject: principal.subject, SupportReason: principal.supportReason, CreatedAt: now, ExpiresAt: now.Add(workspacesession.TicketLifetime)})
@@ -214,7 +215,7 @@ func (w *workspaceService) sweepRelayTickets(ctx context.Context, now time.Time)
 	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(postgres.RelayActionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		page, err = owner.RelayTicketPage(ctx, after, hubmaintenance.ItemLimit)
@@ -235,7 +236,7 @@ func (w *workspaceService) sweepRelayTickets(ctx context.Context, now time.Time)
 			if err := w.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
 				owner, ok := writer.(postgres.RelayActionWriter)
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				return owner.DeleteExpiredRelayTicket(ctx, ticket.Digest, now, cutoff)
 			}); err != nil {

@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -36,7 +37,7 @@ type dispatchGuardFixture struct {
 	worktreeState      string
 	completionBody     string
 	checkpoint         *tracker.NativeCheckpoint
-	authority          apiCredential
+	authority          hubapi.APICredential
 	acceptanceRecorded bool
 }
 
@@ -115,7 +116,7 @@ func (f dispatchGuardFixture) finish(t *testing.T, disposition ...*tracker.Nativ
 	t.Helper()
 	identity := f.started
 	event := tracker.NativeRunEvent{
-		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
+		Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1,
 		Data: tracker.NativeRunData{
 			Sequence: 2, Identity: &identity,
 			LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded",
@@ -126,7 +127,7 @@ func (f dispatchGuardFixture) finish(t *testing.T, disposition ...*tracker.Nativ
 	}
 	event.Data.CompletionBody = f.completionBody
 	checkpoint := event
-	checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", newNativeID("checkpoint"), ""
+	checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", hubapi.NewID("checkpoint"), ""
 	checkpoint.Data.Disposition = nil
 	checkpoint.Data.CompletionBody = ""
 	checkpoint.Data.Handoff = nativeTestCheckpoint()
@@ -349,7 +350,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "missing legacy disposition remains eligible", readAdmission: true, wantCandidate: true},
 		{name: "aged attempt without disposition or report retries", aged: true, wantCandidate: true, readAdmission: true},
 		{name: "uncertain push without a disposition is reconciled by any runner", retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
-			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "pending", newNativeID("effect")
+			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "pending", hubapi.NewID("effect")
 		}},
 		{name: "legacy complete unpublished retained source is runnable", finalMessage: completeReport, legacy: true, retainedSource: true, wantCandidate: true},
 		{name: "typed complete unpublished retained source is runnable", finalMessage: completeReport, retainedSource: true, wantCandidate: true},
@@ -372,10 +373,10 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "legacy complete with unavailable source remains eligible", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.Availability = "missing" }, wantCandidate: true, claimUnavailable: true},
 		{name: "legacy complete requiring manual recovery remains eligible", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.Resume = "manual_recovery" }, wantCandidate: true},
 		{name: "pending publication is reconciled by any runner", finalMessage: completeReport, legacy: true, retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
-			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "pending", newNativeID("effect")
+			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "pending", hubapi.NewID("effect")
 		}},
 		{name: "ambiguous publication is reconciled by any runner", finalMessage: completeReport, legacy: true, retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
-			c.ExternalEffect, c.EffectState, c.EffectID = "pr_create", "ambiguous", newNativeID("effect")
+			c.ExternalEffect, c.EffectState, c.EffectID = "pr_create", "ambiguous", hubapi.NewID("effect")
 		}},
 		{name: "typed complete published current version waits for review", reviewOutcome: "approved", finalMessage: completeReport, retainedSource: true, publication: "owned", readAdmission: true, exclusion: "automated_review_missing"},
 		{name: "published audit pass validator wait retries same source", finalMessage: completeReport, retainedSource: true, publication: "owned", machineVerdict: "wait", wantCandidate: true, readAdmission: true},
@@ -398,10 +399,10 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "aged validation failure retries", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "validation_failed"}, aged: true, wantCandidate: true},
 		{name: "aged moved head retries", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "head_moved"}, aged: true, wantCandidate: true},
 		{name: "confirmed push without a disposition continues", retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
-			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "confirmed", newNativeID("effect")
+			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "confirmed", hubapi.NewID("effect")
 		}},
 		{name: "confirmed pull request without a disposition continues", retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
-			c.ExternalEffect, c.EffectState, c.EffectID = "pr_create", "confirmed", newNativeID("effect")
+			c.ExternalEffect, c.EffectState, c.EffectID = "pr_create", "confirmed", hubapi.NewID("effect")
 		}},
 		{name: "aged human action stays held", disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true}, aged: true, readAdmission: true, exclusion: "human_action"},
 		{name: "aged permission wait stays held", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait"}, aged: true, readAdmission: true, exclusion: "permission_wait"},
@@ -511,9 +512,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					})
 				}
 				if test.machineVerdict != "" {
-					audit := tracker.ChangeReview{ID: newNativeID("review"), VersionID: published.ID, Decision: "approved", CreatedAt: f.now, SecurityAudit: &tracker.SecurityAuditReview{Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "audit-invocation", ProjectID: string(f.project.ID), Repository: published.Repository, BaseSHA: published.BaseSHA, HeadSHA: published.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: f.now, StartedAt: f.now.Add(-time.Second), CompletedAt: f.now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}}
+					audit := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: published.ID, Decision: "approved", CreatedAt: f.now, SecurityAudit: &tracker.SecurityAuditReview{Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "audit-invocation", ProjectID: string(f.project.ID), Repository: published.Repository, BaseSHA: published.BaseSHA, HeadSHA: published.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: f.now, StartedAt: f.now.Add(-time.Second), CompletedAt: f.now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}}
 					result := &gate.ValidatorResult{VersionID: published.ID, Submitted: true, Verdict: test.machineVerdict, Repository: published.Repository, BaseSHA: published.BaseSHA, HeadSHA: published.HeadSHA, NotVerified: []string{"Acceptance criterion requires production"}}
-					review := tracker.ChangeReview{ID: newNativeID("review"), VersionID: published.ID, Decision: "commented", CreatedAt: f.now, Validator: result}
+					review := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: published.ID, Decision: "commented", CreatedAt: f.now, Validator: result}
 					if test.implementationReview {
 						review.ImplementationReview, review.Validator = result, nil
 					}
@@ -562,7 +563,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			if attempt.Status != "succeeded" || attempt.Outcome != "succeeded" || attempt.CompletionBody != test.finalMessage || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != f.worktreeState || attempt.WorkItemRevision != revision || attempt.DispatchGeneration != 0 || test.legacy && test.disposition == nil && attempt.Disposition != nil {
 				t.Fatalf("completion lost successful current-revision evidence: %#v", attempt)
 			}
-			claim := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			claim := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
 			if test.expiredLease {
 				if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '1 minute'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 minute'),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.now.Add(-time.Minute), f.project.OrganizationID, f.lease.ID); err != nil {
@@ -793,7 +794,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	// version of it.
 	issue := f.reload(t)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(f.issue.WorkItemID), f.token, map[string]any{
-		"idempotency_key": newNativeID("edit"), "expected_revision": fmt.Sprint(issue.Revision), "title": "Edited after the attempt",
+		"idempotency_key": hubapi.NewID("edit"), "expected_revision": fmt.Sprint(issue.Revision), "title": "Edited after the attempt",
 	}), http.StatusOK)
 	if !f.candidate(t) {
 		t.Fatal("an edit must re-offer the item")
@@ -809,7 +810,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	// transition, which is also an edit of the item.
 	issue = f.reload(t)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/workflow", f.token, map[string]any{
-		"idempotency_key": newNativeID("move"), "expected_revision": fmt.Sprint(issue.Revision), "state": "In Progress", "reason": "user_requested",
+		"idempotency_key": hubapi.NewID("move"), "expected_revision": fmt.Sprint(issue.Revision), "state": "In Progress", "reason": "user_requested",
 	}), http.StatusOK)
 	if !f.candidate(t) {
 		t.Fatal("a manual move back to a dispatchable lane must re-offer the item")
@@ -836,7 +837,7 @@ func TestClaimCandidatesKeepOfferingUnsuccessfulAttempts(t *testing.T) {
 			t.Parallel()
 			f := newDispatchGuardFixture(t)
 			event := tracker.NativeRunEvent{
-				Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
+				Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1,
 				Data: tracker.NativeRunData{
 					Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
 					LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: test.outcome,
@@ -844,14 +845,14 @@ func TestClaimCandidatesKeepOfferingUnsuccessfulAttempts(t *testing.T) {
 			}
 			if test.checkpoint != "" {
 				checkpoint := event
-				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", newNativeID("checkpoint"), ""
+				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", hubapi.NewID("checkpoint"), ""
 				checkpoint.Data.Handoff = nativeTestCheckpoint()
 				checkpoint.Data.Handoff.WorktreeState = test.checkpoint
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, checkpoint), http.StatusOK)
 				event.Data.Sequence++
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
-			event.IdempotencyKey = newNativeID("replay-finish")
+			event.IdempotencyKey = hubapi.NewID("replay-finish")
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 			f.release(t)
 			if got := f.candidate(t); got != test.candidate {
@@ -919,7 +920,7 @@ func TestClaimCandidatesIgnoreAnsweredOnProjectionProfile(t *testing.T) {
 		t.Fatalf("fixture worker authority status%d: %v", status, err)
 	}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
-	request := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: newNativeID("projected-session"), ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	request := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("projected-session"), ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	lease, err := f.service.claimNativeIssueTenant(t.Context(), scope, request, 10*time.Minute)
 	if err != nil || lease.LeaseID == "" {
 		t.Fatalf("a projected item must stay claimable: its revision is not the tracker's: %v", err)

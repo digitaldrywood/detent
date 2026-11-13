@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -65,7 +66,7 @@ func changeToolCall(name string, args operatortool.ChangeArguments) operatortool
 }
 
 func TestOperatorChangeWithoutPostgresCannotUseLegacyStorage(t *testing.T) {
-	app := hubChangeApplication{service: &Service{}, scope: nativeScope{credential: apiCredential{Scope: apiScopeAdmin}}}
+	app := hubChangeApplication{service: &Service{}, scope: nativeScope{credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}}
 	args := operatortool.ChangeArguments{ProjectID: "example-project", ItemID: "wi_example", RequestID: "example-command"}
 	for _, name := range []string{operatortool.ListChanges, operatortool.GetChange, operatortool.GetChangeReviewPolicy, operatortool.ArtifactReferences} {
 		t.Run(name, func(t *testing.T) {
@@ -300,8 +301,8 @@ func TestOperatorMutationRefusalPrecedence(t *testing.T) {
 		}{
 			{"uncertain outcome", errors.Join(mutation.ErrUncertain, limit), mutation.ErrUncertain},
 			{"access denied", errors.Join(operatortool.ErrAccessDenied, limit), operatortool.ErrAccessDenied},
-			{"native access denied", errors.Join(&nativeError{Code: "access_denied", status: http.StatusForbidden}, limit), operatortool.ErrAccessDenied},
-			{"denied revision", errors.Join(&nativeError{Code: "revision_conflict", status: http.StatusForbidden}, limit), operatortool.ErrAccessDenied},
+			{"native access denied", errors.Join(&hubapi.NativeError{Code: "access_denied", Status: http.StatusForbidden}, limit), operatortool.ErrAccessDenied},
+			{"denied revision", errors.Join(&hubapi.NativeError{Code: "revision_conflict", Status: http.StatusForbidden}, limit), operatortool.ErrAccessDenied},
 		} {
 			t.Run(projection.name+"/"+test.name, func(t *testing.T) {
 				projected := projection.project(test.err)
@@ -712,7 +713,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		row.ID, row.Number = newNativeID("version"), 2
+		row.ID, row.Number = hubapi.NewID("version"), 2
 		row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
 		change, err := f.service.readChangeRecord(t.Context(), analyticsTestScope(t, f.nativeFixture), string(f.issue.WorkItemID), f.change.ID)
 		if err != nil {
@@ -1486,7 +1487,7 @@ func operatorChangeRevokeGrant(t *testing.T, f nativeFixture) {
 
 func operatorChangeSetBody(t *testing.T, f nativeFixture, item tracker.NativeIssue, body string) tracker.NativeIssue {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(item.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("body")}, ExpectedRevision: item.Revision, Body: &body})
+	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(item.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("body")}, ExpectedRevision: item.Revision, Body: &body})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &item)
 	return item
@@ -1494,9 +1495,9 @@ func operatorChangeSetBody(t *testing.T, f nativeFixture, item tracker.NativeIss
 
 func operatorChangeLandingAttempt(t *testing.T, f changeFixture, version tracker.ChangeVersion, receipt tracker.NativeLandingReceipt, at time.Time, validation bool) (leasestore.Attempt, string) {
 	t.Helper()
-	leaseID := newNativeID("lease")
+	leaseID := hubapi.NewID("lease")
 	lease := coordinatorActionLease(t, f.service, f.project.OrganizationID, f.issue.WorkItemID, leaseID)
-	data := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", PolicyID: version.PolicyID, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Phase: "completed", HeartbeatAt: at, Landing: &receipt}}
+	data := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", PolicyID: version.PolicyID, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Phase: "completed", HeartbeatAt: at, Landing: &receipt}}
 	if validation {
 		data.Runtime.Validation = receipt.Gate
 	}
@@ -1505,7 +1506,7 @@ func operatorChangeLandingAttempt(t *testing.T, f changeFixture, version tracker
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: at, Data: tracker.CollaborationData{Revision: f.issue.Revision, Run: &data}}))
+	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: at, Data: tracker.CollaborationData{Revision: f.issue.Revision, Run: &data}}))
 	if err != nil {
 		t.Fatal(err)
 	}

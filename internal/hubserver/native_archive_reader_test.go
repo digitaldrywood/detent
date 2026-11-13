@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -48,7 +49,7 @@ func newArchiveRevisionFixture(t *testing.T, f nativeFixture, title string, coun
 		t.Fatal(err)
 	}
 	now := f.service.config.now().UTC().Truncate(time.Microsecond)
-	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Number: int(number), Revision: tracker.Revision(count + 1), Profile: "native"}, Title: title, State: "Todo", Actor: scope.actor(), CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
+	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: int(number), Revision: tracker.Revision(count + 1), Profile: "native"}, Title: title, State: "Todo", Actor: scope.actor(), CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
 	content := eventstore.NewContent(f.service.runDetailStore())
 	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: count + 1}, historyTestJSON(t, issue))
 	if err != nil {

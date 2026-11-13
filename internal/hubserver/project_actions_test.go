@@ -12,6 +12,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -54,7 +55,7 @@ var execCapabilities = workspacesession.Capabilities{Files: true, Diff: true, Ex
 // first action rather than author a second.
 func (f actionFixture) postAction(t *testing.T, token string, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
-	filled := map[string]any{"idempotency_key": newNativeID("actkey")}
+	filled := map[string]any{"idempotency_key": hubapi.NewID("actkey")}
 	maps.Copy(filled, body)
 	return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/actions", token, filled)
 }
@@ -70,7 +71,7 @@ func (f actionFixture) authored(t *testing.T, body map[string]any) workspacesess
 
 func (f actionFixture) patchAction(t *testing.T, id string, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
-	filled := map[string]any{"idempotency_key": newNativeID("actkey")}
+	filled := map[string]any{"idempotency_key": hubapi.NewID("actkey")}
 	maps.Copy(filled, body)
 	return performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/actions/"+id, f.token, filled)
 }
@@ -95,7 +96,7 @@ func (f actionFixture) requireRefusedAction(t *testing.T, method, actionID strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	filled := map[string]any{"idempotency_key": newNativeID("actkey")}
+	filled := map[string]any{"idempotency_key": hubapi.NewID("actkey")}
 	maps.Copy(filled, body)
 	raw, err := json.Marshal(filled)
 	if err != nil {
@@ -103,11 +104,11 @@ func (f actionFixture) requireRefusedAction(t *testing.T, method, actionID strin
 	}
 	response := httptest.NewRecorder()
 	c := echo.New().NewContext(httptest.NewRequest(method, "/actions", bytes.NewReader(raw)).WithContext(t.Context()), response)
-	c.SetPath(nativeBase + "/actions")
+	c.SetPath(hubapi.NativeBase + "/actions")
 	c.Set("native_scope", nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential})
 	handle := service.createProjectAction
 	if method == http.MethodPatch {
-		c.SetPath(nativeBase + "/actions/:action")
+		c.SetPath(hubapi.NativeBase + "/actions/:action")
 		c.SetParamNames("action")
 		c.SetParamValues(actionID)
 		handle = service.patchProjectAction
@@ -305,7 +306,7 @@ func TestProjectActionPatch(t *testing.T) {
 		requireNativeStatus(t, f.patchAction(t, action.ID, map[string]any{"expected_revision": 1, "name": "Build all"}), http.StatusOK)
 		response := f.patchAction(t, action.ID, map[string]any{"expected_revision": 1, "name": "Build some"})
 		requireNativeCode(t, response, http.StatusConflict, "revision_conflict")
-		var failure nativeError
+		var failure hubapi.NativeError
 		decodeHubResponse(t, response, &failure)
 		if failure.CurrentRevision != 2 {
 			t.Fatalf("current_revision = %d, want 2", failure.CurrentRevision)
@@ -319,7 +320,7 @@ func TestProjectActionPatch(t *testing.T) {
 	})
 
 	t.Run("an action of another project is not found", func(t *testing.T) {
-		requireNativeCode(t, f.patchAction(t, newNativeID("action"), map[string]any{
+		requireNativeCode(t, f.patchAction(t, hubapi.NewID("action"), map[string]any{
 			"expected_revision": 1, "name": "Nothing"}), http.StatusNotFound, "not_found")
 	})
 }

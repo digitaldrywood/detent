@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -34,7 +35,7 @@ func TestChangeFindingAttributionPersistsForTwoItems(t *testing.T) {
 		receipt := gate.CommandResult{Command: command, HeadSHA: version.HeadSHA, ExitCode: 1, Output: diagnostic, FinishedAt: time.Now(), BaseReproduction: &observation}
 		finding := gate.Finding{Body: diagnostic, CheckCommand: command, CheckDiagnostic: diagnostic}
 		for _, role := range []string{"validator", "implementation_review", "security_audit"} {
-			review := tracker.ChangeReview{ID: newNativeID("review"), VersionID: version.ID, Decision: "changes_requested", Body: "Fix the finding", CreatedAt: f.service.config.now()}
+			review := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version.ID, Decision: "changes_requested", Body: "Fix the finding", CreatedAt: f.service.config.now()}
 			result := &gate.ValidatorResult{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "rework", Findings: []gate.Finding{finding}, Commands: []gate.CommandResult{receipt}}
 			switch role {
 			case "validator":

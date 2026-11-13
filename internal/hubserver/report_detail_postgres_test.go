@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -158,7 +159,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 	for _, organization := range []tracker.OrganizationID{"org_partial_first", "org_partial_second"} {
 		t.Run(string(organization), func(t *testing.T) {
 			service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}}}
-			out, err := service.readPostgresHostedReport(t.Context(), apiCredential{}, []string{string(project)}, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}, reportsFilter{}, false)
+			out, err := service.readPostgresHostedReport(t.Context(), hubapi.APICredential{}, []string{string(project)}, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}, reportsFilter{}, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -174,7 +175,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 				t.Fatalf("tenant open work = %+v", out.OpenWork)
 			}
 			for _, filter := range []reportsFilter{{Models: []string{"unrecorded-model"}}, {Stages: []string{"unrecorded-stage"}}} {
-				filtered, err := service.readPostgresHostedReport(t.Context(), apiCredential{}, []string{string(project)}, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}, filter, false)
+				filtered, err := service.readPostgresHostedReport(t.Context(), hubapi.APICredential{}, []string{string(project)}, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}, filter, false)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -228,7 +229,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 				t.Fatal(err)
 			}
 			service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now }}}
-			credential := apiCredential{Hosted: &auth.HostedIdentity{Subject: user}, HostedRole: "reporter", HostedPrincipal: principal, ID: principal, Scope: apiScopeOperator}
+			credential := hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: user}, HostedRole: "reporter", HostedPrincipal: principal, ID: principal, Scope: hubapi.APIScopeOperator}
 			identity := operatortool.Identity{PrincipalID: principal, OrganizationID: string(organization), CredentialID: principal}
 			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
 				return operatortool.Authority{Identity: identity, Check: func(_ context.Context, requirement operatortool.Requirement) error {
@@ -319,7 +320,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 						if restored {
 							return
 						}
-						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 						defer cancel()
 						if err := repository.WriteTenant(cleanup, organization, corestore.Serving, func(w tenantstore.Writer) error {
 							return w.SetAccessProjectGrant(cleanup, accessstore.ProjectGrant{OrganizationID: organization, UserID: user, ProjectID: project})

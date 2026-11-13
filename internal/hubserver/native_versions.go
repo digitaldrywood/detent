@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -25,7 +26,7 @@ func (s *Service) getNativeVersion(c echo.Context) error {
 
 	revision, err := strconv.ParseInt(c.Param("revision"), 10, 64)
 	if err != nil || revision <= 0 {
-		return s.nativeAPIError(c, nativePublicInvalid("Revision must be a positive decimal integer"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Revision must be a positive decimal integer"))
 	}
 	body, err := s.readVersion(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("comment"), revision)
 	if err != nil {
@@ -35,10 +36,10 @@ func (s *Service) getNativeVersion(c echo.Context) error {
 }
 
 func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comment string, revision int64) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	recordID := item
 	if comment != "" {
@@ -62,7 +63,7 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		version, err = r.CollaborationVersion(ctx, recordID, revision)
@@ -97,7 +98,7 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 		return nil
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	var body json.RawMessage
 	if archived != nil {
@@ -129,9 +130,9 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 		return nil, artifact.ErrIntegrity
 	}
 	if !scope.reporterOwns(issue.Actor) {
-		return nil, nativeNotFound()
+		return nil, hubapi.NativeNotFound()
 	}
-	if scope.credential.Scope != apiScopeAdmin || scope.credential.NativeOnly {
+	if scope.credential.Scope != hubapi.APIScopeAdmin || scope.credential.NativeOnly {
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			for _, links := range []*[]tracker.NativeDependency{&issue.Blockers, &issue.Dependents, &issue.Related} {
 				kept := []tracker.NativeDependency{}
@@ -143,13 +144,13 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 					if err != nil {
 						return err
 					}
-					if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+					if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 						continue
 					}
 					relatedScope := scope
 					relatedScope.project = row.ProjectID
 					if err := s.authorizeAccessScope(ctx, r, relatedScope, false); err != nil {
-						if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, auth.ErrHostedIdentity) || isNativeNotFound(err) {
+						if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, auth.ErrHostedIdentity) || hubapi.IsNativeNotFound(err) {
 							continue
 						}
 						return err
@@ -170,7 +171,7 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 			return nil
 		})
 		if err != nil {
-			return nil, projectRecordError(err)
+			return nil, hubapi.ProjectRecordError(err)
 		}
 		issue.Dependencies = []tracker.NativeWorkItemID{}
 		for _, link := range issue.Blockers {

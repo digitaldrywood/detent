@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -162,7 +163,7 @@ func resolveLocalOrganization(ctx context.Context, repository *postgres.Reposito
 }
 
 func bootstrapLocalOrganization(ctx context.Context, repository *postgres.Repository, cfg Config, token string) (tracker.OrganizationID, error) {
-	organization := tracker.OrganizationID(newNativeID("org"))
+	organization := tracker.OrganizationID(hubapi.NewID("org"))
 	now := cfg.now().UTC()
 	hash := apikey.HashToken(token)
 	cursorKey := make([]byte, 32)
@@ -177,10 +178,10 @@ func bootstrapLocalOrganization(ctx context.Context, repository *postgres.Reposi
 		accessstore.Organization{OrganizationID: organization, Name: "Local organization", Slug: "local-organization", Local: true, CreatedAt: now},
 		accessstore.Credential{
 			OrganizationID: organization, ID: bootstrapTokenID, Name: "Bootstrap administrator",
-			Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: string(apiScopeAdmin),
+			Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: string(hubapi.APIScopeAdmin),
 			KeyScope: "admin", ProjectAccess: "all", Kind: "service", CreatedAt: now, UpdatedAt: now,
 		},
-		accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: cursorKey},
+		accessstore.HubIdentity{OrganizationID: organization, ID: hubapi.NewID("hub"), CursorKey: cursorKey},
 		secret, audit,
 	)
 }
@@ -232,7 +233,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 			}
 			database.runtimeBilling = cfg.Hosted.Billing
 			if cfg.Hosted.EmailSender != nil {
-				return nil, errors.Join(ErrPostgresFeatureUnavailable, database.Close())
+				return nil, errors.Join(hubapi.ErrPostgresFeatureUnavailable, database.Close())
 			}
 		} else {
 			localOrganization, err = resolveLocalOrganization(ctx, database.postgres, cfg)

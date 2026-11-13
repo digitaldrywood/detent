@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -46,7 +47,7 @@ func TestEvidencePayloadSizeAndReadEquivalence(t *testing.T) {
 	var inlineBytes int
 	for _, size := range []int{32, 256 << 10} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
-			review := tracker.ChangeReview{ID: newNativeID("review"), VersionID: version.ID, Decision: "commented", Body: strings.Repeat("x", size), CreatedAt: f.service.config.now().UTC()}
+			review := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version.ID, Decision: "commented", Body: strings.Repeat("x", size), CreatedAt: f.service.config.now().UTC()}
 			row := payloadEvidenceFixture(t, f.service, f.project.OrganizationID, f.change.ID, version.ID, "review", review.ID, review)
 			stored := len(row.PayloadObjectKey) + len(row.PayloadSHA256)
 			if inlineBytes != 0 && stored != inlineBytes {
@@ -160,7 +161,7 @@ func TestAttemptPayloadObjectsAndTypedReads(t *testing.T) {
 			now = now.Add(time.Minute)
 			data.Sequence++
 			for range 1 + size/2048 {
-				data.ArtifactIDs = append(data.ArtifactIDs, newNativeID("artifact"))
+				data.ArtifactIDs = append(data.ArtifactIDs, hubapi.NewID("artifact"))
 			}
 			artifacts := append([]string(nil), data.ArtifactIDs...)
 			post := func(kind string) {
@@ -339,7 +340,7 @@ func TestAttemptPayloadObjectsAndTypedReads(t *testing.T) {
 					if !errors.Is(err, artifact.ErrIntegrity) {
 						t.Fatalf("retained artifact %s silently fell back: %v", failure, err)
 					}
-					var unavailable *nativeArchiveError
+					var unavailable *hubapi.NativeArchiveError
 					if !errors.As(err, &unavailable) || unavailable.Archive == nil || unavailable.Archive.Availability != "unavailable" && unavailable.Archive.Availability != "invalid" {
 						t.Fatalf("retained artifact %s lost archive refusal: %v", failure, err)
 					}
@@ -536,7 +537,7 @@ func TestRunHistoryWritesOnlyObjectReferences(t *testing.T) {
 				rejected.Data.Sequence = 0
 				rejectedResponse := performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", current.worker, rejected)
 				requireNativeStatus(t, rejectedResponse, http.StatusUnprocessableEntity)
-				var refusal apiErrorResponse
+				var refusal hubapi.APIErrorResponse
 				decodeHubResponse(t, rejectedResponse, &refusal)
 				if refusal.Code != "invalid_request" {
 					t.Fatalf("current unordered run refusal=%q", refusal.Code)
@@ -814,7 +815,7 @@ func TestAttemptPayloadStorageUnavailableAPI(t *testing.T) {
 				Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded"}}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event)
 			requireNativeStatus(t, response, http.StatusServiceUnavailable)
-			var failure apiErrorResponse
+			var failure hubapi.APIErrorResponse
 			decodeHubResponse(t, response, &failure)
 			if failure.Code != "storage_unreachable" || !strings.Contains(failure.Message, "storage") || storage == "unconfigured" && !strings.Contains(failure.Message, "configur") {
 				t.Errorf("storage failure = %+v", failure)
@@ -876,7 +877,7 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 			}
 			change := f.change
 			if test.legacy {
-				change.ID, version.ID = newNativeID("change"), newNativeID("version")
+				change.ID, version.ID = hubapi.NewID("change"), hubapi.NewID("version")
 				version.ChangeID, change.CurrentVersion, change.Revision, change.Landed = change.ID, version.ID, 1, nil
 			}
 			scope := analyticsTestScope(t, f.nativeFixture)
@@ -1188,7 +1189,7 @@ func payloadAssertHistoricalAttemptReads(t *testing.T, data tracker.NativeRunDat
 func payloadAssertHistoricalVersion(t *testing.T, f changeFixture, version tracker.ChangeVersion, bundle []byte) {
 	t.Helper()
 	legacy := version
-	legacy.ID, legacy.ChangeID, legacy.Number = newNativeID("version"), newNativeID("change"), version.Number+1000
+	legacy.ID, legacy.ChangeID, legacy.Number = hubapi.NewID("version"), hubapi.NewID("change"), version.Number+1000
 	change := f.change
 	change.ID, change.CurrentVersion, change.Revision, change.Landed = legacy.ChangeID, legacy.ID, 1, nil
 	fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
@@ -1285,7 +1286,7 @@ func payloadSeedRecoveryEdits(t *testing.T, f nativeFixture, issue tracker.Nativ
 			kind = "workflow.transitioned"
 			data = tracker.CollaborationData{Revision: data.Revision, FromState: "Todo", ToState: "Blocked", Reason: "worker_progress"}
 		}
-		event := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, RecordedAt: f.service.config.now(), Actor: actor, Data: data}
+		event := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, RecordedAt: f.service.config.now(), Actor: actor, Data: data}
 		raw, err := json.Marshal(event)
 		if err != nil {
 			t.Fatal(err)
@@ -1417,15 +1418,15 @@ func (w payloadRecoveryWriter) LatestWorkflowTransition(ctx context.Context, pro
 
 func payloadSeedLandingAttempt(t *testing.T, f changeFixture, receipt tracker.NativeLandingReceipt) (leasestore.Attempt, attachment.ArchiveReference) {
 	t.Helper()
-	leaseID := newNativeID("lease")
+	leaseID := hubapi.NewID("lease")
 	lease := coordinatorActionLease(t, f.service, f.project.OrganizationID, f.issue.WorkItemID, leaseID)
-	data := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{Landing: &receipt}}
+	data := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{Landing: &receipt}}
 	content := eventstore.NewContent(f.service.runDetailStore())
 	ref, err := content.PreparePayload(t.Context(), f.project.OrganizationID, historyTestJSON(t, data))
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: receipt.ObservedAt, Data: tracker.CollaborationData{Run: &data}}))
+	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: receipt.ObservedAt, Data: tracker.CollaborationData{Run: &data}}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -129,7 +130,7 @@ func (fixture threadUnreadFixture) viewer(t *testing.T, organization tracker.Org
 	return nativeFixture{service: service, project: project, token: token}
 }
 
-func threadUnreadCredential(t *testing.T, viewer nativeFixture) apiCredential {
+func threadUnreadCredential(t *testing.T, viewer nativeFixture) hubapi.APICredential {
 	t.Helper()
 	credential, status, err := viewer.service.authenticateTenantAPIHash(t.Context(), viewer.project.OrganizationID, apikey.HashToken(viewer.token), "", "")
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
@@ -35,7 +36,7 @@ func (a tenantRunnerAuthority) VerifyConversationWorker(ctx context.Context, rea
 		return err
 	}
 	now := a.now()
-	if credential.OrganizationID != worker.Organization || credential.ID != worker.Credential.ID || credential.Scope != string(apiScopeWorker) || credential.Kind != "service" || !credential.Valid(worker.Credential.Hash, now) {
+	if credential.OrganizationID != worker.Organization || credential.ID != worker.Credential.ID || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" || !credential.Valid(worker.Credential.Hash, now) {
 		return accessstore.ErrDenied
 	}
 	if !slices.Contains(identity.Operations, runnerauth.Claim) {
@@ -46,7 +47,7 @@ func (a tenantRunnerAuthority) VerifyConversationWorker(ctx context.Context, rea
 		return err
 	}
 	if !allowed {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	return nil
 }

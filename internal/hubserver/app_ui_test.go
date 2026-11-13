@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -167,7 +168,7 @@ func TestAppShellServing(t *testing.T) {
 		useAppClientFS(t, fstest.MapFS{})
 		response := f.appRequest(t, "owner", http.MethodGet, "/work")
 		browserHostedStatus(t, response, http.StatusServiceUnavailable)
-		var failure apiErrorResponse
+		var failure hubapi.APIErrorResponse
 		decodeHubResponse(t, response, &failure)
 		if failure.Code != "client_unavailable" {
 			t.Fatalf("code = %q", failure.Code)
@@ -722,7 +723,7 @@ func TestAppUpdatesPostgresProjectionAndFreshAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}, Version: "v1.2.4", now: func() time.Time { return now }}}
-	credential := apiCredential{ID: "operator_example", Hash: "example-hash", Scope: apiScopeOperator, Hosted: &auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_example"}, HostedRole: "owner"}
+	credential := hubapi.APICredential{ID: "operator_example", Hash: "example-hash", Scope: hubapi.APIScopeOperator, Hosted: &auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_example"}, HostedRole: "owner"}
 	updates, err := service.readAppUpdates(t.Context(), credential)
 	if err != nil {
 		t.Fatal(err)
@@ -736,9 +737,9 @@ func TestAppUpdatesPostgresProjectionAndFreshAuthorization(t *testing.T) {
 		t.Fatal("member without manage_runner grants read runner updates")
 	}
 	revoked := false
-	resolve := func(context.Context) (apiCredential, error) {
+	resolve := func(context.Context) (hubapi.APICredential, error) {
 		if revoked {
-			return apiCredential{}, operatortool.ErrAccessDenied
+			return hubapi.APICredential{}, operatortool.ErrAccessDenied
 		}
 		return credential, nil
 	}

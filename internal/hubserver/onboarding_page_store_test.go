@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
@@ -148,7 +149,7 @@ func TestOnboardingPageKeepsViewerVisibilityAndRevocation(t *testing.T) {
 			sibling := newNativeFixture(t, service, organization, "Another example")
 			runner := prepareRunnerForScope(t, sibling, "projects", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			runner.enroll(t)
-			other := tokenResponse{ID: newNativeID("credential"), Token: newNativeID("token")}
+			other := hubapi.TokenResponse{ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}
 			now := service.config.now().UTC().Truncate(time.Microsecond)
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: other.ID, Name: other.ID, Hash: apikey.HashToken(other.Token), Scope: "admin", Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now})

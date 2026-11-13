@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -66,17 +67,17 @@ func spritesTestResponse(body string, status int) *http.Response {
 func TestProjectSecretPermissions(t *testing.T) {
 	for _, test := range []struct {
 		name       string
-		credential apiCredential
+		credential hubapi.APICredential
 		want       bool
 	}{
-		{name: "owner", credential: apiCredential{Hosted: &auth.HostedIdentity{}, HostedRole: "owner"}, want: true},
-		{name: "admin", credential: apiCredential{Hosted: &auth.HostedIdentity{}, HostedRole: "admin"}, want: true},
-		{name: "member", credential: apiCredential{Hosted: &auth.HostedIdentity{}, HostedRole: "member"}},
-		{name: "viewer", credential: apiCredential{Hosted: &auth.HostedIdentity{}, HostedRole: "viewer"}},
-		{name: "instance administrator", credential: apiCredential{Scope: apiScopeAdmin}, want: true},
-		{name: "scoped administrator", credential: apiCredential{Scope: apiScopeAdmin, NativeOnly: true}},
-		{name: "operator", credential: apiCredential{Scope: apiScopeOperator}},
-		{name: "worker", credential: apiCredential{Scope: apiScopeWorker}},
+		{name: "owner", credential: hubapi.APICredential{Hosted: &auth.HostedIdentity{}, HostedRole: "owner"}, want: true},
+		{name: "admin", credential: hubapi.APICredential{Hosted: &auth.HostedIdentity{}, HostedRole: "admin"}, want: true},
+		{name: "member", credential: hubapi.APICredential{Hosted: &auth.HostedIdentity{}, HostedRole: "member"}},
+		{name: "viewer", credential: hubapi.APICredential{Hosted: &auth.HostedIdentity{}, HostedRole: "viewer"}},
+		{name: "instance administrator", credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}, want: true},
+		{name: "scoped administrator", credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin, NativeOnly: true}},
+		{name: "operator", credential: hubapi.APICredential{Scope: hubapi.APIScopeOperator}},
+		{name: "worker", credential: hubapi.APICredential{Scope: hubapi.APIScopeWorker}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := canManageProjectSecrets(test.credential); got != test.want {
@@ -193,7 +194,7 @@ func TestProjectSecretPermissions(t *testing.T) {
 			}
 			owner, ok := w.(postgres.SpriteWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			pool, err := owner.SpritePool(t.Context())
 			if err != nil {
@@ -301,7 +302,7 @@ func TestProjectSecretLifecycle(t *testing.T) {
 					t.Fatalf("tool metadata=%s %v", result.Content, err)
 				}
 
-				scope := nativeScope{organization: tracker.OrganizationID("org_secret_lifecycle"), project: tracker.ProjectID(f.project), credential: apiCredential{ID: "internal-provisioner"}}
+				scope := nativeScope{organization: tracker.OrganizationID("org_secret_lifecycle"), project: tracker.ProjectID(f.project), credential: hubapi.APICredential{ID: "internal-provisioner"}}
 				if slug, err := f.service.checkProjectSprites(t.Context(), scope); err != nil || slug != "detent-test" {
 					t.Fatalf("internal use=%s %v", slug, err)
 				}

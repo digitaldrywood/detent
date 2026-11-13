@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -64,7 +65,7 @@ func TestConversationCoordinatorRejectsRecordOutsideScope(t *testing.T) {
 		}
 	}
 	for _, organization := range organizations {
-		scope := nativeScope{organization: organization, project: "project_first", credential: apiCredential{ID: "owner", Hash: string(organization), Scope: apiScopeOperator}}
+		scope := nativeScope{organization: organization, project: "project_first", credential: hubapi.APICredential{ID: "owner", Hash: string(organization), Scope: hubapi.APIScopeOperator}}
 		for _, page := range []struct {
 			args coordinatorRunnerArguments
 			ids  []string
@@ -100,14 +101,14 @@ func TestConversationCoordinatorRejectsRecordOutsideScope(t *testing.T) {
 				}
 				foreign := record
 				foreign.OrganizationID = other
-				var refusal *nativeError
+				var refusal *hubapi.NativeError
 				if err := coordinator.authorizeRecord(t.Context(), scope, foreign, write); !errors.As(err, &refusal) || refusal.Code != "not_found" {
 					t.Errorf("foreign organization %s write=%t: %v", other, write, err)
 				}
 			}
 			foreign := record
 			foreign.ProjectID = "project_second"
-			var refusal *nativeError
+			var refusal *hubapi.NativeError
 			if err := coordinator.authorizeRecord(t.Context(), scope, foreign, write); !errors.As(err, &refusal) || refusal.Code != "not_found" {
 				t.Errorf("foreign project %s write=%t: %v", organization, write, err)
 			}

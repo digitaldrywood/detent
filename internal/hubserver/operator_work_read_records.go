@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -64,7 +65,7 @@ func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope nativ
 					otherScope := scope
 					otherScope.project = other.ProjectID
 					authErr := s.authorizeAccessScope(ctx, r, otherScope, false)
-					if errors.Is(authErr, accessstore.ErrDenied) || errors.Is(authErr, auth.ErrHostedIdentity) || errors.Is(authErr, corestore.ErrNotFound) || isNativeNotFound(authErr) {
+					if errors.Is(authErr, accessstore.ErrDenied) || errors.Is(authErr, auth.ErrHostedIdentity) || errors.Is(authErr, corestore.ErrNotFound) || hubapi.IsNativeNotFound(authErr) {
 						return operatortool.ErrProjectScopeRequired
 					}
 					if authErr != nil {
@@ -79,14 +80,14 @@ func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope nativ
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		version, err = r.CollaborationVersion(ctx, string(row.NativeID), row.Revision)
 		return err
 	})
 	if err != nil {
-		return tracker.NativeIssue{}, projectRecordError(err)
+		return tracker.NativeIssue{}, hubapi.ProjectRecordError(err)
 	}
 	item, err := s.hydrateWorkItemRecord(ctx, row, version)
 	if err == nil {

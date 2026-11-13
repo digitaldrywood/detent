@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -358,7 +359,7 @@ func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
 			}
 			denied := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: otherCredential}
 			_, err = read(denied)
-			var deniedError *nativeError
+			var deniedError *hubapi.NativeError
 			if !errors.As(err, &deniedError) || deniedError.Code != "not_found" {
 				t.Fatalf("unauthorized read result=%v", err)
 			}
@@ -433,7 +434,7 @@ func TestConversationEventStorageFootprint(t *testing.T) {
 	var inline int64
 	for index := range count {
 		body := map[string]any{"text": strings.Repeat("representative event content ", 2048), "index": index}
-		raw, err := marshalNative(body)
+		raw, err := hubapi.MarshalNative(body)
 		if err != nil {
 			t.Fatal(err)
 		}

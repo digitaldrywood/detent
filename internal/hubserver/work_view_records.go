@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -44,7 +45,7 @@ func (s *Service) viewRecordScope(c echo.Context) (nativeScope, error) {
 		return nativeScope{}, err
 	}
 	if c.Param("organization") != s.appOrganizationID() {
-		return nativeScope{}, nativeNotFound()
+		return nativeScope{}, hubapi.NativeNotFound()
 	}
 	return nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(c.Param("project")), credential: credential}, nil
 }
@@ -74,14 +75,14 @@ func (s *Service) workViewPreferenceRecord(c echo.Context) error {
 		})
 	} else {
 		if c.Request().Method == http.MethodPut {
-			if err := decodeAPIJSON(c, &value); err != nil {
+			if err := hubapi.DecodeAPIJSON(c, &value); err != nil {
 				return s.invalidAPIRequest(c, err)
 			}
 			if value.Query == nil || len(*value.Query) > 8192 {
-				return s.nativeAPIError(c, nativePublicInvalid("A view query of at most 8192 bytes is required"))
+				return s.nativeAPIError(c, hubapi.NativePublicInvalid("A view query of at most 8192 bytes is required"))
 			}
 			if _, err := url.ParseQuery(*value.Query); err != nil {
-				return s.nativeAPIError(c, nativePublicInvalid("The view query is invalid"))
+				return s.nativeAPIError(c, hubapi.NativePublicInvalid("The view query is invalid"))
 			}
 		}
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -92,7 +93,7 @@ func (s *Service) workViewPreferenceRecord(c echo.Context) error {
 		})
 	}
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	return c.JSON(http.StatusOK, value)
 }
@@ -111,17 +112,17 @@ func (s *Service) savedWorkViewsRecord(c echo.Context) error {
 	favorite := strings.HasSuffix(c.Path(), "/favorite")
 	var v savedWorkView
 	if c.Request().Method != http.MethodDelete {
-		if err := decodeAPIJSON(c, &v); err != nil {
+		if err := hubapi.DecodeAPIJSON(c, &v); err != nil {
 			return s.invalidAPIRequest(c, err)
 		}
 		v.Name = strings.TrimSpace(v.Name)
 		if !favorite && !validSavedWorkView(v) {
-			return s.nativeAPIError(c, nativePublicInvalid("The view name, scope or display state is invalid"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("The view name, scope or display state is invalid"))
 		}
 	}
 	create := id == ""
 	if create {
-		id = newNativeID("view")
+		id = hubapi.NewID("view")
 	}
 	v.ID, v.OwnerID = id, user
 	var result viewstore.Record
@@ -153,13 +154,13 @@ func (s *Service) savedWorkViewsRecord(c echo.Context) error {
 		return err
 	})
 	if errors.Is(err, viewstore.ErrOwnerLimit) {
-		err = nativePublicInvalid("The saved view limit for this owner has been reached")
+		err = hubapi.NativePublicInvalid("The saved view limit for this owner has been reached")
 	}
 	if errors.Is(err, viewstore.ErrOrganizationLimit) {
-		err = nativePublicInvalid("The saved view limit for this organization has been reached")
+		err = hubapi.NativePublicInvalid("The saved view limit for this organization has been reached")
 	}
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	if c.Request().Method == http.MethodDelete {
 		return c.NoContent(http.StatusNoContent)
@@ -168,13 +169,13 @@ func (s *Service) savedWorkViewsRecord(c echo.Context) error {
 }
 
 func (s *Service) readSavedWorkViewsRecord(c echo.Context, scope nativeScope, selection viewstore.Selection, id string) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	params := c.QueryParams()
 	if id == "" {
 		for key, values := range params {
 			if key != "cursor" || len(values) != 1 || len(values[0]) > 100 {
-				return s.nativeAPIError(c, nativePublicInvalid("Invalid saved views cursor"))
+				return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid saved views cursor"))
 			}
 		}
 	}
@@ -213,7 +214,7 @@ func (s *Service) readSavedWorkViewsRecord(c echo.Context, scope nativeScope, se
 			}
 			if len(encoded)+1 > maxSavedWorkViewsPageBytes {
 				if len(page.Views) == 0 {
-					return nativePublicInvalid("Saved view exceeds the page size limit")
+					return hubapi.NativePublicInvalid("Saved view exceeds the page size limit")
 				}
 				page.NextCursor = page.Views[len(page.Views)-1].ID
 				break
@@ -223,7 +224,7 @@ func (s *Service) readSavedWorkViewsRecord(c echo.Context, scope nativeScope, se
 		return nil
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	if id != "" {
 		return c.JSON(http.StatusOK, single)

@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -22,7 +23,7 @@ func (s *Service) projectNativeAnalyticsResidenceTenant(ctx context.Context, sco
 	defer clear(key)
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var page eventstore.AnalyticsResidencePage
 	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -32,7 +33,7 @@ func (s *Service) projectNativeAnalyticsResidenceTenant(ctx context.Context, sco
 		}
 		owner, ok := reader.(eventstore.AnalyticsResidenceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		page, err = owner.ReadAnalyticsResidencePage(ctx, eventstore.AnalyticsResidenceQuery{ProjectID: scope.project, Principal: principal, From: out.Window.From, To: out.Window.To, Limit: maxAnalyticsPopulation, Live: live, IssuesAfter: after.IssuesAfter, EventsAfterItem: after.EventItem, EventsAfterSequence: after.EventSequence})
 		return err

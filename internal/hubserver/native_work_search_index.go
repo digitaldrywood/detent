@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -51,7 +52,7 @@ func (s *Service) refreshNativeIdentity(ctx context.Context) (bool, error) {
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		reader, ok := r.(postgres.DoctorProposalIdentityReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		head, err = reader.NextDoctorProposalIdentityHead(ctx)

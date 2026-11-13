@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -19,9 +20,9 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 		return nil, err
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +160,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 		}
 		if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 			if prior.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			return corestore.ErrSerializationFailure
 		} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -184,7 +185,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 		}
 		writer, ok := w.(eventstore.ReleaseDeliveryWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if !unchanged {
 			if transition != nil {

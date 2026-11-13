@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -78,7 +79,7 @@ func newReleaseTenantFixtureFor(t *testing.T, repo tenantstore.Repository, f hos
 	now := f.service.config.now().UTC()
 	if err := repo.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		hash := apikey.HashToken("example-release-runner")
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "release-runner-token", Name: "Runner", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "all", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "release-runner-token", Name: "Runner", Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "all", Kind: "service"}); err != nil {
 			return err
 		}
 		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: organization, ID: "release-enrollment", RunnerID: "release-runner", MachineID: "release-machine", TokenHash: apikey.HashToken("example-enrollment"), Scope: "organization", Operations: []string{"read"}, CreatedAt: now, ExpiresAt: now.Add(time.Hour), CreatedBy: "example-admin"}); err != nil {
@@ -95,7 +96,7 @@ func newReleaseTenantFixtureFor(t *testing.T, repo tenantstore.Repository, f hos
 		t.Fatal(err)
 	}
 
-	fixture.version = tracker.ChangeVersion{ID: newNativeID("version"), ChangeID: fixture.change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), Repository: "https://github.com/example-org/example-project", PolicyID: hubTestPolicy().ID}, Actor: tracker.Actor{Kind: "human", PrincipalID: "source-author"}, CreatedAt: now}
+	fixture.version = tracker.ChangeVersion{ID: hubapi.NewID("version"), ChangeID: fixture.change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40), Repository: "https://github.com/example-org/example-project", PolicyID: hubTestPolicy().ID}, Actor: tracker.Actor{Kind: "human", PrincipalID: "source-author"}, CreatedAt: now}
 	raw, err := json.Marshal(fixture.version)
 	if err != nil {
 		t.Fatal(err)
@@ -460,7 +461,7 @@ func seedReleaseTenantAudit(t *testing.T, f *releaseTenantFixture) {
 	t.Helper()
 	now := f.f.service.config.now()
 	audit := &tracker.SecurityAuditReview{SessionID: 42, DiffDigest: policy.Digest([]byte("diff")), Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "source-audit", ProjectID: string(f.f.project), IssueID: string(f.source.WorkItemID), Repository: f.version.Repository, BaseSHA: f.version.BaseSHA, HeadSHA: f.version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now.Add(-time.Second), CompletedAt: now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
-	review := tracker.ChangeReview{ID: newNativeID("review"), VersionID: f.version.ID, Decision: "approved", SecurityAudit: audit, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, CreatedAt: now}
+	review := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: f.version.ID, Decision: "approved", SecurityAudit: audit, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, CreatedAt: now}
 	raw, err := json.Marshal(review)
 	if err != nil {
 		t.Fatal(err)

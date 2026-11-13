@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -34,7 +35,7 @@ func (s *Service) exportNativeWorkItems(c echo.Context) error {
 }
 
 func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params url.Values) (operatortool.WorkBulkExportPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	page := operatortool.WorkBulkExportPage{ProjectID: string(scope.project), GeneratedAt: s.config.now(), Freshness: explain.SourceAvailable, Items: []operatortool.WorkBulkExportItem{}}
 	single := url.Values{}
@@ -43,7 +44,7 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 	}
 	single.Del("state")
 	single.Del("label")
-	if err := validateNativeQuery(single, "open", "archived"); err != nil {
+	if err := hubapi.ValidateNativeQuery(single, "open", "archived"); err != nil {
 		return page, err
 	}
 	if err := validateNativeIssueQuery(params); err != nil {
@@ -62,7 +63,7 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 	if cursor.After != "" {
 		after, err = strconv.ParseInt(cursor.After, 10, 64)
 		if err != nil || after < 0 {
-			return page, nativePublicInvalid("Cursor is invalid")
+			return page, hubapi.NativePublicInvalid("Cursor is invalid")
 		}
 	}
 	filter := corestore.WorkItemExportSelection{ProjectID: scope.project, States: selection.States, Labels: selection.Labels, Archived: selection.Archived, Terminal: selection.Terminal, Reporter: selection.Reporter, PrincipalID: scope.actor().PrincipalID}
@@ -223,7 +224,7 @@ func (s *Service) authorizeBulkExportItem(ctx context.Context, r tenantstore.Rea
 		if err != nil {
 			return err
 		}
-		if member.UserID != "" && lesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
+		if member.UserID != "" && hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
 			return auth.ErrHostedIdentity
 		}
 	}
@@ -241,7 +242,7 @@ func (s *Service) authorizeBulkExportItem(ctx context.Context, r tenantstore.Rea
 	if err != nil {
 		return err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 		return corestore.ErrNotFound
 	}
 	return nil

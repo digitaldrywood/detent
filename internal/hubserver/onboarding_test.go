@@ -23,6 +23,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -96,7 +97,7 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			r.enroll(t)
 			adminToken := testHubAdminToken
 			if tt.differentAdmin {
-				admin, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "other-runner-administrator", Scope: apiScopeAdmin})
+				admin, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "other-runner-administrator", Scope: hubapi.APIScopeAdmin})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -343,7 +344,7 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 					}
 					expiry := time.Now().Add(time.Hour)
 					for _, keyProjects := range [][]string{{string(f.project)}, {string(f.project), "prj_onboarding_sibling"}} {
-						key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "scoped-runner-read-" + strings.Join(keyProjects, "-"), Scope: apiScopeOperator, Issuer: &issuer, KeyScope: apikey.ScopeWrite, ExpiresAt: &expiry, ProjectIDs: keyProjects, ProjectAccess: hostedProjectsSelected})
+						key, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "scoped-runner-read-" + strings.Join(keyProjects, "-"), Scope: hubapi.APIScopeOperator, Issuer: &issuer, KeyScope: apikey.ScopeWrite, ExpiresAt: &expiry, ProjectIDs: keyProjects, ProjectAccess: hubapi.HostedProjectsSelected})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -379,7 +380,7 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 					t.Fatal(err)
 				}
 				expiry := time.Now().Add(time.Hour)
-				key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "scoped-unassigned-runner-read", Scope: apiScopeOperator, Issuer: &issuer, KeyScope: apikey.ScopeWrite, ExpiresAt: &expiry, ProjectIDs: []string{string(f.project), string(sibling.project)}, ProjectAccess: hostedProjectsSelected})
+				key, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "scoped-unassigned-runner-read", Scope: hubapi.APIScopeOperator, Issuer: &issuer, KeyScope: apikey.ScopeWrite, ExpiresAt: &expiry, ProjectIDs: []string{string(f.project), string(sibling.project)}, ProjectAccess: hubapi.HostedProjectsSelected})
 				if err != nil {
 					t.Fatal(err)
 				}

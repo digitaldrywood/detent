@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -27,9 +28,9 @@ func TestNativeCommandReplayUsesTenantReceipt(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: organization, credential: apiCredential{ID: principal, Hash: principal, Scope: apiScopeAdmin}}
+			scope := nativeScope{organization: organization, credential: hubapi.APICredential{ID: principal, Hash: principal, Scope: hubapi.APIScopeAdmin}}
 			input := map[string]string{"name": "example"}
-			hash, err := nativeCommandHash(input)
+			hash, err := hubapi.CommandHash(input)
 			if err != nil {
 				t.Fatal(err)
 			}

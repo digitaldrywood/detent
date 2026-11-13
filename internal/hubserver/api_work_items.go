@@ -4,30 +4,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"strings"
-)
-
-const (
-	defaultAPIPageLimit = 50
-	maxAPIPageLimit     = 200
 )
 
 type timelineCursor struct {
 	Version int   `json:"v"`
 	ID      int64 `json:"id"`
-}
-
-func parsePageLimit(value string) (int, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return defaultAPIPageLimit, nil
-	}
-	limit, err := strconv.Atoi(value)
-	if err != nil || limit < 1 || limit > maxAPIPageLimit {
-		return 0, errors.New("page limit is invalid")
-	}
-	return limit, nil
 }
 
 func encodeTimelineCursor(cursor timelineCursor) (string, error) {

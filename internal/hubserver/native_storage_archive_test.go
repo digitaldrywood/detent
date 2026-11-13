@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -106,7 +107,7 @@ func (f *postgresStorageArchiveFixture) write(t *testing.T, fn func(tenantstore.
 func (f *postgresStorageArchiveFixture) transition(t *testing.T, item tracker.NativeWorkItemID, state string) tracker.NativeIssue {
 	t.Helper()
 	issue := readWorkItem(t, f.nativeFixture, item, "")
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("transition")}, ExpectedRevision: issue.Revision, State: state, Reason: "user_requested"})
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("transition")}, ExpectedRevision: issue.Revision, State: state, Reason: "user_requested"})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &issue)
 	f.service.tokenUseWork.Wait()
@@ -114,7 +115,7 @@ func (f *postgresStorageArchiveFixture) transition(t *testing.T, item tracker.Na
 }
 func (f *postgresStorageArchiveFixture) closed(t *testing.T) tracker.NativeIssue {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("create")}, Title: "Archive example", Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: "Todo"})
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("create")}, Title: "Archive example", Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, response, &issue)
@@ -571,7 +572,7 @@ SELECT entry FROM (
 			t.Fatal(err)
 		}
 		defer func() {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 			defer cancel()
 			if err := connection.Close(cleanup); err != nil {
 				t.Error(err)
@@ -582,7 +583,7 @@ SELECT entry FROM (
 			t.Fatal(err)
 		}
 		defer func() {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 			defer cancel()
 			if err := tx.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
 				t.Error(err)

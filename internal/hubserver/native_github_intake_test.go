@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -76,7 +77,7 @@ func applyLinkedWebhook(t *testing.T, f nativeFixture, action, event string, sna
 		t.Fatal(err)
 	}
 	ctx := context.WithValue(t.Context(), linkedSourceURLKey{}, "https://cloud.example")
-	identity, err := nativeCommandHash(raw)
+	identity, err := hubapi.CommandHash(raw)
 	if err != nil {
 		t.Fatal(err)
 	}

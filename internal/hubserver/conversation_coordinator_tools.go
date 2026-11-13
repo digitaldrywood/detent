@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -29,17 +30,15 @@ import (
 
 // Bounds for coordinator tool arguments and results.
 const (
-	coordinatorToolArgumentBytes     = 16 << 10
-	coordinatorWorkflowArgumentBytes = 6*(128<<10) + coordinatorToolArgumentBytes
-	coordinatorToolResultBytes       = 64 << 10
-	coordinatorAttentionDefault      = 20
-	coordinatorAttentionMax          = 50
-	coordinatorAttentionScan         = 500
-	coordinatorIssueBodyRunes        = 4000
-	coordinatorCommentRunes          = 1000
-	coordinatorCommentCount          = 5
-	coordinatorProposalTitleBytes    = 500
-	coordinatorProposalBodyRunes     = 4000
+	coordinatorToolResultBytes    = 64 << 10
+	coordinatorAttentionDefault   = 20
+	coordinatorAttentionMax       = 50
+	coordinatorAttentionScan      = 500
+	coordinatorIssueBodyRunes     = 4000
+	coordinatorCommentRunes       = 1000
+	coordinatorCommentCount       = 5
+	coordinatorProposalTitleBytes = 500
+	coordinatorProposalBodyRunes  = 4000
 )
 
 const (
@@ -132,7 +131,7 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 	}
 	limit := coordinatorToolResultBytes
 	if call.Name == "get_project_integration" || call.Name == "update_project_integration" {
-		limit = coordinatorWorkflowArgumentBytes
+		limit = hubapi.CoordinatorWorkflowArgumentBytes
 	}
 	if len(encoded) > limit {
 		return coordinatorToolError(fmt.Errorf("%s result exceeds %d bytes; narrow the request", call.Name, limit)), nil
@@ -141,9 +140,9 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 }
 
 func coordinatorToolError(err error) runner.AgentToolResult {
-	err = fromFeatureError(err)
+	err = hubapi.FromFeatureError(err)
 	message := err.Error()
-	var native *nativeError
+	var native *hubapi.NativeError
 	var request *operatortool.RequestError
 	switch {
 	case errors.As(err, &native) && native.Code == "invalid_request":
@@ -268,7 +267,7 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 }
 
 func decodeCoordinatorArguments(raw json.RawMessage, target any) error {
-	return decodeCoordinatorArgumentsWithLimit(raw, target, coordinatorToolArgumentBytes)
+	return decodeCoordinatorArgumentsWithLimit(raw, target, hubapi.CoordinatorToolArgumentBytes)
 }
 
 func decodeCoordinatorArgumentsWithLimit(raw json.RawMessage, target any, limit int) error {
@@ -321,7 +320,7 @@ func (t *coordinatorToolset) readableProjects(ctx context.Context, record conver
 				for _, grant := range grants {
 					ids = append(ids, grant.ProjectID)
 				}
-			} else if credential.Scope == apiScopeAdmin && !credential.NativeOnly {
+			} else if credential.Scope == hubapi.APIScopeAdmin && !credential.NativeOnly {
 				rows, err := r.Projects(ctx, after, 100)
 				if err != nil {
 					return err
@@ -436,7 +435,7 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 			if err != nil {
 				return err
 			}
-			item := coordinatorAttentionItem{WorkItemID: string(row.NativeID), ProjectID: row.ProjectID, Number: row.Number, Title: boundRunes(row.Title, coordinatorToolSummaryRunes), State: stringValue(row.WorkflowStateName), UpdatedAt: formatHubTime(row.NativeUpdatedAt), URL: issueBrowserPath(org.Slug, project.Slug, int(row.Number))}
+			item := coordinatorAttentionItem{WorkItemID: string(row.NativeID), ProjectID: row.ProjectID, Number: row.Number, Title: boundRunes(row.Title, coordinatorToolSummaryRunes), State: hubapi.StringValue(row.WorkflowStateName), UpdatedAt: hubapi.FormatHubTime(row.NativeUpdatedAt), URL: issueBrowserPath(org.Slug, project.Slug, int(row.Number))}
 			waiting := false
 			linked, err := r.ConversationByWorkItem(ctx, row.ProjectID, string(row.NativeID))
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -546,7 +545,7 @@ func (t *coordinatorToolset) resolveIssueReference(ctx context.Context, record c
 	scope.project = record.ProjectID
 	s := t.coordinator.server
 	issue, err := s.resolveOperatorNativeItem(ctx, nil, scope, reference)
-	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, explain.ErrNotFound) || isNativeNotFound(err) {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, explain.ErrNotFound) || hubapi.IsNativeNotFound(err) {
 		return "", fmt.Errorf("no issue %s in this project", "#"+strings.TrimPrefix(reference, "#"))
 	}
 	if err != nil {
@@ -582,7 +581,7 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 			return err
 		}
 		if !slices.Contains(readable, row.ProjectID) {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		scope.project = row.ProjectID
 		project, err := r.ProjectRecord(ctx, row.ProjectID)
@@ -594,8 +593,8 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 			return err
 		}
 		result.URL = issueBrowserPath(org.Slug, project.Core.Slug, int(row.Number))
-		result.WorkItemID, result.ProjectID, result.Number, result.Title, result.State = string(row.NativeID), row.ProjectID, row.Number, row.Title, stringValue(row.WorkflowStateName)
-		result.UpdatedAt = formatHubTime(row.NativeUpdatedAt)
+		result.WorkItemID, result.ProjectID, result.Number, result.Title, result.State = string(row.NativeID), row.ProjectID, row.Number, row.Title, hubapi.StringValue(row.WorkflowStateName)
+		result.UpdatedAt = hubapi.FormatHubTime(row.NativeUpdatedAt)
 		for _, state := range project.States {
 			if state.Name == result.State {
 				result.Terminal = state.Terminal
@@ -636,14 +635,14 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 		if status == "running" && (attempt.ClaimReleasedAt != nil || !s.config.now().Before(attempt.LeaseExpiresAt)) {
 			status = "interrupted"
 		}
-		result.LatestAttempt = &coordinatorAttempt{AttemptID: attemptID, Status: status, Outcome: attempt.Outcome, StartedAt: formatHubTime(attempt.StartedAt), UpdatedAt: formatHubTime(attempt.UpdatedAt)}
+		result.LatestAttempt = &coordinatorAttempt{AttemptID: attemptID, Status: status, Outcome: attempt.Outcome, StartedAt: hubapi.FormatHubTime(attempt.StartedAt), UpdatedAt: hubapi.FormatHubTime(attempt.UpdatedAt)}
 	}
 	comments, err := s.readCommentRecords(actorCtx, scope, workItemID, url.Values{"limit": []string{strconv.Itoa(coordinatorCommentCount)}, "direction": []string{"newest"}})
 	if err != nil {
 		return nil, err
 	}
 	for _, comment := range comments.Items {
-		result.Comments = append(result.Comments, coordinatorComment{Author: strings.TrimSpace(comment.Actor.Kind + " " + comment.Actor.PrincipalID), Body: boundRunes(comment.Body, coordinatorCommentRunes), CreatedAt: formatHubTime(comment.CreatedAt)})
+		result.Comments = append(result.Comments, coordinatorComment{Author: strings.TrimSpace(comment.Actor.Kind + " " + comment.Actor.PrincipalID), Body: boundRunes(comment.Body, coordinatorCommentRunes), CreatedAt: hubapi.FormatHubTime(comment.CreatedAt)})
 	}
 	slices.Reverse(result.Comments)
 	return result, nil
@@ -702,7 +701,7 @@ func (s *Service) coordinatorAllowedProjects(ctx context.Context, r tenantstore.
 	for _, id := range ids {
 		scope.project = id
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
-			if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || isNativeNotFound(err) {
+			if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || hubapi.IsNativeNotFound(err) {
 				continue
 			}
 			return nil, err

@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -39,7 +40,7 @@ import (
 )
 
 type runtimeReadQuery struct {
-	nativeQueryer
+	hubapi.NativeQueryer
 	statements []string
 	arguments  [][]any
 }
@@ -47,13 +48,13 @@ type runtimeReadQuery struct {
 func (q *runtimeReadQuery) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
 	q.statements = append(q.statements, statement)
 	q.arguments = append(q.arguments, args)
-	return q.nativeQueryer.QueryContext(ctx, statement, args...)
+	return q.NativeQueryer.QueryContext(ctx, statement, args...)
 }
 
 func (q *runtimeReadQuery) QueryRowContext(ctx context.Context, statement string, args ...any) *sql.Row {
 	q.statements = append(q.statements, statement)
 	q.arguments = append(q.arguments, args)
-	return q.nativeQueryer.QueryRowContext(ctx, statement, args...)
+	return q.NativeQueryer.QueryRowContext(ctx, statement, args...)
 }
 
 type runtimeHistoryTraceKey struct{}
@@ -160,13 +161,13 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	}
 	seedAttempt := func(status string, observation *tracker.NativeRuntimeObservation) string {
 		t.Helper()
-		id := newNativeID("attempt")
+		id := hubapi.NewID("attempt")
 		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 			item, err := w.WorkItem(t.Context(), scope.project, f.issue.WorkItemID)
 			if err != nil {
 				return err
 			}
-			lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(registered.binding.MachineID), RunnerID: registered.binding.RunnerID, SessionID: id, LeaseID: newNativeID("lease"), TTL: time.Hour})
+			lease, err := w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(registered.binding.MachineID), RunnerID: registered.binding.RunnerID, SessionID: id, LeaseID: hubapi.NewID("lease"), TTL: time.Hour})
 			if err != nil {
 				return err
 			}
@@ -185,7 +186,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 			if observation.Landing != nil {
 				data.FromState, data.ToState = observation.Landing.FromState, observation.Landing.TargetState
 			}
-			event, err := content.PrepareEvent(t.Context(), scope.organization, marshal(tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: string(registered.binding.MachineID)}, RecordedAt: now, Data: data}))
+			event, err := content.PrepareEvent(t.Context(), scope.organization, marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: string(registered.binding.MachineID)}, RecordedAt: now, Data: data}))
 			if err != nil {
 				return err
 			}
@@ -223,7 +224,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	transition, err := content.PrepareEvent(t.Context(), scope.organization, marshal(tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "system", PrincipalID: "example-worker"}, RecordedAt: now, Data: tracker.CollaborationData{FromState: "Merging", ToState: issue.State, Reason: "worker_progress", ReasonDetail: finding, Change: &tracker.NativeChangeReference{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}}))
+	transition, err := content.PrepareEvent(t.Context(), scope.organization, marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "system", PrincipalID: "example-worker"}, RecordedAt: now, Data: tracker.CollaborationData{FromState: "Merging", ToState: issue.State, Reason: "worker_progress", ReasonDetail: finding, Change: &tracker.NativeChangeReference{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,21 +268,21 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	for _, history := range []int{1, 64, 256} {
 		t.Run(strconv.Itoa(history), func(t *testing.T) {
 			for i := previous; i < history; i++ {
-				decision, err := content.PrepareEvent(t.Context(), scope.organization, marshal(tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: tracker.Actor{Kind: "system", PrincipalID: "example-scheduler"}, RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "recorded refusal", At: now}}}))
+				decision, err := content.PrepareEvent(t.Context(), scope.organization, marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: tracker.Actor{Kind: "system", PrincipalID: "example-scheduler"}, RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "recorded refusal", At: now}}}))
 				if err != nil {
 					t.Fatal(err)
 				}
 				old := version
-				old.ID, old.Number = newNativeID("version"), int64(i+1000)
+				old.ID, old.Number = hubapi.NewID("version"), int64(i+1000)
 				oldVersion, err := content.PrepareVersion(t.Context(), scope.organization, marshal(old))
 				if err != nil {
 					t.Fatal(err)
 				}
 				var historical []eventstore.Evidence
 				for kind, record := range map[string]any{
-					"review":     tracker.ChangeReview{ID: newNativeID("review"), VersionID: old.ID, Decision: "approved", Body: strings.Repeat("historical review ", 512), Actor: tracker.Actor{Kind: "human", PrincipalID: "old-reviewer"}, CreatedAt: version.CreatedAt},
-					"check":      tracker.ChangeCheck{VersionID: old.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: newNativeID("check"), Conclusion: "failure"}, Actor: tracker.Actor{Kind: "system", PrincipalID: "old-check"}, ReceivedAt: version.CreatedAt},
-					"discussion": tracker.ChangeDiscussion{ID: newNativeID("comment"), VersionID: old.ID, Body: strings.Repeat("historical discussion ", 512), Actor: tracker.Actor{Kind: "human", PrincipalID: "old-commenter"}, CreatedAt: version.CreatedAt},
+					"review":     tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: old.ID, Decision: "approved", Body: strings.Repeat("historical review ", 512), Actor: tracker.Actor{Kind: "human", PrincipalID: "old-reviewer"}, CreatedAt: version.CreatedAt},
+					"check":      tracker.ChangeCheck{VersionID: old.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: hubapi.NewID("check"), Conclusion: "failure"}, Actor: tracker.Actor{Kind: "system", PrincipalID: "old-check"}, ReceivedAt: version.CreatedAt},
+					"discussion": tracker.ChangeDiscussion{ID: hubapi.NewID("comment"), VersionID: old.ID, Body: strings.Repeat("historical discussion ", 512), Actor: tracker.Actor{Kind: "human", PrincipalID: "old-commenter"}, CreatedAt: version.CreatedAt},
 				} {
 					row, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: scope.organization, ChangeID: old.ChangeID, Kind: kind}, marshal(record))
 					if err != nil {
@@ -343,7 +344,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 				if err == nil {
 					err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement.query, statement.args...).Scan(&raw)
 				}
-				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 				rollbackErr := tx.Rollback(cleanup)
 				cancel()
 				if err := errors.Join(err, rollbackErr); err != nil {
@@ -708,7 +709,7 @@ func runtimeCapacityQueries(t *testing.T, service *Service, ctx context.Context,
 	err := repository.ReadTenantSnapshot(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(runnerstore.RuntimeCapacityReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		snapshot, err = owner.RuntimeCapacitySnapshot(readCtx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.project, RunnerID: scope.credential.Runner.RunnerID, At: now, Explanation: explanationRead(ctx)})
@@ -761,7 +762,7 @@ func assertRuntimeCapacityPlans(t *testing.T, pool *pgxpool.Pool, scope nativeSc
 		if err == nil {
 			err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement.query, statement.args...).Scan(&raw)
 		}
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 		rollbackErr := tx.Rollback(cleanup)
 		cancel()
 		if err := errors.Join(err, rollbackErr); err != nil {
@@ -924,7 +925,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 							outside = runner
 						}
 					}
-					machineID := newNativeID("machine")
+					machineID := hubapi.NewID("machine")
 					if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 						return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: scope.organization, ID: machineID, Hostname: "Example outside host", Capacity: 8, Version: "test"})
 					}); err != nil {
@@ -934,7 +935,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 					var hiddenLease leasestore.Lease
 					t.Cleanup(func() {
 						now = originalNow
-						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 						defer cancel()
 						if hiddenLease.LeaseID != "" {
 							if err := repository.WriteTenant(cleanup, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -957,7 +958,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						hiddenLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: machineID, RunnerID: outside.binding.RunnerID, SessionID: "landing/outside-window", LeaseID: newNativeID("lease"), TTL: time.Hour, LandingCapacity: 1})
+						hiddenLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: machineID, RunnerID: outside.binding.RunnerID, SessionID: "landing/outside-window", LeaseID: hubapi.NewID("lease"), TTL: time.Hour, LandingCapacity: 1})
 						if err != nil {
 							return err
 						}
@@ -1156,7 +1157,7 @@ SELECT organization_id,project_id,$7,'capacity_'||native_id,id,$6,native_id,1,$5
 				err := repository.ReadTenantSnapshot(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 					owner, ok := r.(runnerstore.RuntimeCapacityReader)
 					if !ok {
-						return nativeRunEventStorageUnavailable()
+						return hubapi.NativeRunEventStorageUnavailable()
 					}
 					var err error
 					facts, err = owner.RuntimeCapacitySnapshot(readCtx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.project, At: now, Explanation: true})

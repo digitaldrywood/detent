@@ -10,13 +10,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantstore.Reader, credential apiCredential, email string, grants []hostedMemberGrant) error {
+func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantstore.Reader, credential hubapi.APICredential, email string, grants []hostedMemberGrant) error {
 	if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 		return operatortool.ErrAccessDenied
 	}
@@ -33,7 +34,7 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 	selected := make(map[string]bool, len(grants))
 	for _, grant := range grants {
 		if !hostedSafeID(grant.ProjectID) || selected[grant.ProjectID] {
-			return nativePublicInvalid("Select each project only once")
+			return hubapi.NativePublicInvalid("Select each project only once")
 		}
 		selected[grant.ProjectID] = true
 		project, err := r.ProjectRecord(ctx, tracker.ProjectID(grant.ProjectID))
@@ -51,7 +52,7 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 			return operatorAuthorizationError(err)
 		}
 		if grant.Write && !projectGrant.CanWrite || grant.Runner && !projectGrant.ManageRunner {
-			return &nativeError{Code: "forbidden", Message: "You can only grant project access that you hold", status: 403, publicMessage: true}
+			return &hubapi.NativeError{Code: "forbidden", Message: "You can only grant project access that you hold", Status: 403, PublicMessage: true}
 		}
 	}
 	var after string
@@ -118,7 +119,7 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 	}
 }
 
-func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantstore.Reader, credential apiCredential, project tracker.ProjectID, write, runner bool) error {
+func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantstore.Reader, credential hubapi.APICredential, project tracker.ProjectID, write, runner bool) error {
 	row, err := r.ProjectRecord(ctx, project)
 	if err != nil {
 		return operatorAuthorizationError(err)
@@ -132,7 +133,7 @@ func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantsto
 		}
 		return operatortool.ErrAccessDenied
 	}
-	if credential.Scope == apiScopeAdmin && !credential.NativeOnly {
+	if credential.Scope == hubapi.APIScopeAdmin && !credential.NativeOnly {
 		return nil
 	}
 	grant, err := r.AccessProjectGrant(ctx, credential.Hosted.Subject, project)
@@ -140,10 +141,10 @@ func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantsto
 		return operatorAuthorizationError(err)
 	}
 	if write && !grant.CanWrite || runner && !grant.ManageRunner {
-		return &nativeError{Code: "forbidden", Message: "You can only grant project access that you hold", status: 403, publicMessage: true}
+		return &hubapi.NativeError{Code: "forbidden", Message: "You can only grant project access that you hold", Status: 403, PublicMessage: true}
 	}
 	tokenID := credential.ID
-	if credential.Hosted != nil && credential.HostedKeyScope != "" && credential.HostedProjectAccess == hostedProjectsAll {
+	if credential.Hosted != nil && credential.HostedKeyScope != "" && credential.HostedProjectAccess == hubapi.HostedProjectsAll {
 		tokenID = credential.HostedPrincipal
 	}
 	if _, err := r.AccessTokenGrant(ctx, tokenID, project); err != nil {
@@ -157,7 +158,7 @@ func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantsto
 	return nil
 }
 
-func (s *Service) pendingAccessInvitationFor(ctx context.Context, credential apiCredential, id string) (hostedInvitationView, error) {
+func (s *Service) pendingAccessInvitationFor(ctx context.Context, credential hubapi.APICredential, id string) (hostedInvitationView, error) {
 	var view hostedInvitationView
 	if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 		return view, operatortool.ErrAccessDenied
@@ -176,13 +177,13 @@ func (s *Service) pendingAccessInvitationFor(ctx context.Context, credential api
 			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return classified
 			}
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		if row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.now()) {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		if row.Role == "owner" && credential.HostedRole != "owner" {
-			return &nativeError{Code: "forbidden", Message: "You cannot change owner invitations", status: 403, publicMessage: true}
+			return &hubapi.NativeError{Code: "forbidden", Message: "You cannot change owner invitations", Status: 403, PublicMessage: true}
 		}
 		view, err = s.accessInvitationView(ctx, r, row)
 		return err
@@ -195,15 +196,15 @@ func (s *Service) pendingAccessInvitationFor(ctx context.Context, credential api
 		return view, err
 	}
 	if invitation.ID != id || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, row.Email) || invitation.State != "pending" || !invitation.ExpiresAt.After(s.config.now()) {
-		return view, nativeNotFound()
+		return view, hubapi.NativeNotFound()
 	}
 	if invitation.ExpiresAt.Before(row.ExpiresAt) {
-		view.ExpiresAt = formatHubTime(invitation.ExpiresAt)
+		view.ExpiresAt = hubapi.FormatHubTime(invitation.ExpiresAt)
 	}
 	return view, nil
 }
 
-func (s *Service) createAccessInvitation(ctx context.Context, credential apiCredential, email, role string, grants []hostedMemberGrant) (view hostedInvitationView, resultErr error) {
+func (s *Service) createAccessInvitation(ctx context.Context, credential hubapi.APICredential, email, role string, grants []hostedMemberGrant) (view hostedInvitationView, resultErr error) {
 	if err := s.validateHostedInvitationGrants(ctx, credential, email, grants); err != nil {
 		return hostedInvitationView{}, err
 	}
@@ -216,7 +217,7 @@ func (s *Service) createAccessInvitation(ctx context.Context, credential apiCred
 	if expires.IsZero() {
 		expires = now.Add(24 * time.Hour)
 	}
-	view = hostedInvitationView{ID: invitation.ID, Email: email, Role: role, CreatedAt: formatHubTime(now), ExpiresAt: formatHubTime(expires), Grants: append([]hostedMemberGrant{}, grants...)}
+	view = hostedInvitationView{ID: invitation.ID, Email: email, Role: role, CreatedAt: hubapi.FormatHubTime(now), ExpiresAt: hubapi.FormatHubTime(expires), Grants: append([]hostedMemberGrant{}, grants...)}
 	err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
 		scope := nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
@@ -242,7 +243,7 @@ func (s *Service) createAccessInvitation(ctx context.Context, credential apiCred
 	return view, nil
 }
 
-func (s *Service) editAccessInvitation(ctx context.Context, credential apiCredential, id string, grants []hostedMemberGrant) error {
+func (s *Service) editAccessInvitation(ctx context.Context, credential hubapi.APICredential, id string, grants []hostedMemberGrant) error {
 	if grants == nil {
 		grants = []hostedMemberGrant{}
 	}
@@ -260,10 +261,10 @@ func (s *Service) editAccessInvitation(ctx context.Context, credential apiCreden
 			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return classified
 			}
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		if current.AcceptedUserID != "" || !current.ExpiresAt.After(s.config.now()) || current.Email != view.Email || current.Role != view.Role {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		currentView, err := s.accessInvitationView(ctx, w, current)
 		if err != nil {
@@ -292,7 +293,7 @@ func (s *Service) editAccessInvitation(ctx context.Context, credential apiCreden
 	return nil
 }
 
-func (s *Service) revokeAccessInvitation(ctx context.Context, credential apiCredential, id string) error {
+func (s *Service) revokeAccessInvitation(ctx context.Context, credential hubapi.APICredential, id string) error {
 	var current accessstore.Invitation
 	if err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}, true); err != nil {
@@ -311,7 +312,7 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential apiCred
 		return err
 	}
 	if current.AcceptedUserID != "" || !current.ExpiresAt.After(s.config.now()) {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	if current.Role == "owner" && credential.HostedRole != "owner" {
 		return operatortool.ErrAccessDenied
@@ -345,7 +346,7 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential apiCred
 	})
 }
 
-func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential apiCredential, email string) (bool, error) {
+func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential hubapi.APICredential, email string) (bool, error) {
 	runtimePlans := s.database.plans()
 	if runtimePlans == nil {
 		return false, errors.New("hosted entitlements are disabled")
@@ -392,5 +393,5 @@ func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential ap
 }
 
 func nativeUnavailable(message string) error {
-	return &nativeError{Code: "unavailable", Message: message, status: 503}
+	return &hubapi.NativeError{Code: "unavailable", Message: message, Status: 503}
 }

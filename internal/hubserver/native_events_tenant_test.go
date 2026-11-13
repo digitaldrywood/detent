@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -102,8 +103,8 @@ func TestNativeRunEventMutationValidation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			service := &Service{}
 			_, err := service.appendNativeRunEventTenant(t.Context(), nativeScope{}, "wi_example", tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: test.key}, Data: tracker.NativeRunData{Sequence: test.sequence}})
-			var failure *nativeError
-			if !errors.As(err, &failure) || failure.status != test.status {
+			var failure *hubapi.NativeError
+			if !errors.As(err, &failure) || failure.Status != test.status {
 				t.Fatalf("command error=%v, want status %d", err, test.status)
 			}
 			if test.category != "" {
@@ -180,7 +181,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+	scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 	relatedEvents := []tracker.CollaborationEvent{{Data: tracker.CollaborationData{RelatedWorkItemID: issue.WorkItemID}}}
 	if err := service.hydrateTenantHistoryRelatedIssues(t.Context(), scope, relatedEvents); err != nil {
 		t.Fatal(err)
@@ -190,7 +191,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	}
 	start := tracker.NativeRunEvent{
 		Mutation: tracker.Mutation{IdempotencyKey: "start"}, Type: "run.started", SchemaVersion: 1,
-		Data: tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: tracker.LeaseID(lease.LeaseID),
+		Data: tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: tracker.LeaseID(lease.LeaseID),
 			FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: "policy_" + strings.Repeat("a", 64), Sequence: 1,
 			Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example-model"}},
 	}
@@ -275,7 +276,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	stale := finish
 	stale.IdempotencyKey = "stale"
 	stale.Data.Sequence = 4
-	var conflict *nativeError
+	var conflict *hubapi.NativeError
 	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(issue.WorkItemID), stale); !errors.As(err, &conflict) || conflict.Code != "run_sequence_conflict" {
 		t.Fatalf("stale event sequence error=%v", err)
 	}
@@ -335,8 +336,8 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	}
 	secondStart := start
 	secondStart.IdempotencyKey = "second-start"
-	secondStart.Data.AttemptID = newNativeID("attempt")
-	secondStart.Data.RunID = newNativeID("run")
+	secondStart.Data.AttemptID = hubapi.NewID("attempt")
+	secondStart.Data.RunID = hubapi.NewID("run")
 	secondStart.Data.LeaseID = tracker.LeaseID(secondLease.LeaseID)
 	secondStart.Data.FencingToken = tracker.FencingToken(secondLease.FencingToken)
 	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), secondStart); err != nil {
@@ -371,7 +372,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		return rows
 	}
 	rowsBefore := runRows()
-	var orderRefusal *nativeError
+	var orderRefusal *hubapi.NativeError
 	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), staleSuffix); !errors.As(err, &orderRefusal) || orderRefusal.Code != "run_sequence_conflict" {
 		t.Fatalf("older heartbeat after a valid batch prefix: %v", err)
 	}
@@ -396,7 +397,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	laterObservation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", HeartbeatAt: service.config.now().UTC().Add(time.Second)}
 	laterObservation.Type = "run.checkpointed"
 	pendingCheckpoint := *nativeTestCheckpoint()
-	pendingCheckpoint.ExternalEffect, pendingCheckpoint.EffectState, pendingCheckpoint.EffectID = "git_push", "pending", newNativeID("effect")
+	pendingCheckpoint.ExternalEffect, pendingCheckpoint.EffectState, pendingCheckpoint.EffectID = "git_push", "pending", hubapi.NewID("effect")
 	pendingCheckpoint.WorktreeState, pendingCheckpoint.HeadSHA = "unpushed", strings.Repeat("a", 40)
 	laterObservation.Data.Handoff = &pendingCheckpoint
 	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), laterObservation); err != nil {
@@ -537,7 +538,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	} {
 		t.Run(read.name, func(t *testing.T) {
 			err := read.fn()
-			var failure *nativeError
+			var failure *hubapi.NativeError
 			if !errors.As(err, &failure) || failure.Code != "not_found" {
 				t.Fatalf("foreign reporter read error=%v, want opaque not-found", err)
 			}
@@ -561,7 +562,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		t.Fatal("nested prior-event batch was accepted")
 	}
 	runnerScope := scope
-	runnerScope.credential = apiCredential{ID: credentialID, Hash: apikey.HashToken("example_" + binding.RunnerID), Scope: apiScopeWorker, NativeOnly: true, Runner: runnerauth.Identity{Binding: binding, Scope: "projects", OrganizationID: organization.ID, ProjectIDs: []tracker.ProjectID{project.ID}, Operations: operations, ExpiresAt: expires}}
+	runnerScope.credential = hubapi.APICredential{ID: credentialID, Hash: apikey.HashToken("example_" + binding.RunnerID), Scope: hubapi.APIScopeWorker, NativeOnly: true, Runner: runnerauth.Identity{Binding: binding, Scope: "projects", OrganizationID: organization.ID, ProjectIDs: []tracker.ProjectID{project.ID}, Operations: operations, ExpiresAt: expires}}
 	renewRequest := tracker.NativeLeaseMutation{FencingToken: tracker.FencingToken(secondLease.FencingToken), TTLSeconds: 7200, LandingCapacity: 3}
 	renewBody, err := json.Marshal(renewRequest)
 	if err != nil {
@@ -630,8 +631,8 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	}
 	cancelStart := start
 	cancelStart.IdempotencyKey = "cancel-start"
-	cancelStart.Data.AttemptID = newNativeID("attempt")
-	cancelStart.Data.RunID = newNativeID("run")
+	cancelStart.Data.AttemptID = hubapi.NewID("attempt")
+	cancelStart.Data.RunID = hubapi.NewID("run")
 	cancelStart.Data.LeaseID = tracker.LeaseID(thirdLease.LeaseID)
 	cancelStart.Data.FencingToken = tracker.FencingToken(thirdLease.FencingToken)
 	if _, err := service.appendNativeRunEventTenant(t.Context(), runnerScope, string(thirdIssue.WorkItemID), cancelStart); err != nil {
@@ -888,7 +889,7 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 				if err := w.ApproveProjectPolicy(t.Context(), policy, ""); err != nil {
 					return err
 				}
-				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credential, Name: "Example runner", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credential, Name: "Example runner", Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 					return err
 				}
 				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credential, ProjectID: project.ID}); err != nil {
@@ -921,7 +922,7 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 					var issue tracker.NativeIssue
 					decodeHubResponse(t, response, &issue)
 					path := base + "/work-items/" + string(issue.WorkItemID)
-					claim := tracker.NativeClaim{PolicyID: policy.PolicyID, WorkItemID: issue.WorkItemID, MachineID: binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
+					claim := tracker.NativeClaim{PolicyID: policy.PolicyID, WorkItemID: issue.WorkItemID, MachineID: binding.MachineID, SessionID: hubapi.NewID("session"), TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 					response = performHubAPIRequest(t, service, http.MethodPost, base+"/claims", token, claim)
 					requireNativeStatus(t, response, http.StatusOK)
 					var lease tracker.NativeLease
@@ -977,7 +978,7 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 							t.Fatal("workflow replay changed response")
 						}
 					}
-					start := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "first-event"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: policy.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "example-backend", Model: "example-model"}}}
+					start := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "first-event"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: policy.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "example-backend", Model: "example-model"}}}
 					stale := start
 					stale.IdempotencyKey = "stale-event"
 					stale.Data.FencingToken++

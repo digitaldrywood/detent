@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -32,23 +33,23 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
 	scope := nativeRequestScope(c)
 	var request tracker.LandChangeVersion
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes is required"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required"))
 	}
 	if !changerequest.ValidHash(request.MergeSHA, 40) && !changerequest.ValidHash(request.MergeSHA, 64) {
-		return s.nativeAPIError(c, nativePublicInvalid("The landed commit must be a lowercase commit identity"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("The landed commit must be a lowercase commit identity"))
 	}
 	if strings.TrimSpace(request.BaseRef) == "" || len(request.BaseRef) > 256 || !slices.Contains([]string{"squash", "merge", "rebase"}, request.Method) {
-		return s.nativeAPIError(c, nativePublicInvalid("Landing names the base branch and a merge method of squash, merge or rebase"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Landing names the base branch and a merge method of squash, merge or rebase"))
 	}
 	if request.Receipt != nil && (!request.Receipt.Landed || request.Receipt.Waiting || request.Receipt.GateFailed || request.Receipt.Refusal != "") {
-		return s.nativeAPIError(c, nativePublicInvalid("Landing receipt must attest a completed landing"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Landing receipt must attest a completed landing"))
 	}
 	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -64,7 +65,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if change.WorkItemID != tracker.NativeWorkItemID(c.Param("item")) {
-		return s.nativeAPIError(c, nativePublicInvalid("Land through the Change Request's primary issue"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Land through the Change Request's primary issue"))
 	}
 	var changeRow eventstore.Change
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -73,27 +74,27 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	if changeRow.OrganizationID != scope.organization || changeRow.ProjectID != scope.project || changeRow.WorkItemID != change.WorkItemID || changeRow.Revision != int64(change.Revision) || changeRow.CurrentVersionID == nil || *changeRow.CurrentVersionID != change.CurrentVersion {
-		return s.nativeAPIError(c, nativeConflict(change.Revision))
+		return s.nativeAPIError(c, hubapi.NativeConflict(change.Revision))
 	}
 	versionRow, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, c.Param("version"))
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	version, err := eventstore.NewContent(s.runDetailStore()).Version(ctx, versionRow)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if request.Receipt != nil && (request.Receipt.VersionID != version.ID || request.Receipt.HeadSHA != version.HeadSHA || request.Receipt.MergeSHA != request.MergeSHA || request.Receipt.BaseRef != request.BaseRef) {
-		return s.nativeAPIError(c, nativePublicInvalid("Landing receipt identities differ from the reviewed version"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Landing receipt identities differ from the reviewed version"))
 	}
 	if change.CurrentVersion != version.ID {
 		if landed := change.CurrentLanding(); landed != nil && landed.VersionID == version.ID && landed.MergeSHA == request.MergeSHA {
 			return s.recordExistingLandingReceipt(c, ctx, scope, operation, hash, request, change)
 		}
-		return s.nativeAPIError(c, nativeConflict(change.Revision))
+		return s.nativeAPIError(c, hubapi.NativeConflict(change.Revision))
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
@@ -106,14 +107,14 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	detail, err := s.selectedChangeDetail(ctx, scope, c.Param("item"), change.ID, now)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if detail.Summary.Status != "reviewed" {
-		return s.nativeAPIError(c, &nativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), status: http.StatusConflict})
+		return s.nativeAPIError(c, &hubapi.NativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), Status: http.StatusConflict})
 	}
 	itemRow, itemVersion, err := s.readWorkItemRecord(ctx, scope, string(change.WorkItemID))
 	if err != nil {
@@ -130,15 +131,15 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		return err
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	delivery := issue.ReleaseDelivery
 	associated := delivery != nil
 	if associated && (delivery.ChangeID != change.ID || delivery.VersionID != version.ID || delivery.HeadSHA != version.HeadSHA || delivery.BaseRef != request.BaseRef || version.External == nil || version.External.Provider != "github" || version.External.ID != strconv.Itoa(delivery.PRNumber) && delivery.PRNumber > 0) {
-		return s.nativeAPIError(c, nativePublicInvalid("Landing must cover the associated release version and branch"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Landing must cover the associated release version and branch"))
 	}
 	if associated && (request.Receipt == nil || request.Receipt.BaseSHA != delivery.BaseSHA || request.Receipt.HeadSHA != version.HeadSHA || request.Receipt.MergeSHA != request.MergeSHA) {
-		return s.nativeAPIError(c, nativePublicInvalid("Release landing must retain the reviewed base and head"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Release landing must retain the reviewed base and head"))
 	}
 	if err := s.verifyChangeLandingIncorporation(ctx, version, request); err != nil {
 		return s.nativeAPIError(c, err)
@@ -171,7 +172,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	var landingAttempt leasestore.Attempt
-	if scope.credential.Scope == apiScopeWorker {
+	if scope.credential.Scope == hubapi.APIScopeWorker {
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			landingAttempt, _, err = s.runnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(change.WorkItemID), false)
@@ -184,7 +185,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	var landingReceipt *eventstore.LandingReceipt
 	if request.Receipt != nil {
 		if version.AttemptID == "" && landingAttempt.ID == "" {
-			return s.nativeAPIError(c, nativePublicInvalid("Landing receipts require the source attempt bound by the immutable version"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Landing receipts require the source attempt bound by the immutable version"))
 		}
 		receiptAttemptID := version.AttemptID
 		if landingAttempt.ID != "" {
@@ -209,12 +210,12 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	var nextItem *corestore.WorkItem
 	var nextItemVersion *eventstore.CollaborationVersion
 	var nextSearch *searchstore.Document
-	fromState := stringValue(itemRow.WorkflowStateName)
+	fromState := hubapi.StringValue(itemRow.WorkflowStateName)
 	if !issue.Terminal {
 		projectWorkflow := tracker.NativeProject{States: project.States}
 		target := terminalTarget(projectWorkflow, fromState)
 		if target == "" {
-			return s.nativeAPIError(c, nativeInvalid("The workflow allows no move from "+fromState+" to a terminal lane"))
+			return s.nativeAPIError(c, hubapi.NativeInvalid("The workflow allows no move from "+fromState+" to a terminal lane"))
 		}
 		updatedIssue := issue
 		updatedIssue.State = target
@@ -264,7 +265,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
-					return nativeConflict(change.Revision - 1)
+					return hubapi.NativeConflict(change.Revision - 1)
 				}
 				return corestore.ErrSerializationFailure
 			} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -303,12 +304,12 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 				return err
 			}
 			if !reflect.DeepEqual(policyRows, reviewedPolicy) {
-				return policyMismatch("Current approved policy changed; the reviewed version must be republished")
+				return hubapi.PolicyMismatch("Current approved policy changed; the reviewed version must be republished")
 			}
-			if scope.credential.Scope == apiScopeWorker {
+			if scope.credential.Scope == hubapi.APIScopeWorker {
 				locker, ok := w.(leasestore.FencedLeaseLocker)
 				if !ok {
-					return nativeRunEventStorageUnavailable()
+					return hubapi.NativeRunEventStorageUnavailable()
 				}
 				if _, err := locker.LockLease(ctx, string(request.LeaseID)); err != nil {
 					return err
@@ -352,7 +353,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 						return err
 					}
 				}
-				if scope.credential.Scope == apiScopeWorker {
+				if scope.credential.Scope == hubapi.APIScopeWorker {
 					if err := w.AdvanceLeaseWorkItemRevision(ctx, leasestore.Fence{LeaseID: string(request.LeaseID), FencingToken: int64(request.FencingToken)}, itemRow.ID, itemRow.Revision, int64(nextIssue.Revision)); err != nil {
 						return err
 					}
@@ -373,10 +374,10 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 			continue
 		}
 		if errors.Is(err, corestore.ErrRevisionConflict) {
-			return s.nativeAPIError(c, nativeConflict(change.Revision))
+			return s.nativeAPIError(c, hubapi.NativeConflict(change.Revision))
 		}
 		if err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
+			return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 		}
 		break
 	}
@@ -413,7 +414,7 @@ func (s *Service) recordExistingLandingReceipt(c echo.Context, ctx context.Conte
 		_, err = w.PutReceipt(ctx, receipt)
 		return err
 	}); err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	return c.JSONBlob(http.StatusOK, response)
 }
@@ -424,7 +425,7 @@ func (s *Service) verifyChangeLandingIncorporation(ctx context.Context, version 
 	}
 	proof := request.Receipt.Incorporation
 	if proof.SourceBaseSHA != version.BaseSHA || proof.SourceHeadSHA != version.HeadSHA || proof.TargetHeadSHA != request.MergeSHA || !changerequest.ValidHash(proof.TargetTreeSHA, len(version.HeadSHA)) || proof.MergeTreeSHA != proof.TargetTreeSHA || request.Receipt.HeadSHA != version.HeadSHA || request.Receipt.MergeSHA != request.MergeSHA {
-		return nativePublicInvalid("landing incorporation proof must bind the reviewed range to the target tree")
+		return hubapi.NativePublicInvalid("landing incorporation proof must bind the reviewed range to the target tree")
 	}
 	select {
 	case s.sourceVerification <- struct{}{}:
@@ -434,7 +435,7 @@ func (s *Service) verifyChangeLandingIncorporation(ctx context.Context, version 
 	err := workspace.VerifyLandingIncorporation(ctx, *proof, request.IncorporationObjects)
 	<-s.sourceVerification
 	if err != nil {
-		return nativePublicInvalid("landing incorporation objects do not prove the reviewed range")
+		return hubapi.NativePublicInvalid("landing incorporation objects do not prove the reviewed range")
 	}
 	return nil
 }
@@ -444,12 +445,12 @@ func validateChangeLandingSecurityAudit(ctx context.Context, detail tracker.Chan
 		return nil
 	}
 	if request.Receipt == nil || request.Receipt.SecurityAudit == nil || request.Receipt.BaseSHA == "" || request.Receipt.MergeSHA != request.MergeSHA || request.Receipt.Incorporation != nil && request.Receipt.BaseSHA != version.BaseSHA {
-		return nativePublicInvalid("landing requires security audit evidence for its exact base and head")
+		return hubapi.NativePublicInvalid("landing requires security audit evidence for its exact base and head")
 	}
 	audit := *request.Receipt.SecurityAudit
 	securityaudit.NormalizeAttribution(&audit.Run)
 	evaluation := securityaudit.Evaluate(audit.Run, nil, securityaudit.Key{ProjectID: string(scope.project), Repository: version.Repository, PRNumber: audit.Run.PRNumber, BaseSHA: request.Receipt.BaseSHA, HeadSHA: auditHead}, "", []string{"none"})
-	auditRaw, err := marshalNative(audit)
+	auditRaw, err := hubapi.MarshalNative(audit)
 	if err != nil {
 		return err
 	}
@@ -458,7 +459,7 @@ func validateChangeLandingSecurityAudit(ctx context.Context, detail tracker.Chan
 		if review.VersionID != version.ID || review.SecurityAudit == nil || !review.SecurityAudit.Landing || review.Decision != "approved" {
 			continue
 		}
-		reviewRaw, err := marshalNative(review.SecurityAudit)
+		reviewRaw, err := hubapi.MarshalNative(review.SecurityAudit)
 		if err != nil {
 			return err
 		}
@@ -467,7 +468,7 @@ func validateChangeLandingSecurityAudit(ctx context.Context, detail tracker.Chan
 		}
 	}
 	if !evaluation.Allowed || audit.Verdict != "pass" || !audit.Landing || !recorded {
-		return nativePublicInvalid("landing security audit does not match recorded approval for the integrated change")
+		return hubapi.NativePublicInvalid("landing security audit does not match recorded approval for the integrated change")
 	}
 	return nil
 }

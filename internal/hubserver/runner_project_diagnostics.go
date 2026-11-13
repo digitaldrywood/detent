@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -37,13 +38,13 @@ func (s *Service) getRunnerProjectDiagnostics(c echo.Context) error {
 	if value := c.QueryParam("limit"); value != "" {
 		n, err := strconv.Atoi(value)
 		if err != nil {
-			return s.nativeAPIError(c, nativePublicInvalid("Invalid diagnostic limit"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid diagnostic limit"))
 		}
 		args.Limit = n
 	}
 	for key := range c.QueryParams() {
 		if !slices.Contains([]string{"runner_id", "issue_id", "attempt_id", "cursor", "limit"}, key) {
-			return s.nativeAPIError(c, nativePublicInvalid("Invalid diagnostic selector"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid diagnostic selector"))
 		}
 	}
 	raw, err := json.Marshal(args)
@@ -51,7 +52,7 @@ func (s *Service) getRunnerProjectDiagnostics(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if _, err := operatortool.DecodeLocalProjectArguments(operatortool.RunnerProjectDiagnostics, raw, true); err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid diagnostic selector"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid diagnostic selector"))
 	}
 	page, err := s.readRunnerProjectDiagnostics(c.Request().Context(), scope, args)
 	if err != nil {
@@ -69,7 +70,7 @@ type nativeDiagnosticWorkItemBatchReader interface {
 }
 
 func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope nativeScope, args operatortool.LocalProjectArguments) (runnerauth.DiagnosticPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	scope.project = tracker.ProjectID(args.ProjectID)
 	now := s.config.now().UTC()
@@ -84,8 +85,8 @@ func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope 
 		}
 		if scope.credential.HostedRole == "reporter" && args.IssueID != "" {
 			item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(args.IssueID))
-			if errors.Is(err, corestore.ErrNotFound) || err == nil && !scope.reporterOwns(tracker.Actor{Kind: stringValue(item.ActorKind), PrincipalID: stringValue(item.ActorPrincipalID)}) {
-				return nativeNotFound()
+			if errors.Is(err, corestore.ErrNotFound) || err == nil && !scope.reporterOwns(tracker.Actor{Kind: hubapi.StringValue(item.ActorKind), PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+				return hubapi.NativeNotFound()
 			}
 			if err != nil {
 				return err
@@ -243,7 +244,7 @@ func diagnosticReporterIssues(ctx context.Context, reader tenantstore.Reader, sc
 			return nil, err
 		}
 		for _, item := range items {
-			if scope.reporterOwns(tracker.Actor{Kind: stringValue(item.ActorKind), PrincipalID: stringValue(item.ActorPrincipalID)}) {
+			if scope.reporterOwns(tracker.Actor{Kind: hubapi.StringValue(item.ActorKind), PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				visible[string(item.NativeID)] = true
 			}
 		}

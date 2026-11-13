@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -106,7 +107,7 @@ func TestHostedChangePolicyAuthorization(t *testing.T) {
 func TestHostedChangePolicyJourney(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
-	seedHubAPIToken(t, f.service, "ungranted-ci", "ungranted-ci-token", apiScopeOperator)
+	seedHubAPIToken(t, f.service, "ungranted-ci", "ungranted-ci-token", hubapi.APIScopeOperator)
 	for _, project := range []string{f.project, f.privateProject} {
 		t.Run(project, func(t *testing.T) {
 			base := "/api/v2/organizations/org_browser_preview/projects/" + project
@@ -119,7 +120,7 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			descriptor = descriptor.WithID()
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
 			principal := "ci-" + project
-			seedHubAPIToken(t, f.service, principal, "credential-"+project, apiScopeOperator)
+			seedHubAPIToken(t, f.service, principal, "credential-"+project, hubapi.APIScopeOperator)
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
 				return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.service.accessOrganization(), TokenID: principal, ProjectID: tracker.ProjectID(project)})
 			}); err != nil {
@@ -254,11 +255,11 @@ func TestHostedChangePolicyCIPrincipals(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name    string
-		role    apiScope
+		role    hubapi.APIScope
 		revoked bool
 	}{
-		{"independent worker", apiScopeWorker, false},
-		{"revoked operator", apiScopeOperator, true},
+		{"independent worker", hubapi.APIScopeWorker, false},
+		{"revoked operator", hubapi.APIScopeOperator, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -287,7 +288,7 @@ func TestHostedChangePolicyBoundaries(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
-	seedHubAPIToken(t, f.service, "admin", "admin-bearer", apiScopeAdmin)
+	seedHubAPIToken(t, f.service, "admin", "admin-bearer", hubapi.APIScopeAdmin)
 	for _, test := range []struct {
 		name, path, csrf, bearer string
 		want                     int
@@ -312,7 +313,7 @@ func TestHostedChangePolicyBoundaries(t *testing.T) {
 			requireNativeStatus(t, response, test.want)
 		})
 	}
-	for _, role := range []apiScope{apiScopeWorker, apiScopeOperator, apiScopeAdmin} {
+	for _, role := range []hubapi.APIScope{hubapi.APIScopeWorker, hubapi.APIScopeOperator, hubapi.APIScopeAdmin} {
 		t.Run("bearer only/"+string(role), func(t *testing.T) {
 			seedHubAPIToken(t, f.service, "bearer-"+string(role), string(role)+"-token", role)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", string(role)+"-token", tracker.ApproveChangeReviewPolicy{}), http.StatusNotFound)

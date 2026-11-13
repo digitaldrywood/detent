@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -49,7 +50,7 @@ func (s *Service) authorizeBoardModel(ctx context.Context, reader tenantstore.Re
 		BoardAuthorizedItems(context.Context, accessstore.Authority, []tracker.NativeWorkItemID, []string, string) (viewstore.BoardReadAuthority, error)
 	})
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	reporter := ""
 	if scope.credential.HostedRole == "reporter" {

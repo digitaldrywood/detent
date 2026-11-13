@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -18,7 +19,7 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 		return nil
 	}
 	if s.config.TenantRepository == nil || s.database == nil {
-		return ErrPostgresFeatureUnavailable
+		return hubapi.ErrPostgresFeatureUnavailable
 	}
 	var project tracker.ProjectID
 	organization := s.database.hostedOrganization
@@ -26,7 +27,7 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 		var err error
 		gitHubIntakeReader, ok := r.(projectstore.GitHubIntakeReader)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return hubapi.ErrPostgresFeatureUnavailable
 		}
 		project, err = gitHubIntakeReader.NextGitHubIntake(ctx, s.config.now())
 		return err
@@ -47,7 +48,7 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 		retryErr := s.config.TenantRepository.WriteTenant(cleanup, organization, corestore.Background, func(w tenantstore.Writer) error {
 			gitHubIntakeWriter, ok := w.(projectstore.GitHubIntakeWriter)
 			if !ok {
-				return ErrPostgresFeatureUnavailable
+				return hubapi.ErrPostgresFeatureUnavailable
 			}
 			return gitHubIntakeWriter.DeferGitHubIntake(cleanup, project, s.config.now(), s.config.jitter())
 		})
@@ -68,7 +69,7 @@ func (s *Service) advanceGitHubBatch(ctx context.Context, scope nativeScope) err
 }
 
 func (s *Service) gitHubIntegrationScope(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID) (nativeScope, error) {
-	scope := nativeScope{integrationOwned: true, organization: organization, project: project, credential: apiCredential{ID: "github", Scope: apiScopeAdmin}, sourceActor: nativeIntegrationActor("github")}
+	scope := nativeScope{integrationOwned: true, organization: organization, project: project, credential: hubapi.APICredential{ID: "github", Scope: hubapi.APIScopeAdmin}, sourceActor: nativeIntegrationActor("github")}
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		p, err := r.ProjectRecord(ctx, project)
 		if err != nil {

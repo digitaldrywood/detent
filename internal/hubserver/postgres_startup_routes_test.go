@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -275,7 +276,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 				check := func(service *Service, token string, want int) {
 					t.Helper()
 					credential, status, err := service.authenticateAPIToken(t.Context(), token, "", "")
-					if status != want || want == http.StatusOK && (err != nil || credential.Scope != apiScopeAdmin || credential.Hosted != nil) {
+					if status != want || want == http.StatusOK && (err != nil || credential.Scope != hubapi.APIScopeAdmin || credential.Hosted != nil) {
 						t.Fatalf("local authentication status=%d error=%v, want %d", status, err, want)
 					}
 				}
@@ -514,7 +515,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 	expires := now.Add(time.Hour)
 	capacity := providercapacity.Report{Provider: "example-provider", Backend: "example-backend", AccountAlias: "example-account", SharedAccountAlias: "example-shared-account", Billing: "subscription", Models: []string{"example-model"}, MaxConcurrent: 1, Availability: "available", ObservedAt: now}
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: "credential_runner", Name: "Example runner", Hash: workerHash, Fingerprint: tokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: "credential_runner", Name: "Example runner", Hash: workerHash, Fingerprint: hubapi.TokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: "credential_runner", ProjectID: project.ID}); err != nil {
@@ -544,7 +545,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 		if err := w.ReplaceRunnerLocalChecks(t.Context(), "runner_0123456789abcdef0123456789abcdef", project.ID, runnerauth.LocalChecks{Checkout: "passed", Configuration: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}, ObservedAt: now, CheckoutAt: now, ConfigurationAt: now, DoctorAt: now, ProviderAt: now}); err != nil {
 			return err
 		}
-		return w.SaveProjectOnboardingProgress(t.Context(), project.ID, onboarding.Progress{Revision: 1, Repository: "existing", Doctor: true, Provider: true, Artifacts: "local", UpdatedAt: formatHubTime(now)}, 0)
+		return w.SaveProjectOnboardingProgress(t.Context(), project.ID, onboarding.Progress{Revision: 1, Repository: "existing", Doctor: true, Provider: true, Artifacts: "local", UpdatedAt: hubapi.FormatHubTime(now)}, 0)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -702,7 +703,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 		requireNativeStatus(t, claimResponse, http.StatusOK)
 		var attemptLease tracker.NativeLease
 		decodeHubResponse(t, claimResponse, &attemptLease)
-		attemptID, runID := newNativeID("attempt"), newNativeID("run")
+		attemptID, runID := hubapi.NewID("attempt"), hubapi.NewID("run")
 		data := tracker.NativeRunData{AttemptID: attemptID, RunID: runID, LeaseID: attemptLease.ID, FencingToken: attemptLease.FencingToken, PolicyID: policy.ID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example-backend", Model: "example-model"}}
 		path := "/api/v2/organizations/org_startup/projects/" + url.PathEscape(string(project.ID)) + "/work-items/" + url.PathEscape(string(issue.WorkItemID)) + "/events"
 		started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "start_" + attemptID}, Type: "run.started", SchemaVersion: 1, Data: data}
@@ -819,7 +820,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 				defer cancel()
 				if _, err := admin.ExecContext(ctx, test.restore); err != nil {
 					t.Error(err)
@@ -1140,7 +1141,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 				identity.MachineID = tracker.MachineID(id + "_machine")
 				identity.OS, identity.IsolationTier = "linux", isolation.NativeTrusted
 				identity.ProjectIDs = []tracker.ProjectID{assignedProject}
-				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: identity.TokenID, Name: "Recovery " + id, Hash: apikey.HashToken(identity.TokenID), Fingerprint: tokenFingerprint(apikey.HashToken(identity.TokenID)), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: identity.TokenID, Name: "Recovery " + id, Hash: apikey.HashToken(identity.TokenID), Fingerprint: hubapi.TokenFingerprint(apikey.HashToken(identity.TokenID)), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 					return err
 				}
 				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: identity.TokenID, ProjectID: assignedProject}); err != nil {

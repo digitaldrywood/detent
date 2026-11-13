@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -301,20 +302,20 @@ func TestNativeFilerPublicNames(t *testing.T) {
 func TestNativeCreatedByIdentity(t *testing.T) {
 	for _, test := range []struct {
 		name       string
-		credential apiCredential
+		credential hubapi.APICredential
 		want       string
 	}{
-		{"browser", apiCredential{ID: "person", SessionHash: "session"}, "person"},
-		{"personal hosted", apiCredential{ID: "key", HostedPrincipal: "person", HostedKeyKind: "personal", HostedKeyScope: apikey.ScopeRead}, "person"},
-		{"personal entry", apiCredential{ID: "person", EntryKey: &apikey.KeyAuthority{ID: "key", Kind: "personal"}}, "person"},
-		{"service hosted", apiCredential{ID: "key", HostedPrincipal: "person", HostedKeyKind: "service", HostedKeyScope: apikey.ScopeRead}, ""},
-		{"service entry", apiCredential{ID: "service", EntryKey: &apikey.KeyAuthority{ID: "key", Kind: "service"}}, ""},
-		{"worker", apiCredential{ID: "worker", Scope: apiScopeWorker}, ""},
+		{"browser", hubapi.APICredential{ID: "person", SessionHash: "session"}, "person"},
+		{"personal hosted", hubapi.APICredential{ID: "key", HostedPrincipal: "person", HostedKeyKind: "personal", HostedKeyScope: apikey.ScopeRead}, "person"},
+		{"personal entry", hubapi.APICredential{ID: "person", EntryKey: &apikey.KeyAuthority{ID: "key", Kind: "personal"}}, "person"},
+		{"service hosted", hubapi.APICredential{ID: "key", HostedPrincipal: "person", HostedKeyKind: "service", HostedKeyScope: apikey.ScopeRead}, ""},
+		{"service entry", hubapi.APICredential{ID: "service", EntryKey: &apikey.KeyAuthority{ID: "key", Kind: "service"}}, ""},
+		{"worker", hubapi.APICredential{ID: "worker", Scope: hubapi.APIScopeWorker}, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			value, err := nativeCreatedBy(nativeScope{credential: test.credential}, url.Values{"created_by": {"me"}})
 			if test.want == "" {
-				var native *nativeError
+				var native *hubapi.NativeError
 				if !errors.As(err, &native) || native.Code != "invalid_request" {
 					t.Fatalf("error=%v", err)
 				}
@@ -370,7 +371,7 @@ func TestHostedPersonalKeyCreatedBy(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, kind := range []string{"personal", "service"} {
-		key, err := f.service.createHostedAPIKeyFor(t.Context(), issuer, hostedKeyRequest{Kind: kind, Name: "filer-" + kind, Scope: apikey.ScopeWrite, NeverExpires: true, ProjectAccess: hostedProjectsAll})
+		key, err := f.service.createHostedAPIKeyFor(t.Context(), issuer, hostedKeyRequest{Kind: kind, Name: "filer-" + kind, Scope: apikey.ScopeWrite, NeverExpires: true, ProjectAccess: hubapi.HostedProjectsAll})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -390,7 +391,7 @@ func TestHostedPersonalKeyCreatedBy(t *testing.T) {
 		var restPage tracker.NativeIssuePage
 		if kind == "service" {
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-			var refusal apiErrorResponse
+			var refusal hubapi.APIErrorResponse
 			decodeHubResponse(t, response, &refusal)
 			if refusal.Code != "invalid_request" {
 				t.Fatalf("refusal=%+v", refusal)

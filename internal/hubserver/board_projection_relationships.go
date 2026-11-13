@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,7 +21,7 @@ func (s *Service) boardProjectedRelationshipIssues(ctx context.Context, organiza
 		}
 		batch, ok := reader.(tenantstore.WorkItemRelationshipBatchReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		facts, err = batch.WorkItemRelationshipFacts(ctx, project, []tracker.NativeWorkItemID{issue.WorkItemID})
@@ -32,7 +33,7 @@ func (s *Service) boardProjectedRelationshipIssues(ctx context.Context, organiza
 	broad := issue
 	s.projectBoardRelationships(nativeScope{organization: organization, project: project}, &broad, facts)
 	reporter := issue
-	scope := nativeScope{organization: organization, project: project, credential: apiCredential{HostedRole: "reporter", ID: issue.Actor.PrincipalID}, sourceActor: &issue.Actor}
+	scope := nativeScope{organization: organization, project: project, credential: hubapi.APICredential{HostedRole: "reporter", ID: issue.Actor.PrincipalID}, sourceActor: &issue.Actor}
 	s.projectBoardRelationships(scope, &reporter, facts)
 	result := viewstore.BoardReporterRelations{ReporterStatus: reporterStatus(issue.State), Dependencies: reporter.Dependencies, Blockers: reporter.Blockers, Dependents: reporter.Dependents, Related: reporter.Related, DependencyReady: reporter.DependencyReady, BlockedReason: reporter.BlockedReason, UnblocksReason: reporter.UnblocksReason}
 	return broad, result, nil
@@ -62,7 +63,7 @@ func (s *Service) projectBoardRelationships(scope nativeScope, issue *tracker.Na
 				edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.project
 			}
 		}
-		visible = visible && scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(relation.ActorPrincipalID)})
+		visible = visible && scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
 		if !visible {
 			if relation.Type == "dependency" {
 				switch relation.Direction {

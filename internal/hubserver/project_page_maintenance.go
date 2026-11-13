@@ -3,9 +3,11 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"log/slog"
 	"sync"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -49,7 +51,7 @@ func (s *Service) MaintainProjectPage(ctx context.Context, org tracker.Organizat
 	err := s.config.TenantRepository.ReadTenant(ctx, org, corestore.Background, func(r tenantstore.Reader) error {
 		owner, ok := r.(projectstore.PageMaintainer)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		candidate, err = owner.NextProjectPage(ctx, after)
@@ -93,7 +95,7 @@ func (s *Service) MaintainProjectPage(ctx context.Context, org tracker.Organizat
 	err = s.config.TenantRepository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
 		owner, ok := w.(projectstore.PageMaintainer)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		published, err = owner.PublishProjectPage(ctx, candidate, page)

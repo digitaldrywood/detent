@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -76,7 +77,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			var issuer apiCredential
+			var issuer hubapi.APICredential
 			if scenario.deployment == "shared" {
 				issuer = shared.sessionCredential(t, user)
 			} else {
@@ -87,7 +88,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 				}
 			}
 			expires := time.Now().Add(time.Hour)
-			key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "policy-client", Scope: apiScopeAdmin, KeyScope: apikey.ScopeAdmin, Issuer: &issuer, ProjectAccess: hostedProjectsAll, ExpiresAt: &expires})
+			key, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "policy-client", Scope: hubapi.APIScopeAdmin, KeyScope: apikey.ScopeAdmin, Issuer: &issuer, ProjectAccess: hubapi.HostedProjectsAll, ExpiresAt: &expires})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -612,10 +613,10 @@ func TestWorkflowExecutionFailureProjection(t *testing.T) {
 	}{
 		{"continuation direction", direction.Message, direction, operatortool.ErrInvalidArguments},
 		{"active claim", operatortool.ErrServiceUnavailable.Error(), tracker.ErrLeaseConflict, operatortool.ErrServiceUnavailable},
-		{"graph", "Workflow transition is not allowed", &nativeError{Code: "transition_not_allowed", Message: "credential-secret", Details: map[string]any{"private": "credential-secret"}, status: http.StatusUnprocessableEntity}, operatortool.ErrInvalidArguments},
-		{"revision", "Resource has changed", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 9, status: http.StatusConflict}, mutation.ErrConflict},
-		{"foreign graph", operatortool.ErrAccessDenied.Error(), &nativeError{Code: "transition_not_allowed", Message: "credential-secret", status: http.StatusForbidden}, operatortool.ErrAccessDenied},
-		{"missing", operatortool.ErrAccessDenied.Error(), nativeNotFound(), operatortool.ErrAccessDenied},
+		{"graph", "Workflow transition is not allowed", &hubapi.NativeError{Code: "transition_not_allowed", Message: "credential-secret", Details: map[string]any{"private": "credential-secret"}, Status: http.StatusUnprocessableEntity}, operatortool.ErrInvalidArguments},
+		{"revision", "Resource has changed", &hubapi.NativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 9, Status: http.StatusConflict}, mutation.ErrConflict},
+		{"foreign graph", operatortool.ErrAccessDenied.Error(), &hubapi.NativeError{Code: "transition_not_allowed", Message: "credential-secret", Status: http.StatusForbidden}, operatortool.ErrAccessDenied},
+		{"missing", operatortool.ErrAccessDenied.Error(), hubapi.NativeNotFound(), operatortool.ErrAccessDenied},
 		{"revoked", operatortool.ErrAccessDenied.Error(), operatortool.ErrAccessDenied, operatortool.ErrAccessDenied},
 		{"underlying", operatortool.ErrServiceUnavailable.Error(), errors.New("SQL credential-secret"), operatortool.ErrServiceUnavailable},
 	} {
@@ -663,15 +664,15 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				t.Fatal(err)
 			}
 			expires := time.Now().Add(time.Hour)
-			scope := apiScopeOperator
+			scope := hubapi.APIScopeOperator
 			if test.scope == apikey.ScopeAdmin {
-				scope = apiScopeAdmin
+				scope = hubapi.APIScopeAdmin
 			}
-			projectIDs, access := []string{string(f.project)}, hostedProjectsSelected
+			projectIDs, access := []string{string(f.project)}, hubapi.HostedProjectsSelected
 			if test.repository {
-				projectIDs, access = nil, hostedProjectsAll
+				projectIDs, access = nil, hubapi.HostedProjectsAll
 			}
-			key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "client", Scope: scope, KeyScope: test.scope, Issuer: &issuer, ProjectIDs: projectIDs, ProjectAccess: access, ExpiresAt: &expires})
+			key, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "client", Scope: scope, KeyScope: test.scope, Issuer: &issuer, ProjectIDs: projectIDs, ProjectAccess: access, ExpiresAt: &expires})
 			if err != nil {
 				t.Fatal(err)
 			}

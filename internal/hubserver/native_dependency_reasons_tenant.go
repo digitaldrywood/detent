@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -22,19 +23,19 @@ import (
 
 func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope nativeScope, anchor string, request tracker.UpdateDependencyReason) (json.RawMessage, error) {
 	if !validDependencyReason(request.Text) || (request.Kind != "blocked" && request.Kind != "unblocks") || request.ExpectedRevision < 0 || request.ExpectedRevision == math.MaxInt64 {
-		return nil, nativePublicInvalid("Reason must be plain text of at most 140 characters and kind blocked or unblocks")
+		return nil, hubapi.NativePublicInvalid("Reason must be plain text of at most 140 characters and kind blocked or unblocks")
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if s.config.AccessRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
 	operation := "dependency-reason/" + anchor
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +49,7 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 	}
 	var pinned policystore.Revision
 	var requirements policy.Requirements
-	if scope.credential.Scope == apiScopeWorker && request.LeaseID != "" {
+	if scope.credential.Scope == hubapi.APIScopeWorker && request.LeaseID != "" {
 		pinned, requirements, err = s.dependencyReasonPolicy(ctx, scope, request.LeaseID)
 		if err != nil {
 			return nil, err
@@ -72,7 +73,7 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 		reason = issue.UnblocksReason
 	}
 	if reason.Revision != request.ExpectedRevision {
-		return nil, nativeConflict(tracker.Revision(reason.Revision))
+		return nil, hubapi.NativeConflict(tracker.Revision(reason.Revision))
 	}
 	result := tracker.DependencyReason{Text: request.Text, Basis: request.Basis, CurrentBasis: request.Basis, Revision: request.ExpectedRevision + 1}
 	raw, err := json.Marshal(result)
@@ -97,7 +98,7 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 		previous, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			replay = &previous
 			return nil
@@ -114,7 +115,7 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 			if err != nil {
 				return err
 			}
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 				return corestore.ErrNotFound
 			}
 			if id == tracker.NativeWorkItemID(anchor) {
@@ -125,17 +126,17 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 			}
 		}
 		if target.ID != row.ID || target.Revision != row.Revision || target.EventSequence != row.EventSequence {
-			return nativeConflict(tracker.Revision(request.ExpectedRevision))
+			return hubapi.NativeConflict(tracker.Revision(request.ExpectedRevision))
 		}
 		now := s.config.now().UTC()
-		if scope.credential.Scope == apiScopeWorker {
+		if scope.credential.Scope == hubapi.APIScopeWorker {
 			if err := s.authorizeDependencyReasonLease(ctx, w, scope, anchorRow, request.Mutation, pinned, requirements, now); err != nil {
 				return err
 			}
 		}
 		writer, ok := w.(corestore.DependencyReasonWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		edges, err := writer.DependencyReasonEdges(ctx, scope.project, request.WorkItemID, request.Kind)
 		if err != nil {
@@ -143,13 +144,13 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 		}
 		related := make([]string, 0, len(edges))
 		for _, edge := range edges {
-			if edge.ProjectID != scope.project || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(edge.ActorPrincipalID)}) {
-				return nativeConflict(tracker.Revision(reason.Revision))
+			if edge.ProjectID != scope.project || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(edge.ActorPrincipalID)}) {
+				return hubapi.NativeConflict(tracker.Revision(reason.Revision))
 			}
 			related = append(related, string(edge.WorkItemID))
 		}
 		if request.Basis != dependencyBasis(related) {
-			return nativeConflict(tracker.Revision(reason.Revision))
+			return hubapi.NativeConflict(tracker.Revision(reason.Revision))
 		}
 		if s.database.plans() != nil {
 			if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
@@ -163,10 +164,10 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 		return err
 	})
 	if errors.Is(err, corestore.ErrRevisionConflict) {
-		return nil, nativeConflict(tracker.Revision(request.ExpectedRevision))
+		return nil, hubapi.NativeConflict(tracker.Revision(request.ExpectedRevision))
 	}
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if replay != nil {
 		return content.Receipt(ctx, *replay)
@@ -192,7 +193,7 @@ func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantst
 		}
 		locker, ok := w.(leasestore.FencedLeaseLocker)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		lease, err = locker.LockLease(ctx, string(command.LeaseID))
 		if err != nil {
@@ -208,7 +209,7 @@ func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantst
 		return err
 	}
 	if !allowed {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	if command.LeaseID == "" {
 		_, err := w.LatestAttempt(ctx, anchor.ID)
@@ -235,7 +236,7 @@ func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantst
 		return err
 	}
 	if currentPolicy.OrganizationID != scope.organization || currentPolicy.ProjectID != scope.project || currentPolicy.LeaseID != command.LeaseID || revision.OrganizationID != pinned.OrganizationID || revision.ProjectID != pinned.ProjectID || revision.PolicyID != pinned.PolicyID || revision.PayloadSHA256 != pinned.PayloadSHA256 || revision.PayloadObjectKey != pinned.PayloadObjectKey || revision.PayloadBytes != pinned.PayloadBytes || revision.PayloadContentBytes != pinned.PayloadContentBytes {
-		return policyMismatch("Lease policy changed during the request")
+		return hubapi.PolicyMismatch("Lease policy changed during the request")
 	}
 	runner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID}, Operations: identity.Operations, Routing: runnerauth.Routing{Scope: identity.Scope, ProjectIDs: []tracker.ProjectID{scope.project}, Tags: identity.Tags, State: identity.State}}
 	return runnerExcluded(runner.Exclusions(scope.project, requirements, true))
@@ -249,14 +250,14 @@ func (s *Service) dependencyReasonPolicy(ctx context.Context, scope nativeScope,
 			return err
 		}
 		if pinned.OrganizationID != scope.organization || pinned.ProjectID != scope.project || pinned.LeaseID != lease || pinned.PolicyID == "" {
-			return policyMismatch("Lease policy is outside the authorized project")
+			return hubapi.PolicyMismatch("Lease policy is outside the authorized project")
 		}
 		revision, err = r.ProjectPolicyRevision(ctx, scope.project, pinned.PolicyID)
 		if err != nil {
 			return err
 		}
 		if revision.OrganizationID != scope.organization || revision.ProjectID != scope.project || revision.PolicyID != pinned.PolicyID {
-			return policyMismatch("Lease policy is outside the authorized project")
+			return hubapi.PolicyMismatch("Lease policy is outside the authorized project")
 		}
 		return nil
 	})

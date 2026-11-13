@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -412,7 +413,7 @@ func (f hostedSecurityFixture) seedIssue(t *testing.T, number int) tracker.Nativ
 	t.Helper()
 	organization := f.service.accessOrganization()
 	now := f.service.config.now()
-	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: f.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Number: number, Revision: 1, Profile: "native"}, State: "Todo", Title: "private-issue-sentinel", Body: "private-body-sentinel", CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
+	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: f.project, WorkItemID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: number, Revision: 1, Profile: "native"}, State: "Todo", Title: "private-issue-sentinel", Body: "private-body-sentinel", CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
 	fields, err := f.service.prepareWorkItemFields(t.Context(), organization, workItemRecordPlan{issue: issue, create: true})
 	if err != nil {
 		t.Fatal(err)
@@ -528,7 +529,7 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 	f.seedIssue(t, 1)
 	staff := f.user(t, "staff", "owner", "staff@example.test", "write", "")
 	customer := f.user(t, "customer", "owner", "customer@example.test", "write", "")
-	bootstrapToken := newNativeID("token")
+	bootstrapToken := hubapi.NewID("token")
 	seeded := f.service.config.now().UTC()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: bootstrapTokenID, Name: "Bootstrap administrator", Hash: apikey.HashToken(bootstrapToken), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", Kind: "service", CreatedAt: seeded, UpdatedAt: seeded})
@@ -1348,7 +1349,7 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			credential := apiCredential{ID: principal, Hash: principalHash, HostedPrincipal: principal, HostedMembership: membership, Scope: apiScopeOperator, NativeOnly: true, Hosted: user.identity.Hosted, SessionHash: apikey.HashToken(user.token), HostedRole: "owner", ManageRunners: true}
+			credential := hubapi.APICredential{ID: principal, Hash: principalHash, HostedPrincipal: principal, HostedMembership: membership, Scope: hubapi.APIScopeOperator, NativeOnly: true, Hosted: user.identity.Hosted, SessionHash: apikey.HashToken(user.token), HostedRole: "owner", ManageRunners: true}
 			project, err := f.service.createHostedProjectRecord(t.Context(), credential, "Project for "+test.role, nil)
 			if (err == nil) != test.created {
 				t.Fatalf("createHostedProjectRecord() = %q, %v; want created %v", project, err, test.created)

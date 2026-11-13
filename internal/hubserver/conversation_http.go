@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/skills"
@@ -44,26 +45,26 @@ var (
 
 func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
 	scope := s.requireConversationScope()
-	e.POST(nativeBase+"/conversations", s.createConversation, scope, s.operatorAuthority)
-	e.GET(nativeBase+"/conversations", s.listProjectConversations, scope)
+	e.POST(hubapi.NativeBase+"/conversations", s.createConversation, scope, s.operatorAuthority)
+	e.GET(hubapi.NativeBase+"/conversations", s.listProjectConversations, scope)
 	e.GET("/api/v2/organizations/:organization/conversations", s.listOrganizationConversations, s.requireConversationOrganization())
-	e.GET(nativeBase+"/conversations/:conversation", s.getConversation, scope)
-	e.GET(nativeBase+"/work-items/:item/conversation", s.getWorkItemConversation, scope)
-	e.GET(nativeBase+"/conversations/:conversation/messages", s.listConversationMessages, scope)
-	e.GET(nativeBase+"/conversations/:conversation/events", s.streamConversationEvents, scope)
-	e.POST(nativeBase+"/conversations/:conversation/actions", s.postConversationAction, scope, s.operatorAuthority)
-	e.POST(nativeBase+"/conversations/:conversation/commands", s.postConversationCommand, scope, s.operatorAuthority)
-	e.POST(nativeBase+"/conversations/:conversation/link", s.linkConversation, scope)
-	e.PATCH(nativeBase+"/conversations/:conversation", s.patchConversation, scope)
-	e.POST(nativeBase+"/conversations/:conversation/archive", s.archiveConversation, scope)
-	e.DELETE(nativeBase+"/conversations/:conversation", s.deleteConversation, scope)
-	e.GET(nativeBase+"/work-items/:item/references", s.listWorkItemReferences, scope)
-	e.POST(nativeBase+"/conversations/:conversation/attachments", s.uploadConversationAttachment, scope)
+	e.GET(hubapi.NativeBase+"/conversations/:conversation", s.getConversation, scope)
+	e.GET(hubapi.NativeBase+"/work-items/:item/conversation", s.getWorkItemConversation, scope)
+	e.GET(hubapi.NativeBase+"/conversations/:conversation/messages", s.listConversationMessages, scope)
+	e.GET(hubapi.NativeBase+"/conversations/:conversation/events", s.streamConversationEvents, scope)
+	e.POST(hubapi.NativeBase+"/conversations/:conversation/actions", s.postConversationAction, scope, s.operatorAuthority)
+	e.POST(hubapi.NativeBase+"/conversations/:conversation/commands", s.postConversationCommand, scope, s.operatorAuthority)
+	e.POST(hubapi.NativeBase+"/conversations/:conversation/link", s.linkConversation, scope)
+	e.PATCH(hubapi.NativeBase+"/conversations/:conversation", s.patchConversation, scope)
+	e.POST(hubapi.NativeBase+"/conversations/:conversation/archive", s.archiveConversation, scope)
+	e.DELETE(hubapi.NativeBase+"/conversations/:conversation", s.deleteConversation, scope)
+	e.GET(hubapi.NativeBase+"/work-items/:item/references", s.listWorkItemReferences, scope)
+	e.POST(hubapi.NativeBase+"/conversations/:conversation/attachments", s.uploadConversationAttachment, scope)
 	// The download also answers a worker: the runner fetches the files the
 	// control named with its own token, so the conversation's read rule
 	// governs the bytes the provider sees.
-	e.GET(nativeBase+"/conversations/:conversation/attachments/:attachment", s.getConversationAttachment, s.requireConversationScope(apiScopeWorker))
-	e.DELETE(nativeBase+"/conversations/:conversation/attachments/:attachment", s.deleteConversationAttachment, scope)
+	e.GET(hubapi.NativeBase+"/conversations/:conversation/attachments/:attachment", s.getConversationAttachment, s.requireConversationScope(hubapi.APIScopeWorker))
+	e.DELETE(hubapi.NativeBase+"/conversations/:conversation/attachments/:attachment", s.deleteConversationAttachment, scope)
 }
 
 // requireConversationScope authenticates an operator or admin credential
@@ -73,22 +74,22 @@ func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
 // scopes widen the credential set; the per-handler authorization is
 // unchanged, so a wider route is still bounded by the conversation's own
 // read rule.
-func (s *Service) requireConversationScope(extra ...apiScope) echo.MiddlewareFunc {
-	allowed := append([]apiScope{apiScopeOperator, apiScopeAdmin}, extra...)
+func (s *Service) requireConversationScope(extra ...hubapi.APIScope) echo.MiddlewareFunc {
+	allowed := append([]hubapi.APIScope{hubapi.APIScopeOperator, hubapi.APIScopeAdmin}, extra...)
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return s.requireAPIScope(allowed...)(func(c echo.Context) error {
-			credential, ok := c.Get("hub_api_credential").(apiCredential)
+			credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 			if !ok {
-				return s.nativeAPIError(c, nativeNotFound())
+				return s.nativeAPIError(c, hubapi.NativeNotFound())
 			}
 			ctx := c.Request().Context()
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
 
 			if err := s.authorizeProjectRecord(ctx, scope, false); err != nil {
 				if c.Param("conversation") != "" {
-					var denied *nativeError
-					if errors.Is(err, accessstore.ErrDenied) || errors.As(err, &denied) && denied.status == http.StatusForbidden {
-						return s.nativeAPIError(c, nativeNotFound())
+					var denied *hubapi.NativeError
+					if errors.Is(err, accessstore.ErrDenied) || errors.As(err, &denied) && denied.Status == http.StatusForbidden {
+						return s.nativeAPIError(c, hubapi.NativeNotFound())
 					}
 				}
 				return s.nativeAPIError(c, err)
@@ -126,13 +127,13 @@ func (s *Service) requireConversationOrganization() echo.MiddlewareFunc {
 		return func(c echo.Context) error {
 			credential, status, err := s.authenticateAPIRequest(c)
 			if err != nil {
-				return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
+				return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", hubapi.APIErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
 			}
 			if s.config.Hosted != nil && credential.Hosted == nil {
-				return s.nativeAPIError(c, nativeNotFound())
+				return s.nativeAPIError(c, hubapi.NativeNotFound())
 			}
-			if credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin {
-				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
+			if credential.Scope != hubapi.APIScopeOperator && credential.Scope != hubapi.APIScopeAdmin {
+				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", hubapi.APIErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
 			}
 			ctx := c.Request().Context()
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
@@ -153,7 +154,7 @@ func (s *Service) requireConversationOrganization() echo.MiddlewareFunc {
 }
 
 func (s *Service) authorizeConversationOrganization(ctx context.Context, scope nativeScope) error {
-	return fromFeatureError(s.requestAuth().AuthorizeOrganization(ctx, s.authInput(scope)))
+	return hubapi.FromFeatureError(s.requestAuth().AuthorizeOrganization(ctx, s.authInput(scope)))
 }
 
 func conversationQueryInt(c echo.Context, name string) (int64, error) {
@@ -163,7 +164,7 @@ func conversationQueryInt(c echo.Context, name string) (int64, error) {
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
-		return 0, nativePublicInvalid("Query parameter " + name + " must be a non-negative integer")
+		return 0, hubapi.NativePublicInvalid("Query parameter " + name + " must be a non-negative integer")
 	}
 	return value, nil
 }
@@ -180,7 +181,7 @@ func conversationQueryTristate(c echo.Context, name string) (value, present bool
 	case "0", "false", "no":
 		return false, true, nil
 	default:
-		return false, false, nativePublicInvalid("Query parameter " + name + " must be true or false")
+		return false, false, hubapi.NativePublicInvalid("Query parameter " + name + " must be true or false")
 	}
 }
 
@@ -190,7 +191,7 @@ func conversationQueryTristate(c echo.Context, name string) (value, present bool
 // mutation runs.
 func (s *Service) createConversation(c echo.Context) error {
 	var request conversationCreateRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandCreateConversation(c.Request().Context(), nativeRequestScope(c), request)
@@ -315,7 +316,7 @@ func (s *Service) listConversationMessages(c echo.Context) error {
 // postConversationCommand implements POST /conversations/:conversation/commands.
 func (s *Service) postConversationCommand(c echo.Context) error {
 	var command conversation.Command
-	if err := decodeAPIJSON(c, &command); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &command); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandPostConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), command)
@@ -327,7 +328,7 @@ func (s *Service) postConversationCommand(c echo.Context) error {
 
 func (s *Service) linkConversation(c echo.Context) error {
 	var request conversationLinkRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandLinkConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
@@ -342,7 +343,7 @@ func (s *Service) linkConversation(c echo.Context) error {
 // that asks for neither is refused rather than silently accepted.
 func (s *Service) patchConversation(c echo.Context) error {
 	var request conversationPatchRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandPatchConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
@@ -435,7 +436,7 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 // record.
 func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeScope, conversationID string) (conversationRecord, error) {
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	if scope.credential.EntryKey != nil {
 		claims, ok := hostedSharedClaims(c)
@@ -473,8 +474,8 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 // denial is a decision the client must respect; a failure is transient and
 // the client may reconnect.
 func conversationStreamCloseReason(err error) string {
-	err = fromFeatureError(err)
-	var native *nativeError
+	err = hubapi.FromFeatureError(err)
+	var native *hubapi.NativeError
 	switch {
 	case errors.Is(err, tenantauth.ErrUnavailable):
 		return conversationClosedServerError
@@ -495,7 +496,7 @@ func readConversationAttachmentUpload(c echo.Context) (conversationAttachmentUpl
 	request.Body = http.MaxBytesReader(c.Response(), request.Body, conversationAttachmentRequestBytes)
 	reader, err := request.MultipartReader()
 	if err != nil {
-		return conversationAttachmentUpload{}, nativePublicInvalid("A multipart upload with a file part is required")
+		return conversationAttachmentUpload{}, hubapi.NativePublicInvalid("A multipart upload with a file part is required")
 	}
 	var upload conversationAttachmentUpload
 	seenFile := false
@@ -534,10 +535,10 @@ func readConversationAttachmentUpload(c echo.Context) (conversationAttachmentUpl
 		}
 	}
 	if !seenFile {
-		return conversationAttachmentUpload{}, nativePublicInvalid("A file part is required")
+		return conversationAttachmentUpload{}, hubapi.NativePublicInvalid("A file part is required")
 	}
 	if upload.Key == "" || len(upload.Key) > conversation.MaxCommandKeyBytes {
-		return conversationAttachmentUpload{}, nativePublicInvalid(fmt.Sprintf("An idempotency key of at most %d bytes is required", conversation.MaxCommandKeyBytes))
+		return conversationAttachmentUpload{}, hubapi.NativePublicInvalid(fmt.Sprintf("An idempotency key of at most %d bytes is required", conversation.MaxCommandKeyBytes))
 	}
 	return upload, nil
 }
@@ -558,11 +559,11 @@ func conversationAttachmentRefusal(part *multipart.Part, message string) error {
 	if err := part.Close(); err != nil {
 		return conversationAttachmentBodyError(err)
 	}
-	return nativeInvalid(message)
+	return hubapi.NativeInvalid(message)
 }
 
 func conversationAttachmentTooLarge() error {
-	return &nativeError{Code: "invalid_request", Message: fmt.Sprintf("A file must be at most %d bytes", conversation.MaxAttachmentBytes), status: http.StatusRequestEntityTooLarge, publicMessage: true}
+	return &hubapi.NativeError{Code: "invalid_request", Message: fmt.Sprintf("A file must be at most %d bytes", conversation.MaxAttachmentBytes), Status: http.StatusRequestEntityTooLarge, PublicMessage: true}
 }
 
 // conversationAttachmentBodyError turns a truncated or oversized body into the
@@ -572,7 +573,7 @@ func conversationAttachmentBodyError(err error) error {
 	if errors.As(err, &tooLarge) {
 		return conversationAttachmentTooLarge()
 	}
-	return nativePublicInvalid("The upload could not be read")
+	return hubapi.NativePublicInvalid("The upload could not be read")
 }
 
 // uploadConversationAttachment implements POST
@@ -617,7 +618,7 @@ func (s *Service) deleteConversationAttachment(c echo.Context) error {
 
 func (s *Service) archiveConversation(c echo.Context) error {
 	scope := nativeRequestScope(c)
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	id := c.Param("conversation")
 	original, err := s.conversations.ReadPublicationConversationForOrganization(ctx, scope.organization, id)
@@ -656,7 +657,7 @@ func (s *Service) archiveConversation(c echo.Context) error {
 			return err
 		}
 		if stored.Revision != original.Revision || stored.EventSequence != original.EventSeq {
-			return nativeConflict(tracker.Revision(stored.Revision))
+			return hubapi.NativeConflict(tracker.Revision(stored.Revision))
 		}
 		if err := requireConversationRemoval(conversationRecordFromStore(stored)); err != nil {
 			return err
@@ -682,7 +683,7 @@ func (s *Service) archiveConversation(c echo.Context) error {
 
 func (s *Service) deleteConversation(c echo.Context) error {
 	scope := nativeRequestScope(c)
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	id := c.Param("conversation")
 	original, err := s.conversations.ReadPublicationConversationForOrganization(ctx, scope.organization, id)
@@ -699,7 +700,7 @@ func (s *Service) deleteConversation(c echo.Context) error {
 			return err
 		}
 		if stored.Revision != original.Revision || stored.EventSequence != original.EventSeq {
-			return nativeConflict(tracker.Revision(stored.Revision))
+			return hubapi.NativeConflict(tracker.Revision(stored.Revision))
 		}
 		if err := requireConversationRemoval(record); err != nil {
 			return err

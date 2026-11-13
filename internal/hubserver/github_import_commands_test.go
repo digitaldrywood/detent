@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -37,9 +38,9 @@ func TestPostgresImportStarts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: "org", project: project, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+		scope := nativeScope{organization: "org", project: project, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 		request := startGitHubImportRequest{Mutation: tracker.Mutation{IdempotencyKey: "start"}, IssueNumber: 1}
-		options := nativeCommandOptions{OperationID: projectOperationID(scope, "POST", "/imports")}
+		options := hubapi.NativeCommandOptions{OperationID: projectOperationID(scope, "POST", "/imports")}
 		raw, err := service.executeNativeMutation(t.Context(), scope, options, request.Mutation, request, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -81,7 +82,7 @@ func TestPostgresImportStarts(t *testing.T) {
 		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 			owner, ok := w.(projectstore.GitHubOutboxWriter)
 			if !ok {
-				return ErrPostgresFeatureUnavailable
+				return hubapi.ErrPostgresFeatureUnavailable
 			}
 			_, err := owner.ClaimGitHubOutbound(t.Context(), time.Now(), time.Now().Add(time.Minute), "unexpected")
 			if !errors.Is(err, corestore.ErrNotFound) {
@@ -115,7 +116,7 @@ func TestPostgresImportStarts(t *testing.T) {
 		staleScope := sourceScope
 		staleScope.githubIntakeRevision = &githubIntakeRevision{importID: job.ID, revision: int64(job.Revision) - 1}
 		revokedScope := sourceScope
-		revokedScope.credential = apiCredential{ID: "revoked_" + string(project), Scope: apiScopeOperator, Hash: apikey.HashToken("example-revoked-" + string(project))}
+		revokedScope.credential = hubapi.APICredential{ID: "revoked_" + string(project), Scope: hubapi.APIScopeOperator, Hash: apikey.HashToken("example-revoked-" + string(project))}
 		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: scope.organization, ID: revokedScope.credential.ID, Name: "Example revoked " + string(project), Hash: revokedScope.credential.Hash, Scope: "operator", KeyScope: "write", ProjectAccess: "all", Kind: "service", CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
 				return err

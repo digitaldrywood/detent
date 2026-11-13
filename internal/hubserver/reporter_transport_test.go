@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -226,7 +227,7 @@ func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
 						response := send(t, transport, test.method, test.path, raw, nil)
 						if deployment == "dedicated" && transport == "REST-key" && strings.HasPrefix(test.path, "/api/v1/") {
 							requireNativeStatus(t, response, http.StatusForbidden)
-							var refusal apiErrorResponse
+							var refusal hubapi.APIErrorResponse
 							decodeHubResponse(t, response, &refusal)
 							if refusal.Code != "invalid_csrf" {
 								t.Fatalf("bearer-only reserved route refusal = %s", refusal.Code)
@@ -244,7 +245,7 @@ func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
 						if response.Code != wantStatus {
 							t.Fatalf("REST write %s=%d %s", test.name, response.Code, response.Body.String())
 						}
-						var failure apiErrorResponse
+						var failure hubapi.APIErrorResponse
 						if json.Unmarshal(response.Body.Bytes(), &failure) != nil || failure.Code == "invalid_request" || failure.Code == "" {
 							t.Fatalf("unexpected refusal for %s: %s", test.name, response.Body.String())
 						}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -60,7 +61,7 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 	if value := c.QueryParam("wait"); value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed < 1 || parsed > 30 {
-			return s.nativeAPIError(c, nativePublicInvalid("Wait must be between 1 and 30 seconds"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Wait must be between 1 and 30 seconds"))
 		}
 		wait = parsed
 	}
@@ -68,7 +69,7 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 	key := dispatchNotificationKey(scope.organization)
 	s.notifications.dispatchCursor(key)
 	authorize := func() error {
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 		defer cancel()
 		now := s.config.now().UTC()
 		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {

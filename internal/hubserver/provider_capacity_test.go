@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -129,7 +130,7 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, test.want)
 			if test.code != "" {
-				var refusal nativeError
+				var refusal hubapi.NativeError
 				decodeHubResponse(t, response, &refusal)
 				if refusal.Code != test.code {
 					t.Fatalf("refusal = %s, want %s", refusal.Code, test.code)
@@ -470,7 +471,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 					}
 					item.WorkflowStateName = &test.states[i]
 					if test.created != nil {
-						item.NativeCreatedAt, err = parseTimeValue(test.created[i])
+						item.NativeCreatedAt, err = hubapi.ParseTimeValue(test.created[i])
 						if err != nil {
 							return err
 						}
@@ -612,7 +613,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 				claim.ProviderCandidates = claim.ProviderCandidates[test.winner : test.winner+1]
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 				requireNativeStatus(t, response, http.StatusConflict)
-				var refusal nativeError
+				var refusal hubapi.NativeError
 				decodeHubResponse(t, response, &refusal)
 				if refusal.Code != "no_claimable_work" {
 					t.Fatalf("higher-ranked project refusal = %s, want no_claimable_work", refusal.Code)
@@ -652,7 +653,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			for _, path := range []string{"/claims", "/claims/preview"} {
 				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+path, r.redemption.Credential, claim)
 				requireNativeStatus(t, response, http.StatusConflict)
-				var failure nativeError
+				var failure hubapi.NativeError
 				decodeHubResponse(t, response, &failure)
 				if failure.Code != "selector_no_match" {
 					t.Fatalf("fixed host lost authority: %s", failure.Code)
@@ -972,7 +973,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 	}
 	hold, err := writer.Begin(t.Context())
 	if err != nil {
-		closeContext, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+		closeContext, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 		defer cancel()
 		_ = writer.Close(closeContext)
 		t.Fatal(err)
@@ -981,7 +982,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 	releaseWriter := func() {
 		t.Helper()
 		release.Do(func() {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 			defer cancel()
 			if err := hold.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
 				t.Error(err)
@@ -1020,7 +1021,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 		t.Cleanup(func() {
 			cancel()
 			releaseWriter()
-			cleanup, stop := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+			cleanup, stop := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 			defer stop()
 			select {
 			case <-finished:
@@ -1132,7 +1133,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 	for _, path := range []string{"/claims", "/claims/preview"} {
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+path, r.redemption.Credential, claim)
 		requireNativeStatus(t, response, http.StatusConflict)
-		var failure nativeError
+		var failure hubapi.NativeError
 		decodeHubResponse(t, response, &failure)
 		if failure.Code != "selector_no_match" {
 			t.Fatalf("fixed host lost authority: %s", failure.Code)

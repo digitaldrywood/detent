@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -27,7 +28,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 	defer clear(key)
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return out, "", workItemStorageUnavailable()
+		return out, "", hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var page reportstore.AnalyticsAttemptPage
 	var events []eventstore.Event
@@ -38,7 +39,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 		}
 		owner, ok := r.(reportstore.AnalyticsAttemptReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		page, err = owner.ReadAnalyticsAttemptPage(ctx, reportstore.AnalyticsAttemptQuery{ProjectID: scope.project, Principal: principal, RunnerID: runner, RunnerIDs: analyticsCohortRunners(ctx), From: w.From, To: w.To, After: after, Limit: maxAnalyticsPopulation})
 		if err != nil {
@@ -46,7 +47,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 		}
 		batch, ok := r.(eventstore.RunEventBatchReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		page.Items = slices.DeleteFunc(page.Items, func(row reportstore.AnalyticsAttemptRow) bool { return !analyticsCohortAllows(ctx, row.WorkItemID) })
 		ids := make([]string, len(page.Items))
@@ -157,7 +158,7 @@ func (s *Service) readNativeAnalyticsUsagePopulationTenant(ctx context.Context, 
 	defer clear(key)
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return reportstore.AnalyticsUsagePage{}, "", workItemStorageUnavailable()
+		return reportstore.AnalyticsUsagePage{}, "", hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var page reportstore.AnalyticsUsagePage
 	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -167,7 +168,7 @@ func (s *Service) readNativeAnalyticsUsagePopulationTenant(ctx context.Context, 
 		}
 		owner, ok := r.(reportstore.AnalyticsUsageReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		page, err = owner.ReadAnalyticsUsagePage(ctx, reportstore.AnalyticsUsageQuery{ProjectID: scope.project, Principal: principal, From: w.From, To: w.To, After: after, Limit: maxAnalyticsPopulation})
 		return err

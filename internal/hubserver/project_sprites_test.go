@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -96,7 +97,7 @@ func TestWakeSpriteRunners(t *testing.T) {
 
 			afterWake := f.service.config.now()
 			wakeTimeInRange := func(value *string) bool {
-				at, err := parseTimeValue(spriteFactValue(value))
+				at, err := hubapi.ParseTimeValue(spriteFactValue(value))
 				return err == nil && !at.Before(beforeWake) && !at.After(afterWake)
 			}
 			if tt.wantWakeCalls > 0 {
@@ -517,7 +518,7 @@ func TestWakeSpriteRunnersProjectIsolation(t *testing.T) {
 	})}
 	first, firstScope, _ := newSpriteWakeFixture(t, client, true, time.Minute, "first-runner")
 	second := newNativeFixture(t, first.service, first.project.OrganizationID, "second")
-	secondScope := nativeScope{organization: second.project.OrganizationID, project: second.project.ID, credential: apiCredential{ID: "test"}}
+	secondScope := nativeScope{organization: second.project.OrganizationID, project: second.project.ID, credential: hubapi.APICredential{ID: "test"}}
 	enrollSpriteWakeRunners(t, second, time.Minute, "second-runner")
 	storeSpriteWakeSecret(t, second, spritesSecretSentinel+"-second")
 	plain := newNativeFixture(t, first.service, first.project.OrganizationID, "non-sprite")

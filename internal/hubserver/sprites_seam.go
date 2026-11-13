@@ -2,9 +2,11 @@ package hubserver
 
 import (
 	"context"
+	"net/http"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/sprites"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"net/http"
 )
 
 var errSpriteNameTaken = sprites.ErrNameTaken
@@ -21,10 +23,10 @@ type spriteScaleDecision = sprites.ScaleDecision
 
 func decideSpriteScale(input spriteScaleInput) spriteScaleDecision { return sprites.DecideScale(input) }
 func validateSpritePoolAccess(tier *string) error {
-	return fromFeatureError(sprites.ValidatePoolAccess(tier))
+	return hubapi.FromFeatureError(sprites.ValidatePoolAccess(tier))
 }
 func validateSpritePoolSettings(settings *spritePoolSettings) error {
-	return fromFeatureError(sprites.ValidatePoolSettings(settings))
+	return hubapi.FromFeatureError(sprites.ValidatePoolSettings(settings))
 }
 func spritesResponseError(status int) error { return sprites.ResponseError(status) }
 func validSpritesSlug(slug string) bool     { return sprites.ValidSlug(slug) }

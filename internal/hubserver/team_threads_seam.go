@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/threads"
@@ -22,8 +23,8 @@ func (s *Service) threadsService() *threads.Service {
 		Details:      s.runDetailStore,
 		Now:          s.config.now,
 		Organization: func() tracker.OrganizationID { return tracker.OrganizationID(s.appOrganizationID()) },
-		RecordError:  projectRecordError,
-		IsNotFound:   isNativeNotFound,
+		RecordError:  hubapi.ProjectRecordError,
+		IsNotFound:   hubapi.IsNativeNotFound,
 	})
 }
 
@@ -50,12 +51,12 @@ func (s *Service) threadCaller(scope nativeScope) threads.Caller {
 
 func (s *Service) listThreadRecords(ctx context.Context, scope nativeScope, in teamThreadInput) (teamThreadPage, error) {
 	page, err := s.threadsService().List(ctx, s.threadCaller(scope), in)
-	return page, fromFeatureError(err)
+	return page, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) requestTeamUnread(ctx context.Context, scope nativeScope, projects []string, refresh bool) (teamUnreadSummary, error) {
 	summary, err := s.threadsService().RequestUnread(ctx, s.threadCaller(scope), projects, refresh)
-	return summary, fromFeatureError(err)
+	return summary, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) maintainTeamUnread(ctx context.Context) error {
@@ -68,7 +69,7 @@ func (s *Service) advanceTeamUnreadRecord(ctx context.Context) (bool, int, error
 
 func (s *Service) threadHTTPDeps() threads.HTTPDeps {
 	return threads.HTTPDeps{Service: s.threadsService, Auth: s.requestAuth, Operator: s.operatorAuthority,
-		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 		Resolve: func(ctx context.Context) (hubauth.Input, error) {
 			resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
 			if !ok {

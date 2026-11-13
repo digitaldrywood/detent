@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -63,7 +64,7 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 	}
 	ticket := strings.TrimSpace(c.QueryParam("ticket"))
 	if ticket == "" {
-		return s.nativeAPIError(c, nativePublicInvalid("A relay ticket is required"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("A relay ticket is required"))
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
@@ -76,21 +77,21 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 			return err
 		}
 		if workspacesession.Terminal(found.State) {
-			return nativeStaleExecution("The workspace has ended")
+			return hubapi.NativeStaleExecution("The workspace has ended")
 		}
 		tickets, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		redeemed, err := tickets.RedeemRelayTicket(ctx, postgres.RedeemRelayTicketInput{OrganizationID: scope.organization, ProjectID: scope.project, Digest: relayTicketDigest(ticket), SessionID: principal.sessionID, PrincipalID: principal.principalID, Subject: principal.subject, Now: s.config.now().UTC()})
 		if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, corestore.ErrNotFound) {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		if err != nil {
 			return err
 		}
 		if redeemed.WorkspaceID != found.ID {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		record = found
 		return nil
@@ -103,7 +104,7 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	connection := &relayConnection{
-		ID: newNativeID("relayconn"), WorkspaceID: record.ID, Socket: socket, Scope: s.authInput(scope),
+		ID: hubapi.NewID("relayconn"), WorkspaceID: record.ID, Socket: socket, Scope: s.authInput(scope),
 		PrincipalID: principal.principalID, SessionID: principal.sessionID,
 		Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{}),
 	}
@@ -130,7 +131,7 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 // commit to anybody, and a commit's author line is permanent in the
 // repository's history in a way a relay audit row is not.
 func (s *Service) relayActor(ctx context.Context, organization tracker.OrganizationID, connection *relayConnection, principal relayPrincipal) workspacesession.Actor {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	actor := workspacesession.Actor{
 		PrincipalID: principal.principalID, Subject: principal.subject, ConnectionID: connection.ID,
@@ -293,12 +294,12 @@ func (w *workspaceService) revalidatePerson(ctx context.Context, c echo.Context,
 		return errors.New("the relay principal changed")
 	}
 	if scope.organization != record.OrganizationID || scope.project != record.ProjectID {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	current := scope
 	current.credential = principal.credential
 	if w.server.config.TenantRepository == nil {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	return w.server.config.TenantRepository.ReadTenant(ctx, current.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := w.server.authorizeAccessScope(ctx, r, current, false); err != nil {
@@ -306,7 +307,7 @@ func (w *workspaceService) revalidatePerson(ctx context.Context, c echo.Context,
 		}
 		workspaces, ok := r.(postgres.WorkspaceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		live, err := workspaces.WorkspaceSession(ctx, current.project, record.ID)
 		if err != nil {
@@ -331,15 +332,15 @@ func (w *workspaceService) revalidatePerson(ctx context.Context, c echo.Context,
 // session was revoked, the membership row was deactivated, the grant was
 // withdrawn, the workspace ended, or the runner lost its lease.
 func (w *workspaceService) revalidatePersonLocally(ctx context.Context, record workspaceRecord, connection *relayConnection) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if w.server.config.TenantRepository == nil {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	return w.server.config.TenantRepository.ReadTenant(ctx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		workspaces, ok := r.(postgres.WorkspaceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		live, err := workspaces.WorkspaceSession(ctx, record.ProjectID, record.ID)
 		if err != nil {
@@ -409,7 +410,7 @@ func (w *workspaceService) revalidatePersonLocally(ctx context.Context, record w
 // It answers "" when the frame may be forwarded and a relay error code
 // otherwise.
 func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceRecord, connection *relayConnection, frame workspacesession.Frame) string {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if frame.Channel != workspacesession.ChannelTerminal {
 		return ""
@@ -541,7 +542,7 @@ func decodeTerminalOpen(frame workspacesession.Frame) (workspacesession.Terminal
 // question asked per frame because a grant can be withdrawn under a live
 // socket.
 func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspaceRecord, connection *relayConnection, frame workspacesession.Frame) string {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	gitWrite := frame.Channel == workspacesession.ChannelGit && workspacesession.GitWriteRequest(frame.Type)
 	execRun := frame.Channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecRun
@@ -935,13 +936,13 @@ func relayCodeMessage(code string) string {
 // shortens a workspace's life by nothing a person would notice, and failing a
 // frame over it would be worse.
 func (w *workspaceService) touchWorkspace(ctx context.Context, record workspaceRecord) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	now := w.now()
 	err := w.server.accessWrite(ctx, record.OrganizationID, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(postgres.WorkspaceWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		return owner.TouchWorkspaceActivity(ctx, record.ProjectID, record.ID, now)
 	})
@@ -971,7 +972,7 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 		var err error
 		record, err = service.readRelayWorker(ctx, reader, scope, c.Param("workspace"), identity)
 		if err == nil && !workspacesession.Bound(record.State) {
-			return nativeStaleExecution("The workspace is not bound to a runner")
+			return hubapi.NativeStaleExecution("The workspace is not bound to a runner")
 		}
 		return err
 	})
@@ -983,7 +984,7 @@ func (s *Service) openWorkspaceWorkerRelay(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	connection := &relayConnection{
-		ID: newNativeID("relayrunner"), WorkspaceID: record.ID, Socket: socket, Runner: true, Scope: s.authInput(scope), Owner: record.owner(),
+		ID: hubapi.NewID("relayrunner"), WorkspaceID: record.ID, Socket: socket, Runner: true, Scope: s.authInput(scope), Owner: record.owner(),
 		PrincipalID: scope.credential.ID, SessionID: string(record.LeaseID),
 		Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{}),
 	}
@@ -1226,12 +1227,12 @@ func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunStat
 	err = w.server.accessWrite(ctx, state.Organization, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if reason == "" {
 			if _, err := readRelayRunnerAuthority(ctx, writer, nativeAuthInput(state.RunnerScope), state.LeaseID, w.now()); err != nil {
-				var refusal *nativeError
-				if !errors.Is(err, corestore.ErrNotFound) && (!errors.As(err, &refusal) || refusal.status >= 500) {
+				var refusal *hubapi.NativeError
+				if !errors.Is(err, corestore.ErrNotFound) && (!errors.As(err, &refusal) || refusal.Status >= 500) {
 					return err
 				}
 				input.Status, input.ExitCode, input.Reason = workspacesession.RunFailed, pgtype.Int4{}, workspacesession.RunReasonStreamClosed
@@ -1253,7 +1254,7 @@ func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunStat
 			}
 			workspaces, ok := writer.(postgres.WorkspaceReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			workspace, readErr := workspaces.WorkspaceSession(ctx, state.Project, state.WorkspaceID)
 			if readErr != nil {
@@ -1293,13 +1294,13 @@ func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunStat
 
 // openRelayAudit writes the connection's workspace_relay_sessions row.
 func (w *workspaceService) openRelayAudit(ctx context.Context, record workspaceRecord, connection *relayConnection, principal relayPrincipal) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	connection.AuditID = newNativeID("relaysession")
+	connection.AuditID = hubapi.NewID("relaysession")
 	err := w.server.accessWrite(ctx, record.OrganizationID, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		_, err := owner.CreateRelaySession(ctx, postgres.CreateRelaySessionInput{
 			OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, WorkspaceID: record.ID,
@@ -1319,14 +1320,14 @@ func (w *workspaceService) closeRelayAudit(ctx context.Context, record workspace
 	if connection.AuditID == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	in, out := connection.Counters()
 	now := w.now()
 	err := w.server.accessWrite(ctx, record.OrganizationID, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		return owner.CloseRelaySession(ctx, postgres.CloseRelaySessionInput{
 			OrganizationID: record.OrganizationID, ProjectID: record.ProjectID,
@@ -1367,7 +1368,7 @@ func readRelayRunnerAuthority(ctx context.Context, reader tenantstore.Reader, sc
 	if err != nil {
 		return runnerstore.Identity{}, err
 	}
-	if credential.OrganizationID != scope.organization || credential.Scope != string(apiScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, now) || !runnerIdentityMatchesHeldLease(identity, scope.organization, scope.credential.Runner.RunnerID, credential.ID, scope.credential.Runner.MachineID, now) {
+	if credential.OrganizationID != scope.organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, now) || !runnerIdentityMatchesHeldLease(identity, scope.organization, scope.credential.Runner.RunnerID, credential.ID, scope.credential.Runner.MachineID, now) {
 		return runnerstore.Identity{}, runnerUnauthorized()
 	}
 	allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
@@ -1375,7 +1376,7 @@ func readRelayRunnerAuthority(ctx context.Context, reader tenantstore.Reader, sc
 		return runnerstore.Identity{}, err
 	}
 	if !allowed {
-		return runnerstore.Identity{}, nativeNotFound()
+		return runnerstore.Identity{}, hubapi.NativeNotFound()
 	}
 	if identity.State == "disabled" {
 		return runnerstore.Identity{}, runnerExcluded([]runnerauth.Exclusion{{Code: "runner_disabled", Message: "Runner is disabled"}})
@@ -1385,18 +1386,18 @@ func readRelayRunnerAuthority(ctx context.Context, reader tenantstore.Reader, sc
 
 func (w *workspaceService) readRelayWorker(ctx context.Context, reader tenantstore.Reader, scope nativeScope, id string, claim workspaceWorkerIdentity) (workspaceRecord, error) {
 	if workspacesession.ValidateID(id) != nil {
-		return workspaceRecord{}, nativeNotFound()
+		return workspaceRecord{}, hubapi.NativeNotFound()
 	}
 	if strings.TrimSpace(string(claim.LeaseID)) == "" || claim.FencingToken <= 0 {
-		return workspaceRecord{}, nativePublicInvalid("A lease and fencing token are required")
+		return workspaceRecord{}, hubapi.NativePublicInvalid("A lease and fencing token are required")
 	}
 	workspaces, ok := reader.(postgres.WorkspaceReader)
 	if !ok {
-		return workspaceRecord{}, workItemStorageUnavailable()
+		return workspaceRecord{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	found, err := workspaces.WorkspaceSession(ctx, scope.project, id)
 	if err != nil {
-		return workspaceRecord{}, projectRecordError(err)
+		return workspaceRecord{}, hubapi.ProjectRecordError(err)
 	}
 	identity, err := readRelayRunnerAuthority(ctx, reader, scope, string(claim.LeaseID), w.now())
 	if err != nil {
@@ -1404,25 +1405,25 @@ func (w *workspaceService) readRelayWorker(ctx context.Context, reader tenantsto
 	}
 	lease, err := reader.Lease(ctx, string(claim.LeaseID))
 	if err != nil {
-		return workspaceRecord{}, projectRecordError(err)
+		return workspaceRecord{}, hubapi.ProjectRecordError(err)
 	}
 	if lease.FencingToken != int64(claim.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(w.now()) {
-		return workspaceRecord{}, nativeStaleExecution("The workspace lease is no longer current")
+		return workspaceRecord{}, hubapi.NativeStaleExecution("The workspace lease is no longer current")
 	}
 	if identity.MachineID != tracker.MachineID(lease.MachineID) {
-		return workspaceRecord{}, nativeNotFoundAt("lease_runner_credential")
+		return workspaceRecord{}, hubapi.NativeNotFoundAt("lease_runner_credential")
 	}
 
 	if found.RunnerID != identity.RunnerID {
-		return workspaceRecord{}, nativeStaleExecution("The workspace belongs to another runner")
+		return workspaceRecord{}, hubapi.NativeStaleExecution("The workspace belongs to another runner")
 	}
 	owner, ok := reader.(postgres.RelayActionReader)
 	if !ok {
-		return workspaceRecord{}, workItemStorageUnavailable()
+		return workspaceRecord{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	found, err = owner.WorkspaceRelayOwner(ctx, postgres.WorkspaceRelayOwnerInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: id, RunnerID: identity.RunnerID, MachineID: string(identity.MachineID), LeaseID: lease.LeaseID, FencingToken: lease.FencingToken, Now: w.now()})
 	if errors.Is(err, corestore.ErrNotFound) {
-		return workspaceRecord{}, nativeStaleExecution("The lease does not hold this workspace's work item")
+		return workspaceRecord{}, hubapi.NativeStaleExecution("The lease does not hold this workspace's work item")
 	}
 	return relayWorkspaceRecord(found), err
 }
@@ -1440,11 +1441,11 @@ func (w *workspaceService) claimRelayExecRun(ctx context.Context, record workspa
 			return err
 		}
 		if !workspacesession.Bound(workspace.State) {
-			return nativeStaleExecution("The workspace is not bound to a runner")
+			return hubapi.NativeStaleExecution("The workspace is not bound to a runner")
 		}
 		owner, ok := reader.(postgres.RelayActionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		run, err = owner.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: record.OrganizationID, ProjectID: record.ProjectID, ID: strings.TrimSpace(payload.RunID)})
 		return err
@@ -1477,7 +1478,7 @@ func (w *workspaceService) claimRelayExecRun(ctx context.Context, record workspa
 		}
 		owner, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		id := run.ID
@@ -1508,18 +1509,18 @@ func (w *workspaceService) readRelayWorkspaceForActor(ctx context.Context, reade
 		return workspaceRecord{}, err
 	}
 	if workspacesession.ValidateID(id) != nil {
-		return workspaceRecord{}, nativeNotFound()
+		return workspaceRecord{}, hubapi.NativeNotFound()
 	}
 	owner, ok := reader.(postgres.WorkspaceReader)
 	if !ok {
-		return workspaceRecord{}, workItemStorageUnavailable()
+		return workspaceRecord{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	row, err := owner.WorkspaceSession(ctx, scope.project, id)
 	if err != nil {
-		return workspaceRecord{}, projectRecordError(err)
+		return workspaceRecord{}, hubapi.ProjectRecordError(err)
 	}
 	if err := workspaceReadableSubject(ctx, reader, scope, row.SubjectWorkItemID); err != nil {
-		return workspaceRecord{}, projectRecordError(err)
+		return workspaceRecord{}, hubapi.ProjectRecordError(err)
 	}
 	return relayWorkspaceRecord(row), nil
 }
@@ -1541,7 +1542,7 @@ func actionRunExitCode(value *int) (pgtype.Int4, error) {
 	var code pgtype.Int4
 	if value != nil {
 		if err := code.Scan(int64(*value)); err != nil {
-			return code, nativePublicInvalid("exit_code exceeds storage bounds")
+			return code, hubapi.NativePublicInvalid("exit_code exceeds storage bounds")
 		}
 	}
 	return code, nil
@@ -1554,14 +1555,14 @@ func (s *Service) retainRelayArchive(ctx context.Context, writer tenantstore.Wri
 	if err := writer.LockArchiveAccounting(ctx); err != nil {
 		return err
 	}
-	object, err := writer.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: organization, ID: newNativeID("archive"), Reference: ref, CreatedAt: at})
+	object, err := writer.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: organization, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: at})
 	if err != nil {
 		return err
 	}
 	if kind == "project-action-run-output" || kind == "workspace-terminal-recording" {
 		usage, err := writer.ChargeArchiveObject(ctx, object.ID, math.MaxInt64)
 		if errors.Is(err, corestore.ErrNotFound) {
-			return attachmentAccountingUnavailable()
+			return hubapi.AttachmentAccountingUnavailable()
 		}
 		if err != nil {
 			return err
@@ -1578,7 +1579,7 @@ func (s *Service) relayArchiveReference(ctx context.Context, organization tracke
 	err := s.accessRead(ctx, organization, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(attemptArchiveReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		object, err := owner.ArchiveObjectByKey(ctx, expected.Key)
 		if err != nil {

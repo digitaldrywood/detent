@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -28,7 +29,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 	}{revision}
 	operation := projectOperationID(scope, "POST", "/imports/"+id+"/advance")
-	hash, err := nativeCommandHash(input)
+	hash, err := hubapi.CommandHash(input)
 	if err != nil {
 		return nil, err
 	}
@@ -36,20 +37,20 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		return raw, err
 	}
 	if s.config.ImportBackend == nil {
-		return nil, nativePublicInvalid("GitHub import transport is not configured")
+		return nil, hubapi.NativePublicInvalid("GitHub import transport is not configured")
 	}
 	current, err := s.readGitHubImportRecord(ctx, scope, id)
 	if err != nil {
 		return nil, err
 	}
 	if current.Revision != revision {
-		return nil, nativeConflict(current.Revision)
+		return nil, hubapi.NativeConflict(current.Revision)
 	}
 	if current.Stage == "finished" {
 		return json.Marshal(current)
 	}
 	if current.RetryAfter != nil && s.config.now().Before(*current.RetryAfter) {
-		return nil, &nativeError{Code: "invalid_request", Message: "Import retry is not ready", status: http.StatusTooManyRequests, publicMessage: true}
+		return nil, &hubapi.NativeError{Code: "invalid_request", Message: "Import retry is not ready", Status: http.StatusTooManyRequests, PublicMessage: true}
 	}
 	project, err := s.readProjectRecord(ctx, scope)
 	if err != nil {
@@ -57,7 +58,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 	}
 	integration := projectIntegrationRecord(project)
 	if !integration.ManualImportEnabled || integration.Repository == "" {
-		return nil, nativePublicInvalid("Manual intake is disabled")
+		return nil, hubapi.NativePublicInvalid("Manual intake is disabled")
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return s.database.requireHostedFeatureRecord(ctx, r, "github_integration", s.config.now())
@@ -67,7 +68,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 	page, fetchErr := s.fetchGitHubImportRecordPage(ctx, scope, integration, current)
 	next := current
 	next.Revision++
-	next.ObservedAt = formatHubTime(s.config.now())
+	next.ObservedAt = hubapi.FormatHubTime(s.config.now())
 	var records []projectstore.GitHubImportRecord
 	var historical *historicalGitHubImportPlan
 	if fetchErr != nil {
@@ -78,7 +79,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		next.Status, next.LastError, next.RetryAfter = "partial", "GitHub source page is unavailable", &retry
 	} else {
 		if len(page.Records) > 100 || page.NextCursor != "" && page.NextCursor == current.Cursor {
-			return nil, nativePublicInvalid("GitHub import page did not advance within its budget")
+			return nil, hubapi.NativePublicInvalid("GitHub import page did not advance within its budget")
 		}
 		intakeScope := scope
 		intakeScope.integrationRepository = integration.Repository
@@ -105,13 +106,13 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 			next.WorkItemID = string(plan.item.NativeID)
 			if current.Stage == "issue" {
 				if page.Issue == nil || page.Issue.Number != current.IssueNumber {
-					return nil, nativePublicInvalid("GitHub import returned the wrong issue")
+					return nil, hubapi.NativePublicInvalid("GitHub import returned the wrong issue")
 				}
-				next.SourceUpdatedAt = formatHubTime(page.Issue.UpdatedAt)
+				next.SourceUpdatedAt = hubapi.FormatHubTime(page.Issue.UpdatedAt)
 			}
 		} else if current.Stage == "issue" {
 			if page.Issue == nil || page.Issue.Number != current.IssueNumber {
-				return nil, nativePublicInvalid("GitHub import returned the wrong issue")
+				return nil, hubapi.NativePublicInvalid("GitHub import returned the wrong issue")
 			}
 			source := *page.Issue
 			snapshot := linkedSnapshotFromSource(source, s.config.now())
@@ -120,7 +121,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 				return nil, err
 			}
 			next.WorkItemID = string(issue.WorkItemID)
-			next.SourceUpdatedAt = formatHubTime(source.UpdatedAt)
+			next.SourceUpdatedAt = hubapi.FormatHubTime(source.UpdatedAt)
 		} else if current.Stage == "comments" && len(page.Records) > 0 {
 			var linked eventstore.LinkedSource
 			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -146,7 +147,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		}
 		for _, record := range page.Records {
 			if record.SourceKey == "" || !json.Valid(record.Data) {
-				return nil, nativePublicInvalid("GitHub import record is incomplete")
+				return nil, hubapi.NativePublicInvalid("GitHub import record is incomplete")
 			}
 			raw, err := json.Marshal(record)
 			if err != nil {
@@ -202,14 +203,14 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		}
 		owner, ok := w.(projectstore.GitHubImportWriter)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return hubapi.ErrPostgresFeatureUnavailable
 		}
 		latest, err := owner.GitHubImport(ctx, scope.project, id)
 		if err != nil {
 			return err
 		}
 		if latest.Revision != int64(revision) {
-			return nativeConflict(tracker.Revision(latest.Revision))
+			return hubapi.NativeConflict(tracker.Revision(latest.Revision))
 		}
 		if historical != nil {
 			if err := applyHistoricalGitHubImport(ctx, w, project, *historical); err != nil {
@@ -218,7 +219,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		}
 		latest.WorkItemID, latest.Stage, latest.Cursor, latest.Pages, latest.Status, latest.Gaps, latest.LastError, latest.RetryAfter, latest.ObservedAt, latest.EditSequence = next.WorkItemID, next.Stage, next.Cursor, int64(next.Pages), next.Status, next.Gaps, next.LastError, next.RetryAfter, s.config.now(), next.EditSequence
 		if next.SourceUpdatedAt != "" {
-			value, err := parseTimeValue(next.SourceUpdatedAt)
+			value, err := hubapi.ParseTimeValue(next.SourceUpdatedAt)
 			if err != nil {
 				return err
 			}
@@ -227,7 +228,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		if fetchErr == nil && current.Stage == "dependencies" && current.Cursor == "" {
 			owner, ok := w.(projectstore.GitHubImportRecordWriter)
 			if !ok {
-				return ErrPostgresFeatureUnavailable
+				return hubapi.ErrPostgresFeatureUnavailable
 			}
 			if err := owner.ResetCurrentGitHubImportDependencies(ctx, scope.project, id); err != nil {
 				return err
@@ -236,7 +237,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		for _, record := range records {
 			gitHubImportRecordWriter, ok := w.(projectstore.GitHubImportRecordWriter)
 			if !ok {
-				return ErrPostgresFeatureUnavailable
+				return hubapi.ErrPostgresFeatureUnavailable
 			}
 			if err := gitHubImportRecordWriter.CreateGitHubImportRecord(ctx, record); err != nil {
 				return err
@@ -256,7 +257,7 @@ func (s *Service) fetchGitHubImportRecordPage(ctx context.Context, scope nativeS
 			var err error
 			gitHubImportRecordReader, ok := r.(projectstore.GitHubImportRecordReader)
 			if !ok {
-				return ErrPostgresFeatureUnavailable
+				return hubapi.ErrPostgresFeatureUnavailable
 			}
 			source, err = gitHubImportRecordReader.GitHubImportEditSource(ctx, scope.project, job.ID, job.EditSequence)
 			return err
@@ -306,7 +307,7 @@ func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope nativ
 				return err
 			}
 			plan.create = true
-			plan.item = corestore.WorkItem{OrganizationID: scope.organization, ProjectID: scope.project, NativeID: tracker.NativeWorkItemID(newNativeID("wi")), Number: number}
+			plan.item = corestore.WorkItem{OrganizationID: scope.organization, ProjectID: scope.project, NativeID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: number}
 			return nil
 		}
 		return err
@@ -331,12 +332,12 @@ func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope nativ
 	}
 	if job.Stage == "issue" && project.Core.Profile == "github_compatible" {
 		if page.Issue == nil || page.Issue.Number != job.IssueNumber {
-			return plan, nativePublicInvalid("GitHub import returned the wrong issue")
+			return plan, hubapi.NativePublicInvalid("GitHub import returned the wrong issue")
 		}
 		source := *page.Issue
 		canonical, repository, number, err := tracker.ParseGitHubIssueURL(source.URL)
 		if err != nil || !strings.EqualFold(repository, project.Settings.Repository) || number != source.Number || source.NodeID == "" {
-			return plan, nativePublicInvalid("GitHub source does not match its repository")
+			return plan, hubapi.NativePublicInvalid("GitHub source does not match its repository")
 		}
 		snapshot := linkedSnapshotFromSource(source, now)
 		if err := validateLinkedIssueSnapshot(snapshot); err != nil {
@@ -379,7 +380,7 @@ func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope nativ
 		if err != nil {
 			return plan, err
 		}
-		raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: plan.item.NativeID, ID: newNativeID("evt"), Type: "github.imported", SchemaVersion: 1, Actor: *nativeIntegrationActor("github"), RecordedAt: source.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision}})
+		raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: plan.item.NativeID, ID: hubapi.NewID("evt"), Type: "github.imported", SchemaVersion: 1, Actor: *nativeIntegrationActor("github"), RecordedAt: source.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision}})
 		if err != nil {
 			return plan, err
 		}
@@ -399,7 +400,7 @@ func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope nativ
 			continue
 		}
 		if len(record.Body) > 64<<10 {
-			return plan, nativePublicInvalid("Intake discussion contains an oversized comment")
+			return plan, hubapi.NativePublicInvalid("Intake discussion contains an oversized comment")
 		}
 		if err := validateImportProvenance(&record.Provenance); err != nil {
 			return plan, err
@@ -480,7 +481,7 @@ func applyHistoricalGitHubImport(ctx context.Context, w tenantstore.Writer, proj
 		} else {
 			owner, ok := w.(postgres.SourceWorkItemWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			if _, err := owner.UpdateWorkItemFromSource(ctx, row, issue.LastActivityAt); err != nil {
 				return err

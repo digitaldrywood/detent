@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,36 +21,36 @@ var errHostedContextUnavailable = errors.New("hosted application context is unav
 
 type hostedContextExecutor struct{ service *Service }
 
-func (e hostedContextExecutor) credential(ctx context.Context, name, project string) (context.Context, apiCredential, error) {
+func (e hostedContextExecutor) credential(ctx context.Context, name, project string) (context.Context, hubapi.APICredential, error) {
 	requirement := operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: project}
 	if name == operatortool.AppUpdates {
 		requirement.ResourceKind = "runners"
 	}
 	ctx, err := operatortool.AuthorizeCurrent(ctx, requirement)
 	if err != nil {
-		return ctx, apiCredential{}, err
+		return ctx, hubapi.APICredential{}, err
 	}
 	s := e.service
 	if s.config.Hosted == nil {
-		return ctx, apiCredential{}, errHostedContextUnavailable
+		return ctx, hubapi.APICredential{}, errHostedContextUnavailable
 	}
 	if s.config.TenantRepository == nil || name != operatortool.AppUpdates && name != operatortool.AppBootstrapPayload && name != operatortool.ReleaseNotes {
-		return ctx, apiCredential{}, errHostedContextUnavailable
+		return ctx, hubapi.APICredential{}, errHostedContextUnavailable
 	}
 	credential, err := currentHubOperator(ctx)
 	if err != nil {
-		return ctx, apiCredential{}, operatorAuthorizationError(err)
+		return ctx, hubapi.APICredential{}, operatorAuthorizationError(err)
 	}
 	if credential.Hosted == nil || credential.HostedRole == "account" || operatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
-		return ctx, apiCredential{}, operatortool.ErrAccessDenied
+		return ctx, hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	if name == operatortool.AppUpdates {
 		allowed, err := s.appAllRunnerGrants(ctx, credential)
 		if err != nil {
-			return ctx, apiCredential{}, err
+			return ctx, hubapi.APICredential{}, err
 		}
 		if !allowed {
-			return ctx, apiCredential{}, operatortool.ErrAccessDenied
+			return ctx, hubapi.APICredential{}, operatortool.ErrAccessDenied
 		}
 	}
 	return ctx, credential, nil
@@ -99,7 +100,7 @@ func (e hostedContextExecutor) listTools(ctx context.Context) ([]operatortool.De
 }
 
 func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	defer func() {
 		if resultErr == nil {
@@ -193,8 +194,8 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 	return operatortool.Result{Content: raw}, nil
 }
 
-func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredential, projects ...tracker.ProjectID) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) appAllRunnerGrants(ctx context.Context, credential hubapi.APICredential, projects ...tracker.ProjectID) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if credential.Hosted == nil {
 		return false, nil
@@ -202,7 +203,7 @@ func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredenti
 	return s.appAllRunnerGrantsPostgres(ctx, credential, projects)
 }
 
-func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential apiCredential, projects []tracker.ProjectID) (bool, error) {
+func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential hubapi.APICredential, projects []tracker.ProjectID) (bool, error) {
 	if s.config.TenantRepository == nil {
 		return false, errHostedContextUnavailable
 	}
@@ -222,7 +223,7 @@ func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential api
 	return allowed, nil
 }
 
-func (s *Service) appAllRunnerGrantsWith(ctx context.Context, reader tenantstore.Reader, credential apiCredential, projects []tracker.ProjectID) (bool, error) {
+func (s *Service) appAllRunnerGrantsWith(ctx context.Context, reader tenantstore.Reader, credential hubapi.APICredential, projects []tracker.ProjectID) (bool, error) {
 	if credential.HostedRole != "owner" && credential.HostedRole != "admin" && credential.HostedRole != "member" || projects != nil && len(projects) == 0 {
 		return false, nil
 	}
@@ -233,7 +234,7 @@ func (s *Service) appAllRunnerGrantsWith(ctx context.Context, reader tenantstore
 	err := func() error {
 		accessReader, ok := reader.(accessstore.ProjectAccessPageReader)
 		if !ok {
-			return ErrProjectParticipants
+			return hubapi.ErrProjectParticipants
 		}
 		if projects != nil {
 			if len(projects) > corestore.MaxPageSize {

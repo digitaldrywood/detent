@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -507,7 +508,7 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 	ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
 		return operatortool.Authority{Identity: identity, Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil
 	}})
-	ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (apiCredential, error) { return apiCredential{}, nil })
+	ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (hubapi.APICredential, error) { return hubapi.APICredential{}, nil })
 	for _, cfg := range []Config{{now: time.Now}, {now: time.Now, Hosted: &HostedConfig{OrganizationID: "org_test"}}} {
 		service := &Service{config: cfg}
 		for _, name := range []string{operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports} {
@@ -1280,7 +1281,7 @@ func seedAnalyticsTestChange(t *testing.T, service *Service, scope nativeScope, 
 	return change, version
 }
 
-func analyticsHostedTestAuthority(t *testing.T, f hostedSecurityFixture, user hostedSecurityUser) (context.Context, apiCredential) {
+func analyticsHostedTestAuthority(t *testing.T, f hostedSecurityFixture, user hostedSecurityUser) (context.Context, hubapi.APICredential) {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(t.Context())
 	request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
@@ -1369,7 +1370,7 @@ func seedAnalyticsTestAttempt(t *testing.T, db *sql.DB, service *Service, scope 
 
 func appendAnalyticsTestEvent(t *testing.T, service *Service, scope nativeScope, item tracker.NativeWorkItemID, kind string, data tracker.CollaborationData, at time.Time) eventstore.Event {
 	t.Helper()
-	row, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: at, Data: data}))
+	row, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: at, Data: data}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1411,7 +1412,7 @@ func transitionAnalyticsTestWorkItem(t *testing.T, service *Service, scope nativ
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: at, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: from, ToState: target}}))
+	event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: at, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: from, ToState: target}}))
 	if err != nil {
 		t.Fatal(err)
 	}

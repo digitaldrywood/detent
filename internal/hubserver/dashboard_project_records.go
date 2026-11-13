@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -19,7 +20,7 @@ func requireDashboardRecordItem(ctx context.Context, r tenantstore.Reader, scope
 	if err != nil {
 		return err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 		return corestore.ErrNotFound
 	}
 	return nil
@@ -28,7 +29,7 @@ func requireDashboardRecordItem(ctx context.Context, r tenantstore.Reader, scope
 func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDelivery, sub *dashboardSubscription, scope nativeScope) (bool, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return false, workItemStorageUnavailable()
+		return false, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	frames := make([]dashboardFrame, 0, min(d.config.pageSize, corestore.MaxPageSize))
 	type actionFrame struct {
@@ -120,7 +121,7 @@ func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDe
 				if row.RelatedID == sub.workspace && (sub.item == "" || sub.item == selectedWorkspace.SubjectWorkItemID) {
 					owner, ok := r.(postgres.RelayActionReader)
 					if !ok {
-						return workspaceUnavailable()
+						return hubapi.WorkspaceUnavailable()
 					}
 					run, found := runs[row.EntityID]
 					var readErr error
@@ -250,7 +251,7 @@ func (s *Service) dashboardRecordFrame(ctx context.Context, r tenantstore.Reader
 		return frame, true, err
 	}
 	if row.Topic != "work_item" && row.Topic != "human_action" && row.Topic != "lane" && row.Topic != "board" && row.Topic != "health" && row.Topic != "workspace" && row.Topic != "action_run" {
-		return frame, false, workItemStorageUnavailable()
+		return frame, false, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if row.Topic == "health" {
 		frame.event = "health.findings"
@@ -270,14 +271,14 @@ func (s *Service) dashboardRecordFrame(ctx context.Context, r tenantstore.Reader
 
 func (s *Service) dashboardWorkspaceRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, id string) (postgres.WorkspaceSession, error) {
 	if s.workspaces == nil {
-		return postgres.WorkspaceSession{}, nativeNotFound()
+		return postgres.WorkspaceSession{}, hubapi.NativeNotFound()
 	}
 	if err := workspacesession.ValidateID(id); err != nil {
 		return postgres.WorkspaceSession{}, corestore.ErrNotFound
 	}
 	owner, ok := r.(postgres.WorkspaceReader)
 	if !ok {
-		return postgres.WorkspaceSession{}, workspaceUnavailable()
+		return postgres.WorkspaceSession{}, hubapi.WorkspaceUnavailable()
 	}
 	row, err := owner.WorkspaceSession(ctx, scope.project, id)
 	if err != nil {

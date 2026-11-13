@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -170,7 +171,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "worker-backlog"}, Title: "Unapproved admission", Body: issueContractTestSections, State: "Backlog"}
 		response := performHubAPIRequest(t, f.service, http.MethodPost, base+"/work-items", credential, request)
 		requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-		var failure apiErrorResponse
+		var failure hubapi.APIErrorResponse
 		decodeHubResponse(t, response, &failure)
 		if failure.Message != "Workflow target requires an operator" {
 			t.Fatalf("worker operator-only admission = %v", failure)

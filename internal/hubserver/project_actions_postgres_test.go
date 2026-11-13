@@ -12,20 +12,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
 )
 
 func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
@@ -337,7 +339,7 @@ func TestPostgresProjectActionDeletionLifecycle(t *testing.T) {
 							return err
 						}
 						var err error
-						object, err = w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: newNativeID("att"), Reference: ref, CreatedAt: now})
+						object, err = w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: hubapi.NewID("att"), Reference: ref, CreatedAt: now})
 						if err != nil {
 							return err
 						}
@@ -417,7 +419,7 @@ func TestPostgresProjectActionsRollbackRefusesRetainedData(t *testing.T) {
 			if err := w.(actionstore.Writer).CreateProjectAction(t.Context(), actionstore.Record{Action: workspacesession.Action{ID: "retained_action", OrganizationID: string(organization), ProjectID: string(project), Name: "Example", CreatedBy: "operator", Revision: 1, CreatedAt: now, UpdatedAt: now}, Command: ref}); err != nil {
 				return err
 			}
-			object, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: newNativeID("att"), Reference: ref, CreatedAt: now})
+			object, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: hubapi.NewID("att"), Reference: ref, CreatedAt: now})
 			if err != nil {
 				return err
 			}

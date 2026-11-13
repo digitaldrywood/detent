@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
@@ -18,10 +19,10 @@ type billingDestination struct {
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
-type billingAuthorization func(context.Context) (apiCredential, error)
+type billingAuthorization func(context.Context) (hubapi.APICredential, error)
 
 func billingFailure(status int, message string) error {
-	return &nativeError{Code: "billing_unavailable", Message: message, status: status}
+	return &hubapi.NativeError{Code: "billing_unavailable", Message: message, Status: status}
 }
 
 func checkoutProviderFailure(message string, err error) error {

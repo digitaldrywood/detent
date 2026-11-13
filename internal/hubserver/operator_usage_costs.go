@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -53,7 +54,7 @@ func (e hubProjectExecutor) monthlyUsageCosts(ctx context.Context, arguments jso
 	}
 	report, err := e.service.database.monthlyCosts(ctx, string(scope.organization), request.Scope, projects, window, e.service.config.now())
 	if err != nil {
-		return operatortool.Result{}, errProjectServiceUnavailable
+		return operatortool.Result{}, hubapi.ErrProjectServiceUnavailable
 	}
 	return billingResult(boundedMonthlyCostDetails(report))
 }

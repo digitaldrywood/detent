@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -53,7 +54,7 @@ func (s *Service) updateHostedPlan(c echo.Context) error {
 	}
 
 	var command hostedPlanCommand
-	if err := decodeAPIJSON(c, &command); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &command); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := s.database.applyHostedPlanCommand(c.Request().Context(), s.config.Hosted.EntitlementAdministrator, command); err != nil {
@@ -64,9 +65,9 @@ func (s *Service) updateHostedPlan(c echo.Context) error {
 
 func hostedRunnerTransactionMetrics(path string) []string {
 	switch path {
-	case nativeBase + "/leases/:lease/validate", nativeBase + "/claims/preview":
+	case hubapi.NativeBase + "/leases/:lease/validate", hubapi.NativeBase + "/claims/preview":
 		return []string{"events_total", "usage_windows"}
-	case nativeBase + "/machines/:machine/heartbeat":
+	case hubapi.NativeBase + "/machines/:machine/heartbeat":
 		return []string{"connected_runners", "events_total", "usage_windows", "collaboration_bytes"}
 	case enrollmentBase + "/redeem":
 		return []string{"registered_runners", "connected_runners", "usage_windows"}

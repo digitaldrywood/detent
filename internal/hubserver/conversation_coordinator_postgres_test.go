@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -113,7 +114,7 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 	for _, project := range projects {
 		t.Run(string(project), func(t *testing.T) {
 			key := "key_" + string(project)
-			scope := nativeScope{organization: organization, credential: apiCredential{ID: key, Hash: key + "-hash", Scope: apiScopeOperator, HostedRole: "owner", HostedMembership: "example_membership", Hosted: &auth.HostedIdentity{Subject: "example_user"}}}
+			scope := nativeScope{organization: organization, credential: hubapi.APICredential{ID: key, Hash: key + "-hash", Scope: hubapi.APIScopeOperator, HostedRole: "owner", HostedMembership: "example_membership", Hosted: &auth.HostedIdentity{Subject: "example_user"}}}
 			if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 				allowed, err := service.coordinatorAllowedProjects(t.Context(), r, scope, projects)
 				if err != nil {
@@ -202,11 +203,11 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 					}); err != nil {
 						t.Fatal(err)
 					}
-					var denied *nativeError
-					if _, err := service.readPGConversationPage(t.Context(), current, id, 0, 10); !errors.As(err, &denied) || denied.status != http.StatusNotFound {
+					var denied *hubapi.NativeError
+					if _, err := service.readPGConversationPage(t.Context(), current, id, 0, 10); !errors.As(err, &denied) || denied.Status != http.StatusNotFound {
 						t.Errorf("stored answer remained readable after %s narrowing: %v", restriction, err)
 					}
-					if _, err := service.readPGConversation(t.Context(), current, id); !errors.As(err, &denied) || denied.status != http.StatusNotFound {
+					if _, err := service.readPGConversation(t.Context(), current, id); !errors.As(err, &denied) || denied.Status != http.StatusNotFound {
 						t.Errorf("stored conversation remained readable after %s narrowing: %v", restriction, err)
 					}
 					if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteAccessTokenGrant(t.Context(), key, other) }); err != nil {

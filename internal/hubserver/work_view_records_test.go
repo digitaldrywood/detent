@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -316,7 +317,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 			t.Fatalf("retained canonical=%q want=%q error=%v", canonical, expected, err)
 		}
 	}
-	if _, err := f.service.readableRecordReference(t.Context(), streamScope, []string{"foreign-org", "example-project", "issues", "42"}, true); !isNativeNotFound(err) {
+	if _, err := f.service.readableRecordReference(t.Context(), streamScope, []string{"foreign-org", "example-project", "issues", "42"}, true); !hubapi.IsNativeNotFound(err) {
 		t.Fatalf("foreign organization reference=%v", err)
 	}
 	if err := f.service.requireBoardRecordProject(t.Context(), streamScope); err != nil {

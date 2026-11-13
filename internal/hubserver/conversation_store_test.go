@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -140,14 +141,14 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 	})
 	t.Run("read missing is not found", func(t *testing.T) {
 		_, err := f.readConversation(t.Context(), f.project.ID, conversation.NewConversationID())
-		var failure *nativeError
+		var failure *hubapi.NativeError
 		if !errors.As(err, &failure) || failure.Code != "not_found" {
 			t.Fatalf("readConversation() error = %v, want not_found", err)
 		}
 	})
 	t.Run("read across project is not found", func(t *testing.T) {
 		_, err := f.readConversation(t.Context(), tracker.ProjectID("proj_other"), newer.ID)
-		var failure *nativeError
+		var failure *hubapi.NativeError
 		if !errors.As(err, &failure) || failure.Code != "not_found" {
 			t.Fatalf("readConversation() error = %v, want not_found", err)
 		}
@@ -302,7 +303,7 @@ func TestConversationStoreUpdateRevision(t *testing.T) {
 	}
 	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+missing.ID, f.ownerToken, map[string]any{"title": "missing"})
 	requireNativeStatus(t, response, http.StatusNotFound)
-	var missingResponse apiErrorResponse
+	var missingResponse hubapi.APIErrorResponse
 	decodeHubResponse(t, response, &missingResponse)
 	if missingResponse.Code != "not_found" {
 		t.Fatalf("updateConversation(missing) code=%s, want not_found", missingResponse.Code)
@@ -514,7 +515,7 @@ func TestConversationStoreQuestions(t *testing.T) {
 		t.Fatalf("answered question still pending: %#v", pending)
 	}
 	_, err = f.readQuestion(t.Context(), record.ID, conversation.NewQuestionID())
-	var failure *nativeError
+	var failure *hubapi.NativeError
 	if !errors.As(err, &failure) || failure.Code != "not_found" {
 		t.Fatalf("readQuestion(missing) error = %v, want not_found", err)
 	}

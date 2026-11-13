@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -791,7 +792,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 								if !allowed {
 									hash = apikey.HashToken("example changed credential")
 								}
-								return w.RotateAccessCredential(t.Context(), "credential_owner", hash, tokenFingerprint(hash), clock)
+								return w.RotateAccessCredential(t.Context(), "credential_owner", hash, hubapi.TokenFingerprint(hash), clock)
 							}
 							member, err := w.AccessMember(t.Context(), "owner")
 							if err != nil {
@@ -998,7 +999,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					requireNativeStatus(t, changeCall("owner", operatortool.ReviewChange, args), http.StatusOK)
 					if err := repository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 						row, err := r.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
-						if err == nil && (stringValue(row.WorkflowStateName) != "Merging" || row.Revision != 2) {
+						if err == nil && (hubapi.StringValue(row.WorkflowStateName) != "Merging" || row.Revision != 2) {
 							return errors.New("existing review did not promote after canonical projection recovery")
 						}
 						return err
@@ -1029,8 +1030,8 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					requireNativeStatus(t, changeCall("owner", operatortool.ReviewChange, args), http.StatusOK)
 					if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 						row, err := r.WorkItem(t.Context(), "project_example", target.issue.WorkItemID)
-						if err == nil && (stringValue(row.WorkflowStateName) != "Review" || row.Revision != 1) {
-							return fmt.Errorf("outstanding other review was bypassed: %s/%d", stringValue(row.WorkflowStateName), row.Revision)
+						if err == nil && (hubapi.StringValue(row.WorkflowStateName) != "Review" || row.Revision != 1) {
+							return fmt.Errorf("outstanding other review was bypassed: %s/%d", hubapi.StringValue(row.WorkflowStateName), row.Revision)
 						}
 						return err
 					}); err != nil {
@@ -1043,8 +1044,8 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					requireNativeStatus(t, changeCall("admin", operatortool.ReviewChange, args), http.StatusOK)
 					if err := repository.ReadTenant(t.Context(), target.issue.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 						row, err := r.WorkItem(t.Context(), "project_example", target.issue.WorkItemID)
-						if err == nil && (stringValue(row.WorkflowStateName) != "Merging" || row.Revision != 2) {
-							return fmt.Errorf("all current human approvals did not promote: %s/%d", stringValue(row.WorkflowStateName), row.Revision)
+						if err == nil && (hubapi.StringValue(row.WorkflowStateName) != "Merging" || row.Revision != 2) {
+							return fmt.Errorf("all current human approvals did not promote: %s/%d", hubapi.StringValue(row.WorkflowStateName), row.Revision)
 						}
 						return err
 					}); err != nil {
@@ -1154,7 +1155,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 							if err != nil {
 								return err
 							}
-							if stringValue(row.WorkflowStateName) != "Review" || row.Revision != 1 {
+							if hubapi.StringValue(row.WorkflowStateName) != "Review" || row.Revision != 1 {
 								return errors.New("live-lease refusal mutated workflow")
 							}
 							stored, err := r.Change(t.Context(), created.ChangeID)
@@ -1218,8 +1219,8 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 						if decision == "changes_requested" {
 							state, revision = "Rework", 3
 						}
-						if stringValue(row.WorkflowStateName) != state || row.Revision != revision {
-							return fmt.Errorf("review workflow state=%s revision=%d, want %s/%d", stringValue(row.WorkflowStateName), row.Revision, state, revision)
+						if hubapi.StringValue(row.WorkflowStateName) != state || row.Revision != revision {
+							return fmt.Errorf("review workflow state=%s revision=%d, want %s/%d", hubapi.StringValue(row.WorkflowStateName), row.Revision, state, revision)
 						}
 						if decision != "commented" && (row.DispatchGeneration <= history.DispatchGeneration || row.DispatchRequestedAt == nil) {
 							return errors.New("review transition omitted fresh dispatch intent")
@@ -1459,7 +1460,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				return err
 			}
 			called = true
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		})
 		defer func() { service.config.ConversationDispatch = original }()
 		refused := call("owner", move(issue, "rollback-intent", "Rework"))
@@ -1473,7 +1474,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if row.Revision != int64(issue.Revision) || stringValue(row.WorkflowStateName) != issue.State {
+			if row.Revision != int64(issue.Revision) || hubapi.StringValue(row.WorkflowStateName) != issue.State {
 				return fmt.Errorf("failed dispatch intent changed issue state")
 			}
 			bound, err := (mutation.Metadata{PrincipalID: "credential_owner", OrganizationID: "org_startup", ProjectID: "project_example", Action: operatortool.MoveItem}).Bind("rollback-intent", nil)
@@ -1661,7 +1662,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if row.Revision != int64(changed.Revision) || stringValue(row.WorkflowStateName) != "Rework" {
+		if row.Revision != int64(changed.Revision) || hubapi.StringValue(row.WorkflowStateName) != "Rework" {
 			return fmt.Errorf("current state differs")
 		}
 		version, err := r.CollaborationVersion(t.Context(), string(issue.WorkItemID), row.Revision)
@@ -1886,7 +1887,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if row.Revision != int64(changed.Revision) || stringValue(row.WorkflowStateName) != changed.State {
+		if row.Revision != int64(changed.Revision) || hubapi.StringValue(row.WorkflowStateName) != changed.State {
 			return fmt.Errorf("refused transition changed the issue")
 		}
 		bound, err := (mutation.Metadata{PrincipalID: "credential_owner", OrganizationID: "org_startup", ProjectID: "project_example", Action: operatortool.MoveItem}).Bind("active_Cancelled", nil)
@@ -1972,7 +1973,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if row.Revision != int64(newer.Revision) || stringValue(row.WorkflowStateName) != "Cancelled" {
+		if row.Revision != int64(newer.Revision) || hubapi.StringValue(row.WorkflowStateName) != "Cancelled" {
 			return fmt.Errorf("expired command changed newer state")
 		}
 		return nil

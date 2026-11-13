@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -93,7 +94,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 		fields["state"] = args.State
 	case "propose_backlog_admission":
 		if args.Priority != nil || args.State != "" || issue.State != "Backlog" {
-			return nil, nativePublicInvalid("Admission requires a Backlog item")
+			return nil, hubapi.NativePublicInvalid("Admission requires a Backlog item")
 		}
 		targetState = "Todo"
 		fields["state"] = targetState

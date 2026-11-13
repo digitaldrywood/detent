@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -45,7 +46,7 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 		if locked {
 			locker, ok := r.(attachmentstore.LockingReader)
 			if !ok {
-				return nil, workItemStorageUnavailable()
+				return nil, hubapi.NativeWorkItemStorageUnavailable()
 			}
 			row, err = locker.LockAttachment(ctx, scope.project, id)
 		} else {
@@ -66,7 +67,7 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 		err := attachment.ValidateVisualReferences(field.value, string(scope.organization), string(scope.project), resolve)
 		var refusal *attachment.VisualReferenceError
 		if errors.As(err, &refusal) {
-			return nil, nativePublicInvalid(fmt.Sprintf("%s block %d: %s", field.name, refusal.Block, attachment.VisualReferenceMessage))
+			return nil, hubapi.NativePublicInvalid(fmt.Sprintf("%s block %d: %s", field.name, refusal.Block, attachment.VisualReferenceMessage))
 		}
 		if err != nil {
 			return nil, err
@@ -75,14 +76,14 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 	err = changerequest.ValidateVisualArtifacts(artifacts, string(scope.organization), string(scope.project), resolve)
 	var refusal *attachment.VisualReferenceError
 	if errors.As(err, &refusal) {
-		return nil, nativePublicInvalid(fmt.Sprintf("%s[%d]: %s", artifactName, refusal.Block-1, attachment.VisualReferenceMessage))
+		return nil, hubapi.NativePublicInvalid(fmt.Sprintf("%s[%d]: %s", artifactName, refusal.Block-1, attachment.VisualReferenceMessage))
 	}
 	if err != nil {
 		return nil, err
 	}
 	for _, id := range ids {
 		if metadata[id].ID != id {
-			return nil, nativePublicInvalid(attachment.VisualReferenceMessage)
+			return nil, hubapi.NativePublicInvalid(attachment.VisualReferenceMessage)
 		}
 	}
 	return ids, nil

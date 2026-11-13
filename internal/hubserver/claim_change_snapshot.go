@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -13,7 +14,7 @@ import (
 func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope nativeScope, plans []nativeClaimPlan) error {
 	ids := []string{}
 	for _, plan := range plans {
-		if (stringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending) && plan.changeRecord.ID != "" {
+		if (hubapi.StringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending) && plan.changeRecord.ID != "" {
 			ids = append(ids, plan.changeRecord.ID)
 		}
 	}
@@ -22,7 +23,7 @@ func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope
 	}
 	reader, ok := r.(tenantstore.ClaimChangeRowsReader)
 	if !ok {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	rows, err := reader.ClaimChangeRows(ctx, scope.project, ids)
 	if err != nil {
@@ -78,7 +79,7 @@ func (s *Service) prepareNativeClaimLegacyAuditFacts(ctx context.Context, scope 
 	}
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	var rows map[int64][]eventstore.AuditDisposition
 	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -87,7 +88,7 @@ func (s *Service) prepareNativeClaimLegacyAuditFacts(ctx context.Context, scope 
 		}
 		reader, ok := r.(tenantstore.ClaimAuditDispositionRowsReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		rows, err = reader.ClaimAuditDispositionRows(ctx, scope.project, runs)

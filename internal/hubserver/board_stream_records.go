@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -107,7 +108,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 						if err != nil {
 							return err
 						}
-						if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+						if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 							return corestore.ErrNotFound
 						}
 						return nil
@@ -124,7 +125,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 				}
 				if card.Change != nil {
 					detail, err := s.selectedChangeDetail(ctx, scope, string(row.WorkItemID), card.Change.ID, s.config.now())
-					if errors.Is(err, corestore.ErrNotFound) || isNativeNotFound(err) {
+					if errors.Is(err, corestore.ErrNotFound) || hubapi.IsNativeNotFound(err) {
 						card.Change = nil
 					} else if err != nil {
 						return false, err

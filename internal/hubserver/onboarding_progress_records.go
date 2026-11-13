@@ -11,13 +11,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 )
 
 func (s *Service) readOnboardingProgressRecord(ctx context.Context, scope nativeScope) (onboarding.Progress, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var result onboarding.Progress
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -28,7 +29,7 @@ func (s *Service) readOnboardingProgressRecord(ctx context.Context, scope native
 		result, err = r.ProjectOnboardingProgress(ctx, scope.project)
 		return err
 	})
-	return result, projectRecordError(err)
+	return result, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) saveOnboardingProgressRecord(c echo.Context, request saveOnboardingRequest) error {
@@ -41,21 +42,21 @@ func (s *Service) saveOnboardingProgressRecord(c echo.Context, request saveOnboa
 
 func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope nativeScope, operation string, request saveOnboardingRequest) (json.RawMessage, error) {
 	if err := request.Progress.Validate(); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, hubapi.NativeInvalid(err.Error())
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.Progress.Revision < 0 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes and a nonnegative revision are required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes and a nonnegative revision are required")
 	}
 	_, viewerKey, err := onboardingViewer(scope.credential)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +68,7 @@ func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope nativ
 	}
 	progress := request.Progress
 	progress.Revision++
-	progress.UpdatedAt = formatHubTime(s.config.now().UTC())
+	progress.UpdatedAt = hubapi.FormatHubTime(s.config.now().UTC())
 	raw, err := json.Marshal(progress)
 	if err != nil {
 		return nil, err
@@ -85,7 +86,7 @@ func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope nativ
 		previous, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			replay = &previous
 			return nil
@@ -120,10 +121,10 @@ func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope nativ
 		if readErr != nil {
 			return nil, readErr
 		}
-		return nil, nativeConflict(current.Revision)
+		return nil, hubapi.NativeConflict(current.Revision)
 	}
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if replay != nil {
 		raw, err = content.Receipt(ctx, *replay)

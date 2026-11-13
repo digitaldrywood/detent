@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -13,14 +14,14 @@ type operatorCatalogKey struct{}
 
 type operatorCatalogAuthority struct {
 	identity           operatortool.Identity
-	credential         apiCredential
+	credential         hubapi.APICredential
 	runnerAccess       error
 	support            bool
 	createOrganization bool
 }
 
-func (s *Service) withOperatorCatalog(ctx context.Context, credential apiCredential, organization string) context.Context {
-	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) withOperatorCatalog(ctx context.Context, credential hubapi.APICredential, organization string) context.Context {
+	readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	catalog := operatorCatalogAuthority{identity: operatorIdentity(credential, organization), credential: credential}
 	if _, board := entryBoardCredential(ctx); board {
@@ -48,17 +49,17 @@ func operatorCatalog(ctx context.Context) (operatorCatalogAuthority, error) {
 	return catalog, nil
 }
 
-func (s *Service) catalogBillingCredential(ctx context.Context, kind string, write bool) (apiCredential, error) {
+func (s *Service) catalogBillingCredential(ctx context.Context, kind string, write bool) (hubapi.APICredential, error) {
 	scope := apikey.ScopeRead
 	if write {
 		scope = apikey.ScopeWrite
 	}
 	if _, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: scope, ResourceKind: kind}); err != nil {
-		return apiCredential{}, err
+		return hubapi.APICredential{}, err
 	}
 	catalog, err := operatorCatalog(ctx)
 	if err != nil || s.config.Hosted == nil || catalog.credential.Hosted == nil {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	return catalog.credential, nil
 }
@@ -91,7 +92,7 @@ func (s *Service) authorizeCatalog(ctx context.Context, requirement operatortool
 		if credential.Hosted != nil {
 			return ctx, catalog.runnerAccess
 		}
-		if credential.NativeOnly || credential.Scope != apiScopeAdmin {
+		if credential.NativeOnly || credential.Scope != hubapi.APIScopeAdmin {
 			return ctx, operatortool.ErrAccessDenied
 		}
 		return ctx, nil
@@ -103,7 +104,7 @@ func (s *Service) authorizeCatalog(ctx context.Context, requirement operatortool
 	}
 	if requirement.Scope != apikey.ScopeRead {
 		projectResource := requirement.ResourceKind == "work_item" || requirement.ResourceKind == "workspace" || requirement.ResourceKind == "project" || operatortool.IsThreadTool(requirement.Action)
-		if credential.Hosted != nil && (!hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) || !projectResource && credential.HostedRole != "owner" && credential.HostedRole != "admin") || credential.Hosted == nil && requirement.Scope == apikey.ScopeAdmin && credential.Scope != apiScopeAdmin {
+		if credential.Hosted != nil && (!hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) || !projectResource && credential.HostedRole != "owner" && credential.HostedRole != "admin") || credential.Hosted == nil && requirement.Scope == apikey.ScopeAdmin && credential.Scope != hubapi.APIScopeAdmin {
 			return ctx, operatortool.ErrAccessDenied
 		}
 	}
@@ -132,7 +133,7 @@ func (s *Service) administrationCatalog(ctx context.Context) ([]operatortool.Def
 		case operatortool.OrganizationSession:
 			allowed = true
 		case operatortool.OrganizationList:
-			allowed = s.config.Hosted != nil || credential.NativeOnly || credential.Scope == apiScopeAdmin
+			allowed = s.config.Hosted != nil || credential.NativeOnly || credential.Scope == hubapi.APIScopeAdmin
 		case operatortool.OrganizationSwitch:
 			allowed = s.config.Hosted == nil || !s.hostedShared() && credential.Hosted.SupportActor == "" && credential.HostedKeyScope == ""
 		case operatortool.SessionLogout:
@@ -145,7 +146,7 @@ func (s *Service) administrationCatalog(ctx context.Context) ([]operatortool.Def
 			allowed = s.config.Hosted != nil && !s.hostedShared() && credential.Hosted.SupportActor == "" && credential.HostedKeyScope == ""
 		default:
 			if s.config.Hosted == nil {
-				allowed = d.Name == operatortool.CredentialList && credential.Scope == apiScopeAdmin && !credential.NativeOnly
+				allowed = d.Name == operatortool.CredentialList && credential.Scope == hubapi.APIScopeAdmin && !credential.NativeOnly
 			} else {
 				allowed = strings.HasPrefix(d.Name, "credential_") || d.Name == operatortool.MembershipList || credential.HostedRole == "owner" || credential.HostedRole == "admin"
 			}

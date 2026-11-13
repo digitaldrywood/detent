@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -153,12 +154,12 @@ func (r hostedIdempotent) validate(required bool) error {
 	key := strings.TrimSpace(r.IdempotencyKey)
 	if key == "" {
 		if required {
-			return nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+			return hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 		}
 		return nil
 	}
 	if len(r.IdempotencyKey) > 128 {
-		return nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	return nil
 }
@@ -311,7 +312,7 @@ func (s *Service) editHostedInvitationJSON(c echo.Context) error {
 		hostedIdempotent
 		Grants []hostedMemberGrant `json:"grants"`
 	}
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
@@ -338,7 +339,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 		Role   string              `json:"role"`
 		Grants []hostedMemberGrant `json:"grants"`
 	}
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(true); err != nil {
@@ -353,19 +354,19 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	}
 	view, err := s.inviteHostedMemberFor(c.Request().Context(), credential, request.Email, request.Role, request.IdempotencyKey, request.Grants)
 	if err != nil {
-		var application *nativeError
+		var application *hubapi.NativeError
 		var limit *hostedLimitError
 		switch {
 		case errors.Is(err, tenantauth.ErrUnavailable):
 			return s.nativeAPIError(c, err)
-		case errors.Is(err, mutation.ErrUncertain) && errors.As(err, &application) && application.status == http.StatusServiceUnavailable:
+		case errors.Is(err, mutation.ErrUncertain) && errors.As(err, &application) && application.Status == http.StatusServiceUnavailable:
 			return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 		case errors.As(err, &application):
 			return s.nativeAPIError(c, err)
 		case errors.Is(err, mutation.ErrConflict):
-			return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
+			return s.nativeAPIError(c, &hubapi.NativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), Status: http.StatusConflict})
 		case errors.Is(err, mutation.ErrUncertain):
-			return s.refusedAPIError(c, http.StatusConflict, "idempotency_in_progress", mutation.ErrUncertain.Error(), apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
+			return s.refusedAPIError(c, http.StatusConflict, "idempotency_in_progress", mutation.ErrUncertain.Error(), hubapi.APIErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
 		case errors.Is(err, operatortool.ErrInvalidArguments):
 			return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 		case errors.As(err, &limit):
@@ -432,7 +433,7 @@ func (s *Service) changeHostedRoleJSON(c echo.Context) error {
 		hostedIdempotent
 		Role string `json:"role"`
 	}
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
@@ -469,7 +470,7 @@ func (s *Service) changeHostedGrantJSON(c echo.Context) error {
 		Runner    bool   `json:"runner"`
 		Revoke    bool   `json:"revoke"`
 	}
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
@@ -490,7 +491,7 @@ func (s *Service) changeHostedGrantJSON(c echo.Context) error {
 }
 
 // hostedMemberByID resolves one active membership of this organization.
-func (s *Service) hostedMemberByID(ctx context.Context, credential apiCredential, id string) (auth.Membership, error) {
+func (s *Service) hostedMemberByID(ctx context.Context, credential hubapi.APICredential, id string) (auth.Membership, error) {
 	memberships, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
 	if err != nil {
 		return auth.Membership{}, errors.Join(tenantauth.ErrUnavailable, err)
@@ -555,15 +556,15 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 		GrantAccess bool                  `json:"grant_access"`
 		States      []tracker.NativeState `json:"states,omitempty"`
 	}
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(true); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok || credential.Hosted == nil {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	name := strings.TrimSpace(request.Name)
 	if name == "" || len(name) > 120 || !request.GrantAccess {
@@ -586,13 +587,13 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 
 // hostedJSONError answers a hosted API failure with the native error shape.
 func (s *Service) hostedJSONError(c echo.Context, status int, message string) error {
-	return s.refusedAPIError(c, status, hostedErrorCode(status), message, apiErrorResponse{Code: hostedErrorCode(status), Message: message})
+	return s.refusedAPIError(c, status, hostedErrorCode(status), message, hubapi.APIErrorResponse{Code: hostedErrorCode(status), Message: message})
 }
 
 func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 	var request hostedIdempotent
 	if c.Request().ContentLength != 0 {
-		if err := decodeAPIJSON(c, &request); err != nil {
+		if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 			return s.invalidAPIRequest(c, err)
 		}
 	}
@@ -623,7 +624,7 @@ func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 
 func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
 	var request hostedIdempotent
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
@@ -640,7 +641,7 @@ func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
 		if errors.Is(err, tenantauth.ErrUnavailable) {
 			return s.nativeAPIError(c, err)
 		}
-		var targetError *nativeError
+		var targetError *hubapi.NativeError
 		if errors.As(err, &targetError) {
 			return s.nativeAPIError(c, err)
 		}
@@ -661,13 +662,13 @@ func (s *Service) hostedAPIError(c echo.Context, err error) error {
 		return s.nativeAPIError(c, operatorAuthorizationError(err))
 	}
 	if errors.Is(err, auth.ErrInvalidSession) {
-		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
+		return c.JSON(http.StatusUnauthorized, hubapi.APIErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
 	if errors.Is(err, auth.ErrHostedIdentity) {
-		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
+		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", hubapi.APIErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	return s.nativeAPIError(c, err)
 }
@@ -715,7 +716,7 @@ func (s *Service) commandOrganization(ctx context.Context, command hostedCommand
 // readHostedOperation is the read-only application receipt lookup. It never
 // claims a missing command; action_result must remain a read operation.
 func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand) (json.RawMessage, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	return s.readHostedOperationRecord(ctx, command.forContext(ctx))
 }

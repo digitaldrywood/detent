@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -77,7 +78,7 @@ func reportRunnerCapacity(t *testing.T, service *Service, projectBase, credentia
 func nativeStartedEvent(lease tracker.NativeLease) tracker.NativeRunEvent {
 	return tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "start"}, Type: "run.started", SchemaVersion: 1,
 		Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test-model"},
-			LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: lease.PolicyID, RunID: newNativeID("run"), AttemptID: newNativeID("attempt")}}
+			LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: lease.PolicyID, RunID: hubapi.NewID("run"), AttemptID: hubapi.NewID("attempt")}}
 }
 
 func nativeTestCheckpoint() *tracker.NativeCheckpoint {
@@ -101,7 +102,7 @@ func nativeAttemptListingPayload(t *testing.T, f nativeFixture, id string, raw [
 		t.Fatalf("store listing payload: %v", err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: newNativeID("archive"), Reference: ref, CreatedAt: f.service.config.now().UTC()})
+		_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: f.service.config.now().UTC()})
 		return err
 	}); err != nil {
 		t.Fatalf("register listing payload: %v", err)
@@ -145,7 +146,7 @@ func nativeAttemptFixtureLease(t *testing.T, runner runnerFixture, issue tracker
 		if err != nil {
 			return fmt.Errorf("read attempt work item %s: %w", issue.WorkItemID, err)
 		}
-		claimed, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(runner.binding.MachineID), SessionID: session, LeaseID: newNativeID("lease"), TTL: ttl, PreviousAttemptCancellation: cancellation.attemptCancellation()})
+		claimed, err = w.Claim(t.Context(), leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(runner.binding.MachineID), SessionID: session, LeaseID: hubapi.NewID("lease"), TTL: ttl, PreviousAttemptCancellation: cancellation.attemptCancellation()})
 		if err != nil {
 			return fmt.Errorf("claim work item: %w", err)
 		}
@@ -313,7 +314,7 @@ func legacyNativeAttemptPage(attempts []tracker.NativeAttempt, limit, budget int
 		}
 		if len(encoded)+1 > budget {
 			if len(page.Items) == 0 {
-				return tracker.Page[tracker.NativeAttempt]{}, &nativeError{Code: "attempt_record_too_large", status: http.StatusUnprocessableEntity}
+				return tracker.Page[tracker.NativeAttempt]{}, &hubapi.NativeError{Code: "attempt_record_too_large", Status: http.StatusUnprocessableEntity}
 			}
 			hasMore = true
 			break
@@ -397,8 +398,8 @@ func TestNativeAttemptPageByteBoundaryEquivalence(t *testing.T) {
 							want, wantErr := legacyNativeAttemptPage(remaining, limit, budget, current, key, view)
 							got, err := f.service.readNativeAttemptPage(t.Context(), scope, string(issue.WorkItemID), params, json.Marshal)
 							if wantErr != nil {
-								var oversized *nativeError
-								if !errors.As(err, &oversized) || oversized.Code != "attempt_record_too_large" || oversized.status != http.StatusUnprocessableEntity {
+								var oversized *hubapi.NativeError
+								if !errors.As(err, &oversized) || oversized.Code != "attempt_record_too_large" || oversized.Status != http.StatusUnprocessableEntity {
 									t.Fatalf("error=%v, want oversized record", err)
 								}
 								break
@@ -566,9 +567,9 @@ func copyNativeAttemptFixture(t *testing.T, f nativeFixture, worker string, issu
 		}
 		reader, ok := r.(attemptArchiveReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
-		object, err := reader.ArchiveObjectByKey(t.Context(), stringValue(template.CheckpointObjectKey))
+		object, err := reader.ArchiveObjectByKey(t.Context(), hubapi.StringValue(template.CheckpointObjectKey))
 		checkpoint = object.Reference
 		return err
 	}); err != nil {
@@ -609,7 +610,7 @@ func copyNativeAttemptFixture(t *testing.T, f nativeFixture, worker string, issu
 		var history *eventstore.Event
 		if sequence == 3 {
 			actor := (nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}).actor()
-			value := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}
+			value := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}
 			raw, err := json.Marshal(value)
 			if err != nil {
 				t.Fatal(err)
@@ -852,7 +853,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "push-ambiguity", 2
 			event.Data.Handoff = nativeTestCheckpoint()
-			event.Data.Handoff.ExternalEffect, event.Data.Handoff.EffectState, event.Data.Handoff.EffectID = "git_push", "ambiguous", newNativeID("effect")
+			event.Data.Handoff.ExternalEffect, event.Data.Handoff.EffectState, event.Data.Handoff.EffectID = "git_push", "ambiguous", hubapi.NewID("effect")
 			event.Data.Handoff.HeadSHA = strings.Repeat("a", 40)
 			event.Data.Handoff.ExpectedHeadSHA = strings.Repeat("b", 40)
 			var version tracker.ChangeVersion
@@ -985,7 +986,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 				if test.retained && mutation.LeaseID != "" && mutation.LeaseID != lease.ID {
 					want = "not_found"
 				}
-				var failure *nativeError
+				var failure *hubapi.NativeError
 				if !errors.As(err, &failure) || failure.Code != want {
 					t.Fatalf("stale evidence was not fenced: %v", err)
 				}
@@ -1227,7 +1228,7 @@ func TestNativeCheckpointValidation(t *testing.T) {
 		{"unbound effect", func(d *tracker.NativeRunData) { d.Handoff.ExternalEffect = "git_push" }},
 		{"customer availability assertion", func(d *tracker.NativeRunData) {
 			d.Handoff.Storage = "customer_store"
-			d.ArtifactIDs = []string{newNativeID("artifact")}
+			d.ArtifactIDs = []string{hubapi.NewID("artifact")}
 		}},
 		{"untyped change", func(d *tracker.NativeRunData) {
 			d.Handoff.Change = &tracker.NativeChangeReference{ChangeID: "https://example.com"}
@@ -1303,7 +1304,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			dispositionHumanAction = stringValue(attempt.ClaimDisposition) == "human_action"
+			dispositionHumanAction = hubapi.StringValue(attempt.ClaimDisposition) == "human_action"
 			deltas, err := r.BoardDeltas(t.Context(), f.project.ID, 0, corestore.MaxPageSize)
 			if err != nil {
 				return err
@@ -1473,7 +1474,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 		t.Fatal("blocker history omitted recorded run authority")
 	}
 	firstRun := full[0].NativeRunData
-	edit := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Revision: 9, Run: &firstRun}}
+	edit := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Revision: 9, Run: &firstRun}}
 	appendNativeAttemptHistoryFixture(t, f, edit)
 	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers&limit=100", worker, nil)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -1618,7 +1619,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 101 {
-		historySource.ID, historySource.AggregateSequence = newNativeID("evt"), 0
+		historySource.ID, historySource.AggregateSequence = hubapi.NewID("evt"), 0
 		appendNativeAttemptHistoryFixture(t, f, historySource)
 	}
 	started := time.Now()
@@ -1898,7 +1899,7 @@ func TestExpiredLeaseCancellationWithoutRunEvent(t *testing.T) {
 	claimed := claimNativeAttempt(t, f, f.worker(t, "worker"), "example-host", "session_example", issue.WorkItemID)
 	var lease leasestore.Lease
 	var issueID int64
-	attemptID, runID := newNativeID("attempt"), newNativeID("run")
+	attemptID, runID := hubapi.NewID("attempt"), hubapi.NewID("run")
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		var err error
 		lease, err = w.Lease(t.Context(), string(claimed.ID))

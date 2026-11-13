@@ -8,10 +8,11 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-func (s *Service) reportsReadableProjects(ctx context.Context, credential apiCredential, project string) ([]string, bool, error) {
+func (s *Service) reportsReadableProjects(ctx context.Context, credential hubapi.APICredential, project string) ([]string, bool, error) {
 	granted, err := s.usageReadableProjects(ctx, credential)
 	if err != nil {
 		return nil, false, err
@@ -34,7 +35,7 @@ func (s *Service) hostedReportOptions(c echo.Context) error {
 	return s.hostedReportOptionsPostgres(c)
 }
 
-func (s *Service) readProjectReport(ctx context.Context, credential apiCredential, project string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, bool, error) {
+func (s *Service) readProjectReport(ctx context.Context, credential hubapi.APICredential, project string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, bool, error) {
 	if s.config.TenantRepository == nil {
 		return hostedReportsReport{}, false, errors.New("PostgreSQL report reader is unavailable")
 	}

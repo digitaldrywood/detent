@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -27,7 +28,7 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 	}
 	selection.SearchText = params.Get("q")
 	selection.WorkItemIDs = nil
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	var response any
 	read := func(ctx context.Context) error {
@@ -50,7 +51,7 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 					BoardStatusModel(context.Context, viewstore.BoardSelection) ([]viewstore.BoardStatusRecord, error)
 				})
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				rows, readErr := model.BoardStatusModel(ctx, selection)
 				if readErr != nil {
@@ -60,7 +61,7 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 					BoardAuthorizedItems(context.Context, accessstore.Authority, []tracker.NativeWorkItemID, []string, string) (viewstore.BoardReadAuthority, error)
 				})
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				ids := make([]tracker.NativeWorkItemID, 0, len(rows))
 				changes := []string{}
@@ -94,7 +95,7 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 					BoardSummaryModel(context.Context, viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error)
 				})
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				var rows []viewstore.BoardSummaryRecord
 				rows, err = model.BoardSummaryModel(ctx, selection)

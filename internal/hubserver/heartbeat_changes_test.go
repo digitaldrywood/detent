@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -63,7 +64,7 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 	}
 	activity := func() {
 		t.Helper()
-		raw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: "org_startup", ProjectID: "prj_runner", AggregateType: "issue", AggregateID: item.WorkItemID, Type: "comment.created", SchemaVersion: 1, RecordedAt: now, Actor: tracker.Actor{Kind: "runner", PrincipalID: "credential_1"}})
+		raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: "org_startup", ProjectID: "prj_runner", AggregateType: "issue", AggregateID: item.WorkItemID, Type: "comment.created", SchemaVersion: 1, RecordedAt: now, Actor: tracker.Actor{Kind: "runner", PrincipalID: "credential_1"}})
 		if err != nil {
 			t.Fatal(err)
 		}

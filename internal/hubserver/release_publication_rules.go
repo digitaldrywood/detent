@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
@@ -15,11 +16,11 @@ func (s *Service) checkReleasePublicationRules(ctx context.Context, scope native
 	if plan.publishing {
 		issue := plan.issue
 		if issue.IssueContract != nil && issue.IssueContract.HumanAction != "" || strings.EqualFold(issue.State, "Blocked") || !plan.facts.DependencyReady || strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch") {
-			return nativePublicInvalid("Held delivery cannot publish a release PR")
+			return hubapi.NativePublicInvalid("Held delivery cannot publish a release PR")
 		}
 		for _, state := range plan.project.States {
 			if state.Name == issue.State && state.OperatorOnly {
-				return nativePublicInvalid("Operator-only delivery cannot publish a release PR")
+				return hubapi.NativePublicInvalid("Operator-only delivery cannot publish a release PR")
 			}
 		}
 		attempt := plan.attempt.attempt
@@ -29,7 +30,7 @@ func (s *Service) checkReleasePublicationRules(ctx context.Context, scope native
 				return err
 			}
 			if answeredClaimKind(run.NativeRunData, run.Checkpoint) != "" {
-				return nativePublicInvalid("Delivery retains an unanswered attempt hold")
+				return hubapi.NativePublicInvalid("Delivery retains an unanswered attempt hold")
 			}
 		}
 		content := eventstore.NewContent(s.runDetailStore())
@@ -41,7 +42,7 @@ func (s *Service) checkReleasePublicationRules(ctx context.Context, scope native
 		if sourceVersion.External != nil {
 			prNumber, err = strconv.Atoi(sourceVersion.External.ID)
 			if err != nil || prNumber < 1 {
-				return nativePublicInvalid("Source Change requires an exact PR identity")
+				return hubapi.NativePublicInvalid("Source Change requires an exact PR identity")
 			}
 		}
 		audited := false
@@ -74,17 +75,17 @@ func (s *Service) checkReleasePublicationRules(ctx context.Context, scope native
 			break
 		}
 		if !audited {
-			return nativePublicInvalid("Source Change requires a passing immutable security audit")
+			return hubapi.NativePublicInvalid("Source Change requires a passing immutable security audit")
 		}
 	}
 	rules := approved.ReviewPolicy
 	policy := approved.Policy
 	independentReview := rules.RequireReview || policy.Gates.Validator || policy.Gates.SecurityAudit || policy.Gates.AutomatedReview == gate.AutomatedReviewRequired
 	if historicalSource && (!policy.Gates.SecurityAudit || !rules.RequireReview && !policy.Gates.Validator && policy.Gates.AutomatedReview != gate.AutomatedReviewRequired) {
-		return nativePublicInvalid("Historical source recovery requires current delivery security audit and independent scope review")
+		return hubapi.NativePublicInvalid("Historical source recovery requires current delivery security audit and independent scope review")
 	}
 	if !independentReview {
-		return nativePublicInvalid("Release delivery requires the project's independent review policy")
+		return hubapi.NativePublicInvalid("Release delivery requires the project's independent review policy")
 	}
 	return nil
 }

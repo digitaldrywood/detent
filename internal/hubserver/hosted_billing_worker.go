@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -58,7 +59,7 @@ func (s *Service) billingMaintenance(ctx context.Context, tenant BillingTenant) 
 		now = time.Now
 	}
 	if leaseID == nil {
-		leaseID = func() string { return newNativeID("billing") }
+		leaseID = func() string { return hubapi.NewID("billing") }
 	}
 	d := &database{billingRepository: maintenanceBillingRepository{s.database.billingRepository}, billingAuditStore: hubmaintenance.LimitDetails(s.database.billingAuditStore), hostedOrganization: tracker.OrganizationID(tenant.Tenant.Organization), now: now, newLeaseID: leaseID}
 	d.hostedRuntime.Store(&hostedRuntimeConfig{Revision: tenant.Revision, Plans: tenant.Plans, Billing: tenant.Config})

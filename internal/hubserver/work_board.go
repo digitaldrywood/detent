@@ -12,6 +12,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -31,7 +32,7 @@ type workBoardProject struct {
 }
 
 func (s *Service) workBoard(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	credential, _, err := s.appCredential(c)
 	if err != nil {
@@ -39,29 +40,29 @@ func (s *Service) workBoard(c echo.Context) error {
 	}
 	org := s.appOrganizationID()
 	if c.Param("organization") != org {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	params, err := nativeReadQuery(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if len(params) != 2 || len(params["state"]) != 1 || len(params.Get("state")) > maxSavedWorkViewBytes {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid working set"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid working set"))
 	}
 	input := savedWorkView{Name: "Work", Scope: "personal", ProjectIDs: params["project"]}
 	decoder := json.NewDecoder(strings.NewReader(params.Get("state")))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input.State); err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid display state"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid display state"))
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid display state"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid display state"))
 	}
 	if len(input.ProjectIDs) == 0 || !validSavedWorkView(input) {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid working set or display state"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid working set or display state"))
 	}
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
 	scopes := make([]nativeScope, len(input.ProjectIDs))
 	for i, id := range input.ProjectIDs {
@@ -89,7 +90,7 @@ func (s *Service) readWorkBoardProject(ctx context.Context, scope nativeScope, s
 		return workBoardProject{}, fmt.Errorf("read project: %w", err)
 	}
 	if record.Core.DeletedAt != nil {
-		return workBoardProject{}, nativeNotFound()
+		return workBoardProject{}, hubapi.NativeNotFound()
 	}
 	project, err := s.projectRecordNative(ctx, record)
 	if err != nil {

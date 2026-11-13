@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -89,8 +90,8 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 		t.Fatal(err)
 	}
 	plan, err = service.planWorkItemRecord(t.Context(), scope, plan, request)
-	var unavailable *nativeError
-	if err != nil && (!errors.As(err, &unavailable) || unavailable.status != http.StatusServiceUnavailable) || plan.project.Core.WorkflowSource == "" || plan.issue.IssueContract == nil || !plan.create || plan.issue.WorkItemID == "" {
+	var unavailable *hubapi.NativeError
+	if err != nil && (!errors.As(err, &unavailable) || unavailable.Status != http.StatusServiceUnavailable) || plan.project.Core.WorkflowSource == "" || plan.issue.IssueContract == nil || !plan.create || plan.issue.WorkItemID == "" {
 		t.Fatalf("expected complete configured-source plan: %v", err)
 	}
 	policyRevision, policyFound, err := service.validateWorkItemRecordFilingTenant(t.Context(), scope, plan)
@@ -110,7 +111,7 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: organization, ProjectID: project, AggregateID: plan.issue.WorkItemID, Type: plan.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization, ProjectID: project, AggregateID: plan.issue.WorkItemID, Type: plan.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,13 +5,14 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestValidateWorkItemReceiptIssue(t *testing.T) {
 	scope := nativeScope{organization: "org_example", project: "prj_example"}
-	native := tracker.NativeWorkItemID(newNativeID("wi"))
+	native := tracker.NativeWorkItemID(hubapi.NewID("wi"))
 	for _, test := range []struct {
 		name    string
 		id      tracker.NativeWorkItemID

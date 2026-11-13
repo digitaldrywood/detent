@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -28,7 +29,7 @@ func TestBoardReadinessBeforeAndDuringBackfill(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 		t.Run(string(org), func(t *testing.T) {
 			fixture := newNativeFixture(t, service, org, "Example backfill")
-			scope := nativeScope{organization: org, project: fixture.project.ID, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+			scope := nativeScope{organization: org, project: fixture.project.ID, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 			records := []viewstore.BoardRecord{}
 			for n := 1; n <= 2; n++ {
 				id := tracker.NativeWorkItemID(fmt.Sprintf("wi_pending_%d", n))

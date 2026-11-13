@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -90,7 +91,7 @@ func TestBoundedProjectPolicyHistory(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			page, err := boundedProjectPolicyHistory(full, test.budget)
 			if test.fails {
-				if !errors.Is(err, errProjectServiceUnavailable) {
+				if !errors.Is(err, hubapi.ErrProjectServiceUnavailable) {
 					t.Fatalf("unpageable history=%v", err)
 				}
 				return
@@ -403,7 +404,7 @@ func TestHostedProjectTools(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
-					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 					defer cancel()
 					if err := f.service.config.TenantRepository.WriteTenant(cleanup, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 						return w.ReplaceBillingPlan(cleanup, original)
@@ -537,7 +538,7 @@ func TestHostedProjectTools(t *testing.T) {
 										t.Fatal(err)
 									}
 									t.Cleanup(func() {
-										cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+										cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 										defer cancel()
 										if err := f.service.config.TenantRepository.WriteTenant(cleanup, "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 											_, err := w.AdjustCollaborationBytes(cleanup, -delta, consumption)
@@ -558,7 +559,7 @@ func TestHostedProjectTools(t *testing.T) {
 									}
 									delta := consumption - before
 									t.Cleanup(func() {
-										cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+										cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 										defer cancel()
 										result, err := admin.ExecContext(cleanup, "UPDATE hosted_usage_windows SET amount=amount-$4 WHERE organization_id=$1 AND window_start=$2 AND metric=$3 AND amount>=$4", "org_security", window, test.resource, delta)
 										if err != nil {

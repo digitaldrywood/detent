@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -17,12 +18,12 @@ import (
 
 func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope, operation string, request startGitHubImportRequest) (json.RawMessage, error) {
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +35,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 		return nil, err
 	}
 	if project.Settings.Intake != "manual" || project.Settings.Repository == "" || request.IssueNumber <= 0 {
-		return nil, nativePublicInvalid("Enable manual intake on a repository-backed project and provide a positive issue number")
+		return nil, hubapi.NativePublicInvalid("Enable manual intake on a repository-backed project and provide a positive issue number")
 	}
 	var current projectstore.GitHubImport
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -48,18 +49,18 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 	})
 	created := errors.Is(err, corestore.ErrNotFound)
 	if err != nil && !created {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	next := current
 	if created {
-		identity, err := nativeCommandHash([]string{string(scope.organization), string(scope.project), scope.credential.ID, request.IdempotencyKey})
+		identity, err := hubapi.CommandHash([]string{string(scope.organization), string(scope.project), scope.credential.ID, request.IdempotencyKey})
 		if err != nil {
 			return nil, err
 		}
 		next = projectstore.GitHubImport{OrganizationID: scope.organization, ProjectID: scope.project, ID: "imp_" + identity[:32], IssueNumber: int64(request.IssueNumber), Stage: "issue", Status: "pending", Revision: 1, Gaps: []string{}, ObservedAt: s.config.now()}
 	} else if request.Restart {
 		if current.Revision != int64(request.ExpectedRevision) {
-			return nil, nativeConflict(tracker.Revision(current.Revision))
+			return nil, hubapi.NativeConflict(tracker.Revision(current.Revision))
 		}
 		next.Stage, next.Cursor, next.Status, next.LastError = "issue", "", "pending", ""
 		next.EditSequence, next.RetryAfter, next.Gaps = 0, nil, []string{}
@@ -74,7 +75,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 			return err
 		}
 		if latest.Settings.Revision != project.Settings.Revision {
-			return nativeConflict(tracker.Revision(latest.Settings.Revision))
+			return hubapi.NativeConflict(tracker.Revision(latest.Settings.Revision))
 		}
 		owner, ok := w.(projectstore.GitHubImportWriter)
 		if !ok {
@@ -91,7 +92,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 				return readErr
 			}
 			if actual.Revision != current.Revision {
-				return nativeConflict(tracker.Revision(actual.Revision))
+				return hubapi.NativeConflict(tracker.Revision(actual.Revision))
 			}
 		}
 		return err
@@ -100,12 +101,12 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 
 func (s *Service) tenantReceiptMutation(ctx context.Context, scope nativeScope, operation string, command tracker.Mutation, input, value any, apply func(tenantstore.Writer) error) (json.RawMessage, error) {
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	hash, err := nativeCommandHash(input)
+	hash, err := hubapi.CommandHash(input)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +134,7 @@ func (s *Service) tenantReceiptMutation(ctx context.Context, scope nativeScope, 
 		previous, err := w.Receipt(ctx, scope.credential.ID, operation, command.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			existing = &previous
 			return nil
@@ -157,10 +158,10 @@ func (s *Service) tenantReceiptMutation(ctx context.Context, scope nativeScope, 
 		return err
 	})
 	if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, corestore.ErrUniqueViolation) {
-		return nil, nativeConflict(0)
+		return nil, hubapi.NativeConflict(0)
 	}
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if existing != nil {
 		return content.Receipt(ctx, *existing)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -103,7 +104,7 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 		return nil, fmt.Errorf("you don't have access to this conversation's stored answers: equal screen access is required: %w", operatortool.ErrAccessDenied)
 	}
 	var fields map[string]json.RawMessage
-	if len(call.Arguments) > coordinatorToolArgumentBytes || json.Unmarshal(call.Arguments, &fields) != nil || fields == nil {
+	if len(call.Arguments) > hubapi.CoordinatorToolArgumentBytes || json.Unmarshal(call.Arguments, &fields) != nil || fields == nil {
 		return nil, errCoordinatorToolArguments
 	}
 	if _, ok := fields["project_id"]; ok {
@@ -220,11 +221,11 @@ func (s *Service) coordinatorSlackIntegration(ctx context.Context, organization 
 			result.ChannelName = row.ChannelName
 			result.LastDeliveryFailed, result.LastStatusCode = row.LastDeliveryFailed, int(row.LastStatusCode)
 			if row.LastSuccessAt != nil {
-				stamp := formatHubTime(*row.LastSuccessAt)
+				stamp := hubapi.FormatHubTime(*row.LastSuccessAt)
 				result.LastSuccessAt = &stamp
 			}
 			if row.LastFailureAt != nil {
-				stamp := formatHubTime(*row.LastFailureAt)
+				stamp := hubapi.FormatHubTime(*row.LastFailureAt)
 				result.LastFailureAt = &stamp
 			}
 		} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -261,7 +262,7 @@ func (s *Service) coordinatorRunnerAttached(ctx context.Context, record conversa
 	return r.AllowsProject(record.ProjectID), nil
 }
 
-func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversationRecord, credential apiCredential, editable bool) (any, error) {
+func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversationRecord, credential hubapi.APICredential, editable bool) (any, error) {
 	if s.config.Hosted == nil || string(record.OrganizationID) != s.config.Hosted.OrganizationID {
 		return nil, operatortool.ErrAccessDenied
 	}
@@ -312,7 +313,7 @@ func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversa
 	return map[string]any{"project_id": record.ProjectID, "usage_scope": "project", "runners": runners, "observed_at": s.config.now(), "runner_options": []string{"self-hosted", "Sprites"}, "runner_details_access": editable}, nil
 }
 
-func (s *Service) coordinatorScreenReport(ctx context.Context, record conversationRecord, credential apiCredential, call runner.AgentToolCall) (any, error) {
+func (s *Service) coordinatorScreenReport(ctx context.Context, record conversationRecord, credential hubapi.APICredential, call runner.AgentToolCall) (any, error) {
 	if !s.hubFleetReadPermitted(operatortool.Reports, credential) {
 		return nil, operatortool.ErrAccessDenied
 	}
@@ -391,7 +392,7 @@ func coordinatorProjectMembers(raw json.RawMessage, project tracker.ProjectID) (
 	return page, nil
 }
 
-func (t *coordinatorToolset) restrictReadAudience(ctx context.Context, record conversationRecord, credential apiCredential) error {
+func (t *coordinatorToolset) restrictReadAudience(ctx context.Context, record conversationRecord, credential hubapi.APICredential) error {
 	var audience string
 	err := t.coordinator.server.config.TenantRepository.ReadTenant(ctx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error

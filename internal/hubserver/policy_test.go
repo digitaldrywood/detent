@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -74,7 +75,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 		expires := now.Add(time.Hour)
 		err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 			hash := apikey.HashToken(runner.token)
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: tokenID, Name: runner.runnerID, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: tokenID, Name: runner.runnerID, Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: tokenID, ProjectID: project.ID}); err != nil {
@@ -107,7 +108,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 			if err != nil {
 				return err
 			}
-			return service.authorizeAccessScope(t.Context(), reader, nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: credential.ID, Hash: credential.Hash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, OrganizationID: identity.OrganizationID}}}, true)
+			return service.authorizeAccessScope(t.Context(), reader, nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: credential.ID, Hash: credential.Hash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, OrganizationID: identity.OrganizationID}}}, true)
 		}); err != nil {
 			t.Fatalf("authorize seeded runner %s: %v", runner.runnerID, err)
 		}
@@ -473,7 +474,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 func TestSelectedPostgresPolicyApprovalFailsClosedWithoutAccessRepository(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	service := &Service{config: Config{TenantRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now, Logger: discardLogger()}}
-	scope := nativeScope{organization: "org_example", project: "prj_example", credential: apiCredential{ID: "credential_example", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+	scope := nativeScope{organization: "org_example", project: "prj_example", credential: hubapi.APICredential{ID: "credential_example", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 	for name, operation := range map[string]func() error{
 		"route authorization": func() error { return service.authorizeProjectRecord(t.Context(), scope, true) },
 		"mutation authority": func() error {
@@ -488,8 +489,8 @@ func TestSelectedPostgresPolicyApprovalFailsClosedWithoutAccessRepository(t *tes
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := operation()
-			var native *nativeError
-			if !errors.As(err, &native) || native.status != http.StatusNotFound {
+			var native *hubapi.NativeError
+			if !errors.As(err, &native) || native.Status != http.StatusNotFound {
 				t.Fatalf("selected PostgreSQL authority error = %v, want not found", err)
 			}
 		})
@@ -512,7 +513,7 @@ func TestPostgresProjectPolicyApprovalRejectsDemotedHostedAdmin(t *testing.T) {
 	const userID, memberID, credentialID, sessionHash = "user_example", "membership_example", "credential_example_owner", "session_example_owner"
 	credentialHash := apikey.HashToken("example_owner_token")
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example owner", Hash: credentialHash, Fingerprint: tokenFingerprint(credentialHash), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: userID, MembershipID: memberID, KeyScope: "admin", ProjectAccess: "selected", Kind: "personal"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example owner", Hash: credentialHash, Fingerprint: hubapi.TokenFingerprint(credentialHash), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: userID, MembershipID: memberID, KeyScope: "admin", ProjectAccess: "selected", Kind: "personal"}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization.ID, UserID: userID, Email: "owner@example.test", MembershipID: memberID, Role: "owner", Active: true, PrincipalID: credentialID, CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -530,7 +531,7 @@ func TestPostgresProjectPolicyApprovalRejectsDemotedHostedAdmin(t *testing.T) {
 	}
 	service.config.Hosted = &HostedConfig{OrganizationID: string(organization.ID)}
 	identity := &auth.HostedIdentity{Subject: userID, OrganizationID: "provider_example", SessionID: "session_example", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
-	actor := apiCredential{ID: credentialID, Hash: credentialHash, Scope: apiScopeOperator, NativeOnly: true, Hosted: identity, SessionHash: sessionHash, HostedRole: "owner", HostedMembership: memberID, HostedKeyScope: apikey.ScopeAdmin}
+	actor := hubapi.APICredential{ID: credentialID, Hash: credentialHash, Scope: hubapi.APIScopeOperator, NativeOnly: true, Hosted: identity, SessionHash: sessionHash, HostedRole: "owner", HostedMembership: memberID, HostedKeyScope: apikey.ScopeAdmin}
 	scope := nativeScope{organization: organization.ID, project: project.ID, credential: actor, requireHostedAdmin: true}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		return service.authorizeAccessScope(t.Context(), r, scope, true)
@@ -642,7 +643,7 @@ func (w policyApprovalLockWriter) ProjectRecord(ctx context.Context, project tra
 
 func assertPostgresPolicyApprovalLockOrdering(t *testing.T, service *Service, repository tenantstore.Repository, organization tracker.OrganizationID, project tracker.ProjectID, credentialID, runnerID, expectedID string, approved, replacement policy.Descriptor, replacementSource *policy.RepositorySource) {
 	t.Helper()
-	var credential apiCredential
+	var credential hubapi.APICredential
 	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		token, err := reader.AccessCredential(t.Context(), credentialID)
 		if err != nil {
@@ -652,7 +653,7 @@ func assertPostgresPolicyApprovalLockOrdering(t *testing.T, service *Service, re
 		if err != nil {
 			return err
 		}
-		credential = apiCredential{ID: token.ID, Hash: token.Hash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, OrganizationID: identity.OrganizationID}}
+		credential = hubapi.APICredential{ID: token.ID, Hash: token.Hash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, OrganizationID: identity.OrganizationID}}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -682,7 +683,7 @@ func assertPostgresPolicyApprovalLockOrdering(t *testing.T, service *Service, re
 	approvalCtx := context.WithValue(t.Context(), policyLockWriteKindKey{}, "approval")
 	approvalStarted = true
 	go func() {
-		_, err := service.approveTenantProjectPolicy(approvalCtx, nativeScope{organization: organization, project: project, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}, "test_hub_admin", policy.Change{ExpectedID: expectedID, ObservedPolicyID: approved.ID})
+		_, err := service.approveTenantProjectPolicy(approvalCtx, nativeScope{organization: organization, project: project, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}, "test_hub_admin", policy.Change{ExpectedID: expectedID, ObservedPolicyID: approved.ID})
 		approvalDone <- err
 	}()
 	select {
@@ -768,7 +769,7 @@ func (r postgresPolicyObservationRepository) WriteTenant(ctx context.Context, or
 
 func assertPostgresPolicyObservationOrdering(t *testing.T, service *Service, repository tenantstore.Repository, organization tracker.OrganizationID, project tracker.ProjectID, credentialID, runnerID string, descriptor policy.Descriptor, source *policy.RepositorySource) {
 	t.Helper()
-	var credential apiCredential
+	var credential hubapi.APICredential
 	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		row, err := reader.AccessCredential(t.Context(), credentialID)
 		if err != nil {
@@ -778,7 +779,7 @@ func assertPostgresPolicyObservationOrdering(t *testing.T, service *Service, rep
 		if err != nil {
 			return err
 		}
-		credential = apiCredential{ID: row.ID, Hash: row.Hash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, OrganizationID: identity.OrganizationID}}
+		credential = hubapi.APICredential{ID: row.ID, Hash: row.Hash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, OrganizationID: identity.OrganizationID}}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -1184,7 +1185,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				statement := fmt.Sprintf(`CREATE FUNCTION refuse_policy_transition() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture transition failure'; END $$; CREATE TRIGGER refuse_later_transition BEFORE UPDATE OF workflow_state_name ON issues FOR EACH ROW WHEN (OLD.native_id='%s' AND OLD.workflow_state_name IS DISTINCT FROM NEW.workflow_state_name) EXECUTE FUNCTION refuse_policy_transition()`, changes[2].issue.WorkItemID)
 				admin := hostedPostgresAdmin(t, f.service)
 				t.Cleanup(func() {
-					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 					defer cancel()
 					if _, err := admin.ExecContext(cleanupCtx, `DROP TRIGGER IF EXISTS refuse_later_transition ON issues; DROP FUNCTION IF EXISTS refuse_policy_transition()`); err != nil {
 						t.Errorf("drop private policy transition fixture: %v", err)
@@ -2189,7 +2190,7 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !approved {
-				var refusal *nativeError
+				var refusal *hubapi.NativeError
 				if !errors.As(err, &refusal) || refusal.Code != "policy_not_approved" {
 					t.Fatalf("unapproved production policy owner: %v", err)
 				}
@@ -2470,7 +2471,7 @@ func TestPolicyScopeRequiresTypedRepository(t *testing.T) {
 func (s *Service) approveTestTenantPolicy(ctx context.Context, path, actor string, change policy.Change) (policy.Approval, error) {
 	organization, project, ok := strings.Cut(path, "/")
 	if !ok {
-		return policy.Approval{}, nativeNotFound()
+		return policy.Approval{}, hubapi.NativeNotFound()
 	}
 	credential, _, err := s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), apikey.HashToken(testHubAdminToken), "", "")
 	if err != nil {
@@ -2483,7 +2484,7 @@ func (s *Service) approveTestTenantPolicy(ctx context.Context, path, actor strin
 func readTestTenantProjectPolicy(ctx context.Context, s *Service, path string) (policy.Approval, bool, error) {
 	organization, project, ok := strings.Cut(path, "/")
 	if !ok {
-		return policy.Approval{}, false, nativeNotFound()
+		return policy.Approval{}, false, hubapi.NativeNotFound()
 	}
 	approval, revision, err := s.readTenantProjectPolicyRevision(ctx, tracker.OrganizationID(organization), tracker.ProjectID(project))
 	return approval, revision.PolicyID != "", err

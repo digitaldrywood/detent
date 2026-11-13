@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -79,7 +80,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 					case "reviews":
 						reader, ok := r.(eventstore.ChangeRecoveryReader)
 						if !ok {
-							return nativeRunEventStorageUnavailable()
+							return hubapi.NativeRunEventStorageUnavailable()
 						}
 						rows, _, err := reader.RecoveryChangeEvidence(t.Context(), target.change.ID, version.ID, math.MaxInt64, nil)
 						if err != nil {
@@ -121,7 +122,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 					case "escape":
 						reader, ok := r.(eventstore.QualityEscapeReader)
 						if !ok {
-							return nativeRunEventStorageUnavailable()
+							return hubapi.NativeRunEventStorageUnavailable()
 						}
 						_, err := reader.QualityEscapeOccurrence(t.Context(), target.change.ID, version.ID, "missing")
 						if !errors.Is(err, corestore.ErrNotFound) {
@@ -216,7 +217,7 @@ func TestRecoveryUnknownHistoryBudgetPreservesOlderEvidence(t *testing.T) {
 					if err := target.service.config.TenantRepository.ReadTenant(t.Context(), target.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 						reader, ok := r.(eventstore.ChangeRecoveryReader)
 						if !ok {
-							return nativeRunEventStorageUnavailable()
+							return hubapi.NativeRunEventStorageUnavailable()
 						}
 						var err error
 						rows, _, err = reader.RecoveryChangeEvidence(t.Context(), target.change.ID, version.ID, through, []string{"wanted"})
@@ -333,7 +334,7 @@ func TestLegacyClaimReviewsRetainGateAuthority(t *testing.T) {
 		if err := target.service.config.TenantRepository.ReadTenant(t.Context(), target.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			reader, ok := r.(tenantstore.ClaimChangeRowsReader)
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			facts, err := reader.ClaimChangeRows(t.Context(), target.project.ID, []string{target.change.ID})
 			rows = facts[target.change.ID].Evidence
@@ -370,7 +371,7 @@ func TestLegacyClaimReviewsRetainGateAuthority(t *testing.T) {
 func historyRepairSource(t *testing.T, f changeFixture, base tracker.ChangeVersion, count int) (*coreNeutralFixture, changeFixture, []tracker.ChangeVersion) {
 	t.Helper()
 	change := f.change
-	change.ID, change.Revision, change.Landed = newNativeID("change"), 1, nil
+	change.ID, change.Revision, change.Landed = hubapi.NewID("change"), 1, nil
 	versions := make([]tracker.ChangeVersion, count)
 	for index := range versions {
 		versions[index] = base
@@ -420,15 +421,15 @@ func historyRepairImport(t *testing.T, target changeFixture, source CoreChangeIm
 
 func historyRepairAttempt(t *testing.T, f changeFixture, data tracker.NativeRunData) leasestore.Attempt {
 	t.Helper()
-	leaseID := newNativeID("lease")
+	leaseID := hubapi.NewID("lease")
 	lease := coordinatorActionLease(t, f.service, f.project.OrganizationID, f.issue.WorkItemID, leaseID)
-	data.AttemptID, data.RunID, data.LeaseID, data.FencingToken, data.Sequence, data.Outcome = newNativeID("attempt"), newNativeID("run"), tracker.LeaseID(leaseID), tracker.FencingToken(lease.FencingToken), 1, "succeeded"
+	data.AttemptID, data.RunID, data.LeaseID, data.FencingToken, data.Sequence, data.Outcome = hubapi.NewID("attempt"), hubapi.NewID("run"), tracker.LeaseID(leaseID), tracker.FencingToken(lease.FencingToken), 1, "succeeded"
 	content := eventstore.NewContent(f.service.runDetailStore())
 	ref, err := content.PreparePayload(t.Context(), f.project.OrganizationID, historyTestJSON(t, data))
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}))
+	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -15,7 +16,7 @@ func (s *Service) planVerificationRecord(ctx context.Context, scope nativeScope,
 		return plan, operatortool.ErrAccessDenied
 	}
 	if request.ExpectedRevision > 0 && request.ExpectedRevision != plan.issue.Revision {
-		return plan, nativeConflict(plan.issue.Revision)
+		return plan, hubapi.NativeConflict(plan.issue.Revision)
 	}
 	if !nativeDoneState(plan.issue.State) || plan.issue.Verification == nil || plan.issue.Verification.State != tracker.VerificationPending {
 		return plan, nativeVerificationInvalid("Issue is not awaiting verification")

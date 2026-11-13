@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -48,7 +49,7 @@ func (s *Service) hydrateChangeVersionWithRows(ctx context.Context, scope native
 			}
 			reader, ok := r.(eventstore.ChangeLandingReader)
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			landing, err := reader.LatestVersionLandingEvent(ctx, scope.project, item, request.Reference)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -101,7 +102,7 @@ func (s *Service) readNativeLandingObservation(ctx context.Context, scope native
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(eventstore.ChangeLandingReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		observation, err = reader.LatestVersionLandingEvent(ctx, scope.project, item, ref)

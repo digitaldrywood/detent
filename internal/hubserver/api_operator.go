@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,7 +30,7 @@ func (s *Service) operatorAPIError(c echo.Context, err error) error {
 	case strings.Contains(err.Error(), "not found"):
 		status, code, message = http.StatusNotFound, "mutation_target_not_found", "Mutation target was not found"
 	}
-	return s.refusedAPIError(c, status, code, message, apiErrorResponse{Code: code, Message: message})
+	return s.refusedAPIError(c, status, code, message, hubapi.APIErrorResponse{Code: code, Message: message})
 }
 
 func queuePriority(value string) (int, bool) {

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -86,7 +87,7 @@ func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: tokenID, Name: "Example runner", Hash: workerHash, Fingerprint: tokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: tokenID, Name: "Example runner", Hash: workerHash, Fingerprint: hubapi.TokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: tokenID, ProjectID: projectID}); err != nil {
@@ -121,7 +122,7 @@ func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := nativeBase + "/leases/:lease/validate"
+	path := hubapi.NativeBase + "/leases/:lease/validate"
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, strings.ReplaceAll(path, ":organization", "org_startup"), bytes.NewReader(requestBody))
 	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
@@ -129,7 +130,7 @@ func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 	context.SetPath(path)
 	context.SetParamNames("organization", "project", "lease")
 	context.SetParamValues("org_startup", string(projectID), leaseID)
-	credential := apiCredential{ID: tokenID, Hash: workerHash, Scope: apiScopeWorker, HostedKeyKind: "service", Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: "org_startup", Operations: []string{runnerauth.Read, runnerauth.Claim}}}
+	credential := hubapi.APICredential{ID: tokenID, Hash: workerHash, Scope: hubapi.APIScopeWorker, HostedKeyKind: "service", Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: "org_startup", Operations: []string{runnerauth.Read, runnerauth.Claim}}}
 	context.Set("hub_api_credential", credential)
 	context.Set("native_scope", nativeScope{organization: "org_startup", project: projectID, credential: credential})
 	if err := service.validateRunnerLease(context); err != nil {
@@ -201,7 +202,7 @@ func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 				}
 				return
 			}
-			var nativeFailure *nativeError
+			var nativeFailure *hubapi.NativeError
 			if !errors.As(validationErr, &nativeFailure) || nativeFailure.Code != test.wantCode {
 				t.Fatalf("validation error = %v, want code %q", validationErr, test.wantCode)
 			}

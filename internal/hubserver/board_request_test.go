@@ -22,6 +22,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -43,7 +44,7 @@ func TestBoardModelCardPreservesCollections(t *testing.T) {
 					issue.ExternalReferences = []tracker.ExternalReference{{Provider: "github", ID: "1"}}
 				}
 				reporter := &viewstore.BoardReporterRelations{Dependencies: issue.Dependencies, Blockers: issue.Blockers, Dependents: issue.Dependents, Related: issue.Related}
-				card, err := boardModelCard(nativeScope{credential: apiCredential{HostedRole: role}}, viewstore.BoardRecord{PageIssue: &issue, ReporterRelations: reporter})
+				card, err := boardModelCard(nativeScope{credential: hubapi.APICredential{HostedRole: role}}, viewstore.BoardRecord{PageIssue: &issue, ReporterRelations: reporter})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -232,7 +233,7 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 		details.beforeRead = nil
 		fixture := newNativeFixture(t, service, org, "Example")
 		service.localOrganization = string(org)
-		scope := nativeScope{organization: org, project: fixture.project.ID, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+		scope := nativeScope{organization: org, project: fixture.project.ID, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 		now := service.config.now().UTC().Truncate(time.Microsecond)
 		seeded := 0
 		for _, size := range []int{20, 500} {

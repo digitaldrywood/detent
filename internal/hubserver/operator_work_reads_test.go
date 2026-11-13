@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -1033,7 +1034,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 		{"invalid head", func(f *tracker.NativeFinalization) { f.HeadSHA = "/private/source" }},
 		{"private refusal code", func(f *tracker.NativeFinalization) { f.VersionCode = "private/source" }},
 		{"unowned source version", func(f *tracker.NativeFinalization) {
-			f.SourceVersion = &tracker.NativeChangeReference{ChangeID: newNativeID("change"), VersionID: newNativeID("version"), HeadSHA: strings.Repeat("c", 40)}
+			f.SourceVersion = &tracker.NativeChangeReference{ChangeID: hubapi.NewID("change"), VersionID: hubapi.NewID("version"), HeadSHA: strings.Repeat("c", 40)}
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1071,7 +1072,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(eventstore.WorkflowTransitionReader)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return hubapi.ErrPostgresFeatureUnavailable
 		}
 		var err error
 		decisionRecord, err = reader.LatestSchedulerDecision(t.Context(), f.project.ID, second.WorkItemID)
@@ -1296,7 +1297,7 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 	requireNativeStatus(t, f.post(t, f.request(1, tracker.AttemptDiffFile{Path: "first.go", Status: "added", Additions: 1, Patch: "+first"}, tracker.AttemptDiffFile{Path: "second.go", Status: "added", Additions: 1, Patch: "+second"})), http.StatusAccepted)
 	at := f.service.config.now()
 	finished := tracker.NativeRunEvent{
-		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("event")}, Type: "run.finished", SchemaVersion: 1,
+		Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("event")}, Type: "run.finished", SchemaVersion: 1,
 		Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
 			LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded",
 			Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "completed", HeartbeatAt: at}},
@@ -1414,7 +1415,7 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(attachmentstore.StorageArchiveReader)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return hubapi.ErrPostgresFeatureUnavailable
 		}
 		var err error
 		pointer, err = owner.StorageArchivePointer(t.Context(), f.project.ID, f.issue.WorkItemID)

@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -240,7 +241,7 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 }
 
 func (s *Service) bootstrapHostedMember(ctx context.Context, identity auth.Identity) error {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	if identity.Subject != s.config.Hosted.BootstrapSubject || identity.Hosted.SupportActor != "" {
 		return nil
@@ -300,7 +301,7 @@ func (s *Service) startHostedSupport(c echo.Context) error {
 
 func (s *Service) logoutHosted(c echo.Context) error {
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	session, hash, sessionErr := s.hostedSession(ctx, c)
 	if cookie, err := c.Cookie(hostedCookie); err == nil && hash == "" {
@@ -346,7 +347,7 @@ func (s *Service) createHostedOrganization(c echo.Context) error {
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "This account cannot create the organization")
 	}
-	credential := apiCredential{Hosted: session.Identity, SessionHash: hash}
+	credential := hubapi.APICredential{Hosted: session.Identity, SessionHash: hash}
 	if _, err := s.createHostedOrganizationFor(c.Request().Context(), credential, c.FormValue("name")); err != nil {
 		status := http.StatusServiceUnavailable
 		if errors.Is(err, operatortool.ErrAccessDenied) {
@@ -437,7 +438,7 @@ func (s *Service) startHostedInvitation(c echo.Context) error {
 		return s.hostedInvitationDenied(c, problem, denial)
 	}
 	var accepted string
-	readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancelRead()
 
 	err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {

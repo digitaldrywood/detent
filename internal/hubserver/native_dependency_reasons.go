@@ -14,6 +14,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -23,11 +24,11 @@ func dependencyBasis(ids []string) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func readNativeDependencyDetails(ctx context.Context, q nativeQueryer, scope nativeScope, issue *tracker.NativeIssue) error {
+func readNativeDependencyDetails(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope, issue *tracker.NativeIssue) error {
 	return readNativeDependencyDetailsBatch(ctx, q, scope, []*tracker.NativeIssue{issue})
 }
 
-func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scope nativeScope, issues []*tracker.NativeIssue) error {
+func readNativeDependencyDetailsBatch(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope, issues []*tracker.NativeIssue) error {
 	if scope.credential.HostedRole == "reporter" {
 		pageQuery, pageErr := prepareNativePageQuery(ctx, q, nativeScope{organization: scope.organization}, "", "native_issue_actors")
 		if pageErr != nil {
@@ -54,17 +55,17 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scop
 		edges[issue.WorkItemID] = &dependencyEdges{}
 		ids = append(ids, issue.WorkItemID)
 	}
-	rawIDs, err := sqlList(ids)
+	rawIDs, err := hubapi.SQLList(ids)
 	if err != nil {
 		return err
 	}
 	selection := rawIDs
-	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+	condition, grantArgs := scope.credential.ProjectGrantSQL("i.organization_id", "i.project_id")
 	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
 	condition = "(" + condition + ") AND (" + visibility + ")"
 	grantArgs = append(grantArgs, visibilityArgs...)
 	args := append(grantArgs, selection, scope.organization, scope.project)
-	rows, err := querySQL(ctx, q, `SELECT source.native_id, i.native_id, i.project_id, i.number, i.title, COALESCE(ws.detent_state,''), COALESCE(ws.terminal,0), o.slug, p.slug,
+	rows, err := hubapi.QuerySQL(ctx, q, `SELECT source.native_id, i.native_id, i.project_id, i.number, i.title, COALESCE(ws.detent_state,''), COALESCE(ws.terminal,0), o.slug, p.slug,
  d.dependent_issue_id = source.id, (`+condition+`), COALESCE(ws.dispatchable,0), CASE WHEN ws.terminal=1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
  (SELECT a.started_at FROM native_attempts a
  WHERE a.work_item_id=i.native_id AND a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.status='running'
@@ -94,14 +95,14 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scop
 		link.Identifier = string(link.ProjectID) + "#" + strconv.Itoa(link.Number)
 		link.WebURL = issueBrowserPath(organizationSlug, projectSlug, link.Number)
 		if closed.Valid {
-			at, err := parseTimeValue(closed.String)
+			at, err := hubapi.ParseTimeValue(closed.String)
 			if err != nil {
 				return err
 			}
 			link.ClosedAt = &at
 		}
 		if started.Valid {
-			at, err := parseTimeValue(started.String)
+			at, err := hubapi.ParseTimeValue(started.String)
 			if err != nil {
 				return err
 			}
@@ -142,7 +143,7 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scop
 			return strings.Compare(string(a.ID), string(b.ID))
 		})
 	}
-	reasons, err := querySQL(ctx, q, `SELECT native_id,blocked_reason,blocked_reason_basis,blocked_reason_revision,unblocks_reason,unblocks_reason_basis,unblocks_reason_revision FROM issues WHERE native_id IN (SELECT value FROM sql_rows(?)) AND organization_id=? AND project_id=?`, selection, scope.organization, scope.project)
+	reasons, err := hubapi.QuerySQL(ctx, q, `SELECT native_id,blocked_reason,blocked_reason_basis,blocked_reason_revision,unblocks_reason,unblocks_reason_basis,unblocks_reason_revision FROM issues WHERE native_id IN (SELECT value FROM sql_rows(?)) AND organization_id=? AND project_id=?`, selection, scope.organization, scope.project)
 	if err != nil {
 		return err
 	}
@@ -198,7 +199,7 @@ func validDependencyReason(text string) bool {
 
 func (s *Service) updateNativeDependencyReason(c echo.Context) error {
 	var request tracker.UpdateDependencyReason
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)

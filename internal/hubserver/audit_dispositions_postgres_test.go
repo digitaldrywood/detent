@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -30,7 +31,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 	f := newRunnerPGFixture(t, func(p *policy.Descriptor) { p.Gates.SecurityAudit = true })
 	for _, role := range []string{"operator", "admin"} {
 		token := "example-disposition-" + role
-		credential := apiCredential{ID: "disposition_" + role, Hash: apikey.HashToken(token), Scope: apiScope(role)}
+		credential := hubapi.APICredential{ID: "disposition_" + role, Hash: apikey.HashToken(token), Scope: hubapi.APIScope(role)}
 		hostedRole, permission := "member", "write"
 		if role == "admin" {
 			hostedRole, permission = "admin", "admin"
@@ -41,7 +42,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		}
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 			now := time.Now().UTC()
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: credential.ID, Hash: credential.Hash, Fingerprint: tokenFingerprint(credential.Hash), Name: "Example disposition " + role, Scope: "operator", NativeOnly: true, Kind: "personal", UserID: credential.ID, MembershipID: membership.ID, KeyScope: permission, ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_startup", ID: credential.ID, Hash: credential.Hash, Fingerprint: hubapi.TokenFingerprint(credential.Hash), Name: "Example disposition " + role, Scope: "operator", NativeOnly: true, Kind: "personal", UserID: credential.ID, MembershipID: membership.ID, KeyScope: permission, ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: "org_startup", UserID: credential.ID, Email: role + "@example.test", MembershipID: membership.ID, Role: hostedRole, Active: true, PrincipalID: credential.ID, CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -63,7 +64,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			t.Fatal(err)
 		}
 		key := securityaudit.Key{ProjectID: "prj_runner", Repository: "example-org/example-project", PRNumber: index + 1, BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat(strconv.Itoa(index+1), 40)}
-		changeID, versionID := newNativeID("change"), newNativeID("version")
+		changeID, versionID := hubapi.NewID("change"), hubapi.NewID("version")
 		change := tracker.ChangeRequest{ID: changeID, OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: lease.WorkItemID, LinkedIssues: []tracker.NativeWorkItemID{lease.WorkItemID}, Title: "Example", Revision: 1, CreatedAt: now, UpdatedAt: now}
 		changeRaw, err := json.Marshal(change)
 		if err != nil {
@@ -95,7 +96,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		if index == 1 {
 			run.Findings = append(run.Findings, securityaudit.Finding{ID: "finding_unresolved", Severity: "p1", Body: "Another finding", Certainty: securityaudit.CertaintyConfirmed})
 		}
-		review := tracker.ChangeReview{ID: newNativeID("review"), VersionID: versionID, Decision: "changes_requested", CreatedAt: now, SecurityAudit: &tracker.SecurityAuditReview{SessionID: sessionID, VersionID: versionID, Run: run}}
+		review := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: versionID, Decision: "changes_requested", CreatedAt: now, SecurityAudit: &tracker.SecurityAuditReview{SessionID: sessionID, VersionID: versionID, Run: run}}
 		reviewRaw, err := json.Marshal(review)
 		if err != nil {
 			t.Fatal(err)
@@ -207,7 +208,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		scope := nativeScope{organization: "org_startup", project: "prj_runner"}
 		if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			credential, err := r.AccessCredential(ctx, "credential_"+strconv.Itoa(index+1))
-			scope.credential = apiCredential{ID: credential.ID, Hash: credential.Hash, Scope: apiScope(credential.Scope)}
+			scope.credential = hubapi.APICredential{ID: credential.ID, Hash: credential.Hash, Scope: hubapi.APIScope(credential.Scope)}
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -255,7 +256,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		}
 		if index == 0 {
 			next := version
-			next.ID, next.Number, next.HeadSHA = newNativeID("version"), 2, strings.Repeat("f", 40)
+			next.ID, next.Number, next.HeadSHA = hubapi.NewID("version"), 2, strings.Repeat("f", 40)
 			raw, err := json.Marshal(next)
 			if err != nil {
 				t.Fatal(err)

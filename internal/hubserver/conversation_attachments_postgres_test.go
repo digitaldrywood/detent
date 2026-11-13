@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -20,10 +22,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func TestConversationAttachmentPostgresHTTP(t *testing.T) {
@@ -236,7 +238,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				service.config.TenantRepository = repository
-				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 				defer cancel()
 				if _, err := admin.ExecContext(cleanup, `UPDATE api_tokens SET operator_key_scope=$2 WHERE organization_id=$1 AND id='test_hub_admin'`, f.org, originalScope); err != nil {
 					t.Error(err)
@@ -347,7 +349,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			scope := nativeScope{organization: f.org, project: f.project, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+			scope := nativeScope{organization: f.org, project: f.project, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 			retainedMessageWant := body.Messages[0]
 			retainedMessageWant.Attachments = nil
 			retainedMessageWant.Text = "retained accepted snapshot"

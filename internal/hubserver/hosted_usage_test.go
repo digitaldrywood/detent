@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -459,7 +460,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 						case "non-run event":
 							data := checkpoint.Data
 							data.Usage, data.Handoff = nil, nil
-							value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: organization, ProjectID: fixture.project.ID, AggregateType: "issue", AggregateID: claimed.issue.WorkItemID, Type: "attempt.noted", SchemaVersion: 1, Actor: analyticsTestScope(t, fixture).actor(), RecordedAt: clock.Now(), Data: tracker.CollaborationData{Run: &data}}
+							value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: organization, ProjectID: fixture.project.ID, AggregateType: "issue", AggregateID: claimed.issue.WorkItemID, Type: "attempt.noted", SchemaVersion: 1, Actor: analyticsTestScope(t, fixture).actor(), RecordedAt: clock.Now(), Data: tracker.CollaborationData{Run: &data}}
 							raw, err := json.Marshal(value)
 							if err != nil {
 								t.Fatal(err)

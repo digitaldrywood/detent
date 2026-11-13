@@ -8,10 +8,11 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readNativeComment(ctx context.Context, query nativeQueryer, scope nativeScope, itemID, commentID string) (tracker.NativeComment, error) {
+func readNativeComment(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, itemID, commentID string) (tracker.NativeComment, error) {
 	var comment tracker.NativeComment
 	var actor, created, updated string
 	var editor, provenance sql.NullString
@@ -34,16 +35,16 @@ FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_
 			return comment, err
 		}
 	}
-	if comment.CreatedAt, err = parseTimeValue(created); err != nil {
+	if comment.CreatedAt, err = hubapi.ParseTimeValue(created); err != nil {
 		return comment, err
 	}
-	comment.UpdatedAt, err = parseTimeValue(updated)
+	comment.UpdatedAt, err = hubapi.ParseTimeValue(updated)
 	return comment, err
 }
 
 func (s *Service) createNativeComment(c echo.Context) error {
 	var request tracker.CreateComment
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.createNativeCommentCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
@@ -55,7 +56,7 @@ func (s *Service) createNativeComment(c echo.Context) error {
 
 func (s *Service) updateNativeComment(c echo.Context) error {
 	var request tracker.UpdateComment
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.updateNativeCommentCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("comment"), request)

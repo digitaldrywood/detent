@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 func TestGitHubWorkersRequirePostgresOwner(t *testing.T) {
@@ -15,11 +17,11 @@ func TestGitHubWorkersRequirePostgresOwner(t *testing.T) {
 	}{
 		{"batch maintenance", func(s *Service) error { return s.maintainGitHubBatches(context.Background()) }, nil},
 		{"reconciliation", func(s *Service) error { return s.maintainGitHubReconciliationRecords(context.Background()) }, nil},
-		{"completion", func(s *Service) error { return s.completeRunnerGitHubBatch(context.Background(), nativeScope{}) }, ErrPostgresFeatureUnavailable},
-		{"advance", func(s *Service) error { return s.advanceGitHubBatch(context.Background(), nativeScope{}) }, ErrPostgresFeatureUnavailable},
+		{"completion", func(s *Service) error { return s.completeRunnerGitHubBatch(context.Background(), nativeScope{}) }, hubapi.ErrPostgresFeatureUnavailable},
+		{"advance", func(s *Service) error { return s.advanceGitHubBatch(context.Background(), nativeScope{}) }, hubapi.ErrPostgresFeatureUnavailable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := test.call(configured); !errors.Is(err, ErrPostgresFeatureUnavailable) {
+			if err := test.call(configured); !errors.Is(err, hubapi.ErrPostgresFeatureUnavailable) {
 				t.Fatalf("configured worker without owner=%v", err)
 			}
 			if err := test.call(&Service{}); !errors.Is(err, test.unconfigured) {

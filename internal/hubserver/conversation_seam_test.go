@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -39,7 +40,7 @@ const (
 )
 
 func conversationAlreadyLinked(p0 string) error {
-	return fromFeatureError(conversations.ConversationAlreadyLinked(p0))
+	return hubapi.FromFeatureError(conversations.ConversationAlreadyLinked(p0))
 }
 
 func conversationArchiveCache(p0 context.Context) *conversations.ConversationArchiveReads {
@@ -58,10 +59,12 @@ func conversationModelFromReport(p0 providercapacity.Report, p1 string) conversa
 	return conversations.ConversationModelFromReport(p0, p1)
 }
 
-func conversationQueueFull() error { return fromFeatureError(conversations.ConversationQueueFull()) }
+func conversationQueueFull() error {
+	return hubapi.FromFeatureError(conversations.ConversationQueueFull())
+}
 
 func conversationStaleOwner(p0 string, p1 string, p2 string) error {
-	return fromFeatureError(conversations.ConversationStaleOwner(p0, p1, p2))
+	return hubapi.FromFeatureError(conversations.ConversationStaleOwner(p0, p1, p2))
 }
 
 func conversationTime(p0 time.Time) string { return conversations.ConversationTime(p0) }
@@ -76,5 +79,5 @@ func newConversationStore(p0 *sql.DB) *conversations.ConversationStore {
 
 func questionPayload(p0 conversations.ConversationQuestionRecord) ([]byte, error) {
 	r0, r1 := conversations.QuestionPayload(p0)
-	return r0, fromFeatureError(r1)
+	return r0, hubapi.FromFeatureError(r1)
 }

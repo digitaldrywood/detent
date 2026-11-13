@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -30,11 +31,11 @@ func freshCapacityConfig(r runnerauth.Runner, now time.Time) bool {
 }
 
 func (s *Service) authorizeRunnerCapacity(ctx context.Context, reader tenantstore.Reader, scope nativeScope) error {
-	return fromFeatureError(s.runnerAdviceService().Authorize(ctx, reader, s.authInput(scope)))
+	return hubapi.FromFeatureError(s.runnerAdviceService().Authorize(ctx, reader, s.authInput(scope)))
 }
 func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, resource, backend string) (any, error) {
 	value, err := s.runnerAdviceService().Read(ctx, s.authInput(scope), resource, backend)
-	return value, fromFeatureError(err)
+	return value, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeScope, resource string, request runnerCapacityChange) (any, error) {
@@ -42,10 +43,10 @@ func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeS
 }
 
 func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope nativeScope, resource string, request runnerCapacityChange) (any, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if request.ExpectedRevision < 1 || request.Validate() != nil || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("A bounded capacity, configuration revision, runner revision and idempotency key are required")
+		return nil, hubapi.NativePublicInvalid("A bounded capacity, configuration revision, runner revision and idempotency key are required")
 	}
 	if scope.credential.Runner.RunnerID != "" {
 		return nil, accessstore.ErrDenied
@@ -56,7 +57,7 @@ func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope native
 	}
 	authorize := func(reader tenantstore.Reader) error { return s.authorizeRunnerCapacity(ctx, reader, scope) }
 	operation := "runner_capacity " + resource
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -73,12 +74,12 @@ func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope native
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	if receipt.CommandKey != "" {
 		if receipt.RequestHash != hash {
-			return nil, nativeConflict(0)
+			return nil, hubapi.NativeConflict(0)
 		}
 		return content.Receipt(ctx, receipt)
 	}
@@ -102,7 +103,7 @@ func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope native
 		previous, err := writer.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			receipt = previous
 			return nil
@@ -115,11 +116,11 @@ func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope native
 			return err
 		}
 		if identity.Revision != request.ExpectedRevision || identity.Revision != r.Revision-1 {
-			return nativeConflict(tracker.Revision(identity.Revision))
+			return hubapi.NativeConflict(tracker.Revision(identity.Revision))
 		}
 		current := runnerauth.Runner{CapacityConfig: identity.CapacityConfig, LastHeartbeatAt: identity.LastHeartbeatAt}
 		if !freshCapacityConfig(current, s.config.now().UTC()) || identity.CapacityConfig.Revision != request.ExpectedConfigRevision {
-			return &nativeError{Code: "revision_conflict", Message: "Current enrolled runner configuration evidence is required; read runner capacity again", status: http.StatusConflict, publicMessage: true}
+			return &hubapi.NativeError{Code: "revision_conflict", Message: "Current enrolled runner configuration evidence is required; read runner capacity again", Status: http.StatusConflict, PublicMessage: true}
 		}
 		identity.CapacityLimit, identity.CapacityRequest = int64(request.Capacity), &request.CapacityRequest
 		if err := writer.UpdateRunnerRouting(ctx, request.ExpectedRevision, identity); err != nil {
@@ -129,19 +130,19 @@ func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope native
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	return content.Receipt(ctx, receipt)
 }
 
 func (s *Service) updateRunnerCapacity(c echo.Context) error {
 	var request runnerCapacityChange
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	value, err := s.updateRunnerCapacityCommand(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"), request)
 	if err != nil {
@@ -151,7 +152,7 @@ func (s *Service) updateRunnerCapacity(c echo.Context) error {
 	return c.JSON(http.StatusOK, value)
 }
 
-func (s *Service) runnerCapacityView(ctx context.Context, query nativeQueryer, r runnerauth.Runner, backend string, now time.Time) (runnerauth.CapacityView, error) {
+func (s *Service) runnerCapacityView(ctx context.Context, query hubapi.NativeQueryer, r runnerauth.Runner, backend string, now time.Time) (runnerauth.CapacityView, error) {
 	view := r.CapacityView(backend, now)
 	if s.database.plans() != nil {
 		entitlement, err := s.database.hostedEntitlement(ctx, query, now)

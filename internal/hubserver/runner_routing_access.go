@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -38,7 +39,7 @@ func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenan
 			if err != nil {
 				return err
 			}
-			if lesserHostedRole(member.Role, scope.credential.HostedRole) == "member" {
+			if hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole) == "member" {
 				grant, err := reader.AccessProjectGrant(ctx, member.UserID, project)
 				if err != nil || !grant.ManageRunner {
 					return accessstore.ErrDenied
@@ -56,20 +57,20 @@ func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenan
 		if err != nil {
 			return err
 		}
-		credential.HostedRole = lesserHostedRole(member.Role, credential.HostedRole)
+		credential.HostedRole = hubapi.LesserHostedRole(member.Role, credential.HostedRole)
 		credential.HostedKeyScope = apikey.Scope(key.KeyScope)
-		credential.HostedProjectAccess = hostedProjectAccess(key.ProjectAccess)
-		organizationAdmin := (credential.HostedRole == "owner" || credential.HostedRole == "admin") && (credential.HostedKeyScope == "" || credential.HostedProjectAccess == hostedProjectsAll)
+		credential.HostedProjectAccess = hubapi.HostedProjectAccess(key.ProjectAccess)
+		organizationAdmin := (credential.HostedRole == "owner" || credential.HostedRole == "admin") && (credential.HostedKeyScope == "" || credential.HostedProjectAccess == hubapi.HostedProjectsAll)
 		if !organizationAdmin {
 			allowed, err := s.appAllRunnerGrantsWith(ctx, reader, credential, nil)
 			if errors.Is(err, corestore.ErrInvalidPage) {
-				return nativeNotFound()
+				return hubapi.NativeNotFound()
 			}
 			if err != nil {
 				return err
 			}
 			if !allowed {
-				return nativeNotFound()
+				return hubapi.NativeNotFound()
 			}
 		}
 	}
@@ -116,7 +117,7 @@ func (s *Service) readRunnerRoutingReceipt(ctx context.Context, scope nativeScop
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		return s.authorizeRunnerRoutingAccess(ctx, reader, scope, projects, represented.Scope)
 	}); err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	return raw, nil
 }

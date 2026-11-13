@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -792,14 +793,14 @@ func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
 func recordSelectionFixtureAttempt(t *testing.T, f nativeFixture, r runnerFixture, item tracker.NativeIssue, outcome string, checkpoint *tracker.NativeCheckpoint) string {
 	t.Helper()
 	now := f.service.config.now()
-	attemptID, runID := newNativeID("attempt"), newNativeID("run")
+	attemptID, runID := hubapi.NewID("attempt"), hubapi.NewID("run")
 	var lease leasestore.Lease
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		stored, err := w.WorkItem(t.Context(), f.project.ID, item.WorkItemID)
 		if err != nil {
 			return err
 		}
-		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: stored.ID, ExpectedRevision: stored.Revision, MachineID: string(r.binding.MachineID), SessionID: newNativeID("selection-session"), LeaseID: newNativeID("lease"), TTL: time.Hour})
+		lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: stored.ID, ExpectedRevision: stored.Revision, MachineID: string(r.binding.MachineID), SessionID: hubapi.NewID("selection-session"), LeaseID: hubapi.NewID("lease"), TTL: time.Hour})
 		if err != nil {
 			return err
 		}
@@ -828,7 +829,7 @@ func recordSelectionFixtureAttempt(t *testing.T, f nativeFixture, r runnerFixtur
 		if err != nil {
 			t.Fatal(err)
 		}
-		event, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: item.WorkItemID, Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: r.binding.RunnerID}, RecordedAt: now, Data: tracker.CollaborationData{Run: &run}}))
+		event, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: item.WorkItemID, Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: r.binding.RunnerID}, RecordedAt: now, Data: tracker.CollaborationData{Run: &run}}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -860,7 +861,7 @@ func recordSelectionFixtureAttempt(t *testing.T, f nativeFixture, r runnerFixtur
 
 func updateSelectionFixtureBody(t *testing.T, f nativeFixture, item tracker.NativeIssue, body string) tracker.NativeIssue {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(item.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("selection-body")}, ExpectedRevision: item.Revision, Body: &body})
+	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(item.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("selection-body")}, ExpectedRevision: item.Revision, Body: &body})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &item)
 	return item

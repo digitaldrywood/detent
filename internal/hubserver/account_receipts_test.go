@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -24,7 +25,7 @@ func TestPostgresAccountReceiptsPreserveReplayAndUncertainty(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		credential := apiCredential{Hosted: &auth.HostedIdentity{Subject: "actor", SessionID: "session", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}}
+		credential := hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: "actor", SessionID: "session", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}}
 		metadata := mutation.Metadata{RetryIdentity: "same-retry", InputHash: "same-input"}
 		for range 2 {
 			output, err := service.executeHostedAccountFor(t.Context(), credential, operatortool.SupportStart, operatoradmin.Input{}, metadata)

@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -91,18 +92,18 @@ func TestHostedKeyActorImport(t *testing.T) {
 func TestNativeKeyActor(t *testing.T) {
 	for _, test := range []struct {
 		name       string
-		credential apiCredential
+		credential hubapi.APICredential
 		want       tracker.Actor
 	}{
-		{"browser", apiCredential{ID: "human", SessionHash: "session"}, tracker.Actor{Kind: "human", PrincipalID: "human"}},
-		{"personal entry", apiCredential{ID: "human", EntryKey: &apikey.KeyAuthority{ID: "key", Kind: "personal"}}, tracker.Actor{Kind: "human", PrincipalID: "human", ViaKey: "key"}},
-		{"service entry", apiCredential{ID: "service_key", EntryKey: &apikey.KeyAuthority{ID: "key", Kind: "service"}}, tracker.Actor{Kind: "integration", PrincipalID: "service_key", ViaKey: "key"}},
-		{"personal hosted", apiCredential{ID: "key", HostedPrincipal: "human", HostedKeyKind: "personal", HostedKeyScope: apikey.ScopeWrite}, tracker.Actor{Kind: "human", PrincipalID: "human", ViaKey: "key"}},
-		{"service hosted", apiCredential{ID: "key", HostedPrincipal: "human", HostedKeyKind: "service", HostedKeyScope: apikey.ScopeWrite}, tracker.Actor{Kind: "integration", PrincipalID: "key", ViaKey: "key"}},
-		{"worker", apiCredential{ID: "worker", Scope: apiScopeWorker}, tracker.Actor{Kind: "runner", PrincipalID: "worker"}},
-		{"hosted worker", apiCredential{ID: "worker", Scope: apiScopeWorker, HostedKeyKind: "service"}, tracker.Actor{Kind: "runner", PrincipalID: "worker"}},
-		{"runner", apiCredential{ID: "runner", Scope: apiScopeOperator, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: "runner"}}}, tracker.Actor{Kind: "runner", PrincipalID: "runner"}},
-		{"hosted runner", apiCredential{ID: "runner", Scope: apiScopeOperator, HostedKeyKind: "service", Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: "runner"}}}, tracker.Actor{Kind: "runner", PrincipalID: "runner"}},
+		{"browser", hubapi.APICredential{ID: "human", SessionHash: "session"}, tracker.Actor{Kind: "human", PrincipalID: "human"}},
+		{"personal entry", hubapi.APICredential{ID: "human", EntryKey: &apikey.KeyAuthority{ID: "key", Kind: "personal"}}, tracker.Actor{Kind: "human", PrincipalID: "human", ViaKey: "key"}},
+		{"service entry", hubapi.APICredential{ID: "service_key", EntryKey: &apikey.KeyAuthority{ID: "key", Kind: "service"}}, tracker.Actor{Kind: "integration", PrincipalID: "service_key", ViaKey: "key"}},
+		{"personal hosted", hubapi.APICredential{ID: "key", HostedPrincipal: "human", HostedKeyKind: "personal", HostedKeyScope: apikey.ScopeWrite}, tracker.Actor{Kind: "human", PrincipalID: "human", ViaKey: "key"}},
+		{"service hosted", hubapi.APICredential{ID: "key", HostedPrincipal: "human", HostedKeyKind: "service", HostedKeyScope: apikey.ScopeWrite}, tracker.Actor{Kind: "integration", PrincipalID: "key", ViaKey: "key"}},
+		{"worker", hubapi.APICredential{ID: "worker", Scope: hubapi.APIScopeWorker}, tracker.Actor{Kind: "runner", PrincipalID: "worker"}},
+		{"hosted worker", hubapi.APICredential{ID: "worker", Scope: hubapi.APIScopeWorker, HostedKeyKind: "service"}, tracker.Actor{Kind: "runner", PrincipalID: "worker"}},
+		{"runner", hubapi.APICredential{ID: "runner", Scope: hubapi.APIScopeOperator, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: "runner"}}}, tracker.Actor{Kind: "runner", PrincipalID: "runner"}},
+		{"hosted runner", hubapi.APICredential{ID: "runner", Scope: hubapi.APIScopeOperator, HostedKeyKind: "service", Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: "runner"}}}, tracker.Actor{Kind: "runner", PrincipalID: "runner"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := (nativeScope{credential: test.credential}).actor(); got != test.want {
@@ -162,7 +163,7 @@ func TestMCPKeyIssueContract(t *testing.T) {
 					body := issueorigin.Stamp(issueContractTestSections, issueorigin.Origin{Kind: "worker", Fingerprint: "key-contract-" + kind})
 					body = strings.Repeat("x", 42917-len(body)-1) + "\n" + body
 					originalBody := body
-					key, err := f.service.createHostedAPIKeyFor(t.Context(), issuer, hostedKeyRequest{Kind: kind, Name: "contract-" + kind, Scope: apikey.ScopeWrite, NeverExpires: true, ProjectAccess: hostedProjectsAll})
+					key, err := f.service.createHostedAPIKeyFor(t.Context(), issuer, hostedKeyRequest{Kind: kind, Name: "contract-" + kind, Scope: apikey.ScopeWrite, NeverExpires: true, ProjectAccess: hubapi.HostedProjectsAll})
 					if err != nil || key.Kind != kind {
 						t.Fatalf("create key=%+v error=%v", key, err)
 					}
@@ -372,7 +373,7 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := nativeScope{organization: "org_security", project: f.project, credential: issuer}
-	key, err := f.service.createHostedAPIKeyFor(t.Context(), issuer, hostedKeyRequest{Kind: "personal", Name: "revision writes", Scope: apikey.ScopeWrite, NeverExpires: true, ProjectAccess: hostedProjectsAll})
+	key, err := f.service.createHostedAPIKeyFor(t.Context(), issuer, hostedKeyRequest{Kind: "personal", Name: "revision writes", Scope: apikey.ScopeWrite, NeverExpires: true, ProjectAccess: hubapi.HostedProjectsAll})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,13 +465,13 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 					repository := service.config.TenantRepository
 					orgID, projectID := scope.organization, scope.project
 					binding := runnerauth.NewBinding()
-					workerID, runnerID := newNativeID("credential"), binding.RunnerID
+					workerID, runnerID := hubapi.NewID("credential"), binding.RunnerID
 					workerToken, err := apikey.GenerateToken()
 					if err != nil {
 						t.Fatal(err)
 					}
 					workerHash := apikey.HashToken(workerToken)
-					leaseID := newNativeID("lease")
+					leaseID := hubapi.NewID("lease")
 					var lease leasestore.Lease
 					expires := now.Add(time.Hour)
 					if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -481,13 +482,13 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 						if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: orgID, ID: string(binding.MachineID), Hostname: "example", Capacity: 1, Version: "example"}); err != nil {
 							return err
 						}
-						if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: orgID, ID: workerID, Name: "Source runner", Hash: workerHash, Fingerprint: tokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+						if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: orgID, ID: workerID, Name: "Source runner", Hash: workerHash, Fingerprint: hubapi.TokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 							return err
 						}
 						if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: orgID, TokenID: workerID, ProjectID: projectID}); err != nil {
 							return err
 						}
-						enrollmentID := newNativeID("enrollment")
+						enrollmentID := hubapi.NewID("enrollment")
 						operations := []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}
 						if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: orgID, ID: enrollmentID, RunnerID: runnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken("example-source-enrollment"), Scope: "projects", ProjectIDs: []tracker.ProjectID{projectID}, Operations: operations, CreatedAt: now, ExpiresAt: expires, CreatedBy: "example-owner"}); err != nil {
 							return err
@@ -509,7 +510,7 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 					}); err != nil {
 						t.Fatal(err)
 					}
-					input.AttemptID, input.RunID = newNativeID("attempt"), newNativeID("run")
+					input.AttemptID, input.RunID = hubapi.NewID("attempt"), hubapi.NewID("run")
 					for index, kind := range []string{"run.started", "run.finished"} {
 						run := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: kind}, Type: kind, SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: input.AttemptID, RunID: input.RunID, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: input.PolicyID, Sequence: int64(index + 1), Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "example"}}}
 						if kind == "run.finished" {

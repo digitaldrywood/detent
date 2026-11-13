@@ -3,10 +3,12 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -161,7 +163,7 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 	}()
 	owner, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return snapshot, nativeRunEventStorageUnavailable()
+		return snapshot, hubapi.NativeRunEventStorageUnavailable()
 	}
 	err = owner.ReadTenantSnapshot(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
@@ -200,7 +202,7 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 		step = "latest_transition"
 		transitions, ok := r.(eventstore.WorkflowTransitionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		transition, err := transitions.LatestWorkflowTransition(ctx, candidate.ProjectID, candidate.WorkItemID)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -262,7 +264,7 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 				LeaseMutationIdentity(context.Context, string) (runnerstore.Identity, error)
 			})
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			identity, err := runnerReader.LeaseMutationIdentity(ctx, lease.LeaseID)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -587,7 +589,7 @@ func applyBoardExecutionDiagnostics(execution *tracker.NativeBoardExecution, lea
 			execution.ID = claim.NativeAttemptID
 		}
 		execution.Running, execution.Stage = true, local.Stage
-		execution.ExpiresAt = minTime(execution.ExpiresAt, asOf.Add(runnerauth.HeartbeatTimeout))
+		execution.ExpiresAt = hubapi.MinTime(execution.ExpiresAt, asOf.Add(runnerauth.HeartbeatTimeout))
 	}
 	if count != 1 {
 		local = nil

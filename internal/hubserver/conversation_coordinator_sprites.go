@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -74,7 +75,7 @@ func (args coordinatorSpriteArguments) apply(settings *spritePoolSettings) {
 func decodeCoordinatorSpriteArguments(name string, raw json.RawMessage) (coordinatorSpriteArguments, error) {
 	var args coordinatorSpriteArguments
 	var fields map[string]json.RawMessage
-	if len(raw) > coordinatorToolArgumentBytes || json.Unmarshal(raw, &fields) != nil || fields == nil {
+	if len(raw) > hubapi.CoordinatorToolArgumentBytes || json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return args, operatortool.ErrInvalidArguments
 	}
 	for _, value := range fields {
@@ -146,7 +147,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 	if call.Name == "set_sprite_pool" {
 		args.apply(&settings)
 	} else if settings.Revision == 0 || settings.MaxRunners == 0 {
-		return nil, nativePublicInvalid("Configure and enable the Sprite pool with set_sprite_pool before scaling up")
+		return nil, hubapi.NativePublicInvalid("Configure and enable the Sprite pool with set_sprite_pool before scaling up")
 	}
 	if call.Name == "scale_up_sprite_pool" {
 		if _, err := s.spritePoolRecordAuthority(ctx, scope, nil); err != nil {
@@ -184,14 +185,14 @@ func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope nat
 	}
 	if settings.MaxRunners > 0 {
 		if s.config.SecretKeys == nil || s.config.Hosted == nil {
-			return nativePublicInvalid("Sprite pools require hosted configuration and the organization secret store")
+			return hubapi.NativePublicInvalid("Sprite pools require hosted configuration and the organization secret store")
 		}
 		status, err := s.readAccessSecretStatus(ctx, scope)
 		if err != nil {
 			return err
 		}
 		if !status.Present {
-			return nativePublicInvalid("Set the Sprites organization token through set_sprites_token before enabling the pool")
+			return hubapi.NativePublicInvalid("Set the Sprites organization token through set_sprites_token before enabling the pool")
 		}
 	}
 	return nil
@@ -225,7 +226,7 @@ func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action cha
 			return chat.ActionExecution{}, coordinatorActionError(err)
 		}
 		if view.Revision != change.Revision {
-			return chat.ActionExecution{}, coordinatorActionError(nativeConflict(tracker.Revision(view.Revision)))
+			return chat.ActionExecution{}, coordinatorActionError(hubapi.NativeConflict(tracker.Revision(view.Revision)))
 		}
 		settings := view.spritePoolSettings
 		change.Input.apply(&settings)

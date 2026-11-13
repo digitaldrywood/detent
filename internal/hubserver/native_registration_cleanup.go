@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -45,7 +46,7 @@ func readTenantRunCleanupPredecessor(ctx context.Context, r tenantstore.Reader, 
 	previous := &tenantRunCleanupPredecessor{attempt: attempt, lease: lease, event: event, committed: map[int64]eventstore.Event{}}
 	reader, ok := r.(nativeRunEventReader)
 	if !ok {
-		return nil, false, nativeRunEventStorageUnavailable()
+		return nil, false, hubapi.NativeRunEventStorageUnavailable()
 	}
 	for _, prefix := range request.PriorEvents {
 		if prefix.Data.Sequence > attempt.Sequence {

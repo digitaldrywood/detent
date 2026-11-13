@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -30,7 +31,7 @@ func TestRunnerDiagnosticsUsesTenantOwnerWithoutLegacyAlias(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: organization, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+			scope := nativeScope{organization: organization, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 			page, err := service.readRunnerProjectDiagnostics(t.Context(), scope, operatortool.LocalProjectArguments{ProjectID: "project_example", Limit: 10})
 			if err != nil {
 				t.Fatal(err)
@@ -83,7 +84,7 @@ func TestRunnerRemovalUsesTenantAuthorityAndActiveLeases(t *testing.T) {
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
-			scope := nativeScope{organization: org, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+			scope := nativeScope{organization: org, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 			for _, id := range []string{"busy", "idle"} {
 				_, err := service.revokeRunnerIdentityCommand(t.Context(), scope, id)
 				if (id == "busy") != (err != nil) {

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -211,11 +212,11 @@ func TestModelSelectionToolAuthority(t *testing.T) {
 						t.Fatal(err)
 					}
 					expiry := time.Now().Add(time.Hour)
-					scope := apiScopeOperator
+					scope := hubapi.APIScopeOperator
 					if test.key == apikey.ScopeAdmin {
-						scope = apiScopeAdmin
+						scope = hubapi.APIScopeAdmin
 					}
-					key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "model-tools", Scope: scope, Issuer: &issuer, KeyScope: test.key, ExpiresAt: &expiry, ProjectIDs: []string{string(f.project)}})
+					key, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "model-tools", Scope: scope, Issuer: &issuer, KeyScope: test.key, ExpiresAt: &expiry, ProjectIDs: []string{string(f.project)}})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -316,7 +317,7 @@ func TestNativeModelSelectionTools(t *testing.T) {
 	if action.Status != chatpkg.ActionSucceeded || saved.Revision != 2 || saved.Effective.Model("normal") != "native-model" {
 		t.Fatalf("saved=%+v action=%+v", saved, action)
 	}
-	operator, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "organization-operator", Scope: apiScopeOperator})
+	operator, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "organization-operator", Scope: hubapi.APIScopeOperator})
 	if err != nil {
 		t.Fatal(err)
 	}

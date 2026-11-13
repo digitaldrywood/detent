@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -61,12 +62,12 @@ func claimAttemptDiffFixture(t *testing.T, enrolled bool, f nativeFixture) *atte
 		capabilities = append(capabilities, tracker.NativeExecutionCapability)
 	}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", fixture.worker,
-		tracker.NativeClaim{PolicyID: fixture.policy, WorkItemID: fixture.issue.WorkItemID, MachineID: machine, SessionID: newNativeID("session"),
+		tracker.NativeClaim{PolicyID: fixture.policy, WorkItemID: fixture.issue.WorkItemID, MachineID: machine, SessionID: hubapi.NewID("session"),
 			TTLSeconds: 600, ProtocolMajor: 2, Capabilities: capabilities})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &fixture.lease)
-	fixture.attempt = newNativeID("attempt")
-	fixture.run = newNativeID("run")
+	fixture.attempt = hubapi.NewID("attempt")
+	fixture.run = hubapi.NewID("run")
 	return fixture
 }
 
@@ -80,7 +81,7 @@ func (f *attemptDiffFixture) start(t *testing.T) {
 func (f *attemptDiffFixture) event(t *testing.T, kind string, sequence int64, outcome string) {
 	t.Helper()
 	event := tracker.NativeRunEvent{
-		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("event")}, Type: kind, SchemaVersion: 1,
+		Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("event")}, Type: kind, SchemaVersion: 1,
 		Data: tracker.NativeRunData{Sequence: sequence, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
 			LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: outcome},
 	}
@@ -110,10 +111,10 @@ func (f *attemptDiffFixture) get(t *testing.T, query string) *httptest.ResponseR
 	return performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/attempts/"+f.attempt+"/diff"+query, f.token, nil)
 }
 
-func requireNativeCode(t *testing.T, response *httptest.ResponseRecorder, status int, code string) nativeError {
+func requireNativeCode(t *testing.T, response *httptest.ResponseRecorder, status int, code string) hubapi.NativeError {
 	t.Helper()
 	requireNativeStatus(t, response, status)
-	var failure nativeError
+	var failure hubapi.NativeError
 	decodeHubResponse(t, response, &failure)
 	if failure.Code != code {
 		t.Fatalf("code = %q, want %q: %s", failure.Code, code, response.Body.String())
@@ -150,7 +151,7 @@ func TestAttemptDiffBodyAllowanceCoversEscaping(t *testing.T) {
 			}
 		})
 	}
-	if want := int64(6*tracker.MaxDiffBytes + (1 << 20)); maxAttemptDiffRequestBytes != want {
-		t.Fatalf("allowance = %d, want %d", maxAttemptDiffRequestBytes, want)
+	if want := int64(6*tracker.MaxDiffBytes + (1 << 20)); hubapi.MaxAttemptDiffRequestBytes != want {
+		t.Fatalf("allowance = %d, want %d", hubapi.MaxAttemptDiffRequestBytes, want)
 	}
 }

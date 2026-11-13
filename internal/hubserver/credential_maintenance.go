@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudorigin"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -36,7 +37,7 @@ func (s *Service) registerCredentialMaintenanceRoutes(e *echo.Echo) {
 
 func (s *Service) requireCredentialMaintenance(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 		defer cancelRead()
 		c.Response().Header().Set("Cache-Control", "no-store")
 		if _, err := apiBearerToken(c); err != nil || c.Request().Header.Get("Origin") != "" {
@@ -49,7 +50,7 @@ func (s *Service) requireCredentialMaintenance(next echo.HandlerFunc) echo.Handl
 			}
 			return c.NoContent(status)
 		}
-		if credential.Scope != apiScopeAdmin || credential.NativeOnly || credential.Hosted != nil || credential.Runner.RunnerID != "" || credential.HostedKeyKind != "service" || credential.HostedProjectAccess != hostedProjectsAll {
+		if credential.Scope != hubapi.APIScopeAdmin || credential.NativeOnly || credential.Hosted != nil || credential.Runner.RunnerID != "" || credential.HostedKeyKind != "service" || credential.HostedProjectAccess != hubapi.HostedProjectsAll {
 			return s.hostedJSONError(c, http.StatusForbidden, "A non-native instance administrator credential is required")
 		}
 		var member bool
@@ -143,7 +144,7 @@ func (s *Service) authorizeCredentialMaintenanceWrite(ctx context.Context, w ten
 	if err != nil {
 		return err
 	}
-	if credential.Scope != string(apiScopeAdmin) || credential.Kind != "service" || credential.ProjectAccess != string(hostedProjectsAll) || credential.NativeOnly || credential.UserID != "" || credential.MembershipID != "" {
+	if credential.Scope != string(hubapi.APIScopeAdmin) || credential.Kind != "service" || credential.ProjectAccess != string(hubapi.HostedProjectsAll) || credential.NativeOnly || credential.UserID != "" || credential.MembershipID != "" {
 		return accessstore.ErrDenied
 	}
 	member, err := w.AccessCredentialHasMember(ctx, credential.ID)

@@ -60,7 +60,7 @@ const workItemRecordBody = "## Acceptance criteria\nThe issue is served.\n## Mus
 var newNativeID = hubapi.NewID
 var nativeFixtureStates = hubtest.States
 var hubTestPolicy = hubtest.PolicyDescriptor
-var workItemStorageUnavailable = func() error { return hubserver.ErrPostgresFeatureUnavailable }
+var workItemStorageUnavailable = func() error { return hubapi.ErrPostgresFeatureUnavailable }
 
 type nativeScope struct {
 	organization tracker.OrganizationID
@@ -292,7 +292,7 @@ func (f hostedSecurityFixture) feature(t *testing.T, user hostedSecurityUser, sc
 		return json.Unmarshal(r.Body.Bytes(), out)
 	}
 	base := "/api/v2/organizations/" + string(scope.Organization) + "/projects/" + string(scope.Project)
-	return pullrequests.New(pullrequests.Deps{Repository: s.repository, Now: s.config.now, Cache: s.pullRequests, TransportAvailable: s.config.ReconcileBackend != nil, Unavailable: hubserver.ErrPostgresFeatureUnavailable, ValidCheckout: runnerstore.ValidCheckoutRepository,
+	return pullrequests.New(pullrequests.Deps{Repository: s.repository, Now: s.config.now, Cache: s.pullRequests, TransportAvailable: s.config.ReconcileBackend != nil, Unavailable: hubapi.ErrPostgresFeatureUnavailable, ValidCheckout: runnerstore.ValidCheckoutRepository,
 		VerifiedCheckout: func(ctx context.Context, repository string, now time.Time) (bool, error) {
 			var v bool
 			err := s.repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -345,7 +345,7 @@ func (f hostedSecurityFixture) feature(t *testing.T, user hostedSecurityUser, sc
 func (s *fixtureService) runDetailStore() attachment.DetailStore { return s.config.RunDetails }
 
 func (s *fixtureService) maintainGitHubReconciliationRecords(ctx context.Context) error {
-	return githubreconcile.New(githubreconcile.Deps{Repository: s.repository, Organization: s.organization, Backend: s.config.ReconcileBackend, Importer: s.config.ImportBackend, Ready: true, Unavailable: hubserver.ErrPostgresFeatureUnavailable, Now: s.config.now, Jitter: s.config.jitter, Interval: time.Minute, Integration: func(ctx context.Context, org tracker.OrganizationID, project tracker.ProjectID) (githubreconcile.Integration, error) {
+	return githubreconcile.New(githubreconcile.Deps{Repository: s.repository, Organization: s.organization, Backend: s.config.ReconcileBackend, Importer: s.config.ImportBackend, Ready: true, Unavailable: hubapi.ErrPostgresFeatureUnavailable, Now: s.config.now, Jitter: s.config.jitter, Interval: time.Minute, Integration: func(ctx context.Context, org tracker.OrganizationID, project tracker.ProjectID) (githubreconcile.Integration, error) {
 		var record projectstore.Record
 		err := s.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error

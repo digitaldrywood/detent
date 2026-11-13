@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -23,7 +24,7 @@ func (s *Service) readNativeRunCommand(ctx context.Context, scope nativeScope, c
 	if repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository); ok {
 		return repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return read(ctx, r) })
 	}
-	return nativeRunEventStorageUnavailable()
+	return hubapi.NativeRunEventStorageUnavailable()
 }
 
 func (s *Service) writeNativeRunCommand(ctx context.Context, scope nativeScope, command eventstore.RunCommand, write func(context.Context, tenantstore.Writer) error) error {
@@ -64,7 +65,7 @@ func (s *Service) writeNativeRunCommand(ctx context.Context, scope nativeScope, 
 type runnerEventAuthorityKey struct{}
 
 func runnerEventCommandRoute(c echo.Context) bool {
-	return c.Request().Method == http.MethodPost && (c.Path() == nativeBase+"/work-items/:item/events" || c.Path() == nativeBase+"/runner-sessions" || c.Path() == nativeBase+"/leases/:lease/release")
+	return c.Request().Method == http.MethodPost && (c.Path() == hubapi.NativeBase+"/work-items/:item/events" || c.Path() == hubapi.NativeBase+"/runner-sessions" || c.Path() == hubapi.NativeBase+"/leases/:lease/release")
 }
 
 func (s *Service) runnerEventCommandScope(c echo.Context, scope nativeScope) bool {

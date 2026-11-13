@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
@@ -323,7 +324,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := repository.WriteTenant(t.Context(), selected.ID, corestore.Serving, func(w tenantstore.Writer) error {
-					if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: selected.ID, ID: newNativeID("hub"), CursorKey: key}); err != nil {
+					if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: selected.ID, ID: serverapi.NewID("hub"), CursorKey: key}); err != nil {
 						return err
 					}
 					return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: selected.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: service.config.now()}, accessstore.SecretAudit{OrganizationID: selected.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: service.config.now()})
@@ -595,7 +596,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				if test.stages.retainedAcceptance {
 					retained := *acceptanceRequest.Validator
 					retained.SessionID = recordSession(44, "validator")
-					raw, err := marshalNative(tracker.ChangeReview{ID: "review_retained_acceptance", VersionID: version.ID, Decision: "approved", Validator: &retained, SessionMachineID: lease.MachineID, Actor: tracker.Actor{Kind: "runner", PrincipalID: "previous-worker"}, CreatedAt: f.service.config.now()})
+					raw, err := serverapi.MarshalNative(tracker.ChangeReview{ID: "review_retained_acceptance", VersionID: version.ID, Decision: "approved", Validator: &retained, SessionMachineID: lease.MachineID, Actor: tracker.Actor{Kind: "runner", PrincipalID: "previous-worker"}, CreatedAt: f.service.config.now()})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -643,7 +644,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					sourceReview.ImplementationReview = nil
 					sourceReview.SecurityAudit = recordedAudit
 				}
-				raw, err := marshalNative(sourceReview)
+				raw, err := serverapi.MarshalNative(sourceReview)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -651,7 +652,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			if largeAudit {
 				raw, err := json.Marshal(request)
-				if err != nil || len(raw) >= maxAPIRequestBodyBytes {
+				if err != nil || len(raw) >= serverapi.MaxAPIRequestBodyBytes {
 					t.Fatalf("audit request bytes=%d err=%v", len(raw), err)
 				}
 				t.Logf("authenticated audit write bytes=%d", len(raw))
@@ -1177,7 +1178,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				observation.Data.Identity.Role = "merge"
 				observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", Landing: &tracker.NativeLandingReceipt{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, BaseSHA: request.SecurityAudit.Run.BaseSHA, SecurityAudit: request.SecurityAudit, GateFailed: true}}
 				raw, err := json.Marshal(observation)
-				if err != nil || len(raw) >= maxAPIRequestBodyBytes {
+				if err != nil || len(raw) >= serverapi.MaxAPIRequestBodyBytes {
 					t.Fatalf("landing write bytes=%d err=%v", len(raw), err)
 				}
 				t.Logf("authenticated landing write bytes=%d", len(raw))

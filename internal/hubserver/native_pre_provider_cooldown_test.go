@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -38,13 +39,13 @@ func TestClaimCandidatesRetryInstancePreProviderFailures(t *testing.T) {
 			r.enroll(t)
 			reportRunnerCapacity(t, f.service, f.base, r.redemption.Credential, r.binding.MachineID, r.redemption.DisplayName, r.redemption.BackendIsolation, r.redemption.Capacity)
 			f.worker = r.redemption.Credential
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &f.lease)
-			f.attempt, f.run = newNativeID("attempt"), newNativeID("run")
+			f.attempt, f.run = hubapi.NewID("attempt"), hubapi.NewID("run")
 			failure := test.failure
 			failure.ObservedAt = f.now
-			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{
+			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{
 				LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "failed", TerminalFailure: &failure,
 			}}
 			if test.preProvider {
@@ -53,7 +54,7 @@ func TestClaimCandidatesRetryInstancePreProviderFailures(t *testing.T) {
 			} else {
 				event.Data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}
 				started := event
-				started.IdempotencyKey, started.Type, started.Data.Sequence, started.Data.Outcome, started.Data.TerminalFailure = newNativeID("start"), "run.started", 1, "", nil
+				started.IdempotencyKey, started.Type, started.Data.Sequence, started.Data.Outcome, started.Data.TerminalFailure = hubapi.NewID("start"), "run.started", 1, "", nil
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, started), http.StatusOK)
 				event.Data.Sequence = 2
 			}

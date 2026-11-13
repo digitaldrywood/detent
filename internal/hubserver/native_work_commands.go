@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -22,7 +23,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 	if origin, ok := issueorigin.Parse(request.Body); ok && origin.Kind == "doctor" && origin.Instance == "github-actions" {
 		scope.scheduledRepair = s.observeScheduledRepair(ctx, scope, request)
 		if scope.scheduledRepair == nil {
-			return nil, nativePublicInvalid("Scheduled report is not authorized by the approved workflow")
+			return nil, hubapi.NativePublicInvalid("Scheduled report is not authorized by the approved workflow")
 		}
 	}
 	scope.action = operatortool.FileIssue
@@ -30,7 +31,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 	if request.ChallengeToken != "" {
 		operation += "/duplicate-confirmation"
 	}
-	result, err := s.executeWorkItemRecordMutation(ctx, scope, nativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, "")
+	result, err := s.executeWorkItemRecordMutation(ctx, scope, hubapi.NativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, "")
 	if err == nil && s.wakeSpriteRunnersAfter != nil {
 		s.wakeSpriteRunnersAfter(scope, result)
 	}
@@ -56,7 +57,7 @@ func normalizeNativeMachineIntake(scope nativeScope, states []tracker.NativeStat
 				todo = todo || state.Name == "Todo" && state.Dispatchable && !state.Terminal && !state.OperatorOnly
 			}
 			if !backlog || !todo {
-				return request, nativePublicInvalid("Defect reporting requires nondispatchable Backlog and dispatchable Todo")
+				return request, hubapi.NativePublicInvalid("Defect reporting requires nondispatchable Backlog and dispatchable Todo")
 			}
 			request.State = "Todo"
 			if request.Priority == nil || *request.Priority > 1 {
@@ -69,27 +70,27 @@ func normalizeNativeMachineIntake(scope nativeScope, states []tracker.NativeStat
 
 func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.UpdateIssue) (json.RawMessage, error) {
 	scope.action, scope.actionItem = operatortool.EditItem, item
-	options := nativeCommandOptions{OperationID: "PATCH /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item, Item: item, RequireLease: true, Feature: "collaboration"}
+	options := hubapi.NativeCommandOptions{OperationID: "PATCH /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item, Item: item, RequireLease: true, Feature: "collaboration"}
 	if s.config.TenantRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
 }
 
 func (s *Service) changeNativeDependencyCommand(ctx context.Context, scope nativeScope, item string, request tracker.DependencyMutation) (json.RawMessage, error) {
-	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/dependencies", Item: item, RequireLease: true, Feature: "collaboration"}
+	options := hubapi.NativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/dependencies", Item: item, RequireLease: true, Feature: "collaboration"}
 	scope.action = operatortool.SetDependency
 	if s.config.TenantRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
 }
 
 func (s *Service) createNativeCommentCommand(ctx context.Context, scope nativeScope, item string, request tracker.CreateComment) (json.RawMessage, error) {
 	scope.action, scope.actionItem = operatortool.AddComment, item
-	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/comments", Item: item, RequireLease: true, Feature: "collaboration"}
+	options := hubapi.NativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/comments", Item: item, RequireLease: true, Feature: "collaboration"}
 	if s.config.TenantRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
 }
@@ -97,9 +98,9 @@ func (s *Service) createNativeCommentCommand(ctx context.Context, scope nativeSc
 func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeScope, item string, comment string, request tracker.UpdateComment) (json.RawMessage, error) {
 	scope.action = operatortool.EditComment
 	scope.actionItem, scope.actionComment = item, comment
-	options := nativeCommandOptions{OperationID: "PATCH /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/comments/" + comment, Item: item, RequireLease: true, Feature: "collaboration"}
+	options := hubapi.NativeCommandOptions{OperationID: "PATCH /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/comments/" + comment, Item: item, RequireLease: true, Feature: "collaboration"}
 	if s.config.TenantRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, comment)
 }
@@ -109,9 +110,9 @@ func (s *Service) setNativeArchiveCommand(ctx context.Context, scope nativeScope
 	if archived {
 		operation = "archive"
 	}
-	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items/" + item + "/" + operation, Item: item, RequireLease: true, Feature: "collaboration", Completion: archived}
+	options := hubapi.NativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items/" + item + "/" + operation, Item: item, RequireLease: true, Feature: "collaboration", Completion: archived}
 	if s.config.TenantRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	return s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, workItemArchive{archiveIssueRequest: request, Archived: archived}, "")
 }
@@ -140,7 +141,7 @@ func (s *Service) operatorCreateNativeWork(ctx context.Context, scope nativeScop
 func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, name string, request operatortool.WorkArguments) (json.RawMessage, error) {
 	command := tracker.MutationForContext(ctx, "")
 	if request.Target == "pr" {
-		return nil, nativePublicInvalid("application service is unavailable")
+		return nil, hubapi.NativePublicInvalid("application service is unavailable")
 	}
 	current, err := s.nativeWorkObservation(ctx, scope, request.Identifier)
 	if err != nil {
@@ -160,26 +161,26 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 		return s.verifyNativeIssueCommand(ctx, scope, request.Identifier, tracker.VerifyFix{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Result: request.Result, Comment: request.Comment})
 	case operatortool.EditComment:
 		if request.ExpectedRevision <= 0 {
-			return nil, nativePublicInvalid("expected revision is required")
+			return nil, hubapi.NativePublicInvalid("expected revision is required")
 		}
 		return s.updateNativeCommentCommand(ctx, scope, request.Identifier, request.CommentID, tracker.UpdateComment{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Body: *request.Body})
 	case operatortool.SetDependency:
 		if request.ExpectedRevision <= 0 {
-			return nil, nativePublicInvalid("expected revision is required")
+			return nil, hubapi.NativePublicInvalid("expected revision is required")
 		}
 		return s.changeNativeDependencyCommand(ctx, scope, request.Identifier, tracker.DependencyMutation{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), RelatedWorkItemID: tracker.NativeWorkItemID(request.Related), RelationshipType: request.RelationshipType, Operation: request.Operation})
 	case operatortool.RestoreItem:
 		return s.setNativeArchiveCommand(ctx, scope, request.Identifier, archiveIssueRequest{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision)}, false)
 	case operatortool.OrderItem, operatortool.SetQueuePriority:
-		return nil, &nativeError{Code: "invalid_request", Message: "Queue ordering and priority overrides require a GitHub-compatible project; native projects use issue priority", status: http.StatusUnprocessableEntity, publicMessage: true}
+		return nil, &hubapi.NativeError{Code: "invalid_request", Message: "Queue ordering and priority overrides require a GitHub-compatible project; native projects use issue priority", Status: http.StatusUnprocessableEntity, PublicMessage: true}
 	default:
-		return nil, nativePublicInvalid("application service is unavailable")
+		return nil, hubapi.NativePublicInvalid("application service is unavailable")
 	}
 }
 
 func (s *Service) operatorCompatibilityWork(ctx context.Context, scope nativeScope, name string, request operatortool.WorkArguments, command tracker.Mutation) (json.RawMessage, error) {
 	if s.config.TenantRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	record, _, err := s.readWorkItemRecord(ctx, scope, request.Identifier)
 	if err != nil {
@@ -191,6 +192,6 @@ func (s *Service) operatorCompatibilityWork(ctx context.Context, scope nativeSco
 	case operatortool.SetDependency:
 		return s.mutateCompatibilityDependency(ctx, scope, record, request, command)
 	default:
-		return nil, nativePublicInvalid("application service is unavailable")
+		return nil, hubapi.NativePublicInvalid("application service is unavailable")
 	}
 }

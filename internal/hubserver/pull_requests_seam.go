@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/pullrequests"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -33,7 +34,7 @@ func (c *pullRequestCache) inner() *pullrequests.Cache {
 func (c *pullRequestCache) invalidate(key string) { c.inner().Invalidate(key) }
 func (s *Service) pullRequestService(scope nativeScope) *pullrequests.Service {
 	return pullrequests.New(pullrequests.Deps{
-		Repository: s.config.TenantRepository, Now: s.config.now, Cache: s.pullRequests.inner(), TransportAvailable: s.config.ReconcileBackend != nil, Unavailable: ErrPostgresFeatureUnavailable,
+		Repository: s.config.TenantRepository, Now: s.config.now, Cache: s.pullRequests.inner(), TransportAvailable: s.config.ReconcileBackend != nil, Unavailable: hubapi.ErrPostgresFeatureUnavailable,
 		ValidCheckout: validCheckoutRepository,
 		VerifiedCheckout: func(ctx context.Context, repository string, now time.Time) (bool, error) {
 			return s.verifiedProjectCheckout(ctx, nil, scope, repository, now)
@@ -56,11 +57,11 @@ func (s *Service) pullRequestService(scope nativeScope) *pullrequests.Service {
 		},
 	})
 }
-func (s *Service) projectRepositoryBinding(ctx context.Context, _ nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, bool, error) {
+func (s *Service) projectRepositoryBinding(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope) (*pullRequestConnector, int64, bool, error) {
 	result, id, enabled, err := s.pullRequestService(scope).RepositoryBinding(ctx, s.featureScope(scope))
-	return result, id, enabled, fromFeatureError(err)
+	return result, id, enabled, hubapi.FromFeatureError(err)
 }
 func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScope, item, refresh string) ([]pullRequestView, error) {
 	result, err := s.pullRequestService(scope).Read(ctx, s.featureScope(scope), item, refresh)
-	return result, fromFeatureError(err)
+	return result, hubapi.FromFeatureError(err)
 }

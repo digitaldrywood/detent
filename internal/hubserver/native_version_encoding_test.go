@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -253,7 +254,7 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 							t.Fatalf("historical read materialized live versions=%d error=%v", versions, err)
 						}
 					}
-					if _, err := service.readVersion(t.Context(), scope, string(item), comment, count+1); !isNativeNotFound(err) {
+					if _, err := service.readVersion(t.Context(), scope, string(item), comment, count+1); !hubapi.IsNativeNotFound(err) {
 						t.Fatalf("missing revision error=%v", err)
 					}
 				})
@@ -597,7 +598,7 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 					}
 					if revision == revisions {
 						source.set("issues", map[string]string{"native_id": item}, map[string]any{"title": issue.Title, "body": issue.Body, "revision": revisions, "event_sequence": 1})
-						source.set("native_comments", map[string]string{"id": commentID}, map[string]any{"revision": revisions, "body": comment.Body, "updated_at": formatHubTime(comment.UpdatedAt)})
+						source.set("native_comments", map[string]string{"id": commentID}, map[string]any{"revision": revisions, "body": comment.Body, "updated_at": hubapi.FormatHubTime(comment.UpdatedAt)})
 					}
 				}
 			}

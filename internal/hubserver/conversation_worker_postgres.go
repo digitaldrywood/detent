@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -45,7 +46,7 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 			return err
 		}
 		if item.Archived {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, reader, scope, itemID, request.conversationWorkerIdentity, request.RunID, false, true); err != nil {
 			return err
@@ -444,7 +445,7 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 	s := r.server
 	request.BatchKey = strings.TrimSpace(request.BatchKey)
 	if len(request.Events) > conversationMaxTurnEvents || len(request.BatchKey) > conversation.MaxCommandKeyBytes {
-		return s.nativeAPIError(e, nativePublicInvalid("The turn event batch exceeds its limit"))
+		return s.nativeAPIError(e, hubapi.NativePublicInvalid("The turn event batch exceeds its limit"))
 	}
 	now := s.config.now()
 	for {
@@ -618,45 +619,45 @@ func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record 
 	switch event.Type {
 	case "execution_status":
 		if !conversation.ExecutionStatus(event.Status).Valid() {
-			return nativePublicInvalid("execution_status carries an unknown status")
+			return hubapi.NativePublicInvalid("execution_status carries an unknown status")
 		}
 	case "turn_started":
 		if strings.TrimSpace(event.TurnID) == "" {
-			return nativePublicInvalid("turn_started requires a turn_id")
+			return hubapi.NativePublicInvalid("turn_started requires a turn_id")
 		}
 		if execution.Owner.TurnID != "" && execution.Owner.TurnID != event.TurnID {
 			return conversationStale("Another turn is still in progress")
 		}
 	case "delta":
 		if strings.TrimSpace(event.ProviderItemID) == "" || len(event.Text) > conversationMaxDeltaBytes {
-			return nativePublicInvalid("delta requires a provider_item_id and bounded text")
+			return hubapi.NativePublicInvalid("delta requires a provider_item_id and bounded text")
 		}
 	case "item":
 		if event.Kind != string(conversation.MessageTool) && event.Kind != string(conversation.MessageStatus) {
-			return nativePublicInvalid("item kind must be tool or status")
+			return hubapi.NativePublicInvalid("item kind must be tool or status")
 		}
 		_, err := conversationItemData(event.Data)
 		return err
 	case "question_opened":
 		if strings.TrimSpace(event.RequestID) == "" {
-			return nativePublicInvalid("question_opened requires a request_id and prompts")
+			return hubapi.NativePublicInvalid("question_opened requires a request_id and prompts")
 		}
 		if err := conversation.ValidatePrompts(event.Prompts); err != nil {
-			return nativeInvalid(err.Error())
+			return hubapi.NativeInvalid(err.Error())
 		}
 		if event.TurnID != "" && execution.Owner.TurnID != "" && event.TurnID != execution.Owner.TurnID {
 			return conversationStale("The question belongs to another turn")
 		}
 	case "control_result":
 		if strings.TrimSpace(event.Key) == "" {
-			return nativePublicInvalid("control_result requires a key")
+			return hubapi.NativePublicInvalid("control_result requires a key")
 		}
 		message, found, err := reader.MessageByCommandKey(ctx, record.ID, event.Key)
 		if err != nil {
 			return err
 		}
 		if !found {
-			return nativeInvalid("Unknown control key " + fmt.Sprintf("%q", event.Key))
+			return hubapi.NativeInvalid("Unknown control key " + fmt.Sprintf("%q", event.Key))
 		}
 		if message.AttemptID != execution.Owner.AttemptID {
 			return conversationStale("The control was handed to another attempt")
@@ -664,11 +665,11 @@ func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record 
 		switch event.Status {
 		case "delivered", "rejected", "unknown":
 		default:
-			return nativePublicInvalid("control_result status must be delivered, rejected or unknown")
+			return hubapi.NativePublicInvalid("control_result status must be delivered, rejected or unknown")
 		}
 	case "turn_completed":
 		if strings.TrimSpace(event.TurnID) == "" {
-			return nativePublicInvalid("turn_completed requires a turn_id")
+			return hubapi.NativePublicInvalid("turn_completed requires a turn_id")
 		}
 		if execution.Owner.TurnID != "" && execution.Owner.TurnID != event.TurnID {
 			return conversationStale("The completed turn is not the current turn")
@@ -676,10 +677,10 @@ func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record 
 		switch event.Status {
 		case "completed", "interrupted", "failed":
 		default:
-			return nativePublicInvalid("turn_completed status must be completed, interrupted or failed")
+			return hubapi.NativePublicInvalid("turn_completed status must be completed, interrupted or failed")
 		}
 	default:
-		return nativeInvalid("Unknown turn event type " + fmt.Sprintf("%q", event.Type))
+		return hubapi.NativeInvalid("Unknown turn event type " + fmt.Sprintf("%q", event.Type))
 	}
 	return nil
 }
@@ -807,7 +808,7 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope nati
 			return err
 		}
 		if !found {
-			return nativeInvalid("Unknown control key")
+			return hubapi.NativeInvalid("Unknown control key")
 		}
 		var delivery conversation.Delivery
 		var failure *conversation.ReceiptError
@@ -916,7 +917,7 @@ func (r *conversationWorkerRouter) controlsPostgres(e echo.Context, id string, i
 	}
 	for {
 		page, err := r.pollControlsPostgres(ctx, scope, id, identity, after)
-		if err != nil && (wait == 0 || !isNativeConflict(err)) {
+		if err != nil && (wait == 0 || !hubapi.IsNativeConflict(err)) {
 			return s.nativeAPIError(e, conversationStaleExecutionError("controls", id, translateConversationError(err)))
 		}
 		if len(page.Controls) > 0 || wait == 0 {
@@ -1009,7 +1010,7 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 			return err
 		}
 		if stored.Revision != snapshot.Revision {
-			return nativeConflict(tracker.Revision(stored.Revision))
+			return hubapi.NativeConflict(tracker.Revision(stored.Revision))
 		}
 		acknowledged, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: id, AttemptID: identity.AttemptID, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliverySending}, BeforeSequence: after + 1, Limit: limit})
 		if err != nil {

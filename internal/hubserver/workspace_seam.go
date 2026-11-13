@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
@@ -108,18 +109,18 @@ func workspaceRecords(rows []workspacehub.Record) []workspaceRecord {
 }
 func (w *workspaceService) dueWorkspaces(ctx context.Context, now time.Time) ([]workspaceRecord, error) {
 	rows, err := w.lifecycleService().Due(ctx, now)
-	return workspaceRecords(rows), fromFeatureError(err)
+	return workspaceRecords(rows), hubapi.FromFeatureError(err)
 }
 func (w *workspaceService) applyDeadline(ctx context.Context, record workspaceRecord, now time.Time) (workspaceRecord, bool, error) {
 	row, changed, err := w.lifecycleService().ApplyDeadline(ctx, workspacehub.Record(record), now)
-	return workspaceRecord(row), changed, fromFeatureError(err)
+	return workspaceRecord(row), changed, hubapi.FromFeatureError(err)
 }
 func (w *workspaceService) recoverOpenWorkspaces(ctx context.Context) error {
-	return fromFeatureError(w.lifecycleService().RecoverOpen(ctx))
+	return hubapi.FromFeatureError(w.lifecycleService().RecoverOpen(ctx))
 }
 func updateWorkspaceState(ctx context.Context, owner postgres.WorkspaceWriter, row, expected postgres.WorkspaceSession, target, reason string, now time.Time) (postgres.WorkspaceSession, error) {
 	updated, err := workspacehub.UpdateState(ctx, workspaceLifecycleStateWriter{owner}, workspacehub.Row(row), workspacehub.Row(expected), target, reason, now)
-	return postgres.WorkspaceSession(updated), fromFeatureError(err)
+	return postgres.WorkspaceSession(updated), hubapi.FromFeatureError(err)
 }
 
 func workspaceClaimable(record workspaceRecord, capabilities workspacesession.Capabilities, fresh bool, runnerID, retainedRunner, runnerIsolation, configuredIsolation string) (bool, string) {
@@ -168,7 +169,7 @@ func (w *workspaceService) workspaceRunReason(ctx context.Context, workspaceID s
 	err := w.server.accessRead(readCtx, state.Organization, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(postgres.WorkspaceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		record, err = owner.WorkspaceSession(readCtx, state.Project, workspaceID)

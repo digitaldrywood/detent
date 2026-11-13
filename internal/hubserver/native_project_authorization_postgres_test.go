@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -49,13 +50,13 @@ func TestPostgresNativeProjectAuthorizationRejectsDeletedProjectsAndRemovedRunne
 			}); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: organization, project: project, credential: apiCredential{ID: runner, Hash: apikey.HashToken(runner), Scope: apiScopeWorker, NativeOnly: true, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runner, MachineID: tracker.MachineID(runner)}, OrganizationID: organization}}}
+			scope := nativeScope{organization: organization, project: project, credential: hubapi.APICredential{ID: runner, Hash: apikey.HashToken(runner), Scope: hubapi.APIScopeWorker, NativeOnly: true, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runner, MachineID: tracker.MachineID(runner)}, OrganizationID: organization}}}
 			if err := db.authorizeNativeProject(t.Context(), scope); err != nil {
 				t.Fatalf("organization runner without token grant: %v", err)
 			}
 			mismatched := scope
 			mismatched.credential.Runner.OrganizationID = "org_other"
-			if err := db.authorizeNativeProject(t.Context(), mismatched); !isNativeNotFound(err) {
+			if err := db.authorizeNativeProject(t.Context(), mismatched); !hubapi.IsNativeNotFound(err) {
 				t.Fatalf("mismatched runner organization: %v", err)
 			}
 			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -63,10 +64,10 @@ func TestPostgresNativeProjectAuthorizationRejectsDeletedProjectsAndRemovedRunne
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.authorizeNativeProject(t.Context(), scope); !isNativeNotFound(err) {
+			if err := db.authorizeNativeProject(t.Context(), scope); !hubapi.IsNativeNotFound(err) {
 				t.Fatalf("removed runner: %v", err)
 			}
-			scope.credential = apiCredential{ID: admin, Hash: apikey.HashToken(admin), Scope: apiScopeAdmin}
+			scope.credential = hubapi.APICredential{ID: admin, Hash: apikey.HashToken(admin), Scope: hubapi.APIScopeAdmin}
 			if err := db.authorizeNativeProject(t.Context(), scope); err != nil {
 				t.Fatalf("live project administrator: %v", err)
 			}
@@ -79,7 +80,7 @@ func TestPostgresNativeProjectAuthorizationRejectsDeletedProjectsAndRemovedRunne
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.authorizeNativeProject(t.Context(), scope); !isNativeNotFound(err) {
+			if err := db.authorizeNativeProject(t.Context(), scope); !hubapi.IsNativeNotFound(err) {
 				t.Fatalf("deleted project administrator: %v", err)
 			}
 		})

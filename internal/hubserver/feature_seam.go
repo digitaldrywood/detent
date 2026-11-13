@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"errors"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -24,12 +23,4 @@ func (s *Service) featureScope(scope nativeScope) hubapi.Scope {
 		rebound.project = project
 		return s.authorizeAccessScope(ctx, reader, rebound, write)
 	})
-}
-
-func fromFeatureError(err error) error {
-	var failure *hubapi.Error
-	if !errors.As(err, &failure) || failure == nil {
-		return err
-	}
-	return &nativeError{Code: failure.Code, Message: failure.Message, CurrentRevision: failure.CurrentRevision, Details: failure.Details, status: failure.Status, publicMessage: failure.Public, logAttributes: failure.LogAttributes()}
 }

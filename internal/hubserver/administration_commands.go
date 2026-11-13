@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -17,7 +18,7 @@ import (
 
 // These commands are shared with dashboard adapters. They own persistence and
 // provider effects; MCP only supplies typed input and trusted mutation context.
-func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential) (hostedMembersResponse, error) {
+func (s *Service) hostedMembersFor(ctx context.Context, credential hubapi.APICredential) (hostedMembersResponse, error) {
 	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
 	memberships, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
 	if err != nil {
@@ -48,7 +49,7 @@ func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential
 			continue
 		}
 		if err == nil {
-			member.Role.Slug = lesserHostedRole(member.Role.Slug, role)
+			member.Role.Slug = hubapi.LesserHostedRole(member.Role.Slug, role)
 		}
 		response.MemberCount++
 		if !manage && member.UserID != credential.Hosted.Subject {
@@ -70,7 +71,7 @@ func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential
 	return response, err
 }
 
-func (s *Service) inviteHostedMemberFor(ctx context.Context, credential apiCredential, email, role, key string, grants []hostedMemberGrant) (hostedInvitationView, error) {
+func (s *Service) inviteHostedMemberFor(ctx context.Context, credential hubapi.APICredential, email, role, key string, grants []hostedMemberGrant) (hostedInvitationView, error) {
 	if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" || !auth.ValidOrganizationRole(role) || role == "owner" && credential.HostedRole != "owner" {
 		return hostedInvitationView{}, operatortool.ErrAccessDenied
 	}
@@ -112,7 +113,7 @@ func (s *Service) inviteHostedMemberFor(ctx context.Context, credential apiCrede
 	return view, nil
 }
 
-func (s *Service) removeHostedMemberFor(ctx context.Context, credential apiCredential, id string) error {
+func (s *Service) removeHostedMemberFor(ctx context.Context, credential hubapi.APICredential, id string) error {
 	member, err := s.hostedManagedMemberFor(ctx, credential, id, true)
 	if err != nil {
 		return err
@@ -140,7 +141,7 @@ func (s *Service) removeHostedMemberFor(ctx context.Context, credential apiCrede
 	return s.config.Hosted.Provider.RevokeMembership(ctx, member.ID)
 }
 
-func (s *Service) changeHostedRoleFor(ctx context.Context, credential apiCredential, id, role string) (hostedMemberView, error) {
+func (s *Service) changeHostedRoleFor(ctx context.Context, credential hubapi.APICredential, id, role string) (hostedMemberView, error) {
 	if !auth.ValidOrganizationRole(role) || role == "owner" && credential.HostedRole != "owner" {
 		return hostedMemberView{}, operatortool.ErrAccessDenied
 	}
@@ -151,16 +152,16 @@ func (s *Service) changeHostedRoleFor(ctx context.Context, credential apiCredent
 	return s.changeAccessRole(ctx, credential, member, role)
 }
 
-func (s *Service) changeHostedGrantFor(ctx context.Context, credential apiCredential, id, project string, write, runner, revoke bool) (hostedMemberView, error) {
+func (s *Service) changeHostedGrantFor(ctx context.Context, credential hubapi.APICredential, id, project string, write, runner, revoke bool) (hostedMemberView, error) {
 	member, err := s.hostedMemberByID(ctx, credential, id)
 	if err != nil {
 		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 			return hostedMemberView{}, classified
 		}
-		return hostedMemberView{}, nativeNotFound()
+		return hostedMemberView{}, hubapi.NativeNotFound()
 	}
 	if !hostedSafeID(member.UserID) || !hostedSafeID(project) {
-		return hostedMemberView{}, nativePublicInvalid("Select a member and project")
+		return hostedMemberView{}, hubapi.NativePublicInvalid("Select a member and project")
 	}
 	if err := s.hostedGrant(ctx, credential, member.UserID, project, write, runner, revoke); err != nil {
 		return hostedMemberView{}, err
@@ -168,11 +169,11 @@ func (s *Service) changeHostedGrantFor(ctx context.Context, credential apiCreden
 	return s.hostedMemberResponse(ctx, member)
 }
 
-func (s *Service) revokeHostedInvitationFor(ctx context.Context, credential apiCredential, id string) error {
+func (s *Service) revokeHostedInvitationFor(ctx context.Context, credential hubapi.APICredential, id string) error {
 	return s.revokeAccessInvitation(ctx, credential, id)
 }
 
-func (s *Service) resendHostedInvitationFor(ctx context.Context, credential apiCredential, id string) error {
+func (s *Service) resendHostedInvitationFor(ctx context.Context, credential hubapi.APICredential, id string) error {
 	view, err := s.pendingHostedInvitationFor(ctx, credential, id)
 	if err != nil {
 		return err
@@ -186,11 +187,11 @@ func (s *Service) resendHostedInvitationFor(ctx context.Context, credential apiC
 	return nil
 }
 
-func (s *Service) pendingHostedInvitationFor(ctx context.Context, credential apiCredential, id string) (hostedInvitationView, error) {
+func (s *Service) pendingHostedInvitationFor(ctx context.Context, credential hubapi.APICredential, id string) (hostedInvitationView, error) {
 	return s.pendingAccessInvitationFor(ctx, credential, id)
 }
 
-func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credential apiCredential, email, role string, grants []hostedMemberGrant) (view hostedInvitationView, resultErr error) {
+func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credential hubapi.APICredential, email, role string, grants []hostedMemberGrant) (view hostedInvitationView, resultErr error) {
 	grants = append([]hostedMemberGrant{}, grants...)
 	if err := s.validateHostedInvitationGrants(ctx, credential, email, grants); err != nil {
 		return hostedInvitationView{}, err
@@ -198,10 +199,10 @@ func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credentia
 	return s.createAccessInvitation(ctx, credential, email, role, grants)
 }
 
-func (s *Service) validateHostedGrants(ctx context.Context, credential apiCredential, grants []hostedMemberGrant) error {
+func (s *Service) validateHostedGrants(ctx context.Context, credential hubapi.APICredential, grants []hostedMemberGrant) error {
 	return s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
-			return &nativeError{Code: "forbidden", Message: "You cannot manage project grants", status: 403, publicMessage: true}
+			return &hubapi.NativeError{Code: "forbidden", Message: "You cannot manage project grants", Status: 403, PublicMessage: true}
 		}
 		if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}, true); err != nil {
 			return err
@@ -216,7 +217,7 @@ func (s *Service) validateHostedGrants(ctx context.Context, credential apiCreden
 		seen := map[string]bool{}
 		for _, grant := range grants {
 			if !hostedSafeID(grant.ProjectID) || seen[grant.ProjectID] {
-				return nativePublicInvalid("Select each project only once")
+				return hubapi.NativePublicInvalid("Select each project only once")
 			}
 			seen[grant.ProjectID] = true
 			if err := s.validateAccessInvitationGrant(ctx, r, credential, tracker.ProjectID(grant.ProjectID), grant.Write, grant.Runner); err != nil {
@@ -227,17 +228,17 @@ func (s *Service) validateHostedGrants(ctx context.Context, credential apiCreden
 	})
 }
 
-func (s *Service) validateHostedInvitationGrants(ctx context.Context, credential apiCredential, email string, grants []hostedMemberGrant) error {
+func (s *Service) validateHostedInvitationGrants(ctx context.Context, credential hubapi.APICredential, email string, grants []hostedMemberGrant) error {
 	return s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		return s.validateAccessInvitationGrants(ctx, r, credential, email, grants)
 	})
 }
 
-func (s *Service) editHostedInvitationFor(ctx context.Context, credential apiCredential, id string, grants []hostedMemberGrant) (resultErr error) {
+func (s *Service) editHostedInvitationFor(ctx context.Context, credential hubapi.APICredential, id string, grants []hostedMemberGrant) (resultErr error) {
 	return s.editAccessInvitation(ctx, credential, id, grants)
 }
 
-func (s *Service) validateHostedInvitationEdit(ctx context.Context, credential apiCredential, view hostedInvitationView, grants []hostedMemberGrant) error {
+func (s *Service) validateHostedInvitationEdit(ctx context.Context, credential hubapi.APICredential, view hostedInvitationView, grants []hostedMemberGrant) error {
 	previous := make([]hostedMemberGrant, 0, len(view.Grants))
 	for _, grant := range view.Grants {
 		previous = append(previous, hostedMemberGrant{ProjectID: grant.ProjectID})

@@ -15,14 +15,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func authCredential(c apiCredential) hubauth.Credential {
-	return hubauth.Credential{EntryKey: c.EntryKey, Hosted: c.Hosted, HostedRole: c.HostedRole, HostedMembership: c.HostedMembership, HostedPrincipal: c.HostedPrincipal, HostedKeyScope: c.HostedKeyScope, HostedKeyKind: c.HostedKeyKind, HostedProjectAccess: string(c.HostedProjectAccess), ManageRunners: c.ManageRunners, SessionHash: c.SessionHash, Hash: c.Hash, ID: c.ID, Name: c.Name, Scope: hubauth.TokenScope(c.Scope), NativeOnly: c.NativeOnly, Runner: c.Runner, Agent: c.Agent, RunnerRenewal: c.runnerRenewal, RequestCapacity: c.requestCapacity}
+func authCredential(c hubapi.APICredential) hubauth.Credential {
+	return hubauth.Credential{EntryKey: c.EntryKey, Hosted: c.Hosted, HostedRole: c.HostedRole, HostedMembership: c.HostedMembership, HostedPrincipal: c.HostedPrincipal, HostedKeyScope: c.HostedKeyScope, HostedKeyKind: c.HostedKeyKind, HostedProjectAccess: string(c.HostedProjectAccess), ManageRunners: c.ManageRunners, SessionHash: c.SessionHash, Hash: c.Hash, ID: c.ID, Name: c.Name, Scope: hubauth.TokenScope(c.Scope), NativeOnly: c.NativeOnly, Runner: c.Runner, Agent: c.Agent, RunnerRenewal: c.RunnerRenewal, RequestCapacity: c.RequestCapacity}
 }
-func nativeCredential(c hubauth.Credential) apiCredential {
-	return apiCredential{EntryKey: c.EntryKey, Hosted: c.Hosted, HostedRole: c.HostedRole, HostedMembership: c.HostedMembership, HostedPrincipal: c.HostedPrincipal, HostedKeyScope: c.HostedKeyScope, HostedKeyKind: c.HostedKeyKind, HostedProjectAccess: hostedProjectAccess(c.HostedProjectAccess), ManageRunners: c.ManageRunners, SessionHash: c.SessionHash, Hash: c.Hash, ID: c.ID, Name: c.Name, Scope: apiScope(c.Scope), NativeOnly: c.NativeOnly, Runner: c.Runner, Agent: c.Agent, runnerRenewal: c.RunnerRenewal, requestCapacity: c.RequestCapacity}
+func nativeCredential(c hubauth.Credential) hubapi.APICredential {
+	return hubapi.APICredential{EntryKey: c.EntryKey, Hosted: c.Hosted, HostedRole: c.HostedRole, HostedMembership: c.HostedMembership, HostedPrincipal: c.HostedPrincipal, HostedKeyScope: c.HostedKeyScope, HostedKeyKind: c.HostedKeyKind, HostedProjectAccess: hubapi.HostedProjectAccess(c.HostedProjectAccess), ManageRunners: c.ManageRunners, SessionHash: c.SessionHash, Hash: c.Hash, ID: c.ID, Name: c.Name, Scope: hubapi.APIScope(c.Scope), NativeOnly: c.NativeOnly, Runner: c.Runner, Agent: c.Agent, RunnerRenewal: c.RunnerRenewal, RequestCapacity: c.RequestCapacity}
 }
-func nativeCredentialResult(c hubauth.Credential, status int, err error) (apiCredential, int, error) {
-	return nativeCredential(c), status, fromFeatureError(err)
+func nativeCredentialResult(c hubauth.Credential, status int, err error) (hubapi.APICredential, int, error) {
+	return nativeCredential(c), status, hubapi.FromFeatureError(err)
 }
 func (s *Service) requestAuth() *hubauth.Authenticator {
 	deps := hubauth.Deps{
@@ -78,7 +78,7 @@ func (s *Service) authInput(scope nativeScope) hubauth.Input {
 					}
 					reader, ok := r.(tenantstore.Reader)
 					if !ok {
-						return ErrPostgresFeatureUnavailable
+						return hubapi.ErrPostgresFeatureUnavailable
 					}
 					if err := s.gitHubBatchRequestAuthority(ctx, reader, *fence.authority, fence.requireAdminKey); err != nil {
 						return err
@@ -116,7 +116,7 @@ func nativeAuthInput(input hubauth.Input) nativeScope {
 func (s *Service) operatorAuthOptions() hubauth.OperatorOptions {
 	options := hubauth.OperatorOptions{
 		Classify: operatorAuthorizationError,
-		Error:    func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+		Error:    func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 		Refuse: func(c echo.Context, status int, code, message string, body any) error {
 			return s.refusedAPIError(c, status, code, message, body)
 		},
@@ -133,7 +133,7 @@ func (s *Service) operatorAuthOptions() hubauth.OperatorOptions {
 			return s.operatorCurrentAuthority(ctx, nativeCredential(c), org)
 		},
 		Bind: func(ctx context.Context, organization, origin string, c hubauth.Credential, resolve hubauth.Resolver) context.Context {
-			nativeResolve := func(ctx context.Context) (apiCredential, error) {
+			nativeResolve := func(ctx context.Context) (hubapi.APICredential, error) {
 				c, err := resolve(ctx)
 				return nativeCredential(c), err
 			}
@@ -166,9 +166,9 @@ func (s *Service) operatorCheckOptions() hubauth.AuthorityOptions {
 			credential := scope.credential
 			return operatortool.Authority{Explainer: operatorWorkReads{service: s, scope: scope}, WorkReads: operatorWorkReads{service: s, scope: scope}, Changes: hubChangeApplication{service: s, scope: scope}, BindContext: func(ctx context.Context) context.Context {
 				ctx = context.WithValue(ctx, operatorScopeKey{}, scope)
-				ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (apiCredential, error) { return credential, nil })
+				ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (hubapi.APICredential, error) { return credential, nil })
 				ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
-				return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (apiCredential, error) { return credential, nil }))
+				return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (hubapi.APICredential, error) { return credential, nil }))
 			}}
 		},
 		KeyCredential: func(ctx context.Context, c hubauth.Credential) (hubauth.Credential, error) {
@@ -191,7 +191,7 @@ func (s *Service) resolveHubauthNativeScope(ctx context.Context, c echo.Context)
 	a := s.requestAuth()
 	err := a.ResolveNative(ctx, c, hubauth.NativeOptions{
 		Credential: func(c echo.Context) (hubauth.Credential, bool) {
-			v, ok := c.Get("hub_api_credential").(apiCredential)
+			v, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 			return authCredential(v), ok
 		},
 		EventScope: func(c echo.Context, input hubauth.Input) bool {
@@ -215,15 +215,15 @@ func (s *Service) resolveHubauthNativeScope(ctx context.Context, c echo.Context)
 			_, _, err := s.readWorkItemRecord(ctx, nativeAuthInput(input), item)
 			return err
 		},
-		RecordError: projectRecordError,
+		RecordError: hubapi.ProjectRecordError,
 		Store: func(c echo.Context, input hubauth.Input) {
 			c.Set("native_scope", nativeAuthInput(input))
 			c.Set("hub_request_scope", a.Scope(input))
 		},
 	})
-	return fromFeatureError(err)
+	return hubapi.FromFeatureError(err)
 }
-func (s *Service) requireHubauthAPI(allowed ...apiScope) echo.MiddlewareFunc {
+func (s *Service) requireHubauthAPI(allowed ...hubapi.APIScope) echo.MiddlewareFunc {
 	roles := make([]hubauth.TokenScope, len(allowed))
 	for i, role := range allowed {
 		roles[i] = hubauth.TokenScope(role)
@@ -238,11 +238,11 @@ func (s *Service) requireHubauthAPI(allowed ...apiScope) echo.MiddlewareFunc {
 func (s *Service) hubauthAPIOptions() hubauth.APIOptions {
 	return hubauth.APIOptions{
 		Classify: operatorAuthorizationError,
-		Error:    func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+		Error:    func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 		Refuse: func(c echo.Context, status int, code, message string, body any) error {
 			return s.refusedAPIError(c, status, code, message, body)
 		},
-		IsNotFound:           func(err error) bool { return isNativeNotFound(fromFeatureError(err)) },
+		IsNotFound:           func(err error) bool { return hubapi.IsNativeNotFound(hubapi.FromFeatureError(err)) },
 		HostedAdministration: s.requireHostedAdministration,
 		ArtifactPublisher: func(c echo.Context, v hubauth.Credential) bool {
 			return s.hostedArtifactPublisher(c, nativeCredential(v))
@@ -255,7 +255,7 @@ func (s *Service) hubauthAPIOptions() hubauth.APIOptions {
 	}
 }
 
-func (s *Service) requireHubauthNative(allowed ...apiScope) echo.MiddlewareFunc {
+func (s *Service) requireHubauthNative(allowed ...hubapi.APIScope) echo.MiddlewareFunc {
 	roles := make([]hubauth.TokenScope, len(allowed))
 	for i, role := range allowed {
 		roles[i] = hubauth.TokenScope(role)

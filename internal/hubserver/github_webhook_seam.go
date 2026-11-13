@@ -4,10 +4,12 @@ import (
 	"context"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/githubwebhook"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *Service) gitHubWebhookIntegration(scope nativeScope) githubwebhook.Integration {
@@ -41,11 +43,11 @@ func (s *Service) githubWebhookService() *githubwebhook.Service {
 		Logger:           s.config.Logger,
 		Secret:           s.config.GitHubWebhookSecret,
 		Retention:        s.config.WebhookPayloadRetention,
-		Unavailable:      ErrPostgresFeatureUnavailable,
+		Unavailable:      hubapi.ErrPostgresFeatureUnavailable,
 		DeliveryConflict: ErrWebhookDeliveryConflict,
 		Context:          s.runDetailContext,
 		Error:            s.nativeAPIError,
-		ValidCommit:      validCommitID,
+		ValidCommit:      hubapi.ValidCommitID,
 		Integration: func(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID) (githubwebhook.Integration, error) {
 			scope, err := s.gitHubIntegrationScope(ctx, organization, project)
 			return s.gitHubWebhookIntegration(scope), err

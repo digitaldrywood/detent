@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"reflect"
 	"strings"
 	"sync"
@@ -15,9 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -167,7 +169,7 @@ func TestDiagnosticsProjectionReadBound(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			credential := apiCredential{Hosted: f.owner.identity.Hosted}
+			credential := hubapi.APICredential{Hosted: f.owner.identity.Hosted}
 			report, err := f.hosted.service.readDiagnosticsTenant(t.Context(), credential, w, f.hosted.project)
 			if err != nil {
 				t.Fatal(err)

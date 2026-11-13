@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -22,15 +23,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential apiCredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
+func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential hubapi.APICredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
 	return s.readDiagnosticsTenant(ctx, credential, w, "")
 }
 
-func (s *Service) readDiagnosticsTenant(ctx context.Context, credential apiCredential, w operatortool.AnalyticsWindow, requested tracker.ProjectID) (diagnosticsReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) readDiagnosticsTenant(ctx context.Context, credential hubapi.APICredential, w operatortool.AnalyticsWindow, requested tracker.ProjectID) (diagnosticsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil {
-		return diagnosticsReport{}, workItemStorageUnavailable()
+		return diagnosticsReport{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	ctx = s.runDetailContext(ctx)
 	var ids []tracker.ProjectID
@@ -40,7 +41,7 @@ func (s *Service) readDiagnosticsTenant(ctx context.Context, credential apiCrede
 	if credential.HostedRole == "reporter" {
 		principal = (nativeScope{credential: credential}).actor().PrincipalID
 		if principal == "" {
-			return diagnosticsReport{}, nativeNotFound()
+			return diagnosticsReport{}, hubapi.NativeNotFound()
 		}
 	}
 
@@ -54,7 +55,7 @@ func (s *Service) readDiagnosticsTenant(ctx context.Context, credential apiCrede
 		}
 		projectReader, ok := r.(accessstore.ProjectAccessPageReader)
 		if !ok {
-			return ErrProjectParticipants
+			return hubapi.ErrProjectParticipants
 		}
 		projects, err := projectReader.ProjectAccessPage(ctx, projectAccessFilter(credential, requested, "", 100))
 		if err != nil {

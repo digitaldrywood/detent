@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -33,7 +34,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 		return nil, operatortool.ErrInvalidArguments
 	}
 	operation := nativeOperation(scope, http.MethodPost, "/work-items/"+request.Identifier+"/"+name)
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +52,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 			return nil, err
 		}
 		if name == operatortool.OrderItem {
-			raw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: source.NativeID, ID: newNativeID("evt"), Type: "queue.order_changed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: s.config.now().UTC(), Data: tracker.CollaborationData{Revision: tracker.Revision(source.Revision), Operation: "order", Fields: []string{"queue_order"}}})
+			raw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: source.NativeID, ID: hubapi.NewID("evt"), Type: "queue.order_changed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: s.config.now().UTC(), Data: tracker.CollaborationData{Revision: tracker.Revision(source.Revision), Operation: "order", Fields: []string{"queue_order"}}})
 			if err != nil {
 				return nil, err
 			}
@@ -86,7 +87,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 				if err != nil {
 					return nil, err
 				}
-				key, err := nativeCommandHash(struct{ Operation, ActorID, CommandKey string }{operation, scope.credential.ID, command.IdempotencyKey})
+				key, err := hubapi.CommandHash(struct{ Operation, ActorID, CommandKey string }{operation, scope.credential.ID, command.IdempotencyKey})
 				if err != nil {
 					return nil, err
 				}
@@ -122,7 +123,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 			return err
 		}
 		if project.Core.Profile != "github_compatible" {
-			return nativePublicInvalid("Queue ordering and priority overrides require a GitHub-compatible project; native projects use issue priority")
+			return hubapi.NativePublicInvalid("Queue ordering and priority overrides require a GitHub-compatible project; native projects use issue priority")
 		}
 		row, err := w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(request.Identifier))
 		if err != nil {
@@ -131,7 +132,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 		previous, err := w.Receipt(ctx, scope.credential.ID, operation, command.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= previous.ResponseReplayUntilNs {
 				return receiptstore.ErrExpired
@@ -143,7 +144,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 			return err
 		}
 		if row.Revision != source.Revision || name == operatortool.SetQueuePriority && project.Settings.Revision != sourceProject.Settings.Revision {
-			return nativeConflict(tracker.Revision(row.Revision))
+			return hubapi.NativeConflict(tracker.Revision(row.Revision))
 		}
 		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
 			return err
@@ -155,7 +156,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 			}
 		}
 		if !validState {
-			return nativePublicInvalid("Queue state is not configured")
+			return hubapi.NativePublicInvalid("Queue state is not configured")
 		}
 		entry, err := w.QueueEntry(ctx, scope.project, row.NativeID, request.Scope)
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -187,7 +188,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 		if outbound != nil {
 			owner, ok := w.(projectstore.GitHubOutboxWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			if err := owner.EnqueueGitHubOutbound(ctx, *outbound); err != nil {
 				return err
@@ -200,7 +201,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if replay != nil {
 		return content.Receipt(ctx, *replay)

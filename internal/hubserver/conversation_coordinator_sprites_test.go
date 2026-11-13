@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -23,7 +24,7 @@ func TestCoordinatorSpritePoolReplay(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
-			scope := nativeScope{organization: f.project.OrganizationID, credential: apiCredential{Scope: apiScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
+			scope := nativeScope{organization: f.project.OrganizationID, credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
 			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 				credential, err := r.CredentialByHash(t.Context(), scope.credential.Hash)
 				scope.credential.ID = credential.ID
@@ -168,7 +169,7 @@ func TestCoordinatorSpriteArguments(t *testing.T) {
 		{"empty payload", "get_sprite_pool", ``, false},
 		{"array", "get_sprite_pool", `[]`, false},
 		{"trailing payload", "get_sprite_pool", `{} {}`, false},
-		{"oversized payload", "get_sprite_pool", `{"x":"` + strings.Repeat("x", coordinatorToolArgumentBytes) + `"}`, false},
+		{"oversized payload", "get_sprite_pool", `{"x":"` + strings.Repeat("x", hubapi.CoordinatorToolArgumentBytes) + `"}`, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := decodeCoordinatorSpriteArguments(test.tool, json.RawMessage(test.arguments))

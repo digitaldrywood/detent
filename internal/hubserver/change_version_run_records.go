@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -28,13 +29,13 @@ type preparedChangeVersionRun struct {
 
 func (s *Service) prepareChangeVersionRun(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion) (*preparedChangeVersionRun, error) {
 	if request.AttemptID == "" {
-		if scope.credential.Scope == apiScopeWorker {
-			return nil, nativePublicInvalid("Worker versions must identify their fenced run and attempt")
+		if scope.credential.Scope == hubapi.APIScopeWorker {
+			return nil, hubapi.NativePublicInvalid("Worker versions must identify their fenced run and attempt")
 		}
 		return nil, errNoChangeVersionRun
 	}
 	if s.config.TenantRepository == nil || s.config.NativeRunEvents == nil {
-		return nil, nativeRunEventStorageUnavailable()
+		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	prepared := &preparedChangeVersionRun{sessionID: -1}
 	var event eventstore.Event
@@ -48,7 +49,7 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope nativeScope
 		if err != nil {
 			return err
 		}
-		publishing := prepared.attempt.Status == "running" && scope.credential.Scope == apiScopeWorker && scope.credential.Runner.RunnerID != ""
+		publishing := prepared.attempt.Status == "running" && scope.credential.Scope == hubapi.APIScopeWorker && scope.credential.Runner.RunnerID != ""
 		if prepared.attempt.ID != request.AttemptID || prepared.attempt.IssueID != prepared.workItem.ID || prepared.attempt.RunID != request.RunID {
 			return corestore.ErrNotFound
 		}
@@ -62,7 +63,7 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope nativeScope
 		if prepared.lease.IssueID != prepared.workItem.ID || prepared.lease.FencingToken != prepared.attempt.FencingToken || prepared.lease.MachineID == "" || prepared.lease.SessionID == "" {
 			return nativeExecutionConflict("Version source attempt does not match its fenced lease")
 		}
-		if scope.credential.Scope == apiScopeWorker && (string(request.LeaseID) != prepared.lease.LeaseID || int64(request.FencingToken) != prepared.lease.FencingToken) {
+		if scope.credential.Scope == hubapi.APIScopeWorker && (string(request.LeaseID) != prepared.lease.LeaseID || int64(request.FencingToken) != prepared.lease.FencingToken) {
 			return nativeExecutionConflict("Version publication must use the source attempt's fenced lease")
 		}
 		event, err = r.LatestRunEvent(ctx, scope.project, request.AttemptID)
@@ -85,7 +86,7 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope nativeScope
 		return nil
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	payload, err := eventstore.NewContent(s.runDetailStore()).Event(ctx, event)
 	if err != nil {
@@ -114,7 +115,7 @@ func (s *Service) recheckChangeVersionRun(ctx context.Context, w tenantstore.Wri
 		return nil
 	}
 	if s.config.NativeRunEvents == nil {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	workItem, err := w.WorkItem(ctx, prepared.authority.ProjectID, prepared.authority.WorkItem.NativeID)
 	if err != nil {
@@ -129,7 +130,7 @@ func (s *Service) recheckChangeVersionRun(ctx context.Context, w tenantstore.Wri
 	}
 	locker, ok := w.(leasestore.FencedLeaseLocker)
 	if !ok {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	identity, err := w.RunnerForLease(ctx, prepared.lease.LeaseID)
 	if err != nil {
@@ -160,8 +161,8 @@ func (s *Service) recheckChangeVersionRun(ctx context.Context, w tenantstore.Wri
 	}
 	authority := prepared.authority
 	authority.WorkItem, authority.Lease = workItem, lease
-	if authority.Scope.credential.Scope != apiScopeWorker {
-		authority.Scope.credential = apiCredential{ID: identity.TokenID, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID}}}
+	if authority.Scope.credential.Scope != hubapi.APIScopeWorker {
+		authority.Scope.credential = hubapi.APICredential{ID: identity.TokenID, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID}}}
 	}
 	return (tenantNativeRunEventParticipant{service: s}).validateNativeRunEventOwner(ctx, w, &authority)
 }

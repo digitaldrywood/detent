@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -81,7 +82,7 @@ func TestHostedArtifactGrantRevocation(t *testing.T) {
 			}
 		}},
 		{name: "local session revoked", change: func(t *testing.T, f postgresArtifactFixture, user hostedSecurityUser) {
-			if _, err := f.admin.ExecContext(t.Context(), "UPDATE hosted_sessions SET revoked_at=$1 WHERE token_hash=$2", formatHubTime(time.Now()), apikey.HashToken(user.token)); err != nil {
+			if _, err := f.admin.ExecContext(t.Context(), "UPDATE hosted_sessions SET revoked_at=$1 WHERE token_hash=$2", hubapi.FormatHubTime(time.Now()), apikey.HashToken(user.token)); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -158,7 +159,7 @@ func TestHostedArtifactGrantRevocation(t *testing.T) {
 					organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
 					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 						now := time.Now().UTC()
-						credential := accessstore.Credential{OrganizationID: organization, ID: "artifact_reader_" + kind, Name: "Artifact reader " + kind, Hash: apikey.HashToken(token), Fingerprint: tokenFingerprint(apikey.HashToken(token)), Scope: "operator", NativeOnly: true, Kind: kind, KeyScope: "read", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: new(now.Add(time.Hour))}
+						credential := accessstore.Credential{OrganizationID: organization, ID: "artifact_reader_" + kind, Name: "Artifact reader " + kind, Hash: apikey.HashToken(token), Fingerprint: hubapi.TokenFingerprint(apikey.HashToken(token)), Scope: "operator", NativeOnly: true, Kind: kind, KeyScope: "read", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: new(now.Add(time.Hour))}
 						if kind == "personal" {
 							member, err := w.AccessMember(t.Context(), user.identity.Subject)
 							if err != nil {

@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -397,8 +398,8 @@ func TestWorkItemConversationMissingDiagnostic(t *testing.T) {
 				scope := nativeScope{organization: tenant.project.OrganizationID, project: tenant.project.ID, credential: credential}
 				raw, err := f.service.readWorkspaceTool(t.Context(), scope, "get_work_item_conversation", workspaceToolRequest{WorkItemID: string(test.item)})
 				if test.denied {
-					var refused *nativeError
-					if !errors.As(err, &refused) || refused.status != http.StatusNotFound {
+					var refused *hubapi.NativeError
+					if !errors.As(err, &refused) || refused.Status != http.StatusNotFound {
 						t.Fatalf("foreign item lookup=%s error=%v", raw, err)
 					}
 					return
@@ -906,11 +907,11 @@ func TestWorkspaceOperatorUnavailable(t *testing.T) {
 		want    string
 		wantErr error
 	}{
-		{"revision projection", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, Details: map[string]any{"credential": "credential-secret"}, status: http.StatusConflict}, `{"code":"revision_conflict","current_revision":"4"}`, nil},
-		{"stale projection", &nativeError{Code: "stale_execution", Message: "credential-secret", Details: map[string]any{"credential": "credential-secret", "expected_attempt_id": conversationOptional("att_old"), "current_attempt_id": conversationOptional("att_current")}, status: http.StatusConflict}, `{"code":"stale_execution","details":{"expected_attempt_id":"att_old","current_attempt_id":"att_current"}}`, nil},
+		{"revision projection", &hubapi.NativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, Details: map[string]any{"credential": "credential-secret"}, Status: http.StatusConflict}, `{"code":"revision_conflict","current_revision":"4"}`, nil},
+		{"stale projection", &hubapi.NativeError{Code: "stale_execution", Message: "credential-secret", Details: map[string]any{"credential": "credential-secret", "expected_attempt_id": conversationOptional("att_old"), "current_attempt_id": conversationOptional("att_current")}, Status: http.StatusConflict}, `{"code":"stale_execution","details":{"expected_attempt_id":"att_old","current_attempt_id":"att_current"}}`, nil},
 		{"internal", errors.New("credential-secret"), "", errWorkspaceOperationUnavailable},
-		{"unrelated conflict", &nativeError{Code: "internal-conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusConflict}, "", errWorkspaceOperationUnavailable},
-		{"denied revision", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusForbidden}, "", operatortool.ErrAccessDenied},
+		{"unrelated conflict", &hubapi.NativeError{Code: "internal-conflict", Message: "credential-secret", CurrentRevision: 4, Status: http.StatusConflict}, "", errWorkspaceOperationUnavailable},
+		{"denied revision", &hubapi.NativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, Status: http.StatusForbidden}, "", operatortool.ErrAccessDenied},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := safeWorkspaceError(test.err)

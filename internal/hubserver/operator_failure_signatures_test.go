@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -82,7 +83,7 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 			foreign := scope
 			foreign.project = "prj_foreign"
 			hidden, _, _, err := f.service.readNativeFailuresTenant(t.Context(), foreign, "", w)
-			if !isNativeNotFound(err) || len(hidden) != 0 {
+			if !hubapi.IsNativeNotFound(err) || len(hidden) != 0 {
 				t.Fatalf("scope leak: %#v %v", hidden, err)
 			}
 		})
@@ -118,7 +119,7 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 				fixture := newNativeFixture(t, f.service, f.project.OrganizationID, test.name)
 				scope := analyticsTestScope(t, fixture)
 				issue := seedAnalyticsTestWorkItem(t, f.service, scope.organization, scope.project, "boundary", 1, test.name, "Todo", test.at.Add(-time.Hour))
-				seedAnalyticsTestAttempt(t, hostedPostgresAdmin(t, f.service), f.service, scope, issue.WorkItemID, "boundary-"+string(scope.project), "failed", minTime(test.at, updated).Add(-3*time.Minute), updated, data)
+				seedAnalyticsTestAttempt(t, hostedPostgresAdmin(t, f.service), f.service, scope, issue.WorkItemID, "boundary-"+string(scope.project), "failed", hubapi.MinTime(test.at, updated).Add(-3*time.Minute), updated, data)
 				failures, partial, _, err := f.service.readNativeFailuresTenant(t.Context(), scope, "", w)
 				if err != nil || partial || len(failures) != test.want {
 					t.Fatalf("window failures=%#v partial=%v err=%v", failures, partial, err)

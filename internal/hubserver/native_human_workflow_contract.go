@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -25,16 +26,16 @@ func applyHumanWorkflowContract(issue *tracker.NativeIssue, previousState string
 	hold = hold && signal != nil && signal.Invalid == nil && signal.Fields["issue_contract_return_state"] != ""
 	if hold {
 		if signal.Status != workpad.StatusBlocked || signal.HumanAction == "" {
-			return nativePublicInvalid("Issue contract hold requires a human action")
+			return hubapi.NativePublicInvalid("Issue contract hold requires a human action")
 		}
 		if issue.IssueContract != nil && issue.IssueContract.Exempt || contract.Evaluate(nativeContractIssue(*issue)).Satisfied() {
-			return nativePublicInvalid("Issue contract hold does not match the issue")
+			return hubapi.NativePublicInvalid("Issue contract hold does not match the issue")
 		}
 		if signal.Fields["issue_contract_return_state"] != target || previousState != target && !slices.Contains(workflow.Config.BacklogAdmission.Sources.States, previousState) {
-			return nativePublicInvalid("Issue contract hold must return to the configured admission lane")
+			return hubapi.NativePublicInvalid("Issue contract hold must return to the configured admission lane")
 		}
 		if request.State != workflow.Config.Agent.StopRun.TargetState {
-			return nativePublicInvalid("Issue contract failure destination does not match the workflow")
+			return hubapi.NativePublicInvalid("Issue contract failure destination does not match the workflow")
 		}
 		if issue.IssueContract == nil {
 			issue.IssueContract = &issuecontract.State{}
@@ -47,12 +48,12 @@ func applyHumanWorkflowContract(issue *tracker.NativeIssue, previousState string
 	}
 	if issue.IssueContract != nil && issue.IssueContract.ReturnState == request.State {
 		if issue.IssueContract.HumanAction != "" || !contract.Evaluate(nativeContractIssue(*issue)).Satisfied() {
-			return nativePublicInvalid("Human confirmation is required to clear the issue contract hold")
+			return hubapi.NativePublicInvalid("Human confirmation is required to clear the issue contract hold")
 		}
 		issue.IssueContract.ReturnState = ""
 	}
 	if issue.IssueContract != nil && issue.IssueContract.ReleaseDelivery != nil && strings.EqualFold(request.State, target) {
-		return nativeWorkflowInvalid("The verified release delivery contract requires its current typed delivery authority")
+		return hubapi.NativeWorkflowInvalid("The verified release delivery contract requires its current typed delivery authority")
 	}
 	return nil
 }

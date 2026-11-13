@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -127,7 +128,7 @@ func TestDoctorProposalNeutralImportRepairsOnlyUnchangedHead(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if item.Revision != 3 || item.Title != "Live title" || item.DoctorIdentityRevision != nil || stringValue(item.BodyObjectKey) != bodyRef.Key {
+			if item.Revision != 3 || item.Title != "Live title" || item.DoctorIdentityRevision != nil || hubapi.StringValue(item.BodyObjectKey) != bodyRef.Key {
 				return errors.New("receipt replay changed or rebound advanced source")
 			}
 			unchanged, err := r.WorkItem(t.Context(), project, "wi_core_import_second")

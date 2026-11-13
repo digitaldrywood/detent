@@ -2,13 +2,13 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -43,7 +43,7 @@ type nativeCapabilitiesResponse struct {
 }
 
 func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitiesResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var serverID string
 	organization := s.database.hostedOrganization
@@ -68,12 +68,12 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 	return nativeCapabilitiesResponse{
 		ServerID: serverID, Version: s.config.Version, MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
 		ProtocolMajors: []int{1, 2}, EventSchemas: []int{1}, Features: features,
-		MaxRequestBytes: maxAPIRequestBodyBytes, MaxPageSize: maxAPIPageLimit,
+		MaxRequestBytes: hubapi.MaxAPIRequestBodyBytes, MaxPageSize: hubapi.MaxAPIPageLimit,
 	}, nil
 }
 
 func (s *Service) nativeOrganizations(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	organization := s.database.hostedOrganization
 	if organization == "" || s.config.AccessRepository == nil {
@@ -105,7 +105,7 @@ func (s *Service) createNativeOrganization(c echo.Context) error {
 	var request struct {
 		Name string `json:"name"`
 	}
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.createNativeOrganizationFor(c.Request().Context(), request.Name)
@@ -127,12 +127,12 @@ func (s *Service) createNativeProject(c echo.Context) error {
 		return s.localAppCreateProject(c)
 	}
 	var request createNativeProjectRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
 	c.Set("native_scope", scope)
@@ -141,13 +141,9 @@ func (s *Service) createNativeProject(c echo.Context) error {
 
 func validateNativeStates(states []tracker.NativeState) error {
 	if err := policy.ValidateStates(states); err != nil {
-		return nativeWorkflowInvalid(err.Error())
+		return hubapi.NativeWorkflowInvalid(err.Error())
 	}
 	return nil
-}
-
-func nativeWorkflowInvalid(message string) error {
-	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
 }
 
 func (s *Service) grantNativeToken(c echo.Context) error {
@@ -155,18 +151,13 @@ func (s *Service) grantNativeToken(c echo.Context) error {
 		OrganizationID tracker.OrganizationID `json:"organization_id"`
 		ProjectID      tracker.ProjectID      `json:"project_id"`
 	}
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := s.grantNativeTokenFor(c.Request().Context(), c.Param("id"), string(request.OrganizationID), string(request.ProjectID)); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
-}
-
-type nativeQueryer interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 func (s *Service) getNativeProject(c echo.Context) error {

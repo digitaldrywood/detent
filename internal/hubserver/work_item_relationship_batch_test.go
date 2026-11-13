@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -116,7 +117,7 @@ func TestHydrateWorkItemRelationshipFactsPagePreservesReporterRedaction(t *testi
 	scope := nativeScope{
 		organization: organization,
 		project:      project,
-		credential:   apiCredential{ID: reporterID, Hash: "example-hash", Scope: apiScopeOperator, Hosted: &auth.HostedIdentity{Subject: reporterUser, OrganizationID: "org_provider", SessionID: "session_reporter", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, HostedRole: "reporter", HostedMembership: reporterMembership},
+		credential:   hubapi.APICredential{ID: reporterID, Hash: "example-hash", Scope: hubapi.APIScopeOperator, Hosted: &auth.HostedIdentity{Subject: reporterUser, OrganizationID: "org_provider", SessionID: "session_reporter", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, HostedRole: "reporter", HostedMembership: reporterMembership},
 		sourceActor:  &tracker.Actor{PrincipalID: reporterID},
 	}
 	if err := fixture.service.hydrateWorkItemRelationshipFactsPage(t.Context(), scope, []*tracker.NativeIssue{first, second, duplicate}); err != nil {

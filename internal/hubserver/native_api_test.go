@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -54,8 +55,8 @@ func newNativeFixture(t *testing.T, service *Service, organization tracker.Organ
 			organization = "org_first"
 		}
 	}
-	project := tracker.NativeProject{OrganizationID: organization, ID: tracker.ProjectID(newNativeID("prj")), Name: name, States: nativeFixtureStates(), Profile: "native", RequireDependencies: true}
-	token := tokenResponse{ID: newNativeID("credential"), Token: newNativeID("token")}
+	project := tracker.NativeProject{OrganizationID: organization, ID: tracker.ProjectID(hubapi.NewID("prj")), Name: name, States: nativeFixtureStates(), Profile: "native", RequireDependencies: true}
+	token := hubapi.TokenResponse{ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}
 	now := service.config.now().UTC().Truncate(time.Microsecond)
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project.ID, Name: name, Profile: "native", RequireDependencies: project.RequireDependencies}, States: project.States})
@@ -127,7 +128,7 @@ func newPostgresNativeService(t *testing.T, cfg Config) *Service {
 	for _, organization := range []tracker.OrganizationID{primary + "_second", primary} {
 		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: bytes.Repeat([]byte{0x5a}, 32)})
+			return w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: hubapi.NewID("hub"), CursorKey: bytes.Repeat([]byte{0x5a}, 32)})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -163,7 +164,7 @@ func createIndependentNativeIssue(t *testing.T, request tracker.CreateIssue, sen
 	}
 	response := send(request)
 	if response.Code == http.StatusConflict {
-		var failure apiErrorResponse
+		var failure hubapi.APIErrorResponse
 		decodeHubResponse(t, response, &failure)
 		var challenge duplicateChallenge
 		decodeHubResponse(t, response, &challenge)
@@ -379,7 +380,7 @@ func TestNativeAPIError(t *testing.T) {
 		err                       error
 		status                    int
 	}{
-		{"validation", "invalid_request", "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", "WARN", &nativeError{Code: "invalid_request", Message: "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", status: http.StatusUnprocessableEntity, publicMessage: true}, http.StatusUnprocessableEntity},
+		{"validation", "invalid_request", "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", "WARN", &hubapi.NativeError{Code: "invalid_request", Message: "This runner has active work. Drain it and wait for its leases to finish or expire before removing it.", Status: http.StatusUnprocessableEntity, PublicMessage: true}, http.StatusUnprocessableEntity},
 		{"key refusal", "scope_required", "Write access is required", "WARN", &apikey.Refusal{Code: "scope_required", Message: "Write access is required"}, http.StatusForbidden},
 		{"access denied", "access_denied", "operator access is unavailable", "WARN", operatortool.ErrAccessDenied, http.StatusForbidden},
 		{"authorization diagnostic", "service_unavailable", operatortool.ErrServiceUnavailable.Error(), "ERROR", &operatortool.AuthorizationError{Stage: "check", Cause: errors.New("private-context"), PrincipalID: "principal_example", OrganizationID: "org_example", ProjectID: "prj_example"}, http.StatusServiceUnavailable},
@@ -393,11 +394,11 @@ func TestNativeAPIError(t *testing.T) {
 		{"joined authorization outage", "service_unavailable", "Authorization is temporarily unavailable", "ERROR", errors.Join(tenantauth.ErrUnavailable, &operatortool.AuthorizationError{Stage: "resolve", Cause: auth.ErrInvalidSession}), http.StatusServiceUnavailable},
 		{"allowance", "allowance_exhausted", "Hosted active_runners allowance reached (2 of 2). Existing data, reading, export and billing remain available.", "WARN", &hostedLimitError{Resource: "active_runners", Allowance: 2, Consumption: 2}, http.StatusTooManyRequests},
 		{"request refusal", "invalid_request", "A project is required", "WARN", &operatortool.RequestError{Code: "invalid_request", Message: "A project is required"}, http.StatusUnprocessableEntity},
-		{"private validation", "invalid_request", "Unprocessable Entity: invalid request", "WARN", nativeInvalid("private-context"), http.StatusUnprocessableEntity},
-		{"publication rejection", "invalid_request", "publication rejected: category=version_validation field=source [private error text omitted]", "WARN", nativeRejection(nativeInvalid("private-context"), "version_validation", "source"), http.StatusUnprocessableEntity},
+		{"private validation", "invalid_request", "Unprocessable Entity: invalid request", "WARN", hubapi.NativeInvalid("private-context"), http.StatusUnprocessableEntity},
+		{"publication rejection", "invalid_request", "publication rejected: category=version_validation field=source [private error text omitted]", "WARN", nativeRejection(hubapi.NativeInvalid("private-context"), "version_validation", "source"), http.StatusUnprocessableEntity},
 		{"lease conflict", "lease_conflict", "Work item is already leased", "WARN", tracker.ErrLeaseConflict, http.StatusConflict},
 		{"invalid claim", "invalid_request", "Request is invalid", "WARN", tracker.ErrInvalidClaimRequest, http.StatusUnprocessableEntity},
-		{"revision conflict", "revision_conflict", "Resource has changed", "WARN", nativeConflict(7), http.StatusConflict},
+		{"revision conflict", "revision_conflict", "Resource has changed", "WARN", hubapi.NativeConflict(7), http.StatusConflict},
 		{"typed revision conflict", "revision_conflict", "Resource has changed", "WARN", corestore.ErrRevisionConflict, http.StatusConflict},
 		{"typed attempt conflict", "revision_conflict", "Resource has changed", "WARN", leasestore.ErrAttemptConflict, http.StatusConflict},
 		{"retry key conflict", "idempotency_conflict", "Request was already used with different content", "WARN", corestore.ErrUniqueViolation, http.StatusConflict},
@@ -405,7 +406,7 @@ func TestNativeAPIError(t *testing.T) {
 		{"domain not found", "not_found", "Resource was not found", "", corestore.ErrNotFound, http.StatusNotFound},
 		{"authorization missing resource", "access_denied", "operator access is unavailable", "WARN", &operatortool.AuthorizationError{Stage: "check", Cause: corestore.ErrNotFound}, http.StatusForbidden},
 		{"search refresh pending", "not_ready", "Search index refresh is pending", "", searchstore.ErrIndexPending, http.StatusServiceUnavailable},
-		{"service unavailable", "storage_owner_unavailable", "Dependency is temporarily unavailable", "ERROR", &nativeError{Code: "storage_owner_unavailable", Message: "Dependency is temporarily unavailable", status: http.StatusServiceUnavailable, publicMessage: true, logAttributes: []any{"private_detail", "private-context"}}, http.StatusServiceUnavailable},
+		{"service unavailable", "storage_owner_unavailable", "Dependency is temporarily unavailable", "ERROR", &hubapi.NativeError{Code: "storage_owner_unavailable", Message: "Dependency is temporarily unavailable", Status: http.StatusServiceUnavailable, PublicMessage: true, LogAttributes: []any{"private_detail", "private-context"}}, http.StatusServiceUnavailable},
 		{"internal error", "native_operation_failed", "Native operation could not be completed", "ERROR", errors.New("database unavailable"), http.StatusInternalServerError},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -424,7 +425,7 @@ func TestNativeAPIError(t *testing.T) {
 					request := httptest.NewRequest(http.MethodDelete, "/private-target?token=query-secret", strings.NewReader("body-secret"))
 					request.Header.Set("Authorization", "Bearer header-secret")
 					c := echo.New().NewContext(request, recorded)
-					c.SetPath(nativeBase + "/runners/:runner")
+					c.SetPath(hubapi.NativeBase + "/runners/:runner")
 					c.SetParamNames("organization", "project", "runner")
 					c.SetParamValues("private-organization", "private-project", "runner_example")
 					c.Set("native_scope", nativeScope{organization: "org_example", project: "prj_example"})
@@ -485,7 +486,7 @@ func TestNativeAPIError(t *testing.T) {
 						}
 					}
 					if test.level == "WARN" || test.name == "service unavailable" {
-						fields := map[string]any{"refusal_code": test.code, "route": nativeBase + "/runners/:runner", "organization_id": "org_example", "project_id": "prj_example", "method": http.MethodDelete}
+						fields := map[string]any{"refusal_code": test.code, "route": hubapi.NativeBase + "/runners/:runner", "organization_id": "org_example", "project_id": "prj_example", "method": http.MethodDelete}
 						if test.level == "WARN" {
 							fields["reason"] = test.reason
 						} else {
@@ -547,7 +548,7 @@ func TestNativeWorkflowRefusalCode(t *testing.T) {
 			recorded := httptest.NewRecorder()
 			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/workflow", nil), recorded)
 			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
-			if err := service.nativeAPIError(context, &nativeError{Code: failure.Code, Message: failure.Message, status: http.StatusUnprocessableEntity, publicMessage: true}); err != nil {
+			if err := service.nativeAPIError(context, &hubapi.NativeError{Code: failure.Code, Message: failure.Message, Status: http.StatusUnprocessableEntity, PublicMessage: true}); err != nil {
 				t.Fatal(err)
 			}
 			redacted := requireNativeCode(t, recorded, http.StatusUnprocessableEntity, "transition_not_allowed")
@@ -792,7 +793,7 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 						t.Fatal(err)
 					}
 					var fields map[string]json.RawMessage
-					if err := json.Unmarshal(raw, &fields); err != nil || string(fields["last_activity_at"]) != strconv.Quote(formatHubTime(clock.Now())) {
+					if err := json.Unmarshal(raw, &fields); err != nil || string(fields["last_activity_at"]) != strconv.Quote(hubapi.FormatHubTime(clock.Now())) {
 						t.Fatalf("operator activity = %s, error = %v", fields["last_activity_at"], err)
 					}
 				}
@@ -802,13 +803,13 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 		for _, stamp := range []time.Time{latest.Add(-time.Nanosecond), latest.Truncate(time.Second), latest.Add(-time.Hour), latest} {
 			before := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
 			clock.Advance(stamp.Sub(clock.Now()))
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "older-" + formatHubTime(stamp)}, Body: "Older activity"}), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "older-" + hubapi.FormatHubTime(stamp)}, Body: "Older activity"}), http.StatusOK)
 			after := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
 			if !after.LastActivityAt.Equal(before.LastActivityAt) || !after.UpdatedAt.Equal(before.UpdatedAt) {
 				t.Fatalf("older event changed activity %s -> %s or updated %s -> %s", before.LastActivityAt, after.LastActivityAt, before.UpdatedAt, after.UpdatedAt)
 			}
-			title := "Older edit " + formatHubTime(stamp)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "older-edit-" + formatHubTime(stamp)}, ExpectedRevision: after.Revision, Title: &title}), http.StatusOK)
+			title := "Older edit " + hubapi.FormatHubTime(stamp)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "older-edit-" + hubapi.FormatHubTime(stamp)}, ExpectedRevision: after.Revision, Title: &title}), http.StatusOK)
 			edited := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
 			if !edited.LastActivityAt.Equal(latest) || !edited.UpdatedAt.Equal(stamp.Truncate(time.Microsecond)) {
 				t.Fatalf("older edit activity = %s, updated = %s; want %s, %s", edited.LastActivityAt, edited.UpdatedAt, latest, stamp)
@@ -906,7 +907,7 @@ func TestNativeImportsAndAdministrationBoundaries(t *testing.T) {
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "tenant-admin", "scope": "admin"})
 	requireNativeStatus(t, response, http.StatusNotFound)
-	token, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "tenant-admin", Scope: apiScopeAdmin})
+	token, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "tenant-admin", Scope: hubapi.APIScopeAdmin})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1151,7 +1152,7 @@ func TestNativeDependenciesAndTransitions(t *testing.T) {
 		{"b depends c", b, c.WorkItemID, http.StatusOK},
 		{"cycle", c, a.WorkItemID, http.StatusUnprocessableEntity},
 		{"self", c, c.WorkItemID, http.StatusUnprocessableEntity},
-		{"missing", c, tracker.NativeWorkItemID(newNativeID("wi")), http.StatusNotFound},
+		{"missing", c, tracker.NativeWorkItemID(hubapi.NewID("wi")), http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ExpectedRevision: 1, RelatedWorkItemID: test.blocker, Operation: "add"}

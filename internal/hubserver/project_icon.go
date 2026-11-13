@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -30,7 +31,7 @@ type setProjectIconRequest struct {
 
 func (s *Service) setProjectIcon(c echo.Context) error {
 	var request setProjectIconRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
@@ -44,36 +45,36 @@ func (s *Service) setProjectIcon(c echo.Context) error {
 
 func (s *Service) setProjectIconCommand(ctx context.Context, scope nativeScope, request setProjectIconRequest) (json.RawMessage, error) {
 	scope.requireHostedAdmin = true
-	if scope.credential.Hosted == nil && scope.credential.Scope != apiScopeAdmin {
-		return nil, &nativeError{Code: "forbidden", Message: "Project administration is required", status: http.StatusForbidden, publicMessage: true}
+	if scope.credential.Hosted == nil && scope.credential.Scope != hubapi.APIScopeAdmin {
+		return nil, &hubapi.NativeError{Code: "forbidden", Message: "Project administration is required", Status: http.StatusForbidden, PublicMessage: true}
 	}
 	if request.Icon.Kind == "image" {
 		normalized, err := projecticon.Normalize(request.Content)
 		if err != nil {
-			return nil, nativePublicInvalid(err.Error())
+			return nil, hubapi.NativePublicInvalid(err.Error())
 		}
 		request.Content = normalized
 	}
-	options := nativeCommandOptions{OperationID: projectOperationID(scope, "PUT", "/icon"), Feature: "collaboration"}
+	options := hubapi.NativeCommandOptions{OperationID: projectOperationID(scope, "PUT", "/icon"), Feature: "collaboration"}
 	if raw, found, err := s.nativeCommandReplay(ctx, scope, options.OperationID, request.IdempotencyKey, request); found || err != nil {
 		return raw, err
 	}
 	if request.ExpectedRevision <= 0 {
-		return nil, nativePublicInvalid("A positive expected revision is required")
+		return nil, hubapi.NativePublicInvalid("A positive expected revision is required")
 	}
 	icon := request.Icon
 	if icon.ImageKey != "" || icon.ImageSHA256 != "" || icon.URL != "" || icon.Kind != "image" && len(request.Content) != 0 {
-		return nil, nativePublicInvalid("Image references are server owned")
+		return nil, hubapi.NativePublicInvalid("Image references are server owned")
 	}
 	if err := icon.Validate(); err != nil {
-		return nil, nativePublicInvalid(err.Error())
+		return nil, hubapi.NativePublicInvalid(err.Error())
 	}
 	current, err := s.readProjectRecord(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
 	if tracker.Revision(current.Settings.Revision) != request.ExpectedRevision {
-		return nil, nativeConflict(tracker.Revision(current.Settings.Revision))
+		return nil, hubapi.NativeConflict(tracker.Revision(current.Settings.Revision))
 	}
 	var record *attachment.Metadata
 	if icon.Kind == "image" {
@@ -83,7 +84,7 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope nativeScope, 
 			store = s.config.Hosted.SharedEntry.Icons
 		}
 		if store == nil {
-			return nil, nativePublicInvalid("Image storage is unavailable")
+			return nil, hubapi.NativePublicInvalid("Image storage is unavailable")
 		}
 		icon.ImageKey = conversation.NewAttachmentID()
 		digest := sha256.Sum256(content)
@@ -109,7 +110,7 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope nativeScope, 
 			return err
 		}
 		if tracker.Revision(latest.Settings.Revision) != request.ExpectedRevision {
-			return nativeConflict(tracker.Revision(latest.Settings.Revision))
+			return hubapi.NativeConflict(tracker.Revision(latest.Settings.Revision))
 		}
 		if latest.Settings.Icon.Kind == "image" {
 			if err := w.DeleteIconAttachment(ctx, scope.project, latest.Settings.Icon.ImageKey, s.config.now()); err != nil {
@@ -144,7 +145,7 @@ func (s *Service) createIconAttachment(ctx context.Context, w tenantstore.Writer
 	}
 	usage, err := w.AdjustCollaborationBytes(ctx, record.Size, limit)
 	if errors.Is(err, corestore.ErrNotFound) {
-		return attachmentAccountingUnavailable()
+		return hubapi.AttachmentAccountingUnavailable()
 	}
 	if err != nil {
 		return err

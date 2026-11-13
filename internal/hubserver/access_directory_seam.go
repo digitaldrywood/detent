@@ -2,13 +2,16 @@ package hubserver
 
 import (
 	"context"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessdirectory"
-	"github.com/digitaldrywood/detent/internal/platformusers"
+
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/accessdirectory"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/platformusers"
 )
 
 func (s *Service) accessDirectoryService() *accessdirectory.Service {
-	return accessdirectory.New(accessdirectory.Deps{Repository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.now, Claims: hostedSharedClaims, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) }, Invalid: s.invalidAPIRequest})
+	return accessdirectory.New(accessdirectory.Deps{Repository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.now, Claims: hostedSharedClaims, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) }, Invalid: s.invalidAPIRequest})
 }
 func (s *Service) hostedPlatformUsers(c echo.Context) error {
 	return s.accessDirectoryService().ServeHTTP(c)

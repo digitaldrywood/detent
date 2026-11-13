@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -21,7 +22,7 @@ func TestLocalAppAuthentication(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
 	f := newNativeFixture(t, newLocalHTTPService(t), "", "Example project")
 	second := newNativeFixture(t, f.service, f.project.OrganizationID, "Second project")
-	workerToken := tokenResponse{Token: f.worker(t, "example-worker")}
+	workerToken := hubapi.TokenResponse{Token: f.worker(t, "example-worker")}
 	for _, test := range []struct {
 		name, method, path, token, origin, site string
 		bearer                                  bool
@@ -111,7 +112,7 @@ func TestLocalAppAuthentication(t *testing.T) {
 		})
 	}
 	t.Run("independent local preferences", func(t *testing.T) {
-		other, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "second administrator", Scope: apiScopeAdmin})
+		other, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "second administrator", Scope: hubapi.APIScopeAdmin})
 		if err != nil {
 			t.Fatal(err)
 		}

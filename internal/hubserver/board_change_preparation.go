@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -107,14 +108,14 @@ func (s *Service) prepareBoardChangeRowsFor(ctx context.Context, scope nativeSco
 }
 func (p boardChangePreparation) summary(ctx context.Context, s *Service, scope nativeScope, item tracker.NativeWorkItemID, id string, now time.Time) (tracker.ChangeSummary, error) {
 	if p.err != nil {
-		return tracker.ChangeSummary{}, projectRecordError(p.err)
+		return tracker.ChangeSummary{}, hubapi.ProjectRecordError(p.err)
 	}
 	row, ok := p.rows[tenantstore.BoardChangeRequest{WorkItemID: item, ChangeID: id}]
 	if !ok || row.Change == nil {
-		return tracker.ChangeSummary{}, nativeNotFound()
+		return tracker.ChangeSummary{}, hubapi.NativeNotFound()
 	}
 	if row.Change.CurrentVersionID != nil && row.Version == nil {
-		return tracker.ChangeSummary{}, projectRecordError(corestore.ErrNotFound)
+		return tracker.ChangeSummary{}, hubapi.ProjectRecordError(corestore.ErrNotFound)
 	}
 	detail, err := s.hydrateCurrentChangeDetailWithFacts(ctx, scope, item, *row.Change, row.Version, p.policy, now, &row, p.approval, p.workload)
 	return detail.Summary, err
@@ -137,7 +138,7 @@ func filterBoardChangeRecord(scope nativeScope, change tracker.ChangeRequest, ro
 		if link.ProjectID != scope.project {
 			return tracker.ChangeRequest{}, false, corestore.ErrTenantMismatch
 		}
-		if !link.ItemExists || !link.VersionExists || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(link.ActorPrincipalID)}) {
+		if !link.ItemExists || !link.VersionExists || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(link.ActorPrincipalID)}) {
 			continue
 		}
 		linked = append(linked, link.WorkItemID)

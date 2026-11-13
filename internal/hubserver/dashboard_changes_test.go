@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -430,7 +431,7 @@ func testDashboardChangeLog(t *testing.T) {
 						t.Fatalf("step %d project %d change=%+v", step, i, delta)
 					}
 					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
-						scope := nativeScope{organization: organization, project: project, credential: apiCredential{Scope: apiScopeAdmin}}
+						scope := nativeScope{organization: organization, project: project, credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}
 						frame, visible, err := service.dashboardRecordFrame(t.Context(), r, scope, &dashboardSubscription{}, delta)
 						if err == nil && (!visible || frame.event != "health.findings") {
 							t.Fatalf("health frame=%+v visible=%t", frame, visible)
@@ -504,7 +505,7 @@ func testDashboardChangeLog(t *testing.T) {
 			}
 		}
 		before = []int64{head(projects[0]), head(projects[1])}
-		replacementID := newNativeID("finding")
+		replacementID := hubapi.NewID("finding")
 		if err := repository.WriteHealth(t.Context(), organization, corestore.Background, func(w postgres.HealthWriter) error {
 			_, err := w.UpdateHealthRecord(t.Context(), postgres.UpdateHealthRecordInput{OrganizationID: organization, ID: current.ID, ExpectedRevision: current.Revision, LastSeenAt: current.LastSeenAt, ResolvedAt: new(now.Add(7 * time.Second)), Severity: current.Severity, Summary: current.Summary, NextAction: current.NextAction, EvidenceObjectKey: current.EvidenceObjectKey, EvidenceSha256: current.EvidenceSha256, EvidenceBytes: current.EvidenceBytes, EvidenceContentBytes: current.EvidenceContentBytes})
 			if err != nil {

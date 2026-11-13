@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -286,8 +287,8 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 				t.Fatal(err)
 			}
 			got := []tracker.Actor{
-				(nativeScope{credential: apiCredential{ID: "actor-contract", Scope: apiScopeOperator}}).actor(),
-				(nativeScope{credential: apiCredential{ID: "actor-contract", Scope: apiScopeWorker}}).actor(),
+				(nativeScope{credential: hubapi.APICredential{ID: "actor-contract", Scope: hubapi.APIScopeOperator}}).actor(),
+				(nativeScope{credential: hubapi.APICredential{ID: "actor-contract", Scope: hubapi.APIScopeWorker}}).actor(),
 				*nativeIntegrationActor("github"),
 				healthIssueScope("", "").actor(),
 			}

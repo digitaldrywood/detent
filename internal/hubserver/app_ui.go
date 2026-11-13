@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerupdate"
@@ -233,9 +234,9 @@ func (s *Service) appUpdates(c echo.Context) error {
 			return s.nativeAPIError(c, operatorAuthorizationError(err))
 		}
 		if status == http.StatusForbidden {
-			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
+			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", hubapi.APIErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
 		}
-		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
+		return c.JSON(http.StatusUnauthorized, hubapi.APIErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
 	payload, err := s.readAppUpdates(c.Request().Context(), credential)
 	if err != nil {
@@ -244,19 +245,19 @@ func (s *Service) appUpdates(c echo.Context) error {
 	return c.JSON(http.StatusOK, payload)
 }
 
-func (s *Service) readAppUpdates(ctx context.Context, credential apiCredential) (appUpdates, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) readAppUpdates(ctx context.Context, credential hubapi.APICredential) (appUpdates, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.Hosted != nil {
 		if credential.Hosted == nil || credential.HostedRole == "viewer" {
-			return appUpdates{}, nativeNotFound()
+			return appUpdates{}, hubapi.NativeNotFound()
 		}
 		allowed, err := s.appAllRunnerGrants(ctx, credential)
 		if err != nil {
 			return appUpdates{}, err
 		}
 		if !allowed {
-			return appUpdates{}, nativeNotFound()
+			return appUpdates{}, hubapi.NativeNotFound()
 		}
 	}
 	current := detentVersion(s.config.Version)
@@ -264,7 +265,7 @@ func (s *Service) readAppUpdates(ctx context.Context, credential apiCredential) 
 	payload := appUpdates{MinimumRunnerVersion: minimum, Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
 	now := s.config.now()
 	if s.config.TenantRepository == nil {
-		return appUpdates{}, workItemStorageUnavailable()
+		return appUpdates{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	const pageSize = 200
 	organization := tracker.OrganizationID(s.appOrganizationID())
@@ -274,7 +275,7 @@ func (s *Service) readAppUpdates(ctx context.Context, credential apiCredential) 
 		err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			pageReader, ok := reader.(runnerstore.UpdateProjectionPageReader)
 			if !ok {
-				return ErrProjectParticipants
+				return hubapi.ErrProjectParticipants
 			}
 			var err error
 			page, err = pageReader.RunnerUpdateProjectionPage(ctx, cursor, pageSize)
@@ -547,15 +548,15 @@ func conversationChoiceLabel(value string) string {
 
 // hostedReadableProjects lists the projects the credential may read with the
 // capabilities the client needs to render them.
-func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
+func (s *Service) hostedReadableProjects(ctx context.Context, credential hubapi.APICredential) ([]appBootstrapProject, error) {
 	if s.config.Hosted == nil {
 		return s.localAppProjects(ctx, credential)
 	}
 	return s.hostedReadableProjectsPostgres(ctx, credential)
 }
 
-func (s *Service) hostedReadableProjectsPostgres(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) hostedReadableProjectsPostgres(ctx context.Context, credential hubapi.APICredential) ([]appBootstrapProject, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	const pageSize = 200
 	projects := []appBootstrapProject{}
@@ -567,7 +568,7 @@ func (s *Service) hostedReadableProjectsPostgres(ctx context.Context, credential
 		err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.appOrganizationID()), corestore.Serving, func(reader tenantstore.Reader) error {
 			pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
 			if !ok {
-				return ErrProjectParticipants
+				return hubapi.ErrProjectParticipants
 			}
 			var err error
 			rows, err = pageReader.ProjectAccessPage(ctx, filter)

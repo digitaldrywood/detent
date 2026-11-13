@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/threadstore"
@@ -42,7 +43,7 @@ func reopenCredentialFixture(t *testing.T, f *browserHostedFixture, maintenance 
 	f.service = service
 }
 
-func testMaintenanceCheckLifecycle(t *testing.T, f *browserHostedFixture, path string, created tokenResponse, version tracker.ChangeVersion) {
+func testMaintenanceCheckLifecycle(t *testing.T, f *browserHostedFixture, path string, created hubapi.TokenResponse, version tracker.ChangeVersion) {
 	t.Helper()
 	request := changeTestResult(version)
 	for _, test := range []struct {
@@ -58,7 +59,7 @@ func testMaintenanceCheckLifecycle(t *testing.T, f *browserHostedFixture, path s
 			requireNativeStatus(t, response, test.status)
 			oldToken := created.Token
 			if test.name == "rotation" {
-				var rotated tokenResponse
+				var rotated hubapi.TokenResponse
 				decodeHubResponse(t, response, &rotated)
 				if rotated.ID != created.ID || rotated.Token == oldToken {
 					t.Fatal("rotation changed principal or retained the old secret")
@@ -99,18 +100,18 @@ func TestCredentialMaintenanceAccess(t *testing.T) {
 	f.service.config.InitialAdminToken = []byte("replacement-bootstrap-secret")
 	reopenCredentialFixture(t, f, true)
 	var scopedAdmin, reporter, worker string
-	for _, scope := range []apiScope{apiScopeAdmin, apiScopeOperator, apiScopeWorker} {
-		response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, tokenRequest{Name: string(scope), Scope: scope})
+	for _, scope := range []hubapi.APIScope{hubapi.APIScopeAdmin, hubapi.APIScopeOperator, hubapi.APIScopeWorker} {
+		response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, hubapi.TokenRequest{Name: string(scope), Scope: scope})
 		requireNativeStatus(t, response, http.StatusCreated)
-		var token tokenResponse
+		var token hubapi.TokenResponse
 		decodeHubResponse(t, response, &token)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", testHubAdminToken, map[string]string{"organization_id": "org_browser_preview", "project_id": f.project}), http.StatusNoContent)
 		switch scope {
-		case apiScopeAdmin:
+		case hubapi.APIScopeAdmin:
 			scopedAdmin = token.Token
-		case apiScopeOperator:
+		case hubapi.APIScopeOperator:
 			reporter = token.Token
-		case apiScopeWorker:
+		case hubapi.APIScopeWorker:
 			worker = token.Token
 		}
 	}
@@ -167,7 +168,7 @@ func TestCredentialMaintenanceAccess(t *testing.T) {
 	t.Run("tenant isolation", func(t *testing.T) { testMaintenanceTenantIsolation(t, f) })
 	t.Run("self target", func(t *testing.T) { testMaintenanceSelfTarget(t, f) })
 	reopenCredentialFixture(t, f, false)
-	requireNativeStatus(t, maintenanceHTTP(t.Context(), f.service, f, "", http.MethodPost, "/api/v1/tokens", testHubAdminToken, "owner", tokenRequest{Name: "public-denied", Scope: apiScopeOperator}), http.StatusNotFound)
+	requireNativeStatus(t, maintenanceHTTP(t.Context(), f.service, f, "", http.MethodPost, "/api/v1/tokens", testHubAdminToken, "owner", hubapi.TokenRequest{Name: "public-denied", Scope: hubapi.APIScopeOperator}), http.StatusNotFound)
 	var publicTokens int
 	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM api_tokens WHERE organization_id=$1 AND name=$2", f.service.accessOrganization(), "public-denied").Scan(&publicTokens); err != nil || publicTokens != 0 {
 		t.Fatalf("normal-mode credential create rows=%d error=%v", publicTokens, err)
@@ -241,19 +242,19 @@ func TestCredentialMaintenanceAuditOutcomes(t *testing.T) {
 		}
 	})
 	reopenCredentialFixture(t, f, true)
-	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, tokenRequest{Name: "audit-token", Scope: apiScopeOperator})
+	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, hubapi.TokenRequest{Name: "audit-token", Scope: hubapi.APIScopeOperator})
 	requireNativeStatus(t, response, http.StatusCreated)
-	var created tokenResponse
+	var created hubapi.TokenResponse
 	decodeHubResponse(t, response, &created)
 	for _, test := range []struct {
 		name, method, path string
 		body               any
 		status             int
 	}{
-		{"create", http.MethodPost, "/api/v1/tokens", tokenRequest{Name: "second-token", Scope: apiScopeOperator}, http.StatusCreated},
+		{"create", http.MethodPost, "/api/v1/tokens", hubapi.TokenRequest{Name: "second-token", Scope: hubapi.APIScopeOperator}, http.StatusCreated},
 		{"rotate", http.MethodPost, "/api/v1/tokens/" + created.ID + "/rotate", nil, http.StatusOK},
 		{"revoke", http.MethodDelete, "/api/v1/tokens/" + created.ID, nil, http.StatusNoContent},
-		{"duplicate", http.MethodPost, "/api/v1/tokens", tokenRequest{Name: "audit-token", Scope: apiScopeOperator}, http.StatusConflict},
+		{"duplicate", http.MethodPost, "/api/v1/tokens", hubapi.TokenRequest{Name: "audit-token", Scope: hubapi.APIScopeOperator}, http.StatusConflict},
 		{"invalid body", http.MethodPost, "/api/v1/tokens", map[string]string{"unknown": "field"}, http.StatusUnprocessableEntity},
 		{"unknown token", http.MethodPost, "/api/v1/tokens/unknown/rotate", nil, http.StatusNotFound},
 	} {
@@ -274,7 +275,7 @@ func TestCredentialMaintenanceAuditOutcomes(t *testing.T) {
 func maintenanceCredential(t *testing.T, s *Service, id, secret string, administrator bool) accessstore.Credential {
 	t.Helper()
 	now := s.config.now().UTC().Truncate(time.Microsecond)
-	row := accessstore.Credential{OrganizationID: s.accessOrganization(), ID: id, Name: id, Hash: apikey.HashToken(secret), Fingerprint: tokenFingerprint(apikey.HashToken(secret)), Scope: "operator", Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}
+	row := accessstore.Credential{OrganizationID: s.accessOrganization(), ID: id, Name: id, Hash: apikey.HashToken(secret), Fingerprint: hubapi.TokenFingerprint(apikey.HashToken(secret)), Scope: "operator", Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}
 	if administrator {
 		row.Scope, row.KeyScope, row.ProjectAccess = "admin", "admin", "all"
 	}
@@ -323,7 +324,7 @@ func testMaintenanceCurrentIssuer(t *testing.T, f *browserHostedFixture) {
 				id := strings.ReplaceAll(t.Name(), "/", "_")
 				issuer := maintenanceCredential(t, s, "issuer_"+id, "secret_"+id, true)
 				target := maintenanceCredential(t, s, "target_"+id, "target_secret_"+id, false)
-				method, path, body := http.MethodPost, "/api/v1/tokens", any(tokenRequest{Name: "new_" + id, Scope: apiScopeOperator})
+				method, path, body := http.MethodPost, "/api/v1/tokens", any(hubapi.TokenRequest{Name: "new_" + id, Scope: hubapi.APIScopeOperator})
 				switch operation {
 				case "rotate":
 					path, body = "/api/v1/tokens/"+target.ID+"/rotate", nil
@@ -441,9 +442,9 @@ func testMaintenanceTenantIsolation(t *testing.T, f *browserHostedFixture) {
 		s               *Service
 		secret, project string
 	}{{first, testHubAdminToken, f.project}, {second, "second_admin_secret", "project_maintenance_second"}} {
-		response := performHubAPIRequest(t, current.s, http.MethodPost, "/api/v1/tokens", current.secret, tokenRequest{Name: "same-logical-name", Scope: apiScopeOperator})
+		response := performHubAPIRequest(t, current.s, http.MethodPost, "/api/v1/tokens", current.secret, hubapi.TokenRequest{Name: "same-logical-name", Scope: hubapi.APIScopeOperator})
 		requireNativeStatus(t, response, http.StatusCreated)
-		var token tokenResponse
+		var token hubapi.TokenResponse
 		decodeHubResponse(t, response, &token)
 		path := "/api/v2/tokens/" + token.ID + "/grants"
 		requireNativeStatus(t, performHubAPIRequest(t, current.s, http.MethodPost, path, current.secret, map[string]string{"organization_id": string(current.s.accessOrganization()), "project_id": current.project}), http.StatusNoContent)
@@ -482,14 +483,14 @@ func testMaintenanceSelfTarget(t *testing.T, f *browserHostedFixture) {
 	}
 	response := performHubAPIRequest(t, s, http.MethodPost, "/api/v1/tokens/"+row.ID+"/rotate", "self_secret", nil)
 	requireNativeStatus(t, response, http.StatusOK)
-	var rotated tokenResponse
+	var rotated hubapi.TokenResponse
 	decodeHubResponse(t, response, &rotated)
 	if rotated.ID != row.ID || rotated.Token == "self_secret" || rotated.ExpiresAt == nil || !rotated.ExpiresAt.Equal(expiry) {
 		t.Fatal("self rotation changed immutable identity or expiry")
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPost, "/api/v1/tokens", "self_secret", tokenRequest{Name: "old-self-refused", Scope: apiScopeOperator}), http.StatusUnauthorized)
+	requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPost, "/api/v1/tokens", "self_secret", hubapi.TokenRequest{Name: "old-self-refused", Scope: hubapi.APIScopeOperator}), http.StatusUnauthorized)
 	requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodDelete, "/api/v1/tokens/"+row.ID, rotated.Token, nil), http.StatusNoContent)
-	requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPost, "/api/v1/tokens", rotated.Token, tokenRequest{Name: "revoked-self-refused", Scope: apiScopeOperator}), http.StatusUnauthorized)
+	requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPost, "/api/v1/tokens", rotated.Token, hubapi.TokenRequest{Name: "revoked-self-refused", Scope: hubapi.APIScopeOperator}), http.StatusUnauthorized)
 	var audits int
 	if err := hostedPostgresAdmin(t, s).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id=$1 AND actual_actor=$2 AND effective_user=$2 AND event='credential_maintenance' AND status IN (200,204)", s.accessOrganization(), row.ID).Scan(&audits); err != nil || audits != 2 {
 		t.Fatalf("self-target completion audits=%d error=%v", audits, err)
@@ -990,7 +991,7 @@ func testMaintenanceLockOrder(t *testing.T) {
 					normal.config.TenantRepository, normal.config.AccessRepository = normalOwner, normalOwner
 					account = maintenanceFreshOwner(t, f, operation == "revoke")
 					if family == "project model" && operation == "rotate" {
-						var rotated tokenResponse
+						var rotated hubapi.TokenResponse
 						decodeHubResponse(t, m, &rotated)
 						if rotated.ID != principal || rotated.Token == "" || apikey.HashToken(rotated.Token) != after.Hash {
 							t.Fatal("rotation response does not match current principal")

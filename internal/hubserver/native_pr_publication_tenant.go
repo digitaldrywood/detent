@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -101,7 +102,7 @@ func (s *Service) validateTenantPRPublication(ctx context.Context, reader tenant
 	}
 	prepared := authority.Publication
 	if prepared == nil {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	change, err := reader.Change(ctx, publication.ChangeID)
 	if err != nil {
@@ -111,7 +112,7 @@ func (s *Service) validateTenantPRPublication(ctx context.Context, reader tenant
 	if err != nil {
 		return err
 	}
-	if change.OrganizationID != authority.OrganizationID || change.ProjectID != authority.ProjectID || change.WorkItemID != authority.WorkItem.NativeID || valueOrEmpty(change.CurrentVersionID) != publication.VersionID || !reflect.DeepEqual(version, prepared.version) {
+	if change.OrganizationID != authority.OrganizationID || change.ProjectID != authority.ProjectID || change.WorkItemID != authority.WorkItem.NativeID || hubapi.ValueOrEmpty(change.CurrentVersionID) != publication.VersionID || !reflect.DeepEqual(version, prepared.version) {
 		return corestore.ErrRevisionConflict
 	}
 	if prepared.retained {

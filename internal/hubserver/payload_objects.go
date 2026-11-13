@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -43,7 +44,7 @@ func readStoredPayload(ctx context.Context, key string) ([]byte, error) {
 		return bytes.Clone(raw), nil
 	}
 	if writing {
-		return nil, &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
+		return nil, &claimHydration{run: func(ctx context.Context, _ hubapi.NativeQueryer) error {
 			_, err := readStoredPayload(ctx, key)
 			return err
 		}}
@@ -71,7 +72,7 @@ func readStoredPayload(ctx context.Context, key string) ([]byte, error) {
 func payloadNativeID(ctx context.Context, prefix string) string {
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
 	if !ok {
-		return newNativeID(prefix)
+		return hubapi.NewID(prefix)
 	}
 	content.mu.Lock()
 	defer content.mu.Unlock()
@@ -86,7 +87,7 @@ func payloadNativeID(ctx context.Context, prefix string) string {
 	if id := content.ids[slot]; id != "" {
 		return id
 	}
-	id := newNativeID(prefix)
+	id := hubapi.NewID(prefix)
 	content.ids[slot] = id
 	return id
 }
@@ -156,6 +157,6 @@ func isolateContentContext(ctx context.Context) context.Context {
 
 type payloadQueryKey struct{}
 
-func payloadQueryContext(ctx context.Context, q nativeQueryer) context.Context {
+func payloadQueryContext(ctx context.Context, q hubapi.NativeQueryer) context.Context {
 	return context.WithValue(ctx, payloadQueryKey{}, q)
 }

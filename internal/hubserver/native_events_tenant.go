@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -74,13 +75,13 @@ func validateNativeLandingAuthority(ctx context.Context, reader tenantstore.Read
 			return err
 		}
 		if version.HeadSHA != l.HeadSHA {
-			return nativeRejection(nativeInvalid("Landing evidence must name its immutable version head"), "owner_validation", "data.runtime.landing")
+			return nativeRejection(hubapi.NativeInvalid("Landing evidence must name its immutable version head"), "owner_validation", "data.runtime.landing")
 		}
 	}
 	if !l.Landed {
 		return nil
 	}
-	unrecorded := nativeRejection(nativeInvalid("Landing evidence requires the recorded Change landing authority"), "owner_validation", "data.runtime.landing")
+	unrecorded := nativeRejection(hubapi.NativeInvalid("Landing evidence requires the recorded Change landing authority"), "owner_validation", "data.runtime.landing")
 	if change.LandedVersionID == nil || change.LandedHeadSHA == nil || change.LandedMergeSHA == nil || change.LandedBaseRef == nil || *change.LandedVersionID != l.VersionID || *change.LandedHeadSHA != l.HeadSHA || *change.LandedMergeSHA != l.MergeSHA || *change.LandedBaseRef != l.BaseRef {
 		return unrecorded
 	}
@@ -108,7 +109,7 @@ func validateNativeFinalizationAuthority(ctx context.Context, reader tenantstore
 			return err
 		}
 		if version.HeadSHA != f.HeadSHA {
-			return nativeRejection(nativeInvalid("Finalizer version must name its recorded head"), "owner_validation", "data.finalization")
+			return nativeRejection(hubapi.NativeInvalid("Finalizer version must name its recorded head"), "owner_validation", "data.finalization")
 		}
 	}
 	source := f.SourceVersion
@@ -116,14 +117,14 @@ func validateNativeFinalizationAuthority(ctx context.Context, reader tenantstore
 		return nil
 	}
 	if source.ChangeID != f.ChangeID {
-		return nativeRejection(nativeInvalid("Finalizer source must belong to the reported Change"), "owner_validation", "data.finalization")
+		return nativeRejection(hubapi.NativeInvalid("Finalizer source must belong to the reported Change"), "owner_validation", "data.finalization")
 	}
 	version, err := reader.Version(ctx, source.ChangeID, source.VersionID)
 	if err != nil {
 		return err
 	}
 	if version.HeadSHA != source.HeadSHA || version.AttemptID != f.SourceAttemptID {
-		return nativeRejection(nativeInvalid("Finalizer source must match its recorded version and attempt"), "owner_validation", "data.finalization")
+		return nativeRejection(hubapi.NativeInvalid("Finalizer source must match its recorded version and attempt"), "owner_validation", "data.finalization")
 	}
 	return nil
 }
@@ -194,31 +195,31 @@ type preparedNativeRunEvent struct {
 func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeScope, item string, request tracker.NativeRunEvent) (result json.RawMessage, resultErr error) {
 	defer func() {
 		if errors.Is(resultErr, billingstore.ErrCostOverlap) {
-			resultErr = nativePublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
+			resultErr = hubapi.NativePublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
 		}
 		if errors.Is(resultErr, leasestore.ErrAttemptConflict) {
 			resultErr = nativeExecutionConflict("Run event sequence conflicts with the persisted attempt")
 		}
 		if errors.Is(resultErr, mutation.ErrConflict) {
-			resultErr = &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
+			resultErr = &hubapi.NativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: http.StatusConflict, PublicMessage: true}
 		}
 
 	}()
 	if request.Data.Sequence <= 0 {
-		return nil, nativeRejection(nativePublicInvalid("Current run events require a positive sequence"), "owner_validation", "data.sequence")
+		return nil, nativeRejection(hubapi.NativePublicInvalid("Current run events require a positive sequence"), "owner_validation", "data.sequence")
 	}
 	if request.IdempotencyKey == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativeRejection(nativePublicInvalid("An idempotency key of at most 128 bytes is required"), "event_validation", "")
+		return nil, nativeRejection(hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required"), "event_validation", "")
 	}
 	if s.config.NativeRunEvents == nil || s.config.TenantRepository == nil || scope.project == "" || item == "" {
-		return nil, nativeRunEventStorageUnavailable()
+		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	store := s.runDetailStore()
 	if store == nil {
 		return nil, errContentStorageUnconfigured
 	}
 	store = runEventDetailStore{DetailStore: store}
-	requestHash, err := nativeCommandHash(request)
+	requestHash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +248,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		}
 	}
 	if len(events) > 8 {
-		return nil, nativePublicInvalid("Run detail batches are limited to eight events")
+		return nil, hubapi.NativePublicInvalid("Run detail batches are limited to eight events")
 	}
 	prepared := make([]preparedNativeRunEvent, 0, len(events))
 	var workItem corestore.WorkItem
@@ -468,7 +469,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		}
 	}
 	if request.Data.MachineID != "" && string(request.Data.MachineID) != lease.MachineID || request.Data.SessionID != "" && request.Data.SessionID != lease.SessionID || request.Data.RunnerID != "" && request.Data.RunnerID != scope.credential.Runner.RunnerID {
-		return nil, nativeRejection(nativePublicInvalid("Execution identity must match the authenticated lease owner"), "owner_validation", "data")
+		return nil, nativeRejection(hubapi.NativePublicInvalid("Execution identity must match the authenticated lease owner"), "owner_validation", "data")
 	}
 	request.Data.MachineID = tracker.MachineID(lease.MachineID)
 	request.Data.SessionID = lease.SessionID
@@ -531,17 +532,17 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			}
 		}
 		if event.Data.AttemptID != request.Data.AttemptID || event.Data.RunID != request.Data.RunID || event.Data.LeaseID != request.Data.LeaseID || event.Data.FencingToken != request.Data.FencingToken || len(event.PriorEvents) != 0 {
-			return nil, nativePublicInvalid("Run detail batch must contain ordered observations for one execution")
+			return nil, hubapi.NativePublicInvalid("Run detail batch must contain ordered observations for one execution")
 		}
 		prefixAllowed := event.Type == "run.observed"
 		if i == 0 && event.Type == "run.started" && event.Data.Sequence == 1 && request.Type == "run.finished" {
 			prefixAllowed = true
 		}
 		if i < len(events)-1 && !prefixAllowed {
-			return nil, nativePublicInvalid("Run detail batch must contain ordered observations for one execution")
+			return nil, hubapi.NativePublicInvalid("Run detail batch must contain ordered observations for one execution")
 		}
 		if event.Data.MachineID != "" && string(event.Data.MachineID) != lease.MachineID || event.Data.SessionID != "" && event.Data.SessionID != lease.SessionID || event.Data.RunnerID != "" && event.Data.RunnerID != scope.credential.Runner.RunnerID {
-			return nil, nativeRejection(nativePublicInvalid("Execution identity must match the authenticated lease owner"), "owner_validation", "data")
+			return nil, nativeRejection(hubapi.NativePublicInvalid("Execution identity must match the authenticated lease owner"), "owner_validation", "data")
 		}
 		event.Data.MachineID, event.Data.SessionID, event.Data.RunnerID = tracker.MachineID(lease.MachineID), lease.SessionID, scope.credential.Runner.RunnerID
 		var landingProof *nativeLandingAuthority
@@ -679,7 +680,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		}
 		dataRecord := tracker.CollaborationData{Run: &event.Data}
 		if landing := event.Data.Runtime; landing != nil && landing.Landing != nil {
-			dataRecord.FromState = valueOrEmpty(workItem.WorkflowStateName)
+			dataRecord.FromState = hubapi.ValueOrEmpty(workItem.WorkflowStateName)
 			if cleanupPredecessor != nil && predecessor != nil && predecessor.Runtime != nil && sameNativeLandingObservation(predecessor.Runtime.Landing, landing.Landing) {
 				dataRecord.FromState = landingState
 			}
@@ -993,7 +994,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			}
 			usage, err := owner.ChargeRunEventArchives(ctx, refs, limit)
 			if errors.Is(err, corestore.ErrNotFound) {
-				return attachmentAccountingUnavailable()
+				return hubapi.AttachmentAccountingUnavailable()
 			}
 			if err != nil {
 				return err
@@ -1010,7 +1011,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 			}
 			usage, err := w.ChargeArchiveObject(ctx, object.ID, limit)
 			if errors.Is(err, corestore.ErrNotFound) {
-				return attachmentAccountingUnavailable()
+				return hubapi.AttachmentAccountingUnavailable()
 			}
 			if err != nil {
 				return err
@@ -1034,10 +1035,6 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	return response, nil
 }
 
-func nativeRunEventStorageUnavailable() error {
-	return &nativeError{Code: "not_ready", Message: "Run event storage is not available", status: http.StatusServiceUnavailable, publicMessage: true}
-}
-
 func nativeRunAttemptStatus(event tracker.NativeRunEvent) (string, error) {
 	if event.Type != "run.finished" {
 		return "running", nil
@@ -1046,7 +1043,7 @@ func nativeRunAttemptStatus(event tracker.NativeRunEvent) (string, error) {
 	case "succeeded", "failed", "cancelled", "interrupted":
 		return event.Data.Outcome, nil
 	default:
-		return "", nativePublicInvalid("Run outcome is invalid")
+		return "", hubapi.NativePublicInvalid("Run outcome is invalid")
 	}
 }
 
@@ -1122,7 +1119,7 @@ func admitNativeRunEventBatch(ctx context.Context, r tenantstore.Reader, project
 		}
 		reader, ok := r.(nativeRunEventReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		if _, err := reader.RunEvent(ctx, project, item, nativeAttemptHistoryID(event.Type, event.Data)); errors.Is(err, corestore.ErrNotFound) {
 			return leasestore.ErrAttemptConflict

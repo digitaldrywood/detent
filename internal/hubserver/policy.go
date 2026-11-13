@@ -17,6 +17,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -24,22 +25,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-var errNoApprovedRepositoryPolicy = &nativeError{Code: "policy_not_approved", Message: "No approved repository policy; resolve the customer definition and ask an administrator to approve its descriptor", status: http.StatusConflict}
+var errNoApprovedRepositoryPolicy = &hubapi.NativeError{Code: "policy_not_approved", Message: "No approved repository policy; resolve the customer definition and ask an administrator to approve its descriptor", Status: http.StatusConflict}
 
 const projectPolicyObservationLimit = 512
 
-func policyMismatch(message string) error {
-	return &nativeError{Code: "policy_mismatch", Message: message, status: http.StatusConflict}
-}
-
 func (s *Service) policyScope(c echo.Context) (string, error) {
 	if s.config.TenantRepository == nil {
-		return "", workItemStorageUnavailable()
+		return "", hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if c.Param("organization") == "" || c.Param("project") == "" {
-		return "", nativeNotFound()
+		return "", hubapi.NativeNotFound()
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project"))}
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -47,7 +44,7 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
-		return "", nativeNotFound()
+		return "", hubapi.NativeNotFound()
 	}
 	if err != nil {
 		return "", err
@@ -56,22 +53,22 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 }
 
 func (s *Service) getProjectPolicy(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	version := c.QueryParam("execution_configuration")
 	if version != "" && version != "1" {
-		return s.nativeAPIError(c, nativeInvalid("unsupported execution configuration version"))
+		return s.nativeAPIError(c, hubapi.NativeInvalid("unsupported execution configuration version"))
 	}
 	scope, err := s.policyScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	limit, err := parsePageLimit(c.QueryParam("limit"))
+	limit, err := hubapi.ParsePageLimit(c.QueryParam("limit"))
 	if err != nil {
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
 	}
 	var approval policy.Approval
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	approval, err = s.readTenantProjectPolicy(ctx, tracker.OrganizationID(c.Param("organization")), tracker.ProjectID(c.Param("project")))
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -154,7 +151,7 @@ func (s *Service) tenantProjectPolicyRead(ctx context.Context, organization trac
 			Policy:             observed.Policy,
 			RunnerID:           row.RunnerID,
 			RunnerIDs:          []string{row.RunnerID},
-			ObservedAt:         formatHubTime(row.ObservedAt),
+			ObservedAt:         hubapi.FormatHubTime(row.ObservedAt),
 			Source:             row.Source,
 			Conflict:           row.DistinctPolicyCount > 1 || row.PreviouslyApproved,
 			PreviouslyApproved: row.PreviouslyApproved,
@@ -183,16 +180,16 @@ func (s *Service) tenantProjectPolicyRead(ctx context.Context, organization trac
 
 func (s *Service) tenantProjectWorkflowHistory(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, limit int, after string) ([]policy.WorkflowApply, string, error) {
 	if limit == 0 {
-		limit = defaultAPIPageLimit
+		limit = hubapi.DefaultAPIPageLimit
 	}
-	if limit < 1 || limit > maxAPIPageLimit {
-		return nil, "", nativePublicInvalid("History page limit is invalid")
+	if limit < 1 || limit > hubapi.MaxAPIPageLimit {
+		return nil, "", hubapi.NativePublicInvalid("History page limit is invalid")
 	}
 	var before int64
 	if after != "" {
 		parsed, err := strconv.ParseInt(after, 10, 64)
 		if err != nil || parsed < 1 {
-			return nil, "", nativePublicInvalid("History cursor is invalid")
+			return nil, "", hubapi.NativePublicInvalid("History cursor is invalid")
 		}
 		before = parsed
 	}
@@ -211,7 +208,7 @@ func (s *Service) tenantProjectWorkflowHistory(ctx context.Context, organization
 		}
 		for index := range rows {
 			row := &rows[index]
-			if row.ChangeID != "" || row.PullRequestURL != "" || row.Repository == "" || !validCommitID(row.SourceCommit) {
+			if row.ChangeID != "" || row.PullRequestURL != "" || row.Repository == "" || !hubapi.ValidCommitID(row.SourceCommit) {
 				continue
 			}
 			landing, err := reader.ProjectPolicyLanding(ctx, project, row.Repository, row.SourceCommit, "")
@@ -254,7 +251,7 @@ func (s *Service) tenantProjectWorkflowHistory(ctx context.Context, organization
 		entry := policy.WorkflowApply{
 			ID: row.ID, Repository: row.Repository, Commit: row.SourceCommit,
 			PreviousDefinitionDigest: row.PreviousDefinitionDigest, DefinitionDigest: row.DefinitionDigest,
-			RunnerID: row.RunnerID, AppliedBy: row.AppliedBy, AppliedAt: formatHubTime(row.AppliedAt),
+			RunnerID: row.RunnerID, AppliedBy: row.AppliedBy, AppliedAt: hubapi.FormatHubTime(row.AppliedAt),
 			ChangeID: row.ChangeID, PullRequestURL: row.PullRequestURL,
 		}
 		if previous, found := definitions[row.PreviousPolicyID]; found {
@@ -323,26 +320,26 @@ func (s *Service) decodeTenantProjectPolicy(ctx context.Context, organization tr
 	if err != nil {
 		return policy.Approval{}, err
 	}
-	return decodeProjectPolicy(ctx, string(organization)+"/"+string(project), revision.PolicyID, string(raw), policy.Approval{ApprovedBy: revision.ApprovedBy, ApprovedAt: formatHubTime(revision.ApprovedAt)})
+	return decodeProjectPolicy(ctx, string(organization)+"/"+string(project), revision.PolicyID, string(raw), policy.Approval{ApprovedBy: revision.ApprovedBy, ApprovedAt: hubapi.FormatHubTime(revision.ApprovedAt)})
 }
 
 func (s *Service) approveProjectPolicy(c echo.Context) error {
 	var change policy.Change
-	if err := decodeAPIJSON(c, &change); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &change); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if change.ObservedPolicyID == "" {
 		if err := change.Policy.Validate(); err != nil {
-			return s.nativeAPIError(c, nativeInvalid(err.Error()))
+			return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
 		}
 	}
 	_, err := s.policyScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok || credential.ID == "" {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential, requireHostedAdmin: true}
 	approval, err := s.approveTenantProjectPolicy(c.Request().Context(), scope, credential.ID, change)
@@ -364,7 +361,7 @@ type tenantPolicyCommandReceipt struct {
 
 func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, scope nativeScope, actor string, change policy.Change, command *tenantPolicyCommandReceipt) (policy.Approval, error) {
 	if s.config.AccessRepository == nil {
-		return policy.Approval{}, nativeNotFound()
+		return policy.Approval{}, hubapi.NativeNotFound()
 	}
 	previous, previousRevision, err := s.readTenantProjectPolicyRevision(ctx, scope.organization, scope.project)
 	if err != nil {
@@ -372,7 +369,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 	}
 	if change.ObservedPolicyID != "" {
 		if !reflect.ValueOf(change.Policy).IsZero() {
-			return policy.Approval{}, nativeInvalid("policy must be omitted when observed_policy_id is supplied")
+			return policy.Approval{}, hubapi.NativeInvalid("policy must be omitted when observed_policy_id is supplied")
 		}
 		if previous.Policy.ID == change.ObservedPolicyID {
 			return s.reconcileTenantPolicyApproval(ctx, scope, previous, previousRevision, command)
@@ -385,10 +382,10 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 	}
 	resolved, err := workflowconfig.ResolveSharedPolicy(change.Policy)
 	if err != nil {
-		return policy.Approval{}, nativeInvalid(err.Error())
+		return policy.Approval{}, hubapi.NativeInvalid(err.Error())
 	}
 	if previous.Policy.ID != change.ExpectedID && previous.Policy.ID != resolved.ID {
-		return policy.Approval{}, policyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
+		return policy.Approval{}, hubapi.PolicyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
 	}
 	if previous.Policy.ID == resolved.ID {
 		return s.reconcileTenantPolicyApproval(ctx, scope, previous, previousRevision, command)
@@ -424,7 +421,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 	if err != nil {
 		return policy.Approval{}, err
 	}
-	result := policy.Approval{Policy: canonical, ApprovedBy: actor, ApprovedAt: formatHubTime(now)}
+	result := policy.Approval{Policy: canonical, ApprovedBy: actor, ApprovedAt: hubapi.FormatHubTime(now)}
 	var receipt eventstore.Receipt
 	if command != nil {
 		response, err := json.Marshal(result)
@@ -449,7 +446,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 			prior, err := writer.Receipt(ctx, scope.credential.ID, command.Operation, command.Key)
 			if err == nil {
 				if prior.RequestHash != command.Hash {
-					return nativeConflict(0)
+					return hubapi.NativeConflict(0)
 				}
 				receiptReplayed = true
 				return nil
@@ -471,7 +468,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 				return err
 			}
 			if !current {
-				return policyMismatch("Observed repository policy is no longer reported by an authorized runner")
+				return hubapi.PolicyMismatch("Observed repository policy is no longer reported by an authorized runner")
 			}
 		}
 		current, err := writer.ProjectPolicy(ctx, scope.project)
@@ -482,7 +479,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 		}
 		currentID := current.PolicyID
 		if currentID != change.ExpectedID && currentID != resolved.ID {
-			return policyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
+			return hubapi.PolicyMismatch("Approved policy changed; inspect the current policy and supply its expected_policy_id")
 		}
 		if currentID == resolved.ID {
 			if err := applyDefaultReviewPolicy(ctx, writer, review, actor, now); err != nil {
@@ -589,7 +586,7 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope nativ
 			prior, err := writer.Receipt(ctx, scope.credential.ID, command.Operation, command.Key)
 			if err == nil {
 				if prior.RequestHash != command.Hash {
-					return nativeConflict(0)
+					return hubapi.NativeConflict(0)
 				}
 				replayed = true
 				replayReceipt = prior
@@ -647,7 +644,7 @@ func (s *Service) readTenantObservedPolicy(ctx context.Context, organization tra
 		return policy.Descriptor{}, err
 	}
 	if len(rows) == 0 {
-		return policy.Descriptor{}, policyMismatch("Observed repository policy is no longer reported by an authorized runner")
+		return policy.Descriptor{}, hubapi.PolicyMismatch("Observed repository policy is no longer reported by an authorized runner")
 	}
 	row := rows[0]
 	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, eventstore.Receipt{
@@ -669,21 +666,21 @@ func (s *Service) readTenantObservedPolicy(ctx context.Context, organization tra
 
 func (s *Service) observeProjectPolicy(c echo.Context) error {
 	var observation policy.Observation
-	if err := decodeAPIJSON(c, &observation); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &observation); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	descriptor, err := workflowconfig.ResolveSharedPolicy(observation.Descriptor)
 	if err != nil {
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
 	}
 	observation.Descriptor = descriptor
 	_, err = s.policyScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok || credential.ID == "" {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	reporter := credential.Runner.RunnerID
 	if reporter == "" {
@@ -695,9 +692,9 @@ func (s *Service) observeProjectPolicy(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeScope, credential apiCredential, reporter string, observation policy.Observation) error {
+func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeScope, credential hubapi.APICredential, reporter string, observation policy.Observation) error {
 	if s.config.AccessRepository == nil || credential.Runner.RunnerID == "" || credential.Runner.OrganizationID != scope.organization {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	previous, previousRevision, err := s.readTenantProjectPolicyRevision(ctx, scope.organization, scope.project)
 	if err != nil {
@@ -777,14 +774,14 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 			return err
 		}
 		if identity.RunnerID != credential.Runner.RunnerID || identity.OrganizationID != scope.organization || identity.RemovedAt != nil || !identity.ExpiresAt.After(now) {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		allowed, err := writer.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
 		if err != nil {
 			return err
 		}
 		if !allowed {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		if err := writer.LockWorkItemProject(ctx, scope.project); err != nil {
 			return err
@@ -826,7 +823,7 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope nativeSc
 	if err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, writeObservation); err != nil {
 		return err
 	}
-	return &nativeError{Code: "workflow_conflict", Message: "Repository workflow removes a state used by work items; observation retained without approval", status: http.StatusConflict}
+	return &hubapi.NativeError{Code: "workflow_conflict", Message: "Repository workflow removes a state used by work items; observation retained without approval", Status: http.StatusConflict}
 }
 
 func (s *Service) tenantProjectPolicyRevisionForDescriptor(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, descriptor policy.Descriptor, content *eventstore.Content) (policystore.Revision, bool, error) {
@@ -897,7 +894,7 @@ func sameTenantProjectPolicyRevisionContent(left, right policystore.Revision) bo
 
 func (s *Service) prepareObservedPolicyLanding(ctx context.Context, scope nativeScope, observation policy.Observation) (eventstore.PolicyLanding, error) {
 	source := observation.Source
-	if observation.Workflow == nil || source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != observation.Workflow.Revision {
+	if observation.Workflow == nil || source == nil || !hubapi.ValidCommitID(source.Commit) || !hubapi.ValidCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != observation.Workflow.Revision {
 		return eventstore.PolicyLanding{}, nil
 	}
 	var landing eventstore.PolicyLanding
@@ -970,7 +967,7 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 			repository = project.Settings.Repository
 		}
 		source := observation.Source
-		sourceUnavailable := source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision || repository == "" || !strings.EqualFold(repository, source.Repository)
+		sourceUnavailable := source == nil || !hubapi.ValidCommitID(source.Commit) || !hubapi.ValidCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision || repository == "" || !strings.EqualFold(repository, source.Repository)
 		if !sourceUnavailable {
 			landing, err = writer.ProjectPolicyLanding(ctx, scope.project, repository, source.Commit, source.DefaultBranch)
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -1024,7 +1021,7 @@ func reconcileTenantWorkflowPolicy(ctx context.Context, writer tenantstore.Write
 	}
 	if descriptor.Workflow == nil {
 		if project.Core.WorkflowSource != "" {
-			return policyMismatch("Repository-controlled workflow requires a resolved workflow in the policy descriptor; inspect the repository definition with an updated runner")
+			return hubapi.PolicyMismatch("Repository-controlled workflow requires a resolved workflow in the policy descriptor; inspect the repository definition with an updated runner")
 		}
 		return nil
 	}
@@ -1076,18 +1073,18 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	var request struct {
 		ExpectedID string `json:"expected_policy_id"`
 	}
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	_, err := s.policyScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok || credential.ID == "" {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	return s.nativeAPIError(c, &nativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", status: http.StatusGone, publicMessage: true})
+	return s.nativeAPIError(c, &hubapi.NativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", Status: http.StatusGone, PublicMessage: true})
 }
 
 type preparedDefaultReviewPolicy struct {
@@ -1161,7 +1158,7 @@ func applyDefaultReviewPolicy(ctx context.Context, w tenantstore.Writer, prepare
 		return nil
 	}
 	if current.ReviewPolicyID != prepared.current.ReviewPolicyID || current.PolicyRevisionID != prepared.current.PolicyRevisionID || current.Revision != prepared.current.Revision {
-		return policyMismatch("Change review policy changed; read the current policy and retry")
+		return hubapi.PolicyMismatch("Change review policy changed; read the current policy and retry")
 	}
 	next := prepared.next
 	next.UpdatedBy, next.UpdatedAt = actor, now
@@ -1329,7 +1326,7 @@ func validateCloudWorkflowPolicy(markdown string, descriptor policy.Descriptor) 
 	}
 	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(markdown)})
 	if err != nil {
-		return policyMismatch("Saved Cloud workflow is invalid; correct its Markdown definition before approving execution")
+		return hubapi.PolicyMismatch("Saved Cloud workflow is invalid; correct its Markdown definition before approving execution")
 	}
 	if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
 		workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
@@ -1343,14 +1340,14 @@ func validateCloudWorkflowPolicy(markdown string, descriptor policy.Descriptor) 
 	} else if descriptor.Configuration != nil && descriptor.Configuration.DefinitionDigest == workflow.SourceHash {
 		return nil
 	}
-	return policyMismatch("Cloud workflow changed; load its current Markdown definition and approve the resolved policy before claiming work")
+	return hubapi.PolicyMismatch("Cloud workflow changed; load its current Markdown definition and approve the resolved policy before claiming work")
 }
 
 func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (string, error) {
 	if d.postgres == nil || d.hostedOrganization == "" {
-		return "", workItemStorageUnavailable()
+		return "", hubapi.NativeWorkItemStorageUnavailable()
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var id string
 	err := d.postgres.ReadTenant(ctx, d.hostedOrganization, corestore.Serving, func(reader tenantstore.Reader) error {

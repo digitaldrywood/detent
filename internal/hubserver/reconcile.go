@@ -3,6 +3,8 @@ package hubserver
 import (
 	"context"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 type reconcileTarget struct {
@@ -15,5 +17,5 @@ type reconcileTarget struct {
 }
 
 func (d *database) reconcileTargets(ctx context.Context) ([]reconcileTarget, error) {
-	return nil, ErrPostgresFeatureUnavailable
+	return nil, hubapi.ErrPostgresFeatureUnavailable
 }

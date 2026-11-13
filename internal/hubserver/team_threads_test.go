@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -55,7 +56,7 @@ func threadBase(f nativeFixture) string {
 
 func createTestThread(t *testing.T, f nativeFixture, scope string, issue tracker.NativeWorkItemID) teamThread {
 	t.Helper()
-	in := teamThreadInput{Scope: scope, Title: "Shared research", Key: newNativeID("intent")}
+	in := teamThreadInput{Scope: scope, Title: "Shared research", Key: hubapi.NewID("intent")}
 	if scope == "project" {
 		in.ProjectID = string(f.project.ID)
 	}
@@ -290,7 +291,7 @@ func TestTeamThreadHostedAgentAttribution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Kind: "personal", Name: "Example client", Scope: apiScopeOperator, Issuer: &credential, KeyScope: apikey.ScopeWrite, ProjectAccess: hostedProjectsAll})
+	key, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Kind: "personal", Name: "Example client", Scope: hubapi.APIScopeOperator, Issuer: &credential, KeyScope: apikey.ScopeWrite, ProjectAccess: hubapi.HostedProjectsAll})
 	if err != nil {
 		t.Fatal(err)
 	}

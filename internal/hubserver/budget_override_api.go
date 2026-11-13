@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -38,10 +39,10 @@ type budgetOverrideCommand struct {
 }
 
 func (s *Service) registerBudgetOverrideRoutes(e *echo.Echo) {
-	e.GET(nativeBase+"/budget-override", s.getBudgetOverride, s.requireNativeScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
-	write := s.requireNativeScope(apiScopeOperator, apiScopeAdmin)
-	e.PUT(nativeBase+"/budget-override", s.putBudgetOverride, write)
-	e.DELETE(nativeBase+"/budget-override", s.deleteBudgetOverride, write)
+	e.GET(hubapi.NativeBase+"/budget-override", s.getBudgetOverride, s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator, hubapi.APIScopeAdmin))
+	write := s.requireNativeScope(hubapi.APIScopeOperator, hubapi.APIScopeAdmin)
+	e.PUT(hubapi.NativeBase+"/budget-override", s.putBudgetOverride, write)
+	e.DELETE(hubapi.NativeBase+"/budget-override", s.deleteBudgetOverride, write)
 }
 
 func budgetOverrideResponse(value postgres.BudgetOverride) budgetOverrideValue {
@@ -49,7 +50,7 @@ func budgetOverrideResponse(value postgres.BudgetOverride) budgetOverrideValue {
 }
 
 func (s *Service) getBudgetOverride(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
 	var value postgres.BudgetOverride
@@ -59,7 +60,7 @@ func (s *Service) getBudgetOverride(c echo.Context) error {
 		}
 		owner, ok := r.(postgres.BudgetOverrideReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		value, err = owner.ActiveBudgetOverride(ctx, scope.project, s.config.now())
@@ -82,13 +83,13 @@ func (s *Service) deleteBudgetOverride(c echo.Context) error {
 func (s *Service) writeBudgetOverride(c echo.Context, clear bool) error {
 	var command budgetOverrideCommand
 	if err := c.Bind(&command); err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Invalid budget override request"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid budget override request"))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	result, err := s.executeBudgetOverride(ctx, nativeRequestScope(c), command, clear)
 	if errors.Is(err, postgres.ErrBudgetOverride) {
-		err = nativePublicInvalid("Budget override exceeds the current project policy")
+		err = hubapi.NativePublicInvalid("Budget override exceeds the current project policy")
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -103,7 +104,7 @@ func (s *Service) budgetOverridePolicy(ctx context.Context, record projectstore.
 	}
 	workflow, err := config.ParseWorkflow([]byte(markdown))
 	if err != nil {
-		return postgres.BudgetOverridePolicy{}, nativePublicInvalid("Project workflow is invalid")
+		return postgres.BudgetOverridePolicy{}, hubapi.NativePublicInvalid("Project workflow is invalid")
 	}
 	value := workflow.Config.Budget
 	duration := time.Duration(value.OverrideMaxDurationSeconds) * time.Second
@@ -143,7 +144,7 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope nativeScope, 
 		}
 		owner, ok := r.(postgres.BudgetOverrideReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		previous, err = owner.ActiveBudgetOverride(ctx, scope.project, now)
 		if !clear && errors.Is(err, corestore.ErrNotFound) {
@@ -173,7 +174,7 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return nil, err
 	}
-	hash, err := nativeCommandHash(input)
+	hash, err := hubapi.CommandHash(input)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +194,7 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope nativeScope, 
 		existing, err := w.ReplayReceipt(ctx, scope.credential.ID, operation, command.IdempotencyKey)
 		if err == nil {
 			if existing.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			replay = &existing
 			return nil
@@ -203,7 +204,7 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope nativeScope, 
 		}
 		owner, ok := w.(postgres.BudgetOverrideCommandWriter)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		if clear {
 			err = owner.ClearBudgetOverride(ctx, scope.project)

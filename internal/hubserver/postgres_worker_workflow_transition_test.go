@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -66,7 +67,7 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 	tokenHash := apikey.HashToken(secret)
 	expires := startedAt.Add(time.Hour)
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example runner", Hash: tokenHash, Fingerprint: tokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: startedAt, UpdatedAt: startedAt, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example runner", Hash: tokenHash, Fingerprint: hubapi.TokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: startedAt, UpdatedAt: startedAt, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credentialID, ProjectID: project.ID}); err != nil {
@@ -93,7 +94,7 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 	requireNativeStatus(t, secondResponse, http.StatusOK)
 	var second tracker.NativeIssue
 	decodeHubResponse(t, secondResponse, &second)
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: credentialID, Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
+	scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
 	acquire := func(item tracker.NativeIssue, session string) leasestore.Lease {
 		t.Helper()
 		var lease leasestore.Lease
@@ -135,7 +136,7 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 	if service.database.postgres == nil || service.config.TenantRepository == nil {
 		t.Fatal("required PostgreSQL fixture owners are not configured")
 	}
-	projectGetPath := strings.Replace(nativeBase, ":organization", string(organization.ID), 1)
+	projectGetPath := strings.Replace(hubapi.NativeBase, ":organization", string(organization.ID), 1)
 	projectGetPath = strings.Replace(projectGetPath, ":project", string(project.ID), 1)
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, projectGetPath+"/policy", testHubAdminToken, nil), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, itemsPath+"/"+string(issue.WorkItemID), testHubAdminToken, nil), http.StatusOK)

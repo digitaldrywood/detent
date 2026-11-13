@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -29,17 +30,17 @@ import (
 )
 
 func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name string) ([]byte, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	var secret accessstore.Secret
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	err := repository.ReadTenantSnapshot(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.SpriteReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		actor, err := owner.SpritePoolAuthority(readCtx, s.config.now())
 		if err != nil {
@@ -129,13 +130,13 @@ func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeSco
 	created := false
 	for {
 		name, err := names.next(func(name string) (bool, error) {
-			readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+			readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 			defer cancel()
 			var exists bool
 			err := s.accessRead(readCtx, scope.organization, func(r tenantstore.Reader) error {
 				owner, ok := r.(postgres.SpriteReader)
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				_, err := owner.SpriteMember(readCtx, name)
 				exists = err == nil
@@ -210,7 +211,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return false, err
 	}
-	enrollment := runnerauth.Enrollment{ID: newNativeID("enrollment"), Token: token, ExpiresAt: now.Add(runnerauth.MaxEnrollmentTTL)}
+	enrollment := runnerauth.Enrollment{ID: hubapi.NewID("enrollment"), Token: token, ExpiresAt: now.Add(runnerauth.MaxEnrollmentTTL)}
 	reserved := false
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
@@ -218,7 +219,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 		}
 		owner, ok := w.(postgres.SpriteWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		actor, err := owner.SpritePoolAuthority(ctx, s.config.now())
 		if err != nil {
@@ -373,7 +374,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 }
 
 func (s *Service) requireSpriteMemberWanted(ctx context.Context, scope nativeScope, name string) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var wanted bool
 	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
@@ -397,7 +398,7 @@ func (s *Service) cancelPoolSpriteReservation(ctx context.Context, scope nativeS
 		}
 		owner, ok := w.(postgres.SpriteReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		row, err := owner.SpriteMember(ctx, member.Name)
 		if err != nil {
@@ -432,7 +433,7 @@ func (s *Service) retirePoolSpriteReservation(ctx context.Context, scope nativeS
 		}
 		owner, ok := w.(postgres.SpriteWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		row, err := owner.SpriteMember(ctx, name)
 		if err != nil {
@@ -465,7 +466,7 @@ func (s *Service) retirePoolSpriteReservation(ctx context.Context, scope nativeS
 }
 
 func (s *Service) poolSpriteTokenAvailable(ctx context.Context, scope nativeScope) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { _, err := r.AccessSecret(ctx, "", flySpritesToken); return err })
 	return err == nil, err
@@ -474,7 +475,7 @@ func (s *Service) poolSpriteTokenAvailable(ctx context.Context, scope nativeScop
 func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, member spritePoolMember, settings spritePoolSettings, enrollment runnerauth.Enrollment) error {
 	version := "v" + strings.TrimPrefix(s.config.Version, "v")
 	if !regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(version) {
-		return nativePublicInvalid("Sprite provisioning requires a Hub built from a pinned release")
+		return hubapi.NativePublicInvalid("Sprite provisioning requires a Hub built from a pinned release")
 	}
 	body, err := json.Marshal(struct {
 		Name string `json:"name"`
@@ -609,7 +610,7 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 		}
 		owner, ok := w.(postgres.SpriteReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		row, err := owner.SpriteMember(ctx, member.Name)
 		if err != nil {
@@ -722,7 +723,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 		}
 		owner, ok := w.(postgres.SpriteWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		actor, err = owner.SpritePoolAuthority(ctx, s.config.now())
@@ -816,7 +817,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 	if readErr != nil || response.StatusCode != http.StatusNotFound && (response.StatusCode < 200 || response.StatusCode > 299) {
 		return errSpritesValidation
 	}
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubReadTimeout)
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
 	defer cancel()
 	return s.config.TenantRepository.WriteTenant(cleanup, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(cleanup); err != nil {
@@ -824,7 +825,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 		}
 		owner, ok := w.(postgres.SpriteWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		currentActor, err := owner.SpritePoolAuthority(cleanup, s.config.now())
 		if err != nil {

@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -68,7 +69,7 @@ func (s *Service) projectOnboardingBatchTenant(ctx context.Context, organization
 	values := make([]onboarding.Project, len(rows))
 	for i, row := range rows {
 		if row.Progress.Artifacts == "customer" {
-			return nil, &nativeError{Code: "storage_owner_unavailable", Message: "Project artifact services are unavailable", status: http.StatusServiceUnavailable, publicMessage: true}
+			return nil, &hubapi.NativeError{Code: "storage_owner_unavailable", Message: "Project artifact services are unavailable", Status: http.StatusServiceUnavailable, PublicMessage: true}
 		}
 		values[i] = onboarding.Project{Repository: row.Repository, Progress: row.Progress, Runners: []runnerauth.Eligibility{}}
 		if row.Repository == "" {
@@ -122,7 +123,7 @@ func (s *Service) projectOnboardingBatchTenant(ctx context.Context, organization
 				raw, err := eventstore.NewContent(s.runDetailStoreFor(policyCtx)).Receipt(policyCtx, eventstore.Receipt{OrganizationID: organization, PayloadObjectKey: revision.PayloadObjectKey, PayloadSHA256: revision.PayloadSHA256, PayloadBytes: revision.PayloadBytes, PayloadContentBytes: revision.PayloadContentBytes})
 				var approval policy.Approval
 				if err == nil {
-					approval, err = decodeProjectPolicy(policyCtx, string(organization)+"/"+string(rows[i].ProjectID), revision.PolicyID, string(raw), policy.Approval{ApprovedBy: revision.ApprovedBy, ApprovedAt: formatHubTime(revision.ApprovedAt)})
+					approval, err = decodeProjectPolicy(policyCtx, string(organization)+"/"+string(rows[i].ProjectID), revision.PolicyID, string(raw), policy.Approval{ApprovedBy: revision.ApprovedBy, ApprovedAt: hubapi.FormatHubTime(revision.ApprovedAt)})
 				}
 				if err != nil {
 					failureMu.Lock()

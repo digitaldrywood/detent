@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/activity"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportdata"
 
 	"github.com/labstack/echo/v4"
@@ -13,33 +14,29 @@ import (
 )
 
 func (s *Service) activityHTTP() *activity.HTTPService {
-	return activity.NewHTTP(activity.HTTPDeps{Service: s.activityService, Unavailable: errHubOperatorUnavailable, Now: s.config.now, Available: func() bool { return s.database != nil && s.config.Hosted != nil }, ReadError: safeWorkReadError, Result: hubOperatorResult, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) }, Refuse: func(c echo.Context, status int, code, reason string, response any) error {
+	return activity.NewHTTP(activity.HTTPDeps{Service: s.activityService, Unavailable: errHubOperatorUnavailable, Now: s.config.now, Available: func() bool { return s.database != nil && s.config.Hosted != nil }, ReadError: hubapi.SafeWorkReadError, Result: hubOperatorResult, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) }, Refuse: func(c echo.Context, status int, code, reason string, response any) error {
 		return s.refusedAPIError(c, status, code, reason, response)
 	}, Caller: func(ctx context.Context) (activity.Caller, error) {
 		credential, err := currentHubOperator(ctx)
 		return s.activityCaller(credential), err
 	}})
 }
-func (s *Service) activityCaller(credential apiCredential) activity.Caller {
+func (s *Service) activityCaller(credential hubapi.APICredential) activity.Caller {
 	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential}
-	return activity.Caller{Credential: authCredential(credential), Scope: s.featureScope(scope), IsNotFound: isNativeNotFound}
+	return activity.Caller{Credential: authCredential(credential), Scope: s.featureScope(scope), IsNotFound: hubapi.IsNativeNotFound}
 }
 func (s *Service) executeActivityRead(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	return s.activityHTTP().Execute(ctx, call)
 }
 func (s *Service) hostedActivity(c echo.Context) error { return s.activityHTTP().Serve(c) }
 func (s *Service) activityService() *activity.Service {
-	return activity.New(activity.Deps{Repository: s.config.TenantRepository, Details: s.runDetailStore, Now: s.config.now, Organization: s.appOrganizationID, MissingParticipants: ErrProjectParticipants, Unavailable: errHubOperatorUnavailable})
+	return activity.New(activity.Deps{Repository: s.config.TenantRepository, Details: s.runDetailStore, Now: s.config.now, Organization: s.appOrganizationID, MissingParticipants: hubapi.ErrProjectParticipants, Unavailable: errHubOperatorUnavailable})
 }
-func (s *Service) readActivityReport(ctx context.Context, credential apiCredential, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow) (operatortool.ActivityReport, error) {
+func (s *Service) readActivityReport(ctx context.Context, credential hubapi.APICredential, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow) (operatortool.ActivityReport, error) {
 	out, err := s.activityService().Read(ctx, s.activityCaller(credential), r, w)
-	return out, fromFeatureError(err)
+	return out, hubapi.FromFeatureError(err)
 }
 
 func readDiagnosticObjects[T, R any](records []T, read func(T) (R, error)) ([]R, []error) {
 	return reportdata.ReadObjects(records, read)
-}
-
-func sampledDuration(values []float64) operatortool.AnalyticsDuration {
-	return reportdata.SampledDuration(values)
 }

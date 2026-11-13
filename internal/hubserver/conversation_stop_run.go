@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -77,7 +78,7 @@ func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversa
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) || err == nil && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(server.config.now())) {
-		return nil, nativePublicInvalid("This item has no active runner attempt")
+		return nil, hubapi.NativePublicInvalid("This item has no active runner attempt")
 	}
 	if err != nil {
 		return nil, err

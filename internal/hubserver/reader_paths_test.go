@@ -29,6 +29,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -649,7 +650,7 @@ func TestReadPoolExhaustionReturnsLoggedDeadline(t *testing.T) {
 	var canceledBefore int64
 	saturate := true
 	handler := echo.New()
-	handler.GET(nativeBase+"/onboarding", func(c echo.Context) error {
+	handler.GET(hubapi.NativeBase+"/onboarding", func(c echo.Context) error {
 		if !saturate {
 			return service.getOnboardingPage(c)
 		}
@@ -676,7 +677,7 @@ func TestReadPoolExhaustionReturnsLoggedDeadline(t *testing.T) {
 		})
 		c.SetRequest(c.Request().WithContext(ctx))
 		return service.getOnboardingPage(c)
-	}, service.requireAPIScope(apiScopeOperator, apiScopeWorker, apiScopeAdmin))
+	}, service.requireAPIScope(hubapi.APIScopeOperator, hubapi.APIScopeWorker, hubapi.APIScopeAdmin))
 
 	request := newHubAPIRequest(t, http.MethodGet, f.base+"/onboarding", f.token, nil)
 	response := httptest.NewRecorder()

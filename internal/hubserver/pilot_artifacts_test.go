@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -79,7 +80,7 @@ func pilotUploadArtifact(t *testing.T, f *browserHostedFixture, issue tracker.Na
 	binding := artifact.Binding{ServiceID: cfg.ServiceID, Origin: "http://" + gateway.Listener.Addr().String(), Mode: "customer", PublisherTokenID: "pilot-publisher"}
 	now := f.service.config.now()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: tracker.OrganizationID(organization), ID: binding.PublisherTokenID, Name: "Example publisher", Hash: apikey.HashToken(publisher), Scope: string(apiScopeWorker), NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: tracker.OrganizationID(organization), ID: binding.PublisherTokenID, Name: "Example publisher", Hash: apikey.HashToken(publisher), Scope: string(hubapi.APIScopeWorker), NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(organization), TokenID: binding.PublisherTokenID, ProjectID: tracker.ProjectID(f.project)}); err != nil {

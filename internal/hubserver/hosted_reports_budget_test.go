@@ -21,6 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -108,7 +109,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 				statements = append(statements, tracedStatement{query, values})
 				mu.Unlock()
 			}}
-			ctx, cancel := context.WithTimeout(withRequestTiming(t.Context(), timing), hubReadTimeout)
+			ctx, cancel := context.WithTimeout(withRequestTiming(t.Context(), timing), hubapi.ReadTimeout)
 			defer cancel()
 			request := httptest.NewRequest(http.MethodGet, browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+test.rangeName, nil).WithContext(ctx)
 			request.AddCookie(f.cookies["owner"])
@@ -116,7 +117,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 			started := time.Now()
 			f.service.Handler().ServeHTTP(response, request)
 			elapsed := time.Since(started)
-			if response.Code != http.StatusOK || elapsed >= hubReadTimeout {
+			if response.Code != http.StatusOK || elapsed >= hubapi.ReadTimeout {
 				t.Fatalf("report took %s: HTTP %d: %s", elapsed, response.Code, response.Body.String())
 			}
 			var report hostedReportsReport

@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -92,7 +93,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Example project", Slug: "example-project", Profile: "native"}, States: nativeFixtureStates()}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: tokenID, Name: "Example runner", Hash: workerHash, Fingerprint: tokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: tokenID, Name: "Example runner", Hash: workerHash, Fingerprint: hubapi.TokenFingerprint(workerHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: tokenID, ProjectID: project}); err != nil {
@@ -122,7 +123,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: organization, LeaseID: lease.LeaseID, RunnerID: runnerID, AssignedAt: now}); err != nil {
 				return err
 			}
-			attempt, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: newNativeID("attempt"), Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: newNativeID("run"), Sequence: 1, Status: "running", StartedAt: now, DispatchGeneration: 1, PayloadObjectKey: "example/start"})
+			attempt, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: hubapi.NewID("attempt"), Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: hubapi.NewID("run"), Sequence: 1, Status: "running", StartedAt: now, DispatchGeneration: 1, PayloadObjectKey: "example/start"})
 			if err != nil {
 				return err
 			}
@@ -170,7 +171,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 				{Path: "large.go", Status: tracker.DiffStatusModified, Additions: 5, Patch: strings.Repeat("x", tracker.MaxDiffPatchBytes+512)},
 			},
 		}
-		path := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/attempts/"+fixture.attempt.ID+"/diff", ":organization", string(organization)), ":project", string(project))
+		path := strings.ReplaceAll(strings.ReplaceAll(hubapi.NativeBase+"/attempts/"+fixture.attempt.ID+"/diff", ":organization", string(organization)), ":project", string(project))
 		response := postAttemptDiffWithConcurrentAuthority(t, service, admin, organization, tokenID, path, workerToken, request, index == 0)
 		requireNativeStatus(t, response, http.StatusAccepted)
 		var receipt tracker.AttemptDiffReceipt
@@ -304,7 +305,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		itemPath := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/work-items/"+string(fixture.item)+"/diff", ":organization", string(organization)), ":project", string(project))
+		itemPath := strings.ReplaceAll(strings.ReplaceAll(hubapi.NativeBase+"/work-items/"+string(fixture.item)+"/diff", ":organization", string(organization)), ":project", string(project))
 		itemRead := performHubAPIRequest(t, service, http.MethodGet, itemPath, workerToken, nil)
 		requireNativeStatus(t, itemRead, http.StatusOK)
 		var itemDiff tracker.WorkItemDiff
@@ -320,7 +321,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 		HeadSHA:    strings.Repeat("c", 40),
 		Files:      []tracker.AttemptDiffFile{{Path: "next.go", Status: tracker.DiffStatusModified, Additions: 9, Patch: "+next"}},
 	}
-	firstPath := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/attempts/"+first.attempt.ID+"/diff", ":organization", string(organization)), ":project", string(project))
+	firstPath := strings.ReplaceAll(strings.ReplaceAll(hubapi.NativeBase+"/attempts/"+first.attempt.ID+"/diff", ":organization", string(organization)), ":project", string(project))
 	secondResponse := performHubAPIRequest(t, service, http.MethodPost, firstPath, workerToken, secondGeneration)
 	requireNativeStatus(t, secondResponse, http.StatusAccepted)
 	var secondReceipt tracker.AttemptDiffReceipt
@@ -339,18 +340,18 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 	if err := json.Unmarshal(firstRead.Body.Bytes(), &firstDiff); err != nil || firstDiff.ID == latestDiff.ID || firstDiff.Generation.Seq != 1 {
 		t.Fatalf("explicit generation diff=%+v error=%v body=%s", firstDiff, err, firstRead.Body.String())
 	}
-	emptyItemPath := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/work-items/"+string(emptyItem)+"/diff", ":organization", string(organization)), ":project", string(project))
+	emptyItemPath := strings.ReplaceAll(strings.ReplaceAll(hubapi.NativeBase+"/work-items/"+string(emptyItem)+"/diff", ":organization", string(organization)), ":project", string(project))
 	emptyRead := performHubAPIRequest(t, service, http.MethodGet, emptyItemPath, workerToken, nil)
 	requireNativeStatus(t, emptyRead, http.StatusOK)
 	var emptyDiff tracker.WorkItemDiff
 	if err := json.Unmarshal(emptyRead.Body.Bytes(), &emptyDiff); err != nil || emptyDiff.Diff != nil {
 		t.Fatalf("empty work item diff=%+v error=%v body=%s", emptyDiff, err, emptyRead.Body.String())
 	}
-	missingItemPath := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/work-items/wi_missing/diff", ":organization", string(organization)), ":project", string(project))
+	missingItemPath := strings.ReplaceAll(strings.ReplaceAll(hubapi.NativeBase+"/work-items/wi_missing/diff", ":organization", string(organization)), ":project", string(project))
 	if response := performHubAPIRequest(t, service, http.MethodGet, missingItemPath, workerToken, nil); response.Code != http.StatusNotFound {
 		t.Fatalf("missing work item diff status=%d body=%s", response.Code, response.Body.String())
 	}
-	wrongPath := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/attempts/"+fixtures[1].attempt.ID+"/diff", ":organization", string(organization)), ":project", string(project))
+	wrongPath := strings.ReplaceAll(strings.ReplaceAll(hubapi.NativeBase+"/attempts/"+fixtures[1].attempt.ID+"/diff", ":organization", string(organization)), ":project", string(project))
 	staleFence := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: fixtures[1].attempt.ID, RunnerID: runnerID, LeaseID: tracker.LeaseID(fixtures[1].lease.LeaseID), FencingToken: tracker.FencingToken(fixtures[1].lease.FencingToken + 1)}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 2}}
 	if response := performHubAPIRequest(t, service, http.MethodPost, wrongPath, workerToken, staleFence); response.Code != http.StatusConflict {
 		t.Fatalf("stale fencing token status=%d body=%s", response.Code, response.Body.String())
@@ -459,7 +460,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 			BaseSHA:    strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40),
 			Files: []tracker.AttemptDiffFile{{Path: "object.go", Status: tracker.DiffStatusModified, PatchBody: &body}},
 		}
-		path := strings.ReplaceAll(strings.ReplaceAll(nativeBase+"/attempts/"+fixture.attempt.ID+"/diff", ":organization", string(organization)), ":project", string(project))
+		path := strings.ReplaceAll(strings.ReplaceAll(hubapi.NativeBase+"/attempts/"+fixture.attempt.ID+"/diff", ":organization", string(organization)), ":project", string(project))
 		response := performHubAPIRequest(t, service, http.MethodPost, path, workerToken, request)
 		requireNativeStatus(t, response, http.StatusAccepted)
 		for _, check := range []struct {
@@ -510,8 +511,8 @@ func TestAttemptDiffReadsRequireTypedOwner(t *testing.T) {
 			} else {
 				_, err = service.readWorkItemDiff(t.Context(), nativeScope{}, "item", "attempt")
 			}
-			var unavailable *nativeError
-			if !errors.As(err, &unavailable) || unavailable.status != http.StatusServiceUnavailable {
+			var unavailable *hubapi.NativeError
+			if !errors.As(err, &unavailable) || unavailable.Status != http.StatusServiceUnavailable {
 				t.Fatalf("missing owner error = %v", err)
 			}
 		})

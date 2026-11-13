@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -135,7 +136,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						t.Fatal(err)
 					}
 					expires := time.Now().Add(time.Hour)
-					key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "coordinator", Scope: apiScopeOperator, Issuer: &credential, KeyScope: apikey.ScopeWrite, ExpiresAt: &expires, ProjectIDs: []string{string(f.project)}, ProjectAccess: hostedProjectsSelected})
+					key, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "coordinator", Scope: hubapi.APIScopeOperator, Issuer: &credential, KeyScope: apikey.ScopeWrite, ExpiresAt: &expires, ProjectIDs: []string{string(f.project)}, ProjectAccess: hubapi.HostedProjectsSelected})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -166,7 +167,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				if outcome == "number resolution" {
-					seedArchiveIssues(t, f.service, nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}, 18, "Todo")
+					seedArchiveIssues(t, f.service, nativeScope{organization: "org_security", project: f.project, credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}, 18, "Todo")
 				}
 				response := createIndependentNativeIssue(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "luna-issue"}, Title: "Original issue", Body: nativeContractTestBody, State: "Todo", Labels: []string{"original"}}, func(draft tracker.CreateIssue) *httptest.ResponseRecorder {
 					return request(t, u, http.MethodPost, f.base+"/work-items", draft)
@@ -388,7 +389,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				archiveIDs := []string{string(id)}
 				if tool == string(chat.ActionArchiveItems) {
 					coordinatorActionState(t, f.service, "org_security", f.project, tracker.NativeState{Name: "Merging"}, false)
-					scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
+					scope := nativeScope{organization: "org_security", project: f.project, credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
 					children := 4
 					if outcome == "number resolution" {
 						coordinatorActionState(t, f.service, "org_security", f.project, tracker.NativeState{Name: "Blocked"}, false)
@@ -906,7 +907,7 @@ func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.N
 		err = f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
 			owner, ok := r.(postgres.SpriteReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			members, err := owner.SpriteMembers(t.Context(), "", 1)
 			actual = len(members) > 0
@@ -984,7 +985,7 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 	base := browserHostedOrganizationBase + "/projects/" + f.project
 	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", map[string]any{"idempotency_key": "luna-blocked", "title": "Landing blocked by branch rules", "body": "Enable GitHub pull-request mode and retry." + issueContractTestSections, "state": "Blocked"}, http.StatusOK), &issue)
 	f.workItem = string(issue.WorkItemID)
-	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
+	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
 	archiveIssues := seedArchiveIssues(t, f.service, scope, 5, "Todo")
 	blockedArchive := seedArchiveIssues(t, f.service, scope, 1, "Merging")[0]
 	coordinatorActionWriteIssue(t, f.service, "org_browser_preview", tracker.ProjectID(f.project), blockedArchive.WorkItemID, func(issue *tracker.NativeIssue) { issue.Title = "Running cleanup issue" })
@@ -1440,7 +1441,7 @@ func assertCoordinatorSplitPostgresEffect(t *testing.T, f hostedSecurityFixture,
 				continue
 			}
 			children = append(children, item)
-			if stringValue(item.WorkflowStateName) != "Todo" || item.Priority == nil || *item.Priority != 1 {
+			if hubapi.StringValue(item.WorkflowStateName) != "Todo" || item.Priority == nil || *item.Priority != 1 {
 				t.Fatalf("child lost approved state or priority: %+v", item)
 			}
 			queue, err := r.QueueEntry(ctx, f.project, item.NativeID, string(f.project))
@@ -1605,7 +1606,7 @@ func assertCoordinatorSplitPostgresEffect(t *testing.T, f hostedSecurityFixture,
 		if err != nil {
 			return err
 		}
-		if row.Revision != blocker.Revision || stringValue(row.WorkflowStateName) != "Todo" {
+		if row.Revision != blocker.Revision || hubapi.StringValue(row.WorkflowStateName) != "Todo" {
 			t.Fatalf("dependency assertion leaked its fixture transition: %+v", row)
 		}
 		return nil
@@ -1731,7 +1732,7 @@ func coordinatorActionParkAttempt(t *testing.T, s *Service, organization tracker
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: organization, ProjectID: project, AggregateType: "work_item", AggregateID: id, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "archive-runner"}, RecordedAt: s.config.now(), Data: tracker.CollaborationData{Run: &data}})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization, ProjectID: project, AggregateType: "work_item", AggregateID: id, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "archive-runner"}, RecordedAt: s.config.now(), Data: tracker.CollaborationData{Run: &data}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1841,7 +1842,7 @@ func coordinatorActionPoolChange(t *testing.T, s *Service, change func(*postgres
 	coordinatorFixtureWrite(t, s, "org_security", func(w tenantstore.Writer) error {
 		owner, ok := w.(postgres.SpriteWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		row, err := owner.SpritePool(t.Context())
 		if err != nil {
@@ -1879,7 +1880,7 @@ func coordinatorActionSpriteSeed(t *testing.T, f hostedSecurityFixture, u hosted
 		}
 		owner, ok := w.(postgres.SpriteWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		_, err = owner.PutSpritePool(t.Context(), postgres.SpritePool{OrganizationID: organization, MinRunners: 1, MaxRunners: 1, IdleSeconds: 300, BootstrapObjectKey: &ref.Key, ConfiguredBy: member.PrincipalID, IsolationTier: "native-trusted", PlacementMode: "blended"}, 0)
 		return err

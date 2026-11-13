@@ -7,13 +7,14 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, project string, write bool) (nativeScope, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	permission := apikey.ScopeRead
 	if write {
@@ -37,7 +38,7 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 		return scope, operatortool.ErrInvalidArguments
 	}
 	if e.service.config.TenantRepository == nil {
-		return scope, workItemStorageUnavailable()
+		return scope, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if e.service.config.AccessRepository == nil {
 		return scope, operatortool.ErrAccessDenied
@@ -49,7 +50,7 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 }
 
 func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var request operatortool.ModelSelectionReadRequest
 	if operatortool.DecodeModelSelectionArguments(call, &request) != nil {
@@ -101,14 +102,14 @@ func (e hubProjectExecutor) modelSelectionCommand(ctx context.Context, call oper
 		operation = http.MethodPut + " /api/v2/organizations/" + string(scope.organization) + "/model-selection"
 	}
 	if mode == projectCommandReplay {
-		hash, err := nativeCommandHash(request)
+		hash, err := hubapi.CommandHash(request)
 		if err != nil {
 			return nil, err
 		}
 		raw, _, err := e.service.changeRecordReceipt(ctx, scope, operation, input.RequestID, hash)
 		return raw, err
 	}
-	return e.service.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, nil)
+	return e.service.executeNativeMutation(ctx, scope, hubapi.NativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, nil)
 }
 
 func (e hubProjectExecutor) modelSelectionCatalogAllowed(ctx context.Context, definition operatortool.Definition) bool {
@@ -126,7 +127,7 @@ func (e hubProjectExecutor) modelSelectionCatalogAllowed(ctx context.Context, de
 			return false
 		}
 	}
-	if !definition.Annotations.ReadOnly && (credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin || credential.Hosted != nil && (credential.HostedRole != "owner" && credential.HostedRole != "admin" || credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin))) {
+	if !definition.Annotations.ReadOnly && (credential.Scope != hubapi.APIScopeOperator && credential.Scope != hubapi.APIScopeAdmin || credential.Hosted != nil && (credential.HostedRole != "owner" && credential.HostedRole != "admin" || credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin))) {
 		return false
 	}
 	return true

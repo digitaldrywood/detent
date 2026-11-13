@@ -19,6 +19,7 @@ import (
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -36,9 +37,9 @@ func TestHubOperatorConflictProjection(t *testing.T) {
 		err                 error
 		revision            int64
 	}{
-		{"private revision details", "revision_conflict", "Resource has changed; read its current revision before retrying", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 42, status: http.StatusConflict}, 42},
+		{"private revision details", "revision_conflict", "Resource has changed; read its current revision before retrying", &hubapi.NativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 42, Status: http.StatusConflict}, 42},
 		{"public update refusal", "revision_conflict", "Read get_runner_update", runnerUpdateConflict(42, "Read get_runner_update"), 42},
-		{"private retry details", "idempotency_conflict", "The request_id was already used with different content", &nativeError{Code: "idempotency_conflict", Message: "credential-secret", status: http.StatusConflict}, 0},
+		{"private retry details", "idempotency_conflict", "The request_id was already used with different content", &hubapi.NativeError{Code: "idempotency_conflict", Message: "credential-secret", Status: http.StatusConflict}, 0},
 		{"owner retry conflict", "idempotency_conflict", "The request_id was already used with different content", mutation.ErrConflict, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -55,7 +56,7 @@ func TestHubOperatorRefusalProjection(t *testing.T) {
 	t.Parallel()
 	for _, public := range []bool{false, true} {
 		t.Run(fmt.Sprintf("public=%t", public), func(t *testing.T) {
-			failure := &nativeError{Code: "invalid_request", Message: "Drain the runner before removing it", status: http.StatusUnprocessableEntity, publicMessage: public}
+			failure := &hubapi.NativeError{Code: "invalid_request", Message: "Drain the runner before removing it", Status: http.StatusUnprocessableEntity, PublicMessage: public}
 			err := safeHubOperatorError(fmt.Errorf("private-context: %w", failure))
 			var request *operatortool.RequestError
 			if !public {

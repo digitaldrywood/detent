@@ -1,6 +1,9 @@
 package hubserver
 
-import "github.com/digitaldrywood/detent/internal/hubserver/eventbroker"
+import (
+	"github.com/digitaldrywood/detent/internal/hubserver/eventbroker"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+)
 
 type notificationBroker struct{ *eventbroker.Broker }
 
@@ -10,7 +13,7 @@ type notificationSubscription struct {
 }
 
 func newNotificationBroker() *notificationBroker {
-	return &notificationBroker{eventbroker.New(newNativeID("wait"))}
+	return &notificationBroker{eventbroker.New(hubapi.NewID("wait"))}
 }
 
 func (b *notificationBroker) subscribe(key string) (*notificationSubscription, func()) {

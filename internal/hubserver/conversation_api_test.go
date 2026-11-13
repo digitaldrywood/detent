@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -57,11 +58,11 @@ func newConversationAPIFixture(t *testing.T, cfg *ConversationConfig, clocks ...
 	f := newDefaultNativeFixture(t, config)
 	f.service.registerConversationRoutes(f.service.echo)
 	now := f.service.config.now().UTC().Truncate(time.Microsecond)
-	tokens := []tokenResponse{{ID: newNativeID("credential"), Token: newNativeID("token")}, {ID: newNativeID("credential"), Token: newNativeID("token")}}
+	tokens := []hubapi.TokenResponse{{ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}, {ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		for _, token := range tokens {
 			hash := apikey.HashToken(token.Token)
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: "Example conversation operator " + token.ID, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: string(apiScopeOperator), NativeOnly: true, Kind: "personal", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: "Example conversation operator " + token.ID, Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: string(hubapi.APIScopeOperator), NativeOnly: true, Kind: "personal", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: token.ID, ProjectID: f.project.ID}); err != nil {
@@ -128,7 +129,7 @@ func conversationCreateBody(body map[string]any) map[string]any {
 		filled[name] = value
 	}
 	if _, named := filled["key"]; !named {
-		filled["key"] = newNativeID("cck")
+		filled["key"] = hubapi.NewID("cck")
 	}
 	return filled
 }
@@ -198,14 +199,14 @@ func (f conversationAPIFixture) link(t *testing.T, token, id, key string, share 
 	})
 }
 
-func decodeNativeError(t *testing.T, response *httptest.ResponseRecorder) nativeError {
+func decodeNativeError(t *testing.T, response *httptest.ResponseRecorder) hubapi.NativeError {
 	t.Helper()
-	var failure nativeError
+	var failure hubapi.NativeError
 	decodeHubResponse(t, response, &failure)
 	return failure
 }
 
-func requireNativeError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) nativeError {
+func requireNativeError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) hubapi.NativeError {
 	t.Helper()
 	requireNativeStatus(t, response, status)
 	failure := decodeNativeError(t, response)
@@ -1770,7 +1771,7 @@ func TestConversationPostgresScopeUsesTenantRecords(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	reporterScope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeOperator, HostedRole: "reporter", HostedPrincipal: stringValue(item.ActorPrincipalID)}}
+	reporterScope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{Scope: hubapi.APIScopeOperator, HostedRole: "reporter", HostedPrincipal: hubapi.StringValue(item.ActorPrincipalID)}}
 	if _, _, err := f.service.readWorkItemRecord(t.Context(), reporterScope, linkedResult.Issue.ID); err != nil {
 		t.Fatalf("reporter could not read its own work item: %v", err)
 	}
@@ -1778,8 +1779,8 @@ func TestConversationPostgresScopeUsesTenantRecords(t *testing.T) {
 	if _, _, err := f.service.readWorkItemRecord(t.Context(), reporterScope, linkedResult.Issue.ID); err == nil {
 		t.Fatal("reporter read another principal's work item")
 	} else {
-		var failure *nativeError
-		if !errors.As(err, &failure) || failure.status != http.StatusNotFound {
+		var failure *hubapi.NativeError
+		if !errors.As(err, &failure) || failure.Status != http.StatusNotFound {
 			t.Fatalf("foreign reporter visibility error = %v, want not found", err)
 		}
 	}

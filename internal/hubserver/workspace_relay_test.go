@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -931,7 +932,7 @@ func closeRelayDial(response *http.Response) {
 func (f *relayFixture) action(t *testing.T, name, command string) workspacesession.Action {
 	t.Helper()
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/actions", f.token,
-		map[string]any{"idempotency_key": newNativeID("actkey"), "name": name, "command": command})
+		map[string]any{"idempotency_key": hubapi.NewID("actkey"), "name": name, "command": command})
 	requireNativeStatus(t, response, http.StatusCreated)
 	var authored workspacesession.Action
 	decodeHubResponse(t, response, &authored)
@@ -943,7 +944,7 @@ func (f *relayFixture) queuedRun(t *testing.T, action workspacesession.Action) s
 	t.Helper()
 	response := performHubAPIRequest(t, f.service, http.MethodPost,
 		f.base+"/actions/"+action.ID+"/runs", f.token,
-		map[string]any{"idempotency_key": newNativeID("runkey"), "workspace_id": f.workspace})
+		map[string]any{"idempotency_key": hubapi.NewID("runkey"), "workspace_id": f.workspace})
 	requireNativeStatus(t, response, http.StatusAccepted)
 	var receipt projectActionRunReceipt
 	decodeHubResponse(t, response, &receipt)
@@ -1010,7 +1011,7 @@ func TestWorkspaceRelayRefusesExecWhenTheRunnerDoesNotServeIt(t *testing.T) {
 	// has to offer, so the channel is refused rather than forwarded to a
 	// runner that cannot run anything.
 	action := f.action(t, "Run tests", "go test ./...")
-	person.send(execRunFrame(newNativeID("actionrun"), action))
+	person.send(execRunFrame(hubapi.NewID("actionrun"), action))
 	if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeForbidden {
 		t.Fatalf("exec answered %+v, want forbidden", payload)
 	}
@@ -1026,7 +1027,7 @@ func TestWorkspaceRelayRefusesExecOnAReadOnlyWorkspace(t *testing.T) {
 	// editing. A command writes into that worktree, so the channel is refused
 	// whatever the runner can do.
 	action := f.action(t, "Run tests", "go test ./...")
-	person.send(execRunFrame(newNativeID("actionrun"), action))
+	person.send(execRunFrame(hubapi.NewID("actionrun"), action))
 	if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeForbidden {
 		t.Fatalf("exec on a read-only workspace answered %+v, want forbidden", payload)
 	}
@@ -1324,7 +1325,7 @@ func TestWorkspaceRelayRefusesARunFrameItMayNotStart(t *testing.T) {
 	})
 
 	t.Run("a run frame naming no run at all is not found", func(t *testing.T) {
-		person.send(execRunFrame(newNativeID("actionrun"), action))
+		person.send(execRunFrame(hubapi.NewID("actionrun"), action))
 		if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeNotFound {
 			t.Fatalf("an unknown run answered %+v, want not_found", payload)
 		}
@@ -1670,7 +1671,7 @@ func TestWorkspaceRelayGitWriteAuthority(t *testing.T) {
 				}
 				frame := gitFrame(test.frameType, "Commit from the authority table")
 				if test.exec {
-					frame = execRunFrame(newNativeID("actionrun"), workspacesession.Action{ID: newNativeID("action"), Command: "make test"})
+					frame = execRunFrame(hubapi.NewID("actionrun"), workspacesession.Action{ID: hubapi.NewID("action"), Command: "make test"})
 				}
 				if code := relay.refuseRelayWrite(t.Context(), record, connection, frame); code != test.want {
 					t.Fatalf("refuseRelayWrite = %q, want %q", code, test.want)
@@ -1749,7 +1750,7 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 		{
 			name: "hosted member", organization: organizations[0],
 			principal: relayPrincipal{
-				credential:  apiCredential{Hosted: &auth.HostedIdentity{Subject: "user_ada.lovelace"}},
+				credential:  hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: "user_ada.lovelace"}},
 				subject:     "user_ada.lovelace",
 				principalID: "hosted_ada.lovelace",
 			},
@@ -1758,7 +1759,7 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 		{
 			name: "same subject in second tenant", organization: organizations[1],
 			principal: relayPrincipal{
-				credential:  apiCredential{Hosted: &auth.HostedIdentity{Subject: "user_ada.lovelace"}},
+				credential:  hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: "user_ada.lovelace"}},
 				subject:     "user_ada.lovelace",
 				principalID: "hosted_ada.lovelace",
 			},
@@ -1767,7 +1768,7 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 		{
 			name: "inactive member", organization: organizations[0],
 			principal: relayPrincipal{
-				credential:  apiCredential{Hosted: &auth.HostedIdentity{Subject: "user_inactive"}},
+				credential:  hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: "user_inactive"}},
 				subject:     "user_inactive",
 				principalID: "hosted_inactive",
 			},
@@ -1776,7 +1777,7 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 		{
 			name: "same subject active in second tenant", organization: organizations[1],
 			principal: relayPrincipal{
-				credential:  apiCredential{Hosted: &auth.HostedIdentity{Subject: "user_inactive"}},
+				credential:  hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: "user_inactive"}},
 				subject:     "user_inactive",
 				principalID: "hosted_inactive",
 			},
@@ -1790,7 +1791,7 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 			// it.
 			name: "support actor", organization: organizations[0],
 			principal: relayPrincipal{
-				credential: apiCredential{Hosted: &auth.HostedIdentity{
+				credential: hubapi.APICredential{Hosted: &auth.HostedIdentity{
 					Subject: "user_ada.lovelace", SupportActor: "support@example.test",
 				}},
 				subject:       "support@example.test",
@@ -1804,7 +1805,7 @@ func TestRelayActorStampsTheAuthor(t *testing.T) {
 			// runner's log says which one acted, and authors nothing.
 			name: "operator token", organization: organizations[0],
 			principal: relayPrincipal{
-				credential: apiCredential{Name: "operator-relay", ID: "tok_1"},
+				credential: hubapi.APICredential{Name: "operator-relay", ID: "tok_1"},
 				subject:    "operator-relay", principalID: "tok_1",
 			},
 			wantName: "operator-relay",
@@ -2251,7 +2252,7 @@ func TestWorkspaceRelayTicketNeedsOnlyRead(t *testing.T) {
 	writer := f.user(t, "writer", "member", "writer@example.test", "write", "")
 	issue := f.seedIssue(t, 1)
 	response := f.request(t, writer, http.MethodPost, f.base+"/workspaces", map[string]any{
-		"idempotency_key": newNativeID("wsk"), "work_item_id": string(issue),
+		"idempotency_key": hubapi.NewID("wsk"), "work_item_id": string(issue),
 	})
 	requireNativeStatus(t, response, http.StatusCreated)
 	var session workspacesession.Session
@@ -2334,7 +2335,7 @@ func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *test
 				f.updateWorkspace(t, func(arg *postgres.WorkspaceUpdate) { arg.State = test.state })
 			}
 			connection := &relayConnection{
-				ID: newNativeID("relayconn"), WorkspaceID: f.workspace, Runner: test.runner, Scope: f.service.authInput(nativeScope{organization: f.project.OrganizationID, project: f.project.ID}),
+				ID: hubapi.NewID("relayconn"), WorkspaceID: f.workspace, Runner: test.runner, Scope: f.service.authInput(nativeScope{organization: f.project.OrganizationID, project: f.project.ID}),
 				Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{}),
 			}
 			relay := f.service.workspaces.relay

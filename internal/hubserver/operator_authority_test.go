@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -50,10 +51,10 @@ func TestHostedOperatorCurrentAuthority(t *testing.T) {
 					operatorPostgresSQL(t, f, "UPDATE hosted_project_grants SET can_write=FALSE WHERE user_id=$1", u.identity.Subject)
 				}},
 				{name: "session revoked", role: "owner", grant: "write", scope: apikey.ScopeRead, denied: true, change: func(t *testing.T, f operatorSecurityFixture, u hostedSecurityUser) {
-					operatorPostgresSQL(t, f, "UPDATE hosted_sessions SET revoked_at=$1", formatHubTime(time.Now()))
+					operatorPostgresSQL(t, f, "UPDATE hosted_sessions SET revoked_at=$1", hubapi.FormatHubTime(time.Now()))
 				}},
 				{name: "session expired", role: "owner", grant: "write", scope: apikey.ScopeRead, denied: true, change: func(t *testing.T, f operatorSecurityFixture, u hostedSecurityUser) {
-					operatorPostgresSQL(t, f, "UPDATE hosted_sessions SET expires_at=$1", formatHubTime(time.Now().Add(-time.Hour)))
+					operatorPostgresSQL(t, f, "UPDATE hosted_sessions SET expires_at=$1", hubapi.FormatHubTime(time.Now().Add(-time.Hour)))
 				}},
 			} {
 				t.Run(test.name, func(t *testing.T) {
@@ -152,7 +153,7 @@ func operatorPostgresSQL(t *testing.T, f operatorSecurityFixture, query string, 
 
 func TestHubMCPOperatorCredentialBoundary(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
-	worker := operatorNativeTokenFixture(t, f.service, f.project.OrganizationID, apiScopeWorker, "mcp-worker")
+	worker := operatorNativeTokenFixture(t, f.service, f.project.OrganizationID, hubapi.APIScopeWorker, "mcp-worker")
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
 	for _, test := range []struct {
 		name, token, target string

@@ -5,10 +5,11 @@ import (
 	"database/sql"
 	"errors"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readLegacyIssueChangeSideData(ctx context.Context, query nativeQueryer, scope nativeScope, item string, issue *tracker.NativeIssue) (err error) {
+func readLegacyIssueChangeSideData(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, item string, issue *tracker.NativeIssue) (err error) {
 	var id, raw string
 	var current, landed, base, merge sql.NullString
 	err = query.QueryRowContext(ctx, `SELECT c.id,c.record_json,c.claim_version_id,c.landed_version_id,c.landed_base_ref,c.landed_merge_sha FROM change_requests c JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.rowid DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&id, &raw, &current, &landed, &base, &merge)

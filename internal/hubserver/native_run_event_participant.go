@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -25,7 +26,7 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEventOwner(ctx context
 
 func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Context, reader tenantstore.Reader, authority *NativeRunEventAuthority, human bool) error {
 	if authority == nil || authority.OrganizationID == "" || authority.ProjectID == "" || authority.WorkItem.NativeID == "" || authority.Lease.LeaseID == "" {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	event := authority.Event
 	if human && (event.Type != "run.finished" || event.Data.Outcome != "cancelled" || event.Data.Sequence <= 1 || authority.UsageCorrection || authority.UsageFacts != nil || len(authority.UsageCosts) != 0) {
@@ -92,7 +93,7 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 		return err
 	}
 	if pinned.OrganizationID != authority.OrganizationID || pinned.ProjectID != authority.ProjectID || pinned.PolicyID != event.Data.PolicyID {
-		return policyMismatch("Run event policy must match the policy pinned to its lease")
+		return hubapi.PolicyMismatch("Run event policy must match the policy pinned to its lease")
 	}
 	return nil
 }
@@ -120,7 +121,7 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEvent(ctx context.Cont
 	if event.Data.Sequence == 1 {
 		dispatch, ok := reader.(tenantstore.DispatchReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		state, err := dispatch.IssueDispatchState(ctx, authority.ProjectID, item.NativeID)
 		if err != nil {
@@ -206,7 +207,7 @@ func (p tenantNativeRunEventParticipant) ApplyNativeRunEvent(ctx context.Context
 	if len(authority.UsageReport.Totals) > 0 {
 		reports, ok := writer.(reportstore.UsageWriter)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		if err := reports.RecordAttemptUsage(ctx, authority.UsageReport); err != nil {
 			return err
@@ -218,7 +219,7 @@ func (p tenantNativeRunEventParticipant) ApplyNativeRunEvent(ctx context.Context
 		}
 		reports, ok := writer.(reportstore.UsageWriter)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		if err := reports.RefreshReportUsage(ctx, authority.UsageCosts); err != nil {
 			return err
@@ -233,12 +234,12 @@ func (p tenantNativeRunEventParticipant) ValidateNativeLeaseMutation(ctx context
 
 func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context.Context, reader tenantstore.Reader, authority *NativeLeaseAuthority, human bool) error {
 	if authority == nil || authority.Scope.organization == "" || authority.Scope.project == "" || authority.Lease.LeaseID == "" {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	if human && (authority.Operation != "release" || authority.Request.Reason != "cancelled" || !authority.Request.CancelAttempt) {
 		return tracker.ErrInvalidClaimRequest
 	}
-	if authority.Lease.OrganizationID != authority.Scope.organization || !human && (authority.Scope.credential.Scope != apiScopeWorker || authority.Scope.credential.Runner.RunnerID == "") {
+	if authority.Lease.OrganizationID != authority.Scope.organization || !human && (authority.Scope.credential.Scope != hubapi.APIScopeWorker || authority.Scope.credential.Runner.RunnerID == "") {
 		return tracker.ErrMachineNotFound
 	}
 	item, err := reader.WorkItemByID(ctx, authority.Scope.project, authority.Lease.IssueID)

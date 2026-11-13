@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/localboard"
@@ -76,7 +77,7 @@ func localBoardTarget(t *testing.T, service *Service, name string) nativeFixture
 				t.Fatal(err)
 			}
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: org, ID: newNativeID("hub"), CursorKey: key}); err != nil {
+				if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: org, ID: hubapi.NewID("hub"), CursorKey: key}); err != nil {
 					return err
 				}
 				return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: service.config.now()}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: service.config.now()})
@@ -649,7 +650,7 @@ func localBoardHostedPlans(t *testing.T, service *Service, limits map[string]int
 			base = plan
 		}
 	}
-	base.ID = newNativeID("plan")
+	base.ID = hubapi.NewID("plan")
 	base.Allowances = maps.Clone(base.Allowances)
 	maps.Copy(base.Allowances, limits)
 	plans.Plans = append(plans.Plans, base)
@@ -711,10 +712,10 @@ func localBoardHostedUsage(t *testing.T, service *Service) (map[string]int64, er
 
 func localBoardWorker(t *testing.T, f nativeFixture) string {
 	t.Helper()
-	token := newNativeID("worker")
+	token := hubapi.NewID("worker")
 	now := f.service.config.now()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token, Name: "Example worker", Hash: apikey.HashToken(token), Scope: string(apiScopeWorker), NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token, Name: "Example worker", Hash: apikey.HashToken(token), Scope: string(hubapi.APIScopeWorker), NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}
 		return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: token, ProjectID: f.project.ID})

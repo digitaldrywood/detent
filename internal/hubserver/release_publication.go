@@ -9,32 +9,33 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) prepareReleasePublication(ctx context.Context, scope nativeScope, item string, r tracker.PublishReleasePick) (tracker.ReleasePickPublication, error) {
 	var result tracker.ReleasePickPublication
-	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin || scope.credential.Runner.RunnerID != "" {
-		return result, nativeNotFound()
+	if scope.credential.Scope != hubapi.APIScopeOperator && scope.credential.Scope != hubapi.APIScopeAdmin || scope.credential.Runner.RunnerID != "" {
+		return result, hubapi.NativeNotFound()
 	}
 	if r.PRNumber < 0 {
-		return result, nativeInvalid("Publication requires a valid PR identity")
+		return result, hubapi.NativeInvalid("Publication requires a valid PR identity")
 	}
 	association := tracker.AssociateReleasePick{ReleasePickInput: r.ReleasePickInput, ExpectedRevision: r.ExpectedRevision}
 	if err := validatePreparedReleasePick(r.ReleasePickInput, r.ExpectedRevision); err != nil {
 		return result, err
 	}
 	if strings.TrimSpace(r.IdempotencyKey) == "" || len(r.IdempotencyKey) > 128 {
-		return result, nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return result, hubapi.NativeInvalid("An idempotency key of at most 128 bytes is required")
 	}
-	hash, err := nativeCommandHash(r)
+	hash, err := hubapi.CommandHash(r)
 	if err != nil {
 		return result, err
 	}
 	authorize := func(ctx context.Context) error {
 		if s.config.TenantRepository == nil {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 			return err
@@ -55,7 +56,7 @@ func (s *Service) prepareReleasePublication(ctx context.Context, scope nativeSco
 				return err
 			}
 			if receipt.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			return nil
 		})
@@ -69,7 +70,7 @@ func (s *Service) prepareReleasePublication(ctx context.Context, scope nativeSco
 	}
 	result, err = publisher.PublishReleasePick(ctx, tracker.NativeWorkItemID(item), r.ReleasePickInput, authorize)
 	if errors.Is(err, ErrReleasePickMismatch) {
-		return result, nativeInvalid("Release publication provenance verification failed")
+		return result, hubapi.NativeInvalid("Release publication provenance verification failed")
 	}
 	if err != nil {
 		return result, err
@@ -88,7 +89,7 @@ func releasePublicationOperation(scope nativeScope, item string) string {
 
 func (s *Service) publishReleasePick(c echo.Context) error {
 	var r tracker.PublishReleasePick
-	if err := decodeAPIJSON(c, &r); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &r); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.prepareReleasePublication(c.Request().Context(), nativeRequestScope(c), c.Param("item"), r)

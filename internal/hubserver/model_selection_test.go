@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -100,10 +101,10 @@ func TestCloudModelSelection(t *testing.T) {
 
 func modelSelectionTestCredential(t *testing.T, service *Service, organization tracker.OrganizationID, scope string) string {
 	t.Helper()
-	token := newNativeID("example_token")
+	token := hubapi.NewID("example_token")
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		now := service.config.now().UTC()
-		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: newNativeID("example_credential"), Name: newNativeID("example_credential_name"), Hash: apikey.HashToken(token), Scope: scope, CreatedAt: now, UpdatedAt: now, KeyScope: "admin", ProjectAccess: "all", Kind: "service"})
+		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: hubapi.NewID("example_credential"), Name: hubapi.NewID("example_credential_name"), Hash: apikey.HashToken(token), Scope: scope, CreatedAt: now, UpdatedAt: now, KeyScope: "admin", ProjectAccess: "all", Kind: "service"})
 	}); err != nil {
 		t.Fatal(err)
 	}

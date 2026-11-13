@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -125,7 +126,7 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
 	action.RequestID, action.Arguments = request.RequestID, arguments
-	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: request.ProjectID, ResourceID: action.IssueID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: newNativeID("mcp")}
+	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: request.ProjectID, ResourceID: action.IssueID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: hubapi.NewID("mcp")}
 	action.Mutation, err = action.Mutation.Bind(request.RequestID, arguments)
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
@@ -215,13 +216,13 @@ func workflowExecutionFailure(err error) (chat.ActionExecution, error) {
 	if errors.Is(safe, operatortool.ErrServiceUnavailable) {
 		message = operatortool.ErrServiceUnavailable.Error()
 	}
-	var failure *nativeError
+	var failure *hubapi.NativeError
 	if errors.As(err, &failure) {
 		switch {
-		case failure.status == http.StatusUnprocessableEntity && failure.Code == "transition_not_allowed":
+		case failure.Status == http.StatusUnprocessableEntity && failure.Code == "transition_not_allowed":
 			message = "Workflow transition is not allowed"
 			safe = &operatortool.RequestError{Code: failure.Code, Message: message}
-		case failure.status == http.StatusConflict && failure.Code == "revision_conflict":
+		case failure.Status == http.StatusConflict && failure.Code == "revision_conflict":
 			message = "Resource has changed"
 		}
 	}

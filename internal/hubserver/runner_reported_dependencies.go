@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -90,7 +91,7 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope nativeSco
 		return nil, false, nil
 	}
 	if len(refs) > corestore.MaxPageSize {
-		return nil, false, nativePublicInvalid("Completion report contains too many dependencies")
+		return nil, false, hubapi.NativePublicInvalid("Completion report contains too many dependencies")
 	}
 	result := &preparedRunnerDependencies{source: source, final: source, endpoints: []corestore.WorkItem{source}}
 	var existing map[tracker.NativeWorkItemID]bool
@@ -119,7 +120,7 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope nativeSco
 			RunnerReportedDependencies(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, []tracker.NativeWorkItemID) (map[tracker.NativeWorkItemID]bool, error)
 		})
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		existing, err = reader.RunnerReportedDependencies(ctx, scope.project, source.NativeID, ids)
@@ -162,7 +163,7 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope nativeSco
 		if err != nil {
 			return nil, false, err
 		}
-		raw, err = json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: source.NativeID, Type: "dependency.changed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, RelatedWorkItemID: target.NativeID, Operation: "add"}})
+		raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: source.NativeID, Type: "dependency.changed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, RelatedWorkItemID: target.NativeID, Operation: "add"}})
 		if err != nil {
 			return nil, false, err
 		}
@@ -213,7 +214,7 @@ func (s *Service) writeRunnerDependenciesCommand(ctx context.Context, scope nati
 			if err != nil {
 				return err
 			}
-			if current.ID != endpoint.ID || current.Revision != endpoint.Revision || current.ID == dependencies.source.ID && current.EventSequence != dependencies.source.EventSequence || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+			if current.ID != endpoint.ID || current.Revision != endpoint.Revision || current.ID == dependencies.source.ID && current.EventSequence != dependencies.source.EventSequence || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 				return corestore.ErrSerializationFailure
 			}
 		}

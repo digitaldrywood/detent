@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -48,22 +49,22 @@ func (s *Service) operatorAdministration() *operatoradmin.Executor {
 
 // Resolve through the original authenticated binding again. The effective role
 // supplied by the entry is still capped by the local member role.
-func (a hubAdministration) credential(ctx context.Context) (apiCredential, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+func (a hubAdministration) credential(ctx context.Context) (hubapi.APICredential, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	c := operatortool.CurrentConnection(ctx)
 	authority, err := c.Resolve(ctx)
 	if err != nil || authority.Identity != c.Identity {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	s := a.service
-	if resolve, ok := ctx.Value(hubOperatorResolverKey{}).(func(context.Context) (apiCredential, error)); ok {
+	if resolve, ok := ctx.Value(hubOperatorResolverKey{}).(func(context.Context) (hubapi.APICredential, error)); ok {
 		return resolve(ctx)
 	}
 	if c.Identity.SessionID != "" {
 		session, err := s.storedWebSession(ctx, c.Identity.SessionID, s.config.now())
 		if err != nil || session.Identity == nil {
-			return apiCredential{}, operatortool.ErrAccessDenied
+			return hubapi.APICredential{}, operatortool.ErrAccessDenied
 		}
 		if s.hostedShared() {
 			credential, _, err := s.hostedSharedCredential(ctx, session, c.Identity.SessionID, authority.Account.Role)
@@ -74,31 +75,31 @@ func (a hubAdministration) credential(ctx context.Context) (apiCredential, error
 		}
 		credential, _, err := s.hostedSessionCredential(ctx, session, c.Identity.SessionID)
 		if err == nil {
-			credential.HostedRole = lesserHostedRole(credential.HostedRole, authority.Account.Role)
+			credential.HostedRole = hubapi.LesserHostedRole(credential.HostedRole, authority.Account.Role)
 		}
 		return credential, err
 	}
 	if c.Identity.OrganizationID == "" {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	credential, _, err := s.authenticateTenantAPIHash(readCtx, tracker.OrganizationID(c.Identity.OrganizationID), c.Identity.CredentialID, "", "")
 	if errors.Is(err, auth.ErrHostedIdentity) {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	if err != nil {
-		return apiCredential{}, err
+		return hubapi.APICredential{}, err
 	}
 	if operatorIdentity(credential, c.Identity.OrganizationID) != c.Identity {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	if credential.Hosted != nil {
-		credential.HostedRole = lesserHostedRole(credential.HostedRole, authority.Account.Role)
+		credential.HostedRole = hubapi.LesserHostedRole(credential.HostedRole, authority.Account.Role)
 	}
 	return credential, nil
 }
 
 func (a hubAdministration) Authorize(ctx context.Context, name string, in operatoradmin.Input, resource string) error {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	credential, err := a.credential(ctx)
 	if err != nil {
@@ -115,7 +116,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		return nil
 	}
 	if name == operatortool.OrganizationList {
-		if s.config.Hosted == nil && !credential.NativeOnly && credential.Scope != apiScopeAdmin {
+		if s.config.Hosted == nil && !credential.NativeOnly && credential.Scope != hubapi.APIScopeAdmin {
 			return operatortool.ErrAccessDenied
 		}
 		return nil
@@ -131,7 +132,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		if name == operatortool.CredentialCreate && (len(in.Scopes) > 0 && len(in.Scopes) == 1 && in.Scopes[0] == "read" || in.ExpiresIn != "") || name == operatortool.CredentialRotate && in.Grace != "" {
 			return operatortool.ErrInvalidArguments
 		}
-		if credential.Scope != apiScopeAdmin || credential.NativeOnly || credential.Runner.RunnerID != "" {
+		if credential.Scope != hubapi.APIScopeAdmin || credential.NativeOnly || credential.Runner.RunnerID != "" {
 			return operatortool.ErrAccessDenied
 		}
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeAdmin, OrganizationWide: true}); err != nil {
@@ -202,7 +203,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 				if key.Expiry == nil {
 					return operatortool.ErrAccessDenied
 				}
-				expiry, err := parseTimeValue(*key.Expiry)
+				expiry, err := hubapi.ParseTimeValue(*key.Expiry)
 				projects := append([]string(nil), in.ProjectIDs...)
 				sort.Strings(projects)
 				projects = slices.Compact(projects)
@@ -347,7 +348,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 }
 
 func (a hubAdministration) Read(ctx context.Context, name string, in operatoradmin.Input) (any, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	s := a.service
 	credential, err := a.credential(ctx)
@@ -416,7 +417,7 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 }
 
 func (a hubAdministration) Preview(ctx context.Context, name string, in operatoradmin.Input) (operatoradmin.Preview, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	s := a.service
 	credential, err := a.credential(ctx)
@@ -503,7 +504,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 		err = s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 			row, err := r.AccessInvitation(ctx, in.InvitationID)
 			if err != nil || row.AcceptedUserID != "" && row.AcceptedUserID != credential.Hosted.Subject {
-				return nativeNotFound()
+				return hubapi.NativeNotFound()
 			}
 			id, email, role = row.ID, row.Email, row.Role
 			return nil
@@ -525,8 +526,8 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 		}
 		preview.ResourceID = in.CredentialID
 		preview.Current = struct {
-			Credential tokenResponse       `json:"credential"`
-			Input      operatoradmin.Input `json:"input"`
+			Credential hubapi.TokenResponse `json:"credential"`
+			Input      operatoradmin.Input  `json:"input"`
 		}{view, in}
 	}
 	return preview, nil
@@ -635,8 +636,8 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 			data, err = s.createHostedAPIKeyFor(ctx, credential, request)
 			break
 		}
-		var token tokenResponse
-		token, err = s.createAPITokenFor(ctx, tokenRequest{Name: in.Name, Scope: nativeToolScope(in.Scopes)})
+		var token hubapi.TokenResponse
+		token, err = s.createAPITokenFor(ctx, hubapi.TokenRequest{Name: in.Name, Scope: nativeToolScope(in.Scopes)})
 		if err == nil {
 			for _, project := range in.ProjectIDs {
 				if err = s.grantNativeTokenFor(ctx, token.ID, operatortool.ConnectionIdentity(ctx).OrganizationID, project); err != nil {
@@ -665,7 +666,7 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 	if err != nil {
 		return operatoradmin.Output{}, err
 	}
-	if token, ok := data.(tokenResponse); ok {
+	if token, ok := data.(hubapi.TokenResponse); ok {
 		output.ResourceID = token.ID
 		if s.config.Hosted != nil {
 			data = token
@@ -691,7 +692,7 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 	}
 	receipt := output
 	if name == operatortool.CredentialCreate || name == operatortool.CredentialRotate {
-		if token, ok := data.(tokenResponse); ok {
+		if token, ok := data.(hubapi.TokenResponse); ok {
 			token.Token = ""
 			receipt.Data, err = json.Marshal(token)
 			if err != nil {
@@ -712,11 +713,11 @@ func (a hubAdministration) Audit(ctx context.Context, m mutation.Metadata, outco
 	a.service.config.Logger.InfoContext(ctx, "operator mutation", "audit", m, "outcome", outcome)
 }
 
-func nativeToolScope(scopes []string) apiScope {
+func nativeToolScope(scopes []string) hubapi.APIScope {
 	if apikey.HasScope(scopes, apikey.ScopeAdmin) {
-		return apiScopeAdmin
+		return hubapi.APIScopeAdmin
 	}
-	return apiScopeOperator
+	return hubapi.APIScopeOperator
 }
 
 func hostedToolKeyRequest(in operatoradmin.Input) (hostedKeyRequest, error) {
@@ -727,7 +728,7 @@ func hostedToolKeyRequest(in operatoradmin.Input) (hostedKeyRequest, error) {
 	if err != nil || days < 1 || days > 90 {
 		return hostedKeyRequest{}, operatortool.ErrInvalidArguments
 	}
-	return hostedKeyRequest{Name: in.Name, Scope: apikey.Scope(in.Scopes[0]), Days: days, Projects: in.ProjectIDs, ProjectAccess: hostedProjectAccess(in.ProjectAccess)}, nil
+	return hostedKeyRequest{Name: in.Name, Scope: apikey.Scope(in.Scopes[0]), Days: days, Projects: in.ProjectIDs, ProjectAccess: hubapi.HostedProjectAccess(in.ProjectAccess)}, nil
 }
 
 func (s *Service) hostedSwitchFor(ctx context.Context, identity *auth.HostedIdentity, organization string) (string, error) {
@@ -752,9 +753,9 @@ func (s *Service) hostedSwitchFor(ctx context.Context, identity *auth.HostedIden
 }
 
 // Metadata deliberately omits token hashes and runner credentials.
-func (s *Service) operatorOrganizationMetadata(ctx context.Context, credential apiCredential, in operatoradmin.Input) (any, error) {
+func (s *Service) operatorOrganizationMetadata(ctx context.Context, credential hubapi.APICredential, in operatoradmin.Input) (any, error) {
 	organization := tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID)
-	if organization == "" || credential.Runner.RunnerID != "" || !credential.NativeOnly && credential.Scope != apiScopeAdmin {
+	if organization == "" || credential.Runner.RunnerID != "" || !credential.NativeOnly && credential.Scope != hubapi.APIScopeAdmin {
 		return nil, operatortool.ErrAccessDenied
 	}
 	if in.Offset < 0 || in.Offset > 100000 {
@@ -803,11 +804,11 @@ func (s *Service) operatorOrganizationMetadata(ctx context.Context, credential a
 	return result, err
 }
 
-func (s *Service) tokenMetadata(ctx context.Context, credential apiCredential, in operatoradmin.Input) (any, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) tokenMetadata(ctx context.Context, credential hubapi.APICredential, in operatoradmin.Input) (any, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	organization := tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID)
-	if organization == "" || credential.Scope != apiScopeAdmin || credential.NativeOnly || credential.Runner.RunnerID != "" {
+	if organization == "" || credential.Scope != hubapi.APIScopeAdmin || credential.NativeOnly || credential.Runner.RunnerID != "" {
 		return nil, operatortool.ErrAccessDenied
 	}
 	if in.Offset < 0 || in.Offset > 100000 {
@@ -821,13 +822,13 @@ func (s *Service) tokenMetadata(ctx context.Context, credential apiCredential, i
 	if !ok {
 		return nil, operatoradmin.ErrUnavailable
 	}
-	result := operatoradmin.PageResult[tokenResponse]{Items: []tokenResponse{}}
+	result := operatoradmin.PageResult[hubapi.TokenResponse]{Items: []hubapi.TokenResponse{}}
 	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		current, err := r.AccessCredential(ctx, credential.ID)
 		if err != nil {
 			return err
 		}
-		if current.Scope != string(apiScopeAdmin) || current.NativeOnly {
+		if current.Scope != string(hubapi.APIScopeAdmin) || current.NativeOnly {
 			return operatortool.ErrAccessDenied
 		}
 		if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: organization, credential: credential, requireHostedAdmin: true}, false); err != nil {
@@ -860,14 +861,14 @@ func (s *Service) tokenMetadata(ctx context.Context, credential apiCredential, i
 	return result, err
 }
 
-func (s *Service) tokenMetadataByID(ctx context.Context, id string) (tokenResponse, error) {
+func (s *Service) tokenMetadataByID(ctx context.Context, id string) (hubapi.TokenResponse, error) {
 	return s.tokenMetadataByIDFor(ctx, s.accessOrganization(), id)
 }
 
-func (s *Service) tokenMetadataByIDFor(ctx context.Context, organization tracker.OrganizationID, id string) (tokenResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) tokenMetadataByIDFor(ctx context.Context, organization tracker.OrganizationID, id string) (hubapi.TokenResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	var view tokenResponse
+	var view hubapi.TokenResponse
 	err := s.accessRead(ctx, organization, func(r tenantstore.Reader) error {
 		row, err := r.AccessCredential(ctx, id)
 		if err != nil {
@@ -879,16 +880,16 @@ func (s *Service) tokenMetadataByIDFor(ctx context.Context, organization tracker
 	return view, err
 }
 
-func tokenMetadataRecord(ctx context.Context, r tenantstore.Reader, row accessstore.Credential) (tokenResponse, error) {
+func tokenMetadataRecord(ctx context.Context, r tenantstore.Reader, row accessstore.Credential) (hubapi.TokenResponse, error) {
 	view := accessTokenResponse(row)
 	var after tracker.ProjectID
 	for {
 		grants, err := r.AccessTokenGrants(ctx, row.ID, after, corestore.MaxPageSize)
 		if err != nil {
-			return tokenResponse{}, err
+			return hubapi.TokenResponse{}, err
 		}
 		for _, grant := range grants {
-			view.Grants = append(view.Grants, tokenGrantResponse{OrganizationID: string(grant.OrganizationID), ProjectID: string(grant.ProjectID)})
+			view.Grants = append(view.Grants, hubapi.TokenGrantResponse{OrganizationID: string(grant.OrganizationID), ProjectID: string(grant.ProjectID)})
 			view.Projects = append(view.Projects, string(grant.ProjectID))
 		}
 		if len(grants) < corestore.MaxPageSize {
@@ -898,7 +899,7 @@ func tokenMetadataRecord(ctx context.Context, r tenantstore.Reader, row accessst
 	}
 }
 
-func (s *Service) hostedOrganizationChoicesFor(ctx context.Context, credential apiCredential) ([]nativeOrganization, error) {
+func (s *Service) hostedOrganizationChoicesFor(ctx context.Context, credential hubapi.APICredential) ([]nativeOrganization, error) {
 	choices := []nativeOrganization{{ID: tracker.OrganizationID(s.config.Hosted.OrganizationID), Name: s.config.Hosted.OrganizationID}}
 	if s.hostedShared() || credential.Hosted.SupportActor != "" || credential.HostedKeyScope != "" {
 		return choices, nil
@@ -928,7 +929,7 @@ func (a hubAdministration) AuthorizeOutput(ctx context.Context, name string, in 
 	if err := a.Authorize(ctx, name, in, output.ResourceID); err != nil {
 		return err
 	}
-	var delivered tokenResponse
+	var delivered hubapi.TokenResponse
 	if json.Unmarshal(output.Data, &delivered) != nil {
 		return operatortool.ErrAccessDenied
 	}
@@ -939,7 +940,7 @@ func (a hubAdministration) AuthorizeOutput(ctx context.Context, name string, in 
 	return nil
 }
 
-func (s *Service) operatorSessionDestination(credential apiCredential) string {
+func (s *Service) operatorSessionDestination(credential hubapi.APICredential) string {
 	if s.config.Hosted == nil {
 		return s.operatorDashboardURL()
 	}
@@ -949,7 +950,7 @@ func (s *Service) operatorSessionDestination(credential apiCredential) string {
 	return s.config.Hosted.PublicURL + "/"
 }
 
-func (a hubAdministration) committedDeletionOutput(ctx context.Context, credential apiCredential, name string, in operatoradmin.Input) (operatoradmin.Output, bool, error) {
+func (a hubAdministration) committedDeletionOutput(ctx context.Context, credential hubapi.APICredential, name string, in operatoradmin.Input) (operatoradmin.Output, bool, error) {
 	identity := operatortool.ConnectionIdentity(ctx)
 	metadata := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: in.ProjectID, Action: name}
 	bound, err := metadata.Bind(in.RequestID, in)

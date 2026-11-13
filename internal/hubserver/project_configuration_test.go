@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
@@ -301,7 +302,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				resolve := func(context.Context) (apiCredential, error) { return credential, nil }
+				resolve := func(context.Context) (hubapi.APICredential, error) { return credential, nil }
 				ctx = context.WithValue(ctx, hubOperatorResolverKey{}, resolve)
 				ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) {
 					return nativeScope{organization: f.project.OrganizationID, credential: credential}, nil
@@ -449,7 +450,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 						t.Fatalf("resume refusal=%s %v", result.Content, err)
 					}
 					if strings.Contains(scenario, "stale") {
-						var conflict *nativeError
+						var conflict *hubapi.NativeError
 						if !errors.As(err, &conflict) || conflict.Code != "revision_conflict" || int64(conflict.CurrentRevision) != observed.RunnerRevision {
 							t.Fatalf("resume CAS mismatch=%v", err)
 						}
@@ -562,14 +563,14 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			preview, previewErr := executor.projectConfigurationCommand(ctx, "apply_local_project_policy", args, true)
 			result, err = call("apply_local_project_policy", args)
 			if scenario == "serialization conflict" {
-				var conflict *nativeError
+				var conflict *hubapi.NativeError
 				if previewErr != nil || !errors.As(err, &conflict) || conflict.Code != "revision_conflict" || serialization.attempts.Load() != 1 {
 					t.Fatalf("serialization retry spun: preview=%v result=%s error=%v attempts=%d", previewErr, result.Content, err, serialization.attempts.Load())
 				}
 				return
 			}
 			if scenario == "racing binding enable" {
-				var conflict *nativeError
+				var conflict *hubapi.NativeError
 				if previewErr != nil || !errors.As(err, &conflict) || conflict.Code != "policy_mismatch" {
 					t.Fatalf("claim between plan and write was not refused: preview=%s %v result=%s %v", preview.Content, previewErr, result.Content, err)
 				}
@@ -589,7 +590,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				}
 				if strings.HasPrefix(scenario, "busy binding ") {
 					for _, refusal := range []error{previewErr, err} {
-						var conflict *nativeError
+						var conflict *hubapi.NativeError
 						if !errors.As(refusal, &conflict) || conflict.Code != "policy_mismatch" {
 							t.Fatalf("binding refusal=%v", refusal)
 						}

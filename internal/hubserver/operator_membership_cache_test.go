@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -54,7 +55,7 @@ func TestOperatorMembershipProviderAvailability(t *testing.T) {
 				t.Fatal(err)
 			}
 			expiry := time.Now().Add(time.Hour)
-			key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "example-client", Scope: apiScopeAdmin, Issuer: &credential, KeyScope: apikey.ScopeAdmin, ExpiresAt: &expiry, ProjectAccess: hostedProjectsAll})
+			key, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "example-client", Scope: hubapi.APIScopeAdmin, Issuer: &credential, KeyScope: apikey.ScopeAdmin, ExpiresAt: &expiry, ProjectAccess: hubapi.HostedProjectsAll})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -108,7 +109,7 @@ func TestOperatorMembershipProviderAvailability(t *testing.T) {
 			}
 			outage = test.outage
 			if test.revokedKey {
-				operatorPostgresSQL(t, f, "UPDATE api_tokens SET revoked_at=$1 WHERE token_hash=$2", formatHubTime(time.Now()), apikey.HashToken(key.Token))
+				operatorPostgresSQL(t, f, "UPDATE api_tokens SET revoked_at=$1 WHERE token_hash=$2", hubapi.FormatHubTime(time.Now()), apikey.HashToken(key.Token))
 			}
 			for _, scope := range []apikey.Scope{apikey.ScopeRead, apikey.ScopeWrite, apikey.ScopeAdmin} {
 				_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope, ProjectID: string(f.project)})

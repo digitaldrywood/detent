@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,16 +28,16 @@ import (
 // the stored one. It is a conflict, not a validation failure: the producer is
 // current, the diff it carries is not.
 func attemptDiffStaleGeneration(message string) error {
-	return &nativeError{Code: "stale_generation", Message: message, status: http.StatusConflict}
+	return &hubapi.NativeError{Code: "stale_generation", Message: message, Status: http.StatusConflict}
 }
 
 // attemptDiffTooLarge reports a diff whose patches exceed tracker.MaxDiffBytes.
 // The producer answers it by re-posting the same file list without patches.
 func attemptDiffTooLarge(limit int64) error {
-	return &nativeError{
-		Code: "diff_too_large", Message: "Diff patches exceed the stored diff limit", status: http.StatusRequestEntityTooLarge,
+	return &hubapi.NativeError{
+		Code: "diff_too_large", Message: "Diff patches exceed the stored diff limit", Status: http.StatusRequestEntityTooLarge,
 		Details:       map[string]any{"limit_bytes": limit},
-		publicMessage: true,
+		PublicMessage: true,
 	}
 }
 
@@ -46,23 +47,23 @@ func normalizeAttemptDiff(scope nativeScope, request tracker.AttemptDiffRequest)
 		return nil, 0, attemptDiffTooLarge(tracker.MaxDiffBytes)
 	}
 	if err := tracker.ValidateDiffFiles(files); err != nil {
-		return nil, 0, nativeInvalid(err.Error())
+		return nil, 0, hubapi.NativeInvalid(err.Error())
 	}
 	for _, file := range files {
 		if file.PatchExpired {
-			return nil, 0, nativePublicInvalid("A diff write cannot expire its body")
+			return nil, 0, hubapi.NativePublicInvalid("A diff write cannot expire its body")
 		}
 		if file.PatchBody != nil {
 			if file.Patch != "" {
-				return nil, 0, nativePublicInvalid("Diff body must use exactly one storage representation")
+				return nil, 0, hubapi.NativePublicInvalid("Diff body must use exactly one storage representation")
 			}
 			if err := file.PatchBody.Validate(string(scope.organization), string(scope.project), tracker.MaxDiffPatchBytes); err != nil {
-				return nil, 0, nativeInvalid(err.Error())
+				return nil, 0, hubapi.NativeInvalid(err.Error())
 			}
 		}
 	}
-	if request.PostedBytes < 0 || request.PostedBytes > maxAttemptDiffRequestBytes || request.PostedBytes > 0 && request.PostedBytes < patchBytes {
-		return nil, 0, nativePublicInvalid("Invalid posted diff byte count")
+	if request.PostedBytes < 0 || request.PostedBytes > hubapi.MaxAttemptDiffRequestBytes || request.PostedBytes > 0 && request.PostedBytes < patchBytes {
+		return nil, 0, hubapi.NativePublicInvalid("Invalid posted diff byte count")
 	}
 	return files, patchBytes, nil
 }
@@ -90,21 +91,21 @@ func (s *Service) checkAttemptDiff(c echo.Context) error {
 
 func (s *Service) postAttemptDiff(c echo.Context) error {
 	var request tracker.AttemptDiffRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	attemptID := c.Param("attempt")
-	if !validNativeID(attemptID, "attempt") {
-		return s.nativeAPIError(c, nativeNotFound())
+	if !hubapi.ValidID(attemptID, "attempt") {
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	if err := tracker.ValidateDiffGeneration(request.Generation); err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid(err.Error()))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid(err.Error()))
 	}
 	if request.Generation.Source != request.Producer.Kind {
-		return s.nativeAPIError(c, nativePublicInvalid("Generation source and producer kind must agree"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Generation source and producer kind must agree"))
 	}
 	if len(request.BaseSHA) > tracker.MaxDiffSHABytes || len(request.HeadSHA) > tracker.MaxDiffSHABytes {
-		return s.nativeAPIError(c, nativePublicInvalid("Commit identities are bounded to "+strconv.Itoa(tracker.MaxDiffSHABytes)+" bytes"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Commit identities are bounded to "+strconv.Itoa(tracker.MaxDiffSHABytes)+" bytes"))
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
@@ -125,17 +126,17 @@ func (s *Service) postAttemptDiff(c echo.Context) error {
 func (s *Service) getAttemptDiff(c echo.Context) error {
 
 	attemptID := c.Param("attempt")
-	if !validNativeID(attemptID, "attempt") {
-		return s.nativeAPIError(c, nativeNotFound())
+	if !hubapi.ValidID(attemptID, "attempt") {
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	if err := validateNativeQuery(c.QueryParams(), "at", "source"); err != nil {
+	if err := hubapi.ValidateNativeQuery(c.QueryParams(), "at", "source"); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	var seq int64
 	if raw := strings.TrimSpace(c.QueryParam("at")); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || parsed <= 0 {
-			return s.nativeAPIError(c, nativePublicInvalid("at must be a positive generation sequence"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("at must be a positive generation sequence"))
 		}
 		seq = parsed
 	}
@@ -145,7 +146,7 @@ func (s *Service) getAttemptDiff(c echo.Context) error {
 	source := tracker.DiffSourceAttempt
 	if raw := strings.TrimSpace(c.QueryParam("source")); raw != "" {
 		if raw != tracker.DiffSourceAttempt && raw != tracker.DiffSourceWorkspace {
-			return s.nativeAPIError(c, nativePublicInvalid("source must be attempt or workspace"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("source must be attempt or workspace"))
 		}
 		source = raw
 	}
@@ -160,7 +161,7 @@ func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, 
 	if s.config.TenantRepository == nil {
 		return tracker.AttemptDiff{}, nativeUnavailable("Attempt diff storage is unavailable")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	return s.readAttemptDiffTenant(ctx, scope, item, attemptID, source, seq)
 }
@@ -172,13 +173,13 @@ func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, 
 // answers 200 with `{"diff": null}` rather than a 404 the client would have to
 // tell apart from a permission failure.
 func (s *Service) getWorkItemDiff(c echo.Context) error {
-	if err := validateNativeQuery(c.QueryParams(), "source"); err != nil {
+	if err := hubapi.ValidateNativeQuery(c.QueryParams(), "source"); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	source := tracker.DiffSourceAttempt
 	if raw := strings.TrimSpace(c.QueryParam("source")); raw != "" {
 		if raw != tracker.DiffSourceAttempt && raw != tracker.DiffSourceWorkspace {
-			return s.nativeAPIError(c, nativePublicInvalid("source must be attempt or workspace"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("source must be attempt or workspace"))
 		}
 		source = raw
 	}
@@ -193,7 +194,7 @@ func (s *Service) readWorkItemDiff(ctx context.Context, scope nativeScope, item,
 	if s.config.TenantRepository == nil {
 		return tracker.WorkItemDiff{}, nativeUnavailable("Attempt diff storage is unavailable")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	return s.readWorkItemDiffTenant(ctx, scope, item, source)
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -119,13 +120,13 @@ func (f *conversationWorkerFixture) claim(t *testing.T, start ...bool) {
 			t.Fatal(err)
 		}
 	}
-	f.lease = nativeAttemptFixtureLease(t, f.runner, f.issue, newNativeID("session"))
+	f.lease = nativeAttemptFixtureLease(t, f.runner, f.issue, hubapi.NewID("session"))
 	f.lease.ExpiresAt = f.now.Add(10 * time.Minute)
 	if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$1,renewed_at=$1,expires_at=$2 WHERE organization_id=$3 AND lease_id=$4", f.now, f.lease.ExpiresAt, f.project.OrganizationID, f.lease.ID); err != nil {
 		t.Fatal(err)
 	}
-	f.attempt = newNativeID("attempt")
-	f.run = newNativeID("run")
+	f.attempt = hubapi.NewID("attempt")
+	f.run = hubapi.NewID("run")
 	if len(start) == 0 || start[0] {
 		f.startAttempt(t, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"})
 	}
@@ -134,7 +135,7 @@ func (f *conversationWorkerFixture) claim(t *testing.T, start ...bool) {
 func (f *conversationWorkerFixture) startAttempt(t *testing.T, identity tracker.NativeExecutionIdentity) {
 	t.Helper()
 	f.started = identity
-	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &identity, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy}}
+	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &identity, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 }
 
@@ -474,7 +475,7 @@ func TestConversationWorkerBind(t *testing.T) {
 				f.claim(t, false)
 				body := f.bindBody()
 				if test.different != "" {
-					body[test.different] = newNativeID(strings.TrimSuffix(test.different, "_id"))
+					body[test.different] = hubapi.NewID(strings.TrimSuffix(test.different, "_id"))
 				}
 				requireNativeStatus(t, f.bind(t, body), http.StatusOK)
 				before := f.load(t)
@@ -566,7 +567,7 @@ func TestConversationWorkerBind(t *testing.T) {
 			t.Fatalf("pre-start binding lost its current lease: %+v", record.Execution)
 		}
 		body = f.bindBody()
-		body["attempt_id"] = newNativeID("attempt")
+		body["attempt_id"] = hubapi.NewID("attempt")
 		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
 		identity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example-model", ReasoningEffort: "high"}
 		f.startAttempt(t, identity)
@@ -576,7 +577,7 @@ func TestConversationWorkerBind(t *testing.T) {
 		}
 		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
 		body = f.bindBody()
-		body["attempt_id"] = newNativeID("attempt")
+		body["attempt_id"] = hubapi.NewID("attempt")
 		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
 	})
 	for _, test := range []struct{ confirmed, legacy bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
@@ -796,12 +797,12 @@ func TestConversationWorkerBind(t *testing.T) {
 	t.Run("stale fencing token", func(t *testing.T) {
 		body := f.bindBody()
 		body["fencing_token"] = f.lease.FencingToken + 1
-		body["attempt_id"] = newNativeID("attempt")
+		body["attempt_id"] = hubapi.NewID("attempt")
 		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
 	})
 	t.Run("unknown attempt", func(t *testing.T) {
 		body := f.bindBody()
-		body["attempt_id"] = newNativeID("attempt")
+		body["attempt_id"] = hubapi.NewID("attempt")
 		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
 	})
 	t.Run("missing identity is invalid", func(t *testing.T) {
@@ -943,7 +944,7 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 
 	t.Run("wrong attempt is stale", func(t *testing.T) {
 		attempt := f.attempt
-		f.attempt = newNativeID("attempt")
+		f.attempt = hubapi.NewID("attempt")
 		defer func() { f.attempt = attempt }()
 		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
 	})
@@ -1221,8 +1222,8 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, providerClaim(r, f.issue, "conversation-registered"))
 		requireNativeStatus(t, response, http.StatusOK)
 		decodeHubResponse(t, response, &f.lease)
-		f.attempt, f.run = newNativeID("attempt"), newNativeID("run")
-		event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test-model"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy}}
+		f.attempt, f.run = hubapi.NewID("attempt"), hubapi.NewID("run")
+		event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test-model"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy}}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 		foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-registered")
@@ -1241,9 +1242,9 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 			{name: "wrong project", base: foreign.base, token: foreignRunner.redemption.Credential, status: http.StatusNotFound},
 			{name: "wrong runner", token: other.redemption.Credential, status: http.StatusNotFound},
 			{name: "missing events operation", token: unpermitted.redemption.Credential, status: http.StatusForbidden},
-			{name: "wrong lease", change: func(body map[string]any) { body["lease_id"] = newNativeID("lease") }, status: http.StatusConflict},
+			{name: "wrong lease", change: func(body map[string]any) { body["lease_id"] = hubapi.NewID("lease") }, status: http.StatusConflict},
 			{name: "wrong fence", change: func(body map[string]any) { body["fencing_token"] = f.lease.FencingToken + 1 }, status: http.StatusConflict},
-			{name: "wrong attempt", change: func(body map[string]any) { body["attempt_id"] = newNativeID("attempt") }, status: http.StatusConflict},
+			{name: "wrong attempt", change: func(body map[string]any) { body["attempt_id"] = hubapi.NewID("attempt") }, status: http.StatusConflict},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				body := f.identity()
@@ -1730,7 +1731,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 	waiting := f.queue(t, conversation.MessageText, "text-2", "And this one", nil)
 
 	t.Run("released lease is reconciled", func(t *testing.T) {
-		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET released_at = $1 WHERE lease_id = $2", formatHubTime(f.now), f.lease.ID); err != nil {
+		if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET released_at = $1 WHERE lease_id = $2", hubapi.FormatHubTime(f.now), f.lease.ID); err != nil {
 			t.Fatal(err)
 		}
 		f.advance(11 * time.Minute)
@@ -2208,7 +2209,7 @@ func TestConversationReconcileSettlesTerminalTurnAfterLeaseLoss(t *testing.T) {
 	handed := f.queue(t, conversation.MessageText, "text-1", "Handed over", nil)
 	requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
 	requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "execution_status", "status": "failed", "error": "provider crashed"}), http.StatusAccepted)
-	if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET released_at = $1 WHERE lease_id = $2", formatHubTime(f.now), f.lease.ID); err != nil {
+	if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET released_at = $1 WHERE lease_id = $2", hubapi.FormatHubTime(f.now), f.lease.ID); err != nil {
 		t.Fatal(err)
 	}
 	if record := f.load(t); record.Execution.Status != conversation.ExecutionFailed || record.Execution.Settled {

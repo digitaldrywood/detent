@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -77,7 +78,7 @@ func (scope healthEvaluationScope) coversRecord(ctx context.Context, reader post
 		}
 		owner, ok := reader.(tenantstore.Reader)
 		if !ok {
-			return false, workItemStorageUnavailable()
+			return false, hubapi.NativeWorkItemStorageUnavailable()
 		}
 		switch row.SubjectKind {
 		case "work_item":
@@ -174,11 +175,11 @@ func (s *Service) publishHealthEvaluationScope(ctx context.Context, organization
 		}
 	}
 	if s.database == nil || s.database.postgres == nil {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	details := s.runDetailStore()
 	if len(findings) > 0 && details == nil {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if scope.fingerprints != nil {
 		if err := hubmaintenance.RequireAllowance(ctx, string(organization), hubmaintenance.ByteLimit); err != nil {
@@ -324,7 +325,7 @@ func (s *Service) publishHealthFinding(ctx context.Context, organization tracker
 			if !finding.ConditionSince.IsZero() && finding.ConditionSince.Before(at) {
 				opened = finding.ConditionSince
 			}
-			row, err = w.CreateHealthRecord(ctx, postgres.CreateHealthRecordInput{OrganizationID: organization, ID: newNativeID("finding"), Fingerprint: finding.Fingerprint, Signal: finding.Signal, Class: finding.Class, SubjectKind: finding.Subject.Kind, SubjectID: finding.Subject.ID, OpenedAt: opened, LastSeenAt: at, Severity: finding.Severity, Summary: finding.Summary, NextAction: finding.NextAction, EvidenceObjectKey: ref.Key, EvidenceSha256: ref.SHA256, EvidenceBytes: ref.CompressedSize, EvidenceContentBytes: ref.UncompressedSize})
+			row, err = w.CreateHealthRecord(ctx, postgres.CreateHealthRecordInput{OrganizationID: organization, ID: hubapi.NewID("finding"), Fingerprint: finding.Fingerprint, Signal: finding.Signal, Class: finding.Class, SubjectKind: finding.Subject.Kind, SubjectID: finding.Subject.ID, OpenedAt: opened, LastSeenAt: at, Severity: finding.Severity, Summary: finding.Summary, NextAction: finding.NextAction, EvidenceObjectKey: ref.Key, EvidenceSha256: ref.SHA256, EvidenceBytes: ref.CompressedSize, EvidenceContentBytes: ref.UncompressedSize})
 		} else {
 			row, err = w.UpdateHealthRecord(ctx, postgres.UpdateHealthRecordInput{OrganizationID: organization, ID: row.ID, ExpectedRevision: row.Revision, LastSeenAt: at, Severity: finding.Severity, Summary: finding.Summary, NextAction: finding.NextAction, EvidenceObjectKey: ref.Key, EvidenceSha256: ref.SHA256, EvidenceBytes: ref.CompressedSize, EvidenceContentBytes: ref.UncompressedSize})
 		}
@@ -400,7 +401,7 @@ func (s *Service) resolveHealthRecord(ctx context.Context, organization tracker.
 func enqueueSlackHealthRecord(ctx context.Context, owner postgres.HealthWriter, organization tracker.OrganizationID, row postgres.HealthRecord, event string, at time.Time) error {
 	slack, ok := owner.(postgres.SlackWriter)
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	settings, err := slack.SlackIntegration(ctx)
 	if errors.Is(err, corestore.ErrNotFound) || err == nil && !settings.Enabled {

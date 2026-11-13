@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -20,12 +22,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/threadstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func TestPostgresEntryKeyThreadReads(t *testing.T) {
@@ -176,7 +178,7 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				credential := apiCredential{ID: id, Hash: hash, Scope: apiScopeOperator, NativeOnly: true, HostedMembership: "membership_" + tc.user, HostedPrincipal: "credential_" + tc.user, HostedRole: "owner", HostedKeyKind: "service", HostedKeyScope: apikey.ScopeRead, HostedProjectAccess: hostedProjectAccess(tc.access), Hosted: &auth.HostedIdentity{Subject: tc.user, OrganizationID: "provider_org_startup"}}
+				credential := hubapi.APICredential{ID: id, Hash: hash, Scope: hubapi.APIScopeOperator, NativeOnly: true, HostedMembership: "membership_" + tc.user, HostedPrincipal: "credential_" + tc.user, HostedRole: "owner", HostedKeyKind: "service", HostedKeyScope: apikey.ScopeRead, HostedProjectAccess: hubapi.HostedProjectAccess(tc.access), Hosted: &auth.HostedIdentity{Subject: tc.user, OrganizationID: "provider_org_startup"}}
 				page, err := service.listThreadRecords(t.Context(), nativeScope{organization: "org_startup", credential: credential}, teamThreadInput{})
 				if err != nil {
 					t.Fatal(err)
@@ -228,7 +230,7 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 	call := func(name string, args any, mutate func(*cloudassert.Claims)) *httptest.ResponseRecorder {
 		return request("/internal/v1/keys/call", "first", "thread_reads", map[string]any{"name": name, "arguments": args, "connection_id": "thread_reads"}, mutate)
 	}
-	credential := apiCredential{ID: "credential_first", Hash: "key-hash-first", HostedPrincipal: "credential_first", Scope: apiScopeOperator, HostedRole: "owner", HostedKeyScope: apikey.ScopeRead, HostedProjectAccess: hostedProjectsAll, Hosted: &auth.HostedIdentity{Subject: "first", OrganizationID: "provider_org_startup"}}
+	credential := hubapi.APICredential{ID: "credential_first", Hash: "key-hash-first", HostedPrincipal: "credential_first", Scope: hubapi.APIScopeOperator, HostedRole: "owner", HostedKeyScope: apikey.ScopeRead, HostedProjectAccess: hubapi.HostedProjectsAll, Hosted: &auth.HostedIdentity{Subject: "first", OrganizationID: "provider_org_startup"}}
 	identity := operatorIdentity(credential, "org_startup")
 	catalogContext := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity})
 	catalogContext = context.WithValue(catalogContext, operatorCatalogKey{}, operatorCatalogAuthority{identity: identity, credential: credential})

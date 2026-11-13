@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -62,14 +63,14 @@ func (s *Service) localAppUnauthorized(c echo.Context, status int) error {
 	if status == http.StatusUnauthorized {
 		c.Response().Header().Set("WWW-Authenticate", `Basic realm="Detent Hub", charset="UTF-8"`)
 	}
-	return c.JSON(status, apiErrorResponse{Code: "unauthorized", Message: "A Hub administrator token is required"})
+	return c.JSON(status, hubapi.APIErrorResponse{Code: "unauthorized", Message: "A Hub administrator token is required"})
 }
 
-func (s *Service) localAppCredential(c echo.Context) (apiCredential, int, error) {
+func (s *Service) localAppCredential(c echo.Context) (hubapi.APICredential, int, error) {
 	return s.localAppCredentialContext(c.Request().Context(), c)
 }
 
-func (s *Service) localAppCredentialContext(ctx context.Context, c echo.Context) (apiCredential, int, error) {
+func (s *Service) localAppCredentialContext(ctx context.Context, c echo.Context) (hubapi.APICredential, int, error) {
 	return nativeCredentialResult(s.requestAuth().LocalCredential(ctx, c))
 }
 
@@ -78,7 +79,7 @@ func (s *Service) localAppBootstrap(c echo.Context) error {
 	if err != nil {
 		return s.localAppUnauthorized(c, status)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	payload := appBootstrap{
 		Organizations: []appBootstrapOrganization{}, Projects: []appBootstrapProject{},
@@ -96,7 +97,7 @@ func (s *Service) localAppBootstrap(c echo.Context) error {
 			return err
 		}
 		if !organization.Local {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		payload.Organization.ID = string(organization.OrganizationID)
 		payload.Organization.Name = organization.Name
@@ -128,25 +129,25 @@ func (s *Service) appOrganizationID() string {
 	return s.localOrganization
 }
 
-func (s *Service) appCredential(c echo.Context) (apiCredential, int, error) {
+func (s *Service) appCredential(c echo.Context) (hubapi.APICredential, int, error) {
 	return s.appCredentialContext(c.Request().Context(), c)
 }
 
-func (s *Service) appCredentialContext(ctx context.Context, c echo.Context) (apiCredential, int, error) {
+func (s *Service) appCredentialContext(ctx context.Context, c echo.Context) (hubapi.APICredential, int, error) {
 	if s.config.Hosted != nil {
 		return s.hostedCredential(ctx, c)
 	}
 	return s.localAppCredentialContext(ctx, c)
 }
 
-func appSubject(credential apiCredential) string {
+func appSubject(credential hubapi.APICredential) string {
 	if credential.Hosted != nil {
 		return credential.Hosted.Subject
 	}
 	return "local_" + credential.ID
 }
 
-func (s *Service) localAppProjects(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
+func (s *Service) localAppProjects(ctx context.Context, credential hubapi.APICredential) ([]appBootstrapProject, error) {
 	return s.hostedReadableProjectsPostgres(ctx, credential)
 }
 
@@ -157,7 +158,7 @@ func (s *Service) localAppOnly(next echo.HandlerFunc) echo.HandlerFunc {
 			return s.localAppUnauthorized(c, status)
 		}
 		if org := c.Param("organization"); org != "" && org != s.localOrganization {
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 		if !hostedReadRequest(c) {
 			ctx := c.Request().Context()
@@ -189,18 +190,18 @@ func (s *Service) localAppCreateProject(c echo.Context) error {
 		Name        string `json:"name"`
 		GrantAccess bool   `json:"grant_access"`
 	}
-	if err := decodeAPIJSON(c, &input); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &input); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if !input.GrantAccess {
-		return s.nativeAPIError(c, nativeInvalid("Explicitly grant yourself project access"))
+		return s.nativeAPIError(c, hubapi.NativeInvalid("Explicitly grant yourself project access"))
 	}
 	credential, status, err := s.localAppCredential(c)
 	if err != nil {
 		return s.localAppUnauthorized(c, status)
 	}
 	if c.Param("organization") != s.localOrganization {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(s.localOrganization), credential: credential}
 	c.Set("native_scope", scope)
@@ -220,7 +221,7 @@ func (s *Service) localAppMembers(c echo.Context) error {
 	})
 }
 
-func (s *Service) appAdministrator(c echo.Context) (apiCredential, error) {
+func (s *Service) appAdministrator(c echo.Context) (hubapi.APICredential, error) {
 	if s.config.Hosted == nil {
 		credential, _, err := s.localAppCredential(c)
 		return credential, err

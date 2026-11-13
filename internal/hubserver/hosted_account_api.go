@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -31,7 +32,7 @@ type hostedSupportResponse struct {
 // a tenant Hub answers them as absent rather than running a second copy.
 func (s *Service) hostedEntryOwned(c echo.Context) (bool, error) {
 	if s.hostedShared() {
-		return true, s.nativeAPIError(c, nativeNotFound())
+		return true, s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	return false, nil
 }
@@ -58,7 +59,7 @@ func (s *Service) switchHostedOrganizationJSON(c echo.Context) error {
 		hostedIdempotent
 		Organization string `json:"organization"`
 	}
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
@@ -82,7 +83,7 @@ func (s *Service) acceptHostedInvitationJSON(c echo.Context) error {
 		hostedIdempotent
 		Token string `json:"token"`
 	}
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.validate(false); err != nil {
@@ -103,7 +104,7 @@ func (s *Service) startHostedSupportJSON(c echo.Context) error {
 	}
 	var request hostedIdempotent
 	if c.Request().ContentLength != 0 {
-		if err := decodeAPIJSON(c, &request); err != nil {
+		if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 			return s.invalidAPIRequest(c, err)
 		}
 	}
@@ -137,7 +138,7 @@ func (s *Service) hostedInvitationAcceptedBySession(c echo.Context, token string
 		return false
 	}
 	var accepted int
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 
 	err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
@@ -164,7 +165,7 @@ func (s *Service) hostedWidgetToken(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "A personal browser session is required")
 	}
 	var request struct{}
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Request body is invalid")
 	}
 	provider, ok := s.config.Hosted.Provider.(auth.WidgetTokenProvider)

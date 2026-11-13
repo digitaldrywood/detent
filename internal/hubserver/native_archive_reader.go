@@ -10,7 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
-	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,12 +27,6 @@ type nativeArchiveRead struct {
 	last        int64
 	err         error
 }
-
-type nativeArchiveError struct {
-	Archive *tracker.ArchiveDescriptor `json:"archive"`
-}
-
-func (e *nativeArchiveError) Error() string { return "archive section " + e.Archive.Availability }
 
 func (s *Service) archiveContext(ctx context.Context, scope nativeScope, presign bool) context.Context {
 	if ctx.Value(nativeArchiveContextKey{}) != nil {
@@ -91,14 +85,14 @@ func (r *nativeArchiveRead) load(ctx context.Context, item, kind, subject string
 			if r.err != nil {
 				return attachment.ArchiveSection{}, false, r.err
 			}
-			return attachment.ArchiveSection{}, false, &nativeArchiveError{Archive: &tracker.ArchiveDescriptor{Availability: "section_required", SectionIDs: []string{id}}}
+			return attachment.ArchiveSection{}, false, &hubapi.NativeArchiveError{Archive: &tracker.ArchiveDescriptor{Availability: "section_required", SectionIDs: []string{id}}}
 		}
 		return *r.section, true, r.err
 	}
 	r.descriptor = &tracker.ArchiveDescriptor{Availability: "unavailable", SectionIDs: []string{id}, SHA256: ref.SHA256}
 	fail := func(availability string) (attachment.ArchiveSection, bool, error) {
 		r.descriptor.Availability = availability
-		r.err = &nativeArchiveError{Archive: r.descriptor}
+		r.err = &hubapi.NativeArchiveError{Archive: r.descriptor}
 		return attachment.ArchiveSection{}, false, r.err
 	}
 	if ref.Validate(string(scope.organization)) != nil || ref.UncompressedSize > attachment.MaxSectionBytes || ref.SchemaVersion != 1 || id == "" || (sequence > 0 && kind != "conversation" && sequence > last) {
@@ -111,7 +105,7 @@ func (r *nativeArchiveRead) load(ctx context.Context, item, kind, subject string
 	if reader == nil {
 		return fail("unavailable")
 	}
-	unrestricted := scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly && scope.credential.Hosted == nil
+	unrestricted := scope.credential.Scope == hubapi.APIScopeAdmin && !scope.credential.NativeOnly && scope.credential.Hosted == nil
 	unrestricted = unrestricted || scope.credential.Hosted != nil && scope.credential.EntryKey == nil && scope.credential.HostedKeyScope == "" && (scope.credential.HostedRole == "owner" || scope.credential.HostedRole == "admin")
 	presign := r.presign && unrestricted
 	response, err := readRuntimeObject(ctx, nativeRuntimeObjectKey{kind: "archive", organization: string(scope.organization), reference: ref, presign: presign}, func() (entryauthority.ArchiveResponse, error) {
@@ -256,12 +250,4 @@ func validateNativeArchiveSection(section attachment.ArchiveSection, kind, subje
 		}
 	}
 	return nil
-}
-
-func nativeArchiveReadError(err error) *operatortool.RequestError {
-	var unavailable *nativeArchiveError
-	if !errors.As(err, &unavailable) {
-		return nil
-	}
-	return &operatortool.RequestError{Code: "archive_" + unavailable.Archive.Availability, Message: unavailable.Error(), Archive: unavailable.Archive}
 }

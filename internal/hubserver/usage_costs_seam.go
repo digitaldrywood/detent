@@ -5,9 +5,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
-	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -30,24 +31,24 @@ type runnerUsageFacts = usagecosts.RunnerFacts
 type spriteUsageRequest = usagecosts.SpriteRequest
 
 func normalizeCostObservation(o *costObservation, now time.Time) error {
-	return fromFeatureError(usagecosts.Normalize(o, now))
+	return hubapi.FromFeatureError(usagecosts.Normalize(o, now))
 }
 func costMonth(value string, now time.Time) (usageWindow, error) {
 	v, e := usagecosts.Month(value, now)
-	return v, fromFeatureError(e)
+	return v, hubapi.FromFeatureError(e)
 }
 func buildMonthlyCostReport(organization, scope string, window usageWindow, now time.Time, observations []attributedCostObservation, resources []costResource) (monthlyCostReport, error) {
 	v, e := usagecosts.BuildReport(organization, scope, window, now, observations, resources)
-	return v, fromFeatureError(e)
+	return v, hubapi.FromFeatureError(e)
 }
 func boundedMonthlyCostDetails(report monthlyCostReport) monthlyCostReport {
 	return usagecosts.BoundedDetails(report)
 }
 func validateSpriteUsageRequest(request *spriteUsageRequest, now time.Time) error {
-	return fromFeatureError(usagecosts.ValidateSpriteRequest(request, now))
+	return hubapi.FromFeatureError(usagecosts.ValidateSpriteRequest(request, now))
 }
 func validateRunnerCostUsage(entry tracker.NativeUsage) error {
-	return fromFeatureError(usagecosts.ValidateRunnerUsage(entry))
+	return hubapi.FromFeatureError(usagecosts.ValidateRunnerUsage(entry))
 }
 func nativeUsageCorrection(previous, next tracker.NativeRunData) bool {
 	return usagecosts.UsageCorrection(previous, next)
@@ -57,10 +58,10 @@ func (d *database) costService() *usagecosts.Service {
 }
 func (d *database) monthlyCosts(ctx context.Context, organization, scope string, projects []string, window usageWindow, now time.Time) (monthlyCostReport, error) {
 	v, e := d.costService().Monthly(ctx, organization, scope, projects, window, now)
-	return v, fromFeatureError(e)
+	return v, hubapi.FromFeatureError(e)
 }
 func (s *Service) costService() *usagecosts.Service {
-	deps := usagecosts.Deps{Repository: s.config.TenantRepository, Details: s.runDetailStore(), Now: s.config.now, Prices: usagecosts.Prices(s.usagePrices()), ContentContext: func(ctx context.Context) context.Context { return isolateContentContext(s.runDetailContext(ctx)) }, RecordError: projectRecordError, ValidateDetail: validateNativeDetailReference}
+	deps := usagecosts.Deps{Repository: s.config.TenantRepository, Details: s.runDetailStore(), Now: s.config.now, Prices: usagecosts.Prices(s.usagePrices()), ContentContext: func(ctx context.Context) context.Context { return isolateContentContext(s.runDetailContext(ctx)) }, RecordError: hubapi.ProjectRecordError, ValidateDetail: validateNativeDetailReference}
 	if s.database != nil && s.database.billingRepository != nil {
 		deps.RequireCollaboration = func(ctx context.Context, w tenantstore.Writer, now time.Time) error {
 			return s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now)
@@ -73,7 +74,7 @@ func (s *Service) costService() *usagecosts.Service {
 }
 func (s *Service) prepareRunnerCostRecords(ctx context.Context, scope nativeScope, request tracker.NativeRunEvent, facts runnerUsageFacts, now time.Time, historical ...billingstore.CostObservation) ([]billingstore.CostObservation, error) {
 	v, e := s.costService().PrepareRunnerRecords(ctx, s.featureScope(scope), request, facts, now, historical...)
-	return v, fromFeatureError(e)
+	return v, hubapi.FromFeatureError(e)
 }
 
 func (s *Service) registerCostUsageRoutes(e *echo.Echo) {
@@ -81,19 +82,19 @@ func (s *Service) registerCostUsageRoutes(e *echo.Echo) {
 		e.GET("/api/v2/organizations/:organization/monthly-budget", s.instanceMonthlyBudgetScope, s.requireInstanceAdmin())
 		e.PUT("/api/v2/organizations/:organization/monthly-budget", s.instanceMonthlyBudgetScope, s.requireInstanceAdmin())
 	}
-	e.GET(nativeBase+"/monthly-budget", s.getMonthlyBudget, s.requireNativeScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
-	e.PUT(nativeBase+"/monthly-budget", s.updateMonthlyBudget, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
+	e.GET(hubapi.NativeBase+"/monthly-budget", s.getMonthlyBudget, s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator, hubapi.APIScopeAdmin))
+	e.PUT(hubapi.NativeBase+"/monthly-budget", s.updateMonthlyBudget, s.requireNativeScope(hubapi.APIScopeOperator, hubapi.APIScopeAdmin))
 	hosted := ""
 	if s.config.Hosted != nil {
 		hosted = s.config.Hosted.OrganizationID
 	}
 	usagecosts.RegisterRoutes(e.Group(""), usagecosts.HTTPDeps{Service: s.costService(), Reports: s.database.costService(), Native: func(roles ...hubauth.TokenScope) echo.MiddlewareFunc {
-		allowed := make([]apiScope, len(roles))
+		allowed := make([]hubapi.APIScope, len(roles))
 		for i, role := range roles {
-			allowed[i] = apiScope(role)
+			allowed[i] = hubapi.APIScope(role)
 		}
 		return s.requireNativeScope(allowed...)
-	}, InstanceAdmin: s.requireInstanceAdmin(), HostedOrganization: hosted, AccessRead: s.accessRead, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+	}, InstanceAdmin: s.requireInstanceAdmin(), HostedOrganization: hosted, AccessRead: s.accessRead, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 		Scope: func(c echo.Context, admin bool) hubapi.Scope {
 			scope := nativeRequestScope(c)
 			if admin {
@@ -104,14 +105,14 @@ func (s *Service) registerCostUsageRoutes(e *echo.Echo) {
 		},
 		CanManage: func(c echo.Context) bool { return canManageProjectSecrets(nativeRequestScope(c).credential) },
 		RefuseImport: func(c echo.Context) error {
-			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Importing infrastructure usage requires owner or admin access", apiErrorResponse{Code: "forbidden", Message: "Importing infrastructure usage requires owner or admin access"})
+			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Importing infrastructure usage requires owner or admin access", hubapi.APIErrorResponse{Code: "forbidden", Message: "Importing infrastructure usage requires owner or admin access"})
 		}})
 }
 func (s *Service) importSpriteUsageCommand(ctx context.Context, scope nativeScope, request spriteUsageRequest) ([]byte, error) {
 	manage := canManageProjectSecrets(scope.credential)
 	scope.requireHostedAdmin = true
 	raw, err := s.costService().Import(ctx, s.featureScope(scope), request, manage)
-	return raw, fromFeatureError(err)
+	return raw, hubapi.FromFeatureError(err)
 }
 
 type UsagePrice = usagecosts.Price

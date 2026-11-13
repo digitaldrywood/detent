@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -27,7 +28,7 @@ func (s *Service) readNativeFailuresTenant(ctx context.Context, scope nativeScop
 	defer clear(key)
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return out, false, nil, workItemStorageUnavailable()
+		return out, false, nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var page diagnosticstore.AnalyticsFailurePage
 	var usage reportstore.AnalyticsUsagePage
@@ -38,11 +39,11 @@ func (s *Service) readNativeFailuresTenant(ctx context.Context, scope nativeScop
 		}
 		owner, ok := r.(diagnosticstore.AnalyticsFailureReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		usageOwner, ok := r.(reportstore.AnalyticsUsageReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		page, err = owner.ReadAnalyticsFailurePage(ctx, diagnosticstore.AnalyticsFailureQuery{ProjectID: scope.project, WorkItemID: item, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: after.Failure})
 		if err != nil {

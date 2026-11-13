@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -257,7 +258,7 @@ func TestRunnerCompletionRecordsDependencyEdgesAtomically(t *testing.T) {
 					t.Fatal(err)
 				}
 				now := time.Now().UTC()
-				comment := tracker.NativeComment{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: lease.WorkItemID, ID: newNativeID("cmt"), Revision: 1, Sequence: source.EventSequence + 1, Body: "Example feedback", Actor: scope.actor(), CreatedAt: now, UpdatedAt: now}
+				comment := tracker.NativeComment{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: lease.WorkItemID, ID: hubapi.NewID("cmt"), Revision: 1, Sequence: source.EventSequence + 1, Body: "Example feedback", Actor: scope.actor(), CreatedAt: now, UpdatedAt: now}
 				fields, err := f.service.prepareWorkItemFields(t.Context(), "org_startup", workItemRecordPlan{comment: comment})
 				if err != nil {
 					t.Fatal(err)
@@ -271,7 +272,7 @@ func TestRunnerCompletionRecordsDependencyEdgesAtomically(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				raw, err = json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: "org_startup", ProjectID: "prj_runner", AggregateID: lease.WorkItemID, Type: "comment.created", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: 1, CommentID: comment.ID}})
+				raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: "org_startup", ProjectID: "prj_runner", AggregateID: lease.WorkItemID, Type: "comment.created", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: 1, CommentID: comment.ID}})
 				if err != nil {
 					t.Fatal(err)
 				}

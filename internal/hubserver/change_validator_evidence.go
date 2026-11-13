@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,12 +23,12 @@ type validatorReviewEvidence struct {
 }
 
 func validateValidatorReviewEvidence(scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, request tracker.ReviewChange, evidence validatorReviewEvidence) (tracker.MachineID, error) {
-	worker := scope.credential.Scope == apiScopeWorker
+	worker := scope.credential.Scope == hubapi.APIScopeWorker
 	implementationReview := request.ImplementationReview != nil
 	audit := request.SecurityAudit != nil
 	landingAudit := audit && request.SecurityAudit.Landing
 	invalid := func(message, field string) error {
-		err := nativeInvalid(message)
+		err := hubapi.NativeInvalid(message)
 		if worker && request.Validator != nil && !implementationReview && !audit {
 			return nativeRejection(err, "acceptance_validation", field)
 		}
@@ -35,7 +36,7 @@ func validateValidatorReviewEvidence(scope nativeScope, change tracker.ChangeReq
 	}
 	auditInvalid := func(message, field string) error {
 		if !worker {
-			return nativeInvalid(message)
+			return hubapi.NativeInvalid(message)
 		}
 		return securityAuditRejection(message, field)
 	}
@@ -43,11 +44,11 @@ func validateValidatorReviewEvidence(scope nativeScope, change tracker.ChangeReq
 		if audit {
 			return "", auditInvalid("implementation review and acceptance validation must be separate results", "review")
 		}
-		return "", nativePublicInvalid("implementation review and acceptance validation must be separate results")
+		return "", hubapi.NativePublicInvalid("implementation review and acceptance validation must be separate results")
 	}
 	if request.Validator == nil && !implementationReview && !audit {
 		if worker {
-			return "", &nativeError{status: 403, Code: "forbidden", Message: "workers may only submit validator reviews", publicMessage: true}
+			return "", &hubapi.NativeError{Status: 403, Code: "forbidden", Message: "workers may only submit validator reviews", PublicMessage: true}
 		}
 		return "", nil
 	}
@@ -180,7 +181,7 @@ func validateValidatorReviewEvidence(scope nativeScope, change tracker.ChangeReq
 	}
 	sourceSession, sourceMachine, current := evidence.sourceSession, evidence.sourceMachine, evidence.current
 	if sourceSession < 0 || sourceMachine == "" {
-		return "", nativePublicInvalid("review requires the implementing session's recorded identity")
+		return "", hubapi.NativePublicInvalid("review requires the implementing session's recorded identity")
 	}
 	var currentSession int64
 	if current.Runtime != nil && current.Runtime.Activity != nil {

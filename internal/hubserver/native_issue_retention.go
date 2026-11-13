@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -24,7 +25,7 @@ func (s *Service) retainClosedWorkItems(ctx context.Context, organization tracke
 	if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		owner, ok := r.(corestore.WorkItemRetentionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		after, err = owner.WorkItemRetentionCursor(ctx)
@@ -38,13 +39,13 @@ func (s *Service) retainClosedWorkItems(ctx context.Context, organization tracke
 	}
 
 	advance := func(next corestore.WorkItemRetentionCursor) (bool, error) {
-		checkpoint, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubReadTimeout)
+		checkpoint, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
 		defer cancel()
 		changed := false
 		err := s.config.TenantRepository.WriteTenant(checkpoint, organization, corestore.Background, func(w tenantstore.Writer) error {
 			owner, ok := w.(corestore.WorkItemRetentionWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			var err error
 			changed, err = owner.AdvanceWorkItemRetention(checkpoint, after, next)
@@ -103,7 +104,7 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 	if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		owner, ok := r.(corestore.WorkItemRetentionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		days, eligible, err = owner.WorkItemRetentionPolicy(ctx, plan.current, plan.project.Settings.Revision, now)
 		return err
@@ -130,7 +131,7 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 	if err != nil {
 		return err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: organization, ProjectID: scope.project, AggregateID: candidate.WorkItemID, ID: newNativeID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: tracker.Actor{Kind: "integration", PrincipalID: "auto_archive"}, RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields, Operation: "archive", ReasonDetail: fmt.Sprintf("Archived automatically after %d days", days)}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: organization, ProjectID: scope.project, AggregateID: candidate.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: tracker.Actor{Kind: "integration", PrincipalID: "auto_archive"}, RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields, Operation: "archive", ReasonDetail: fmt.Sprintf("Archived automatically after %d days", days)}})
 	if err != nil {
 		return err
 	}
@@ -159,7 +160,7 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 		}
 		owner, ok := w.(corestore.WorkItemRetentionWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		currentDays, eligible, err := owner.WorkItemRetentionPolicy(ctx, current, project.Settings.Revision, now)
 		if err != nil {

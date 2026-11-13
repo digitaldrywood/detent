@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -41,38 +42,38 @@ func (t *coordinatorToolset) loadSplitIssueSkill(raw json.RawMessage) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	if len(body) > coordinatorToolArgumentBytes {
-		return nil, fmt.Errorf("split-issue skill exceeds %d bytes", coordinatorToolArgumentBytes)
+	if len(body) > hubapi.CoordinatorToolArgumentBytes {
+		return nil, fmt.Errorf("split-issue skill exceeds %d bytes", hubapi.CoordinatorToolArgumentBytes)
 	}
 	return map[string]string{"name": skill.Name, "instructions": body}, nil
 }
 
 func validateCoordinatorIssueSplit(split chat.IssueSplit) error {
 	if !strings.HasPrefix(split.ParentID, "wi_") || len(split.ParentID) > 256 {
-		return nativePublicInvalid("A native parent work item is required")
+		return hubapi.NativePublicInvalid("A native parent work item is required")
 	}
 	if len(split.Children) < 1 || len(split.Children) > coordinatorSplitMaxChildren {
-		return nativePublicInvalid("A split must contain 1 to 10 children")
+		return hubapi.NativePublicInvalid("A split must contain 1 to 10 children")
 	}
 	for _, child := range split.Children {
 		if strings.TrimSpace(child.Title) == "" || len(child.Title) > coordinatorProposalTitleBytes || strings.TrimSpace(child.Description) == "" || utf8.RuneCountInString(child.Description) > coordinatorProposalBodyRunes || strings.TrimSpace(child.State) == "" || len(child.State) > 256 {
-			return nativePublicInvalid("Each child requires a bounded title, description and target state")
+			return hubapi.NativePublicInvalid("Each child requires a bounded title, description and target state")
 		}
 		if child.Priority != nil && (*child.Priority < 0 || *child.Priority > 3) {
-			return nativePublicInvalid("Child priority must be 0 through 3")
+			return hubapi.NativePublicInvalid("Child priority must be 0 through 3")
 		}
 	}
 	if len(split.Edges) > 100 {
-		return nativePublicInvalid("A split may contain at most 100 dependency edges")
+		return hubapi.NativePublicInvalid("A split may contain at most 100 dependency edges")
 	}
 	graph := make([][]int, len(split.Children)+1)
 	seen := map[chat.IssueSplitEdge]bool{}
 	for _, edge := range split.Edges {
 		if edge.Dependent < 0 || edge.Dependent > len(split.Children) || edge.Blocker < 0 || edge.Blocker > len(split.Children) {
-			return nativePublicInvalid("Dependency edge references an unknown child")
+			return hubapi.NativePublicInvalid("Dependency edge references an unknown child")
 		}
 		if seen[edge] {
-			return nativePublicInvalid("Dependency edges must be unique")
+			return hubapi.NativePublicInvalid("Dependency edges must be unique")
 		}
 		seen[edge] = true
 		graph[edge.Dependent] = append(graph[edge.Dependent], edge.Blocker)
@@ -97,14 +98,14 @@ func validateCoordinatorIssueSplit(split chat.IssueSplit) error {
 	}
 	for node := range graph {
 		if !visit(node) {
-			return nativePublicInvalid("Dependencies cannot form a cycle")
+			return hubapi.NativePublicInvalid("Dependencies cannot form a cycle")
 		}
 	}
 	return nil
 }
 
 func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	var split chat.IssueSplit
 	if err := decodeCoordinatorArguments(call.Arguments, &split); err != nil {
@@ -155,15 +156,15 @@ func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conve
 			return nil, err
 		}
 		if !slices.ContainsFunc(project.States, func(state tracker.NativeState) bool { return state.Name == child.State }) {
-			return nil, nativePublicInvalid("Workflow state does not exist")
+			return nil, hubapi.NativePublicInvalid("Workflow state does not exist")
 		}
 	}
 	arguments, err := json.Marshal(split)
 	if err != nil {
 		return nil, err
 	}
-	if len(arguments) > coordinatorToolArgumentBytes {
-		return nil, fmt.Errorf("%w: approved split exceeds %d bytes", errCoordinatorToolArguments, coordinatorToolArgumentBytes)
+	if len(arguments) > hubapi.CoordinatorToolArgumentBytes {
+		return nil, fmt.Errorf("%w: approved split exceeds %d bytes", errCoordinatorToolArguments, hubapi.CoordinatorToolArgumentBytes)
 	}
 	action := chat.Action{RequiresConfirmation: true, ConversationID: record.ID, Kind: chat.ActionIssueSplit, ProjectID: string(record.ProjectID), IssueID: split.ParentID, Identifier: fmt.Sprintf("#%d", parent.Number), Revision: split.Revision, Title: fmt.Sprintf("Split #%d: %s into %d issues", parent.Number, parent.Title, len(split.Children)), Arguments: arguments, Material: true}
 	return t.submitCoordinatorAction(ctx, record, call, action)
@@ -191,7 +192,7 @@ func (s *Service) executeCoordinatorIssueSplit(ctx context.Context, action chat.
 		return chat.ActionExecution{}, err
 	}
 	scope.project = tracker.ProjectID(action.ProjectID)
-	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+split.ParentID+"/split"), Item: split.ParentID, RequireLease: true, Feature: "collaboration"}
+	options := hubapi.NativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+split.ParentID+"/split"), Item: split.ParentID, RequireLease: true, Feature: "collaboration"}
 	raw, err := s.executeCoordinatorSplitRecords(ctx, scope, options, tracker.MutationForContext(ctx, action.RequestID), split)
 	if err != nil {
 		return chat.ActionExecution{}, coordinatorActionError(err)
@@ -283,7 +284,7 @@ func (s *Service) prepareCoordinatorSplitRecord(ctx context.Context, scope nativ
 	if err != nil {
 		return record, err
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, ID: newNativeID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: at, Data: data})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: at, Data: data})
 	if err != nil {
 		return record, err
 	}
@@ -314,24 +315,24 @@ func (s *Service) readCoordinatorSplitReceipt(ctx context.Context, scope nativeS
 	return raw, nil
 }
 
-func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, split chat.IssueSplit) (json.RawMessage, error) {
+func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nativeScope, options hubapi.NativeCommandOptions, command tracker.Mutation, split chat.IssueSplit) (json.RawMessage, error) {
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if err := validateCoordinatorIssueSplit(split); err != nil {
 		return nil, err
 	}
 	if split.Revision <= 0 || strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("A current revision and idempotency key are required")
+		return nil, hubapi.NativePublicInvalid("A current revision and idempotency key are required")
 	}
-	if scope.credential.Scope == apiScopeWorker {
+	if scope.credential.Scope == hubapi.APIScopeWorker {
 		return nil, operatortool.ErrAccessDenied
 	}
 	scope.action, scope.actionItem = string(chat.ActionIssueSplit), split.ParentID
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	hash, err := nativeCommandHash(split)
+	hash, err := hubapi.CommandHash(split)
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +362,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 		organizationSlug = organization.Slug
 		return err
 	}); err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	nodes := []tracker.NativeIssue{parent.issue}
 	rows := []corestore.WorkItem{parent.current}
@@ -458,7 +459,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 			return corestore.ErrNotFound
 		}
 		if !sameWorkItemProjectPlan(parent.project, project) {
-			return nativeConflict(tracker.Revision(parent.current.Revision))
+			return hubapi.NativeConflict(tracker.Revision(parent.current.Revision))
 		}
 		stored, err := w.Receipt(ctx, scope.credential.ID, options.OperationID, command.IdempotencyKey)
 		if err == nil {
@@ -466,7 +467,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 				return receiptstore.ErrExpired
 			}
 			if stored.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			previous = &stored
 			return s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK)
@@ -493,11 +494,11 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(current.ActorPrincipalID)}) {
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		if current.Revision != parent.current.Revision || current.EventSequence != parent.current.EventSequence || current.Archived {
-			return nativeConflict(tracker.Revision(current.Revision))
+			return hubapi.NativeConflict(tracker.Revision(current.Revision))
 		}
 		if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, now); err != nil {
 			return err
@@ -509,7 +510,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 		for _, record := range records {
 			plan := record.plan
 			if plan.requiresIssueContract() && (record.policyFound != (policyErr == nil) || record.policyFound && !sameNativeClaimProjectPolicy(record.policy, policy)) {
-				return policyMismatch("The approved policy changed after the split proposal")
+				return hubapi.PolicyMismatch("The approved policy changed after the split proposal")
 			}
 			if !plan.create || plan.comment.ID != "" {
 				current, err := w.LockWorkItem(ctx, scope.project, plan.current.NativeID)
@@ -517,7 +518,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 					return err
 				}
 				if current.Revision != plan.current.Revision || current.EventSequence != plan.current.EventSequence {
-					return nativeConflict(tracker.Revision(current.Revision))
+					return hubapi.NativeConflict(tracker.Revision(current.Revision))
 				}
 				plan.current = current
 			}
@@ -533,7 +534,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 				}
 				usage, err := w.AdjustCollaborationBytes(ctx, record.commentBytes, limit)
 				if errors.Is(err, corestore.ErrNotFound) {
-					return attachmentAccountingUnavailable()
+					return hubapi.AttachmentAccountingUnavailable()
 				}
 				if err != nil {
 					return err
@@ -576,7 +577,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 	})
 	err = errors.Join(err, releaseWorkItemAuthority(authority))
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if previous != nil {
 		return s.readCoordinatorSplitReceipt(ctx, scope, *previous, split.ParentID)

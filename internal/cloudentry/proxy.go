@@ -23,7 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry/oauth"
 	"github.com/digitaldrywood/detent/internal/cloudentry/socket"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 var strippedRequestHeaders = []string{
@@ -286,7 +286,7 @@ func (s *Service) proxy(c echo.Context) error {
 		}
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
-	limit := hubserver.SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
+	limit := hubapi.SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
 	body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_request", "message": "Request body could not be read"})

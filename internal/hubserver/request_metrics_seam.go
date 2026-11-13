@@ -4,10 +4,12 @@ import (
 	"context"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 type tenantRequestMetrics = requestmetrics.Service
@@ -42,14 +44,14 @@ func (s *Service) requestMetricsHTTP() *requestmetrics.HTTP {
 	return requestmetrics.NewHTTP(requestmetrics.HTTPDeps{Collector: s.requestMetrics, Repository: s.config.TenantRepository, Now: s.config.now, Logger: s.config.Logger, Echo: s.echo, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, err) }, Refuse: func(c echo.Context, status int, code, reason string, body any) error {
 		return s.refusedAPIError(c, status, code, reason, body)
 	}, JSONError: s.hostedJSONError, Credential: func(c echo.Context) hubauth.Credential {
-		cred, _ := c.Get("hub_api_credential").(apiCredential)
+		cred, _ := c.Get("hub_api_credential").(hubapi.APICredential)
 		return authCredential(cred)
 	}, CurrentOperator: func(ctx context.Context) (hubauth.Credential, error) {
 		c, err := currentHubOperator(ctx)
 		return authCredential(c), err
 	}, ExplanationRead: explanationRead, BillingOwner: s.database.metricsBillingOwner, BindingError: ErrHostedDatabaseBinding})
 }
-func (s *Service) admitRunnerRequest(c echo.Context, cred apiCredential) error {
+func (s *Service) admitRunnerRequest(c echo.Context, cred hubapi.APICredential) error {
 	return s.requestMetricsHTTP().AdmitRunnerRequest(c, authCredential(cred))
 }
 func (s *Service) measureRequests(next echo.HandlerFunc) echo.HandlerFunc {

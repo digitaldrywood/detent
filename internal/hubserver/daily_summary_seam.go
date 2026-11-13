@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/dailysummary"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -70,9 +71,9 @@ func (s *Service) deliverDailySummaries(ctx context.Context, now time.Time) erro
 
 func (s *Service) dailySummaryHTTPDeps() dailysummary.HTTPDeps {
 	return dailysummary.HTTPDeps{Service: s.dailySummaryService, Auth: s.requestAuth,
-		Error:       func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) },
+		Error:       func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 		HostedError: s.hostedAPIError, JSONError: s.hostedJSONError, InvalidRequest: s.invalidAPIRequest,
-		ValidToken: func(token string) bool { return validNativeID(token, "unsub") }, Session: s.hostedSessionOnly,
+		ValidToken: func(token string) bool { return hubapi.ValidID(token, "unsub") }, Session: s.hostedSessionOnly,
 	}
 }
 func (s *Service) registerDailySummaryPreferenceRoutes(e *echo.Echo) {

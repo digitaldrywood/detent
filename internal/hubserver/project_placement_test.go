@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -171,13 +172,13 @@ func placementFixtureMember(t *testing.T, f nativeFixture, r runnerFixture, name
 
 func placementFixtureDependency(t *testing.T, f nativeFixture, dependent, blocker tracker.NativeIssue) {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(dependent.WorkItemID)+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("dependency")}, ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"})
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(dependent.WorkItemID)+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("dependency")}, ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"})
 	requireNativeStatus(t, response, http.StatusOK)
 }
 
 func placementFixtureState(t *testing.T, f nativeFixture, item tracker.NativeIssue, state string) tracker.NativeIssue {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("workflow")}, ExpectedRevision: item.Revision, State: state, Reason: "user_requested"})
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("workflow")}, ExpectedRevision: item.Revision, State: state, Reason: "user_requested"})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &item)
 	return item
@@ -567,7 +568,7 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 			}
 			if test.model != "" {
 				body := third.Body + "\n```detent-agent\nschema: 1\nmodel: " + test.model + "\n```"
-				response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(third.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("model")}, ExpectedRevision: third.Revision, Body: &body})
+				response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(third.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("model")}, ExpectedRevision: third.Revision, Body: &body})
 				requireNativeStatus(t, response, http.StatusOK)
 			}
 			if test.pending {
@@ -774,12 +775,12 @@ func TestPlacementClaimTenantBoundaries(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			issue := test.project.create(t, test.name)
-			response := performHubAPIRequest(t, f.service, http.MethodPost, test.project.base+"/claims", test.runner.redemption.Credential, providerClaim(test.runner, issue, newNativeID("session")))
+			response := performHubAPIRequest(t, f.service, http.MethodPost, test.project.base+"/claims", test.runner.redemption.Credential, providerClaim(test.runner, issue, hubapi.NewID("session")))
 			requireNativeStatus(t, response, test.status)
 			if test.status == http.StatusOK {
 				return
 			}
-			var refusal nativeError
+			var refusal hubapi.NativeError
 			decodeHubResponse(t, response, &refusal)
 			if refusal.Code != "no_claimable_work" {
 				t.Fatalf("refusal code=%q, want no_claimable_work", refusal.Code)

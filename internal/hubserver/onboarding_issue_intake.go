@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -73,7 +74,7 @@ func (s *Service) getGitHubBatch(c echo.Context) error {
 }
 
 func (s *Service) projectGitHubBatch(ctx context.Context, scope nativeScope) (githubBatchView, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil {
 		return githubBatchView{}, ErrHostedDatabaseBinding
@@ -102,7 +103,7 @@ func (s *Service) projectGitHubBatch(ctx context.Context, scope nativeScope) (gi
 		return err
 	})
 	if err != nil {
-		return githubBatchView{}, projectRecordError(err)
+		return githubBatchView{}, hubapi.ProjectRecordError(err)
 	}
 	if !found {
 		return projectGitHubBatchView(project.States, nil), nil
@@ -119,7 +120,7 @@ func (s *Service) projectGitHubBatch(ctx context.Context, scope nativeScope) (gi
 }
 
 func intakeInvalid(message string) error {
-	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
+	return &hubapi.NativeError{Code: "invalid_request", Message: message, Status: http.StatusUnprocessableEntity, PublicMessage: true}
 }
 
 func batchHasPending(batch *tracker.GitHubBatch) bool {
@@ -131,7 +132,7 @@ func batchHasPending(batch *tracker.GitHubBatch) bool {
 
 func (s *Service) commandGitHubBatch(c echo.Context) error {
 	var request tracker.GitHubBatchCommand
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, nil)
@@ -151,10 +152,10 @@ func batchRetryAllowed(raw string, now time.Time) error {
 	}
 	deadline, err := time.Parse(time.RFC3339Nano, raw)
 	if err != nil {
-		return nativePublicInvalid("Invalid source retry deadline")
+		return hubapi.NativePublicInvalid("Invalid source retry deadline")
 	}
 	if now.Before(deadline) {
-		return nativeInvalid("Source rate limit has not reset; retry after " + raw)
+		return hubapi.NativeInvalid("Source rate limit has not reset; retry after " + raw)
 	}
 	return nil
 }
@@ -240,7 +241,7 @@ func batchIssueDestination(states []tracker.NativeState, batch *tracker.GitHubBa
 
 func (s *Service) reportGitHubBatch(c echo.Context) error {
 	var request tracker.GitHubBatchResult
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
@@ -253,11 +254,11 @@ func (s *Service) reportGitHubBatch(c echo.Context) error {
 
 func validateBatchDiagnostic(message, retry string) error {
 	if len(message) > 1000 {
-		return nativePublicInvalid("Source diagnostic exceeds1000 bytes")
+		return hubapi.NativePublicInvalid("Source diagnostic exceeds1000 bytes")
 	}
 	if retry != "" {
 		if _, err := time.Parse(time.RFC3339Nano, retry); err != nil {
-			return nativePublicInvalid("Invalid source retry deadline")
+			return hubapi.NativePublicInvalid("Invalid source retry deadline")
 		}
 	}
 	return nil

@@ -5,6 +5,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
@@ -16,10 +17,10 @@ type cloudModelSelection = projectsettings.ModelSelection
 func (s *Service) getCloudModelSelection(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	if s.config.TenantRepository == nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
 	if s.config.AccessRepository == nil {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	if err := s.accessRead(c.Request().Context(), scope.organization, func(r tenantstore.Reader) error {
 		return s.authorizeAccessScope(c.Request().Context(), r, scope, false)
@@ -46,7 +47,7 @@ func (s *Service) getCloudModelSelection(c echo.Context) error {
 
 func (s *Service) organizationModelSelectionScope(c echo.Context) (nativeScope, error) {
 	if s.config.Hosted == nil {
-		credential, ok := c.Get("hub_api_credential").(apiCredential)
+		credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 		if !ok || credential.NativeOnly || credential.Runner.RunnerID != "" {
 			return nativeScope{}, operatortool.ErrAccessDenied
 		}
@@ -76,14 +77,14 @@ func (s *Service) updateOrganizationModelSelection(c echo.Context) error {
 
 func (s *Service) updateCloudModelSelection(c echo.Context) error {
 	var request cloudModelSelectionRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)
 	if s.config.TenantRepository == nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
 	return s.nativeMutation(c, request.Mutation, request, nil)
 }

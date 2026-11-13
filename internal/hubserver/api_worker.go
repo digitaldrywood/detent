@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -31,7 +32,7 @@ func (s *Service) trackerAPIError(c echo.Context, err error) error {
 	case errors.Is(err, tracker.ErrInvalidClaimRequest), errors.Is(err, tracker.ErrInvalidLeaseRequest), errors.Is(err, tracker.ErrInvalidWorkEvent), errors.Is(err, tracker.ErrInvalidCandidateQuery):
 		status, code, message = http.StatusUnprocessableEntity, "invalid_request", "Request is invalid"
 	}
-	return s.refusedAPIError(c, status, code, message, apiErrorResponse{Code: code, Message: message})
+	return s.refusedAPIError(c, status, code, message, hubapi.APIErrorResponse{Code: code, Message: message})
 }
 
 // claimPreflightAcquire bounds how long a preflight waits for a claim reader;

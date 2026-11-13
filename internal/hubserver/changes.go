@@ -11,20 +11,21 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const changeBase = nativeBase + "/work-items/:item/changes"
+const changeBase = hubapi.NativeBase + "/work-items/:item/changes"
 
 func changeCheckRequest(c echo.Context) bool {
 	return c.Request().Method == http.MethodPost && c.Path() == changeBase+"/:change/versions/:version/checks"
 }
 
-func (s *Service) hostedChangeCheckPrincipal(c echo.Context, credential apiCredential) bool {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+func (s *Service) hostedChangeCheckPrincipal(c echo.Context, credential hubapi.APICredential) bool {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	if !changeCheckRequest(c) {
 		return false
@@ -37,7 +38,7 @@ func (s *Service) hostedChangeCheckPrincipal(c echo.Context, credential apiCrede
 func (s *Service) requireHostedChangeCheckPrincipal(ctx context.Context, scope nativeScope) (eventstore.ReviewPolicy, error) {
 	var row eventstore.ReviewPolicy
 	if s.config.TenantRepository == nil {
-		return row, nativeNotFound()
+		return row, hubapi.NativeNotFound()
 	}
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -59,20 +60,20 @@ func (s *Service) requireHostedChangeCheckPrincipal(ctx context.Context, scope n
 			return row, nil
 		}
 	}
-	return row, nativeNotFound()
+	return row, hubapi.NativeNotFound()
 }
 
 func (s *Service) recheckHostedChangeCheckPrincipal(ctx context.Context, r tenantstore.Reader, scope nativeScope, approved eventstore.ReviewPolicy) error {
 	credential := scope.credential
-	if s.config.Hosted == nil || credential.Scope != apiScopeOperator || credential.Hosted != nil || credential.Runner.RunnerID != "" || string(scope.organization) != s.config.Hosted.OrganizationID {
-		return nativeNotFound()
+	if s.config.Hosted == nil || credential.Scope != hubapi.APIScopeOperator || credential.Hosted != nil || credential.Runner.RunnerID != "" || string(scope.organization) != s.config.Hosted.OrganizationID {
+		return hubapi.NativeNotFound()
 	}
 	token, err := r.AccessCredential(ctx, credential.ID)
 	if err != nil {
 		return err
 	}
-	if token.Scope != string(apiScopeOperator) || !token.Valid(credential.Hash, s.config.now()) {
-		return nativeNotFound()
+	if token.Scope != string(hubapi.APIScopeOperator) || !token.Valid(credential.Hash, s.config.now()) {
+		return hubapi.NativeNotFound()
 	}
 	if _, err := r.AccessTokenGrant(ctx, credential.ID, scope.project); err != nil {
 		return err
@@ -81,24 +82,24 @@ func (s *Service) recheckHostedChangeCheckPrincipal(ctx context.Context, r tenan
 		if err != nil {
 			return err
 		}
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	current, err := r.ReviewPolicy(ctx, scope.project)
 	if err != nil {
 		return err
 	}
 	if current != approved {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	return nil
 }
 
 func (s *Service) registerChangeRoutes(e *echo.Echo) {
-	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
-	write := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
-	operator := s.requireNativeScope(apiScopeOperator)
-	e.GET(nativeBase+"/change-review-policy", s.getChangeReviewPolicy, read)
-	e.PUT(nativeBase+"/change-review-policy", s.approveChangeReviewPolicy, s.requireChangeReviewPolicyAdmin())
+	read := s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator)
+	write := s.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator)
+	operator := s.requireNativeScope(hubapi.APIScopeOperator)
+	e.GET(hubapi.NativeBase+"/change-review-policy", s.getChangeReviewPolicy, read)
+	e.PUT(hubapi.NativeBase+"/change-review-policy", s.approveChangeReviewPolicy, s.requireChangeReviewPolicyAdmin())
 	e.GET(changeBase, s.listChanges, read)
 	e.POST(changeBase, s.createChange, write)
 	e.GET(changeBase+"/:change", s.getChange, read)
@@ -117,11 +118,11 @@ func (s *Service) registerChangeRoutes(e *echo.Echo) {
 // Self-hosted operator tokens retain their existing review authority.
 func (s *Service) requireChangeReviewer() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return s.requireNativeScope(apiScopeOperator, apiScopeWorker)(func(c echo.Context) error {
+		return s.requireNativeScope(hubapi.APIScopeOperator, hubapi.APIScopeWorker)(func(c echo.Context) error {
 			scope := nativeRequestScope(c)
-			if scope.credential.Hosted != nil && scope.credential.Scope != apiScopeWorker {
+			if scope.credential.Hosted != nil && scope.credential.Scope != hubapi.APIScopeWorker {
 				if scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
-					return s.nativeAPIError(c, nativeNotFound())
+					return s.nativeAPIError(c, hubapi.NativeNotFound())
 				}
 				scope.requireHostedAdmin = true
 				c.Set("native_scope", scope)
@@ -134,7 +135,7 @@ func (s *Service) requireChangeReviewer() echo.MiddlewareFunc {
 func (s *Service) requireChangeReviewPolicyAdmin() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		if s.config.Hosted == nil {
-			return s.requireInstanceAdmin()(s.requireNativeScope(apiScopeAdmin)(next))
+			return s.requireInstanceAdmin()(s.requireNativeScope(hubapi.APIScopeAdmin)(next))
 		}
 		return s.requireOnboardingAdmin()(func(c echo.Context) error {
 			scope := nativeRequestScope(c)
@@ -146,7 +147,7 @@ func (s *Service) requireChangeReviewPolicyAdmin() echo.MiddlewareFunc {
 }
 
 func (s *Service) getChangeReviewPolicy(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	result, err := s.changeReviewPolicyRecord(ctx, nativeRequestScope(c))
 	if err != nil {
@@ -157,7 +158,7 @@ func (s *Service) getChangeReviewPolicy(c echo.Context) error {
 
 func (s *Service) approveChangeReviewPolicy(c echo.Context) error {
 	var request tracker.ApproveChangeReviewPolicy
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	return s.approveChangeReviewPolicyRecord(c, request)
@@ -177,7 +178,7 @@ func (s *Service) readChanges(ctx context.Context, scope nativeScope, item strin
 
 func (s *Service) createChange(c echo.Context) error {
 	var request tracker.CreateChange
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	return s.createChangeRecord(c, request)
@@ -185,7 +186,7 @@ func (s *Service) createChange(c echo.Context) error {
 
 func (s *Service) getChange(c echo.Context) error {
 	if c.QueryParam("view") != "bounded" {
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 		defer cancel()
 		result, err := s.selectedChangeDetail(ctx, nativeRequestScope(c), c.Param("item"), c.Param("change"), s.config.now())
 		if err != nil {
@@ -193,7 +194,7 @@ func (s *Service) getChange(c echo.Context) error {
 		}
 		return nativeArchiveJSON(c, http.StatusOK, changeDetailResponse(result))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope, ctx := nativeRequestScope(c), ctx
 	var err error
@@ -201,7 +202,7 @@ func (s *Service) getChange(c echo.Context) error {
 	if c.QueryParam("limit") != "" {
 		args.Limit, err = strconv.Atoi(c.QueryParam("limit"))
 		if err != nil {
-			return s.nativeAPIError(c, nativePublicInvalid("limit must be an integer"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("limit must be an integer"))
 		}
 	}
 	raw, err := json.Marshal(args)
@@ -210,7 +211,7 @@ func (s *Service) getChange(c echo.Context) error {
 	}
 	args, err = operatortool.DecodeChangeArguments(operatortool.GetChange, raw)
 	if err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("invalid Change read selector"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("invalid Change read selector"))
 	}
 	result := (hubChangeApplication{service: s}).result(scope, args)
 	result, err = s.readBoundedChangeRecord(ctx, scope, args, result)
@@ -220,10 +221,10 @@ func (s *Service) getChange(c echo.Context) error {
 			return s.nativeAPIError(c, refusal)
 		}
 		if errors.Is(err, mutation.ErrConflict) {
-			return s.nativeAPIError(c, nativeConflict(0))
+			return s.nativeAPIError(c, hubapi.NativeConflict(0))
 		}
 		if errors.Is(err, operatortool.ErrInvalidArguments) {
-			return s.nativeAPIError(c, nativePublicInvalid("invalid Change read cursor"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("invalid Change read cursor"))
 		}
 		return s.nativeAPIError(c, err)
 	}

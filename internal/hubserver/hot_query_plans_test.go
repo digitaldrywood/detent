@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -64,7 +65,7 @@ func TestHotQueryPlans(t *testing.T) {
 	r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim)
 	r.enroll(t)
 	receiptContent := eventstore.NewContent(f.service.runDetailStore())
-	receiptHash, err := nativeCommandHash(map[string]string{"effect": "example"})
+	receiptHash, err := hubapi.CommandHash(map[string]string{"effect": "example"})
 	if err != nil {
 		t.Fatal(err)
 	}

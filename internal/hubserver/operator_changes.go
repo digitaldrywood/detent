@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -267,18 +268,18 @@ func hubSafeChangeError(err error) error {
 	if errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) || errors.Is(err, sql.ErrNoRows) {
 		return operatortool.ErrAccessDenied
 	}
-	var failure *nativeError
-	if errors.As(err, &failure) && (failure.status == http.StatusNotFound || failure.status == http.StatusForbidden || failure.status == http.StatusUnauthorized) {
+	var failure *hubapi.NativeError
+	if errors.As(err, &failure) && (failure.Status == http.StatusNotFound || failure.Status == http.StatusForbidden || failure.Status == http.StatusUnauthorized) {
 		return operatortool.ErrAccessDenied
 	}
-	if errors.Is(err, mutation.ErrConflict) || isNativeConflict(err) {
+	if errors.Is(err, mutation.ErrConflict) || hubapi.IsNativeConflict(err) {
 		return mutation.ErrConflict
 	}
 	if errors.Is(err, mutation.ErrUncertain) {
 		return mutation.ErrUncertain
 	}
 	if errors.As(err, &failure) {
-		if failure.Code == "invalid_request" && failure.publicMessage {
+		if failure.Code == "invalid_request" && failure.PublicMessage {
 			return &operatortool.RequestError{Code: failure.Code, Message: failure.Message}
 		}
 		if failure.Code == "idempotency_conflict" {

@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -27,14 +28,14 @@ func (a tenantChangeVersionAuthority) Prepare(ctx context.Context, scope nativeS
 		return err
 	})
 	if err != nil {
-		return ChangeVersionApproval{}, projectRecordError(err)
+		return ChangeVersionApproval{}, hubapi.ProjectRecordError(err)
 	}
 	result, err := hydrateCurrentChangeVersionApproval(ctx, a.content, scope, rows, request.PolicyID)
 	if err != nil {
-		return ChangeVersionApproval{}, projectRecordError(err)
+		return ChangeVersionApproval{}, hubapi.ProjectRecordError(err)
 	}
 	if change.OrganizationID != scope.organization || change.ProjectID != scope.project || result.Policy.ID != request.PolicyID {
-		return ChangeVersionApproval{}, policyMismatch("Current approved policy changed; read the current policy and retry")
+		return ChangeVersionApproval{}, hubapi.PolicyMismatch("Current approved policy changed; read the current policy and retry")
 	}
 	return result, nil
 }
@@ -45,7 +46,7 @@ func (a tenantChangeVersionAuthority) Authorize(ctx context.Context, w tenantsto
 		return err
 	}
 	if rows.Project.PolicyID != prepared.Policy.ID || rows.hasReview && rows.Review.ReviewPolicyID != prepared.ReviewPolicy.ID || !rows.hasReview && defaultChangeReviewPolicy(prepared.Policy).ID != prepared.ReviewPolicy.ID {
-		return policyMismatch("Current approved Change policy changed during publication")
+		return hubapi.PolicyMismatch("Current approved Change policy changed during publication")
 	}
 	if change.OrganizationID != scope.organization || change.ProjectID != scope.project || change.WorkItemID == "" || request.PolicyID != prepared.Policy.ID {
 		return corestore.ErrTenantMismatch
@@ -62,7 +63,7 @@ type currentChangePolicyRows struct {
 func readCurrentChangePolicyRows(ctx context.Context, r tenantstore.Reader, scope nativeScope) (currentChangePolicyRows, error) {
 	rows, err := readChangeSummaryPolicyRows(ctx, r, scope)
 	if err == nil && rows.hasReview && rows.Review.PolicyRevisionID != rows.Project.PolicyID {
-		return rows, &nativeError{Code: "policy_mismatch", Message: "Change review policy does not match the approved repository policy; read the current policy and retry", status: http.StatusConflict, publicMessage: true}
+		return rows, &hubapi.NativeError{Code: "policy_mismatch", Message: "Change review policy does not match the approved repository policy; read the current policy and retry", Status: http.StatusConflict, PublicMessage: true}
 	}
 	return rows, err
 }
@@ -110,10 +111,10 @@ func hydrateCurrentChangeVersionApproval(ctx context.Context, content *eventstor
 		}
 	}
 	if err := changerequest.ValidatePolicy(rules, descriptor); err != nil {
-		return ChangeVersionApproval{}, nativeConflict(0)
+		return ChangeVersionApproval{}, hubapi.NativeConflict(0)
 	}
 	if policyID != "" && policyID != descriptor.ID {
-		return ChangeVersionApproval{}, policyMismatch("Published version does not match the current approved policy")
+		return ChangeVersionApproval{}, hubapi.PolicyMismatch("Published version does not match the current approved policy")
 	}
 	return ChangeVersionApproval{Policy: descriptor, ReviewPolicy: rules}, nil
 }

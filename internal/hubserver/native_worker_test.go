@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -40,13 +41,13 @@ func (f nativeFixture) worker(t *testing.T, name string) string {
 	projects := []tracker.ProjectID{f.project.ID}
 	hash := apikey.HashToken(token)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: credentialID, Name: name, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: credentialID, Name: name, Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: f.project.OrganizationID, TokenID: credentialID, ProjectID: f.project.ID}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: f.project.OrganizationID, ID: enrollmentID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken(newNativeID("enrollment")), Scope: "projects", ProjectIDs: projects, Operations: operations, CreatedAt: now, ExpiresAt: now.Add(runnerauth.MaxEnrollmentTTL), CreatedBy: "test_hub_admin"}); err != nil {
+		if err := w.CreateRunnerEnrollment(t.Context(), runnerstore.Enrollment{OrganizationID: f.project.OrganizationID, ID: enrollmentID, RunnerID: binding.RunnerID, MachineID: binding.MachineID, TokenHash: apikey.HashToken(hubapi.NewID("enrollment")), Scope: "projects", ProjectIDs: projects, Operations: operations, CreatedAt: now, ExpiresAt: now.Add(runnerauth.MaxEnrollmentTTL), CreatedBy: "test_hub_admin"}); err != nil {
 			return err
 		}
 		if err := w.RedeemRunnerEnrollment(t.Context(), enrollmentID, binding.RunnerID, binding.MachineID, now); err != nil {
@@ -60,7 +61,7 @@ func (f nativeFixture) worker(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, hash, "", "")
-	if err != nil || status != http.StatusOK || credential.Scope != apiScopeWorker || credential.HostedKeyKind != "service" || credential.Runner.Binding != binding || credential.Runner.Scope != "projects" || !slices.Equal(credential.Runner.ProjectIDs, projects) {
+	if err != nil || status != http.StatusOK || credential.Scope != hubapi.APIScopeWorker || credential.HostedKeyKind != "service" || credential.Runner.Binding != binding || credential.Runner.Scope != "projects" || !slices.Equal(credential.Runner.ProjectIDs, projects) {
 		t.Fatalf("fixture worker authority status=%d: %v", status, err)
 	}
 	return token
@@ -253,7 +254,7 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	lateFinish.Data.MachineID, lateFinish.Data.RunnerID, lateFinish.Data.SessionID = machineID, credential.Runner.RunnerID, lease.SessionID
 	refusedFinish := performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, lateFinish)
 	requireNativeStatus(t, refusedFinish, http.StatusConflict)
-	var finishError apiErrorResponse
+	var finishError hubapi.APIErrorResponse
 	decodeHubResponse(t, refusedFinish, &finishError)
 	if finishError.Code != "stale_fencing_token" {
 		t.Fatalf("late completion refusal=%+v", finishError)
@@ -388,7 +389,7 @@ func TestNativeRunnerMinimumVersion(t *testing.T) {
 			}
 			requireNativeStatus(t, response, wantStatus)
 			if test.refused {
-				var failure apiErrorResponse
+				var failure hubapi.APIErrorResponse
 				decodeHubResponse(t, response, &failure)
 				if failure.Code != "unavailable" || failure.Message != "Too old to take work, needs "+test.minimum || failure.Message != runnerClaimRefusal(test.minimum, test.runner) {
 					t.Fatalf("claim refusal = %#v", failure)

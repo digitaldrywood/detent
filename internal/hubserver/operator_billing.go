@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -32,26 +33,26 @@ func (s *Service) operatorDashboardURL() string {
 	return strings.TrimRight(s.config.Hosted.PublicURL, "/")
 }
 
-func (s *Service) operatorBillingCredential(ctx context.Context, kind string, write bool) (apiCredential, error) {
+func (s *Service) operatorBillingCredential(ctx context.Context, kind string, write bool) (hubapi.APICredential, error) {
 	scope := apikey.ScopeRead
 	if write {
 		scope = apikey.ScopeWrite
 	}
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope, ResourceKind: kind}); err != nil {
-		return apiCredential{}, err
+		return hubapi.APICredential{}, err
 	}
 	resolve, ok := ctx.Value(operatorCredentialKey{}).(billingAuthorization)
 	if !ok || s.config.Hosted == nil {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	credential, err := resolve(ctx)
 	if err != nil || operatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	// The resolver and the application's role predicates are evaluated together;
 	// generic organization write authority never implies owner billing authority.
 	if credential.Hosted == nil || kind == "billing" && (credential.HostedRole != "owner" || credential.Hosted.SupportActor != "") || kind == "plan" && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	return credential, nil
 }
@@ -527,7 +528,7 @@ func (s *Service) billingActionBinding(price string) string {
 }
 
 func (s *Service) billingRequestBinding(ctx context.Context, name string, request billingActionRequest) (string, string, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	if name != operatortool.CreditCheckout && name != operatortool.CreditAutoFund {
 		return s.billingActionBinding(request.Price), "", nil
@@ -640,7 +641,7 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 		return execution, operatortool.ErrAccessDenied
 	}
 	ctx = mutation.WithContext(ctx, m)
-	authorize := func(ctx context.Context) (apiCredential, error) {
+	authorize := func(ctx context.Context) (hubapi.APICredential, error) {
 		credential, err := s.operatorBillingCredential(ctx, "billing", true)
 		if err == nil {
 			current, _, bindingErr := s.billingRequestBinding(ctx, string(action.Kind), request)
@@ -767,7 +768,7 @@ type operatorBillingUsageDrivers struct {
 }
 
 func (s *Service) operatorBillingUsage(ctx context.Context, now time.Time) (operatorBillingUsageReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	report, err := s.hostedBillingReport(ctx)
 	if err != nil {

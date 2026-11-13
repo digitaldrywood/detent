@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -95,7 +96,7 @@ func TestHostedTenantAPIAuthorization(t *testing.T) {
 			if !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") {
 				t.Fatalf("content type = %q", response.Header().Get("Content-Type"))
 			}
-			var failure apiErrorResponse
+			var failure hubapi.APIErrorResponse
 			browserHostedDecode(t, response, &failure)
 			if test.code != "" && failure.Code != test.code || failure.Message == "" {
 				t.Fatalf("error = %#v, want code %q", failure, test.code)
@@ -127,7 +128,7 @@ func TestHostedInvitationExpiryIndependentOfSeat(t *testing.T) {
 					"email": email, "role": "member", "idempotency_key": email,
 				}, http.StatusCreated), &view)
 				issued, err := provider.Invitation(t.Context(), view.ID)
-				if err != nil || view.ExpiresAt != formatHubTime(issued.ExpiresAt) {
+				if err != nil || view.ExpiresAt != hubapi.FormatHubTime(issued.ExpiresAt) {
 					t.Fatalf("response expiry = %q, provider expiry = %v: %v", view.ExpiresAt, issued.ExpiresAt, err)
 				}
 				var stored accessstore.Invitation
@@ -136,7 +137,7 @@ func TestHostedInvitationExpiryIndependentOfSeat(t *testing.T) {
 					stored, err = r.AccessInvitation(t.Context(), view.ID)
 					return err
 				})
-				storedExpiry := formatHubTime(stored.ExpiresAt)
+				storedExpiry := hubapi.FormatHubTime(stored.ExpiresAt)
 				if err != nil || storedExpiry != view.ExpiresAt {
 					t.Fatalf("stored expiry = %q, response expiry = %q: %v", storedExpiry, view.ExpiresAt, err)
 				}
@@ -161,7 +162,7 @@ func TestHostedInvitationExpiryIndependentOfSeat(t *testing.T) {
 					}); err != nil {
 						t.Fatal(err)
 					}
-					view.ExpiresAt = formatHubTime(expires)
+					view.ExpiresAt = hubapi.FormatHubTime(expires)
 				}
 				created = append(created, view)
 			}
@@ -933,7 +934,7 @@ func TestHostedInvitationKeyClaim(t *testing.T) {
 			test.prepare(t, f)
 			response := f.api(t, "owner", http.MethodPost, path, body, test.status)
 			if test.code != "" {
-				var failure apiErrorResponse
+				var failure hubapi.APIErrorResponse
 				browserHostedDecode(t, response, &failure)
 				if failure.Code != test.code {
 					t.Fatalf("code = %q, want %q", failure.Code, test.code)

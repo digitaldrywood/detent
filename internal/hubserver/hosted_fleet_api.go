@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -133,7 +134,7 @@ type hostedRunnerNamesResponse struct {
 // hostedFleet answers GET /fleet for any member of the organization.
 func (s *Service) hostedFleet(c echo.Context) error {
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	credential, _, err := s.appCredential(c)
 	if err != nil {
@@ -156,7 +157,7 @@ func (s *Service) hostedFleet(c echo.Context) error {
 			if raw := c.QueryParam(bound.name); raw != "" {
 				*bound.value, err = time.Parse(time.RFC3339, raw)
 				if err != nil {
-					return s.nativeAPIError(c, nativePublicInvalid("Host history timestamps must use RFC3339"))
+					return s.nativeAPIError(c, hubapi.NativePublicInvalid("Host history timestamps must use RFC3339"))
 				}
 			}
 		}
@@ -173,7 +174,7 @@ func (s *Service) hostedFleet(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
-func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential) (hostedFleetResponse, error) {
+func (s *Service) readHostedFleet(ctx context.Context, credential hubapi.APICredential) (hostedFleetResponse, error) {
 	if s.config.TenantRepository == nil {
 		return hostedFleetResponse{}, nativeUnavailable("Runner fleet storage is unavailable")
 	}
@@ -270,7 +271,7 @@ func scopeProviderUsage(runners []hostedFleetRunner, reservations []scopedProvid
 	}
 }
 
-func (s *Service) readHostedRunnerHostHistory(ctx context.Context, credential apiCredential, runnerID string, from, to time.Time) ([]runnerHostHour, error) {
+func (s *Service) readHostedRunnerHostHistory(ctx context.Context, credential hubapi.APICredential, runnerID string, from, to time.Time) ([]runnerHostHour, error) {
 	if s.config.TenantRepository == nil {
 		return nil, nativeUnavailable("Runner fleet storage is unavailable")
 	}

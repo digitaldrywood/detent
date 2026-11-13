@@ -4,6 +4,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 func (s *Service) githubWebhook(c echo.Context) error {
@@ -13,7 +14,7 @@ func (s *Service) githubWebhook(c echo.Context) error {
 func (s *Service) hostedGitHubWebhook(c echo.Context) error {
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	for header, query := range map[string]string{
 		"X-GitHub-Delivery": "delivery_id", "X-GitHub-Event": "event_type",

@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -101,7 +102,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: org, project: "example", credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+		scope := nativeScope{organization: org, project: "example", credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 		for index := range 100 {
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
 			changeID := fmt.Sprintf("change_%03d", index)
@@ -278,7 +279,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				t.Run(string(org)+"/bounded observation plans", func(t *testing.T) {
 					noise := make([]eventstore.Event, 128)
 					for i := range noise {
-						raw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: org, ProjectID: scope.project, AggregateID: "wi_000", Type: "issue.edited", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now})
+						raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: org, ProjectID: scope.project, AggregateID: "wi_000", Type: "issue.edited", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -427,7 +428,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 						}
 						_, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, plan, &descriptor)
 						if test.notReady {
-							var refusal *nativeError
+							var refusal *hubapi.NativeError
 							if !errors.As(err, &refusal) || refusal.Code != "not_ready" {
 								t.Fatalf("claim accepted unavailable facts: %v", err)
 							}
@@ -495,7 +496,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 							}
 							hydrateScope := scope
 							if !tc.credential {
-								hydrateScope.credential = apiCredential{}
+								hydrateScope.credential = hubapi.APICredential{}
 							}
 							counter.workloads = nil
 							got, err := service.hydrateCurrentChangeDetailWithFacts(t.Context(), hydrateScope, plan.candidate.WorkItemID, plan.changeRecord, &plan.changeVersion, plan.changePolicy, now, &facts, nil, tc.workload)
@@ -819,7 +820,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 			operations := []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}
 			expires := now.Add(time.Hour)
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: credentialID, Name: "Example runner", Hash: tokenHash, Fingerprint: tokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: credentialID, Name: "Example runner", Hash: tokenHash, Fingerprint: hubapi.TokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 					return err
 				}
 				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credentialID, ProjectID: "example"}); err != nil {
@@ -844,7 +845,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			runner := nativeScope{organization: org, project: "example", credential: apiCredential{ID: credentialID, Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: binding, OrganizationID: org}}}
+			runner := nativeScope{organization: org, project: "example", credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: binding, OrganizationID: org}}}
 			for index, seed := range []struct {
 				name                      string
 				blocked, edit, redispatch bool

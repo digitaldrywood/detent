@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -42,11 +43,11 @@ func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
 				clock.Store(start.UnixNano())
 				ctx := t.Context()
 				input := map[string]string{"effect": "example"}
-				hash, err := nativeCommandHash(input)
+				hash, err := hubapi.CommandHash(input)
 				if err != nil {
 					t.Fatal(err)
 				}
-				scope := nativeScope{organization: organization, credential: apiCredential{ID: actor, Hash: actor, Scope: apiScopeAdmin}}
+				scope := nativeScope{organization: organization, credential: hubapi.APICredential{ID: actor, Hash: actor, Scope: hubapi.APIScopeAdmin}}
 				raw := fmt.Sprintf(`{"organization":%q,"output":%q}`, organization, strings.Repeat("x", 64<<10))
 				command := hostedCommand{organization: string(organization), actor: actor, operation: operation, key: "external", input: input}
 				effects := 0

@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"strings"
-	"time"
 )
 
 func normalizedQueryStrings(values []string) []string {
@@ -27,8 +26,4 @@ func placeholders(count int) string {
 		return ""
 	}
 	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
-}
-
-func parseTimeValue(value string) (time.Time, error) {
-	return time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
 }

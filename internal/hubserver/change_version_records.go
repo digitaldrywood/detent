@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -19,7 +20,7 @@ import (
 func (s *Service) publishChangeVersionRecord(c echo.Context) error {
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
 	var request tracker.PublishChangeVersion
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
@@ -34,14 +35,14 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 	authority := s.config.ChangeVersionAuthority
 	if authority == nil {
 		if s.config.TenantRepository == nil {
-			return nil, workItemStorageUnavailable()
+			return nil, hubapi.NativeWorkItemStorageUnavailable()
 		}
 		authority = tenantChangeVersionAuthority{repository: s.config.TenantRepository, content: eventstore.NewContent(s.runDetailStore())}
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +58,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 			_, err := validateChangeRecordContent(ctx, r, scope, nil, request.Artifacts, "artifacts", false)
 			return err
 		}); visualErr != nil {
-			return nil, projectRecordError(visualErr)
+			return nil, hubapi.ProjectRecordError(visualErr)
 		}
 		return nil, err
 	}
@@ -69,10 +70,10 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 		return nil, err
 	}
 	if change.WorkItemID != tracker.NativeWorkItemID(item) {
-		return nil, nativePublicInvalid("Publish through the Change Request's primary issue")
+		return nil, hubapi.NativePublicInvalid("Publish through the Change Request's primary issue")
 	}
 	if change.CurrentVersion != request.ExpectedVersionID {
-		return nil, nativeConflict(change.Revision)
+		return nil, hubapi.NativeConflict(change.Revision)
 	}
 	sourceRun, err := s.prepareChangeVersionRun(ctx, scope, change, request)
 	if errors.Is(err, errNoChangeVersionRun) {
@@ -83,19 +84,19 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 	}
 	if request.Source != nil {
 		if err := request.Source.Validate(request.BaseSHA, request.HeadSHA, request.SourceBundle); err != nil {
-			return nil, nativeRejection(nativeInvalid(err.Error()), "version_validation", "source")
+			return nil, nativeRejection(hubapi.NativeInvalid(err.Error()), "version_validation", "source")
 		}
 		if err := s.verifyChangeSource(ctx, *request.Source, request.SourceBundle); err != nil {
 			return nil, err
 		}
 	} else if len(request.SourceBundle) > 0 {
-		return nil, nativePublicInvalid("Source bundle requires immutable source metadata")
+		return nil, hubapi.NativePublicInvalid("Source bundle requires immutable source metadata")
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		_, err := validateChangeRecordContent(ctx, r, scope, nil, request.Artifacts, "artifacts", false)
 		return err
 	}); err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
@@ -106,10 +107,10 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 		return nil, err
 	}
 	if approval.Policy.ID == "" || approval.Policy.ID != request.PolicyID || approval.ReviewPolicy.ID == "" || approval.ReviewPolicy.PolicyID != approval.Policy.ID || changerequest.PolicyID(approval.ReviewPolicy) != approval.ReviewPolicy.ID {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if err := changerequest.ValidatePolicy(approval.ReviewPolicy, approval.Policy); err != nil {
-		return nil, nativeConflict(change.Revision)
+		return nil, hubapi.NativeConflict(change.Revision)
 	}
 	checks := make([]tracker.ChangeCheckExpectation, 0, len(approval.ReviewPolicy.RequiredChecks))
 	for _, spec := range approval.ReviewPolicy.RequiredChecks {
@@ -193,7 +194,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
-					return nativeConflict(change.Revision)
+					return hubapi.NativeConflict(change.Revision)
 				}
 				return corestore.ErrSerializationFailure
 			} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -249,10 +250,10 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 			continue
 		}
 		if errors.Is(err, corestore.ErrRevisionConflict) {
-			return nil, nativeConflict(change.Revision)
+			return nil, hubapi.NativeConflict(change.Revision)
 		}
 		if err != nil {
-			return nil, projectRecordError(err)
+			return nil, hubapi.ProjectRecordError(err)
 		}
 		break
 	}

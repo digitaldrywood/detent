@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -333,7 +334,7 @@ func TestEventCompactionRollback(t *testing.T) {
 	a.advance(2 * time.Hour)
 	beforeRows, beforePayloads := a.canonicalEvents(t)
 	scope := nativeAttemptListingScope(t, a.nativeFixture)
-	value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: a.scope.organization, ProjectID: a.scope.project, AggregateType: "issue", AggregateID: a.issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: a.service.config.now(), Data: tracker.CollaborationData{Run: &a.start.Data}}
+	value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: a.scope.organization, ProjectID: a.scope.project, AggregateType: "issue", AggregateID: a.issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: a.service.config.now(), Data: tracker.CollaborationData{Run: &a.start.Data}}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -50,17 +51,17 @@ func (s *Service) coordinatorRunner(ctx context.Context, scope nativeScope, id s
 		return runnerauth.Runner{}, err
 	}
 	if len(runners) != 1 {
-		return runnerauth.Runner{}, nativeNotFound()
+		return runnerauth.Runner{}, hubapi.NativeNotFound()
 	}
 	return runners[0], nil
 }
 
 func (s *Service) coordinatorRunners(ctx context.Context, scope nativeScope, args coordinatorRunnerArguments) ([]runnerauth.Runner, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return nil, nativeRunEventStorageUnavailable()
+		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	runners := []runnerauth.Runner{}
 	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -72,7 +73,7 @@ func (s *Service) coordinatorRunners(ctx context.Context, scope nativeScope, arg
 		if args.RunnerID != "" {
 			reader, ok := r.(runnerstore.RoutingReader)
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			record, err := reader.RunnerRoutingRecord(ctx, args.RunnerID, now)
 			if err != nil {
@@ -82,7 +83,7 @@ func (s *Service) coordinatorRunners(ctx context.Context, scope nativeScope, arg
 		} else {
 			reader, ok := r.(runnerstore.RoutingPageReader)
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			limit := args.Limit
 			if limit == 0 {
@@ -101,13 +102,13 @@ func (s *Service) coordinatorRunners(ctx context.Context, scope nativeScope, arg
 		for _, record := range records {
 			runner := runnerFromRoutingRecord(record, now, urgent)
 			if !runner.AllowsProject(scope.project) {
-				return nativeNotFound()
+				return hubapi.NativeNotFound()
 			}
 			runners = append(runners, runner)
 		}
 		return nil
 	})
-	return runners, projectRecordError(err)
+	return runners, hubapi.ProjectRecordError(err)
 }
 
 func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -196,7 +197,7 @@ func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action cha
 	r, err := s.coordinatorRunner(ctx, scope, change.RunnerID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return chat.ActionExecution{}, nativeNotFound()
+			return chat.ActionExecution{}, hubapi.NativeNotFound()
 		}
 		return chat.ActionExecution{}, err
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -87,7 +88,7 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 				targetScope := scope
 				targetScope.project = projectID
 				err := s.authorizeAccessScope(ctx, r, targetScope, false)
-				if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || isNativeNotFound(err) {
+				if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || hubapi.IsNativeNotFound(err) {
 					authorizedProjects[projectID] = false
 					continue
 				}
@@ -123,7 +124,7 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 						edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.project
 					}
 				}
-				visible = visible && scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(relation.ActorPrincipalID)})
+				visible = visible && scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
 				if !visible {
 					if relation.Type == "dependency" {
 						switch relation.Direction {

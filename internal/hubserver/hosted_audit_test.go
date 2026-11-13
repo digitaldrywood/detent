@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -137,7 +138,7 @@ func TestHostedAuditRetention(t *testing.T) {
 				{"offset equal", "2026-09-21T07:00:00-05:00"},
 				{"retained nanosecond", "2026-09-21T12:00:00.000000001Z"},
 			} {
-				at, err := parseTimeValue(test.at)
+				at, err := hubapi.ParseTimeValue(test.at)
 				if err != nil {
 					t.Fatal(err)
 				}

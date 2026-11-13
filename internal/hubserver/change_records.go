@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -44,7 +45,7 @@ func (s *Service) listChangeRecords(ctx context.Context, scope nativeScope, item
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if len(records) > corestore.MaxPageSize {
 		return nil, corestore.ErrInvalidPage
@@ -95,7 +96,7 @@ func (s *Service) filterChangeRecord(ctx context.Context, scope nativeScope, cha
 		}
 	})
 	if err != nil {
-		return tracker.ChangeRequest{}, false, projectRecordError(err)
+		return tracker.ChangeRequest{}, false, hubapi.ProjectRecordError(err)
 	}
 	slices.Sort(linked)
 	linked = slices.Compact(linked)
@@ -109,13 +110,13 @@ func (s *Service) filterChangeRecord(ctx context.Context, scope nativeScope, cha
 	visible := make([]tracker.NativeWorkItemID, 0, len(linked))
 	for _, id := range linked {
 		row, _, err := s.readWorkItemRecord(ctx, scope, string(id))
-		if errors.Is(err, corestore.ErrNotFound) || isNativeNotFound(err) {
+		if errors.Is(err, corestore.ErrNotFound) || hubapi.IsNativeNotFound(err) {
 			continue
 		}
 		if err != nil {
 			return tracker.ChangeRequest{}, false, err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			continue
 		}
 		visible = append(visible, id)
@@ -138,7 +139,7 @@ func (s *Service) readChangeRecord(ctx context.Context, scope nativeScope, item,
 		return err
 	})
 	if err != nil {
-		return tracker.ChangeRequest{}, projectRecordError(err)
+		return tracker.ChangeRequest{}, hubapi.ProjectRecordError(err)
 	}
 	change, err := eventstore.NewContent(s.runDetailStore()).Change(ctx, record)
 	if err != nil {
@@ -149,7 +150,7 @@ func (s *Service) readChangeRecord(ctx context.Context, scope nativeScope, item,
 		return tracker.ChangeRequest{}, err
 	}
 	if !visible || !slices.Contains(change.LinkedIssues, tracker.NativeWorkItemID(item)) {
-		return tracker.ChangeRequest{}, nativeNotFound()
+		return tracker.ChangeRequest{}, hubapi.NativeNotFound()
 	}
 	return change, nil
 }
@@ -168,8 +169,8 @@ func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, 
 
 func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope nativeScope, item, changeID, operation, kind, versionID, sourceKey string, value any) (json.RawMessage, error) {
 	ctx = isolateContentContext(s.runDetailContext(ctx))
-	if scope.credential.Scope == apiScopeWorker {
-		return nil, workItemStorageUnavailable()
+	if scope.credential.Scope == hubapi.APIScopeWorker {
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var command tracker.Mutation
 	switch record := value.(type) {
@@ -178,12 +179,12 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope nativeS
 	case tracker.ReviewChange:
 		command = record.Mutation
 	default:
-		return nil, nativePublicInvalid("An idempotency key is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key is required")
 	}
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
-	hash, err := nativeCommandHash(value)
+	hash, err := hubapi.CommandHash(value)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +201,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope nativeS
 	}
 	if versionID != "" {
 		if _, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, versionID); err != nil {
-			return nil, projectRecordError(err)
+			return nil, hubapi.ProjectRecordError(err)
 		}
 	}
 	now, err := s.database.currentTime()
@@ -214,13 +215,13 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope nativeS
 	switch record := value.(type) {
 	case tracker.DiscussChange:
 		if strings.TrimSpace(record.Body) == "" || len(record.Body) > 64<<10 {
-			return nil, nativePublicInvalid("Discussion requires 1 byte to 64 KiB")
+			return nil, hubapi.NativePublicInvalid("Discussion requires 1 byte to 64 KiB")
 		}
 		contentFields = []cloudContentField{{name: "body", value: record.Body}}
 		if record.Escape != nil {
 			quality, err = s.prepareQualityEscapeTenant(ctx, scope, change, record, now)
 			if err != nil {
-				return nil, projectRecordError(err)
+				return nil, hubapi.ProjectRecordError(err)
 			}
 		}
 		if record.VersionID != "" {
@@ -236,17 +237,17 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope nativeS
 		raw, err = json.Marshal(discussion)
 	case tracker.ReviewChange:
 		if record.Decision != "commented" || record.ExpectedRevision != 0 && record.ExpectedRevision != change.Revision || record.ExpectedVersionID != "" && record.ExpectedVersionID != versionID || len(record.Body) > 64<<10 {
-			return nil, workItemStorageUnavailable()
+			return nil, hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if record.Validator != nil || record.ImplementationReview != nil || record.SecurityAudit != nil || record.Bundle != nil {
-			return nil, workItemStorageUnavailable()
+			return nil, hubapi.NativeWorkItemStorageUnavailable()
 		}
 		evidence.VersionID = new(versionID)
 		contentFields = changeReviewContentFields(record)
 		review := tracker.ChangeReview{ID: payloadNativeID(ctx, "review"), VersionID: versionID, Decision: record.Decision, Body: record.Body, Actor: scope.actor(), CreatedAt: evidence.CreatedAt}
 		raw, err = json.Marshal(review)
 	default:
-		return nil, nativePublicInvalid("Unsupported change evidence")
+		return nil, hubapi.NativePublicInvalid("Unsupported change evidence")
 	}
 	if err != nil {
 		return nil, err
@@ -257,7 +258,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope nativeS
 		_, err := validateChangeRecordContent(ctx, r, scope, contentFields, nil, "", false)
 		return err
 	}); err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	evidence, err = eventstore.NewContent(s.runDetailStore()).PrepareEvidence(ctx, evidence, raw)
 	if err != nil {
@@ -277,7 +278,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope nativeS
 			existingSource = true
 		}
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-			return nil, projectRecordError(err)
+			return nil, hubapi.ProjectRecordError(err)
 		}
 	}
 	if response == nil {
@@ -310,7 +311,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope nativeS
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, command.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
-					return nativeConflict(change.Revision)
+					return hubapi.NativeConflict(change.Revision)
 				}
 				return corestore.ErrSerializationFailure
 			} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -370,13 +371,13 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope nativeS
 					continue
 				}
 				if !errors.Is(oldErr, corestore.ErrNotFound) {
-					return nil, projectRecordError(oldErr)
+					return nil, hubapi.ProjectRecordError(oldErr)
 				}
 			}
 			continue
 		}
 		if err != nil {
-			return nil, projectRecordError(err)
+			return nil, hubapi.ProjectRecordError(err)
 		}
 		break
 	}
@@ -397,9 +398,9 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
 	scope := nativeRequestScope(c)
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes is required"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required"))
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -409,7 +410,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 	if hostedCheck {
 		approved, err = s.requireHostedChangeCheckPrincipal(ctx, scope)
 		if err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
+			return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 		}
 	}
 	readReceipt := func() (json.RawMessage, bool, error) {
@@ -432,10 +433,10 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 			return nil, false, nil
 		}
 		if err != nil {
-			return nil, false, projectRecordError(err)
+			return nil, false, hubapi.ProjectRecordError(err)
 		}
 		if receipt.RequestHash != hash {
-			return nil, false, nativeConflict(0)
+			return nil, false, hubapi.NativeConflict(0)
 		}
 		value, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
 		return value, true, err
@@ -454,27 +455,27 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 	}
 	versionRecord, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, c.Param("version"))
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	version, err := eventstore.NewContent(s.runDetailStore()).Version(ctx, versionRecord)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := changerequest.ValidateResult(version, request.ChangeCheckResult, scope.credential.ID, scope.credential.Scope == apiScopeWorker); err != nil {
+	if err := changerequest.ValidateResult(version, request.ChangeCheckResult, scope.credential.ID, scope.credential.Scope == hubapi.APIScopeWorker); err != nil {
 		if visualErr := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			_, err := validateChangeRecordContent(ctx, r, scope, nil, request.Evidence, "evidence", false)
 			return err
 		}); visualErr != nil {
-			return s.nativeAPIError(c, projectRecordError(visualErr))
+			return s.nativeAPIError(c, hubapi.ProjectRecordError(visualErr))
 		}
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
 	}
 	now := s.config.now().UTC()
 	if now.IsZero() {
 		return s.nativeAPIError(c, ErrInvalidClock)
 	}
 	if request.CompletedAt.After(now) {
-		return s.nativeAPIError(c, nativePublicInvalid("CI completion time cannot be in the future"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("CI completion time cannot be in the future"))
 	}
 	check := tracker.ChangeCheck{ChangeCheckResult: request.ChangeCheckResult, VersionID: version.ID, Actor: scope.actor(), ReceivedAt: payloadTimestamp(ctx, now)}
 	raw, err := json.Marshal(check)
@@ -512,11 +513,11 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 			return s.nativeAPIError(c, err)
 		}
 		if string(oldInput) != string(newInput) || old.Actor.PrincipalID != scope.credential.ID {
-			return s.nativeAPIError(c, nativeConflict(change.Revision))
+			return s.nativeAPIError(c, hubapi.NativeConflict(change.Revision))
 		}
 		response, createdEvidence = oldRaw, false
 	} else if !errors.Is(lookupErr, corestore.ErrNotFound) {
-		return s.nativeAPIError(c, projectRecordError(lookupErr))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(lookupErr))
 	}
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
 	if err != nil {
@@ -535,14 +536,14 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 	}
 	var policyRows currentChangePolicyRows
 	var workflowPlan *changeReviewWorkflow
-	if scope.credential.Scope != apiScopeWorker && version.ID == change.CurrentVersion {
+	if scope.credential.Scope != hubapi.APIScopeWorker && version.ID == change.CurrentVersion {
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			policyRows, err = readChangeSummaryPolicyRows(ctx, r, scope)
 			return err
 		})
 		if err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
+			return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 		}
 		approval, err := hydrateChangeSummaryPolicy(ctx, content, scope, policyRows)
 		if err != nil {
@@ -550,7 +551,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 		}
 		workflowPlan, err = s.prepareChangeCheckWorkflow(ctx, scope, change, version, check, approval, now)
 		if err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
+			return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 		}
 	}
 	var transition *changeWorkflowTransition
@@ -576,7 +577,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
-					return nativeConflict(change.Revision)
+					return hubapi.NativeConflict(change.Revision)
 				}
 				return corestore.ErrSerializationFailure
 			} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -645,7 +646,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 					}
 					var oldCheck tracker.ChangeCheck
 					if json.Unmarshal(oldRaw, &oldCheck) != nil || oldCheck.Actor.PrincipalID != scope.credential.ID {
-						return s.nativeAPIError(c, nativeConflict(change.Revision))
+						return s.nativeAPIError(c, hubapi.NativeConflict(change.Revision))
 					}
 					oldResult, err := json.Marshal(oldCheck.ChangeCheckResult)
 					if err != nil {
@@ -656,7 +657,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 						return s.nativeAPIError(c, err)
 					}
 					if string(oldResult) != string(newResult) {
-						return s.nativeAPIError(c, nativeConflict(change.Revision))
+						return s.nativeAPIError(c, hubapi.NativeConflict(change.Revision))
 					}
 					response, createdEvidence = oldRaw, false
 					receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
@@ -666,13 +667,13 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 					continue
 				}
 				if !errors.Is(oldErr, corestore.ErrNotFound) {
-					return s.nativeAPIError(c, projectRecordError(oldErr))
+					return s.nativeAPIError(c, hubapi.ProjectRecordError(oldErr))
 				}
 			}
 			continue
 		}
 		if err != nil {
-			return s.nativeAPIError(c, projectRecordError(err))
+			return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 		}
 		break
 	}
@@ -693,18 +694,18 @@ func (s *Service) createChangeRecord(c echo.Context, request tracker.CreateChang
 func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeScope, itemID, operation string, request tracker.CreateChange) (json.RawMessage, error) {
 	item := tracker.NativeWorkItemID(itemID)
 	if strings.TrimSpace(request.Title) == "" || len(request.Title) > 512 || len(request.Body) > 64<<10 || len(request.LinkedIssues) > 32 {
-		return nil, nativePublicInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues")
+		return nil, hubapi.NativePublicInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues")
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	linked := append([]tracker.NativeWorkItemID{item}, request.LinkedIssues...)
 	slices.Sort(linked)
 	linked = slices.Compact(linked)
 	if len(linked) > 32 {
-		return nil, nativePublicInvalid("A Change may link at most 32 work items")
+		return nil, hubapi.NativePublicInvalid("A Change may link at most 32 work items")
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -725,7 +726,7 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeSco
 		}
 		for _, linkedID := range linked {
 			var item corestore.WorkItem
-			if scope.credential.Scope == apiScopeWorker {
+			if scope.credential.Scope == hubapi.APIScopeWorker {
 				item, err = w.WorkItem(ctx, scope.project, linkedID)
 			} else {
 				item, err = w.LockWorkItem(ctx, scope.project, linkedID)
@@ -733,7 +734,7 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeSco
 			if err != nil {
 				return err
 			}
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				return corestore.ErrNotFound
 			}
 		}
@@ -750,7 +751,7 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeSco
 			return nil, false, nil
 		}
 		if err != nil {
-			return nil, false, projectRecordError(err)
+			return nil, false, hubapi.ProjectRecordError(err)
 		}
 		var raw json.RawMessage
 		var payloadErr error
@@ -766,18 +767,18 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeSco
 				return err
 			}
 			if current.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			if current.ResponseExpired || current.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= current.ResponseReplayUntilNs {
 				return receiptstore.ErrExpired
 			}
 			if !reflect.DeepEqual(current, receipt) {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			return payloadErr
 		})
 		if err != nil {
-			return nil, false, projectRecordError(err)
+			return nil, false, hubapi.ProjectRecordError(err)
 		}
 		return raw, true, nil
 	}
@@ -789,9 +790,9 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeSco
 		return replay, nil
 	}
 	var workerAttempt *leasestore.Attempt
-	if scope.credential.Scope == apiScopeWorker {
+	if scope.credential.Scope == hubapi.APIScopeWorker {
 		if len(request.LinkedIssues) != 0 {
-			return nil, nativePublicInvalid("Worker changes may only link their leased work item")
+			return nil, hubapi.NativePublicInvalid("Worker changes may only link their leased work item")
 		}
 		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			attempt, _, err := s.runnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(item), false)
@@ -814,7 +815,7 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeSco
 		_, err := validateChangeRecordContent(ctx, r, scope, contentFields, nil, "", false)
 		return err
 	}); err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
@@ -857,7 +858,7 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeSco
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
-					return nativeConflict(0)
+					return hubapi.NativeConflict(0)
 				}
 				return corestore.ErrSerializationFailure
 			} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -911,7 +912,7 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope nativeSco
 			continue
 		}
 		if err != nil {
-			return nil, projectRecordError(err)
+			return nil, hubapi.ProjectRecordError(err)
 		}
 		break
 	}
@@ -933,10 +934,10 @@ func (s *Service) changeRecordReceipt(ctx context.Context, scope nativeScope, op
 		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, projectRecordError(err)
+		return nil, false, hubapi.ProjectRecordError(err)
 	}
 	if receipt.RequestHash != hash {
-		return nil, false, nativeConflict(0)
+		return nil, false, hubapi.NativeConflict(0)
 	}
 	value, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
 	return value, true, err
@@ -944,7 +945,7 @@ func (s *Service) changeRecordReceipt(ctx context.Context, scope nativeScope, op
 
 func (s *Service) authorizedChangeRecordReceipt(ctx context.Context, scope nativeScope, operation, key, hash string) (json.RawMessage, bool, error) {
 	if s.config.AccessRepository == nil {
-		return nil, false, nativeNotFound()
+		return nil, false, hubapi.NativeNotFound()
 	}
 	var receipt eventstore.Receipt
 	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -959,10 +960,10 @@ func (s *Service) authorizedChangeRecordReceipt(ctx context.Context, scope nativ
 		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, projectRecordError(err)
+		return nil, false, hubapi.ProjectRecordError(err)
 	}
 	if receipt.RequestHash != hash {
-		return nil, false, nativeConflict(0)
+		return nil, false, hubapi.NativeConflict(0)
 	}
 	value, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
 	return value, true, err
@@ -1008,7 +1009,7 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 		return err
 	})
 	if err != nil {
-		return tracker.ChangeDetail{}, projectRecordError(err)
+		return tracker.ChangeDetail{}, hubapi.ProjectRecordError(err)
 	}
 	if len(versions) > corestore.MaxPageSize || len(evidence) > corestore.MaxPageSize {
 		return tracker.ChangeDetail{}, corestore.ErrInvalidPage
@@ -1077,7 +1078,7 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope nativeScope, i
 	}
 	currentApproval, err := hydrateChangeSummaryPolicy(ctx, content, scope, policyRows)
 	if err != nil {
-		return tracker.ChangeDetail{}, projectRecordError(err)
+		return tracker.ChangeDetail{}, hubapi.ProjectRecordError(err)
 	}
 	policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(current, currentApproval.Policy, currentApproval.ReviewPolicy)
 	result.Summary, err = s.summarizeChangeWithAuditDispositions(ctx, scope, result, policyID, reviewPolicyID, now, false)
@@ -1121,7 +1122,7 @@ func (s *Service) selectedCurrentChangeSummary(ctx context.Context, scope native
 		return err
 	})
 	if err != nil {
-		return tracker.ChangeSummary{}, projectRecordError(err)
+		return tracker.ChangeSummary{}, hubapi.ProjectRecordError(err)
 	}
 	detail, err := s.hydrateCurrentChangeDetail(ctx, scope, item, change, version, policyRows, now)
 	if err == nil {
@@ -1156,13 +1157,13 @@ func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope
 	if err != nil {
 		return tracker.ChangeDetail{}, err
 	}
-	if !visible || !slices.Contains(change.LinkedIssues, item) || change.CurrentVersion != valueOrEmpty(changeRecord.CurrentVersionID) {
+	if !visible || !slices.Contains(change.LinkedIssues, item) || change.CurrentVersion != hubapi.ValueOrEmpty(changeRecord.CurrentVersionID) {
 		return tracker.ChangeDetail{}, corestore.ErrNotFound
 	}
 	if versionRecord == nil {
 		currentApproval, err := boardCurrentApproval(ctx, content, scope, policyRows, approval)
 		if err != nil {
-			return tracker.ChangeDetail{}, projectRecordError(err)
+			return tracker.ChangeDetail{}, hubapi.ProjectRecordError(err)
 		}
 		detail := tracker.ChangeDetail{Change: change}
 		policyID, reviewID := changerequest.CurrentPolicyIdentities(nil, currentApproval.Policy, currentApproval.ReviewPolicy)
@@ -1206,7 +1207,7 @@ func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope
 		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, workload, func(r tenantstore.Reader) error {
 			reader, ok := r.(eventstore.ChangeGateEvidenceReader)
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			var err error
 			evidence, err = reader.CurrentVersionGateEvidence(ctx, change.ID, version.ID, changeRecord.EvidenceSequence)
@@ -1232,7 +1233,7 @@ func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope
 		})
 	}
 	if err != nil {
-		return tracker.ChangeDetail{}, projectRecordError(err)
+		return tracker.ChangeDetail{}, hubapi.ProjectRecordError(err)
 	}
 
 	if !recovery && len(evidence) > corestore.MaxPageSize {
@@ -1260,7 +1261,7 @@ func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope
 			if err := json.Unmarshal(raw, &review); err != nil {
 				return tracker.ChangeDetail{}, err
 			}
-			if review.VersionID != valueOrEmpty(row.VersionID) || review.Decision != row.Decision || review.Actor.Kind != row.ActorKind || review.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(review.CreatedAt, row.CreatedAt) {
+			if review.VersionID != hubapi.ValueOrEmpty(row.VersionID) || review.Decision != row.Decision || review.Actor.Kind != row.ActorKind || review.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(review.CreatedAt, row.CreatedAt) {
 				return tracker.ChangeDetail{}, eventstore.ErrInvalidRecord
 			}
 			if currentReview {
@@ -1273,7 +1274,7 @@ func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope
 			if err := json.Unmarshal(raw, &check); err != nil {
 				return tracker.ChangeDetail{}, err
 			}
-			if check.VersionID != valueOrEmpty(row.VersionID) || check.CheckRunID != valueOrEmpty(row.SourceKey) || check.Actor.Kind != row.ActorKind || check.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(check.ReceivedAt, row.CreatedAt) {
+			if check.VersionID != hubapi.ValueOrEmpty(row.VersionID) || check.CheckRunID != hubapi.ValueOrEmpty(row.SourceKey) || check.Actor.Kind != row.ActorKind || check.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(check.ReceivedAt, row.CreatedAt) {
 				return tracker.ChangeDetail{}, eventstore.ErrInvalidRecord
 			}
 			detail.Checks = append(detail.Checks, check)
@@ -1282,7 +1283,7 @@ func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope
 			if err := json.Unmarshal(raw, &discussion); err != nil {
 				return tracker.ChangeDetail{}, err
 			}
-			if discussion.VersionID != valueOrEmpty(row.VersionID) || discussion.Actor.Kind != row.ActorKind || discussion.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(discussion.CreatedAt, row.CreatedAt) {
+			if discussion.VersionID != hubapi.ValueOrEmpty(row.VersionID) || discussion.Actor.Kind != row.ActorKind || discussion.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(discussion.CreatedAt, row.CreatedAt) {
 				return tracker.ChangeDetail{}, eventstore.ErrInvalidRecord
 			}
 			detail.Discussion = append(detail.Discussion, discussion)
@@ -1290,7 +1291,7 @@ func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope
 	}
 	currentApproval, err := boardCurrentApproval(ctx, content, scope, policyRows, approval)
 	if err != nil {
-		return tracker.ChangeDetail{}, projectRecordError(err)
+		return tracker.ChangeDetail{}, hubapi.ProjectRecordError(err)
 	}
 	policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(&detail.Versions[0], currentApproval.Policy, currentApproval.ReviewPolicy)
 	detail.Summary, err = s.summarizeChangeWithAuditDispositionsFor(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval, workload, facts)
@@ -1325,7 +1326,7 @@ func (s *Service) selectedLatestChangeSummary(ctx context.Context, scope nativeS
 		return tracker.NativeChangeReference{}, tracker.ChangeSummary{}, false, nil
 	}
 	if err != nil {
-		return tracker.NativeChangeReference{}, tracker.ChangeSummary{}, false, projectRecordError(err)
+		return tracker.NativeChangeReference{}, tracker.ChangeSummary{}, false, hubapi.ProjectRecordError(err)
 	}
 	detail, err := s.selectedChangeDetail(ctx, scope, item, latest.ID, now)
 	if err != nil {
@@ -1357,7 +1358,7 @@ func (s *Service) lockChangeRecordOperation(ctx context.Context, w tenantstore.W
 		return eventstore.Change{}, corestore.ErrNotFound
 	}
 	var issue corestore.WorkItem
-	if scope.credential.Scope == apiScopeWorker {
+	if scope.credential.Scope == hubapi.APIScopeWorker {
 		issue, err = w.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
 	} else {
 		issue, err = w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
@@ -1365,11 +1366,11 @@ func (s *Service) lockChangeRecordOperation(ctx context.Context, w tenantstore.W
 	if err != nil {
 		return eventstore.Change{}, err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(issue.ActorPrincipalID)}) {
+	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(issue.ActorPrincipalID)}) {
 		return eventstore.Change{}, corestore.ErrNotFound
 	}
 	var change eventstore.Change
-	if scope.credential.Scope == apiScopeWorker {
+	if scope.credential.Scope == hubapi.APIScopeWorker {
 		change, err = w.Change(ctx, changeID)
 	} else {
 		change, err = w.LockChange(ctx, changeID)
@@ -1405,7 +1406,7 @@ func (s *Service) changeOperationRecordReceipt(ctx context.Context, scope native
 		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, projectRecordError(err)
+		return nil, false, hubapi.ProjectRecordError(err)
 	}
 	var raw json.RawMessage
 	var payloadErr error
@@ -1421,18 +1422,18 @@ func (s *Service) changeOperationRecordReceipt(ctx context.Context, scope native
 			return err
 		}
 		if current.RequestHash != hash {
-			return nativeConflict(0)
+			return hubapi.NativeConflict(0)
 		}
 		if current.ResponseExpired || current.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= current.ResponseReplayUntilNs {
 			return receiptstore.ErrExpired
 		}
 		if !reflect.DeepEqual(current, receipt) {
-			return nativeConflict(0)
+			return hubapi.NativeConflict(0)
 		}
 		return payloadErr
 	})
 	if err != nil {
-		return nil, false, projectRecordError(err)
+		return nil, false, hubapi.ProjectRecordError(err)
 	}
 	return raw, true, nil
 }
@@ -1461,7 +1462,7 @@ func (s *Service) loadChangeExternalRecord(ctx context.Context, scope nativeScop
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(itemRecord.ActorPrincipalID)}) {
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(itemRecord.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		project, err := r.ProjectRecord(ctx, scope.project)
@@ -1475,7 +1476,7 @@ func (s *Service) loadChangeExternalRecord(ctx context.Context, scope nativeScop
 		if err != nil {
 			return err
 		}
-		if change.ProjectID != scope.project || change.Revision != int64(detail.Change.Revision) || valueOrEmpty(change.CurrentVersionID) != selected.ID {
+		if change.ProjectID != scope.project || change.Revision != int64(detail.Change.Revision) || hubapi.ValueOrEmpty(change.CurrentVersionID) != selected.ID {
 			return corestore.ErrRevisionConflict
 		}
 		version, err := r.Version(ctx, change.ID, selected.ID)
@@ -1497,7 +1498,7 @@ func (s *Service) loadChangeExternalRecord(ctx context.Context, scope nativeScop
 		}
 		reader, ok := r.(projectstore.GitHubPullRequestRefreshReader)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return hubapi.ErrPostgresFeatureUnavailable
 		}
 		row, err := reader.GitHubPullRequestRefresh(ctx, projectstore.GitHubPullRequestRefreshKey{ProjectID: scope.project, ChangeID: change.ID, Repository: name, Number: number})
 		if errors.Is(err, corestore.ErrNotFound) {

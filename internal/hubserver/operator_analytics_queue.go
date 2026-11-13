@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -25,7 +26,7 @@ func (s *Service) readAnalyticsSchedulerPopulationTenant(ctx context.Context, sc
 	}
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return out, workItemStorageUnavailable()
+		return out, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var page eventstore.AnalyticsSchedulerPage
 	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -35,7 +36,7 @@ func (s *Service) readAnalyticsSchedulerPopulationTenant(ctx context.Context, sc
 		}
 		owner, ok := r.(eventstore.AnalyticsSchedulerReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		page, err = owner.ReadAnalyticsSchedulerPage(ctx, eventstore.AnalyticsSchedulerQuery{ProjectID: scope.project, Principal: principal, From: w.From, To: w.To, Outcome: outcome, After: after, Limit: maxAnalyticsPopulation})
 		return err
@@ -153,12 +154,12 @@ func (s *Service) projectNativeAnalyticsCapacityWaitTenant(ctx context.Context, 
 			queue.IntervalsUnavailable++
 			continue
 		}
-		start = maxTime(start, out.Window.From)
+		start = hubapi.MaxTime(start, out.Window.From)
 		queue.IntervalsObserved++
 		queue.Seconds += finish.Sub(start).Seconds()
 		for i := range out.Digest {
 			bucket := &out.Digest[i]
-			from, to := maxTime(start, bucket.From), minTime(finish, bucket.To)
+			from, to := hubapi.MaxTime(start, bucket.From), hubapi.MinTime(finish, bucket.To)
 			if to.After(from) {
 				bucket.ProviderCapacityWaitSeconds += to.Sub(from).Seconds()
 			}

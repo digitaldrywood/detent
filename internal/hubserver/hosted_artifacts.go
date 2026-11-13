@@ -10,30 +10,31 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func (s *Service) hostedArtifactAllowances(c echo.Context) error {
 	runtimePlans := s.database.plans()
 	credential, _, err := s.authenticateAPIRequest(c)
-	if err != nil || credential.Scope != apiScopeWorker || !credential.NativeOnly || credential.Hosted != nil || credential.Runner.RunnerID != "" || c.Request().Header.Get(echo.HeaderAuthorization) == "" {
+	if err != nil || credential.Scope != hubapi.APIScopeWorker || !credential.NativeOnly || credential.Hosted != nil || credential.Runner.RunnerID != "" || c.Request().Header.Get(echo.HeaderAuthorization) == "" {
 		return s.hostedJSONError(c, http.StatusForbidden, "A scoped artifact publisher credential is required")
 	}
 	if runtimePlans == nil || runtimePlans.WindowSeconds <= 0 || s.config.TenantRepository == nil {
 		return c.NoContent(http.StatusServiceUnavailable)
 	}
 	var usage artifact.Usage
-	if err := decodeAPIJSON(c, &usage); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &usage); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	now := s.config.now()
 	for _, amount := range []int64{usage.RetainedBytes, usage.ReservedBytes, usage.RelayBytes, usage.StorageRequests} {
 		if amount < 0 || amount > 1<<50 {
-			return s.nativeAPIError(c, nativePublicInvalid("Artifact usage is invalid"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Artifact usage is invalid"))
 		}
 	}
 	if usage.ObservedAt.After(now.Add(time.Minute)) {
-		return s.nativeAPIError(c, nativePublicInvalid("Artifact usage clock is invalid"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Artifact usage clock is invalid"))
 	}
 	ctx := c.Request().Context()
 	var entitlement HostedEntitlement
@@ -42,7 +43,7 @@ func (s *Service) hostedArtifactAllowances(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		if !current.Valid(credential.Hash, now) || current.Scope != string(apiScopeWorker) || !current.NativeOnly {
+		if !current.Valid(credential.Hash, now) || current.Scope != string(hubapi.APIScopeWorker) || !current.NativeOnly {
 			return corestore.ErrNotFound
 		}
 		if err := w.RecordHostedArtifactUsage(ctx, c.Param("service"), credential.ID, usage, now, runtimePlans.WindowSeconds); err != nil {

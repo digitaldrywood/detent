@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 type MigrationHealth struct {
@@ -80,7 +81,7 @@ func (s *startupHealth) serveStandaloneHealth(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Unauthorized", status)
 		return
 	}
-	if credential.Scope != apiScopeWorker && credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin {
+	if credential.Scope != hubapi.APIScopeWorker && credential.Scope != hubapi.APIScopeOperator && credential.Scope != hubapi.APIScopeAdmin {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}

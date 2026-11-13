@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -49,11 +50,11 @@ func readSlackIntegration(ctx context.Context, owner postgres.SlackReader) (slac
 	if err == nil {
 		result.ChannelName, result.LastDeliveryFailed, result.LastStatusCode = row.ChannelName, row.LastDeliveryFailed, int(row.LastStatusCode)
 		if row.LastSuccessAt != nil {
-			value := formatHubTime(*row.LastSuccessAt)
+			value := hubapi.FormatHubTime(*row.LastSuccessAt)
 			result.LastSuccessAt = &value
 		}
 		if row.LastFailureAt != nil {
-			value := formatHubTime(*row.LastFailureAt)
+			value := hubapi.FormatHubTime(*row.LastFailureAt)
 			result.LastFailureAt = &value
 		}
 	}
@@ -74,13 +75,13 @@ func (s *Service) slackSettingsScope(c echo.Context) (nativeScope, error) {
 		return scope, err
 	}
 	if !canManageProjectSecrets(scope.credential) {
-		return scope, &nativeError{Code: "forbidden", Message: "Slack settings require owner or admin access", status: http.StatusForbidden, publicMessage: true}
+		return scope, &hubapi.NativeError{Code: "forbidden", Message: "Slack settings require owner or admin access", Status: http.StatusForbidden, PublicMessage: true}
 	}
 	return scope, nil
 }
 
 func (s *Service) getSlackIntegration(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope, err := s.slackSettingsScope(c)
 	if err != nil {
@@ -93,7 +94,7 @@ func (s *Service) getSlackIntegration(c echo.Context) error {
 		}
 		owner, ok := r.(postgres.SlackReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		result, err = readSlackIntegration(ctx, owner)
@@ -115,7 +116,7 @@ func (s *Service) setSlackIntegration(c echo.Context) error {
 		Webhook     *string `json:"webhook"`
 		ChannelName string  `json:"channel_name"`
 	}
-	if decodeAPIJSON(c, &request) != nil {
+	if hubapi.DecodeAPIJSON(c, &request) != nil {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter a Slack incoming webhook URL and channel name")
 	}
 	request.ChannelName = strings.TrimSpace(request.ChannelName)
@@ -150,7 +151,7 @@ func (s *Service) setSlackIntegration(c echo.Context) error {
 		}
 		owner, ok := w.(postgres.SlackWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		old, secretErr := w.AccessSecret(ctx, "", slackWebhookSecret)
 		if secretErr != nil && !errors.Is(secretErr, corestore.ErrNotFound) {
@@ -207,7 +208,7 @@ func (s *Service) testSlackIntegration(c echo.Context) error {
 	err = s.accessSecretWrite(ctx, scope, func(w tenantstore.Writer) error {
 		owner, ok := w.(postgres.SlackReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		row, err := owner.SlackIntegration(ctx)
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -242,7 +243,7 @@ func (s *Service) testSlackIntegration(c echo.Context) error {
 	err = s.accessWrite(finishCtx, scope.organization, func(w tenantstore.Writer) error {
 		owner, ok := w.(postgres.SlackWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if err := owner.RecordSlackStatus(finishCtx, postgres.RecordSlackStatusInput{OrganizationID: scope.organization, ExpectedRevision: revision, StatusCode: int32(statusCode), Failed: !delivered, At: s.config.now()}); err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
 			return err

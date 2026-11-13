@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
@@ -452,7 +453,7 @@ func TestMonthlyBudgetHistoricalAdmissionsCannotFundNewClaims(t *testing.T) {
 						response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "reopened"+fmt.Sprint(i)))
 						requireNativeStatus(t, response, http.StatusConflict)
 						var refusal struct {
-							apiErrorResponse
+							hubapi.APIErrorResponse
 							Details struct {
 								Budget budget.MonthlyDecision `json:"monthly_budget"`
 							} `json:"details"`
@@ -777,7 +778,7 @@ func TestMonthlyBudgetClaimsApplyCorrectionsAcrossTenants(t *testing.T) {
 			t.Fatal(err)
 		}
 		for number := range 6 {
-			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Number: number + 1, Revision: 1, Profile: "native"}, Title: fmt.Sprint("Example issue ", number), Body: workItemRecordBody, State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "test_hub_admin"}, CreatedAt: now, UpdatedAt: now}
+			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: number + 1, Revision: 1, Profile: "native"}, Title: fmt.Sprint("Example issue ", number), Body: workItemRecordBody, State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "test_hub_admin"}, CreatedAt: now, UpdatedAt: now}
 			raw, err := json.Marshal(issue)
 			if err != nil {
 				t.Fatal(err)
@@ -804,7 +805,7 @@ func TestMonthlyBudgetClaimsApplyCorrectionsAcrossTenants(t *testing.T) {
 		f, runner := fixtures[i], runners[i]
 		issue := issues[i][0]
 		issues[i] = issues[i][1:]
-		request := newHubAPIRequest(t, http.MethodPost, f.base+"/claims", runner.redemption.Credential, providerClaim(runner, issue, newNativeID("session")))
+		request := newHubAPIRequest(t, http.MethodPost, f.base+"/claims", runner.redemption.Credential, providerClaim(runner, issue, hubapi.NewID("session")))
 		request = request.WithContext(context.WithValue(t.Context(), entryAuthBudgetContextKey{}, true))
 		trace.statements.Store(0)
 		exchanges.Store(0)
@@ -827,7 +828,7 @@ func TestMonthlyBudgetClaimsApplyCorrectionsAcrossTenants(t *testing.T) {
 		}
 		requireNativeStatus(t, response, http.StatusConflict)
 		var refusal struct {
-			apiErrorResponse
+			hubapi.APIErrorResponse
 			Details struct {
 				Budget budget.MonthlyDecision `json:"monthly_budget"`
 			} `json:"details"`

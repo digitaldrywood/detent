@@ -10,12 +10,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credential apiCredential, view *hostedFleetRunner, runner runnerauth.Runner, visible map[tracker.ProjectID]bool) error {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credential hubapi.APICredential, view *hostedFleetRunner, runner runnerauth.Runner, visible map[tracker.ProjectID]bool) error {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	facts, err := s.readSpriteMachineFacts(readCtx, runner.OrganizationID, runner.MachineID)
 	if err != nil {
@@ -55,7 +56,7 @@ func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credenti
 			break
 		}
 	}
-	failedAt, parseErr := parseTimeValue(failed)
+	failedAt, parseErr := hubapi.ParseTimeValue(failed)
 	view.Sprite.WakeFailed = parseErr == nil && !failedAt.IsZero() && !failedAt.Before(runner.LastHeartbeatAt)
 	if runner.ConnectionHealth == "offline" && runner.State == "active" {
 		view.Health = "needs_attention"

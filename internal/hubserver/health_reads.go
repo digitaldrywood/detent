@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -29,7 +30,7 @@ func (s *Service) getHealthFindings(c echo.Context) error {
 	if raw := c.QueryParam("limit"); raw != "" {
 		value, err := strconv.Atoi(raw)
 		if err != nil || value < 1 || value > 100 {
-			return s.nativeAPIError(c, nativePublicInvalid("limit must be between 1 and 100"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("limit must be between 1 and 100"))
 		}
 		limit = value
 	}
@@ -41,23 +42,23 @@ func (s *Service) getHealthFindings(c echo.Context) error {
 }
 
 func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, state, since, cursor string, limit int) (healthFindingsPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	page := healthFindingsPage{Items: []healthFinding{}, BaselineUnavailable: []healthBaselineUnavailable{}}
 	if state == "" {
 		state = "open"
 	}
 	if state != "open" && state != "resolved" && state != "all" {
-		return page, nativePublicInvalid("state must be open, resolved or all")
+		return page, hubapi.NativePublicInvalid("state must be open, resolved or all")
 	}
 	if limit < 1 || limit > 100 {
-		return page, nativePublicInvalid("limit must be between 1 and 100")
+		return page, hubapi.NativePublicInvalid("limit must be between 1 and 100")
 	}
 	var sinceAt *time.Time
 	if since != "" {
 		at, err := time.Parse(time.RFC3339Nano, since)
 		if err != nil {
-			return page, nativePublicInvalid("since must be an RFC3339 timestamp")
+			return page, hubapi.NativePublicInvalid("since must be an RFC3339 timestamp")
 		}
 		sinceAt = &at
 	}
@@ -65,15 +66,15 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	if cursor != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(cursor)
 		if err != nil {
-			return page, nativePublicInvalid("invalid findings cursor")
+			return page, hubapi.NativePublicInvalid("invalid findings cursor")
 		}
 		after, err = strconv.ParseInt(string(raw), 10, 64)
 		if err != nil || after < 1 {
-			return page, nativePublicInvalid("invalid findings cursor")
+			return page, hubapi.NativePublicInvalid("invalid findings cursor")
 		}
 	}
 	if s.config.TenantRepository == nil {
-		return page, workItemStorageUnavailable()
+		return page, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	reporter := ""
 	if scope.credential.HostedRole == "reporter" {
@@ -86,19 +87,19 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	projected := true
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return page, workItemStorageUnavailable()
+		return page, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(healthstore.Reader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		records, err = owner.HealthFindings(ctx, scope.project, state, sinceAt, after, reporter, limit+1)
 		if errors.Is(err, healthstore.ErrPagePending) {
 			fallback, ok := r.(healthstore.FallbackReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			projected = false
 			records, err = fallback.LegacyHealthFindings(ctx, scope.project, state, sinceAt, after, reporter, limit+1)

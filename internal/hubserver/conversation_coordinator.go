@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -391,13 +392,13 @@ func coordinatorHandles(record conversationRecord) bool {
 	return record.WorkItemID == ""
 }
 
-func (c *conversationTurnCoordinator) readConversation(ctx context.Context, query nativeQueryer, id string) (conversationRecord, error) {
+func (c *conversationTurnCoordinator) readConversation(ctx context.Context, query hubapi.NativeQueryer, id string) (conversationRecord, error) {
 	return c.service.ReadPublicationConversation(ctx, id)
 }
 
 // pendingMessages returns the user text messages saved after the last
 // assistant message, oldest first.
-func (c *conversationTurnCoordinator) pendingMessages(ctx context.Context, query nativeQueryer, conversationID string) ([]conversationMessageRecord, error) {
+func (c *conversationTurnCoordinator) pendingMessages(ctx context.Context, query hubapi.NativeQueryer, conversationID string) ([]conversationMessageRecord, error) {
 	return c.coordinatorMessages(ctx, conversationstore.MessageFilter{ConversationID: conversationID, Role: conversation.RoleUser, Kind: conversation.MessageText, Deliveries: []conversation.Delivery{conversation.DeliverySaved, conversation.DeliveryQueued}, Limit: coordinatorPendingMessages, Oldest: true})
 }
 
@@ -917,7 +918,7 @@ func coordinatorOutcome(runErr error, cancelled bool) conversation.Delivery {
 
 // transcript returns the last messages before seq as context for a turn
 // without a provider thread.
-func (c *conversationTurnCoordinator) transcript(ctx context.Context, query nativeQueryer, conversationID string, beforeSeq int64) ([]conversationMessageRecord, error) {
+func (c *conversationTurnCoordinator) transcript(ctx context.Context, query hubapi.NativeQueryer, conversationID string, beforeSeq int64) ([]conversationMessageRecord, error) {
 	messages, err := c.coordinatorMessages(ctx, conversationstore.MessageFilter{ConversationID: conversationID, BeforeSequence: beforeSeq, Limit: coordinatorTranscriptMessages})
 	if err != nil {
 		return nil, err

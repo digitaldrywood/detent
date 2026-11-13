@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -49,7 +50,7 @@ func (o *nativeProgressOwner) AuthorizeProgressDefect(ctx context.Context, w ten
 }
 
 func (o nativeProgressOwner) validateProgressLeaseWriter(ctx context.Context, writer tenantstore.Writer) error {
-	if o.scope.credential.Scope != apiScopeWorker {
+	if o.scope.credential.Scope != hubapi.APIScopeWorker {
 		return nil
 	}
 	credential, err := writer.AccessCredential(ctx, o.scope.credential.ID)
@@ -69,7 +70,7 @@ func (o nativeProgressOwner) validateProgressLeaseWriter(ctx context.Context, wr
 	}
 	locker, ok := writer.(leasestore.FencedLeaseLocker)
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	assigned, err := writer.RunnerForLease(ctx, string(o.leaseID))
 	if err != nil {
@@ -83,7 +84,7 @@ func (o nativeProgressOwner) validateProgressLeaseWriter(ctx context.Context, wr
 	if lease.OrganizationID != o.scope.organization || lease.FencingToken != int64(o.fencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || lease.IssueID != item.ID {
 		return tracker.ErrStaleFencingToken
 	}
-	if o.scope.credential.EntryKey != nil || credential.OrganizationID != o.scope.organization || credential.Scope != string(apiScopeWorker) || credential.Kind != "service" || !credential.Valid(o.scope.credential.Hash, now) || identity.RunnerID != assigned.RunnerID || !runnerIdentityMatchesHeldLease(identity, o.scope.organization, o.scope.credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Claim) || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
+	if o.scope.credential.EntryKey != nil || credential.OrganizationID != o.scope.organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" || !credential.Valid(o.scope.credential.Hash, now) || identity.RunnerID != assigned.RunnerID || !runnerIdentityMatchesHeldLease(identity, o.scope.organization, o.scope.credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Claim) || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
 		return runnerUnauthorized()
 	}
 	allowed, err := writer.RunnerProjectAuthorized(ctx, identity.RunnerID, o.scope.project, now)
@@ -91,17 +92,17 @@ func (o nativeProgressOwner) validateProgressLeaseWriter(ctx context.Context, wr
 		return err
 	}
 	if !allowed {
-		return nativeNotFoundAt("lease_runner_credential")
+		return hubapi.NativeNotFoundAt("lease_runner_credential")
 	}
 	pinned, err := writer.LeasePolicy(ctx, o.leaseID)
 	if err != nil {
 		return err
 	}
 	if pinned.OrganizationID != o.scope.organization || pinned.ProjectID != o.scope.project || pinned.LeaseID != o.leaseID || pinned.PolicyID == "" || pinned.PolicyID != o.request.PolicyID || o.request.Instance != lease.MachineID {
-		return policyMismatch("Progress request must match the policy and instance pinned to its lease")
+		return hubapi.PolicyMismatch("Progress request must match the policy and instance pinned to its lease")
 	}
 	if o.expectedRevision > 0 && item.Revision != int64(o.expectedRevision) {
-		return &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+		return &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 	}
 	return nil
 }
@@ -125,7 +126,7 @@ func (o nativeProgressOwner) Load(ctx context.Context, project, issue, id string
 		if err := o.service.authorizeAccessScope(ctx, reader, o.scope, false); err != nil {
 			return err
 		}
-		if o.scope.credential.Scope == apiScopeWorker {
+		if o.scope.credential.Scope == hubapi.APIScopeWorker {
 			identity, err := reader.RunnerIdentityByCredential(ctx, o.scope.credential.ID)
 			if err != nil {
 				return err
@@ -138,7 +139,7 @@ func (o nativeProgressOwner) Load(ctx context.Context, project, issue, id string
 				return err
 			}
 			if !allowed {
-				return nativeNotFound()
+				return hubapi.NativeNotFound()
 			}
 		}
 		project, err := reader.Project(ctx, o.scope.project)
@@ -152,7 +153,7 @@ func (o nativeProgressOwner) Load(ctx context.Context, project, issue, id string
 		if err != nil {
 			return err
 		}
-		if !o.scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+		if !o.scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		receipt, err = reader.Receipt(ctx, nativeProgressReceiptActor, nativeProgressReceiptOperation(o.scope, issue), id)
@@ -163,7 +164,7 @@ func (o nativeProgressOwner) Load(ctx context.Context, project, issue, id string
 		return err
 	})
 	if err != nil {
-		return progresscheck.Record{}, false, projectRecordError(err)
+		return progresscheck.Record{}, false, hubapi.ProjectRecordError(err)
 	}
 	if !found {
 		return progresscheck.Record{}, false, nil
@@ -253,8 +254,8 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 		if !errors.Is(err, corestore.ErrSerializationFailure) {
 			return published, err
 		}
-		if o.scope.credential.Scope != apiScopeWorker || o.leaseID == "" || o.fencingToken <= 0 {
-			return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+		if o.scope.credential.Scope != hubapi.APIScopeWorker || o.leaseID == "" || o.fencingToken <= 0 {
+			return progresscheck.Record{}, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 		}
 		current, sequence, err := o.service.nativeProgressRequestTenant(ctx, o.scope, record.IssueID, o.request.PolicyID, o.request.Instance)
 		if err != nil {
@@ -265,7 +266,7 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 			return progresscheck.Record{}, err
 		}
 		if id != record.RequestID {
-			return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+			return progresscheck.Record{}, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 		}
 		if o.guardRevision != nil {
 			o.guardRevision = &sequence
@@ -283,7 +284,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 		candidate.DefectIssueID = "pending"
 	}
 	if err := candidate.ValidatePublication(o.request); err != nil {
-		return progresscheck.Record{}, nativeInvalid(err.Error())
+		return progresscheck.Record{}, hubapi.NativeInvalid(err.Error())
 	}
 	var startingSequence int64
 	if o.guardRevision != nil {
@@ -296,7 +297,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 			return progresscheck.Record{}, err
 		}
 		if currentID != record.RequestID {
-			return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+			return progresscheck.Record{}, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 		}
 		if revision != *o.guardRevision {
 			return progresscheck.Record{}, corestore.ErrSerializationFailure
@@ -315,10 +316,10 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 			return progresscheck.Record{}, err
 		}
 		if current.Revision != int64(o.expectedRevision) {
-			return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+			return progresscheck.Record{}, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 		}
 	}
-	if o.scope.credential.Scope == apiScopeWorker {
+	if o.scope.credential.Scope == hubapi.APIScopeWorker {
 		if _, err := o.service.validateRunnerLeaseTenant(ctx, o.scope, o.leaseID, o.fencingToken); err != nil {
 			return progresscheck.Record{}, err
 		}
@@ -333,7 +334,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 	}
 	for _, reference := range record.Decision.RetrievedEvidence {
 		if reference.SourceSHA != "" && reference.SourceReceipt == nil {
-			return progresscheck.Record{}, nativeInvalid("Retrieved source receipt is unavailable")
+			return progresscheck.Record{}, hubapi.NativeInvalid("Retrieved source receipt is unavailable")
 		}
 		if reference.SourceSHA == "" && reference.AttemptID == "" {
 			err := o.service.config.TenantRepository.ReadTenant(ctx, o.scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -363,7 +364,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 					return err
 				}
-				return nativeInvalid("Retrieved progress evidence is unavailable for this work item")
+				return hubapi.NativeInvalid("Retrieved progress evidence is unavailable for this work item")
 			})
 			if err != nil {
 				return progresscheck.Record{}, fmt.Errorf("read retrieved progress evidence: %w", err)
@@ -375,7 +376,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 				return progresscheck.Record{}, err
 			}
 			if !slices.Contains(progresscheck.AttemptEvidence(attempt), reference) {
-				return progresscheck.Record{}, nativeInvalid("Retrieved progress receipt is unavailable for this attempt")
+				return progresscheck.Record{}, hubapi.NativeInvalid("Retrieved progress receipt is unavailable for this attempt")
 			}
 		}
 	}
@@ -401,7 +402,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 			Title:    record.Decision.DefectTitle, Body: defectBody, State: "Backlog",
 			Provenance: &tracker.Provenance{Provider: "progress-check", ExternalID: record.Decision.DefectKey},
 		}
-		prepared, defectRaw, err := o.service.prepareWorkItemRecordMutation(ctx, defectScope, nativeCommandOptions{OperationID: nativeIssueCreationOperation(defectScope), Feature: "collaboration"}, request.Mutation, request, "")
+		prepared, defectRaw, err := o.service.prepareWorkItemRecordMutation(ctx, defectScope, hubapi.NativeCommandOptions{OperationID: nativeIssueCreationOperation(defectScope), Feature: "collaboration"}, request.Mutation, request, "")
 		if err != nil {
 			return progresscheck.Record{}, fmt.Errorf("file progress defect: %w", err)
 		}
@@ -427,7 +428,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 		Body:       body,
 		Provenance: &tracker.Provenance{Provider: "progress-check", ExternalID: record.RequestID},
 	}
-	commentOptions := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(o.scope.organization) + "/projects/" + string(o.scope.project) + "/work-items/" + record.IssueID + "/comments", Item: record.IssueID, RequireLease: true, Feature: "collaboration"}
+	commentOptions := hubapi.NativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(o.scope.organization) + "/projects/" + string(o.scope.project) + "/work-items/" + record.IssueID + "/comments", Item: record.IssueID, RequireLease: true, Feature: "collaboration"}
 	commentMutation, commentRaw, err := o.service.prepareWorkItemRecordMutation(ctx, commentScope, commentOptions, commentRequest.Mutation, commentRequest, "")
 	if err != nil {
 		return progresscheck.Record{}, fmt.Errorf("publish progress comment: %w", err)
@@ -450,7 +451,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 		return progresscheck.Record{}, err
 	}
 	if currentRequestID != record.RequestID {
-		return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+		return progresscheck.Record{}, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 	}
 	if currentSequence != expectedSequence {
 		return progresscheck.Record{}, corestore.ErrSerializationFailure
@@ -461,7 +462,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 	}
 	content := eventstore.NewContent(o.service.runDetailStore())
 	contentCtx := o.service.runDetailContext(ctx)
-	hash, err := nativeCommandHash(record)
+	hash, err := hubapi.CommandHash(record)
 	if err != nil {
 		return progresscheck.Record{}, err
 	}

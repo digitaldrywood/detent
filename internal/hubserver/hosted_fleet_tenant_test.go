@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -124,7 +125,7 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 		}
 	}
 	now = asOf.Add(time.Second)
-	credential := apiCredential{HostedRole: "owner", Hosted: &auth.HostedIdentity{Subject: "user_example"}}
+	credential := hubapi.APICredential{HostedRole: "owner", Hosted: &auth.HostedIdentity{Subject: "user_example"}}
 	names, err := service.readHostedRunnerNamesTenant(t.Context(), true)
 	if err != nil {
 		t.Fatal(err)
@@ -251,7 +252,7 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	limited := apiCredential{HostedRole: "member", Hosted: &auth.HostedIdentity{Subject: "user_limited"}}
+	limited := hubapi.APICredential{HostedRole: "member", Hosted: &auth.HostedIdentity{Subject: "user_limited"}}
 	scoped, err := service.readHostedFleet(t.Context(), limited)
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +338,7 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 		t.Fatalf("other tenant overflow affected stable customer plan: %+v %v", stable, err)
 	}
 
-	owner := apiCredential{ID: "credential_owner", Hash: apikey.HashToken("org_first_owner"), Scope: apiScopeOperator, NativeOnly: true, HostedRole: "owner", HostedMembership: "membership_example", HostedKeyScope: apikey.ScopeAdmin, HostedProjectAccess: hostedProjectsAll, Hosted: &auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_example"}}
+	owner := hubapi.APICredential{ID: "credential_owner", Hash: apikey.HashToken("org_first_owner"), Scope: hubapi.APIScopeOperator, NativeOnly: true, HostedRole: "owner", HostedMembership: "membership_example", HostedKeyScope: apikey.ScopeAdmin, HostedProjectAccess: hubapi.HostedProjectsAll, Hosted: &auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_example"}}
 	provider := newHostedSecurityProvider()
 	membership := auth.Membership{ID: "membership_example", UserID: "user_example", OrganizationID: "provider_example", Status: "active"}
 	membership.Role.Slug = "owner"
@@ -349,7 +350,7 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 	if err := repository.MergeRequestMetrics(t.Context(), "org_first", now, []metricsstore.Metric{{At: now.Truncate(time.Minute).Add(-time.Minute), Route: "GET /example", CallerKind: "runner", CallerID: "runner_1", StatusClass: 2, Latency: latency}}); err != nil {
 		t.Fatal(err)
 	}
-	metricsContext := operatortool.WithConnection(context.WithValue(t.Context(), hubOperatorResolverKey{}, func(context.Context) (apiCredential, error) { return owner, nil }), operatortool.Connection{Identity: operatorIdentity(owner, "org_first"), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+	metricsContext := operatortool.WithConnection(context.WithValue(t.Context(), hubOperatorResolverKey{}, func(context.Context) (hubapi.APICredential, error) { return owner, nil }), operatortool.Connection{Identity: operatorIdentity(owner, "org_first"), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 		return service.operatorCurrentAuthority(ctx, owner, "org_first")
 	}})
 	requests, visible, err := service.adminRequestMetrics(metricsContext)
@@ -408,10 +409,10 @@ func BenchmarkTenantFleetProviderViewsTenThousandSharedRunners(b *testing.B) {
 	}
 }
 
-func seedSelectedServiceKey(t *testing.T, repository tenantstore.Repository, org tracker.OrganizationID, id string, keyGrants, memberGrants []tracker.ProjectID, now time.Time) apiCredential {
+func seedSelectedServiceKey(t *testing.T, repository tenantstore.Repository, org tracker.OrganizationID, id string, keyGrants, memberGrants []tracker.ProjectID, now time.Time) hubapi.APICredential {
 	t.Helper()
 	hash := apikey.HashToken(string(org) + id)
-	key := apiCredential{ID: id, Hash: hash, Scope: apiScopeOperator, NativeOnly: true, HostedKeyKind: "service", HostedProjectAccess: hostedProjectsSelected, HostedRole: "owner"}
+	key := hubapi.APICredential{ID: id, Hash: hash, Scope: hubapi.APIScopeOperator, NativeOnly: true, HostedKeyKind: "service", HostedProjectAccess: hubapi.HostedProjectsSelected, HostedRole: "owner"}
 	row := accessstore.Credential{OrganizationID: org, ID: id, Hash: hash, Name: "Example " + id, Kind: "service", Scope: "operator", NativeOnly: true, KeyScope: string(apikey.ScopeRead), ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}
 	user, membership := "user_"+id, "membership_"+id
 	if memberGrants != nil {

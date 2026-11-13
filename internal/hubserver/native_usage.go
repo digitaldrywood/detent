@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -47,17 +48,17 @@ func validateNativeRunUsage(request tracker.NativeRunEvent) error {
 		return nil
 	}
 	if request.Type == "run.started" {
-		return nativePublicInvalid("Usage requires a checkpoint or a finished run")
+		return hubapi.NativePublicInvalid("Usage requires a checkpoint or a finished run")
 	}
 	if len(usage) > maxNativeUsageEntries {
-		return nativeInvalid(fmt.Sprintf("A run event carries at most %d usage entries", maxNativeUsageEntries))
+		return hubapi.NativeInvalid(fmt.Sprintf("A run event carries at most %d usage entries", maxNativeUsageEntries))
 	}
 	seen := make(map[string]bool, len(usage))
 	for _, entry := range usage {
 		provider := strings.TrimSpace(entry.Provider)
 		model := strings.TrimSpace(entry.Model)
 		if provider == "" || model == "" || len(provider) > maxNativeUsageNameBytes || len(model) > maxNativeUsageNameBytes {
-			return nativePublicInvalid("Usage requires a provider and a model of at most 128 bytes each")
+			return hubapi.NativePublicInvalid("Usage requires a provider and a model of at most 128 bytes each")
 		}
 		key := tracker.UsageProviderID(provider) + "\x00" + model
 		if entry.UsageKind == "incremental" {
@@ -67,11 +68,11 @@ func validateNativeRunUsage(request tracker.NativeRunEvent) error {
 			return err
 		}
 		if seen[key] {
-			return nativeInvalid("Usage entries must name distinct provider and model pairs")
+			return hubapi.NativeInvalid("Usage entries must name distinct provider and model pairs")
 		}
 		seen[key] = true
 		if entry.Input < 0 || entry.CachedInput < 0 || entry.Output < 0 || entry.CostEstimate < 0 {
-			return nativePublicInvalid("Usage counts and cost cannot be negative")
+			return hubapi.NativePublicInvalid("Usage counts and cost cannot be negative")
 		}
 	}
 	return nil
@@ -207,7 +208,7 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 				RefreshReportUsagePage(context.Context, tracker.OrganizationID, attachment.DetailStore, string, int) (string, int, error)
 			})
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			next, count, err := owner.RefreshReportUsagePage(ctx, organization, hubmaintenance.LimitDetails(s.runDetailStore()), current.sourcesAfter, 100)
 			if err == nil {
@@ -228,7 +229,7 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 			err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 				owner, ok := r.(reportstore.UsageReplayReader)
 				if !ok {
-					return nativeRunEventStorageUnavailable()
+					return hubapi.NativeRunEventStorageUnavailable()
 				}
 				var err error
 				pending, err = owner.NextPendingUsageAttempt(ctx, afterProject, afterAttempt)
@@ -253,7 +254,7 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 			RefreshAttemptReportUsage(context.Context, tracker.OrganizationID, string, int) (bool, error)
 		})
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		ready, err := owner.RefreshAttemptReportUsage(ctx, organization, pending.AttemptID, 100)
 		if err != nil || !ready {
@@ -263,7 +264,7 @@ func (s *Service) UsageMaintenanceFeature() hubmaintenance.Feature {
 		if err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 			reader, ok := r.(eventstore.AttemptEventPageReader)
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			var err error
 			events, err = reader.AttemptEvents(ctx, pending.ProjectID, pending.WorkItemID, pending.AttemptID, pending.AfterEventSequence, 100)
@@ -308,7 +309,7 @@ func (s *Service) replayNativeUsageEvent(ctx context.Context, event eventstore.E
 	err = s.config.TenantRepository.WriteTenant(ctx, event.OrganizationID, corestore.Background, func(w tenantstore.Writer) error {
 		owner, ok := w.(reportstore.UsageReplayWriter)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		complete, err = owner.ReplayAttemptUsage(ctx, reportstore.UsageReplay{Usage: report, Projection: *reportstore.ProjectEvent(value)})

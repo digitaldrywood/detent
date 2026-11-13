@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
@@ -28,5 +29,5 @@ func projectionTime(at time.Time) string {
 	if at.IsZero() {
 		return ""
 	}
-	return formatHubTime(at)
+	return hubapi.FormatHubTime(at)
 }

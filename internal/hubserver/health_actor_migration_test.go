@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -283,7 +284,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
-					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 					defer cancel()
 					if err := connection.Close(cleanup); err != nil {
 						t.Error(err)
@@ -296,7 +297,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 							t.Fatal(err)
 						}
 						t.Cleanup(func() {
-							cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+							cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 							defer cancel()
 							if err := tx.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
 								t.Error(err)
@@ -310,7 +311,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 						if !errors.As(writeErr, &failure) || failure.Code != "23514" {
 							t.Fatalf("history immutability lost: %s: %v", statement, writeErr)
 						}
-						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 						rollbackErr := tx.Rollback(cleanup)
 						cancel()
 						if rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
@@ -318,7 +319,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 						}
 					}
 				}
-				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 				closeErr := connection.Close(cleanup)
 				cancel()
 				if closeErr != nil {

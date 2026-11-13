@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -172,7 +173,7 @@ func seedScaleSoak(t *testing.T, root string, config scaleSoakConfig) scaleSoakS
 		}
 		now := service.config.now().UTC()
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: key}); err != nil {
+			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: hubapi.NewID("hub"), CursorKey: key}); err != nil {
 				return err
 			}
 			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
@@ -222,8 +223,8 @@ func seedScaleSoakAttempts(t *testing.T, seed *scaleSoakSeed, config scaleSoakCo
 				break
 			}
 		}
-		lease := nativeAttemptFixtureLease(t, runner, item, newNativeID("session"))
-		data := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), PolicyID: hubTestPolicy().ID,
+		lease := nativeAttemptFixtureLease(t, runner, item, hubapi.NewID("session"))
+		data := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), PolicyID: hubTestPolicy().ID,
 			LeaseID: lease.ID, FencingToken: lease.FencingToken, SessionID: lease.SessionID, MachineID: runner.binding.MachineID, RunnerID: runner.binding.RunnerID,
 			Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test-model"}}
 		var ref attachment.ArchiveReference
@@ -246,7 +247,7 @@ func seedScaleSoakAttempts(t *testing.T, seed *scaleSoakSeed, config scaleSoakCo
 				t.Fatal(err)
 			}
 			seed.payloads = append(seed.payloads, ref.Key)
-			event := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: item.OrganizationID, ProjectID: item.ProjectID,
+			event := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: item.OrganizationID, ProjectID: item.ProjectID,
 				AggregateType: "issue", AggregateID: item.WorkItemID, Type: kind, SchemaVersion: 1, RecordedAt: now,
 				Actor: nativeAttemptListingScope(t, f).actor(), Data: tracker.CollaborationData{Run: &data}}
 			raw, err = json.Marshal(event)
@@ -478,11 +479,11 @@ func runScaleSoakRunner(ctx context.Context, h scaleSoakHTTP, r runnerFixture, i
 		return err
 	}
 	var lease tracker.NativeLease
-	if err := h.post(ctx, "claim", r.nativeFixture.base+"/claims", r.redemption.Credential, providerClaim(r, item, newNativeID("session")), &lease); err != nil {
+	if err := h.post(ctx, "claim", r.nativeFixture.base+"/claims", r.redemption.Credential, providerClaim(r, item, hubapi.NewID("session")), &lease); err != nil {
 		return err
 	}
 	event := nativeStartedEvent(lease)
-	event.IdempotencyKey = newNativeID("event")
+	event.IdempotencyKey = hubapi.NewID("event")
 	events := r.nativeFixture.base + "/work-items/" + string(item.WorkItemID) + "/events"
 	if err := h.post(ctx, "run.started", events, r.redemption.Credential, event, nil); err != nil {
 		return err
@@ -497,10 +498,10 @@ func runScaleSoakRunner(ctx context.Context, h scaleSoakHTTP, r runnerFixture, i
 		if err := h.post(ctx, "renew", r.nativeFixture.base+"/leases/"+string(lease.ID)+"/renew", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}, &lease); err != nil {
 			return err
 		}
-		event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", newNativeID("event"), event.Data.Sequence+1
+		event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", hubapi.NewID("event"), event.Data.Sequence+1
 		event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: time.Now().UTC()}
 		prior := event
-		event.IdempotencyKey, event.Data.Sequence = newNativeID("event"), event.Data.Sequence+1
+		event.IdempotencyKey, event.Data.Sequence = hubapi.NewID("event"), event.Data.Sequence+1
 		event.PriorEvents = []tracker.NativeRunEvent{prior}
 		if err := h.post(ctx, "run.observed", events, r.redemption.Credential, event, nil); err != nil {
 			return err
@@ -590,7 +591,7 @@ func TestScaleSoakSeed(t *testing.T) {
 		if err := seed.service.config.TenantRepository.ReadTenant(t.Context(), row.item.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			owner, ok := r.(attemptArchiveReader)
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			object, err := owner.ArchiveObjectByKey(t.Context(), row.ref.Key)
 			if err != nil {

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -63,7 +64,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 				t.Fatal(err)
 			}
 			issue.Number, issue.Revision = int(current.Number), tracker.Revision(current.Revision+1)
-			from = stringValue(current.WorkflowStateName)
+			from = hubapi.StringValue(current.WorkflowStateName)
 		}
 		fields, err := f.service.prepareWorkItemFields(t.Context(), scope.organization, workItemRecordPlan{issue: issue, create: !existing})
 		if err != nil {
@@ -73,13 +74,13 @@ func TestReportsFilterDimensions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: id, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: closed, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: from, ToState: state}}))
+		event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: id, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: closed, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: from, ToState: state}}))
 		if err != nil {
 			t.Fatal(err)
 		}
 		var filing eventstore.Event
 		if !existing {
-			filing, err = content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: id, Type: "issue.created", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: created, Data: tracker.CollaborationData{Revision: 1}}))
+			filing, err = content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: id, Type: "issue.created", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: created, Data: tracker.CollaborationData{Revision: 1}}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -131,7 +132,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, seed := range seeds {
-		id, created, existing := tracker.NativeWorkItemID(newNativeID("issue")), to.Add(-30*time.Hour), false
+		id, created, existing := tracker.NativeWorkItemID(hubapi.NewID("issue")), to.Add(-30*time.Hour), false
 		if seed.name == "runner bug" {
 			id, created, existing = runnerItem, to.AddDate(0, 0, -20), true
 		}
@@ -283,7 +284,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 			}
 			cleaner, ok := w.(accessstore.ProjectAccessCleaner)
 			if !ok {
-				return ErrProjectParticipants
+				return hubapi.ErrProjectParticipants
 			}
 			return cleaner.DeleteAccessProjectGrants(t.Context(), secret.project)
 		}); err != nil {

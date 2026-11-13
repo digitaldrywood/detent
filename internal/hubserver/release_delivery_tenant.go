@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -14,7 +15,7 @@ import (
 
 func (s *Service) readReleaseDeliveryIssue(ctx context.Context, scope nativeScope, item string) (tracker.NativeIssue, error) {
 	if s.config.TenantRepository == nil {
-		return tracker.NativeIssue{}, workItemStorageUnavailable()
+		return tracker.NativeIssue{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	row, _, err := s.readWorkItemRecord(ctx, scope, item)
 	if err != nil {
@@ -53,18 +54,18 @@ func (s *Service) replayReleaseAssociation(ctx context.Context, scope nativeScop
 		}
 		reader, ok := w.(eventstore.ReleaseDeliveryReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		current, err := reader.ReleaseDelivery(ctx, scope.project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
 		if current.ReleaseDelivery != delivery {
-			return nativeConflict(0)
+			return hubapi.NativeConflict(0)
 		}
 		if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 			if prior.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			return corestore.ErrSerializationFailure
 		} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -104,7 +105,7 @@ func (s *Service) releaseAssociationReceipt(ctx context.Context, scope nativeSco
 		return nil, false, releaseAssociationError(err)
 	}
 	if receipt.RequestHash != hash {
-		return nil, false, nativeConflict(0)
+		return nil, false, hubapi.NativeConflict(0)
 	}
 	if receipt.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= receipt.ResponseReplayUntilNs {
 		return nil, false, receiptstore.ErrExpired
@@ -115,9 +116,9 @@ func (s *Service) releaseAssociationReceipt(ctx context.Context, scope nativeSco
 
 func releaseAssociationError(err error) error {
 	if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, corestore.ErrUniqueViolation) || errors.Is(err, corestore.ErrSerializationFailure) {
-		return nativeConflict(0)
+		return hubapi.NativeConflict(0)
 	}
-	return projectRecordError(err)
+	return hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) recordReleaseAssociationAudit(ctx context.Context, w tenantstore.Writer, scope nativeScope, operation string) error {

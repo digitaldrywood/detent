@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -788,7 +789,7 @@ func TestNativeRunDetailIsolation(t *testing.T) {
 			if session == "first" {
 				checkpoint := event
 				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence, checkpoint.Data.Handoff = "run.checkpointed", "checkpoint-"+session, 2, nativeTestCheckpoint()
-				checkpoint.Data.ArtifactIDs = []string{newNativeID("artifact")}
+				checkpoint.Data.ArtifactIDs = []string{hubapi.NewID("artifact")}
 				requireNativeStatus(t, performHubAPIRequest(t, fixture.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
 				uploads := store.uploads
 				store.beforeRead = func(context.Context) error {
@@ -895,7 +896,7 @@ func TestNativeLeaseCancellationPreparation(t *testing.T) {
 				event := nativeStartedEvent(lease)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 				event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Handoff = "run.checkpointed", "checkpoint", 2, nativeTestCheckpoint()
-				event.Data.ArtifactIDs = []string{newNativeID("artifact")}
+				event.Data.ArtifactIDs = []string{hubapi.NewID("artifact")}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 				if failure == "upload" {
 					store.fail = true
@@ -1055,7 +1056,7 @@ func seedRuntimeHistoryAttempt(t *testing.T, repository tenantstore.Repository, 
 			return err
 		}
 		lease, err = w.Claim(ctx, leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: string(runner.binding.MachineID),
-			SessionID: newNativeID("session"), LeaseID: newNativeID("lease"), TTL: time.Minute})
+			SessionID: hubapi.NewID("session"), LeaseID: hubapi.NewID("lease"), TTL: time.Minute})
 		if err != nil {
 			return err
 		}
@@ -1093,7 +1094,7 @@ func seedRuntimeHistoryAttempt(t *testing.T, repository tenantstore.Repository, 
 	payload := storeJSON(data)
 	checkpointRef := storeJSON(checkpointPayload{Checkpoint: checkpoint})
 	rawEvent, err := json.Marshal(tracker.CollaborationEvent{
-		ID: newNativeID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: issue.WorkItemID,
+		ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: issue.WorkItemID,
 		Type: "run.finished", SchemaVersion: 1, RecordedAt: lease.AcquiredAt, Actor: scope.actor(),
 		Data: tracker.CollaborationData{Run: &data, Revision: tracker.Revision(lease.WorkItemRevision)},
 	})
@@ -1226,7 +1227,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 						snapshot := tenantAttemptSnapshot{attempt: latest.attempt, event: latest.event, payload: &latest.payload}
 						ctx, cancel := context.WithCancel(t.Context())
 						cancel()
-						var archive *nativeArchiveError
+						var archive *hubapi.NativeArchiveError
 						if _, err := service.readNativeAttemptRunTenant(ctx, snapshot); !errors.Is(err, context.Canceled) || errors.As(err, &archive) {
 							t.Fatalf("archive cancellation = %v", err)
 						}
@@ -1384,7 +1385,7 @@ func importRunDetailHistory(t *testing.T, f nativeFixture, issue tracker.NativeI
 	}
 	fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "issues", "leases", "machines", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "api_tokens", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "native_attempts", "native_attempt_events", "work_events", "change_content_objects", "attachments", "attempt_diffs", "attempt_diff_files", "attempt_diff_file_archives")
 	fixture.add("issues", map[string]any{"id": row.IssueID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "native_id": issue.WorkItemID})
-	fixture.add("native_attempts", map[string]any{"id": row.ID, "organization_id": row.OrganizationID, "project_id": f.project.ID, "work_item_id": issue.WorkItemID, "lease_id": row.LeaseID, "fencing_token": row.FencingToken, "run_id": row.RunID, "sequence": row.Sequence, "status": row.Status, "work_item_revision": row.WorkItemRevision, "dispatch_generation": row.DispatchGeneration, "data_json": string(payload), "checkpoint_json": string(checkpoint), "artifact_ids_json": "[]", "started_at": formatHubTime(row.StartedAt), "updated_at": formatHubTime(row.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
+	fixture.add("native_attempts", map[string]any{"id": row.ID, "organization_id": row.OrganizationID, "project_id": f.project.ID, "work_item_id": issue.WorkItemID, "lease_id": row.LeaseID, "fencing_token": row.FencingToken, "run_id": row.RunID, "sequence": row.Sequence, "status": row.Status, "work_item_revision": row.WorkItemRevision, "dispatch_generation": row.DispatchGeneration, "data_json": string(payload), "checkpoint_json": string(checkpoint), "artifact_ids_json": "[]", "started_at": hubapi.FormatHubTime(row.StartedAt), "updated_at": hubapi.FormatHubTime(row.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
 	source := CoreExecutionImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, SourceObjects: objects, Objects: objects}
 	for range 2 {
 		count, err := ImportCoreExecution(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source)
@@ -1416,8 +1417,8 @@ func importRunDetailHistoryIntoEmptyTarget(t *testing.T, issue tracker.NativeIss
 	issue.UpdatedAt, issue.LastActivityAt = row.UpdatedAt, row.UpdatedAt
 	source := newCoreNeutralFixture(t, target.project.OrganizationID, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "leases", "machines", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "api_tokens", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "native_attempts", "native_attempt_events", "work_events", "change_content_objects", "attachments", "attempt_diffs", "attempt_diff_files", "attempt_diff_file_archives")
 	source.add("workflow_states", map[string]any{"id": 1, "project_id": target.project.ID, "detent_state": issue.State})
-	source.add("issues", map[string]any{"id": 41, "native_id": issue.WorkItemID, "project_id": target.project.ID, "number": issue.Number, "revision": issue.Revision, "event_sequence": 7, "title": issue.Title, "body": issue.Body, "issue_contract_json": string(historyTestJSON(t, issue.IssueContract)), "report_context_json": string(historyTestJSON(t, issue.ReportContext)), "provenance_json": string(historyTestJSON(t, issue.Provenance)), "actor_json": string(historyTestJSON(t, issue.Actor)), "archived": issue.Archived, "created_at": formatHubTime(issue.CreatedAt), "updated_at": formatHubTime(issue.UpdatedAt), "native_created_at": formatHubTime(issue.CreatedAt), "native_updated_at": formatHubTime(issue.UpdatedAt), "last_activity_at": formatHubTime(issue.LastActivityAt), "workflow_state_id": 1, "labels_json": string(historyTestJSON(t, issue.Labels)), "assignees_json": string(historyTestJSON(t, issue.Assignees))})
-	source.add("queue_entries", map[string]any{"id": 41, "issue_id": 41, "scope": "native", "state": issue.State, "rank": "010", "created_at": formatHubTime(issue.CreatedAt), "updated_at": formatHubTime(issue.UpdatedAt)})
+	source.add("issues", map[string]any{"id": 41, "native_id": issue.WorkItemID, "project_id": target.project.ID, "number": issue.Number, "revision": issue.Revision, "event_sequence": 7, "title": issue.Title, "body": issue.Body, "issue_contract_json": string(historyTestJSON(t, issue.IssueContract)), "report_context_json": string(historyTestJSON(t, issue.ReportContext)), "provenance_json": string(historyTestJSON(t, issue.Provenance)), "actor_json": string(historyTestJSON(t, issue.Actor)), "archived": issue.Archived, "created_at": hubapi.FormatHubTime(issue.CreatedAt), "updated_at": hubapi.FormatHubTime(issue.UpdatedAt), "native_created_at": hubapi.FormatHubTime(issue.CreatedAt), "native_updated_at": hubapi.FormatHubTime(issue.UpdatedAt), "last_activity_at": hubapi.FormatHubTime(issue.LastActivityAt), "workflow_state_id": 1, "labels_json": string(historyTestJSON(t, issue.Labels)), "assignees_json": string(historyTestJSON(t, issue.Assignees))})
+	source.add("queue_entries", map[string]any{"id": 41, "issue_id": 41, "scope": "native", "state": issue.State, "rank": "010", "created_at": hubapi.FormatHubTime(issue.CreatedAt), "updated_at": hubapi.FormatHubTime(issue.UpdatedAt)})
 	source.add("collaboration_versions", map[string]any{"project_id": target.project.ID, "work_item_id": issue.WorkItemID, "record_id": issue.WorkItemID, "revision": issue.Revision, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
 	if len(history) != 7 {
 		t.Fatalf("historical source has %d events, want7", len(history))
@@ -1436,16 +1437,16 @@ func importRunDetailHistoryIntoEmptyTarget(t *testing.T, issue tracker.NativeIss
 		case 7:
 			eventType = "run.finished"
 		}
-		source.add("collaboration_events", map[string]any{"id": fmt.Sprintf("event_imported_run_%d", sequence), "project_id": target.project.ID, "work_item_id": issue.WorkItemID, "sequence": sequence, "type": eventType, "schema_version": 1, "actor_json": string(historyTestJSON(t, issue.Actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: issue.Revision, Run: &data})), "event_revision": issue.Revision, "recorded_at": formatHubTime(row.StartedAt)})
+		source.add("collaboration_events", map[string]any{"id": fmt.Sprintf("event_imported_run_%d", sequence), "project_id": target.project.ID, "work_item_id": issue.WorkItemID, "sequence": sequence, "type": eventType, "schema_version": 1, "actor_json": string(historyTestJSON(t, issue.Actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: issue.Revision, Run: &data})), "event_revision": issue.Revision, "recorded_at": hubapi.FormatHubTime(row.StartedAt)})
 	}
 	execution := source
-	execution.add("machines", map[string]any{"id": lease.MachineID, "hostname": "example-host", "display_name": "Example host", "capacity": 2, "version": "test", "sprite_name": "", "last_heartbeat_at": formatHubTime(lease.AcquiredAt), "registered_at": formatHubTime(lease.AcquiredAt), "updated_at": formatHubTime(row.UpdatedAt)})
-	execution.add("leases", map[string]any{"fencing_token": lease.FencingToken, "lease_id": lease.ID, "issue_id": 41, "machine_id": lease.MachineID, "session_id": lease.SessionID, "work_item_revision": row.WorkItemRevision, "landing_capacity": 0, "acquired_at": formatHubTime(lease.AcquiredAt), "renewed_at": formatHubTime(lease.RenewedAt), "expires_at": formatHubTime(lease.ExpiresAt), "released_at": formatHubTime(row.UpdatedAt)})
+	execution.add("machines", map[string]any{"id": lease.MachineID, "hostname": "example-host", "display_name": "Example host", "capacity": 2, "version": "test", "sprite_name": "", "last_heartbeat_at": hubapi.FormatHubTime(lease.AcquiredAt), "registered_at": hubapi.FormatHubTime(lease.AcquiredAt), "updated_at": hubapi.FormatHubTime(row.UpdatedAt)})
+	execution.add("leases", map[string]any{"fencing_token": lease.FencingToken, "lease_id": lease.ID, "issue_id": 41, "machine_id": lease.MachineID, "session_id": lease.SessionID, "work_item_revision": row.WorkItemRevision, "landing_capacity": 0, "acquired_at": hubapi.FormatHubTime(lease.AcquiredAt), "renewed_at": hubapi.FormatHubTime(lease.RenewedAt), "expires_at": hubapi.FormatHubTime(lease.ExpiresAt), "released_at": hubapi.FormatHubTime(row.UpdatedAt)})
 	execution.add("lease_policies", map[string]any{"lease_id": lease.ID, "scope": string(target.project.OrganizationID) + "/" + string(target.project.ID), "policy_id": run.PolicyID})
 	for sequence := int64(1); sequence <= run.Sequence; sequence++ {
 		execution.add("native_attempt_events", map[string]any{"attempt_id": run.AttemptID, "sequence": sequence, "request_hash": fmt.Sprintf("%064x", sequence)})
 	}
-	execution.add("native_attempts", map[string]any{"id": run.AttemptID, "project_id": target.project.ID, "work_item_id": issue.WorkItemID, "lease_id": run.LeaseID, "fencing_token": run.FencingToken, "run_id": run.RunID, "sequence": run.Sequence, "status": row.Status, "work_item_revision": row.WorkItemRevision, "dispatch_generation": row.DispatchGeneration, "data_json": string(historyTestJSON(t, run)), "checkpoint_json": string(historyTestJSON(t, checkpointPayload{Checkpoint: nativeTestCheckpoint()})), "artifact_ids_json": "[]", "started_at": formatHubTime(row.StartedAt), "updated_at": formatHubTime(row.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
+	execution.add("native_attempts", map[string]any{"id": run.AttemptID, "project_id": target.project.ID, "work_item_id": issue.WorkItemID, "lease_id": run.LeaseID, "fencing_token": run.FencingToken, "run_id": run.RunID, "sequence": run.Sequence, "status": row.Status, "work_item_revision": row.WorkItemRevision, "dispatch_generation": row.DispatchGeneration, "data_json": string(historyTestJSON(t, run)), "checkpoint_json": string(historyTestJSON(t, checkpointPayload{Checkpoint: nativeTestCheckpoint()})), "artifact_ids_json": "[]", "started_at": hubapi.FormatHubTime(row.StartedAt), "updated_at": hubapi.FormatHubTime(row.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
 	workSource := CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: target.project.OrganizationID, ProjectID: target.project.ID, Objects: store}
 	for range 2 {
 		count, err := ImportCoreWorkItems(t.Context(), repository, workSource)

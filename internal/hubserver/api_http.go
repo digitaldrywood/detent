@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -15,29 +14,8 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/chat"
-	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspacesession"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
-
-const maxAPIRequestBodyBytes = 1 << 20
-
-const maxChangeVersionRequestBytes = 28 << 20
-
-// maxAttemptDiffRequestBytes bounds the one endpoint whose body is legitimately
-// larger than every other: a stored attempt diff carries the patches
-// themselves, and the attempt diff contract bounds those at tracker.MaxDiffBytes.
-// The allowance is that bound at the worst case of JSON string escaping plus
-// room for the framing, so a diff the contract accepts is never refused by the
-// transport instead. The factor is six because an encoder writes <, >, & and
-// every control byte as a six-byte \uXXXX sequence, and a patch of HTML or
-// generated code can be dense with them.
-const maxAttemptDiffRequestBytes = 6*tracker.MaxDiffBytes + (1 << 20)
-
-// maxActionRunReportBytes bounds a runner's action run report, which carries
-// the run's whole output up to workspacesession.MaxExecOutputBytes, with the
-// same six-fold escaping allowance: coloured build output is dense with ESC.
-const maxActionRunReportBytes = 6*workspacesession.MaxExecOutputBytes + (1 << 20)
 
 func (s *Service) registerRoutes(e *echo.Echo) {
 	e.Pre(s.timeWriterUse)
@@ -59,7 +37,7 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 		}
 		e.Use(s.hostedBoundary)
 	}
-	e.GET("/health", s.health, s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
+	e.GET("/health", s.health, s.requireAPIScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator, hubapi.APIScopeAdmin))
 	s.registerNativeRoutes(e)
 	s.registerArtifactCatalogRoutes(e)
 	s.registerProjectSecretRoutes(e)
@@ -77,85 +55,13 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 }
 
 func (s *Service) postgresFeatureUnavailable(c echo.Context) error {
-	return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "storage_owner_unavailable", Message: "This Hub feature is unavailable with PostgreSQL storage"})
-}
-
-func decodeAPIJSON(c echo.Context, target any) error {
-	if c == nil || c.Request() == nil {
-		return errors.New("request is required")
-	}
-	request := c.Request()
-	request.Body = http.MaxBytesReader(c.Response(), request.Body, apiRequestBodyLimit(c))
-	decoder := json.NewDecoder(request.Body)
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
-	if !ok || credential.Scope != apiScopeWorker || !strings.HasSuffix(c.Path(), "/heartbeat") {
-		decoder.DisallowUnknownFields()
-	}
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("request body must contain one JSON value")
-		}
-		return err
-	}
-	return nil
-}
-
-// apiRequestBodyLimit is how many bytes this route's body may carry.
-func apiRequestBodyLimit(c echo.Context) int64 {
-	if c.Path() == nativeBase+"/conversations/:conversation/actions" {
-		return 4 * coordinatorWorkflowArgumentBytes
-	}
-	if limit := SharedEntryRequestBodyLimit(c.Request().Method, c.Path()); limit > cloudassert.MaxBodyBytes {
-		return limit
-	}
-	if c.Path() == nativeBase+"/work-items/:item/source-intake" || c.Path() == nativeBase+"/onboarding/issue-intake/result" {
-		return 64 << 20
-	}
-	if c.Path() == nativeBase+"/workspaces/:workspace/worker/action-runs" {
-		return maxActionRunReportBytes
-	}
-	return maxAPIRequestBodyBytes
-}
-
-func SharedEntryRequestBodyLimit(method, path string) int64 {
-	if method != http.MethodPost {
-		return cloudassert.MaxBodyBytes
-	}
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	if len(parts) > 2 && parts[0] == "organizations" {
-		parts = parts[2:]
-	}
-	for _, part := range parts {
-		if part == "" || part == "." || part == ".." {
-			return cloudassert.MaxBodyBytes
-		}
-	}
-	if len(parts) < 6 || parts[0] != "api" || parts[1] != "v2" || parts[2] != "organizations" || parts[4] != "projects" {
-		return cloudassert.MaxBodyBytes
-	}
-	if len(parts) == 9 && parts[6] == "work-items" && parts[8] == "events" {
-		return 8 * maxAPIRequestBodyBytes
-	}
-	if len(parts) == 13 && parts[6] == "work-items" && parts[8] == "changes" && parts[10] == "versions" && parts[12] == "landing" {
-		return maxChangeVersionRequestBytes
-	}
-	if len(parts) == 11 && parts[6] == "work-items" && parts[8] == "changes" && parts[10] == "versions" {
-		return maxChangeVersionRequestBytes
-	}
-	if (len(parts) == 9 && parts[8] == "diff" || len(parts) == 10 && parts[8] == "diff" && parts[9] == "check") && parts[6] == "attempts" {
-		return maxAttemptDiffRequestBytes
-	}
-	return cloudassert.MaxBodyBytes
+	return c.JSON(http.StatusServiceUnavailable, hubapi.APIErrorResponse{Code: "storage_owner_unavailable", Message: "This Hub feature is unavailable with PostgreSQL storage"})
 }
 
 func (s *Service) invalidAPIRequest(c echo.Context, err error) error {
 	var maxBytesError *http.MaxBytesError
 	if errors.As(err, &maxBytesError) {
-		return s.refusedAPIError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body is too large", apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
+		return s.refusedAPIError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body is too large", hubapi.APIErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
 	}
 	message, reason := "Request body is invalid", "Malformed JSON request body"
 	if strings.HasPrefix(err.Error(), "json: unknown field ") {
@@ -168,14 +74,14 @@ func (s *Service) invalidAPIRequest(c echo.Context, err error) error {
 			reason = "Request body contains an invalid field type"
 		}
 	}
-	return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_request", reason, apiErrorResponse{Code: "invalid_request", Message: message})
+	return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_request", reason, hubapi.APIErrorResponse{Code: "invalid_request", Message: message})
 }
 
 func (s *Service) internalAPIError(c echo.Context, code string, message string, err error) error {
 	attributes := append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)
 	attributes = append(attributes, postgresErrorAttributes(err)...)
 	s.config.Logger.Error(message, attributes...)
-	return c.JSON(http.StatusInternalServerError, apiErrorResponse{Code: code, Message: message})
+	return c.JSON(http.StatusInternalServerError, hubapi.APIErrorResponse{Code: code, Message: message})
 }
 
 func postgresErrorAttributes(err error) []any {
@@ -246,13 +152,13 @@ func apiTTL(seconds int64) (time.Duration, error) {
 }
 
 func (s *Service) outboxHealth(c echo.Context) error {
-	limit, err := parsePageLimit(c.QueryParam("limit"))
+	limit, err := hubapi.ParsePageLimit(c.QueryParam("limit"))
 	if err != nil {
-		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_query", "limit must be between 1 and 200", apiErrorResponse{Code: "invalid_query", Message: "limit must be between 1 and 200"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_query", "limit must be between 1 and 200", hubapi.APIErrorResponse{Code: "invalid_query", Message: "limit must be between 1 and 200"})
 	}
 	cursor, err := decodeTimelineCursor(c.QueryParam("cursor"))
 	if err != nil {
-		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_cursor", "Outbox cursor is invalid", apiErrorResponse{Code: "invalid_cursor", Message: "Outbox cursor is invalid"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_cursor", "Outbox cursor is invalid", hubapi.APIErrorResponse{Code: "invalid_cursor", Message: "Outbox cursor is invalid"})
 	}
 	response, err := s.readOutboxHealthPage(c.Request().Context(), limit, cursor)
 	if err != nil {

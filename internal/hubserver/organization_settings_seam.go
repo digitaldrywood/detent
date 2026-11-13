@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/orgsettings"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -27,7 +28,7 @@ type cloudModelSelectionRequest = orgsettings.ModelRequest
 func (s *Service) organizationSettingsService(scope nativeScope) *orgsettings.Service {
 	deps := orgsettings.Deps{
 		Repository: s.config.TenantRepository, AccessRepository: s.config.AccessRepository, Details: s.runDetailStore(), Now: s.config.now,
-		RecordError: projectRecordError, Unavailable: ErrProjectParticipants,
+		RecordError: hubapi.ProjectRecordError, Unavailable: hubapi.ErrProjectParticipants,
 		Recheck: func(ctx context.Context) error { return s.recheckProjectRecordMutation(ctx, scope) },
 		Receipt: func(ctx context.Context, operation, key, hash string) (json.RawMessage, bool, error) {
 			return s.changeRecordReceipt(ctx, scope, operation, key, hash)
@@ -66,12 +67,12 @@ func (s *Service) hostedOrganizationName(c echo.Context) error {
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope.requireHostedAdmin = false
 	name, err := s.organizationSettingsService(scope).Name(ctx, s.featureScope(scope))
 	if err != nil {
-		return s.nativeAPIError(c, fromFeatureError(err))
+		return s.nativeAPIError(c, hubapi.FromFeatureError(err))
 	}
 	return c.JSON(http.StatusOK, organizationNameSettings{Name: name})
 }
@@ -85,7 +86,7 @@ func (s *Service) renameHostedOrganization(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "Organization settings require owner or admin access")
 	}
 	var request renameOrganizationRequest
-	if decodeAPIJSON(c, &request) != nil {
+	if hubapi.DecodeAPIJSON(c, &request) != nil {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter an organization name of at most 120 bytes")
 	}
 	request.Name = strings.TrimSpace(request.Name)
@@ -103,41 +104,41 @@ func (s *Service) renameHostedOrganization(c echo.Context) error {
 func (s *Service) renameOrganizationRecord(ctx context.Context, scope nativeScope, request renameOrganizationRequest) (json.RawMessage, error) {
 	scope.requireHostedAdmin = true
 	raw, err := s.organizationSettingsService(scope).Rename(ctx, s.featureScope(scope), request)
-	return raw, fromFeatureError(err)
+	return raw, hubapi.FromFeatureError(err)
 }
 
 func organizationVisibleReader(r tenantstore.Reader) (projectstore.OrganizationReader, error) {
-	return orgsettings.New(orgsettings.Deps{Unavailable: ErrProjectParticipants}).VisibleReader(r)
+	return orgsettings.New(orgsettings.Deps{Unavailable: hubapi.ErrProjectParticipants}).VisibleReader(r)
 }
 
 func organizationVisibleWriter(w tenantstore.Writer) (projectstore.OrganizationWriter, error) {
-	return orgsettings.New(orgsettings.Deps{Unavailable: ErrProjectParticipants}).VisibleWriter(w)
+	return orgsettings.New(orgsettings.Deps{Unavailable: hubapi.ErrProjectParticipants}).VisibleWriter(w)
 }
 
 func (s *Service) readOrganizationRankRecord(ctx context.Context, scope nativeScope) (organizationProjectRank, error) {
 	value, err := s.organizationSettingsService(scope).ReadRank(ctx, s.featureScope(scope))
-	return value, fromFeatureError(err)
+	return value, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) updateOrganizationRankRecord(ctx context.Context, scope nativeScope, change projectRankChange) (any, error) {
 	scope.requireHostedAdmin = true
 	value, err := s.organizationSettingsService(scope).UpdateRank(ctx, s.featureScope(scope), change)
-	return value, fromFeatureError(err)
+	return value, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) readOrganizationModels(ctx context.Context, organization tracker.OrganizationID) (cloudModelSelection, error) {
 	value, err := s.organizationSettingsService(nativeScope{organization: organization}).ReadModels(ctx, organization)
-	return value, fromFeatureError(err)
+	return value, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) organizationModelsFromRecord(ctx context.Context, organization tracker.OrganizationID, row policystore.OrganizationModels) (cloudModelSelection, error) {
 	value, err := s.organizationSettingsService(nativeScope{organization: organization}).ModelsFromRecord(ctx, organization, row)
-	return value, fromFeatureError(err)
+	return value, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) updateOrganizationModelRecord(ctx context.Context, scope nativeScope, operation string, request cloudModelSelectionRequest) (json.RawMessage, error) {
 	raw, err := s.organizationSettingsService(scope).UpdateModels(ctx, s.featureScope(scope), operation, request)
-	return raw, fromFeatureError(err)
+	return raw, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) organizationLogoScope(c echo.Context) (nativeScope, error) {
@@ -165,7 +166,7 @@ func (s *Service) setOrganizationLogo(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	var request setOrganizationLogoRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	raw, err := s.setOrganizationLogoCommand(c.Request().Context(), scope, request)
@@ -182,12 +183,12 @@ func organizationLogoOperationID(scope nativeScope) string {
 func (s *Service) setOrganizationLogoCommand(ctx context.Context, scope nativeScope, request setOrganizationLogoRequest) (json.RawMessage, error) {
 	scope.project, scope.requireHostedAdmin = "", true
 	raw, err := s.organizationSettingsService(scope).SetLogo(ctx, s.featureScope(scope), request)
-	return raw, fromFeatureError(err)
+	return raw, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) readOrganizationLogoRecord(ctx context.Context, organization tracker.OrganizationID) (organizationLogo, error) {
 	logo, err := s.organizationSettingsService(nativeScope{organization: organization}).ReadLogo(ctx, organization)
-	return logo, fromFeatureError(err)
+	return logo, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) getCurrentOrganizationLogoAttachment(c echo.Context) error {
@@ -213,7 +214,7 @@ func (s *Service) getOrganizationLogoAttachment(c echo.Context) error {
 func (s *Service) organizationLogoAttachment(c echo.Context, scope nativeScope, id string) error {
 	metadata, err := s.organizationSettingsService(scope).LogoAttachment(c.Request().Context(), s.featureScope(scope), id)
 	if err != nil {
-		return s.nativeAPIError(c, fromFeatureError(err))
+		return s.nativeAPIError(c, hubapi.FromFeatureError(err))
 	}
 	metadata.AuthorizedPrincipal = scope.credential.ID
 	return c.JSON(http.StatusOK, metadata)

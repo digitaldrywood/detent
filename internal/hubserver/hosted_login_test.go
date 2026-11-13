@@ -16,6 +16,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 func TestHostedLoginCallbackProtection(t *testing.T) {
@@ -49,7 +50,7 @@ func TestHostedLoginCallbackProtection(t *testing.T) {
 			case "missing cookie":
 				cookies = nil
 			case "expired transaction":
-				hostedLoginExec(t, s, "UPDATE hosted_transactions SET expires_at = $1", formatHubTime(time.Now().Add(-time.Hour)))
+				hostedLoginExec(t, s, "UPDATE hosted_transactions SET expires_at = $1", hubapi.FormatHubTime(time.Now().Add(-time.Hour)))
 			case "missing verifier":
 				hostedLoginExec(t, s, "UPDATE hosted_transactions SET verifier = ''")
 			case "provider error callback":
@@ -274,7 +275,7 @@ func TestHostedLoginInvitationEmailEntry(t *testing.T) {
 			p.sessions[p.identity.Hosted.SessionID] = *p.identity.Hosted
 			p.memberships = append(p.memberships, hostedLoginMembership(p.identity.Subject, "org_provider_login", "member"))
 			p.invitation = auth.Invitation{ID: "invitation_email", Email: p.identity.Email, OrganizationID: "org_provider_login", State: "pending", ExpiresAt: time.Now().Add(time.Hour)}
-			hostedLoginExec(t, s, "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,accepted_user_id,expires_at) VALUES ($1,$2,$3,$4,$5,'',$5::timestamptz + interval '1 day')", p.invitation.ID, p.identity.Email, "org_local_login", "member", formatHubTime(time.Now()))
+			hostedLoginExec(t, s, "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,accepted_user_id,expires_at) VALUES ($1,$2,$3,$4,$5,'',$5::timestamptz + interval '1 day')", p.invitation.ID, p.identity.Email, "org_local_login", "member", hubapi.FormatHubTime(time.Now()))
 			switch tt.name {
 			case "wrong recipient login":
 				p.identity.Email = "different@example.test"
@@ -643,7 +644,7 @@ func TestHostedLoginLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 			}
 			token := hostedLoginSession(t, s, p, identity)
 			if tt.name == "expired local session" {
-				hostedLoginExec(t, s, "UPDATE hosted_sessions SET expires_at = $1", formatHubTime(time.Now().Add(-time.Minute)))
+				hostedLoginExec(t, s, "UPDATE hosted_sessions SET expires_at = $1", hubapi.FormatHubTime(time.Now().Add(-time.Minute)))
 				if _, err := s.hostedSessions.Authenticate(t.Context(), token); !errors.Is(err, auth.ErrInvalidSession) {
 					t.Fatalf("expired local session authenticated before logout: %v", err)
 				}

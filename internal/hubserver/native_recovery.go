@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -16,7 +17,7 @@ import (
 
 func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, item string, projected ...bool) (tracker.NativeRecovery, error) {
 	ctx = s.contentContext(s.runDetailContext(ctx))
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	return s.readNativeRecoveryTenant(ctx, scope, item)
 }
@@ -36,7 +37,7 @@ func recoveryRecordFragment(page *tracker.NativeRecoveryPage, content []byte, of
 	digest := sha256.Sum256(content)
 	sha := hex.EncodeToString(digest[:])
 	if offset < 0 || offset >= int64(len(content)) || expectedDigest != "" && expectedDigest != sha {
-		return nativeConflict(0)
+		return hubapi.NativeConflict(0)
 	}
 	end := min(offset+(64<<10), int64(len(content)))
 	page.Offset, page.TotalBytes, page.SHA256, page.Data = offset, int64(len(content)), sha, content[offset:end]
@@ -116,7 +117,7 @@ func (s *Service) fitNativeRecovery(ctx context.Context, scope nativeScope, path
 	if ok, err := fits(); ok || err != nil {
 		return err
 	}
-	return nativePublicInvalid("Required recovery metadata exceeds the bounded response")
+	return hubapi.NativePublicInvalid("Required recovery metadata exceeds the bounded response")
 }
 
 func projectNativeRecovery(result *tracker.NativeRecovery) error {

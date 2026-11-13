@@ -5,15 +5,16 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (tokenResponse, error) {
+func (s *Service) createAPITokenFor(ctx context.Context, request hubapi.TokenRequest) (hubapi.TokenResponse, error) {
 	return s.createAccessToken(ctx, request)
 }
 
-func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (tokenResponse, error) {
+func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (hubapi.TokenResponse, error) {
 	return s.rotateAccessToken(ctx, id)
 }
 
@@ -43,9 +44,9 @@ func (s *Service) grantNativeTokenFor(ctx context.Context, id, organization, pro
 
 func (s *Service) createNativeOrganizationFor(ctx context.Context, name string) (nativeOrganization, error) {
 	if strings.TrimSpace(name) == "" || len(name) > 200 {
-		return nativeOrganization{}, nativePublicInvalid("Organization name is required")
+		return nativeOrganization{}, hubapi.NativePublicInvalid("Organization name is required")
 	}
-	organization := nativeOrganization{ID: tracker.OrganizationID(newNativeID("org")), Name: name}
+	organization := nativeOrganization{ID: tracker.OrganizationID(hubapi.NewID("org")), Name: name}
 	organization.Slug = strings.ReplaceAll(string(organization.ID), "_", "-")
 	secret, audit, err := newNativeCursorSecret(s.config, organization.ID)
 	if err != nil {

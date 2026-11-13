@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/diffbody"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -24,21 +25,21 @@ func diffBodyService(c echo.Context) bool {
 }
 
 func (s *Service) attemptDiffBodyExists(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	if !diffBodyService(c) {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	var input struct {
 		Key string `json:"key"`
 	}
-	if err := decodeAPIJSON(c, &input); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &input); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	claims, _ := hostedSharedClaims(c)
 	parts := strings.Split(input.Key, "/")
 	if len(parts) != 7 || parts[1] != claims.Audience {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	exists, err := s.manifestDiffBodyExists(ctx, input.Key)
 	if err != nil {

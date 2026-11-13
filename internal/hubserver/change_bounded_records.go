@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -45,7 +46,7 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope
 		if err != nil {
 			return err
 		}
-		if row.ProjectID != scope.project || row.Revision != int64(change.Revision) || valueOrEmpty(row.CurrentVersionID) != change.CurrentVersion {
+		if row.ProjectID != scope.project || row.Revision != int64(change.Revision) || hubapi.ValueOrEmpty(row.CurrentVersionID) != change.CurrentVersion {
 			return corestore.ErrRevisionConflict
 		}
 		if change.CurrentVersion != "" {
@@ -61,7 +62,7 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope
 		return err
 	})
 	if err != nil {
-		return result, projectRecordError(err)
+		return result, hubapi.ProjectRecordError(err)
 	}
 	selection := boundedChangeRecordCursor{changeReadCursor: changeReadCursor{Change: change.ID, Head: change.CurrentVersion, Version: selected.ID, Section: args.Section}, Organization: scope.organization, Project: scope.project, Item: tracker.NativeWorkItemID(args.ItemID), Revision: change.Revision, EvidenceSequence: row.EvidenceSequence}
 	if args.Cursor != "" {
@@ -79,7 +80,7 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope
 				return err
 			})
 			if err != nil {
-				return result, projectRecordError(err)
+				return result, hubapi.ProjectRecordError(err)
 			}
 		}
 	}
@@ -199,7 +200,7 @@ func (s *Service) readExactChangeVersionRecord(ctx context.Context, scope native
 	}
 	row, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, versionID)
 	if err != nil {
-		return tracker.ChangeVersion{}, projectRecordError(err)
+		return tracker.ChangeVersion{}, hubapi.ProjectRecordError(err)
 	}
 	version, err := s.hydrateChangeVersion(ctx, scope, change.WorkItemID, row)
 	if err != nil {
@@ -228,7 +229,7 @@ func (s *Service) recheckChangeReadAuthority(ctx context.Context, scope nativeSc
 			if err != nil {
 				return err
 			}
-			if member.UserID != "" && lesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
+			if member.UserID != "" && hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
 				return auth.ErrHostedIdentity
 			}
 		}
@@ -249,7 +250,7 @@ func (s *Service) readChangeRecordSection(ctx context.Context, scope nativeScope
 		return err
 	})
 	if err != nil {
-		return operatortool.ChangeReadPage{}, projectRecordError(err)
+		return operatortool.ChangeReadPage{}, hubapi.ProjectRecordError(err)
 	}
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	count := len(evidence)
@@ -303,7 +304,7 @@ func (s *Service) readChangeRecordSection(ctx context.Context, scope nativeScope
 			if row.OrganizationID != scope.organization || row.ChangeID != cursor.Change {
 				return operatortool.ChangeReadPage{}, eventstore.ErrInvalidRecord
 			}
-			matches := row.Kind == strings.TrimSuffix(cursor.Section, "s") && (valueOrEmpty(row.VersionID) == cursor.Version || cursor.Section == "discussion" && valueOrEmpty(row.VersionID) == "")
+			matches := row.Kind == strings.TrimSuffix(cursor.Section, "s") && (hubapi.ValueOrEmpty(row.VersionID) == cursor.Version || cursor.Section == "discussion" && hubapi.ValueOrEmpty(row.VersionID) == "")
 			if !matches {
 				if cursor.Offset > 0 {
 					return operatortool.ChangeReadPage{}, mutation.ErrConflict
@@ -379,7 +380,7 @@ func appendBoundedChangeEvidence(detail *tracker.ChangeDetail, row eventstore.Ev
 	switch row.Kind {
 	case "review":
 		var value tracker.ChangeReview
-		if json.Unmarshal(raw, &value) != nil || value.ID == "" || value.VersionID != valueOrEmpty(row.VersionID) || value.Decision != row.Decision || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(value.CreatedAt, row.CreatedAt) {
+		if json.Unmarshal(raw, &value) != nil || value.ID == "" || value.VersionID != hubapi.ValueOrEmpty(row.VersionID) || value.Decision != row.Decision || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(value.CreatedAt, row.CreatedAt) {
 			return eventstore.ErrInvalidRecord
 		}
 		if row.ReviewKind != "" {
@@ -401,13 +402,13 @@ func appendBoundedChangeEvidence(detail *tracker.ChangeDetail, row eventstore.Ev
 		detail.Reviews = append(detail.Reviews, value)
 	case "check":
 		var value tracker.ChangeCheck
-		if json.Unmarshal(raw, &value) != nil || value.VersionID != valueOrEmpty(row.VersionID) || value.CheckRunID != valueOrEmpty(row.SourceKey) || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(value.ReceivedAt, row.CreatedAt) {
+		if json.Unmarshal(raw, &value) != nil || value.VersionID != hubapi.ValueOrEmpty(row.VersionID) || value.CheckRunID != hubapi.ValueOrEmpty(row.SourceKey) || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(value.ReceivedAt, row.CreatedAt) {
 			return eventstore.ErrInvalidRecord
 		}
 		detail.Checks = append(detail.Checks, value)
 	case "discussion":
 		var value tracker.ChangeDiscussion
-		if json.Unmarshal(raw, &value) != nil || value.ID == "" || value.VersionID != valueOrEmpty(row.VersionID) || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(value.CreatedAt, row.CreatedAt) {
+		if json.Unmarshal(raw, &value) != nil || value.ID == "" || value.VersionID != hubapi.ValueOrEmpty(row.VersionID) || value.Actor.Kind != row.ActorKind || value.Actor.PrincipalID != row.ActorPrincipalID || !sameTypedEvidenceTime(value.CreatedAt, row.CreatedAt) {
 			return eventstore.ErrInvalidRecord
 		}
 		detail.Discussion = append(detail.Discussion, value)
@@ -453,7 +454,7 @@ func (s *Service) readBoundedChangeSummary(ctx context.Context, scope nativeScop
 		return err
 	})
 	if err != nil {
-		return tracker.ChangeSummary{}, projectRecordError(err)
+		return tracker.ChangeSummary{}, hubapi.ProjectRecordError(err)
 	}
 	approved, err := hydrateChangeSummaryPolicy(ctx, content, scope, rows)
 	if err != nil {
@@ -461,7 +462,7 @@ func (s *Service) readBoundedChangeSummary(ctx context.Context, scope nativeScop
 	}
 
 	for _, row := range evidence {
-		if row.ChangeID != change.ID || row.OrganizationID != scope.organization || valueOrEmpty(row.VersionID) != current.ID || row.Sequence > through {
+		if row.ChangeID != change.ID || row.OrganizationID != scope.organization || hubapi.ValueOrEmpty(row.VersionID) != current.ID || row.Sequence > through {
 			return tracker.ChangeSummary{}, eventstore.ErrInvalidRecord
 		}
 		raw, err := content.Evidence(ctx, row)
@@ -496,7 +497,7 @@ func (s *Service) readBoundedChangePushes(ctx context.Context, scope nativeScope
 				return err
 			})
 			if err != nil {
-				return nil, projectRecordError(err)
+				return nil, hubapi.ProjectRecordError(err)
 			}
 		}
 		for _, row := range events {
@@ -515,7 +516,7 @@ func (s *Service) readBoundedChangePushes(ctx context.Context, scope nativeScope
 			if checkpoint.ExternalEffect != "git_push" || checkpoint.EffectState != "confirmed" || checkpoint.Change == nil || *checkpoint.Change != reference {
 				continue
 			}
-			if checkpoint.HeadSHA != version.HeadSHA || !validNativeID(checkpoint.EffectID, "effect") || run.AttemptID != row.AttemptID || run.RunID != row.RunID {
+			if checkpoint.HeadSHA != version.HeadSHA || !hubapi.ValidID(checkpoint.EffectID, "effect") || run.AttemptID != row.AttemptID || run.RunID != row.RunID {
 				break
 			}
 			valid := false
@@ -529,7 +530,7 @@ func (s *Service) readBoundedChangePushes(ctx context.Context, scope nativeScope
 				return err
 			})
 			if err != nil {
-				return nil, projectRecordError(err)
+				return nil, hubapi.ProjectRecordError(err)
 			}
 			if valid {
 				snapshot, err := s.readNativeAttemptSnapshotTenant(ctx, scope, item, run.AttemptID)

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -23,7 +24,7 @@ import (
 )
 
 func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if operatortool.IsModelSelection(call.Name) {
 		return e.readModelSelection(ctx, call)
@@ -110,7 +111,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		value, err = s.projectRepositoryFreshness(ctx, scope)
 	case "project_setup":
 		if s.config.Hosted == nil {
-			return operatortool.Result{}, errProjectServiceUnavailable
+			return operatortool.Result{}, hubapi.ErrProjectServiceUnavailable
 		}
 		url := s.hostedPath("/settings/projects")
 		steps := []string{"Create or select a project", "Configure repository, provider credentials and runner in the authenticated browser", "Inspect onboarding and approve its exact policy"}
@@ -123,7 +124,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 			Credentials string   `json:"credentials"`
 		}{url, steps, "Configure credentials in the existing browser setup form; tools never accept or return secret values"}
 	default:
-		return operatortool.Result{}, errProjectServiceUnavailable
+		return operatortool.Result{}, hubapi.ErrProjectServiceUnavailable
 	}
 	if err != nil {
 		return operatortool.Result{}, projectToolError(err)
@@ -139,7 +140,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	if call.Name == "get_project_policy" {
 		view, ok := value.(projectPolicyRead)
 		if !ok {
-			return operatortool.Result{}, errProjectServiceUnavailable
+			return operatortool.Result{}, hubapi.ErrProjectServiceUnavailable
 		}
 		page.Data = json.RawMessage(`{}`)
 		envelope, err := json.Marshal(page)
@@ -203,7 +204,7 @@ func boundedProjectPolicyHistory(approval projectPolicyRead, budget int) (projec
 		}
 	}
 	if len(raw) > budget {
-		return approval, errProjectServiceUnavailable
+		return approval, hubapi.ErrProjectServiceUnavailable
 	}
 	approval.History, approval.HistoryNext = nil, ""
 	for i, entry := range history {
@@ -220,7 +221,7 @@ func boundedProjectPolicyHistory(approval projectPolicyRead, budget int) (projec
 		}
 		if len(raw) > budget {
 			if i == 0 {
-				return approval, errProjectServiceUnavailable
+				return approval, hubapi.ErrProjectServiceUnavailable
 			}
 			approval.History = approval.History[:i]
 			approval.HistoryNext = previousNext
@@ -306,7 +307,7 @@ func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadR
 }
 
 func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r operatortool.ProjectReadRequest) (operatorProjectPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil {
 		return operatorProjectPage{}, operatortool.ErrServiceUnavailable
@@ -314,18 +315,18 @@ func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r 
 	return s.operatorProjectListHosted(ctx, scope, r)
 }
 
-func projectAccessFilter(credential apiCredential, project tracker.ProjectID, after tracker.ProjectID, limit int) accessstore.ProjectAccessFilter {
+func projectAccessFilter(credential hubapi.APICredential, project tracker.ProjectID, after tracker.ProjectID, limit int) accessstore.ProjectAccessFilter {
 	return hubauth.ProjectFilter(authCredential(credential), project, after, limit)
 }
 
-func (s *Service) grantedAccessProjects(ctx context.Context, r accessstore.Reader, organization tracker.OrganizationID, credential apiCredential, projects []accessstore.ProjectAccess) ([]accessstore.ProjectAccess, error) {
+func (s *Service) grantedAccessProjects(ctx context.Context, r accessstore.Reader, organization tracker.OrganizationID, credential hubapi.APICredential, projects []accessstore.ProjectAccess) ([]accessstore.ProjectAccess, error) {
 	if credential.EntryKey != nil || credential.HostedKeyKind != "service" {
 		return projects, nil
 	}
 	granted := make([]accessstore.ProjectAccess, 0, len(projects))
 	for _, project := range projects {
 		err := s.authorizeAccessScope(ctx, r, nativeScope{organization: organization, project: project.ProjectID, credential: credential}, false)
-		if errors.Is(err, accessstore.ErrDenied) || isNativeNotFound(err) {
+		if errors.Is(err, accessstore.ErrDenied) || hubapi.IsNativeNotFound(err) {
 			continue
 		}
 		if err != nil {
@@ -336,7 +337,7 @@ func (s *Service) grantedAccessProjects(ctx context.Context, r accessstore.Reade
 	return granted, nil
 }
 
-func hostedSubject(credential apiCredential) string {
+func hostedSubject(credential hubapi.APICredential) string {
 	if credential.Hosted == nil || credential.EntryKey != nil && credential.EntryKey.Kind == "service" {
 		return ""
 	}
@@ -360,7 +361,7 @@ func (s *Service) operatorProjectListHosted(ctx context.Context, scope nativeSco
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
 		if !ok {
-			return ErrProjectParticipants
+			return hubapi.ErrProjectParticipants
 		}
 		var err error
 		rows, err = pageReader.ProjectAccessPage(ctx, filter)
@@ -407,7 +408,7 @@ func (s *Service) readHostedProjectRecord(ctx context.Context, scope nativeScope
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
 		if !ok {
-			return ErrProjectParticipants
+			return hubapi.ErrProjectParticipants
 		}
 		rows, err := pageReader.ProjectAccessPage(ctx, filter)
 		if err != nil {
@@ -419,11 +420,11 @@ func (s *Service) readHostedProjectRecord(ctx context.Context, scope nativeScope
 		record, err = reader.ProjectRecord(ctx, scope.project)
 		return err
 	})
-	return record, projectRecordError(err)
+	return record, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) readCutoverReceipt(ctx context.Context, scope nativeScope) (CutoverReceipt, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil {
 		return CutoverReceipt{}, operatortool.ErrServiceUnavailable
@@ -434,7 +435,7 @@ func (s *Service) readCutoverReceipt(ctx context.Context, scope nativeScope) (Cu
 			return err
 		}
 		if _, err := r.ProjectRecord(ctx, scope.project); err != nil {
-			return projectRecordError(err)
+			return hubapi.ProjectRecordError(err)
 		}
 		reader, ok := r.(postgres.CutoverReader)
 		if !ok {
@@ -467,7 +468,7 @@ type projectImportRecordPage struct {
 }
 
 func (s *Service) readProjectImportRecords(ctx context.Context, scope nativeScope, r operatortool.ProjectReadRequest) (projectImportRecordPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	result := projectImportRecordPage{Records: []GitHubImportRecord{}}
 	if r.ImportID == "" {

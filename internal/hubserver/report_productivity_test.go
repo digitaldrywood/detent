@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -896,7 +897,7 @@ func BenchmarkOrganizationProductivity(b *testing.B) {
 	org := f.organization
 	content := eventstore.NewContent(f.details)
 	projects := []string{string(project)}
-	token := newNativeID("productivity_benchmark")
+	token := hubapi.NewID("productivity_benchmark")
 	if err := f.repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessCredential(ctx, accessstore.Credential{OrganizationID: org, ID: token, Name: "Example report reader", Hash: apikey.HashToken(token), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err

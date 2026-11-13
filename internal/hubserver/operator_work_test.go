@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -956,7 +957,7 @@ func TestHubMCPCompatibilityCommands(t *testing.T) {
 		f := newNativeFixture(t, nil, "", "compatibility authority")
 		service := f.service
 		organization := f.project.OrganizationID
-		project := tracker.ProjectID(newNativeID("prj"))
+		project := tracker.ProjectID(hubapi.NewID("prj"))
 		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			stored, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Compatible project", Profile: "github_compatible", RequireDependencies: true}, States: nativeFixtureStates()})
 			if err != nil {
@@ -1061,7 +1062,7 @@ func TestHubMCPCompatibilityCommands(t *testing.T) {
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		owner, ok := w.(projectstore.GitHubOutboxWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		outbound, err = owner.GitHubOutbound(t.Context(), key)
@@ -1166,7 +1167,7 @@ func TestSafeNativeWorkError(t *testing.T) {
 		{name: "linked repository mismatch", setup: func(p *projectstore.Record) { p.Settings.CheckoutRepository = "example-org/other-project" }, request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1"}, message: linkedIssueRepositoryMismatch},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			project := projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: tracker.ProjectID(newNativeID("prj")), Name: "Validation example " + test.name, Profile: "native"}, States: nativeFixtureStates()}
+			project := projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: tracker.ProjectID(hubapi.NewID("prj")), Name: "Validation example " + test.name, Profile: "native"}, States: nativeFixtureStates()}
 			if test.setup != nil {
 				test.setup(&project)
 			}
@@ -1196,7 +1197,7 @@ func TestSafeNativeWorkError(t *testing.T) {
 			caller := scope
 			caller.project = project.Core.ID
 			if test.worker {
-				caller.credential.Scope = apiScopeWorker
+				caller.credential.Scope = hubapi.APIScopeWorker
 			}
 			_, cause := f.service.loadWorkItemPlan(t.Context(), caller, "", "", request)
 			err := safeNativeWorkError(cause)
@@ -1224,7 +1225,7 @@ func TestSafeNativeWorkError(t *testing.T) {
 		name  string
 		cause error
 	}{
-		{"private refusal", nativeInvalid("private refusal diagnostic")},
+		{"private refusal", hubapi.NativeInvalid("private refusal diagnostic")},
 		{"SQL failure", sqlFailure},
 		{"internal failure", errors.New("private database diagnostic")},
 	} {
@@ -1240,7 +1241,7 @@ func TestSafeNativeWorkError(t *testing.T) {
 			if err := service.nativeAPIError(context, test.cause); err != nil {
 				t.Fatal(err)
 			}
-			var failure apiErrorResponse
+			var failure hubapi.APIErrorResponse
 			decodeHubResponse(t, response, &failure)
 			want := "Native operation could not be completed"
 			if test.name == "private refusal" {

@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
@@ -22,13 +24,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 type batchFixture struct {
@@ -2098,7 +2100,7 @@ func bindBatchTenant(t *testing.T, f *batchFixture, hosted *HostedConfig) {
 func seedBatchServiceKey(t *testing.T, f *batchFixture, ttl ...time.Duration) string {
 	t.Helper()
 	credential := f.scope(t).credential
-	token := newNativeID("service_token")
+	token := hubapi.NewID("service_token")
 	id := "service_" + string(f.project.ID)
 	now := f.service.config.now()
 	lifetime := 24 * time.Hour
@@ -2164,7 +2166,7 @@ func (f *batchFixture) workerPreview(t *testing.T) {
 func seedBatchExpiringKey(t *testing.T, f *batchFixture, ttl time.Duration) string {
 	t.Helper()
 	credential := f.scope(t).credential
-	token := newNativeID("expiring_token")
+	token := hubapi.NewID("expiring_token")
 	id := "expiring_" + string(f.project.ID)
 	now := f.service.config.now()
 	expires := now.Add(ttl)

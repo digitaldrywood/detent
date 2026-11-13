@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -642,7 +643,7 @@ func canonicalCoreVersionLanding(ctx context.Context, target interface {
 	err := target.ReadRecords(ctx, expected.OrganizationID, corestore.Background, func(r eventstore.Reader) error {
 		owner, ok := r.(eventstore.VersionLandingReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		stored, err = owner.VersionLanding(ctx, expected.ChangeID, expected.VersionID)

@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -81,7 +82,7 @@ func (s *Service) accessMemberGrants(ctx context.Context) (map[string][]hostedMe
 }
 
 func (s *Service) accessInvitationView(ctx context.Context, r accessstore.Reader, row accessstore.Invitation) (hostedInvitationView, error) {
-	view := hostedInvitationView{ID: row.ID, Email: row.Email, Role: row.Role, CreatedAt: formatHubTime(row.CreatedAt), ExpiresAt: formatHubTime(row.ExpiresAt), Grants: []hostedMemberGrant{}}
+	view := hostedInvitationView{ID: row.ID, Email: row.Email, Role: row.Role, CreatedAt: hubapi.FormatHubTime(row.CreatedAt), ExpiresAt: hubapi.FormatHubTime(row.ExpiresAt), Grants: []hostedMemberGrant{}}
 	var after tracker.ProjectID
 	for {
 		page, err := r.AccessInvitationGrants(ctx, row.ID, after, 200)
@@ -147,7 +148,7 @@ func (s *Service) accessPendingInvitations(ctx context.Context) ([]hostedInvitat
 	}
 }
 
-func (s *Service) changeAccessGrant(ctx context.Context, credential apiCredential, user, project string, write, runner, revoke bool) error {
+func (s *Service) changeAccessGrant(ctx context.Context, credential hubapi.APICredential, user, project string, write, runner, revoke bool) error {
 	scope := nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}
 	if _, _, err := s.hostedMutationIdentity(ctx, credential); err != nil {
 		return err
@@ -193,9 +194,9 @@ func accessMemberMissing(err error) bool {
 	return errors.Is(err, corestore.ErrNotFound) && errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied)
 }
 
-func (s *Service) changeAccessRole(ctx context.Context, credential apiCredential, membership auth.Membership, role string) (hostedMemberView, error) {
+func (s *Service) changeAccessRole(ctx context.Context, credential hubapi.APICredential, membership auth.Membership, role string) (hostedMemberView, error) {
 	if s.config.AccessRepository == nil || credential.Hosted == nil {
-		return hostedMemberView{}, workItemStorageUnavailable()
+		return hostedMemberView{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	scope := nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}
 	currentMember := func(ctx context.Context, r tenantstore.Reader) (accessstore.Member, bool, error) {
@@ -215,7 +216,7 @@ func (s *Service) changeAccessRole(ctx context.Context, credential apiCredential
 			if err != nil {
 				return target, false, operatorAuthorizationError(err)
 			}
-			if !actor.Active || lesserHostedRole(actor.Role, credential.HostedRole) != "owner" {
+			if !actor.Active || hubapi.LesserHostedRole(actor.Role, credential.HostedRole) != "owner" {
 				return target, false, auth.ErrHostedIdentity
 			}
 		}
@@ -230,7 +231,7 @@ func (s *Service) changeAccessRole(ctx context.Context, credential apiCredential
 	if err := s.config.Hosted.Provider.SetMembershipRole(ctx, membership.ID, role); err != nil {
 		return hostedMemberView{}, errors.Join(mutation.ErrUncertain, err)
 	}
-	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubReadTimeout)
+	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
 	defer cancel()
 	if err := s.accessWrite(persist, scope.organization, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(persist); err != nil {
@@ -267,7 +268,7 @@ func (s *Service) accessMemberResponse(ctx context.Context, membership auth.Memb
 	case !member.Active || member.MembershipID != membership.ID:
 		return hostedMemberView{}, auth.ErrHostedIdentity
 	default:
-		membership.Role.Slug = lesserHostedRole(membership.Role.Slug, member.Role)
+		membership.Role.Slug = hubapi.LesserHostedRole(membership.Role.Slug, member.Role)
 		emails[member.UserID] = member.Email
 	}
 	view, err := s.hostedMemberIdentity(ctx, membership, emails)

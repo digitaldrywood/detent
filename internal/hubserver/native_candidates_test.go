@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -26,7 +27,7 @@ func TestPublishedReviewCheckpoint(t *testing.T) {
 			moveDispatchGuardFixture(t, f, "Fixing")
 			item := f.base + "/work-items/" + string(f.issue.WorkItemID)
 			finish := tracker.NativeRunEvent{
-				Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
+				Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1,
 				Data: tracker.NativeRunData{
 					Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "gpt-6-astra"},
 					LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded",
@@ -37,7 +38,7 @@ func TestPublishedReviewCheckpoint(t *testing.T) {
 			input.RunID, input.AttemptID = f.run, f.attempt
 			if test.checkpoint {
 				checkpoint := finish
-				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome, checkpoint.Data.Disposition = "run.checkpointed", newNativeID("checkpoint"), "", nil
+				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome, checkpoint.Data.Disposition = "run.checkpointed", hubapi.NewID("checkpoint"), "", nil
 				checkpoint.Data.Handoff = nativeTestCheckpoint()
 				checkpoint.Data.Handoff.WorktreeState, checkpoint.Data.Handoff.HeadSHA, checkpoint.Data.Handoff.WorkspaceDigest = "clean", input.HeadSHA, strings.Repeat("d", 64)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/events", f.worker, checkpoint), http.StatusOK)

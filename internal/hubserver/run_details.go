@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -90,7 +91,7 @@ func (s *Service) runDetailMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-func decodeRunDetail(ctx context.Context, q nativeQueryer, raw string, result *tracker.NativeRunData) error {
+func decodeRunDetail(ctx context.Context, q hubapi.NativeQueryer, raw string, result *tracker.NativeRunData) error {
 	ctx = payloadQueryContext(ctx, q)
 	var stored storedRun
 	if err := decodeStorageJSON(ctx, []byte(raw), &stored); err != nil {
@@ -140,7 +141,7 @@ func decodeRunDetail(ctx context.Context, q nativeQueryer, raw string, result *t
 	return nil
 }
 
-func decodeRunHistory(ctx context.Context, q nativeQueryer, raw string, result *tracker.CollaborationData) error {
+func decodeRunHistory(ctx context.Context, q hubapi.NativeQueryer, raw string, result *tracker.CollaborationData) error {
 	ctx = payloadQueryContext(ctx, q)
 	if err := decodeStorageJSON(ctx, []byte(raw), result); err != nil {
 		return err
@@ -231,7 +232,7 @@ type checkpointPayload struct {
 
 var errRunDetailStoreUnavailable = fmt.Errorf("run detail store unavailable in this context: %w", errContentStorageUnconfigured)
 
-func readRunDetailSegment(ctx context.Context, q nativeQueryer, detail *runDetailReference) (map[string]tracker.NativeRunData, error) {
+func readRunDetailSegment(ctx context.Context, q hubapi.NativeQueryer, detail *runDetailReference) (map[string]tracker.NativeRunData, error) {
 	if detail.ObjectKey != "" {
 		if !strings.HasPrefix(detail.ObjectKey, "orgs/"+detail.Organization+"/") || detail.AttachmentID != "att_"+artifact.Digest([]byte(detail.Organization + "\n" + detail.ObjectKey))[:32] {
 			return nil, artifact.ErrIntegrity
@@ -266,7 +267,7 @@ func readRunDetailSegment(ctx context.Context, q nativeQueryer, detail *runDetai
 		return runs, nil
 	}
 	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && content.writing {
-		return nil, &claimHydration{run: func(ctx context.Context, q nativeQueryer) error {
+		return nil, &claimHydration{run: func(ctx context.Context, q hubapi.NativeQueryer) error {
 			_, err := readRunDetailSegment(ctx, q, detail)
 			return err
 		}}

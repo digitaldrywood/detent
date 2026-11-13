@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -79,7 +80,7 @@ func TestAPITokensAreHashedScopedRotatableAndRedacted(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("read initial token: %v", err)
 	}
-	if storedHash != apikey.HashToken(adminToken) || fingerprint != tokenFingerprint(storedHash) {
+	if storedHash != apikey.HashToken(adminToken) || fingerprint != hubapi.TokenFingerprint(storedHash) {
 		t.Fatalf("stored token metadata = hash %q fingerprint %q", storedHash, fingerprint)
 	}
 	if strings.Contains(storedHash, adminToken) || strings.Contains(fingerprint, adminToken) {
@@ -112,9 +113,9 @@ func TestAPITokensAreHashedScopedRotatableAndRedacted(t *testing.T) {
 	if createdResponse.Code != http.StatusCreated || createdResponse.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("create token status = %d headers = %v body = %s", createdResponse.Code, createdResponse.Header(), createdResponse.Body.String())
 	}
-	var created tokenResponse
+	var created hubapi.TokenResponse
 	decodeHubResponse(t, createdResponse, &created)
-	if created.Token != workerToken || created.Scope != apiScopeWorker {
+	if created.Token != workerToken || created.Scope != hubapi.APIScopeWorker {
 		t.Fatalf("created token = %#v", created)
 	}
 	if err := service.config.TenantRepository.ReadTenant(t.Context(), service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
@@ -138,7 +139,7 @@ func TestAPITokensAreHashedScopedRotatableAndRedacted(t *testing.T) {
 	if rotatedResponse.Code != http.StatusOK || rotatedResponse.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("rotate token status = %d body = %s", rotatedResponse.Code, rotatedResponse.Body.String())
 	}
-	var rotated tokenResponse
+	var rotated hubapi.TokenResponse
 	decodeHubResponse(t, rotatedResponse, &rotated)
 	if rotated.Token != rotatedToken || rotated.RotatedAt.IsZero() {
 		t.Fatalf("rotated token = %#v", rotated)
@@ -206,7 +207,7 @@ func newRetainedWorkListFixtureWith(t *testing.T, objects *memoryRunDetails) (na
 	clock := &leaseTestClock{value: now}
 	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: clock.Now, RunDetails: objects}), "", "Work list authority")
 	organization := f.project.OrganizationID
-	project := tracker.ProjectID(newNativeID("prj"))
+	project := tracker.ProjectID(hubapi.NewID("prj"))
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Retained work list", Profile: "github_compatible"}, States: nativeFixtureStates()})
 		if err != nil {
@@ -549,7 +550,7 @@ func TestClaimNextAPIAppliesAuthorizationFiltersBeforeClaim(t *testing.T) {
 		{"mallory", "mallory-api-filter-token", "Rejected source", []string{"detent:todo", "hold"}, []string{"worker-b"}},
 		{"Alice", "alice-api-filter-token", "Authorized source", []string{"detent:todo", "backend"}, []string{"worker-a"}},
 	} {
-		seedHubAPIToken(t, f.service, source.author, source.token, apiScopeOperator)
+		seedHubAPIToken(t, f.service, source.author, source.token, hubapi.APIScopeOperator)
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", source.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-filter-" + source.author}, Title: source.title, Body: "Complete the requested work." + issueContractTestSections, State: "Todo", Labels: source.labels, Assignees: source.assignees})
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
@@ -586,7 +587,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "operator mutation authority")
 	service := f.service
 	organization := f.project.OrganizationID
-	project := tracker.ProjectID(newNativeID("prj"))
+	project := tracker.ProjectID(hubapi.NewID("prj"))
 	states := nativeFixtureStates()
 	for index := range states {
 		if !states[index].Terminal {
@@ -622,7 +623,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 	if err != nil || count != 2 {
 		t.Fatalf("retained compatible import=%d error=%v", count, err)
 	}
-	seedHubAPIToken(t, service, "operator-token", "operator-secret-token", apiScopeOperator)
+	seedHubAPIToken(t, service, "operator-token", "operator-secret-token", hubapi.APIScopeOperator)
 	const item = tracker.NativeWorkItemID("wi_operator_first")
 	const blocker = tracker.NativeWorkItemID("wi_operator_second")
 	base := "/api/v2/organizations/" + string(organization) + "/projects/" + string(project)
@@ -667,7 +668,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 	nativeLabel := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "native-workflow-label"}, ExpectedRevision: native.Revision, State: "In Progress", Reason: "user_requested", WorkflowLabel: "detent:in-progress"}
 	nativeResponse := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(native.WorkItemID)+"/workflow", f.token, nativeLabel)
 	requireNativeStatus(t, nativeResponse, http.StatusUnprocessableEntity)
-	var nativeLabelRefusal nativeError
+	var nativeLabelRefusal hubapi.NativeError
 	decodeHubResponse(t, nativeResponse, &nativeLabelRefusal)
 	if nativeLabelRefusal.Code != "invalid_request" {
 		t.Fatalf("native workflow label refusal=%+v", nativeLabelRefusal)
@@ -703,7 +704,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 			}
 			decodeHubResponse(t, response, &envelope)
 			if request.refusal != "" {
-				var refusal nativeError
+				var refusal hubapi.NativeError
 				if !envelope.Result.Failed || len(envelope.Result.Content) != 1 || json.Unmarshal([]byte(envelope.Result.Content[0].Text), &refusal) != nil || refusal.Code != "invalid_request" || !strings.HasPrefix(refusal.Message, request.refusal) {
 					t.Fatalf("operator mutation %s with an HTTP idempotency key = %s, want a distinct MCP retry identity refused as %q", request.name, response.Body.String(), request.refusal)
 				}
@@ -720,8 +721,8 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if stringValue(row.WorkflowStateName) != "In Progress" || row.Revision != 2 {
-			return fmt.Errorf("workflow state = %s revision=%d", stringValue(row.WorkflowStateName), row.Revision)
+		if hubapi.StringValue(row.WorkflowStateName) != "In Progress" || row.Revision != 2 {
+			return fmt.Errorf("workflow state = %s revision=%d", hubapi.StringValue(row.WorkflowStateName), row.Revision)
 		}
 		projectEntry, err := r.QueueEntry(t.Context(), project, item, string(project))
 		if err != nil {
@@ -782,7 +783,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			owner, ok := w.(projectstore.GitHubOutboxWriter)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			var err error
 			outbound, err = owner.GitHubOutbound(t.Context(), key)
@@ -821,7 +822,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 	invalid.IdempotencyKey, invalid.ExpectedRevision, invalid.State, invalid.WorkflowLabel = "workflow-invalid-label", 2, "Done", "priority:high"
 	response = performHubAPIRequest(t, service, http.MethodPost, base+"/work-items/"+string(item)+"/workflow", "operator-secret-token", invalid)
 	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-	var invalidLabel nativeError
+	var invalidLabel hubapi.NativeError
 	decodeHubResponse(t, response, &invalidLabel)
 	if invalidLabel.Code != "invalid_request" {
 		t.Fatalf("workflow label refusal=%+v", invalidLabel)
@@ -837,7 +838,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 			request.IdempotencyKey, request.ExpectedRevision, request.State, request.WorkflowLabel = test.name, 2, test.state, test.label
 			response := performHubAPIRequest(t, service, http.MethodPost, base+"/work-items/"+string(item)+"/workflow", "operator-secret-token", request)
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-			var refused nativeError
+			var refused hubapi.NativeError
 			decodeHubResponse(t, response, &refused)
 			if refused.Code != "invalid_request" {
 				t.Fatalf("workflow mapping refusal=%+v", refused)
@@ -863,8 +864,8 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 	}
 	if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 		row, err := r.WorkItem(t.Context(), project, item)
-		if err == nil && (row.Revision != 2 || stringValue(row.WorkflowStateName) != "In Progress") {
-			return fmt.Errorf("refused workflow changed state=%s revision=%d", stringValue(row.WorkflowStateName), row.Revision)
+		if err == nil && (row.Revision != 2 || hubapi.StringValue(row.WorkflowStateName) != "In Progress") {
+			return fmt.Errorf("refused workflow changed state=%s revision=%d", hubapi.StringValue(row.WorkflowStateName), row.Revision)
 		}
 		return err
 	}); err != nil {
@@ -892,7 +893,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 			} `json:"result"`
 		}
 		decodeHubResponse(t, response, &envelope)
-		var refusal nativeError
+		var refusal hubapi.NativeError
 		if !envelope.Result.Failed || len(envelope.Result.Content) != 1 || json.Unmarshal([]byte(envelope.Result.Content[0].Text), &refusal) != nil || refusal.Code != "invalid_request" || !strings.HasPrefix(refusal.Message, "move_item cannot resume an item already in the requested state") {
 			t.Fatalf("second workflow with an HTTP idempotency key=%s, want a distinct MCP retry identity refused", response.Body.String())
 		}
@@ -940,8 +941,8 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if row.Revision != 3 || stringValue(row.WorkflowStateName) != "Cancelled" {
-				return fmt.Errorf("compatible cancellation state=%s revision=%d", stringValue(row.WorkflowStateName), row.Revision)
+			if row.Revision != 3 || hubapi.StringValue(row.WorkflowStateName) != "Cancelled" {
+				return fmt.Errorf("compatible cancellation state=%s revision=%d", hubapi.StringValue(row.WorkflowStateName), row.Revision)
 			}
 			entry, err := r.QueueEntry(t.Context(), project, blocker, string(project))
 			if err == nil && (entry.State != "Cancelled" || entry.Priority == nil || *entry.Priority != tracker.QueuePriorityUrgent) {
@@ -994,8 +995,8 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 		}
 		if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 			row, err := r.WorkItem(t.Context(), project, item)
-			if err == nil && (row.Revision != 4 || stringValue(row.WorkflowStateName) != "Merging") {
-				return fmt.Errorf("change workflow state=%s revision=%d", stringValue(row.WorkflowStateName), row.Revision)
+			if err == nil && (row.Revision != 4 || hubapi.StringValue(row.WorkflowStateName) != "Merging") {
+				return fmt.Errorf("change workflow state=%s revision=%d", hubapi.StringValue(row.WorkflowStateName), row.Revision)
 			}
 			return err
 		}); err != nil {
@@ -1114,8 +1115,8 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if stored.Revision != 2 || stringValue(stored.WorkflowStateName) != test.target {
-					return fmt.Errorf("local automated state=%s revision=%d", stringValue(stored.WorkflowStateName), stored.Revision)
+				if stored.Revision != 2 || hubapi.StringValue(stored.WorkflowStateName) != test.target {
+					return fmt.Errorf("local automated state=%s revision=%d", hubapi.StringValue(stored.WorkflowStateName), stored.Revision)
 				}
 				dispatch, err := r.(tenantstore.DispatchReader).IssueDispatchState(t.Context(), project, id)
 				if err == nil && dispatch.Generation != 1 {
@@ -1163,7 +1164,7 @@ func TestControlPlaneRoutesRequireAuthentication(t *testing.T) {
 
 	f := newDefaultNativeFixture(t, Config{})
 	service := f.service
-	service.echo.GET("/health", service.health, service.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
+	service.echo.GET("/health", service.health, service.requireAPIScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator, hubapi.APIScopeAdmin))
 	item := f.create(t, "Authentication boundary")
 	path := f.base + "/work-items/" + string(item.WorkItemID)
 	routes := []struct{ method, path string }{
@@ -1242,12 +1243,12 @@ func decodeHubResponse(t *testing.T, response *httptest.ResponseRecorder, target
 	}
 }
 
-func seedHubAPIToken(t *testing.T, service *Service, id string, token string, scope apiScope) {
+func seedHubAPIToken(t *testing.T, service *Service, id string, token string, scope hubapi.APIScope) {
 	t.Helper()
 	hash := apikey.HashToken(token)
 	now := service.config.now().UTC().Truncate(time.Microsecond)
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
-		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: service.accessOrganization(), ID: id, Name: id, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: string(scope), Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now})
+		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: service.accessOrganization(), ID: id, Name: id, Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: string(scope), Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now})
 	}); err != nil {
 		t.Fatalf("insert Hub API token: %v", err)
 	}

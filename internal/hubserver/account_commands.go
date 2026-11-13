@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -19,16 +20,16 @@ import (
 
 // A dedicated bootstrap/staff account may not yet have customer membership.
 // This identity can use account setup only; it carries no project/admin role.
-func (s *Service) hostedAccountCredential(ctx context.Context, hash string) (apiCredential, error) {
+func (s *Service) hostedAccountCredential(ctx context.Context, hash string) (hubapi.APICredential, error) {
 	session, err := s.WebSession(ctx, hash, s.config.now())
 	if err != nil || session.Identity == nil || session.Identity.SupportActor != "" {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
-	return apiCredential{ID: "account:" + session.Identity.Subject, Hash: hash, SessionHash: hash, Scope: apiScopeOperator, NativeOnly: true, Hosted: session.Identity, HostedRole: "account"}, nil
+	return hubapi.APICredential{ID: "account:" + session.Identity.Subject, Hash: hash, SessionHash: hash, Scope: hubapi.APIScopeOperator, NativeOnly: true, Hosted: session.Identity, HostedRole: "account"}, nil
 }
 
-func (s *Service) createHostedOrganizationFor(ctx context.Context, credential apiCredential, name string) (string, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) createHostedOrganizationFor(ctx context.Context, credential hubapi.APICredential, name string) (string, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	if credential.Hosted == nil || credential.Hosted.SupportActor != "" || credential.Hosted.Subject != s.config.Hosted.BootstrapSubject {
 		return "", operatortool.ErrAccessDenied
@@ -83,7 +84,7 @@ type accountReceipt struct {
 
 // Account setup has no customer token row. Its receipts therefore reuse the
 // existing hosted audit ledger and dashboard mutation serialization.
-func (s *Service) executeHostedAccountFor(ctx context.Context, credential apiCredential, name string, in operatoradmin.Input, m mutation.Metadata) (operatoradmin.Output, error) {
+func (s *Service) executeHostedAccountFor(ctx context.Context, credential hubapi.APICredential, name string, in operatoradmin.Input, m mutation.Metadata) (operatoradmin.Output, error) {
 	if locked, ok := ctx.Value(hostedMutationContext{}).(bool); !ok || !locked {
 		s.hostedMutationMu.Lock()
 		defer s.hostedMutationMu.Unlock()

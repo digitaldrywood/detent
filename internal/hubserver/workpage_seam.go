@@ -2,10 +2,12 @@ package hubserver
 
 import (
 	"context"
+	"net/url"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/workpage"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"net/url"
 )
 
 type nativeCursor = workpage.Cursor
@@ -20,11 +22,11 @@ func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, pa
 		caller.SessionID = scope.credential.Hosted.SessionID
 	}
 	limit, cursor, key, err := s.workPageService().ReadLimit(s.runDetailContext(ctx), caller, path, params, maximum, defaultLimit)
-	return limit, cursor, key, fromFeatureError(err)
+	return limit, cursor, key, hubapi.FromFeatureError(err)
 }
 func (s *Service) readNativeCursorKey(ctx context.Context, organization tracker.OrganizationID) ([]byte, error) {
 	key, err := s.workPageService().ReadKey(ctx, organization)
-	return key, fromFeatureError(err)
+	return key, hubapi.FromFeatureError(err)
 }
 func newNativeCursorSecret(cfg Config, organization tracker.OrganizationID) (accessstore.Secret, accessstore.SecretAudit, error) {
 	return workpage.NewSecret(cfg.SecretKeys, cfg.now, organization)

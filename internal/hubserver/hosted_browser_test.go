@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -335,7 +336,7 @@ func hostedPostgresConfig(t *testing.T, cfg Config) Config {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "test_hub_admin", Name: "Example administrator", Hash: apikey.HashToken(string(cfg.InitialAdminToken)), Scope: "admin", CreatedAt: now, UpdatedAt: now, KeyScope: "admin", ProjectAccess: "all", Kind: "service"}); err != nil {
 			return err
 		}
-		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: newNativeID("hub"), CursorKey: cursorKey}); err != nil {
+		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: hubapi.NewID("hub"), CursorKey: cursorKey}); err != nil {
 			return err
 		}
 		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: cursorEnvelope.Version, RecordedAt: now})
@@ -1531,7 +1532,7 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 		} {
 			at := now.Add(-seed.age)
 			issue := backlog[0]
-			issue.WorkItemID, issue.Number = tracker.NativeWorkItemID(newNativeID("wi")), int(number)+index
+			issue.WorkItemID, issue.Number = tracker.NativeWorkItemID(hubapi.NewID("wi")), int(number)+index
 			issue.State, issue.Terminal, issue.ClosedAt = seed.state, true, &at
 			issue.CreatedAt, issue.UpdatedAt, issue.LastActivityAt = now.Add(-72*time.Hour), now, now
 			issues = append(issues, issue)

@@ -2,6 +2,8 @@ package hubserver
 
 import (
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 // Durable storage for workspace sessions. Everything
@@ -19,5 +21,5 @@ func nullTime(value *time.Time) any {
 	if value == nil {
 		return nil
 	}
-	return formatHubTime(*value)
+	return hubapi.FormatHubTime(*value)
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,7 +28,7 @@ func reportAttemptFailure(data tracker.NativeRunData, status, updated string) (s
 	if !failed.Valid {
 		return failed, nil
 	}
-	at, err := parseTimeValue(failed.String)
+	at, err := hubapi.ParseTimeValue(failed.String)
 	if err != nil {
 		return sql.NullString{}, err
 	}
@@ -35,7 +36,7 @@ func reportAttemptFailure(data tracker.NativeRunData, status, updated string) (s
 	return failed, nil
 }
 
-func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScope, family string) (_ nativePageFact, resultErr error) {
+func readLegacyReportFact(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope, family string) (_ nativePageFact, resultErr error) {
 	f := nativePageFact{name: family, override: true}
 	var query string
 	switch family {

@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -14,7 +15,7 @@ func (a hubChangeApplication) readChangeListRecords(ctx context.Context, args op
 	scope := a.scope
 	scope.project = tracker.ProjectID(args.ProjectID)
 	result = a.result(scope, args)
-	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin || scope.credential.Runner.RunnerID != "" {
+	if scope.credential.Scope != hubapi.APIScopeOperator && scope.credential.Scope != hubapi.APIScopeAdmin || scope.credential.Runner.RunnerID != "" {
 		return result, operatortool.ErrAccessDenied
 	}
 	s := a.service
@@ -51,7 +52,7 @@ func (a hubChangeApplication) readChangeListRecords(ctx context.Context, args op
 		return err
 	})
 	if err != nil {
-		return result, projectRecordError(err)
+		return result, hubapi.ProjectRecordError(err)
 	}
 	result.Changes = []tracker.ChangeRequest{}
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))

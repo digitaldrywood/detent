@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -64,7 +65,7 @@ func projectRecordPostgresWithClock(t *testing.T, maxConnections int, clock func
 func projectRecordRepositoryFor(t *testing.T, admin *sql.DB, maxConnections int, clock func() time.Time, configure ...func(*pgxpool.Config)) *postgres.Repository {
 	t.Helper()
 	template := postgresStartupTemplate
-	name, password := newNativeID("example"), newNativeID("password")
+	name, password := hubapi.NewID("example"), hubapi.NewID("password")
 	quoted := pgx.Identifier{name}.Sanitize()
 	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)); err != nil {
 		t.Fatal(err)
@@ -313,7 +314,7 @@ func TestPostgresProjectRecords(t *testing.T) {
 			if integration.Revision != 4 || integration.WorkflowMarkdown != markdown {
 				t.Fatalf("workflow=%+v", integration)
 			}
-			var token tokenResponse
+			var token hubapi.TokenResponse
 			token.Token = "example-ungranted-" + string(org.ID)
 			now = service.config.now()
 			if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -348,14 +349,14 @@ type projectRecordParticipantFixture struct{ reject bool }
 
 func (p *projectRecordParticipantFixture) CreateProject(ctx context.Context, w tenantstore.Writer, actor tenantstore.ProjectActor, record projectstore.Record) error {
 	if actor.HostedSubject == "" || actor.PrincipalID == "" {
-		return nativeInvalid("missing actor")
+		return hubapi.NativeInvalid("missing actor")
 	}
 	_, err := w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: record.Core.OrganizationID, ProjectID: record.Core.ID, NativeID: tracker.NativeWorkItemID("participant_" + string(record.Core.ID)), Number: 1, Title: "Participant write"})
 	if err != nil {
 		return err
 	}
 	if p.reject {
-		return nativePublicInvalid("Participant rejected creation")
+		return hubapi.NativePublicInvalid("Participant rejected creation")
 	}
 	return nil
 }
@@ -499,7 +500,7 @@ func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.
 	if _, err := admin.ExecContext(t.Context(), "RESET ROLE"); err != nil {
 		t.Fatal(err)
 	}
-	projectID := tracker.ProjectID(newNativeID("project"))
+	projectID := tracker.ProjectID(hubapi.NewID("project"))
 	createReady := make(chan struct{})
 	releaseCreate := make(chan struct{})
 	createDone := make(chan error, 1)

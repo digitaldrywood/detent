@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -17,10 +18,10 @@ import (
 
 type operatorEntryOriginKey struct{}
 
-func operatorRequestCredential(c echo.Context) (apiCredential, error) {
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+func operatorRequestCredential(c echo.Context) (hubapi.APICredential, error) {
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok || credential.ID == "" {
-		return apiCredential{}, operatortool.ErrAccessDenied
+		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	return credential, nil
 }
@@ -41,9 +42,9 @@ func operatorAuthorizationError(err error) error {
 	if errors.As(err, &failure) {
 		return failure
 	}
-	var native *nativeError
+	var native *hubapi.NativeError
 	if errors.As(err, &native) {
-		if native.status == http.StatusForbidden || native.status == http.StatusNotFound {
+		if native.Status == http.StatusForbidden || native.Status == http.StatusNotFound {
 			return operatortool.ErrAccessDenied
 		}
 	}
@@ -90,10 +91,10 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 	return s.requestAuth().Operator(s.operatorAuthOptions())(next)
 }
 
-func operatorIdentity(credential apiCredential, organization string) operatortool.Identity {
+func operatorIdentity(credential hubapi.APICredential, organization string) operatortool.Identity {
 	return hubauth.Identity(authCredential(credential), organization)
 }
 
-func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCredential, organization string) (operatortool.Authority, error) {
+func (s *Service) operatorCurrentAuthority(ctx context.Context, credential hubapi.APICredential, organization string) (operatortool.Authority, error) {
 	return s.requestAuth().CurrentAuthority(ctx, authCredential(credential), organization, s.operatorCheckOptions())
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -140,14 +141,14 @@ func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		reporter := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, sourceActor: &issue.Actor, credential: apiCredential{HostedRole: "reporter"}}
+		reporter := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, sourceActor: &issue.Actor, credential: hubapi.APICredential{HostedRole: "reporter"}}
 		if _, _, err := fixture.service.readWorkItemRecord(t.Context(), reporter, string(issue.WorkItemID)); err != nil {
 			t.Fatalf("filer denied own item: %v", err)
 		}
 		reporter.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "another-actor"}
 		_, _, err := fixture.service.readWorkItemRecord(t.Context(), reporter, string(issue.WorkItemID))
-		var denied *nativeError
-		if !errors.As(err, &denied) || denied.status != http.StatusNotFound {
+		var denied *hubapi.NativeError
+		if !errors.As(err, &denied) || denied.Status != http.StatusNotFound {
 			t.Fatalf("foreign reporter item authorization=%v want not found", err)
 		}
 		assertIssuePageNotificationParticipants(t, fixture, issue, tracker.Actor{Kind: "human", PrincipalID: "commenter_" + string(issue.WorkItemID)}, true)
@@ -265,7 +266,7 @@ func TestBlockerHistoryUsesTypedPostgresFacts(t *testing.T) {
 		issue := f.create(t, fmt.Sprintf("Blocker history %d", index))
 		appendTransition := func(t *testing.T, typed func(*eventstore.Event)) eventstore.Event {
 			t.Helper()
-			value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "Persisted reason", Run: &tracker.NativeRunData{AttemptID: "persisted-attempt", FencingToken: 3}}}
+			value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "Persisted reason", Run: &tracker.NativeRunData{AttemptID: "persisted-attempt", FencingToken: 3}}}
 			raw, err := json.Marshal(value)
 			if err != nil {
 				t.Fatal(err)
@@ -391,7 +392,7 @@ func TestIssuePageHistoryReadsPastStorageConversionBudget(t *testing.T) {
 		through := int64(0)
 		for index := range storageConversionRows + 3 {
 			for _, kind := range []string{"issue.edited", "comment.created", "workflow.transitioned"} {
-				value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now().Add(time.Duration(index) * time.Microsecond), Data: tracker.CollaborationData{Revision: tracker.Revision(index + 2), FromState: "Todo", ToState: "Done", Reason: strings.Repeat("x", 11000)}}
+				value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now().Add(time.Duration(index) * time.Microsecond), Data: tracker.CollaborationData{Revision: tracker.Revision(index + 2), FromState: "Todo", ToState: "Done", Reason: strings.Repeat("x", 11000)}}
 				if index == storageConversionRows+2 {
 					value.Data.Fields = []string{"title", "body"}
 				}
@@ -527,7 +528,7 @@ func assertIssuePageNotificationParticipants(t *testing.T, f nativeFixture, issu
 	}
 	appendEvent := func(kind string, actor tracker.Actor) eventstore.Event {
 		t.Helper()
-		value := tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Done"}}
+		value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Done"}}
 		raw, err := json.Marshal(value)
 		if err != nil {
 			t.Fatal(err)

@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/url"
@@ -15,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -47,7 +47,7 @@ type operatorWorkReads struct {
 }
 
 func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request operatortool.WorkReadRequest) (result operatortool.Result, resultErr error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	defer func() {
 		if resultErr != nil {
@@ -83,7 +83,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		params.Del("include")
 		page, err := s.readBulkExport(ctx, scope, params)
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
 		return operatortool.EncodeBulkExport(page)
 	}
@@ -101,33 +101,33 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	}
 	if name == operatortool.WorkConfig {
 		if err := s.authorizeProjectRecord(ctx, scope, false); err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
 		record, err := s.readProjectRecord(ctx, scope)
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
 		project, err := s.projectRecordNative(ctx, record)
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
 		approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
 		contract, err := approvedProjectIssueContract(ctx, scope.organization, scope.project, approval)
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
 		templates, err := config.ResolveReporterContracts(contract.Context)
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
 		issueContract := nativeWorkIssueContract{RequiredSections: contract.Sections}
 		if approval.Policy.Authored != nil {
 			repairContract, err := config.ResolvePolicyIssueContract(approval.Policy)
 			if err != nil {
-				return operatortool.Result{}, safeWorkReadError(err)
+				return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 			}
 			if body := repairContract.ReleaseDeliveryBody(); body != "" {
 				issueContract.ReleaseDelivery = &nativeReleaseDeliveryDelegation{PolicyID: approval.Policy.ID, Body: body}
@@ -160,7 +160,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	}
 	item, err := s.resolveOperatorRecordReadItem(ctx, scope, request.Reference)
 	if err != nil {
-		return operatortool.Result{}, safeWorkReadError(err)
+		return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 	}
 	request.Reference = string(item.WorkItemID)
 	switch name {
@@ -177,12 +177,12 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		}
 		evidence, err := s.readNativeRuntime(ctx, scope, request.Reference, selector)
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
 		if name == operatortool.WorkAttemptReceipt && evidence.Attempt != nil {
 			evidence.ValidationAudit, err = s.readValidationAuditRecord(ctx, scope, item, evidence.Attempt)
 			if err != nil {
-				return operatortool.Result{}, safeWorkReadError(err)
+				return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 			}
 		}
 		return operatortool.NativeRuntimeResult(name, request, evidence)
@@ -202,7 +202,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	case operatortool.WorkRelationships:
 		related, err := s.readWorkItemRelationshipPage(ctx, scope, request, item)
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
 		return hubWorkResult(r, request, related, nil)
 	case operatortool.WorkComments:
@@ -223,7 +223,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		// The review/artifacts child owns those application detail operations.
 		changes, err := s.readChanges(ctx, scope, request.Reference)
 		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(err)
+			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
 		refs := make([]operatortool.WorkReference, 0, len(changes))
 		for _, change := range changes {
@@ -257,7 +257,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 
 func hubWorkResult[T any](r operatorWorkReads, request operatortool.WorkReadRequest, data T, err error) (operatortool.Result, error) {
 	if err != nil {
-		return operatortool.Result{}, safeWorkReadError(err)
+		return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 	}
 	view := operatortool.WorkReadResult[T]{ProjectID: request.ProjectID, Reference: request.Reference, URL: operatortool.WorkItemURL(request.ProjectID, request.Reference), GeneratedAt: r.service.config.now(), Freshness: explain.SourceAvailable, Data: data}
 	if _, ok := any(data).(operatortool.NativeItem); ok {
@@ -266,36 +266,14 @@ func hubWorkResult[T any](r operatorWorkReads, request operatortool.WorkReadRequ
 	return operatortool.EncodeResult(view)
 }
 
-func safeWorkReadError(err error) error {
-	var export *operatortool.WorkBulkExportItemError
-	if errors.As(err, &export) {
-		return err
-	}
-	var ambiguous *explain.AmbiguousIdentityError
-	if errors.Is(err, explain.ErrNotFound) || errors.Is(err, operatortool.ErrProjectScopeRequired) || errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.As(err, &ambiguous) {
-		return err
-	}
-	if errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
-		return explain.ErrNotFound
-	}
-	if archive := nativeArchiveReadError(err); archive != nil {
-		return archive
-	}
-	var native *nativeError
-	if errors.As(err, &native) && native.status == 422 {
-		return &operatortool.RequestError{Code: native.Code, Message: native.Message}
-	}
-	return &operatortool.ReadUnavailableError{Err: err}
-}
-
-func (s *Service) resolveOperatorNativeReadItem(ctx context.Context, _ nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+func (s *Service) resolveOperatorNativeReadItem(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
 	return s.resolveOperatorRecordReadItem(ctx, scope, reference)
 }
 
-func (s *Service) resolveOperatorNativeItem(ctx context.Context, _ nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+func (s *Service) resolveOperatorNativeItem(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
 	item, err := s.resolveOperatorRecordReadItem(ctx, scope, reference)
 	if errors.Is(err, explain.ErrNotFound) || errors.Is(err, operatortool.ErrProjectScopeRequired) {
-		return tracker.NativeIssue{}, nativeNotFound()
+		return tracker.NativeIssue{}, hubapi.NativeNotFound()
 	}
 	return item, err
 }
@@ -306,7 +284,7 @@ func (operatorWorkReads) WorkReadNames(context.Context) []string {
 
 func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (explain.IssueExplanation, error) {
 	ctx = context.WithValue(ctx, explanationReadKey{}, true)
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: query.ProjectID})
 	if err != nil {
@@ -316,18 +294,18 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 	scope.project = tracker.ProjectID(query.ProjectID)
 	issue, err := r.service.resolveOperatorRecordReadItem(ctx, scope, query.Reference)
 	if err != nil {
-		return explain.IssueExplanation{}, safeWorkReadError(err)
+		return explain.IssueExplanation{}, hubapi.SafeWorkReadError(err)
 	}
 	evidence, failures, partial, err := r.service.readOperatorExplanation(ctx, scope, issue)
 	if err != nil {
-		return explain.IssueExplanation{}, safeWorkReadError(err)
+		return explain.IssueExplanation{}, hubapi.SafeWorkReadError(err)
 	}
 	if err := r.service.readRuntimeAdmissionTenant(ctx, scope, issue, &evidence, nil); err != nil {
-		return explain.IssueExplanation{}, safeWorkReadError(err)
+		return explain.IssueExplanation{}, hubapi.SafeWorkReadError(err)
 	}
 	out, err := boundedNativeExplanation(evidence, latestNativeFailureSignature(failures, partial))
 	if err != nil {
-		return explain.IssueExplanation{}, safeWorkReadError(err)
+		return explain.IssueExplanation{}, hubapi.SafeWorkReadError(err)
 	}
 	return out, nil
 }
@@ -382,7 +360,7 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope
 		}
 		reader, ok := r.(eventstore.SchedulerDecisionReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
 		decisions, err = reader.SchedulerDecisions(ctx, scope.project, issue.WorkItemID)
@@ -397,7 +375,7 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope
 func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope nativeScope, item string) ([]tenantAttemptSnapshot, int64, bool, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return nil, 0, false, nativeRunEventStorageUnavailable()
+		return nil, 0, false, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var snapshots []tenantAttemptSnapshot
 	var sequence int64
@@ -417,8 +395,8 @@ func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope native
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{Kind: stringValue(work.ActorKind), PrincipalID: stringValue(work.ActorPrincipalID)}) {
-			return nativeNotFound()
+		if !scope.reporterOwns(tracker.Actor{Kind: hubapi.StringValue(work.ActorKind), PrincipalID: hubapi.StringValue(work.ActorPrincipalID)}) {
+			return hubapi.NativeNotFound()
 		}
 		board, err := r.BoardSequence(ctx, scope.project)
 		if err != nil {

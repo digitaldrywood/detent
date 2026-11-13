@@ -10,16 +10,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
@@ -352,7 +354,7 @@ func coreChangeNeutralFixture(t *testing.T, organization tracker.OrganizationID,
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.add("quality_landings", map[string]any{"version_id": version.ID, "record_json": string(frozenJSON), "landed_at": formatHubTime(frozen.LandedAt)})
+		fixture.add("quality_landings", map[string]any{"version_id": version.ID, "record_json": string(frozenJSON), "landed_at": hubapi.FormatHubTime(frozen.LandedAt)})
 		landing := tracker.NativeLandingReceipt{VersionID: version.ID, HeadSHA: headSHA, MergeSHA: strings.Repeat("c", 40), BaseRef: "develop", BaseSHA: baseSHA, Method: "merge", Landed: true, ObservedAt: createdAt.Add(time.Minute + 123*time.Nanosecond)}
 		landingJSON, err := json.Marshal(landing)
 		if err != nil {

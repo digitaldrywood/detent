@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -16,21 +17,21 @@ func configurationRankRequest(c echo.Context) bool {
 }
 
 func (s *Service) registerConfigurationRankRoutes(e *echo.Echo) {
-	permission := s.requireAPIScope(apiScopeOperator, apiScopeAdmin)
+	permission := s.requireAPIScope(hubapi.APIScopeOperator, hubapi.APIScopeAdmin)
 	e.GET(configurationRankBase, s.getConfigurationRank, permission)
 	e.PUT(configurationRankBase, s.putConfigurationRank, permission)
 }
 
 func configurationRankScope(c echo.Context) (nativeScope, error) {
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok || c.Param("organization") == "" {
-		return nativeScope{}, nativeNotFound()
+		return nativeScope{}, hubapi.NativeNotFound()
 	}
 	return nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential, requireHostedAdmin: c.Request().Method == http.MethodPut}, nil
 }
 
 func (s *Service) getConfigurationRank(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope, err := configurationRankScope(c)
 	if err != nil {
@@ -46,10 +47,10 @@ func (s *Service) getConfigurationRank(c echo.Context) error {
 
 func (s *Service) putConfigurationRank(c echo.Context) error {
 	var change projectRankChange
-	if err := decodeAPIJSON(c, &change); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &change); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope, err := configurationRankScope(c)
 	if err != nil {

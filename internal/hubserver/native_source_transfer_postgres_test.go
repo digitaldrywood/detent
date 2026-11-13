@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -23,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -31,7 +34,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func sourceTransferPostgresFixture(t *testing.T) (*Service, *sql.DB) {
@@ -289,12 +291,12 @@ func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
 			} {
 				t.Run(unknown.name, func(t *testing.T) {
 					t.Cleanup(func() {
-						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 						defer cancel()
 						if err := service.config.TenantRepository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 							owner, ok := w.(leasestore.CheckpointSourceWriter)
 							if !ok {
-								return nativeRunEventStorageUnavailable()
+								return hubapi.NativeRunEventStorageUnavailable()
 							}
 							return owner.SetCheckpointSource(ctx, leasestore.CheckpointSourceFact{AttemptID: unknown.attempt.ID, IssueID: unknown.attempt.IssueID, Sequence: unknown.attempt.Sequence, CheckpointObjectKey: unknown.reference.Key, PreservesSource: unknown.checkpoint.PreservesSource()})
 						}); err != nil {
@@ -310,7 +312,7 @@ func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
 					}
 					response := performHubAPIRequest(t, service, http.MethodGet, itemPath+"/source-recovery", string(org)+"_token", nil)
 					requireNativeStatus(t, response, http.StatusServiceUnavailable)
-					var failure apiErrorResponse
+					var failure hubapi.APIErrorResponse
 					decodeHubResponse(t, response, &failure)
 					if failure.Code != "not_ready" {
 						t.Fatalf("unknown checkpoint misclassified: code=%s", failure.Code)
@@ -387,7 +389,7 @@ func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
 					intercepted.afterRead = fail
 					response = performHubAPIRequest(t, service, http.MethodGet, itemPath+"/source-recovery", string(org)+"_token", nil)
 					requireNativeStatus(t, response, outage.status)
-					var failure apiErrorResponse
+					var failure hubapi.APIErrorResponse
 					decodeHubResponse(t, response, &failure)
 					if failure.Code != outage.code || strings.Contains(response.Body.String(), "No verified Hub source") || intercepted.afterRead != nil {
 						t.Fatalf("source outage became absent source: code=%s", failure.Code)

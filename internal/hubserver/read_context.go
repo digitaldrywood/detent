@@ -3,10 +3,7 @@ package hubserver
 import (
 	"context"
 	"errors"
-	"time"
 )
-
-const hubReadTimeout = 15 * time.Second
 
 func (d *database) readTimeoutAttributes(err error) []any {
 	if d == nil || d.postgres == nil || !errors.Is(err, context.DeadlineExceeded) {

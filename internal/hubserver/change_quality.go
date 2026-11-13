@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -22,7 +23,7 @@ import (
 
 func validateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape tracker.QualityEscape) error {
 	if snapshot == nil {
-		return nativePublicInvalid("Landing contract snapshot unavailable; a human must classify historical evidence")
+		return hubapi.NativePublicInvalid("Landing contract snapshot unavailable; a human must classify historical evidence")
 	}
 	switch escape.Cause {
 	case "validator_miss":
@@ -31,10 +32,10 @@ func validateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape track
 				return nil
 			}
 		}
-		return nativePublicInvalid("Validator miss must name a covered criterion and quote its landing evidence")
+		return hubapi.NativePublicInvalid("Validator miss must name a covered criterion and quote its landing evidence")
 	case "missing_criterion":
 		if len(snapshot.Missing) > 0 || len(snapshot.Criteria) == 0 || escape.Criterion != "" {
-			return nativePublicInvalid("Missing criterion requires a complete contract and no covered criterion")
+			return hubapi.NativePublicInvalid("Missing criterion requires a complete contract and no covered criterion")
 		}
 	case "underspecified_issue":
 		for _, section := range snapshot.Missing {
@@ -44,7 +45,7 @@ func validateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape track
 		}
 	}
 	if !strings.Contains(snapshot.IssueBody, escape.BasisQuote) {
-		return nativePublicInvalid("Classification must quote the frozen issue contract")
+		return hubapi.NativePublicInvalid("Classification must quote the frozen issue contract")
 	}
 	return nil
 }
@@ -68,12 +69,12 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 		return nil, nil
 	}
 	if err := escape.Validate(); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, hubapi.NativeInvalid(err.Error())
 	}
 	prepared := &preparedTenantQualityEscape{}
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var previous eventstore.Evidence
 	var project projectstore.Record
@@ -83,12 +84,12 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 		}
 		owner, ok := r.(eventstore.VersionLandingReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		prepared.landing, err = owner.VersionLanding(ctx, change.ID, request.VersionID)
 		if errors.Is(err, corestore.ErrNotFound) {
-			return nativePublicInvalid("Escape must identify a landed version and an occurrence between landing and now")
+			return hubapi.NativePublicInvalid("Escape must identify a landed version and an occurrence between landing and now")
 		}
 		if err != nil {
 			return err
@@ -98,7 +99,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 		}
 		occurrences, ok := r.(eventstore.QualityEscapeReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		previous, err = occurrences.QualityEscapeOccurrence(ctx, change.ID, request.VersionID, escape.OccurrenceID)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -111,7 +112,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 			event, err := r.RunEvent(ctx, scope.project, change.WorkItemID, escape.OccurrenceID)
 			if err != nil {
 				if errors.Is(err, corestore.ErrNotFound) {
-					return nativePublicInvalid("Reopen occurrence must reference its recorded Done transition")
+					return hubapi.NativePublicInvalid("Reopen occurrence must reference its recorded Done transition")
 				}
 				return err
 			}
@@ -130,10 +131,10 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 		return nil, err
 	}
 	if escape.ObservedAt.Before(landing.LandedAt) || escape.ObservedAt.After(now) {
-		return nil, nativePublicInvalid("Escape must identify a landed version and an occurrence between landing and now")
+		return nil, hubapi.NativePublicInvalid("Escape must identify a landed version and an occurrence between landing and now")
 	}
 	if escape.HumanOverride && (scope.credential.SessionHash == "" || scope.actor().Kind != "human") {
-		return nil, nativePublicInvalid("Human classification overrides require a human browser session")
+		return nil, hubapi.NativePublicInvalid("Human classification overrides require a human browser session")
 	}
 	if escape.Cause != "infrastructure" && !escape.HumanOverride {
 		if err := validateQualityBasis(landing.Quality, *escape); err != nil {
@@ -141,7 +142,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 		}
 	}
 	if escape.Kind == "revert" && ((!changerequest.ValidHash(escape.OccurrenceID, 40) && !changerequest.ValidHash(escape.OccurrenceID, 64)) || !strings.Contains(escape.EvidenceQuote, landing.MergeSHA)) {
-		return nil, nativePublicInvalid("Revert occurrence must identify the revert commit and quote its reference to the landed commit")
+		return nil, hubapi.NativePublicInvalid("Revert occurrence must identify the revert commit and quote its reference to the landed commit")
 	}
 	if prepared.reopen != nil {
 		event, err := content.Event(ctx, *prepared.reopen)
@@ -156,7 +157,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 			}
 		}
 		if !valid || !target {
-			return nil, nativePublicInvalid("Reopen occurrence must reference its recorded Done transition")
+			return nil, hubapi.NativePublicInvalid("Reopen occurrence must reference its recorded Done transition")
 		}
 	}
 	if prepared.previous != nil {
@@ -170,10 +171,10 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 		}
 		prior := discussion.Escape
 		if prior.Kind != escape.Kind || !prior.ObservedAt.Equal(escape.ObservedAt) || prior.EvidenceReference != escape.EvidenceReference {
-			return nil, nativePublicInvalid("Escape occurrence identity cannot change")
+			return nil, hubapi.NativePublicInvalid("Escape occurrence identity cannot change")
 		}
 		if prior.HumanOverride && !escape.HumanOverride {
-			return nil, nativePublicInvalid("An agent assessment cannot replace a human override")
+			return nil, hubapi.NativePublicInvalid("An agent assessment cannot replace a human override")
 		}
 	}
 	if escape.Kind == "scheduled_failure" {
@@ -189,7 +190,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope nativeScope, escape tracker.QualityEscape) (*tenantQualityWitness, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	candidates := []tenantQualityWitness{}
 	clipped := false
@@ -214,14 +215,14 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope nati
 			}
 		}
 		for _, item := range items {
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				continue
 			}
 			candidates = append(candidates, tenantQualityWitness{item: item})
 		}
 		budget := maxAnalyticsPopulation - len(items)
 		for _, item := range items {
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				continue
 			}
 			cursor = corestore.ScanCursor{}
@@ -249,7 +250,7 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope nati
 		}
 		owner, ok := r.(eventstore.CollaborationVersionsReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		for start := 0; start < len(candidates); start += corestore.MaxPageSize {
 			end := min(len(candidates), start+corestore.MaxPageSize)
@@ -310,13 +311,13 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope nati
 	if clipped {
 		return nil, reportstore.ErrPopulationExceeded
 	}
-	return nil, nativePublicInvalid("Scheduled escape must quote an existing red scheduled-suite occurrence; candidate commits alone do not establish attribution")
+	return nil, hubapi.NativePublicInvalid("Scheduled escape must quote an existing red scheduled-suite occurrence; candidate commits alone do not establish attribution")
 }
 
 func recheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope nativeScope, change tracker.ChangeRequest, escape tracker.QualityEscape, prepared *preparedTenantQualityEscape) error {
 	owner, ok := w.(eventstore.VersionLandingReader)
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	landing, err := owner.VersionLanding(ctx, change.ID, prepared.landing.VersionID)
 	if err != nil {
@@ -327,7 +328,7 @@ func recheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope
 	}
 	occurrences, ok := w.(eventstore.QualityEscapeReader)
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	previous, err := occurrences.QualityEscapeOccurrence(ctx, change.ID, prepared.landing.VersionID, escape.OccurrenceID)
 	if prepared.previous == nil {
@@ -347,7 +348,7 @@ func recheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope
 		if err != nil {
 			return err
 		}
-		if item.Revision != witness.item.Revision || !reflect.DeepEqual(item.BodyObjectKey, witness.item.BodyObjectKey) || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
+		if item.Revision != witness.item.Revision || !reflect.DeepEqual(item.BodyObjectKey, witness.item.BodyObjectKey) || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 			return corestore.ErrRevisionConflict
 		}
 		if witness.comment != nil {

@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 func TestHostedAccountAPI(t *testing.T) {
@@ -57,7 +58,7 @@ func TestHostedAccountAPI(t *testing.T) {
 				test.check(t, response.Body.Bytes())
 				return
 			}
-			var failure apiErrorResponse
+			var failure hubapi.APIErrorResponse
 			browserHostedDecode(t, response, &failure)
 			if test.code != "" && failure.Code != test.code || failure.Message == "" {
 				t.Fatalf("error = %#v, want code %q", failure, test.code)
@@ -363,8 +364,8 @@ func accountClientRouteMatches(route, call string) bool {
 
 func TestAccountClientRouteMatches(t *testing.T) {
 	t.Parallel()
-	const route = "GET " + nativeBase + "/secrets/:kind"
-	const call = "GET " + nativeBase + "/secrets/fly_sprites_token"
+	const route = "GET " + hubapi.NativeBase + "/secrets/:kind"
+	const call = "GET " + hubapi.NativeBase + "/secrets/fly_sprites_token"
 	for _, test := range []struct {
 		name, route, call string
 		want              bool

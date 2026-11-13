@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -62,7 +63,7 @@ func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope 
 	if err != nil {
 		return result, err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
 	if err != nil {
 		return result, err
 	}
@@ -90,7 +91,7 @@ func (p conversationPreferenceIssue) Lock(ctx context.Context, writer tenantstor
 		return err
 	}
 	if current.Revision != p.plan.current.Revision {
-		return nativeConflict(tracker.Revision(current.Revision))
+		return hubapi.NativeConflict(tracker.Revision(current.Revision))
 	}
 	return nil
 }

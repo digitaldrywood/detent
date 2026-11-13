@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 )
@@ -26,10 +27,10 @@ type hostedCheckout struct {
 	Session   billing.Session `json:"session"`
 }
 
-func (s *Service) hostedBillingOwner(ctx context.Context, c echo.Context) (apiCredential, error) {
+func (s *Service) hostedBillingOwner(ctx context.Context, c echo.Context) (hubapi.APICredential, error) {
 	credential, _, err := s.hostedCredential(ctx, c)
 	if err != nil || credential.Hosted == nil || credential.HostedRole != "owner" || credential.Hosted.SupportActor != "" {
-		return apiCredential{}, auth.ErrHostedIdentity
+		return hubapi.APICredential{}, auth.ErrHostedIdentity
 	}
 	return credential, nil
 }
@@ -41,7 +42,7 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 		Price string `json:"price"`
 	}
 	if api {
-		if err := decodeAPIJSON(c, &request); err != nil {
+		if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 			return s.invalidAPIRequest(c, err)
 		}
 		if err := request.validate(true); err != nil {
@@ -51,13 +52,13 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 	if !api {
 		request.Price = c.FormValue("price")
 	}
-	authorize := func(ctx context.Context) (apiCredential, error) {
+	authorize := func(ctx context.Context) (hubapi.APICredential, error) {
 		return s.hostedBillingOwner(ctx, c)
 	}
 	result, err := s.checkoutBilling(c.Request().Context(), authorize, request.Price, request.IdempotencyKey)
 	if err != nil {
 		s.logStripeFailure(c.Request().Context(), err)
-		var failure *nativeError
+		var failure *hubapi.NativeError
 		switch {
 		case errors.Is(err, auth.ErrHostedIdentity):
 			return s.hostedBillingFailure(c, api, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
@@ -66,7 +67,7 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 		case errors.Is(err, mutation.ErrUncertain):
 			return s.hostedBillingFailure(c, api, http.StatusConflict, mutation.ErrUncertain.Error())
 		case errors.As(err, &failure):
-			return s.hostedBillingFailure(c, api, failure.status, failure.Message)
+			return s.hostedBillingFailure(c, api, failure.Status, failure.Message)
 		default:
 			return s.nativeAPIError(c, err)
 		}
@@ -78,7 +79,7 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 }
 
 func (s *Service) prepareHostedCheckout(ctx context.Context, actor, price string) (hostedCheckout, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	var checkout hostedCheckout
 
@@ -137,7 +138,7 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 	api := hostedBillingAPI(c)
 	var request struct{ hostedIdempotent }
 	if api {
-		if err := decodeAPIJSON(c, &request); err != nil {
+		if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 			return s.invalidAPIRequest(c, err)
 		}
 		if err := request.validate(true); err != nil {
@@ -145,13 +146,13 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 		}
 	}
 
-	authorize := func(ctx context.Context) (apiCredential, error) {
+	authorize := func(ctx context.Context) (hubapi.APICredential, error) {
 		return s.hostedBillingOwner(ctx, c)
 	}
 	result, err := s.portalBilling(c.Request().Context(), authorize, request.IdempotencyKey)
 	if err != nil {
 		s.logStripeFailure(c.Request().Context(), err)
-		var failure *nativeError
+		var failure *hubapi.NativeError
 		switch {
 		case errors.Is(err, auth.ErrHostedIdentity):
 			return s.hostedBillingFailure(c, api, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
@@ -160,7 +161,7 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 		case errors.Is(err, mutation.ErrUncertain):
 			return s.hostedBillingFailure(c, api, http.StatusConflict, mutation.ErrUncertain.Error())
 		case errors.As(err, &failure):
-			return s.hostedBillingFailure(c, api, failure.status, failure.Message)
+			return s.hostedBillingFailure(c, api, failure.Status, failure.Message)
 		default:
 			return s.nativeAPIError(c, err)
 		}
@@ -294,7 +295,7 @@ func (s *Service) hostedBillingFailure(c echo.Context, api bool, status int, mes
 	if code == "" {
 		code = "billing_failed"
 	}
-	return s.refusedAPIError(c, status, code, message, apiErrorResponse{Code: code, Message: message})
+	return s.refusedAPIError(c, status, code, message, hubapi.APIErrorResponse{Code: code, Message: message})
 }
 
 func (s *Service) hostedBillingDestination(c echo.Context, api bool, url string) error {

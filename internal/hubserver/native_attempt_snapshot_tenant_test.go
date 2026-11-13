@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -302,7 +303,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 	service.registerNativeRoutes(service.echo)
 	for _, organizationName := range []string{"Example organization one", "Example organization two"} {
 		t.Run(organizationName, func(t *testing.T) {
-			organization := nativeOrganization{ID: tracker.OrganizationID(newNativeID("org")), Name: organizationName, Slug: strings.ReplaceAll(strings.ToLower(organizationName), " ", "-")}
+			organization := nativeOrganization{ID: tracker.OrganizationID(hubapi.NewID("org")), Name: organizationName, Slug: strings.ReplaceAll(strings.ToLower(organizationName), " ", "-")}
 			now := service.config.now().UTC()
 			cursorKey := bytes.Repeat([]byte{1}, 32)
 			cursorEnvelope, err := keys.Seal(cursorKey, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
@@ -346,10 +347,10 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+			scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 			start := tracker.NativeRunEvent{
 				Mutation: tracker.Mutation{IdempotencyKey: "start"}, Type: "run.started", SchemaVersion: 1,
-				Data: tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: tracker.LeaseID(lease.LeaseID),
+				Data: tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: tracker.LeaseID(lease.LeaseID),
 					FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: "policy_" + strings.Repeat("a", 64), Sequence: 1,
 					Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example-model"}},
 			}
@@ -376,7 +377,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 			}
 			observed := terminal
 			observed.Outcome = ""
-			historyRaw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: organization.ID, ProjectID: project.ID,
+			historyRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization.ID, ProjectID: project.ID,
 				AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, RecordedAt: now,
 				Actor: tracker.Actor{Kind: "integration", PrincipalID: "example"}, Data: tracker.CollaborationData{Run: &observed}})
 			if err != nil {
@@ -579,7 +580,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 	var otherAttempt string
 	for _, organizationName := range []string{"Example organization one", "Example organization two"} {
 		t.Run(organizationName, func(t *testing.T) {
-			organization := nativeOrganization{ID: tracker.OrganizationID(newNativeID("org")), Name: organizationName, Slug: strings.ReplaceAll(strings.ToLower(organizationName), " ", "-")}
+			organization := nativeOrganization{ID: tracker.OrganizationID(hubapi.NewID("org")), Name: organizationName, Slug: strings.ReplaceAll(strings.ToLower(organizationName), " ", "-")}
 			now := service.config.now().UTC()
 			cursorKey := bytes.Repeat([]byte{1}, 32)
 			cursorEnvelope, err := keys.Seal(cursorKey, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
@@ -623,10 +624,10 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+			scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 			start := tracker.NativeRunEvent{
 				Mutation: tracker.Mutation{IdempotencyKey: "start"}, Type: "run.started", SchemaVersion: 1,
-				Data: tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: tracker.LeaseID(lease.LeaseID),
+				Data: tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: tracker.LeaseID(lease.LeaseID),
 					FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: "policy_" + strings.Repeat("a", 64), Sequence: 1,
 					Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example-model"}},
 			}
@@ -719,7 +720,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 						}
 						if test.register {
 							if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-								_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization.ID, ID: newNativeID("archive"), Reference: ref, CreatedAt: now})
+								_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization.ID, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: now})
 								return err
 							}); err != nil {
 								t.Fatal(err)
@@ -792,7 +793,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 				}
 				event := start
 				event.IdempotencyKey = "second-start"
-				event.Data.AttemptID, event.Data.RunID = newNativeID("attempt"), newNativeID("run")
+				event.Data.AttemptID, event.Data.RunID = hubapi.NewID("attempt"), hubapi.NewID("run")
 				event.Data.LeaseID, event.Data.FencingToken = tracker.LeaseID(secondLease.LeaseID), tracker.FencingToken(secondLease.FencingToken)
 				for range 2 {
 					if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(second.WorkItemID), event); err != nil {
@@ -885,7 +886,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 					func(e *leasestore.AttemptEvent) { e.PayloadReference.CompressedSize++ },
 				} {
 					if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-						_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization.ID, ID: newNativeID("archive"), Reference: ref, CreatedAt: now})
+						_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization.ID, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: now})
 						return err
 					}); err != nil {
 						t.Fatal(err)
@@ -1072,11 +1073,11 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 			}
 			if otherAttempt != "" {
 				_, err := service.readNativeAttempt(readContext, scope, string(issue.WorkItemID), otherAttempt)
-				if !errors.Is(err, corestore.ErrNotFound) && !isNativeNotFound(err) {
+				if !errors.Is(err, corestore.ErrNotFound) && !hubapi.IsNativeNotFound(err) {
 					t.Fatalf("cross-organization attempt read = %v", err)
 				}
 				_, err = service.readNativeRecoveryAttemptSnapshot(readContext, scope, string(issue.WorkItemID), issueID, otherAttempt)
-				if !isNativeNotFound(err) {
+				if !hubapi.IsNativeNotFound(err) {
 					t.Fatalf("cross-organization selected recovery = %v", err)
 				}
 			}
@@ -1084,7 +1085,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 			if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET sequence = sequence + 1 WHERE organization_id = $1 AND id = $2", organization.ID, start.Data.AttemptID); err != nil {
 				t.Fatal(err)
 			}
-			var sourceConflict *nativeError
+			var sourceConflict *hubapi.NativeError
 			if _, _, err := service.readRetainedAttemptTenant(t.Context(), scope, string(issue.WorkItemID), start.Data.AttemptID, retainedPin); !errors.As(err, &sourceConflict) || sourceConflict.Code != "revision_conflict" {
 				t.Fatalf("retained pin accepted changed attempt source: %v", err)
 			}
@@ -1105,7 +1106,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			var releaseConflict *nativeError
+			var releaseConflict *hubapi.NativeError
 			if _, _, err := service.readRetainedAttemptTenant(t.Context(), scope, string(issue.WorkItemID), start.Data.AttemptID, retainedPin); !errors.As(err, &releaseConflict) || releaseConflict.Code != "revision_conflict" {
 				t.Fatalf("retained pin accepted an explicitly released lease: %v", err)
 			}

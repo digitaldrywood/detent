@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"encoding/json"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -123,7 +125,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			case "intake pending":
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					imports := w.(projectstore.GitHubImportWriter)
-					record, err := imports.CreateGitHubImport(t.Context(), projectstore.GitHubImport{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: newNativeID("import"), IssueNumber: 1, ObservedAt: f.service.config.now()})
+					record, err := imports.CreateGitHubImport(t.Context(), projectstore.GitHubImport{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: hubapi.NewID("import"), IssueNumber: 1, ObservedAt: f.service.config.now()})
 					if err != nil {
 						return err
 					}
@@ -710,7 +712,7 @@ func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 	winner.claim.SessionID = "offline-target"
 	response = performHubAPIRequest(t, f.service, http.MethodPost, winner.runner.base+"/claims", winner.runner.redemption.Credential, winner.claim)
 	requireNativeStatus(t, response, http.StatusConflict)
-	var failure nativeError
+	var failure hubapi.NativeError
 	decodeHubResponse(t, response, &failure)
 	if failure.Code != "runner_offline" {
 		t.Fatalf("offline reason = %s", failure.Code)
@@ -762,7 +764,7 @@ func TestRunnerRoutingRevocationAndDrain(t *testing.T) {
 				for _, action := range []string{"renew", "validate"} {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/"+action, r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), test.want)
 				}
-				event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "event"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: descriptor.ID, RunID: newNativeID("run"), AttemptID: newNativeID("attempt")}}
+				event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "event"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: descriptor.ID, RunID: hubapi.NewID("run"), AttemptID: hubapi.NewID("attempt")}}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), test.want)
 			})
 		}
@@ -830,7 +832,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 					other.enroll(t)
 					credential = other.redemption.Credential
 				case "cross organization":
-					organization := tracker.OrganizationID(newNativeID("org"))
+					organization := tracker.OrganizationID(hubapi.NewID("org"))
 					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 						return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Other organization", Slug: string(organization), CreatedAt: now})
 					}); err != nil {
@@ -860,7 +862,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 				d.hostedOrganization = f.project.OrganizationID
 				hostedTestPlans(t, f.service, map[string]int64{"api_mutations": test.apiLimit, "ingested_events": 0, "collaboration_bytes": 0, "history_records": 0})
 				f.service.config.Hosted = nil
-				metrics := hostedRunnerTransactionMetrics(nativeBase + "/leases/:lease/validate")
+				metrics := hostedRunnerTransactionMetrics(hubapi.NativeBase + "/leases/:lease/validate")
 				before, err := d.hostedConsumption(t.Context(), nil, now, metrics...)
 				if err != nil {
 					t.Fatal(err)
@@ -868,7 +870,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 				response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/leases/"+string(lease.ID)+"/validate", credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken + test.fenceOffset})
 				requireNativeStatus(t, response, test.status)
 				if test.code != "" {
-					var failure apiErrorResponse
+					var failure hubapi.APIErrorResponse
 					decodeHubResponse(t, response, &failure)
 					if failure.Code != test.code {
 						t.Fatalf("refusal=%s want=%s", failure.Code, test.code)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -80,7 +81,7 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 				t.Fatalf("logged reason = %q, want a nonempty reason matching %q when specified", entry["reason"], reason)
 			}
 			warnings++
-			for key, value := range map[string]any{"code": "invalid_request", "category": want.Category, "field": want.Field, "route": nativeBase + "/work-items/:item/events", "organization": string(f.project.OrganizationID), "project": string(f.project.ID), "work_item": string(f.issue.WorkItemID), "attempt": attempt} {
+			for key, value := range map[string]any{"code": "invalid_request", "category": want.Category, "field": want.Field, "route": hubapi.NativeBase + "/work-items/:item/events", "organization": string(f.project.OrganizationID), "project": string(f.project.ID), "work_item": string(f.issue.WorkItemID), "attempt": attempt} {
 				if entry[key] != value {
 					t.Errorf("%s = %v, want %v", key, entry[key], value)
 				}
@@ -111,7 +112,7 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 		{"references", "event_validation", "data", "", func(e *tracker.NativeRunEvent) { e.Data.RunID = "sentinel-private" }},
 		{"outcome", "event_validation", "data.outcome", "", func(e *tracker.NativeRunEvent) { e.Data.Outcome = "sentinel-private" }},
 		{"nonterminal outcome", "event_validation", "data.outcome", "", func(e *tracker.NativeRunEvent) { e.Type = "run.started" }},
-		{"terminal artifacts", "event_validation", "data.artifact_ids", "", func(e *tracker.NativeRunEvent) { e.Data.ArtifactIDs = []string{newNativeID("artifact")} }},
+		{"terminal artifacts", "event_validation", "data.artifact_ids", "", func(e *tracker.NativeRunEvent) { e.Data.ArtifactIDs = []string{hubapi.NewID("artifact")} }},
 		{"invalid artifact", "event_validation", "data.artifact_ids", "", func(e *tracker.NativeRunEvent) {
 			e.Type, e.Data.Outcome = "run.checkpointed", ""
 			e.Data.ArtifactIDs = []string{"sentinel-private"}
@@ -172,7 +173,7 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 		{"runtime launch policy", "execution_validation", "data.runtime.worker_launch.policy_id", "", func(e *tracker.NativeRunEvent) {
 			e.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", WorkerLaunch: &tracker.NativeWorkerLaunch{
 				PID: 1, ProcessStart: now, ExecutionVersion: "test", ExecutionCommit: strings.Repeat("a", 40),
-				ExecutionSHA256: strings.Repeat("b", 64), ControlVersion: "test", PolicyID: newNativeID("policy"),
+				ExecutionSHA256: strings.Repeat("b", 64), ControlVersion: "test", PolicyID: hubapi.NewID("policy"),
 				Protocol: 1, SelectedAt: now,
 			}}
 		}},
@@ -316,12 +317,12 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 		}},
 		{"source owner", "execution_validation", "data.finalization", "", func(e *tracker.NativeRunEvent) {
 			e.Data.Finalization = finalization()
-			e.Data.Finalization.SourceVersion = &tracker.NativeChangeReference{ChangeID: newNativeID("change"), VersionID: version.ID, HeadSHA: version.HeadSHA}
+			e.Data.Finalization.SourceVersion = &tracker.NativeChangeReference{ChangeID: hubapi.NewID("change"), VersionID: version.ID, HeadSHA: version.HeadSHA}
 		}},
 		{"source attempt", "owner_validation", "data.finalization", "", func(e *tracker.NativeRunEvent) {
 			e.Data.Finalization = finalization()
 			e.Data.Finalization.SourceVersion = &tracker.NativeChangeReference{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
-			e.Data.Finalization.SourceAttemptID = newNativeID("attempt")
+			e.Data.Finalization.SourceAttemptID = hubapi.NewID("attempt")
 		}},
 		{"landing head", "owner_validation", "data.runtime.landing", "", func(e *tracker.NativeRunEvent) {
 			e.Data.Runtime = landing()
@@ -381,17 +382,17 @@ func TestNativeRuntimePhaseRejectionReason(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := validateNativeRuntime(&tracker.NativeRuntimeObservation{Phase: "completed", Phases: []tracker.NativePhase{{Name: "implementation", StartedAt: started}, test.phase}})
-			var failure *nativeError
+			var failure *hubapi.NativeError
 			if !errors.As(err, &failure) || failure == nil {
 				t.Fatalf("validateNativeRuntime() error = %v, want nativeError", err)
 			}
 			want := []any{"phase_index", 1, "phase_failure", test.reason}
-			if len(failure.logAttributes) != len(want) {
-				t.Fatalf("phase log attributes = %v, want %v", failure.logAttributes, want)
+			if len(failure.LogAttributes) != len(want) {
+				t.Fatalf("phase log attributes = %v, want %v", failure.LogAttributes, want)
 			}
 			for i := range want {
-				if failure.logAttributes[i] != want[i] {
-					t.Errorf("phase log attribute %d = %v, want %v", i, failure.logAttributes[i], want[i])
+				if failure.LogAttributes[i] != want[i] {
+					t.Errorf("phase log attribute %d = %v, want %v", i, failure.LogAttributes[i], want[i])
 				}
 			}
 			if strings.Contains(strings.Join([]string{failure.Error(), failure.Message}, " "), "private-phase") {
@@ -413,7 +414,7 @@ func TestHostedNativeRejectionMessages(t *testing.T) {
 			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
 			response := httptest.NewRecorder()
 			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/", nil), response)
-			if err := service.nativeAPIError(c, nativeRejection(nativeInvalid(test.message), test.category, test.field)); err != nil {
+			if err := service.nativeAPIError(c, nativeRejection(hubapi.NativeInvalid(test.message), test.category, test.field)); err != nil {
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)

@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -46,7 +47,7 @@ func (s *Service) accessSecretWrite(ctx context.Context, scope nativeScope, writ
 		if membership.ID != scope.credential.HostedMembership {
 			return accessstore.ErrDenied
 		}
-		scope.credential.HostedRole = lesserHostedRole(scope.credential.HostedRole, membership.Role.Slug)
+		scope.credential.HostedRole = hubapi.LesserHostedRole(scope.credential.HostedRole, membership.Role.Slug)
 	}
 	return s.accessWrite(ctx, scope.organization, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
@@ -120,7 +121,7 @@ func (s *Service) checkAccessSecretKeys(ctx context.Context) error {
 
 func (s *Service) rewrapAccessSecrets(ctx context.Context) error {
 	if s.config.AccessRepository == nil {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if s.config.SecretKeys == nil {
 		return nil
@@ -167,7 +168,7 @@ func (s *Service) rewrapAccessSecrets(ctx context.Context) error {
 	}
 }
 
-func (s *Service) resolveSpritesSecret(ctx context.Context, db nativeQueryer, scope nativeScope) (nativeScope, string, hubsecrets.Envelope, error) {
+func (s *Service) resolveSpritesSecret(ctx context.Context, db hubapi.NativeQueryer, scope nativeScope) (nativeScope, string, hubsecrets.Envelope, error) {
 	if s.config.AccessRepository == nil {
 		return resolveSpritesSecret(ctx, db, scope)
 	}

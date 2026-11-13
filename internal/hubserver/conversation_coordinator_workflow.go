@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -107,13 +108,13 @@ func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversati
 			return nil, err
 		}
 		if configuration.Source == "configured_local_workflow_read_only" {
-			return nil, nativeWorkflowInvalid("Repository workflow is read-only here; propose a reviewed definition change and reconcile its committed revision before policy approval")
+			return nil, hubapi.NativeWorkflowInvalid("Repository workflow is read-only here; propose a reviewed definition change and reconcile its committed revision before policy approval")
 		}
 		if configuration.SelectedPolicy == nil {
 			return nil, &operatortool.RequestError{Code: "unavailable", Message: "The runner has no selected policy observation; inspect local_project_configuration before approval"}
 		}
 		if configuration.SelectedPolicy.ID != args.SelectedID {
-			return nil, policyMismatch("Selected policy changed; read local_project_configuration and preview the change again")
+			return nil, hubapi.PolicyMismatch("Selected policy changed; read local_project_configuration and preview the change again")
 		}
 		input, err := json.Marshal(operatortool.PolicyApprovalInput{ExpectedID: args.ExpectedID, Policy: *configuration.SelectedPolicy, RepositoryPolicy: args.RepositoryPolicy})
 		if err != nil {
@@ -165,7 +166,7 @@ func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversati
 			return nil, err
 		}
 		if current.Data.Policy.ID != request.Input.ExpectedID {
-			return nil, policyMismatch("Approved policy changed; read get_project_policy and preview the change again")
+			return nil, hubapi.PolicyMismatch("Approved policy changed; read get_project_policy and preview the change again")
 		}
 		action.Title = "Approve project workflow policy"
 		action.Description, err = coordinatorSettingsDiff(current.Data.Policy, request.Input.Policy)
@@ -350,7 +351,7 @@ func (s *Service) executeCoordinatorWorkflowAction(ctx context.Context, action c
 				var configuration runnerauth.ProjectConfiguration
 				err = json.Unmarshal(result.Content, &configuration)
 				if err == nil && (configuration.Source == "configured_local_workflow_read_only" || configuration.RunnerID != args.RunnerID || configuration.SelectedPolicy == nil || configuration.SelectedPolicy.ID != args.SelectedID || !reflect.DeepEqual(*configuration.SelectedPolicy, args.Input.Policy)) {
-					err = policyMismatch("Selected policy changed or is unavailable; read local_project_configuration and preview the change again")
+					err = hubapi.PolicyMismatch("Selected policy changed or is unavailable; read local_project_configuration and preview the change again")
 				}
 			}
 		}

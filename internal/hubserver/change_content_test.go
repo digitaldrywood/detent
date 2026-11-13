@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
@@ -149,7 +150,7 @@ func TestChangeContentObjects(t *testing.T) {
 			request.Artifacts = []tracker.ChangeArtifact{{Kind: "artifact", URI: "https://example.test/screen.png", SHA256: artifact.Digest([]byte("image")), Availability: "available"}}
 		}, http.StatusUnprocessableEntity},
 		{"stale version", func(request *tracker.PublishChangeVersion) {
-			request.ExpectedVersionID = newNativeID("version")
+			request.ExpectedVersionID = hubapi.NewID("version")
 		}, http.StatusConflict},
 		{"unknown configuration", func(request *tracker.PublishChangeVersion) {
 			request.PolicyID = artifact.Digest([]byte("unknown configuration"))
@@ -208,7 +209,7 @@ func TestChangeContentObjects(t *testing.T) {
 	output := strings.Repeat("full command output\n", 11000)[:200<<10]
 	reviews := make([]tracker.ChangeReview, 2)
 	for i := range reviews {
-		reviews[i] = tracker.ChangeReview{ID: newNativeID("review"), VersionID: versions[2].ID, Decision: "commented", Body: "Findings remain inline", CreatedAt: f.service.config.now(), Validator: &gate.ValidatorResult{VersionID: versions[2].ID, Repository: input.Repository, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, Verdict: "wait", NotVerified: []string{"Unresolved evidence question"}, Commands: []gate.CommandResult{{Command: "make check-land", Output: output, HeadSHA: input.HeadSHA, TreeSHA: input.BaseSHA, ExitCode: 1, DurationNS: 123}}}}
+		reviews[i] = tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: versions[2].ID, Decision: "commented", Body: "Findings remain inline", CreatedAt: f.service.config.now(), Validator: &gate.ValidatorResult{VersionID: versions[2].ID, Repository: input.Repository, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, Verdict: "wait", NotVerified: []string{"Unresolved evidence question"}, Commands: []gate.CommandResult{{Command: "make check-land", Output: output, HeadSHA: input.HeadSHA, TreeSHA: input.BaseSHA, ExitCode: 1, DurationNS: 123}}}}
 		if _, err := prepareChangeContent(ctx, string(f.project.OrganizationID), []byte(output)); err != nil {
 			t.Fatal(err)
 		}
@@ -398,7 +399,7 @@ func TestChangeContentObjects(t *testing.T) {
 		for _, path := range []string{f.path, f.path + "/versions/" + versions[0].ID + "/source"} {
 			response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 			requireNativeStatus(t, response, http.StatusServiceUnavailable)
-			var failure apiErrorResponse
+			var failure hubapi.APIErrorResponse
 			decodeHubResponse(t, response, &failure)
 			if failure.Code != "storage_unreachable" {
 				t.Fatalf("converted content read without storage = %+v", failure)
@@ -729,7 +730,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 					return err
 				}
 				for _, ref := range []attachment.ArchiveReference{ref, historyRef} {
-					if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: newNativeID("archive"), Reference: ref, CreatedAt: time.Now()}); err != nil {
+					if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: org, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: time.Now()}); err != nil {
 						return err
 					}
 				}
@@ -913,7 +914,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: f.project.OrganizationID, ID: newNativeID("archive"), Reference: ref, CreatedAt: service.config.now()})
+			_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: f.project.OrganizationID, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: service.config.now()})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -974,7 +975,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 			t.Fatal("retained historical source bytes changed")
 		}
 
-		review := tracker.ChangeReview{ID: newNativeID("review"), VersionID: historical.ID, Decision: "commented",
+		review := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: historical.ID, Decision: "commented",
 			Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer"}, CreatedAt: f.service.config.now().UTC().Truncate(time.Microsecond),
 			Validator: &gate.ValidatorResult{VersionID: historical.ID, Repository: historical.Repository, BaseSHA: historical.BaseSHA,
 				HeadSHA: historical.HeadSHA, Verdict: "wait", NotVerified: []string{"Unresolved evidence question"},

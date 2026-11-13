@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -37,16 +38,16 @@ func (s *Service) changeReviewRecordMutation(c echo.Context, request tracker.Rev
 
 func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeScope, item, changeID, versionID, operation string, request tracker.ReviewChange) (json.RawMessage, error) {
 	if request.Decision != "approved" && request.Decision != "changes_requested" && request.Decision != "commented" {
-		return nil, nativePublicInvalid("review decision is invalid")
+		return nil, hubapi.NativePublicInvalid("review decision is invalid")
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || len(request.Body) > 64<<10 {
-		refusal := nativePublicInvalid("An idempotency key of at most 128 bytes and a review body up to 64 KiB are required")
-		if len(request.Body) > 64<<10 && scope.credential.Scope == apiScopeWorker && request.Validator != nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
+		refusal := hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes and a review body up to 64 KiB are required")
+		if len(request.Body) > 64<<10 && scope.credential.Scope == hubapi.APIScopeWorker && request.Validator != nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
 			return nil, nativeRejection(refusal, "acceptance_validation", "body")
 		}
 		return nil, refusal
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -82,14 +83,14 @@ prepareReview:
 		return nil, err
 	}
 	if change.WorkItemID != tracker.NativeWorkItemID(item) {
-		return nil, nativeNotFound()
+		return nil, hubapi.NativeNotFound()
 	}
 	if request.ExpectedRevision != 0 && request.ExpectedRevision != change.Revision || request.ExpectedVersionID != "" && request.ExpectedVersionID != versionID || request.Decision == "approved" && change.CurrentVersion != versionID || change.CurrentLanding() != nil {
-		return nil, nativeConflict(change.Revision)
+		return nil, hubapi.NativeConflict(change.Revision)
 	}
 	versionRow, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, versionID)
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	version, err := eventstore.NewContent(s.runDetailStore()).Version(ctx, versionRow)
 	if err != nil {
@@ -139,26 +140,26 @@ prepareReview:
 			approvedPolicyRows, err = readCurrentChangePolicyRows(ctx, r, scope)
 			return err
 		}); err != nil {
-			return nil, projectRecordError(err)
+			return nil, hubapi.ProjectRecordError(err)
 		}
 		approval, err = hydrateCurrentChangeVersionApproval(ctx, content, scope, approvedPolicyRows, "")
 		if err != nil {
-			return nil, projectRecordError(err)
+			return nil, hubapi.ProjectRecordError(err)
 		}
 		policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(&version, approval.Policy, approval.ReviewPolicy)
 		if policyID != version.Policy.ID || reviewPolicyID != version.ReviewPolicy.ID {
-			return nil, policyMismatch("Current policy changed; the reviewed version must be republished")
+			return nil, hubapi.PolicyMismatch("Current policy changed; the reviewed version must be republished")
 		}
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		_, err := validateChangeRecordContent(ctx, r, scope, submittedContent, nil, "", false)
 		return err
 	}); err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	workflowPlan, err := s.prepareChangeReviewWorkflow(ctx, scope, change, version, review, approval, now)
 	if errors.Is(err, corestore.ErrRevisionConflict) {
-		return nil, nativeConflict(change.Revision)
+		return nil, hubapi.NativeConflict(change.Revision)
 	}
 	if err != nil {
 		return nil, err
@@ -232,7 +233,7 @@ prepareReview:
 		current, err = r.Change(ctx, change.ID)
 		return err
 	}); err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	for {
 		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -276,7 +277,7 @@ prepareReview:
 			}
 			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
-					return nativeConflict(change.Revision)
+					return hubapi.NativeConflict(change.Revision)
 				}
 				return corestore.ErrSerializationFailure
 			} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -302,7 +303,7 @@ prepareReview:
 					return err
 				}
 				if !reflect.DeepEqual(rows, approvedPolicyRows) {
-					return policyMismatch("Current policy changed; the reviewed version must be republished")
+					return hubapi.PolicyMismatch("Current policy changed; the reviewed version must be republished")
 				}
 			}
 			if err := s.lockValidatorReviewRecord(ctx, w, scope, change, request, prepared); err != nil {
@@ -315,14 +316,14 @@ prepareReview:
 				}
 				clock, ok := w.(runnersession.Reader)
 				if !ok {
-					return nativeRunEventStorageUnavailable()
+					return hubapi.NativeRunEventStorageUnavailable()
 				}
 				at, err := clock.RunnerSessionTime(ctx)
 				if err != nil {
 					return err
 				}
 				if ref.SHA256 != request.Bundle.SHA256 || !changerequest.ReviewBundleMatches(version, ref) || !at.Before(ref.ExpiresAt) || ref.Availability != "available" {
-					return nativePublicInvalid("review bundle is unavailable")
+					return hubapi.NativePublicInvalid("review bundle is unavailable")
 				}
 			}
 			workflowCurrent, err := s.recheckChangeReviewWorkflow(ctx, w, scope, workflowPlan, currentChange)
@@ -383,10 +384,10 @@ prepareReview:
 			continue
 		}
 		if errors.Is(err, corestore.ErrRevisionConflict) {
-			return nil, nativeConflict(change.Revision)
+			return nil, hubapi.NativeConflict(change.Revision)
 		}
 		if err != nil {
-			return nil, projectRecordError(err)
+			return nil, hubapi.ProjectRecordError(err)
 		}
 		break
 	}

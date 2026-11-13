@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -34,11 +35,11 @@ func (s *Service) issueNotificationPreference(c echo.Context) error {
 		var request struct {
 			Enabled *bool `json:"enabled"`
 		}
-		if err := decodeAPIJSON(c, &request); err != nil {
+		if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 			return s.invalidAPIRequest(c, err)
 		}
 		if request.Enabled == nil {
-			return s.nativeAPIError(c, nativePublicInvalid("An enabled preference is required"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("An enabled preference is required"))
 		}
 		value.Enabled = *request.Enabled
 		err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
@@ -54,7 +55,7 @@ func (s *Service) issueNotificationPreference(c echo.Context) error {
 			return w.UpdateAccessMember(ctx, member)
 		})
 	} else {
-		readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+		readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 		defer cancel()
 		err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
 			member, err := authorizeIssueNotificationMember(readCtx, r, credential)
@@ -68,7 +69,7 @@ func (s *Service) issueNotificationPreference(c echo.Context) error {
 	return c.JSON(http.StatusOK, value)
 }
 
-func authorizeIssueNotificationMember(ctx context.Context, r tenantstore.Reader, credential apiCredential) (accessstore.Member, error) {
+func authorizeIssueNotificationMember(ctx context.Context, r tenantstore.Reader, credential hubapi.APICredential) (accessstore.Member, error) {
 	member, err := r.AccessMember(ctx, credential.Hosted.Subject)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return accessstore.Member{}, accessstore.ErrDenied
@@ -98,13 +99,13 @@ func (s *Service) unsubscribeIssueEmail(c echo.Context) error {
 		var request struct {
 			Token string `json:"token"`
 		}
-		if err := decodeAPIJSON(c, &request); err != nil {
+		if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 			return s.invalidAPIRequest(c, err)
 		}
 		token = request.Token
 	}
-	if !validNativeID(token, "unsub") {
-		return s.nativeAPIError(c, nativeNotFound())
+	if !hubapi.ValidID(token, "unsub") {
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	repository, ok := s.config.AccessRepository.(accountstore.NotificationRepository)
 	if !ok {

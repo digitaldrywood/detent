@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -699,7 +700,7 @@ func coordinatorFixtureClearPolicyPin(t *testing.T, s *Service, organization tra
 func coordinatorFixturePolicyObservation(ctx context.Context, s *Service, scope, reporter string, observation policy.Observation) error {
 	organization, project, ok := strings.Cut(scope, "/")
 	if !ok {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	row, err := eventstore.NewContent(s.runDetailStore()).PrepareProjectPolicy(ctx, tracker.OrganizationID(organization), observation.Descriptor)
 	if err != nil {

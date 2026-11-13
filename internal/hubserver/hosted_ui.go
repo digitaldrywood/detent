@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -164,9 +165,9 @@ func (s *Service) hostedHome(c echo.Context) error {
 	return s.renderHosted(c, http.StatusOK, data)
 }
 
-func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data *templates.HostedPageData) error {
+func (s *Service) hostedPageData(c echo.Context, credential hubapi.APICredential, data *templates.HostedPageData) error {
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	identity := credential.Hosted
 	if identity.SupportActor != "" {
@@ -211,7 +212,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	}
 	initialScope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(c.Param("project")), credential: initial}
 	if err := s.requireHostedProject(c.Request().Context(), nil, initialScope, false); err != nil {
-		if isNativeNotFound(err) {
+		if hubapi.IsNativeNotFound(err) {
 			return s.nativeAPIError(c, err)
 		}
 		return s.hostedJSONError(c, http.StatusForbidden, "Project access is required for events")
@@ -222,7 +223,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	workspaceID := c.QueryParam("workspace")
 	workItemID := c.QueryParam("work_item")
 	if workItemID != "" {
-		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 		err := s.config.TenantRepository.ReadTenant(readCtx, initialScope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			return requireDashboardRecordItem(readCtx, r, initialScope, workItemID)
 		})
@@ -242,7 +243,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	board := c.QueryParam("board") == "true"
 	if board {
 		if workspaceID != "" || workItemID != "" {
-			return s.nativeAPIError(c, nativePublicInvalid("board stream cannot include a workspace or item"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("board stream cannot include a workspace or item"))
 		}
 		params := c.Request().URL.Query()
 		params.Del("board")
@@ -259,7 +260,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	if value != "" {
 		sequence, err = strconv.ParseInt(value, 10, 64)
 		if err != nil || sequence < 0 {
-			return s.nativeAPIError(c, nativePublicInvalid("Stream sequence is invalid"))
+			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Stream sequence is invalid"))
 		}
 	}
 	return s.serveDashboardEvents(c, initialScope, sequence, value == "", board, workspaceID, workItemID)
@@ -268,7 +269,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 func (s *Service) hostedMetadata(c echo.Context) error {
 	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 		credential, _, err := s.authenticateAPIRequest(c)
-		if err != nil || credential.ID != bootstrapTokenID || credential.Scope != apiScopeAdmin {
+		if err != nil || credential.ID != bootstrapTokenID || credential.Scope != hubapi.APIScopeAdmin {
 			return s.hostedJSONError(c, http.StatusForbidden, "Bootstrap administrator access is required for service metadata")
 		}
 	} else {
@@ -279,7 +280,7 @@ func (s *Service) hostedMetadata(c echo.Context) error {
 	}
 	report, err := s.readHostedMetadata(c.Request().Context())
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "metadata_unavailable", Message: "Service metadata is temporarily unavailable"})
+		return c.JSON(http.StatusServiceUnavailable, hubapi.APIErrorResponse{Code: "metadata_unavailable", Message: "Service metadata is temporarily unavailable"})
 	}
 	return c.JSON(http.StatusOK, report)
 }
@@ -313,7 +314,7 @@ type hostedAccountSetup struct {
 }
 
 func (s *Service) hostedAccountSetupFor(ctx context.Context, session auth.Session) (hostedAccountSetup, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var members int
 	if err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {

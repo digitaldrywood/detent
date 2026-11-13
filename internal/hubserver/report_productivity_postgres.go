@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -67,14 +68,14 @@ func (s *Service) hostedReportsPostgres(c echo.Context) error {
 		return s.hostedReportsDetailPostgres(c, credential)
 	}
 	if project != reportsAllProjects {
-		return s.nativeAPIError(c, nativePublicInvalid("Organization report scope requires all projects"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Organization report scope requires all projects"))
 	}
 	projects, found, err := s.reportsReadableProjects(ctx, credential, reportsAllProjects)
 	if err != nil {
 		return s.usageCredentialError(c, err)
 	}
 	if !found {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	w, err := reportsWindow(params, s.config.now())
 	if err != nil {
@@ -86,15 +87,15 @@ func (s *Service) hostedReportsPostgres(c echo.Context) error {
 	}
 	compare := params.Get("compare")
 	if compare != "" && compare != "prior" && compare != "off" {
-		return s.nativeAPIError(c, nativePublicInvalid("compare must be prior or off"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("compare must be prior or off"))
 	}
 	selectedProjects := reportsQueryValues(params, "projects")
 	if len(selectedProjects) > reportsMaxFilterValues {
-		return s.nativeAPIError(c, nativePublicInvalid("Report project filter accepts at most 32 values"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Report project filter accepts at most 32 values"))
 	}
 	projects = filterProductivityProjects(projects, selectedProjects)
 	if len(projects) == 0 {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	report, err := s.readOrganizationProductivityPostgres(ctx, credential, projects, w, filter)
 	if err != nil {
@@ -115,11 +116,11 @@ func (s *Service) hostedReportOptionsPostgres(c echo.Context) error {
 		return s.usageCredentialError(c, err)
 	}
 	if !found {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	if c.QueryParam("project") != reportsAllProjects {
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: projects[0]}); err != nil {
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 	}
 	w, err := reportsWindow(c.QueryParams(), s.config.now())
@@ -146,8 +147,8 @@ func (s *Service) hostedReportOptionsPostgres(c echo.Context) error {
 	}{reportsFacets{Labels: facets.Labels, FiledBy: convertReportFacets(facets.FiledBy), Runners: convertReportFacets(facets.Runners), Models: facets.Models, Stages: facets.Stages}, facets.Unavailable})
 }
 
-func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, credential apiCredential, projectIDsValue []string, w operatortool.AnalyticsWindow, filter reportsFilter) (postgresOrganizationProductivity, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, credential hubapi.APICredential, projectIDsValue []string, w operatortool.AnalyticsWindow, filter reportsFilter) (postgresOrganizationProductivity, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	w.Bucket = time.Hour
 	if w.To.Sub(w.From) >= 6*24*time.Hour {
@@ -450,7 +451,7 @@ func finishPostgresProductivityMetrics(metrics *postgresProductivityMetrics) {
 		metrics.ReworkRate = new(100 * float64(*metrics.Reworked) / float64(*metrics.Worked))
 	}
 	if len(metrics.cycles) > 0 {
-		metrics.CycleP50 = new(sampledDuration(metrics.cycles).P50Seconds)
+		metrics.CycleP50 = new(hubapi.SampledDuration(metrics.cycles).P50Seconds)
 	}
 }
 
@@ -481,7 +482,7 @@ func addPostgresProductivityMetrics(to *postgresProductivityMetrics, from postgr
 	to.cycles = append(to.cycles, from.cycles...)
 }
 
-func reportPrincipal(credential apiCredential) string {
+func reportPrincipal(credential hubapi.APICredential) string {
 	if credential.HostedRole != "reporter" {
 		return ""
 	}

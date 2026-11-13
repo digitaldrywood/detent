@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -95,7 +96,7 @@ func TestHostedEventsWorkspace(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusCreated)
 				var action workspacesession.Action
 				decodeHubResponse(t, response, &action)
-				runID := newNativeID("run")
+				runID := hubapi.NewID("run")
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
 					_, err := w.(postgres.RelayActionWriter).CreateActionRun(t.Context(), postgres.CreateActionRunInput{ID: runID, OrganizationID: f.service.accessOrganization(), ProjectID: f.project, ActionID: action.ID, WorkspaceID: session.ID, CreatedBy: user.identity.Subject, CreatedAt: f.service.config.now()})
 					return err
@@ -182,7 +183,7 @@ func TestHostedEventsActivityIncludesChangesBelowIssueMaximum(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 	high, low := f.seedIssue(t, 1), f.seedIssue(t, 2)
-	scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: "fixture", Scope: apiScopeAdmin}}
+	scope := nativeScope{organization: "org_security", project: f.project, credential: hubapi.APICredential{ID: "fixture", Scope: hubapi.APIScopeAdmin}}
 	appendEvent := func(item tracker.NativeWorkItemID, kind string, data tracker.CollaborationData) {
 		t.Helper()
 		appendAnalyticsTestEvent(t, f.service, scope, item, kind, data, f.service.config.now())
@@ -263,7 +264,7 @@ func TestHostedEventsHealthFinding(t *testing.T) {
 			break
 		}
 	}
-	page, err := f.service.readHealthFindings(t.Context(), nativeScope{organization: "org_security", project: f.project, credential: apiCredential{Scope: apiScopeAdmin}}, "open", "", "", 100)
+	page, err := f.service.readHealthFindings(t.Context(), nativeScope{organization: "org_security", project: f.project, credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}, "open", "", "", 100)
 	if err != nil || len(page.Items) != 0 {
 		t.Fatalf("resolved findings = %#v: %v", page, err)
 	}
@@ -274,7 +275,7 @@ func TestHostedEventsIssue(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 	item, unrelated := f.seedIssue(t, 1), f.seedIssue(t, 2)
-	scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: "fixture", Scope: apiScopeAdmin}}
+	scope := nativeScope{organization: "org_security", project: f.project, credential: hubapi.APICredential{ID: "fixture", Scope: hubapi.APIScopeAdmin}}
 	var previous int64
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		watermark, err := r.BoardSequence(t.Context(), scope.project)

@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -112,19 +113,19 @@ func (c *conversationTurnCoordinator) coordinatorMessages(ctx context.Context, f
 
 func (c *conversationTurnCoordinator) authorizeRecord(ctx context.Context, scope nativeScope, record conversationRecord, write bool) error {
 	if record.OrganizationID != scope.organization || record.ProjectID != scope.project {
-		return nativeNotFound()
+		return hubapi.NativeNotFound()
 	}
 	return c.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := c.server.authorizeAccessScope(ctx, r, scope, write); err != nil {
 			return err
 		}
 		if record.Visibility == conversation.VisibilityPrivate && record.OwnerPrincipalID != scope.credential.ID {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		if record.ReadAudience != "" {
 			audience, err := conversationReadAudienceRecord(ctx, r, scope.organization, scope.credential)
 			if err != nil || audience != record.ReadAudience {
-				return nativeNotFound()
+				return hubapi.NativeNotFound()
 			}
 		}
 		return authorizeConversationLinkedItemPG(ctx, r, scope, record)
@@ -176,7 +177,7 @@ func (c *conversationTurnCoordinator) updateMessage(ctx context.Context, w tenan
 		return err
 	}
 	if current.Kind == conversation.MessageTool && current.ContentReference != "" {
-		if err := w.PutToolRevision(ctx, conversationstore.ToolRevision{OrganizationID: current.OrganizationID, ConversationID: current.ConversationID, MessageID: current.ID, Revision: current.Revision, ContentReference: current.ContentReference, Tool: stringValue(current.ToolName), ItemID: stringValue(current.ToolItemID), Status: stringValue(current.ToolStatus)}); err != nil {
+		if err := w.PutToolRevision(ctx, conversationstore.ToolRevision{OrganizationID: current.OrganizationID, ConversationID: current.ConversationID, MessageID: current.ID, Revision: current.Revision, ContentReference: current.ContentReference, Tool: hubapi.StringValue(current.ToolName), ItemID: hubapi.StringValue(current.ToolItemID), Status: hubapi.StringValue(current.ToolStatus)}); err != nil {
 			return err
 		}
 	}

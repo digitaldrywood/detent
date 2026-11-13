@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -945,7 +946,7 @@ func setSpriteAllocationFixture(t *testing.T, f nativeFixture, desired int, revi
 			return err
 		}
 		if current.Revision != revision {
-			return nativeConflict(current.Revision)
+			return hubapi.NativeConflict(current.Revision)
 		}
 		row.OrganizationID, row.ProjectID, row.DesiredCount, row.ConfiguredBy = scope.organization, scope.project, int32(desired), credential.ID
 		if row.RequestedAt.IsZero() || desired >= current.AllocatedCount {
@@ -990,7 +991,7 @@ func readSpriteRunnerFixture(t *testing.T, f nativeFixture, id string) (runnerau
 	err := f.service.accessRead(t.Context(), f.project.OrganizationID, func(r tenantstore.Reader) error {
 		owner, ok := r.(runnerstore.RoutingReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		now := f.service.config.now()
 		record, err := owner.RunnerRoutingRecord(t.Context(), id, now)
@@ -1453,7 +1454,7 @@ func TestProjectSpriteWorkspaceClaims(t *testing.T) {
 			}
 			session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
 			item := f.item(t, session.ID)
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(item), MachineID: f.runner.binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}})
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: tracker.NativeWorkItemID(item), MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}})
 			requireNativeStatus(t, response, test.status)
 		})
 	}

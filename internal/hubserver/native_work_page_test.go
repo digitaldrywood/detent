@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -76,16 +77,16 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 			source.set("collaboration_versions", map[string]string{"record_id": string(item), "revision": "2"}, map[string]any{"encoding": "snapshot", "record_json": string(raw)})
 			data, _ := json.Marshal(tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done"})
 			actor, _ := json.Marshal(issue.Actor)
-			source.set("collaboration_events", map[string]string{"work_item_id": string(item), "type": "issue.edited"}, map[string]any{"type": "workflow.transitioned", "data_json": string(data), "recorded_at": formatHubTime(at)})
+			source.set("collaboration_events", map[string]string{"work_item_id": string(item), "type": "issue.edited"}, map[string]any{"type": "workflow.transitioned", "data_json": string(data), "recorded_at": hubapi.FormatHubTime(at)})
 			sequence := 2
 			if index == 0 {
 				for eventIndex := range 400 {
 					sequence++
 					data, _ := json.Marshal(tracker.CollaborationData{Revision: 2, FromState: "Done", ToState: "Done"})
-					source.add("collaboration_events", map[string]any{"id": fmt.Sprintf("event_same_%d", eventIndex), "organization_id": fixture.project.OrganizationID, "project_id": fixture.project.ID, "work_item_id": item, "sequence": sequence, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(actor), "data_json": string(data), "event_revision": 2, "recorded_at": formatHubTime(now)})
+					source.add("collaboration_events", map[string]any{"id": fmt.Sprintf("event_same_%d", eventIndex), "organization_id": fixture.project.OrganizationID, "project_id": fixture.project.ID, "work_item_id": item, "sequence": sequence, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(actor), "data_json": string(data), "event_revision": 2, "recorded_at": hubapi.FormatHubTime(now)})
 				}
 			}
-			source.set("issues", map[string]string{"native_id": string(item)}, map[string]any{"event_sequence": sequence, "workflow_state_id": 2, "updated_at": formatHubTime(at), "native_updated_at": formatHubTime(at), "last_activity_at": formatHubTime(now)})
+			source.set("issues", map[string]string{"native_id": string(item)}, map[string]any{"event_sequence": sequence, "workflow_state_id": 2, "updated_at": hubapi.FormatHubTime(at), "native_updated_at": hubapi.FormatHubTime(at), "last_activity_at": hubapi.FormatHubTime(now)})
 			issue.WorkItemID = tracker.NativeWorkItemID(fmt.Sprintf("wi_closure_%d%s", projectIndex, suffix))
 			closed[issue.WorkItemID] = at
 			items[fixture.project.ID] = append(items[fixture.project.ID], issue)
@@ -944,12 +945,12 @@ func importNativeWorkPageIssues(t *testing.T, f nativeFixture, issues []tracker.
 		if issue.IssueContract != nil {
 			contract = string(historyTestJSON(t, issue.IssueContract))
 		}
-		source.add("issues", map[string]any{"id": id, "native_id": issue.WorkItemID, "organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "number": issue.Number, "revision": issue.Revision, "event_sequence": len(histories[index]) + 1, "native_source_key": nil, "title": issue.Title, "body": issue.Body, "issue_contract_json": contract, "report_context_json": nil, "actor_json": actor, "provenance_json": nil, "archived": issue.Archived, "created_at": formatHubTime(issue.CreatedAt), "updated_at": formatHubTime(issue.UpdatedAt), "native_created_at": formatHubTime(issue.CreatedAt), "native_updated_at": formatHubTime(issue.UpdatedAt), "last_activity_at": formatHubTime(issue.LastActivityAt), "workflow_state_id": stateID, "terminal_entered_at": nil, "labels_json": string(historyTestJSON(t, issue.Labels)), "assignees_json": string(historyTestJSON(t, issue.Assignees)), "author_login": issue.Actor.PrincipalID, "repository_id": nil, "dispatch_wait_since": nil})
+		source.add("issues", map[string]any{"id": id, "native_id": issue.WorkItemID, "organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "number": issue.Number, "revision": issue.Revision, "event_sequence": len(histories[index]) + 1, "native_source_key": nil, "title": issue.Title, "body": issue.Body, "issue_contract_json": contract, "report_context_json": nil, "actor_json": actor, "provenance_json": nil, "archived": issue.Archived, "created_at": hubapi.FormatHubTime(issue.CreatedAt), "updated_at": hubapi.FormatHubTime(issue.UpdatedAt), "native_created_at": hubapi.FormatHubTime(issue.CreatedAt), "native_updated_at": hubapi.FormatHubTime(issue.UpdatedAt), "last_activity_at": hubapi.FormatHubTime(issue.LastActivityAt), "workflow_state_id": stateID, "terminal_entered_at": nil, "labels_json": string(historyTestJSON(t, issue.Labels)), "assignees_json": string(historyTestJSON(t, issue.Assignees)), "author_login": issue.Actor.PrincipalID, "repository_id": nil, "dispatch_wait_since": nil})
 		source.add("collaboration_versions", map[string]any{"organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "work_item_id": issue.WorkItemID, "record_id": issue.WorkItemID, "revision": issue.Revision, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
-		source.add("queue_entries", map[string]any{"id": id, "issue_id": id, "scope": "native", "state": issue.State, "rank": fmt.Sprintf("%04d", index), "priority_override": nil, "created_at": formatHubTime(issue.CreatedAt), "updated_at": formatHubTime(issue.UpdatedAt)})
+		source.add("queue_entries", map[string]any{"id": id, "issue_id": id, "scope": "native", "state": issue.State, "rank": fmt.Sprintf("%04d", index), "priority_override": nil, "created_at": hubapi.FormatHubTime(issue.CreatedAt), "updated_at": hubapi.FormatHubTime(issue.UpdatedAt)})
 		events := append([]tracker.CollaborationEvent{{Type: "issue.created", RecordedAt: issue.CreatedAt, Data: tracker.CollaborationData{Revision: issue.Revision}}}, histories[index]...)
 		for eventIndex, event := range events {
-			source.add("collaboration_events", map[string]any{"id": fmt.Sprintf("event_%s_%d", issue.WorkItemID, eventIndex), "organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "work_item_id": issue.WorkItemID, "sequence": eventIndex + 1, "type": event.Type, "schema_version": 1, "actor_json": actor, "data_json": string(historyTestJSON(t, event.Data)), "event_revision": event.Data.Revision, "recorded_at": formatHubTime(event.RecordedAt)})
+			source.add("collaboration_events", map[string]any{"id": fmt.Sprintf("event_%s_%d", issue.WorkItemID, eventIndex), "organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "work_item_id": issue.WorkItemID, "sequence": eventIndex + 1, "type": event.Type, "schema_version": 1, "actor_json": actor, "data_json": string(historyTestJSON(t, event.Data)), "event_revision": event.Data.Revision, "recorded_at": hubapi.FormatHubTime(event.RecordedAt)})
 		}
 	}
 	input := CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}

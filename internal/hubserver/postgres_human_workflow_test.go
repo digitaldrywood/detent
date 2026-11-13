@@ -9,10 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"strings"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -20,7 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"strings"
 )
 
 func humanWorkflowFixtureStates() []tracker.NativeState {
@@ -253,7 +255,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 		if err != nil {
 			return err
 		}
-		if row.Revision != int64(changed.Revision) || stringValue(row.WorkflowStateName) != "Rework" {
+		if row.Revision != int64(changed.Revision) || hubapi.StringValue(row.WorkflowStateName) != "Rework" {
 			return fmt.Errorf("current human intent was not stored")
 		}
 		version, err := r.CollaborationVersion(t.Context(), string(issue.WorkItemID), row.Revision)
@@ -307,16 +309,16 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 		{"removed target identity", "UPDATE runner_identities SET removed_at=$3 WHERE organization_id=$1 AND token_id=$2"},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
-			item := create(owner, newNativeID("human-target"), "Todo")
+			item := create(owner, hubapi.NewID("human-target"), "Todo")
 			request := claim
 			request.ProviderCandidates = append([]tracker.NativeCapacityCandidate(nil), claim.ProviderCandidates...)
-			request.WorkItemID, request.SessionID = item.WorkItemID, newNativeID("session")
+			request.WorkItemID, request.SessionID = item.WorkItemID, hubapi.NewID("session")
 			request.ProviderCandidates[0].WorkItemID, request.ProviderCandidates[0].Revision = item.WorkItemID, item.Revision
 			response := performHubAPIRequest(t, service, http.MethodPost, base+"/claims", worker, request)
 			requireNativeStatus(t, response, http.StatusOK)
 			var held tracker.NativeLease
 			decodeHubResponse(t, response, &held)
-			start := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: held.ID, FencingToken: held.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example-backend", Model: "example-model"}}}
+			start := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: held.ID, FencingToken: held.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example-backend", Model: "example-model"}}}
 			events := base + "/work-items/" + string(item.WorkItemID) + "/events"
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, events, worker, start), http.StatusOK)
 			credential, _, err := service.authenticateAccessHash(t.Context(), apikey.HashToken(worker), "", "")
@@ -348,7 +350,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 				t.Fatal(err)
 			}
 			finish := start
-			finish.IdempotencyKey, finish.Type, finish.Data.Sequence, finish.Data.Outcome = newNativeID("finish"), "run.finished", 2, "succeeded"
+			finish.IdempotencyKey, finish.Type, finish.Data.Sequence, finish.Data.Outcome = hubapi.NewID("finish"), "run.finished", 2, "succeeded"
 			denied := performHubAPIRequest(t, service, http.MethodPost, events, worker, finish)
 			if denied.Code < 400 || denied.Code >= 500 {
 				t.Fatalf("invalid target worker event accepted: %d", denied.Code)
@@ -357,7 +359,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 			if denied.Code < 400 || denied.Code >= 500 {
 				t.Fatalf("invalid target worker release accepted: %d", denied.Code)
 			}
-			cancel := transition(item, newNativeID("cancel"), "Cancelled")
+			cancel := transition(item, hubapi.NewID("cancel"), "Cancelled")
 			cancel.LeaseID, cancel.FencingToken = held.ID, held.FencingToken
 			response = performHubAPIRequest(t, service, http.MethodPost, workflow(item), owner, cancel)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -407,8 +409,8 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 	if lease.WorkItemID != issue.WorkItemID || lease.ID == tracker.LeaseID(oldLease.LeaseID) || lease.FencingToken <= tracker.FencingToken(oldLease.FencingToken) {
 		t.Fatal("Rework did not claim a new fenced execution")
 	}
-	currentAttemptID := newNativeID("attempt")
-	started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "human-current-start"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: currentAttemptID, RunID: newNativeID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example-backend", Model: "example-model"}}}
+	currentAttemptID := hubapi.NewID("attempt")
+	started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "human-current-start"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: currentAttemptID, RunID: hubapi.NewID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example-backend", Model: "example-model"}}}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, started), http.StatusOK)
 	for _, state := range []string{"Todo"} {
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, workflow(changed), owner, transition(changed, "human-active-"+state, state)), http.StatusConflict)
@@ -495,7 +497,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 		if err != nil {
 			return err
 		}
-		if row.Revision != int64(reopened.Revision) || stringValue(row.WorkflowStateName) != "Todo" {
+		if row.Revision != int64(reopened.Revision) || hubapi.StringValue(row.WorkflowStateName) != "Todo" {
 			return fmt.Errorf("cancel replay overwrote newer human intent")
 		}
 		return nil
@@ -701,7 +703,7 @@ func verifyPostgresHumanReceiptExpiry(t *testing.T, service *Service, organizati
 		if err != nil {
 			return err
 		}
-		if row.Revision != int64(newer.Revision) || stringValue(row.WorkflowStateName) != "Todo" {
+		if row.Revision != int64(newer.Revision) || hubapi.StringValue(row.WorkflowStateName) != "Todo" {
 			return fmt.Errorf("expiry overwrote newer workflow intent")
 		}
 		after, err = r.ArchiveBytes(t.Context())

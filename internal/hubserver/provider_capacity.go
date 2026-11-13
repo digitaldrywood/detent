@@ -8,31 +8,32 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func providerWait(code, message string) error {
-	return &nativeError{Code: code, Message: message, status: http.StatusConflict}
+	return &hubapi.NativeError{Code: code, Message: message, Status: http.StatusConflict}
 }
 
 func isProviderWait(err error) bool {
-	var failure *nativeError
+	var failure *hubapi.NativeError
 	return errors.As(err, &failure) && failure != nil && (failure.Code == "provider_capacity" || failure.Code == "provider_incompatible" || failure.Code == "provider_candidate_changed")
 }
 
 func validateProviderCandidates(candidates []tracker.NativeCapacityCandidate) error {
 	if len(candidates) > 100 {
-		return nativePublicInvalid("Provider selection is limited to 100 candidates per page")
+		return hubapi.NativePublicInvalid("Provider selection is limited to 100 candidates per page")
 	}
 	seen := make(map[tracker.NativeWorkItemID]bool)
 	for _, candidate := range candidates {
 		if candidate.WorkItemID == "" || candidate.Revision <= 0 || seen[candidate.WorkItemID] {
-			return nativePublicInvalid("Provider candidates require distinct work items and positive revisions")
+			return hubapi.NativePublicInvalid("Provider candidates require distinct work items and positive revisions")
 		}
 		if err := candidate.Requirement.Validate(); err != nil {
-			return nativeInvalid(err.Error())
+			return hubapi.NativeInvalid(err.Error())
 		}
 		seen[candidate.WorkItemID] = true
 	}
@@ -41,7 +42,7 @@ func validateProviderCandidates(candidates []tracker.NativeCapacityCandidate) er
 
 func validateProviderReports(reports []providercapacity.Report) error {
 	if err := providercapacity.Validate(reports); err != nil {
-		return nativeInvalid(err.Error())
+		return hubapi.NativeInvalid(err.Error())
 	}
 	return nil
 }

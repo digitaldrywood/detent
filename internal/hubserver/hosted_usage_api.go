@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -37,18 +38,18 @@ func (s *Service) usageSessionOnly(next echo.HandlerFunc) echo.HandlerFunc {
 
 func (s *Service) usageCredentialError(c echo.Context, err error) error {
 	if errors.Is(err, auth.ErrInvalidSession) {
-		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
+		return c.JSON(http.StatusUnauthorized, hubapi.APIErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
 	if errors.Is(err, auth.ErrHostedIdentity) {
-		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
+		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", hubapi.APIErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	return s.nativeAPIError(c, err)
 }
 
-func (s *Service) usageReadableProjects(ctx context.Context, credential apiCredential) ([]string, error) {
+func (s *Service) usageReadableProjects(ctx context.Context, credential hubapi.APICredential) ([]string, error) {
 	projects, err := s.hostedReadableProjectsPostgres(ctx, credential)
 	if err != nil {
 		return nil, err
@@ -78,7 +79,7 @@ func (s *Service) hostedUsageReport(c echo.Context) error {
 }
 
 func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []string) ([]usageRow, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if len(projects) == 0 {
 		return nil, nil
@@ -126,7 +127,7 @@ func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []
 		if len(usage) == 0 {
 			continue
 		}
-		usage[0].BusySeconds = usageBusySeconds(formatHubTime(attempt.StartedAt), formatHubTime(attempt.UpdatedAt), window)
+		usage[0].BusySeconds = usageBusySeconds(hubapi.FormatHubTime(attempt.StartedAt), hubapi.FormatHubTime(attempt.UpdatedAt), window)
 		rows = append(rows, usage...)
 		delete(grouped, attempt.AttemptID)
 	}
@@ -156,7 +157,7 @@ func (s *Service) usageLimits(ctx context.Context) (map[string]usageLimit, error
 }
 
 func (s *Service) usageRunnerCapacity(ctx context.Context) (map[string]runnerCapacity, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	capacity := map[string]runnerCapacity{}
 	for offset := 0; ; offset += 200 {
@@ -173,7 +174,7 @@ func (s *Service) usageRunnerCapacity(ctx context.Context) (map[string]runnerCap
 	}
 }
 
-func (s *Service) readHostedUsage(ctx context.Context, credential apiCredential, rangeName, project string) (usageReport, error) {
+func (s *Service) readHostedUsage(ctx context.Context, credential hubapi.APICredential, rangeName, project string) (usageReport, error) {
 	window, err := usageRangeWindow(rangeName, s.config.now())
 	if err != nil {
 		return usageReport{}, err
@@ -186,7 +187,7 @@ func (s *Service) readHostedUsage(ctx context.Context, credential apiCredential,
 		if !slices.Contains(projects, requested) {
 			// A project the member cannot read is indistinguishable from one
 			// that does not exist.
-			return usageReport{}, nativeNotFound()
+			return usageReport{}, hubapi.NativeNotFound()
 		}
 		projects = []string{requested}
 	}

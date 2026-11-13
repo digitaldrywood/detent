@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/operatorchat"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -36,7 +37,7 @@ func (store operatorChatStore) Save(ctx context.Context, state chat.SessionState
 }
 
 func (s *Service) resolveOperatorChatAuthority(ctx context.Context, identity operatortool.Identity, origin string) (operatortool.Authority, error) {
-	var credential apiCredential
+	var credential hubapi.APICredential
 	var err error
 	if origin != "" {
 		if identity.SessionID != "" {
@@ -81,10 +82,10 @@ func (s *Service) currentEntryOriginClaims(ctx context.Context, encoded string) 
 	return claims, nil
 }
 
-func (s *Service) currentEntryOriginCredential(ctx context.Context, encoded string) (apiCredential, error) {
+func (s *Service) currentEntryOriginCredential(ctx context.Context, encoded string) (hubapi.APICredential, error) {
 	claims, err := s.currentEntryOriginClaims(ctx, encoded)
 	if err != nil {
-		return apiCredential{}, err
+		return hubapi.APICredential{}, err
 	}
 	credential, _, err := s.entryKeyCredential(ctx, claims)
 	return credential, err

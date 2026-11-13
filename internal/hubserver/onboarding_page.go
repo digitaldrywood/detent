@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/onboardingpage"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -24,7 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func onboardingViewer(credential apiCredential) (projectstore.OnboardingViewer, string, error) {
+func onboardingViewer(credential hubapi.APICredential) (projectstore.OnboardingViewer, string, error) {
 	v := projectstore.OnboardingViewer{ID: credential.ID, Hash: credential.Hash, SessionHash: credential.SessionHash, Scope: string(credential.Scope), NativeOnly: credential.NativeOnly, UserID: hostedSubject(credential), Membership: credential.HostedMembership, Principal: credential.HostedPrincipal, Role: credential.HostedRole, KeyScope: string(credential.HostedKeyScope), KeyKind: credential.HostedKeyKind, ProjectAccess: string(credential.HostedProjectAccess), RunnerID: credential.Runner.RunnerID}
 	if credential.EntryKey != nil {
 		v.EntryKind, v.EntryAccess = credential.EntryKey.Kind, credential.EntryKey.Access
@@ -40,8 +41,8 @@ func onboardingViewer(credential apiCredential) (projectstore.OnboardingViewer, 
 	return v, hex.EncodeToString(hash[:]), nil
 }
 
-func onboardingCredential(v projectstore.OnboardingViewer) apiCredential {
-	c := apiCredential{ID: v.ID, Hash: v.Hash, SessionHash: v.SessionHash, Scope: apiScope(v.Scope), NativeOnly: v.NativeOnly, HostedMembership: v.Membership, HostedPrincipal: v.Principal, HostedRole: v.Role, HostedKeyScope: apikey.Scope(v.KeyScope), HostedKeyKind: v.KeyKind, HostedProjectAccess: hostedProjectAccess(v.ProjectAccess)}
+func onboardingCredential(v projectstore.OnboardingViewer) hubapi.APICredential {
+	c := hubapi.APICredential{ID: v.ID, Hash: v.Hash, SessionHash: v.SessionHash, Scope: hubapi.APIScope(v.Scope), NativeOnly: v.NativeOnly, HostedMembership: v.Membership, HostedPrincipal: v.Principal, HostedRole: v.Role, HostedKeyScope: apikey.Scope(v.KeyScope), HostedKeyKind: v.KeyKind, HostedProjectAccess: hubapi.HostedProjectAccess(v.ProjectAccess)}
 	c.Runner.RunnerID = v.RunnerID
 	if v.UserID != "" {
 		c.Hosted = &auth.HostedIdentity{Subject: v.UserID}
@@ -82,7 +83,7 @@ func (s *Service) maintainOnboardingPage(ctx context.Context, organization track
 		return err
 	}
 	value, err := s.projectOnboardingRecord(ctx, nativeScope{organization: organization, project: candidate.ProjectID, credential: onboardingCredential(candidate.Viewer)})
-	var native *nativeError
+	var native *hubapi.NativeError
 	if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, corestore.ErrNotFound) || errors.As(err, &native) && native.Code == "not_found" {
 		return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 			writer, ok := w.(projectstore.OnboardingPageWriter)
@@ -117,7 +118,7 @@ func (s *Service) getOnboardingPage(c echo.Context) error {
 			return err
 		}
 		scope = nativeRequestScope(c)
-		if scope.credential.Scope == apiScopeWorker {
+		if scope.credential.Scope == hubapi.APIScopeWorker {
 			var err error
 			value, err = s.projectOnboarding(ctx, scope)
 			return err

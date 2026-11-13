@@ -3,6 +3,7 @@ package hubserver
 import (
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/usagecosts"
 	"github.com/digitaldrywood/detent/internal/hubserver/usagereport"
 )
@@ -14,7 +15,7 @@ type runnerCapacity = usagereport.RunnerCapacity
 
 func usageRangeWindow(p0 string, p1 time.Time) (usagecosts.Window, error) {
 	r0, r1 := usagereport.RangeWindow(p0, p1)
-	return r0, fromFeatureError(r1)
+	return r0, hubapi.FromFeatureError(r1)
 }
 func usageBusySeconds(p0 string, p1 string, p2 usagecosts.Window) int64 {
 	return usagereport.BusySeconds(p0, p1, p2)

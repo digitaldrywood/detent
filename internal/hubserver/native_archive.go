@@ -5,6 +5,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -18,7 +19,7 @@ func (s *Service) restoreNativeIssue(c echo.Context) error { return s.setNativeA
 
 func (s *Service) setNativeArchive(c echo.Context, archived bool) error {
 	var request archiveIssueRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.setNativeArchiveCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request, archived)

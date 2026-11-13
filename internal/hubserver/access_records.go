@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -14,14 +15,14 @@ import (
 
 func (s *Service) accessRead(ctx context.Context, organization tracker.OrganizationID, read func(tenantstore.Reader) error) error {
 	if s.config.AccessRepository == nil {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	return s.config.AccessRepository.ReadTenant(ctx, organization, corestore.Serving, read)
 }
 
 func (s *Service) accessWrite(ctx context.Context, organization tracker.OrganizationID, write func(tenantstore.Writer) error) error {
 	if s.config.AccessRepository == nil {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	return s.config.AccessRepository.WriteTenant(ctx, organization, corestore.Serving, write)
 }
@@ -38,14 +39,14 @@ func (s *Service) accessAuthority(scope nativeScope, write bool) accessstore.Aut
 }
 
 func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader, scope nativeScope, write bool) error {
-	return fromFeatureError(s.requestAuth().Authorize(ctx, r, s.authInput(scope), write))
+	return hubapi.FromFeatureError(s.requestAuth().Authorize(ctx, r, s.authInput(scope), write))
 }
 
 func (s *Service) accessWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
 	return s.requestAuth().StoredSession(ctx, hash, now)
 }
 
-func (s *Service) authenticateAccessHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
+func (s *Service) authenticateAccessHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (hubapi.APICredential, int, error) {
 	return nativeCredentialResult(s.requestAuth().AuthenticateAccessHash(ctx, hash, renewalRunner, renewalOrganization))
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -59,7 +60,7 @@ func attachmentBinding(record attachment.Metadata) (string, error) {
 
 func (e nativeOperatorExecutor) attachmentOperation(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
 	i := operatortool.ConnectionIdentity(ctx)
-	m := mutation.Metadata{PrincipalID: i.PrincipalID, OrganizationID: i.OrganizationID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: newNativeID("mcp")}
+	m := mutation.Metadata{PrincipalID: i.PrincipalID, OrganizationID: i.OrganizationID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: hubapi.NewID("mcp")}
 	outcome := "failed"
 	if call.Name == operatortool.ReferenceAttachment || call.Name == operatortool.DeleteAttachment {
 		defer func() {
@@ -86,7 +87,7 @@ func (e nativeOperatorExecutor) attachmentOperation(ctx context.Context, call op
 	}
 	record, err := e.service.readCloudAttachment(ctx, scope, r.AttachmentID)
 	if err != nil && scope.credential.HostedRole == "reporter" {
-		return operatortool.Result{}, safeWorkReadError(err)
+		return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 	}
 	if err != nil || record.Validate() != nil {
 		return operatortool.Result{}, operatortool.ErrAccessDenied
@@ -157,7 +158,7 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 		}
 		owner, ok := w.(attachmentstore.DeletionWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		return owner.DeleteAttachment(ctx, scope.project, r.AttachmentID, e.service.config.now().UTC())
 	})
@@ -168,7 +169,7 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 }
 
 func (e nativeOperatorExecutor) attachmentActionResult(ctx context.Context, action chat.Action) (operatortool.Result, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	ctx, scope, r, err := e.attachmentAuthority(ctx, operatortool.DeleteAttachment, action.Arguments)
 	if err != nil {
@@ -190,7 +191,7 @@ func (e nativeOperatorExecutor) attachmentActionResult(ctx context.Context, acti
 				return err
 			}
 			if record.Metadata.DeletedAt == nil {
-				return nativeNotFound()
+				return hubapi.NativeNotFound()
 			}
 			confirmed = record.ObjectDeletedAt != nil
 			return nil

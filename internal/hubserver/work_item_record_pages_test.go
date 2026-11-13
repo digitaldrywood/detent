@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -95,8 +96,8 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 	})
 	objects := &pageObjectProbe{DetailStore: &memoryRunDetails{}, t: t, repository: repository}
 	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: hubmaintenance.LimitDetails(objects)})
-	service.echo.GET(nativeBase+"/work-items/:item/relationships", service.GetWorkItemRelationships, service.requireNativeScope(apiScopeWorker, apiScopeOperator))
-	service.echo.GET(nativeBase+"/work-items/:item/references", service.GetWorkItemReferences, service.requireNativeScope(apiScopeWorker, apiScopeOperator))
+	service.echo.GET(hubapi.NativeBase+"/work-items/:item/relationships", service.GetWorkItemRelationships, service.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
+	service.echo.GET(hubapi.NativeBase+"/work-items/:item/references", service.GetWorkItemReferences, service.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
 	for _, name := range []string{"First organization", "Second organization"} {
 		objects.forbidden = false
 		org, err := service.createNativeOrganizationFor(t.Context(), name)
@@ -311,7 +312,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				if !changed || objects.afterRead != nil {
 					t.Fatal("cold detail did not exercise the object-read source change")
 				}
-				var conflict nativeError
+				var conflict hubapi.NativeError
 				decodeHubResponse(t, response, &conflict)
 				if conflict.Code != "revision_conflict" || conflict.CurrentRevision != currentIssue.Revision || currentIssue.Revision != issue.Revision+1 {
 					t.Fatalf("content change refusal: %+v current=%v original=%v", conflict, currentIssue.Revision, issue.Revision)
@@ -328,7 +329,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				}
 				activityAt := beforeEvent.LastActivityAt.Add(time.Minute)
 				eventRaw, err := json.Marshal(tracker.CollaborationEvent{
-					ID: newNativeID("evt"), OrganizationID: org.ID, ProjectID: project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID,
+					ID: hubapi.NewID("evt"), OrganizationID: org.ID, ProjectID: project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID,
 					Type: "run.checkpointed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: activityAt,
 				})
 				if err != nil {
@@ -391,7 +392,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				}
 				response = performHubAPIRequest(t, service, http.MethodGet, detailPath, readerToken, nil)
 				requireNativeStatus(t, response, http.StatusForbidden)
-				var denied apiErrorResponse
+				var denied hubapi.APIErrorResponse
 				decodeHubResponse(t, response, &denied)
 				if !changed || objects.afterRead != nil || denied.Code != "access_denied" {
 					t.Fatalf("detail did not refuse revocation between snapshots: changed=%t response=%+v", changed, denied)
@@ -405,7 +406,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				}
 			}
 			_, pendingErr := service.readCommentPageModel(t.Context(), scope, string(issue.WorkItemID), url.Values{"limit": {"50"}})
-			var publicErr *nativeError
+			var publicErr *hubapi.NativeError
 			if !errors.As(pendingErr, &publicErr) || publicErr.Code != "not_ready" {
 				t.Fatalf("cold or dirty comments must be pending, got %v", pendingErr)
 			}

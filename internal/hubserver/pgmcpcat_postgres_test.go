@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -252,8 +253,8 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if stringValue(reopened.WorkflowStateName) != "Todo" || reopened.DispatchGeneration != 1 || len(comments) != 1 {
-				t.Errorf("reopen state=%s dispatch=%d comments=%d", stringValue(reopened.WorkflowStateName), reopened.DispatchGeneration, len(comments))
+			if hubapi.StringValue(reopened.WorkflowStateName) != "Todo" || reopened.DispatchGeneration != 1 || len(comments) != 1 {
+				t.Errorf("reopen state=%s dispatch=%d comments=%d", hubapi.StringValue(reopened.WorkflowStateName), reopened.DispatchGeneration, len(comments))
 			}
 			stopped, err := r.WorkItem(t.Context(), "project", "wi_00000000000000000000000000000001")
 			if err != nil {

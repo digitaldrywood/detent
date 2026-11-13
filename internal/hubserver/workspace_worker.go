@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -128,7 +129,7 @@ type workspaceUnbindRequest struct {
 
 func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 	var request workspaceBindRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	service, err := s.requireWorkspaces()
@@ -136,7 +137,7 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if !workspacesession.ValidIsolation(request.Isolation) {
-		return s.nativeAPIError(c, nativePublicInvalid("isolation must be sandbox, container or user"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("isolation must be sandbox, container or user"))
 	}
 	scope, ctx := nativeRequestScope(c), c.Request().Context()
 	var checkout workspaceCheckout
@@ -146,7 +147,7 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 		checkout = workspaceCheckout{WorkItemID: row.SubjectWorkItemID, AttemptID: row.AttemptID, Ref: row.Ref, HeadSHA: row.HeadSHA, Worktree: workspacesession.WorktreeFresh, ReadOnly: row.ReadOnly, Requires: row.Requires, IdleTimeoutSeconds: int(row.IdleTimeoutSeconds), HeartbeatSeconds: int(workspacesession.HeartbeatInterval / time.Second), ExpiresAt: row.ExpiresAt, Deny: service.config.FilesDeny}
 		owner, ok := r.(actionstore.Reader)
 		if !ok {
-			return workspaceUnavailable()
+			return hubapi.WorkspaceUnavailable()
 		}
 		var err error
 		prepared, err = owner.ProjectActions(ctx, scope.project)
@@ -178,13 +179,13 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 	}
 	bound, err := service.mutateWorkspaceWorker(ctx, scope, c.Param("workspace"), request.workspaceWorkerIdentity, prepare, hydrate, func(row postgres.WorkspaceSession, now time.Time) (postgres.WorkspaceSession, string, string, error) {
 		if row.State != workspacesession.StateRequested {
-			return row, "", "", nativeStaleExecution("The workspace is not waiting for a runner")
+			return row, "", "", hubapi.NativeStaleExecution("The workspace is not waiting for a runner")
 		}
 		if row.RebindDeadline != nil && (now.After(*row.RebindDeadline) || row.RunnerID != "" && row.RunnerID != scope.credential.Runner.RunnerID) {
-			return row, "", "", nativeStaleExecution("The workspace re-bind grace has passed or belongs to another runner")
+			return row, "", "", hubapi.NativeStaleExecution("The workspace re-bind grace has passed or belongs to another runner")
 		}
 		if !request.Capabilities.Satisfies(row.Requires) {
-			return row, "", "", nativePublicInvalid("The runner does not serve every required surface")
+			return row, "", "", hubapi.NativePublicInvalid("The runner does not serve every required surface")
 		}
 		if !terminalIsolationAllowed(row.Requires, service.config.Terminal.Isolation, request.Isolation) {
 			return row, "", "", workspaceIsolationRefused()
@@ -222,7 +223,7 @@ func createsWorktree(record workspaceRecord, checkout workspaceCheckout) bool {
 // isolation.
 func (s *Service) heartbeatWorkspaceWorker(c echo.Context) error {
 	var request workspaceHeartbeatRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	service, err := s.requireWorkspaces()
@@ -230,21 +231,21 @@ func (s *Service) heartbeatWorkspaceWorker(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if request.State != "" && !workspacesession.ValidState(request.State) {
-		return s.nativeAPIError(c, nativePublicInvalid("state names no workspace state"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("state names no workspace state"))
 	}
 	if !workspacesession.ValidIsolation(request.Isolation) {
-		return s.nativeAPIError(c, nativePublicInvalid("isolation must be sandbox, container or user"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("isolation must be sandbox, container or user"))
 	}
 	if !workspacesession.ValidWorktree(request.Worktree) {
-		return s.nativeAPIError(c, nativePublicInvalid("worktree must be retained or fresh"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("worktree must be retained or fresh"))
 	}
 	if request.Reason != "" && !workspacesession.ValidReason(request.Reason) {
-		return s.nativeAPIError(c, nativePublicInvalid("reason names no workspace reason"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("reason names no workspace reason"))
 	}
 	scope, ctx := nativeRequestScope(c), c.Request().Context()
 	beat, err := service.mutateWorkspaceWorker(ctx, scope, c.Param("workspace"), request.workspaceWorkerIdentity, nil, nil, func(row postgres.WorkspaceSession, now time.Time) (postgres.WorkspaceSession, string, string, error) {
 		if workspacesession.Terminal(row.State) {
-			return row, "", "", nativeStaleExecution("The workspace has ended")
+			return row, "", "", hubapi.NativeStaleExecution("The workspace has ended")
 		}
 		isolation := row.Isolation
 		if request.Isolation != "" {
@@ -292,7 +293,7 @@ func (s *Service) heartbeatWorkspaceWorker(c echo.Context) error {
 // unbindWorkspaceWorker implements POST .../worker/unbind.
 func (s *Service) unbindWorkspaceWorker(c echo.Context) error {
 	var request workspaceUnbindRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	service, err := s.requireWorkspaces()
@@ -300,7 +301,7 @@ func (s *Service) unbindWorkspaceWorker(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if request.Reason != "" && !workspacesession.ValidReason(request.Reason) {
-		return s.nativeAPIError(c, nativePublicInvalid("reason names no workspace reason"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("reason names no workspace reason"))
 	}
 	scope, ctx := nativeRequestScope(c), c.Request().Context()
 	ended, err := service.mutateWorkspaceWorker(ctx, scope, c.Param("workspace"), request.workspaceWorkerIdentity, nil, nil, func(row postgres.WorkspaceSession, now time.Time) (postgres.WorkspaceSession, string, string, error) {
@@ -358,7 +359,7 @@ func (s *Service) workspaceForWorkItem(c echo.Context) error {
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.WorkspaceReader)
 		if !ok {
-			return workspaceUnavailable()
+			return hubapi.WorkspaceUnavailable()
 		}
 		row, err := owner.WorkspaceByDispatchItem(ctx, scope.project, tracker.NativeWorkItemID(c.Param("item")))
 		if err != nil {
@@ -372,7 +373,7 @@ func (s *Service) workspaceForWorkItem(c echo.Context) error {
 		return nil
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	return c.JSON(http.StatusOK, resource)
 }
@@ -407,7 +408,7 @@ type workspaceActionRunReport struct {
 // may only write runs of the workspace it currently holds.
 func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 	var request workspaceActionRunReport
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	service, err := s.requireWorkspaces()
@@ -415,10 +416,10 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if !workspacesession.ValidRunStatus(request.Status) {
-		return s.nativeAPIError(c, nativePublicInvalid("status names no run status"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("status names no run status"))
 	}
 	if request.Reason != "" && !validActionRunReason(request.Reason) {
-		return s.nativeAPIError(c, nativePublicInvalid("reason names no run reason"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("reason names no run reason"))
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
@@ -436,7 +437,7 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 		}
 		owner, ok := reader.(postgres.RelayActionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		action, err := owner.ProjectAction(ctx, scope.project, strings.TrimSpace(request.ActionID))
 		if err != nil {
@@ -444,7 +445,7 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 		}
 		if strings.TrimSpace(request.RunID) == "" {
 			if !action.Action.RunOnWorktreeCreation {
-				return nativePublicInvalid("Only a run-on-worktree-creation action may be reported without a run id")
+				return hubapi.NativePublicInvalid("Only a run-on-worktree-creation action may be reported without a run id")
 			}
 			return nil
 		}
@@ -453,18 +454,18 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 			return err
 		}
 		if existing.WorkspaceID != record.ID || existing.ActionID != action.Action.ID {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		if !forwardRunStatus(existing.Status, request.Status) {
-			return nativeStaleExecution("A run cannot move from " + existing.Status + " to " + request.Status)
+			return hubapi.NativeStaleExecution("A run cannot move from " + existing.Status + " to " + request.Status)
 		}
 		if existing.ClaimedBy != "" && existing.ClaimedBy != workerActionRunClaimant(record) {
-			return nativeStaleExecution("The action run belongs to another executor")
+			return hubapi.NativeStaleExecution("The action run belongs to another executor")
 		}
 		return nil
 	})
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	output := []byte(request.Output)
 	truncated := request.Truncated
@@ -491,7 +492,7 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 	now := service.now()
 	id := strings.TrimSpace(request.RunID)
 	if id == "" {
-		id = newNativeID("actionrun")
+		id = hubapi.NewID("actionrun")
 	}
 	var reported postgres.ActionRun
 	err = s.accessWrite(ctx, scope.organization, func(writer tenantstore.Writer) error {
@@ -500,7 +501,7 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 		}
 		owner, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		var command actionstore.Record
@@ -544,10 +545,10 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 		return nil
 	})
 	if errors.Is(err, corestore.ErrRevisionConflict) {
-		err = nativeStaleExecution("The action run report is no longer current")
+		err = hubapi.NativeStaleExecution("The action run report is no longer current")
 	}
 	if err != nil {
-		return s.nativeAPIError(c, projectRecordError(err))
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	result, err := s.actionRunRecord(ctx, reported, true)
 	if err != nil {
@@ -569,11 +570,11 @@ func workerRelayIdentity(c echo.Context) (workspaceWorkerIdentity, error) {
 	lease := strings.TrimSpace(c.Request().Header.Get("X-Detent-Lease"))
 	token := strings.TrimSpace(c.Request().Header.Get("X-Detent-Fencing-Token"))
 	if lease == "" || token == "" {
-		return workspaceWorkerIdentity{}, nativePublicInvalid("A lease and fencing token header are required")
+		return workspaceWorkerIdentity{}, hubapi.NativePublicInvalid("A lease and fencing token header are required")
 	}
 	var fencing int64
 	if _, err := fmt.Sscanf(token, "%d", &fencing); err != nil || fencing <= 0 {
-		return workspaceWorkerIdentity{}, nativePublicInvalid("The fencing token header is invalid")
+		return workspaceWorkerIdentity{}, hubapi.NativePublicInvalid("The fencing token header is invalid")
 	}
 	return workspaceWorkerIdentity{LeaseID: tracker.LeaseID(lease), FencingToken: tracker.FencingToken(fencing)}, nil
 }
@@ -590,17 +591,17 @@ func workspaceCapabilityNames(value workspacesession.Capabilities) []string {
 
 func (w *workspaceService) workspaceWorkerRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, id string, identity workspaceWorkerIdentity, now time.Time, bound bool) (postgres.WorkspaceSession, leasestore.Lease, error) {
 	if workspacesession.ValidateID(id) != nil {
-		return postgres.WorkspaceSession{}, leasestore.Lease{}, nativeNotFound()
+		return postgres.WorkspaceSession{}, leasestore.Lease{}, hubapi.NativeNotFound()
 	}
 	if strings.TrimSpace(string(identity.LeaseID)) == "" || identity.FencingToken <= 0 {
-		return postgres.WorkspaceSession{}, leasestore.Lease{}, nativePublicInvalid("A lease and fencing token are required")
+		return postgres.WorkspaceSession{}, leasestore.Lease{}, hubapi.NativePublicInvalid("A lease and fencing token are required")
 	}
 	if _, err := readRelayRunnerAuthority(ctx, r, scope, string(identity.LeaseID), now); err != nil {
 		return postgres.WorkspaceSession{}, leasestore.Lease{}, err
 	}
 	owner, ok := r.(postgres.WorkspaceReader)
 	if !ok {
-		return postgres.WorkspaceSession{}, leasestore.Lease{}, workspaceUnavailable()
+		return postgres.WorkspaceSession{}, leasestore.Lease{}, hubapi.WorkspaceUnavailable()
 	}
 	row, err := owner.WorkspaceSession(ctx, scope.project, id)
 	if err != nil {
@@ -611,7 +612,7 @@ func (w *workspaceService) workspaceWorkerRecord(ctx context.Context, r tenantst
 		return row, lease, err
 	}
 	if lease.FencingToken != int64(identity.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || lease.RenewedAt.After(now) {
-		return row, lease, nativeStaleExecution("The workspace lease is no longer current")
+		return row, lease, hubapi.NativeStaleExecution("The workspace lease is no longer current")
 	}
 	link, err := owner.WorkspaceDispatchItem(ctx, scope.project, id)
 	if err != nil {
@@ -622,10 +623,10 @@ func (w *workspaceService) workspaceWorkerRecord(ctx context.Context, r tenantst
 		return row, lease, err
 	}
 	if lease.OrganizationID != scope.organization || lease.IssueID != item.ID || lease.MachineID != string(scope.credential.Runner.MachineID) {
-		return row, lease, nativeStaleExecution("The lease does not hold this workspace's work item")
+		return row, lease, hubapi.NativeStaleExecution("The lease does not hold this workspace's work item")
 	}
 	if bound && (row.RunnerID != scope.credential.Runner.RunnerID || row.MachineID != lease.MachineID || row.LeaseID != lease.LeaseID || row.FencingToken != lease.FencingToken) {
-		return row, lease, nativeStaleExecution("The workspace belongs to another execution")
+		return row, lease, hubapi.NativeStaleExecution("The workspace belongs to another execution")
 	}
 	return row, lease, nil
 }
@@ -664,7 +665,7 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope nati
 			return nil
 		})
 		if err != nil {
-			return workspaceRecord{}, projectRecordError(err)
+			return workspaceRecord{}, hubapi.ProjectRecordError(err)
 		}
 		if hydrate != nil {
 			if err := hydrate(before); err != nil {
@@ -690,7 +691,7 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope nati
 				LockLease(context.Context, string) (leasestore.Lease, error)
 			})
 			if !ok {
-				return workspaceUnavailable()
+				return hubapi.WorkspaceUnavailable()
 			}
 			if _, err := locker.LockLease(ctx, string(identity.LeaseID)); err != nil {
 				return err
@@ -746,6 +747,6 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope nati
 		if errors.Is(err, corestore.ErrSerializationFailure) {
 			continue
 		}
-		return workspaceTenantRecord(result), projectRecordError(err)
+		return workspaceTenantRecord(result), hubapi.ProjectRecordError(err)
 	}
 }

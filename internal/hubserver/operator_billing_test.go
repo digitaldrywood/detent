@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -79,14 +80,14 @@ func TestBillingCommandResponseLoss(t *testing.T) {
 	f, provider := newHostedCustomerFixture(t)
 	loss := &billingResponseLossProvider{hostedCustomerProvider: provider, sessions: make(map[string]billing.Session)}
 	f.service.config.Hosted.Billing.Provider = loss
-	var credential apiCredential
+	var credential hubapi.APICredential
 	f.service.echo.GET("/billing-command-fixture", func(c echo.Context) error {
 		var err error
 		credential, err = f.service.hostedBillingOwner(c.Request().Context(), c)
 		return err
 	})
 	requireNativeStatus(t, f.page(t, "owner", "/billing-command-fixture"), http.StatusOK)
-	authorize := func(context.Context) (apiCredential, error) { return credential, nil }
+	authorize := func(context.Context) (hubapi.APICredential, error) { return credential, nil }
 	if _, err := f.service.checkoutBilling(t.Context(), authorize, "price_fixture", "lost-response"); err == nil {
 		t.Fatal("fixture did not lose response")
 	}

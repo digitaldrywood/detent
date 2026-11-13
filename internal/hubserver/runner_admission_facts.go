@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -28,7 +29,7 @@ func storeAdmissionFacts(ctx context.Context, tx *sql.Tx, runner string, project
 	return nil
 }
 
-func readAdmissionFacts(ctx context.Context, q nativeQueryer, runner string, project tracker.ProjectID, machine tracker.MachineID, organization tracker.OrganizationID) (tracker.NativeAdmissionObservation, error) {
+func readAdmissionFacts(ctx context.Context, q hubapi.NativeQueryer, runner string, project tracker.ProjectID, machine tracker.MachineID, organization tracker.OrganizationID) (tracker.NativeAdmissionObservation, error) {
 	var observation tracker.NativeAdmissionObservation
 	var received, observed, refreshed string
 	c := &observation.Context
@@ -56,19 +57,19 @@ func readAdmissionFacts(ctx context.Context, q nativeQueryer, runner string, pro
 		return observation, err
 	}
 	if received != "" {
-		observation.ReceivedAt, err = parseTimeValue(received)
+		observation.ReceivedAt, err = hubapi.ParseTimeValue(received)
 		if err != nil {
 			return observation, err
 		}
 	}
 	if observed != "" {
-		c.ObservedAt, err = parseTimeValue(observed)
+		c.ObservedAt, err = hubapi.ParseTimeValue(observed)
 		if err != nil {
 			return observation, err
 		}
 	}
 	if refreshed != "" {
-		c.LastRefreshAt, err = parseTimeValue(refreshed)
+		c.LastRefreshAt, err = hubapi.ParseTimeValue(refreshed)
 		if err != nil {
 			return observation, err
 		}

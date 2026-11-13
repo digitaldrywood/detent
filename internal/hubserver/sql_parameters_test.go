@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"reflect"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 func openSQLParameterTestDatabase(t *testing.T) *sql.DB {
@@ -27,7 +29,7 @@ func TestSQLParameterBinding(t *testing.T) {
 		{name: "zero parameter index", statement: "SELECT ?0", args: []any{1}, invalid: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			statement, args, err := bindSQLParameters(test.statement, test.args)
+			statement, args, err := hubapi.BindSQLParameters(test.statement, test.args)
 			if test.invalid {
 				if err == nil {
 					t.Fatal("invalid parameters accepted")
@@ -42,14 +44,14 @@ func TestSQLParameterBinding(t *testing.T) {
 			}
 		})
 	}
-	if _, err := sqlList(make([]string, maxSQLParameters+1)); err == nil {
+	if _, err := hubapi.SQLList(make([]string, hubapi.MaxSQLParameters+1)); err == nil {
 		t.Fatal("unbounded list accepted")
 	}
-	list, err := sqlList(make([]int64, maxSQLParameters))
+	list, err := hubapi.SQLList(make([]int64, hubapi.MaxSQLParameters))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := bindSQLParameters("SELECT ? FROM sql_rows(?)", []any{1, list}); err == nil {
+	if _, _, err := hubapi.BindSQLParameters("SELECT ? FROM sql_rows(?)", []any{1, list}); err == nil {
 		t.Fatal("combined parameters exceed the statement bound")
 	}
 }

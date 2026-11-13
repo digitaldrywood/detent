@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -21,7 +22,7 @@ import (
 
 func (s *Service) reportsTrackingIssues(ctx context.Context, scope nativeScope, classes []reportClassTotal, failures []nativeFailure) error {
 	if len(failures) > maxAnalyticsPopulation {
-		return nativePublicInvalid("Report failure tracking population exceeds the read limit")
+		return hubapi.NativePublicInvalid("Report failure tracking population exceeds the read limit")
 	}
 	fingerprints := reportsTrackingFingerprints(failures)
 	if len(fingerprints) == 0 {
@@ -29,7 +30,7 @@ func (s *Service) reportsTrackingIssues(ctx context.Context, scope nativeScope, 
 	}
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	tracking := map[string]corestore.DoctorProposalIdentityResult{}
 	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -66,7 +67,7 @@ func (s *Service) reportsTrackingIssues(ctx context.Context, scope nativeScope, 
 	return nil
 }
 
-func (s *Service) populatePostgresReportTracking(ctx context.Context, credential apiCredential, projects []string, attempts []reportstore.AttemptFact, w operatortool.AnalyticsWindow, out *hostedReportsReport) (bool, error) {
+func (s *Service) populatePostgresReportTracking(ctx context.Context, credential hubapi.APICredential, projects []string, attempts []reportstore.AttemptFact, w operatortool.AnalyticsWindow, out *hostedReportsReport) (bool, error) {
 	selected := []reportstore.AttemptFact{}
 	for _, attempt := range attempts {
 		if attempt.Failed && !attempt.OutcomeAt.Before(w.From) && attempt.OutcomeAt.Before(w.To) {
@@ -86,13 +87,13 @@ func (s *Service) populatePostgresReportTracking(ctx context.Context, credential
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(nativeRunEventReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		authorized := map[tracker.ProjectID]bool{}
 		for index, attempt := range selected {
 			if !authorized[attempt.ProjectID] {
 				if !slices.Contains(projects, string(attempt.ProjectID)) {
-					return nativeNotFound()
+					return hubapi.NativeNotFound()
 				}
 				if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: organization, project: attempt.ProjectID, credential: credential}, false); err != nil {
 					return err

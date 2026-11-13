@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -251,7 +252,7 @@ func TestReporterLinksAttachmentsAndBoardStream(t *testing.T) {
 		t.Fatalf("changes=%+v", changes)
 	}
 	contexts := make(chan nativeScope, 1)
-	v.service.echo.GET(nativeBase+"/reporter-board-scope", func(c echo.Context) error { contexts <- nativeRequestScope(c); return c.NoContent(http.StatusOK) }, v.service.requireNativeScope(apiScopeOperator))
+	v.service.echo.GET(hubapi.NativeBase+"/reporter-board-scope", func(c echo.Context) error { contexts <- nativeRequestScope(c); return c.NoContent(http.StatusOK) }, v.service.requireNativeScope(hubapi.APIScopeOperator))
 	requireNativeStatus(t, v.request(t, v.users["reporter"], http.MethodGet, v.base+"/reporter-board-scope", nil), http.StatusOK)
 	scope := <-contexts
 	scope.organization, scope.project = "org_security", v.project
@@ -528,7 +529,7 @@ func TestReporterAggregateReads(t *testing.T) {
 	if len(facets.Labels) != 1 || facets.Labels[0] != "own-label" || len(facets.FiledBy) != 1 || facets.FiledBy[0].ID != own.Actor.PrincipalID {
 		t.Fatalf("facets=%+v", facets)
 	}
-	if _, err := v.service.readRunnerProjectDiagnostics(ctx, scope, operatortool.LocalProjectArguments{ProjectID: string(v.project), IssueID: string(other.WorkItemID)}); !isNativeNotFound(err) {
+	if _, err := v.service.readRunnerProjectDiagnostics(ctx, scope, operatortool.LocalProjectArguments{ProjectID: string(v.project), IssueID: string(other.WorkItemID)}); !hubapi.IsNativeNotFound(err) {
 		t.Fatalf("hidden diagnostic=%v", err)
 	}
 }

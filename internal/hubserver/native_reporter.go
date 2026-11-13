@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -45,7 +46,7 @@ func (scope nativeScope) reporterIssue(issue tracker.NativeIssue) tracker.Native
 
 func requireReporterTriage(scope nativeScope, issue tracker.NativeIssue) error {
 	if scope.credential.HostedRole == "reporter" && issue.State != "Triage" {
-		return &nativeError{Code: "report_already_with_team", Message: "This issue is already with the team. Add a comment to share more details.", status: http.StatusForbidden, publicMessage: true}
+		return &hubapi.NativeError{Code: "report_already_with_team", Message: "This issue is already with the team. Add a comment to share more details.", Status: http.StatusForbidden, PublicMessage: true}
 	}
 	return nil
 }

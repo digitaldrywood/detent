@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -76,8 +77,8 @@ func verifyHumanWorkflowCompletionRace(t *testing.T, service *Service, admin *sq
 	requireNativeStatus(t, response, http.StatusOK)
 	var lease tracker.NativeLease
 	decodeHubResponse(t, response, &lease)
-	attemptID := newNativeID("attempt")
-	started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "human-race-start-" + variant}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: attemptID, RunID: newNativeID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example-backend", Model: "example-model"}}}
+	attemptID := hubapi.NewID("attempt")
+	started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "human-race-start-" + variant}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: attemptID, RunID: hubapi.NewID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: claim.PolicyID, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "example-backend", Model: "example-model"}}}
 	eventPath := base + "/work-items/" + string(item.WorkItemID) + "/events"
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, eventPath, worker, started), http.StatusOK)
 	repository := service.config.TenantRepository
@@ -163,7 +164,7 @@ func verifyHumanWorkflowCompletionRace(t *testing.T, service *Service, admin *sq
 		if err != nil {
 			return err
 		}
-		if attempt.Status != terminalStatus || attempt.Sequence != 2 || stringValue(row.WorkflowStateName) != "Cancelled" || row.Revision != int64(item.Revision+1) {
+		if attempt.Status != terminalStatus || attempt.Sequence != 2 || hubapi.StringValue(row.WorkflowStateName) != "Cancelled" || row.Revision != int64(item.Revision+1) {
 			return fmt.Errorf("completion winner or later human intent was lost")
 		}
 		return nil

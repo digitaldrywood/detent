@@ -15,20 +15,21 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, request monthlyBudgetRequest) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return s.nativeAPIError(c, nativePublicInvalid("An idempotency key of at most 128 bytes is required"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required"))
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -54,7 +55,7 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, r
 			return s.nativeAPIError(c, receiptstore.ErrExpired)
 		}
 		if receipt.RequestHash != hash {
-			return s.nativeAPIError(c, nativeConflict(0))
+			return s.nativeAPIError(c, hubapi.NativeConflict(0))
 		}
 		raw, err := content.Receipt(ctx, receipt)
 		if err != nil {
@@ -68,10 +69,10 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, r
 		return s.nativeAPIError(c, err)
 	}
 	if err := request.Policy.Validate(); err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid(err.Error()))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid(err.Error()))
 	}
 	if request.ExpectedRevision < 0 || request.ExpectedRevision == math.MaxInt64 {
-		return s.nativeAPIError(c, nativePublicInvalid("Expected revision is invalid"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Expected revision is invalid"))
 	}
 	policy := request.Policy
 	policy.Mode = policy.EffectiveMode()
@@ -96,7 +97,7 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, r
 				return receiptstore.ErrExpired
 			}
 			if previous.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			receipt = previous
 			return nil
@@ -116,7 +117,7 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, r
 			return err
 		}
 		if current.Revision != request.ExpectedRevision {
-			return nativeConflict(current.Revision)
+			return hubapi.NativeConflict(current.Revision)
 		}
 		if err := w.SetBillingMonthlyPolicy(ctx, billingstore.MonthlyPolicy{OrganizationID: scope.organization, ProjectID: scope.project, Revision: request.ExpectedRevision + 1, Policy: policy, Actor: scope.credential.ID, UpdatedAt: now}, request.ExpectedRevision); err != nil {
 			return err
@@ -170,7 +171,7 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, r
 		} else if !errors.Is(replayErr, corestore.ErrNotFound) {
 			return s.nativeAPIError(c, replayErr)
 		}
-		return s.nativeAPIError(c, nativeConflict(0))
+		return s.nativeAPIError(c, hubapi.NativeConflict(0))
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)

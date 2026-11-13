@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -469,7 +470,7 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: state, CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}}}), http.StatusOK)
 				refused := performHubAPIRequest(t, service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: item.WorkItemID, MachineID: r.binding.MachineID, SessionID: "routing-refused", TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: []string{"Todo"}})
 				requireNativeStatus(t, refused, http.StatusNotFound)
-				var denial apiErrorResponse
+				var denial hubapi.APIErrorResponse
 				decodeHubResponse(t, refused, &denial)
 				if denial.Code != "machine_not_found" {
 					t.Fatalf("claim refusal code=%s", denial.Code)
@@ -653,7 +654,7 @@ func prepareDispatchIssuesFixture(t *testing.T, f nativeFixture, requests []trac
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw, err = json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, AggregateType: "issue", Type: "issue.created", SchemaVersion: 1, Actor: plan.issue.Actor, RecordedAt: plan.issue.CreatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, ToState: plan.issue.State}})
+		raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, AggregateType: "issue", Type: "issue.created", SchemaVersion: 1, Actor: plan.issue.Actor, RecordedAt: plan.issue.CreatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, ToState: plan.issue.State}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -881,7 +882,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 				}
 				scope = nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 				for _, issue := range issues {
-					lease := nativeAttemptFixtureLease(t, worker, issue, newNativeID("source-session"))
+					lease := nativeAttemptFixtureLease(t, worker, issue, hubapi.NewID("source-session"))
 					event := nativeStartedEvent(lease)
 					path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker.redemption.Credential, event), http.StatusOK)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -33,7 +34,7 @@ func TestReleasePublicationPostgres(t *testing.T) {
 				expected = http.StatusUnprocessableEntity
 			case "source advanced":
 				next := f.version
-				next.ID, next.Number = newNativeID("version"), next.Number+1
+				next.ID, next.Number = hubapi.NewID("version"), next.Number+1
 				raw, err := json.Marshal(next)
 				if err != nil {
 					t.Fatal(err)
@@ -158,7 +159,7 @@ func TestReleasePublicationPostgres(t *testing.T) {
 func TestReleasePRConflictRepositoryCasePostgres(t *testing.T) {
 	f := newReleaseTenantFixture(t)
 	version := f.version
-	version.ID, version.Number = newNativeID("version"), version.Number+1
+	version.ID, version.Number = hubapi.NewID("version"), version.Number+1
 	version.Repository = strings.ToUpper(version.Repository)
 	version.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/example-org/example-project/pull/7"}
 	raw, err := json.Marshal(version)

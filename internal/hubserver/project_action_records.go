@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -34,7 +35,7 @@ func (s *Service) actionRecords(ctx context.Context, scope nativeScope) ([]actio
 		records, err = reader.ProjectActions(ctx, scope.project)
 		return err
 	})
-	return records, projectRecordError(err)
+	return records, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) hydrateActionRecord(ctx context.Context, scope nativeScope, r actionstore.Record) (workspacesession.Action, error) {
@@ -50,7 +51,7 @@ func (s *Service) hydrateActionRecord(ctx context.Context, scope nativeScope, r 
 }
 
 func (s *Service) readActionRecords(ctx context.Context, scope nativeScope) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	records, err := s.actionRecords(ctx, scope)
 	if err != nil {
@@ -78,9 +79,9 @@ func normalizeActionRecord(a *workspacesession.Action) error {
 		value, err := f.normalize(*f.value)
 		if err != nil {
 			if f.value == &a.Icon {
-				return nativeInvalid(err.Error())
+				return hubapi.NativeInvalid(err.Error())
 			}
-			return nativePublicInvalid(err.Error())
+			return hubapi.NativePublicInvalid(err.Error())
 		}
 		*f.value = value
 	}
@@ -88,10 +89,10 @@ func normalizeActionRecord(a *workspacesession.Action) error {
 }
 
 func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, method, id string, mutation tracker.Mutation, input any) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if method != "DELETE" && (strings.TrimSpace(mutation.IdempotencyKey) == "" || len(mutation.IdempotencyKey) > 128) {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
@@ -101,7 +102,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 		suffix += "/" + url.PathEscape(id)
 	}
 	operation := nativeOperation(scope, method, suffix)
-	hash, err := nativeCommandHash(input)
+	hash, err := hubapi.CommandHash(input)
 	if err != nil {
 		return nil, err
 	}
@@ -129,18 +130,18 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 	switch request := input.(type) {
 	case projectActionRequest:
 		if len(records) >= workspacesession.MaxActionsPerProject {
-			return nil, nativePublicInvalid("A project may hold at most 50 actions")
+			return nil, hubapi.NativePublicInvalid("A project may hold at most 50 actions")
 		}
-		next.Action = workspacesession.Action{ID: newNativeID("action"), OrganizationID: string(scope.organization), ProjectID: string(scope.project), Name: request.Name, Command: request.Command, Keybinding: request.Keybinding, Icon: request.Icon, PreviewURL: request.PreviewURL, OpenPreview: request.OpenPreview, RunOnWorktreeCreation: request.RunOnWorktreeCreation, CreatedBy: scope.actor().PrincipalID, Revision: 1, CreatedAt: now, UpdatedAt: now}
+		next.Action = workspacesession.Action{ID: hubapi.NewID("action"), OrganizationID: string(scope.organization), ProjectID: string(scope.project), Name: request.Name, Command: request.Command, Keybinding: request.Keybinding, Icon: request.Icon, PreviewURL: request.PreviewURL, OpenPreview: request.OpenPreview, RunOnWorktreeCreation: request.RunOnWorktreeCreation, CreatedBy: scope.actor().PrincipalID, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	case projectActionPatch:
 		if previous.Action.ID == "" {
-			return nil, nativeNotFound()
+			return nil, hubapi.NativeNotFound()
 		}
 		if request.ExpectedRevision <= 0 {
-			return nil, nativePublicInvalid("Expected revision must be positive")
+			return nil, hubapi.NativePublicInvalid("Expected revision must be positive")
 		}
 		if int64(request.ExpectedRevision) != previous.Action.Revision {
-			return nil, nativeConflict(tracker.Revision(previous.Action.Revision))
+			return nil, hubapi.NativeConflict(tracker.Revision(previous.Action.Revision))
 		}
 		next.Action, err = s.hydrateActionRecord(ctx, scope, previous)
 		if err != nil {
@@ -164,7 +165,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 		next.Action.UpdatedAt = now
 	default:
 		if previous.Action.ID == "" {
-			return nil, nativeNotFound()
+			return nil, hubapi.NativeNotFound()
 		}
 	}
 	raw := json.RawMessage(`{"deleted":true}`)
@@ -213,7 +214,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 			stored, err := w.Receipt(ctx, scope.credential.ID, operation, mutation.IdempotencyKey)
 			if err == nil {
 				if stored.RequestHash != hash {
-					return nativeConflict(0)
+					return hubapi.NativeConflict(0)
 				}
 				replay = &stored
 				return nil
@@ -234,7 +235,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 				return err
 			}
 			if current.Action.Revision != previous.Action.Revision {
-				return nativeConflict(tracker.Revision(current.Action.Revision))
+				return hubapi.NativeConflict(tracker.Revision(current.Action.Revision))
 			}
 		}
 		if previous.Action.ID != "" && (method == "DELETE" || previous.Command != next.Command) {
@@ -250,7 +251,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 				return err
 			}
 			if method == "POST" && len(rows) >= workspacesession.MaxActionsPerProject {
-				return nativePublicInvalid("A project may hold at most 50 actions")
+				return hubapi.NativePublicInvalid("A project may hold at most 50 actions")
 			}
 			for _, r := range rows {
 				if next.Action.Keybinding != "" && r.Action.ID != next.Action.ID && r.Action.Keybinding == next.Action.Keybinding {
@@ -265,7 +266,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 			if err != nil {
 				return err
 			}
-			object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: newNativeID("att"), Reference: next.Command, CreatedAt: now})
+			object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: hubapi.NewID("att"), Reference: next.Command, CreatedAt: now})
 			if err != nil {
 				return err
 			}
@@ -291,7 +292,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if replay != nil {
 		return content.Receipt(ctx, *replay)
@@ -300,5 +301,5 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 }
 
 func projectActionsUnavailable(message string) error {
-	return &nativeError{Code: "not_ready", Message: message, status: http.StatusServiceUnavailable, publicMessage: true}
+	return &hubapi.NativeError{Code: "not_ready", Message: message, Status: http.StatusServiceUnavailable, PublicMessage: true}
 }

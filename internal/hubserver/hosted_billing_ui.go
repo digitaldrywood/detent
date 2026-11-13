@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -33,7 +34,7 @@ type hostedBillingReport struct {
 }
 
 func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRequest) (hostedBillingReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.Hosted == nil || s.config.TenantRepository == nil || s.database == nil || s.database.billingRepository == nil {
 		return hostedBillingReport{}, ErrBillingUsageUnavailable
@@ -291,7 +292,7 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	}
 	credential, err := s.hostedBillingOwner(c.Request().Context(), c)
 	if err != nil {
-		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Billing requires an organization owner without support impersonation", apiErrorResponse{Code: "forbidden", Message: "Billing requires an organization owner without support impersonation"})
+		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Billing requires an organization owner without support impersonation", hubapi.APIErrorResponse{Code: "forbidden", Message: "Billing requires an organization owner without support impersonation"})
 	}
 	ctx := c.Request().Context()
 	if err := s.hostedAudit(ctx, credential.Hosted, "billing_viewed", c.Path(), "", http.StatusOK); err != nil {
@@ -299,7 +300,7 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	}
 	view, err := s.readBillingView(ctx)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing information is temporarily unavailable"})
+		return c.JSON(http.StatusServiceUnavailable, hubapi.APIErrorResponse{Code: "billing_unavailable", Message: "Billing information is temporarily unavailable"})
 	}
 
 	return c.JSON(http.StatusOK, view)
@@ -309,11 +310,11 @@ func (s *Service) hostedBillingUsageJSON(c echo.Context) error {
 	cfg := s.hostedBillingConfig()
 	credential, err := s.hostedAdministrator(c)
 	if err != nil {
-		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Plan and usage require owner or admin access", apiErrorResponse{Code: "forbidden", Message: "Plan and usage require owner or admin access"})
+		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Plan and usage require owner or admin access", hubapi.APIErrorResponse{Code: "forbidden", Message: "Plan and usage require owner or admin access"})
 	}
 	view, err := s.readBillingView(c.Request().Context())
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing usage is temporarily unavailable"})
+		return c.JSON(http.StatusServiceUnavailable, hubapi.APIErrorResponse{Code: "billing_unavailable", Message: "Billing usage is temporarily unavailable"})
 	}
 	canBill := credential.HostedRole == "owner" && credential.Hosted.SupportActor == ""
 	if view.AICredits != nil {
@@ -390,7 +391,7 @@ func (s *Service) hostedPriceLabel(ctx context.Context, price HostedBillingPrice
 }
 
 func (s *Service) readBillingView(ctx context.Context, pages ...creditPageRequest) (hostedBillingView, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	report, err := s.hostedBillingReport(ctx, pages...)
 	if err != nil {

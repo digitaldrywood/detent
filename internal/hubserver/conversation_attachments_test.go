@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -70,7 +71,7 @@ func postConversationAttachment(t *testing.T, service *Service, base, token, id,
 // resource, failing the test on any other status.
 func uploadConversationAttachmentFile(t *testing.T, service *Service, base, token, id, name, media string, content []byte) conversation.AttachmentUpload {
 	t.Helper()
-	response := postConversationAttachment(t, service, base, token, id, name, media, content, newNativeID("idem"))
+	response := postConversationAttachment(t, service, base, token, id, name, media, content, hubapi.NewID("idem"))
 	requireNativeStatus(t, response, http.StatusCreated)
 	var upload conversation.AttachmentUpload
 	decodeHubResponse(t, response, &upload)
@@ -144,7 +145,7 @@ func TestConversationAttachmentUploadAndRead(t *testing.T) {
 	}
 
 	// The same idempotency key returns the same attachment, not a second one.
-	key := newNativeID("idem")
+	key := hubapi.NewID("idem")
 	first := f.uploadAttachment(t, f.token, id, "again.txt", "text/plain", []byte("hello"), key)
 	requireNativeStatus(t, first, http.StatusCreated)
 	second := f.uploadAttachment(t, f.token, id, "again.txt", "text/plain", []byte("hello"), key)
@@ -465,7 +466,7 @@ func TestConversationAttachmentUploadRefusesExtraParts(t *testing.T) {
 			var body bytes.Buffer
 			writer := multipart.NewWriter(&body)
 			test.build(writer)
-			if err := writer.WriteField("idempotency_key", newNativeID("idem")); err != nil {
+			if err := writer.WriteField("idempotency_key", hubapi.NewID("idem")); err != nil {
 				t.Fatal(err)
 			}
 			if err := writer.Close(); err != nil {
@@ -515,12 +516,12 @@ func TestConversationAttachmentBodyError(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			var failure *nativeError
+			var failure *hubapi.NativeError
 			if !errors.As(conversationAttachmentBodyError(test.err), &failure) {
 				t.Fatalf("conversationAttachmentBodyError(%v) is not an API error", test.err)
 			}
-			if failure.status != test.status {
-				t.Fatalf("status = %d, want %d", failure.status, test.status)
+			if failure.Status != test.status {
+				t.Fatalf("status = %d, want %d", failure.Status, test.status)
 			}
 		})
 	}

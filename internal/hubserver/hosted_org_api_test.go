@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -56,7 +57,7 @@ func TestHostedRunnerEnrollmentValidation(t *testing.T) {
 				}
 				return
 			}
-			var failure apiErrorResponse
+			var failure hubapi.APIErrorResponse
 			browserHostedDecode(t, f.api(t, "owner", http.MethodPost, path, request, http.StatusUnprocessableEntity), &failure)
 			if failure.Code != "invalid_request" || failure.Message != test.reason {
 				t.Fatalf("failure = %#v, want invalid_request and %q", failure, test.reason)
@@ -86,7 +87,7 @@ func TestHostedRunnerEnrollmentValidation(t *testing.T) {
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, request)
 			browserHostedStatus(t, response, http.StatusUnprocessableEntity)
-			var failure apiErrorResponse
+			var failure hubapi.APIErrorResponse
 			browserHostedDecode(t, response, &failure)
 			if failure.Code != "invalid_request" || !strings.Contains(failure.Message, test.message) {
 				t.Fatalf("invalid request response lost its actionable reason: %#v", failure)
@@ -316,7 +317,7 @@ func TestHostedMemberManagement(t *testing.T) {
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				response := f.api(t, test.account, test.method, base+test.path, test.payload, test.status)
-				var failure apiErrorResponse
+				var failure hubapi.APIErrorResponse
 				browserHostedDecode(t, response, &failure)
 				if failure.Code == "" || failure.Message == "" {
 					t.Fatalf("error shape = %#v", failure)
@@ -495,7 +496,7 @@ func TestHostedFleetVisibility(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 			defer cancel()
 			if _, err := admin.ExecContext(ctx, "GRANT SELECT ON hosted_usage_counters TO "+postgres.RuntimeRoleName); err != nil {
 				t.Error(err)
@@ -850,7 +851,7 @@ func TestHostedRunnerRoutingAuthority(t *testing.T) {
 					t.Fatal(err)
 				}
 				now := f.service.config.now()
-				enrollment = runnerauth.Enrollment{ID: newNativeID("enrollment"), Token: token, ExpiresAt: now.Add(time.Minute)}
+				enrollment = runnerauth.Enrollment{ID: hubapi.NewID("enrollment"), Token: token, ExpiresAt: now.Add(time.Minute)}
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
 					member, err := w.AccessMember(t.Context(), "user_browser_viewer")
 					if err != nil {

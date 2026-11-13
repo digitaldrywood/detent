@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -16,7 +17,7 @@ import (
 )
 
 func (s *Service) projectOnboardingRecord(ctx context.Context, scope nativeScope) (onboarding.Project, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	result := onboarding.Project{Runners: []runnerauth.Eligibility{}, Artifacts: []artifact.Binding{}}
 	var project projectstore.Record
@@ -77,7 +78,7 @@ func (s *Service) projectOnboardingRecord(ctx context.Context, scope nativeScope
 		return err
 	})
 	if err != nil {
-		return result, projectRecordError(err)
+		return result, hubapi.ProjectRecordError(err)
 	}
 	result.Repository = project.Settings.Repository
 	if result.Repository == "" {
@@ -111,7 +112,7 @@ func (s *Service) projectOnboardingRecord(ctx context.Context, scope nativeScope
 			allManageable = allManageable && project.CanManageRunners
 		}
 	}
-	canManage := scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly || scope.credential.Hosted != nil
+	canManage := scope.credential.Scope == hubapi.APIScopeAdmin && !scope.credential.NativeOnly || scope.credential.Hosted != nil
 	providerViews := tenantFleetProviderViews(records, leases, now)
 	hostSlots := map[tracker.MachineID]map[string]bool{}
 	runnerSlots := map[string]map[string]bool{}
@@ -186,7 +187,7 @@ func (s *Service) projectOnboardingRecord(ctx context.Context, scope nativeScope
 		if check, ok := checks[runner.RunnerID]; ok {
 			eligibility.LocalChecks = &check
 		}
-		if list, ok := repositories[runner.RunnerID]; ok && (scope.credential.Hosted != nil || scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly) {
+		if list, ok := repositories[runner.RunnerID]; ok && (scope.credential.Hosted != nil || scope.credential.Scope == hubapi.APIScopeAdmin && !scope.credential.NativeOnly) {
 			eligibility.RepositoryList = &list
 		}
 		result.Runners = append(result.Runners, eligibility)

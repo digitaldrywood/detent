@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/spritepromotion"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -54,7 +55,7 @@ func (t *coordinatorToolset) promoteSpritesTokenTool(ctx context.Context, record
 	}
 	change, err := s.spritePromotionService(scope).Preview(ctx)
 	if err != nil {
-		return nil, fromFeatureError(err)
+		return nil, hubapi.FromFeatureError(err)
 	}
 	raw, err := json.Marshal(change)
 	if err != nil {
@@ -69,5 +70,5 @@ func (s *Service) executePromoteSpritesToken(ctx context.Context, action chat.Ac
 		return chat.ActionExecution{}, err
 	}
 	result, err := s.spritePromotionService(scope).Execute(ctx, action.Arguments)
-	return result, fromFeatureError(err)
+	return result, hubapi.FromFeatureError(err)
 }

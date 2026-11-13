@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
@@ -25,10 +26,10 @@ import (
 // open workspace. It names the existing id, because the client's next move is
 // to use it rather than to retry.
 func workspaceExists(id string) error {
-	return &nativeError{
+	return &hubapi.NativeError{
 		Code: "workspace_exists", Message: "A workspace is already open on this attempt",
-		status: http.StatusConflict, Details: map[string]any{"workspace_id": id},
-		publicMessage: true,
+		Status: http.StatusConflict, Details: map[string]any{"workspace_id": id},
+		PublicMessage: true,
 	}
 }
 
@@ -36,19 +37,10 @@ func workspaceExists(id string) error {
 // which one was reached, so the answer is actionable rather than only a
 // refusal.
 func workspaceLimit(scope string, limit int) error {
-	return &nativeError{
+	return &hubapi.NativeError{
 		Code: "workspace_limit", Message: "The open workspace limit has been reached",
-		status: http.StatusUnprocessableEntity, Details: map[string]any{"scope": scope, "limit": limit},
-		publicMessage: true,
-	}
-}
-
-// workspaceUnavailable reports that the hub is not running workspace sessions.
-func workspaceUnavailable() error {
-	return &nativeError{
-		Code: "unsupported_control", Message: "Workspace sessions are not enabled on this hub",
-		status:        http.StatusUnprocessableEntity,
-		publicMessage: true,
+		Status: http.StatusUnprocessableEntity, Details: map[string]any{"scope": scope, "limit": limit},
+		PublicMessage: true,
 	}
 }
 
@@ -199,7 +191,7 @@ func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connect
 	err := w.server.accessRead(ctx, connection.Scope.Organization, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(postgres.WorkspaceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		record, err = owner.WorkspaceSession(ctx, connection.Scope.Project, connection.WorkspaceID)

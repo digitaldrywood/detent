@@ -11,7 +11,3 @@ func (d *database) currentTime() (time.Time, error) {
 	}
 	return now, nil
 }
-
-func formatHubTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
-}

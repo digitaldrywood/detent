@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -224,7 +225,7 @@ func (f *coordinatorFixture) attachOperatorConnection(t *testing.T) {
 	f.service.echo.GET("/api/v2/organizations/:organization/coordinator-fixture-context", func(c echo.Context) error {
 		ctx := c.Request().Context()
 		connection := operatortool.CurrentConnection(ctx)
-		connection.ID, connection.Client = newNativeID("luna"), "Luna"
+		connection.ID, connection.Client = hubapi.NewID("luna"), "Luna"
 		ctx = operatortool.WithConnection(ctx, connection)
 		if err := f.service.operatorChat.AttachConnection(ctx); err != nil {
 			return err

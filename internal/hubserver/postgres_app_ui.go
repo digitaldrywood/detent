@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -45,15 +46,15 @@ func (s *Service) postgresAppBootstrapPayload(c echo.Context) error {
 		if status == http.StatusForbidden {
 			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", appBootstrapRefusal{Code: "forbidden", Message: "This account has no access to this organization", Details: appBootstrapRefusalDetails{Organization: s.config.Hosted.OrganizationID, CSRFToken: s.hostedPageCSRF(c)}})
 		}
-		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
+		return c.JSON(http.StatusUnauthorized, hubapi.APIErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
 	session, ok := c.Get("hosted_session").(auth.Session)
 	if !ok {
-		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
+		return c.JSON(http.StatusUnauthorized, hubapi.APIErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
 	csrf := s.hostedPageCSRF(c)
 	if csrf == "" {
-		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
+		return c.JSON(http.StatusUnauthorized, hubapi.APIErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
 	payload, err := s.readPostgresAppBootstrap(c.Request().Context(), credential, session)
 	if err != nil {
@@ -67,8 +68,8 @@ func (s *Service) postgresAppBootstrapPayload(c echo.Context) error {
 	return c.JSON(http.StatusOK, payload)
 }
 
-func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential apiCredential, session auth.Session) (appBootstrap, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential hubapi.APICredential, session auth.Session) (appBootstrap, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	organizationID := tracker.OrganizationID(s.config.Hosted.OrganizationID)
 	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
@@ -171,7 +172,7 @@ func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential apiCr
 	return payload, nil
 }
 
-func (s *Service) postgresAppProjects(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
+func (s *Service) postgresAppProjects(ctx context.Context, credential hubapi.APICredential) ([]appBootstrapProject, error) {
 	const projectLimit = 200
 	filter := projectAccessFilter(credential, "", "", projectLimit)
 	var rows []accessstore.ProjectAccess
@@ -180,7 +181,7 @@ func (s *Service) postgresAppProjects(ctx context.Context, credential apiCredent
 	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
 		pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
 		if !ok {
-			return ErrProjectParticipants
+			return hubapi.ErrProjectParticipants
 		}
 		var err error
 		rows, err = pageReader.ProjectAccessPage(ctx, filter)
@@ -244,7 +245,7 @@ func (s *Service) postgresAppProjects(ctx context.Context, credential apiCredent
 func (s *Service) postgresAppShell(c echo.Context) error {
 	path := c.Request().URL.Path
 	if !hostedReadRequest(c) || appReserved(path) || path == "/internal" || strings.HasPrefix(path, "/internal/") || s.config.TenantRepository == nil || s.config.AccessRepository == nil {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	if s.config.Hosted == nil {
 		if _, status, err := s.localAppCredential(c); err != nil {
@@ -260,7 +261,7 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 			return s.nativeAPIError(c, classified)
 		}
 		if first := strings.Split(strings.Trim(path, "/"), "/")[0]; readableurl.Validate(first) == nil && strings.Contains(strings.Trim(path, "/"), "/") {
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 		return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
 	}
@@ -271,7 +272,7 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return s.nativeAPIError(c, classified)
 			}
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 		organizationID := tracker.OrganizationID(s.config.Hosted.OrganizationID)
 		var project projectstore.Record
@@ -293,21 +294,21 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return s.nativeAPIError(c, classified)
 			}
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 		scope := nativeScope{organization: organizationID, project: project.Core.ID, credential: credential}
 		if err := s.authorizeProjectRecord(c.Request().Context(), scope, false); err != nil {
 			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return s.nativeAPIError(c, classified)
 			}
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 	}
 	if target, handled, err := s.readableShellPath(c); err != nil {
 		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 			return s.nativeAPIError(c, classified)
 		}
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	} else {
 		original := c.Request().URL.Path
 		if organization, ok := c.Get("readable_organization_slug").(string); ok {
@@ -329,7 +330,7 @@ func (s *Service) servePostgresAppShell(c echo.Context, path string) error {
 		if !errors.Is(err, fs.ErrNotExist) {
 			s.config.Logger.Error("application client shell could not be read", "error", err)
 		}
-		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "client_unavailable", Message: "The application client is not built on this hub"})
+		return c.JSON(http.StatusServiceUnavailable, hubapi.APIErrorResponse{Code: "client_unavailable", Message: "The application client is not built on this hub"})
 	}
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	shell := conversationClientShellFor(content, s.hostedBase(), s.hostedSignInPath())

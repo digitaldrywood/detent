@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -25,7 +26,7 @@ func explanationRead(ctx context.Context) bool {
 func (s *Service) readExplanationCurrentChange(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, now time.Time) (*tracker.ChangeDetail, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return nil, nativeRunEventStorageUnavailable()
+		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var change eventstore.Change
 	var version *eventstore.Version
@@ -56,7 +57,7 @@ func (s *Service) readExplanationCurrentChange(ctx context.Context, scope native
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if change.ID == "" {
 		return nil, nil
@@ -69,7 +70,7 @@ func (s *Service) readExplanationCurrentChange(ctx context.Context, scope native
 		return s.authorizeBulkExportItem(ctx, r, scope, item)
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	return &detail, nil
 }

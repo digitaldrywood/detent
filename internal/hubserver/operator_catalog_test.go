@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -70,12 +71,12 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 					f.grant(t, f.user, true, true)
 				}
 				if test.scope != "" {
-					scope := apiScopeOperator
+					scope := hubapi.APIScopeOperator
 					if test.scope == apikey.ScopeAdmin {
-						scope = apiScopeAdmin
+						scope = hubapi.APIScopeAdmin
 					}
 					expiry := time.Now().Add(time.Hour)
-					key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "catalog-test", Scope: scope, Issuer: &credential, KeyScope: test.scope, ExpiresAt: &expiry, ProjectIDs: []string{string(f.project)}})
+					key, err := f.service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "catalog-test", Scope: scope, Issuer: &credential, KeyScope: test.scope, ExpiresAt: &expiry, ProjectIDs: []string{string(f.project)}})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -93,7 +94,7 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 						return f.service.operatorCurrentAuthority(ctx, current, "org_security")
 					}
 					ctx = operatortool.WithConnection(ctx, connection)
-					resolveCredential := func(ctx context.Context) (apiCredential, error) {
+					resolveCredential := func(ctx context.Context) (hubapi.APICredential, error) {
 						current, _, err := f.service.authenticateAPIToken(ctx, key.Token, "", "")
 						return current, err
 					}
@@ -197,7 +198,7 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 						}
 						if index == 2 {
 							f.grant(t, f.user, true, false)
-							operatorPostgresSQL(t, f.operatorSecurityFixture, "UPDATE api_tokens SET revoked_at=$1 WHERE id=$2", formatHubTime(time.Now()), credential.ID)
+							operatorPostgresSQL(t, f.operatorSecurityFixture, "UPDATE api_tokens SET revoked_at=$1 WHERE id=$2", hubapi.FormatHubTime(time.Now()), credential.ID)
 						}
 						arguments, err := json.Marshal(map[string]any{"project_id": string(f.project), "request_id": "catalog-parity-" + strconv.Itoa(index), "title": "Project member write", "description": "Current authority fixture" + issueContractTestSections, "state": "Todo"})
 						if err != nil {
@@ -238,7 +239,7 @@ func TestPostgresOperatorCatalogBootstrapAuthority(t *testing.T) {
 			if test.allocated {
 				role = "owner"
 			}
-			credential := apiCredential{Scope: apiScopeOperator, NativeOnly: true, Hosted: session.Identity, HostedRole: role, SessionHash: apikey.HashToken(cookie.Value)}
+			credential := hubapi.APICredential{Scope: hubapi.APIScopeOperator, NativeOnly: true, Hosted: session.Identity, HostedRole: role, SessionHash: apikey.HashToken(cookie.Value)}
 			ctx := f.service.withOperatorCatalog(t.Context(), credential, test.organization)
 			catalog := ctx.Value(operatorCatalogKey{}).(operatorCatalogAuthority)
 			if catalog.createOrganization != !test.allocated || catalog.support {

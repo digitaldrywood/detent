@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -23,30 +24,13 @@ func (s *Service) nativePage(c echo.Context) (int, nativeCursor, []byte, error) 
 func nativeReadQuery(c echo.Context) (url.Values, error) {
 	params, err := url.ParseQuery(c.Request().URL.RawQuery)
 	if err != nil {
-		return nil, nativePublicInvalid("Query is invalid")
+		return nil, hubapi.NativePublicInvalid("Query is invalid")
 	}
 	return params, nil
 }
 
 func (s *Service) readNativePage(ctx context.Context, scope nativeScope, path string, params url.Values) (int, nativeCursor, []byte, error) {
-	return s.readNativePageLimit(ctx, scope, path, params, maxAPIPageLimit, defaultAPIPageLimit)
-}
-
-func validateNativeQuery(params url.Values, fields ...string) error {
-	fields = append(fields, "archive_url")
-	if value, present := params["archive_url"]; present && (len(value) != 1 || value[0] != "true" && value[0] != "false") {
-		return nativePublicInvalid("archive_url supports true or false")
-	}
-	allowed := map[string]bool{"limit": true, "cursor": true}
-	for _, field := range fields {
-		allowed[field] = true
-	}
-	for key, values := range params {
-		if !allowed[key] || len(values) != 1 || len(values[0]) > 4096 {
-			return nativePublicInvalid("Query contains an unsupported field or value")
-		}
-	}
-	return nil
+	return s.readNativePageLimit(ctx, scope, path, params, hubapi.MaxAPIPageLimit, hubapi.DefaultAPIPageLimit)
 }
 
 func nativePageOrder(params url.Values, column, after string) (string, string, error) {
@@ -59,21 +43,21 @@ func nativePageOrder(params url.Values, column, after string) (string, string, e
 		}
 		return column + " < CAST(? AS INTEGER) ORDER BY " + column + " DESC", after, nil
 	default:
-		return "", "", nativePublicInvalid("direction supports oldest or newest")
+		return "", "", hubapi.NativePublicInvalid("direction supports oldest or newest")
 	}
 }
 
 func nativeCreatedBy(scope nativeScope, params url.Values) (string, error) {
 	value := strings.TrimSpace(params.Get("created_by"))
 	if len(value) > 256 {
-		return "", nativePublicInvalid("created_by is invalid")
+		return "", hubapi.NativePublicInvalid("created_by is invalid")
 	}
 	if value != "me" {
 		return value, nil
 	}
 	actor := scope.actor()
 	if actor.Kind != "human" || actor.PrincipalID == "" {
-		return "", nativePublicInvalid("created_by=me requires a human identity")
+		return "", hubapi.NativePublicInvalid("created_by=me requires a human identity")
 	}
 	return actor.PrincipalID, nil
 }
@@ -84,7 +68,7 @@ func validateNativeIssueQuery(params url.Values) error {
 		switch key {
 		case "type":
 			if len(values) > 2 {
-				return nativePublicInvalid("type must be bug or change_request")
+				return hubapi.NativePublicInvalid("type must be bug or change_request")
 			}
 			for _, value := range values {
 				if err := validateNativeIssueType(value, true); err != nil {
@@ -102,13 +86,13 @@ func validateNativeIssueQuery(params url.Values) error {
 			}
 		case "state", "label", "assignee", "priority":
 			if len(values) > 32 || len(strings.Join(values, "\x00")) > 4096 {
-				return nativePublicInvalid("Query contains an unsupported field or value")
+				return hubapi.NativePublicInvalid("Query contains an unsupported field or value")
 			}
 		default:
 			single[key] = values
 		}
 	}
-	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "completed_from", "completed_to", "sort", "created_after", "created_before", "updated_after", "created_by", "fields")
+	return hubapi.ValidateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "completed_from", "completed_to", "sort", "created_after", "created_before", "updated_after", "created_by", "fields")
 }
 
 // parseNativeIssueIncludes reads the include query and reports whether it asks
@@ -120,7 +104,7 @@ func parseNativeIssueIncludes(value string) (bool, error) {
 	}
 	for name := range strings.SplitSeq(value, ",") {
 		if name = strings.TrimSpace(name); name != "workspace" && name != "work" && name != "summary" && name != "board" {
-			return false, nativePublicInvalid("include supports workspace,work,summary,board")
+			return false, hubapi.NativePublicInvalid("include supports workspace,work,summary,board")
 		}
 	}
 	return slices.ContainsFunc(strings.Split(value, ","), func(name string) bool { return strings.TrimSpace(name) == "workspace" }), nil
@@ -192,5 +176,5 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 }
 
 func nativeVerificationFilterInvalid() error {
-	return &nativeError{Code: "invalid_request", Message: "verification must be pending or verified", status: http.StatusUnprocessableEntity, publicMessage: true}
+	return &hubapi.NativeError{Code: "invalid_request", Message: "verification must be pending or verified", Status: http.StatusUnprocessableEntity, PublicMessage: true}
 }

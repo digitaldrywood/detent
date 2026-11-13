@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -53,7 +54,7 @@ func (w *workspaceService) beginTerminalRecording(
 		cols, rows = workspacesession.DefaultTerminalCols, workspacesession.DefaultTerminalRows
 	}
 	return &terminalStreamState{
-		ID: newNativeID("termrec"), WorkspaceID: record.ID,
+		ID: hubapi.NewID("termrec"), WorkspaceID: record.ID,
 		OrganizationID: string(record.OrganizationID), ProjectID: string(record.ProjectID),
 		RelaySessionID: connection.AuditID, StreamID: stream.ID,
 		PrincipalID: connection.PrincipalID, Subject: connection.Subject,
@@ -158,7 +159,7 @@ func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *t
 	err = w.server.accessWrite(ctx, organization, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if err := writer.LockArchiveAccounting(ctx); err != nil {
 			return err
@@ -176,7 +177,7 @@ func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *t
 			if current.CastObjectKey != ref.Key {
 				archive, ok := writer.(attemptArchiveReader)
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				object, err := archive.ArchiveObjectByKey(ctx, current.CastObjectKey)
 				if err != nil {

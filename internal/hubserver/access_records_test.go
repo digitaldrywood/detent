@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -87,7 +88,7 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 		if err := service.requireOperatorRunners(t.Context(), nil, scope); err != nil {
 			t.Fatalf("runner management grant rejected: %v", err)
 		}
-		token, err := service.createAPITokenFor(t.Context(), tokenRequest{Name: "Example key", Scope: apiScopeOperator, Issuer: &credential, KeyScope: apikey.ScopeRead, ProjectAccess: hostedProjectsAll})
+		token, err := service.createAPITokenFor(t.Context(), hubapi.TokenRequest{Name: "Example key", Scope: hubapi.APIScopeOperator, Issuer: &credential, KeyScope: apikey.ScopeRead, ProjectAccess: hubapi.HostedProjectsAll})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,7 +134,7 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 		if _, _, err := service.sharedHostedSession(t.Context(), c); err != nil {
 			t.Fatal(err)
 		}
-		if err := service.revokeHostedSharedBinding(t.Context(), claims.Binding, formatHubTime(now)); err != nil {
+		if err := service.revokeHostedSharedBinding(t.Context(), claims.Binding, hubapi.FormatHubTime(now)); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, err := service.sharedHostedSession(t.Context(), c); err == nil {
@@ -160,7 +161,7 @@ func TestAccessInvitationLifecycleIsTenantScoped(t *testing.T) {
 	provider := newHostedSecurityProvider()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	services := make(map[tracker.OrganizationID]*Service)
-	credentials := make(map[tracker.OrganizationID]apiCredential)
+	credentials := make(map[tracker.OrganizationID]hubapi.APICredential)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		providerID := "provider_" + string(org)
 		membershipID := "membership_admin_" + string(org)
@@ -199,7 +200,7 @@ func TestAccessInvitationLifecycleIsTenantScoped(t *testing.T) {
 			t.Fatalf("seed lifecycle tenant %s: %v cause=%v", org, err, errors.Unwrap(err))
 		}
 		services[org] = &Service{config: Config{AccessRepository: repository, TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org), Provider: provider, SharedEntry: &HostedSharedEntry{}}, now: func() time.Time { return now }, generateToken: func() (string, error) { return "generated_example_token", nil }}}
-		credentials[org] = apiCredential{ID: "admin_key", Hash: "hash_" + string(org), Scope: apiScopeOperator, NativeOnly: true, Hosted: identity, HostedRole: "admin", HostedMembership: membershipID, HostedPrincipal: "admin_key"}
+		credentials[org] = hubapi.APICredential{ID: "admin_key", Hash: "hash_" + string(org), Scope: hubapi.APIScopeOperator, NativeOnly: true, Hosted: identity, HostedRole: "admin", HostedMembership: membershipID, HostedPrincipal: "admin_key"}
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -414,7 +415,7 @@ func TestSharedAccessSessionLookupFailureIsUnavailable(t *testing.T) {
 					handle echo.HandlerFunc
 				}{
 					{"/app/bootstrap", service.appBootstrapPayload},
-					{nativeBase + "/work-items", service.requireAPIScope(apiScopeOperator)(func(c echo.Context) error { return c.NoContent(http.StatusOK) })},
+					{hubapi.NativeBase + "/work-items", service.requireAPIScope(hubapi.APIScopeOperator)(func(c echo.Context) error { return c.NoContent(http.StatusOK) })},
 				} {
 					response := httptest.NewRecorder()
 					c = echo.New().NewContext(httptest.NewRequest(http.MethodGet, endpoint.path, nil), response)

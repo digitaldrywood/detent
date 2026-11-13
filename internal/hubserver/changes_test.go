@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -192,7 +193,7 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 					}
 					update := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "aggregate-body"}, ExpectedRevision: f.issue.Revision, Body: &body}
 					encoded, err := json.Marshal(update)
-					if err != nil || len(encoded) >= maxAPIRequestBodyBytes {
+					if err != nil || len(encoded) >= hubapi.MaxAPIRequestBodyBytes {
 						t.Fatalf("illegal issue request: %d, %v", len(encoded), err)
 					}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(f.issue.WorkItemID), f.token, update), http.StatusOK)
@@ -645,8 +646,8 @@ func TestChangeCIRejectsForgedAndReplayedResults(t *testing.T) {
 		edit func(*tracker.SubmitChangeCheck)
 	}{
 		{"head", func(r *tracker.SubmitChangeCheck) { r.HeadSHA = strings.Repeat("f", 40) }},
-		{"run", func(r *tracker.SubmitChangeCheck) { r.RunID = newNativeID("run") }},
-		{"check run", func(r *tracker.SubmitChangeCheck) { r.CheckRunID = newNativeID("check") }},
+		{"run", func(r *tracker.SubmitChangeCheck) { r.RunID = hubapi.NewID("run") }},
+		{"check run", func(r *tracker.SubmitChangeCheck) { r.CheckRunID = hubapi.NewID("check") }},
 		{"policy", func(r *tracker.SubmitChangeCheck) { r.PolicyID = "other" }},
 		{"config", func(r *tracker.SubmitChangeCheck) { r.ConfigDigest = policy.Digest([]byte("forged")) }},
 		{"workflow", func(r *tracker.SubmitChangeCheck) { r.WorkflowID = "other.yml" }},
@@ -836,7 +837,7 @@ func TestChangeWorkerRequiresCurrentAttempt(t *testing.T) {
 		{"missing fence", func(r *tracker.PublishChangeVersion) { r.LeaseID = "" }, http.StatusConflict},
 		{"stale fence", func(r *tracker.PublishChangeVersion) { r.FencingToken++ }, http.StatusConflict},
 		{"stale fence before invalid source", func(r *tracker.PublishChangeVersion) { r.FencingToken++; r.SourceBundle = []byte("invalid pack") }, http.StatusConflict},
-		{"unrelated run", func(r *tracker.PublishChangeVersion) { r.RunID = newNativeID("run") }, http.StatusNotFound},
+		{"unrelated run", func(r *tracker.PublishChangeVersion) { r.RunID = hubapi.NewID("run") }, http.StatusNotFound},
 		{"missing run", func(r *tracker.PublishChangeVersion) { r.RunID, r.AttemptID = "", "" }, http.StatusUnprocessableEntity},
 		{"changed source bytes", func(r *tracker.PublishChangeVersion) { r.SourceBundle = []byte("other source") }, http.StatusUnprocessableEntity},
 		{"wrong source base", func(r *tracker.PublishChangeVersion) { r.Source.BaseSHA = r.HeadSHA }, http.StatusUnprocessableEntity},
@@ -1037,13 +1038,13 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 		}
 		fixture := newCoreNeutralFixture(t, scope.organization, "issues", "native_attempts", "leases", "lease_policies")
 		fixture.add("issues", map[string]any{"id": snapshot.attempt.IssueID, "organization_id": scope.organization, "project_id": scope.project, "native_id": local.issue.WorkItemID})
-		fixture.add("native_attempts", map[string]any{"id": id, "organization_id": scope.organization, "project_id": scope.project, "work_item_id": local.issue.WorkItemID, "lease_id": actual.LeaseID, "fencing_token": actual.FencingToken, "run_id": actual.RunID, "sequence": actual.Sequence, "status": snapshot.attempt.Status, "work_item_revision": snapshot.attempt.WorkItemRevision, "dispatch_generation": snapshot.attempt.DispatchGeneration, "data_json": string(payload), "checkpoint_json": checkpoint, "artifact_ids_json": "[]", "started_at": formatHubTime(snapshot.attempt.StartedAt), "updated_at": formatHubTime(snapshot.attempt.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
+		fixture.add("native_attempts", map[string]any{"id": id, "organization_id": scope.organization, "project_id": scope.project, "work_item_id": local.issue.WorkItemID, "lease_id": actual.LeaseID, "fencing_token": actual.FencingToken, "run_id": actual.RunID, "sequence": actual.Sequence, "status": snapshot.attempt.Status, "work_item_revision": snapshot.attempt.WorkItemRevision, "dispatch_generation": snapshot.attempt.DispatchGeneration, "data_json": string(payload), "checkpoint_json": checkpoint, "artifact_ids_json": "[]", "started_at": hubapi.FormatHubTime(snapshot.attempt.StartedAt), "updated_at": hubapi.FormatHubTime(snapshot.attempt.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
 		lease := snapshot.lease
 		var released any
 		if lease.ReleasedAt != nil {
-			released = formatHubTime(*lease.ReleasedAt)
+			released = hubapi.FormatHubTime(*lease.ReleasedAt)
 		}
-		fixture.add("leases", map[string]any{"fencing_token": lease.FencingToken, "lease_id": lease.LeaseID, "issue_id": lease.IssueID, "machine_id": lease.MachineID, "session_id": lease.SessionID, "work_item_revision": lease.WorkItemRevision, "landing_capacity": lease.LandingCapacity, "acquired_at": formatHubTime(lease.AcquiredAt), "renewed_at": formatHubTime(lease.RenewedAt), "expires_at": formatHubTime(lease.ExpiresAt), "released_at": released})
+		fixture.add("leases", map[string]any{"fencing_token": lease.FencingToken, "lease_id": lease.LeaseID, "issue_id": lease.IssueID, "machine_id": lease.MachineID, "session_id": lease.SessionID, "work_item_revision": lease.WorkItemRevision, "landing_capacity": lease.LandingCapacity, "acquired_at": hubapi.FormatHubTime(lease.AcquiredAt), "renewed_at": hubapi.FormatHubTime(lease.RenewedAt), "expires_at": hubapi.FormatHubTime(lease.ExpiresAt), "released_at": released})
 		fixture.add("lease_policies", map[string]any{"lease_id": lease.LeaseID, "scope": string(scope.organization) + "/" + string(scope.project), "policy_id": pinned.PolicyID})
 		source := CoreExecutionImportSource{BundlePath: fixture.write(), OrganizationID: scope.organization, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
 		repository := service.config.TenantRepository.(*postgres.Repository)
@@ -1134,7 +1135,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			localRules.PolicyID = descriptor.ID
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, local.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "push-policy"}, ExpectedID: local.rules.ID, Policy: localRules}), http.StatusOK)
 			localWorker := local.worker(t, "checkpoint-worker "+test.name)
-			localLease := claimNativeAttempt(t, local.nativeFixture, localWorker, newNativeID("machine"), newNativeID("session"), local.issue.WorkItemID, descriptor.ID)
+			localLease := claimNativeAttempt(t, local.nativeFixture, localWorker, hubapi.NewID("machine"), hubapi.NewID("session"), local.issue.WorkItemID, descriptor.ID)
 			localStart := nativeStartedEvent(localLease)
 			localStart.Data.Identity.Role, localStart.Data.MachineID = "code", localLease.MachineID
 			localStart.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Phase: "implementation", HeartbeatAt: now}
@@ -1170,7 +1171,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			var retained []eventstore.Event
 			appendCheckpoint := func(unknown bool) {
 				t.Helper()
-				raw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: eventScope.organization, ProjectID: eventScope.project, AggregateType: "issue", AggregateID: eventItem, Type: "run.checkpointed", SchemaVersion: 1, Actor: eventScope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Run: &run}})
+				raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: eventScope.organization, ProjectID: eventScope.project, AggregateType: "issue", AggregateID: eventItem, Type: "run.checkpointed", SchemaVersion: 1, Actor: eventScope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Run: &run}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1209,9 +1210,9 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 				appendCheckpoint(strings.HasPrefix(test.name, "legacy "))
 				fallthrough
 			case "wrong recorder", "legacy wrong recorder", "legacy overflow wrong recorder":
-				run.AttemptID = newNativeID("attempt")
+				run.AttemptID = hubapi.NewID("attempt")
 			case "wrong run":
-				run.RunID = newNativeID("run")
+				run.RunID = hubapi.NewID("run")
 			case "wrong lease":
 				run.LeaseID = "foreign-lease"
 			case "wrong fence":
@@ -1241,7 +1242,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := service.config.TenantRepository.WriteTenant(t.Context(), localScope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-					_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: localScope.organization, ID: newNativeID("archive"), Reference: ref, CreatedAt: now})
+					_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: localScope.organization, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: now})
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -1252,9 +1253,9 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			case "unrecorded sequence":
 				run.Sequence++
 			case "wrong change":
-				reference.ChangeID = newNativeID("change")
+				reference.ChangeID = hubapi.NewID("change")
 			case "wrong version":
-				reference.VersionID = newNativeID("version")
+				reference.VersionID = hubapi.NewID("version")
 			case "wrong reference head":
 				reference.HeadSHA = strings.Repeat("e", 40)
 			case "wrong checkpoint head":
@@ -1305,7 +1306,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 							if err != nil {
 								t.Fatal(err)
 							}
-							value.ID, value.AggregateSequence = newNativeID("event"), 0
+							value.ID, value.AggregateSequence = hubapi.NewID("event"), 0
 							raw, err := json.Marshal(value)
 							if err != nil {
 								t.Fatal(err)
@@ -1359,7 +1360,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 						switch payloadCase {
 						case "missing attempt payload":
 							t.Cleanup(func() {
-								cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+								cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 								defer cancel()
 								restored, err := details.StoreDetail(cleanup, string(localScope.organization), payload)
 								if err != nil || restored != originalRef {
@@ -1374,7 +1375,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 							if err := json.Unmarshal(payload, &mismatched); err != nil {
 								t.Fatal(err)
 							}
-							mismatched.RunID = newNativeID("run")
+							mismatched.RunID = hubapi.NewID("run")
 							raw, err := json.Marshal(mismatched)
 							if err != nil {
 								t.Fatal(err)
@@ -1384,13 +1385,13 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 								t.Fatal(err)
 							}
 							if err := service.config.TenantRepository.WriteTenant(t.Context(), localScope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-								_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: localScope.organization, ID: newNativeID("archive"), Reference: ref, CreatedAt: now})
+								_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: localScope.organization, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: now})
 								return err
 							}); err != nil {
 								t.Fatal(err)
 							}
 							t.Cleanup(func() {
-								cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+								cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 								defer cancel()
 								if _, err := admin.ExecContext(cleanup, "UPDATE native_attempts SET payload_object_key=$1 WHERE organization_id=$2 AND id=$3", originalRef.Key, localScope.organization, localStart.Data.AttemptID); err != nil {
 									t.Errorf("restore attempt payload reference: %v", err)
@@ -1581,7 +1582,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			foreignScope := scope
 			foreignScope.credential = credential
 			_, err = service.appendNativeRunEventTenant(t.Context(), foreignScope, string(foreignItem.WorkItemID), foreignCheckpoint)
-			var refusal *nativeError
+			var refusal *hubapi.NativeError
 			if !errors.As(err, &refusal) || refusal.Code != "run_sequence_conflict" || !strings.Contains(refusal.Message, "PR publication no longer matches") {
 				t.Fatalf("a linked item's independent owner acquired publication authority: %v", err)
 			}
@@ -1659,7 +1660,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 	})
 	admin := nativeAttemptTestDatabase(t, f.nativeFixture)
 	if _, err := admin.ExecContext(t.Context(), `INSERT INTO collaboration_events(organization_id,project_id,work_item_id,id,sequence,type,schema_version,actor_kind,actor_principal_id,event_revision,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,push_known)
- SELECT organization_id,project_id,work_item_id,$4||n,10000+n,'run.checkpointed',schema_version,actor_kind,actor_principal_id,event_revision,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,true FROM (SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 ORDER BY sequence LIMIT 1) source CROSS JOIN generate_series(1,4000)n`, scope.organization, scope.project, f.issue.WorkItemID, newNativeID("plan")); err != nil {
+ SELECT organization_id,project_id,work_item_id,$4||n,10000+n,'run.checkpointed',schema_version,actor_kind,actor_principal_id,event_revision,recorded_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,true FROM (SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 ORDER BY sequence LIMIT 1) source CROSS JOIN generate_series(1,4000)n`, scope.organization, scope.project, f.issue.WorkItemID, hubapi.NewID("plan")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := admin.ExecContext(t.Context(), "ANALYZE collaboration_events"); err != nil {
@@ -1761,7 +1762,7 @@ func TestChangeInvalidVersionAndReviewPolicy(t *testing.T) {
 		{"repository", func(v *tracker.ChangeVersionInput) { v.Repository = "file:///source" }, http.StatusUnprocessableEntity},
 		{"code hash", func(v *tracker.ChangeVersionInput) { v.Code.SHA256 = "missing" }, http.StatusUnprocessableEntity},
 		{"unknown configuration", func(v *tracker.ChangeVersionInput) { v.PolicyID = "other" }, http.StatusConflict},
-		{"unpaired attempt", func(v *tracker.ChangeVersionInput) { v.RunID = newNativeID("run") }, http.StatusUnprocessableEntity},
+		{"unpaired attempt", func(v *tracker.ChangeVersionInput) { v.RunID = hubapi.NewID("run") }, http.StatusUnprocessableEntity},
 		{"stale review disposition", func(v *tracker.ChangeVersionInput) {
 			v.ReviewDispositions = []tracker.ReviewDisposition{{HeadSHA: v.BaseSHA, ThreadID: "T1", Disposition: "fixed", Evidence: "regression passes"}}
 		}, http.StatusUnprocessableEntity},
@@ -1858,7 +1859,7 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 				fixture.add("policy_revisions", map[string]any{"scope": string(f.project.OrganizationID) + "/" + string(f.project.ID), "policy_id": version.PolicyID, "metadata_json": string(policyRaw)})
 				fixture.add("change_requests", map[string]any{"id": f.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "record_json": string(changeRaw)})
 				fixture.add("change_issue_links", map[string]any{"change_id": f.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID})
-				fixture.add("change_versions", map[string]any{"id": version.ID, "change_id": f.change.ID, "number": 1, "record_json": string(versionRaw), "policy_revision_id": version.PolicyID, "payload_object_key": "", "repository": version.Repository, "created_at": formatHubTime(now), "head_sha": nil, "external_id": nil, "external_url": nil})
+				fixture.add("change_versions", map[string]any{"id": version.ID, "change_id": f.change.ID, "number": 1, "record_json": string(versionRaw), "policy_revision_id": version.PolicyID, "payload_object_key": "", "repository": version.Repository, "created_at": hubapi.FormatHubTime(now), "head_sha": nil, "external_id": nil, "external_url": nil})
 				source := CoreChangeImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
 				for range 2 {
 					if count, err := ImportCoreChanges(t.Context(), service.database.postgres, source); err != nil || count != 1 {
@@ -2448,7 +2449,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 						}
 						response := f.claim(t, owner, second, waiterSession, test.contenderCapacity)
 						requireNativeStatus(t, response, http.StatusConflict)
-						var refusal nativeError
+						var refusal hubapi.NativeError
 						decodeHubResponse(t, response, &refusal)
 						if refusal.Code != exclusion.code {
 							t.Fatalf("refusal=%s, want %s", refusal.Code, exclusion.code)
@@ -2493,7 +2494,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				}
 				response = f.claim(t, owner, third, "landing/different/owner", 1)
 				requireNativeStatus(t, response, http.StatusConflict)
-				var refusal nativeError
+				var refusal hubapi.NativeError
 				decodeHubResponse(t, response, &refusal)
 				if refusal.Code != "runner_capacity" {
 					t.Fatalf("different batch refusal=%s, want runner_capacity", refusal.Code)
@@ -3254,7 +3255,7 @@ func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 				reader, ok := r.(eventstore.WorkflowTransitionReader)
 				if !ok {
-					return ErrPostgresFeatureUnavailable
+					return hubapi.ErrPostgresFeatureUnavailable
 				}
 				var err error
 				transition, err = reader.LatestWorkflowTransition(t.Context(), f.project.ID, issue.WorkItemID)

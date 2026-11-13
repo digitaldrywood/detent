@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -316,7 +317,7 @@ func TestHostedPlanCommandsAndPermissions(t *testing.T) {
 			requireNativeStatus(t, f.request(t, test.user, http.MethodGet, "/api/cloud/billing", nil), test.want)
 		})
 	}
-	bootstrapToken := newNativeID("token")
+	bootstrapToken := hubapi.NewID("token")
 	now := f.service.config.now().UTC()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: bootstrapTokenID, Name: "Bootstrap administrator", Hash: apikey.HashToken(bootstrapToken), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", Kind: "service", CreatedAt: now, UpdatedAt: now})
@@ -462,7 +463,7 @@ func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 			winners++
 			continue
 		}
-		var refusal *nativeError
+		var refusal *hubapi.NativeError
 		if !errors.As(result.err, &refusal) || refusal.Code != "plan_capacity" {
 			t.Errorf("claim error: %v", result.err)
 		}
@@ -587,7 +588,7 @@ func TestHostedMutationQuotaRollbackAndRetry(t *testing.T) {
 			response := f.request(t, f.user, http.MethodPost, f.base+"/work-items", request)
 			requireNativeStatus(t, response, test.want)
 			if test.want != http.StatusOK {
-				var rest apiErrorResponse
+				var rest hubapi.APIErrorResponse
 				decodeHubResponse(t, response, &rest)
 				if test.want == http.StatusTooManyRequests && (rest.Code != "allowance_exhausted" || !strings.Contains(rest.Message, "Hosted ") || !strings.Contains(rest.Message, "allowance reached (")) {
 					t.Fatalf("REST allowance refusal=%s", response.Body)
@@ -1882,7 +1883,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
-					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 					defer cancel()
 					if err := repository.WriteTenant(cleanup, f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 						current, err := w.BillingAssignment(cleanup)
@@ -1988,9 +1989,9 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			{"ordinary completion", hostedNativeMutationMetrics(struct{}{}, true)},
 			{"run observation", hostedNativeMutationMetrics(tracker.NativeRunEvent{Type: "run.observed"}, false)},
 			{"run completion", hostedNativeMutationMetrics(tracker.NativeRunEvent{Type: "run.finished"}, true)},
-			{"lease validation", hostedRunnerTransactionMetrics(nativeBase + "/leases/:lease/validate")},
-			{"provider preview", hostedRunnerTransactionMetrics(nativeBase + "/claims/preview")},
-			{"heartbeat", hostedRunnerTransactionMetrics(nativeBase + "/machines/:machine/heartbeat")},
+			{"lease validation", hostedRunnerTransactionMetrics(hubapi.NativeBase + "/leases/:lease/validate")},
+			{"provider preview", hostedRunnerTransactionMetrics(hubapi.NativeBase + "/claims/preview")},
+			{"heartbeat", hostedRunnerTransactionMetrics(hubapi.NativeBase + "/machines/:machine/heartbeat")},
 			{"enrollment redemption", hostedRunnerTransactionMetrics(enrollmentBase + "/redeem")},
 			{"runner mutation", hostedRunnerTransactionMetrics(runnerBase + "/:runner/rotate")},
 			{"attachment preflight", []string{"collaboration_bytes"}},
@@ -2065,7 +2066,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			t.Run(fmt.Sprintf("%d retained/local %s", retained, test.name), func(t *testing.T) {
 				localWorker := f.worker(t, fmt.Sprintf("local-%d-%s", retained, test.name))
 				issue := f.create(t, fmt.Sprintf("local accounting %d %s", retained, test.name))
-				lease := claimNativeAttempt(t, f, localWorker, newNativeID("machine"), newNativeID("session"), issue.WorkItemID)
+				lease := claimNativeAttempt(t, f, localWorker, hubapi.NewID("machine"), hubapi.NewID("session"), issue.WorkItemID)
 				event := nativeStartedEvent(lease)
 				event.IdempotencyKey = "local-accounting"
 				path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
@@ -2081,7 +2082,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 							t.Fatalf("evidence credential status=%d error=%v", status, err)
 						}
 						scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
-						evidence := attachment.EvidenceRequest{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("upload"), LeaseID: lease.ID, FencingToken: lease.FencingToken}, WorkItemID: issue.WorkItemID, AttemptID: event.Data.AttemptID, Caption: "保留された証拠"}
+						evidence := attachment.EvidenceRequest{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("upload"), LeaseID: lease.ID, FencingToken: lease.FencingToken}, WorkItemID: issue.WorkItemID, AttemptID: event.Data.AttemptID, Caption: "保留された証拠"}
 						input := attachment.UploadRequest{Metadata: attachment.Metadata{Name: "retained.txt", ContentType: "text/plain", Size: 8, SHA256: artifact.Digest([]byte("retained"))}, RequestID: evidence.IdempotencyKey, Evidence: &evidence}
 						prepared := httptest.NewRecorder()
 						c := echo.New().NewContext(newHubAPIRequest(t, http.MethodPost, path, localWorker, nil).WithContext(t.Context()), prepared)
@@ -2108,7 +2109,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					}
 				}
 				if test.legacy {
-					event.Data.AttemptID, event.Data.Sequence = newNativeID("attempt"), 0
+					event.Data.AttemptID, event.Data.Sequence = hubapi.NewID("attempt"), 0
 					event.IdempotencyKey = fmt.Sprintf("local-accounting-%d", retained)
 				}
 				metrics := hostedNativeMutationMetrics(event, false)
@@ -2137,7 +2138,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 						t.Fatal(err)
 					}
 					fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "collaboration_events")
-					fixture.add("collaboration_events", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": issue.WorkItemID, "id": newNativeID("event"), "sequence": 0, "type": event.Type, "schema_version": 1, "actor_json": string(actor), "data_json": string(data), "recorded_at": formatHubTime(time.Now().UTC())})
+					fixture.add("collaboration_events", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": issue.WorkItemID, "id": hubapi.NewID("event"), "sequence": 0, "type": event.Type, "schema_version": 1, "actor_json": string(actor), "data_json": string(data), "recorded_at": hubapi.FormatHubTime(time.Now().UTC())})
 					source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 					if err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
 						var row corestore.WorkItem
@@ -2454,9 +2455,9 @@ func claimHostedPlanWork(t *testing.T, f nativeFixture, token string, request tr
 	t.Helper()
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", token, request)
 	if response.Code != http.StatusOK {
-		var refusal apiErrorResponse
+		var refusal hubapi.APIErrorResponse
 		decodeHubResponse(t, response, &refusal)
-		return tracker.NativeLease{}, &nativeError{Code: refusal.Code, Message: refusal.Message, status: response.Code}
+		return tracker.NativeLease{}, &hubapi.NativeError{Code: refusal.Code, Message: refusal.Message, Status: response.Code}
 	}
 	var lease tracker.NativeLease
 	decodeHubResponse(t, response, &lease)

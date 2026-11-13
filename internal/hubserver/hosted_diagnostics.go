@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -28,11 +29,11 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 	return c.JSON(http.StatusOK, report)
 }
 
-func (s *Service) readCloudDiagnostics(ctx context.Context, credential apiCredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) readCloudDiagnostics(ctx context.Context, credential hubapi.APICredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil {
-		return diagnosticsReport{}, workItemStorageUnavailable()
+		return diagnosticsReport{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	return s.readCloudDiagnosticsTenant(ctx, credential, w)
 }

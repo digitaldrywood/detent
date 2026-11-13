@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -30,7 +31,7 @@ func TestProjectGitHubBatchUsesPostgresRecords(t *testing.T) {
 	}
 	for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
 		t.Run(string(project), func(t *testing.T) {
-			scope := nativeScope{organization: "org_example", project: project, credential: apiCredential{ID: "admin", Scope: apiScopeAdmin, Hash: apikey.HashToken("example-token")}}
+			scope := nativeScope{organization: "org_example", project: project, credential: hubapi.APICredential{ID: "admin", Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken("example-token")}}
 			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 				_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: project, Name: string(project), Profile: "native"}, States: nativeFixtureStates()})
 				return err
@@ -71,7 +72,7 @@ func TestProjectGitHubBatchUsesPostgresRecords(t *testing.T) {
 		})
 	}
 	for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
-		scope := nativeScope{organization: "org_example", project: project, credential: apiCredential{ID: "admin", Scope: apiScopeAdmin, Hash: apikey.HashToken("example-token")}}
+		scope := nativeScope{organization: "org_example", project: project, credential: hubapi.APICredential{ID: "admin", Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken("example-token")}}
 		actual, err := service.projectGitHubBatch(t.Context(), scope)
 		if err != nil || actual.Batch == nil || actual.Batch.ID != "batch_"+string(project) {
 			t.Fatalf("independent project batch = %+v, %v", actual, err)

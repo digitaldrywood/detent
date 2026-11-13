@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -40,7 +41,7 @@ func (s *Service) populateClaimRecoveryProjections(ctx context.Context) error {
 		BackfillChangeRecoveryProjections(context.Context, tracker.OrganizationID, *eventstore.Content, int) (int, error)
 	})
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	_, err := owner.BackfillChangeRecoveryProjections(ctx, tracker.OrganizationID(s.appOrganizationID()), eventstore.NewContent(s.runDetailStore()), corestore.MaxPageSize)
 	return err
@@ -81,7 +82,7 @@ func (s *Service) runNativeRetentionStages(ctx context.Context, stages []nativeR
 
 func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error {
 	if s.config.TenantRepository == nil {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	organization := tracker.OrganizationID(s.appOrganizationID())
 	if organization == "" {
@@ -118,7 +119,7 @@ func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error 
 				}
 				writer, ok := w.(corestore.DuplicateChallengeWriter)
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				_, err := writer.PruneDuplicateChallenges(ctx, now, commandReceiptPruneBatch)
 				return err

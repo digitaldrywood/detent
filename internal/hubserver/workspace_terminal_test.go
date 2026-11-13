@@ -11,13 +11,15 @@ import (
 
 	"github.com/coder/websocket"
 
+	"reflect"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
-	"reflect"
 )
 
 // The terminal channel on the hub.
@@ -418,7 +420,7 @@ func TestWorkspaceRelayRecordsATerminalSession(t *testing.T) {
 			return used
 		}
 		initialUsage := readUsage()
-		state := &terminalStreamState{ID: newNativeID("termrec"), WorkspaceID: f.workspace, OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID), RelaySessionID: recording.RelaySessionID, StreamID: recording.StreamID + "-correction", PrincipalID: recording.PrincipalID, Subject: recording.Subject, Isolation: recording.Isolation, SupportReason: recording.SupportReason, StartedAt: recording.StartedAt, Cols: recording.Cols, Rows: recording.Rows, Recording: workspacesession.NewRecording(recording.Cols, recording.Rows, recording.StartedAt)}
+		state := &terminalStreamState{ID: hubapi.NewID("termrec"), WorkspaceID: f.workspace, OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID), RelaySessionID: recording.RelaySessionID, StreamID: recording.StreamID + "-correction", PrincipalID: recording.PrincipalID, Subject: recording.Subject, Isolation: recording.Isolation, SupportReason: recording.SupportReason, StartedAt: recording.StartedAt, Cols: recording.Cols, Rows: recording.Rows, Recording: workspacesession.NewRecording(recording.Cols, recording.Rows, recording.StartedAt)}
 		state.Recording.Append(workspacesession.AsciicastOutput, "first output", recording.StartedAt)
 		shorter := workspacesession.NewRecording(recording.Cols, recording.Rows, recording.StartedAt)
 		shorter.Append(workspacesession.AsciicastOutput, "first output", recording.StartedAt)

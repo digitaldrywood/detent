@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -17,7 +18,7 @@ type monthlyBudgetRequest struct {
 }
 
 func (s *Service) getMonthlyBudget(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
 	var result monthlyBudgetSettings
@@ -34,17 +35,17 @@ func (s *Service) getMonthlyBudget(c echo.Context) error {
 
 func (s *Service) updateMonthlyBudget(c echo.Context) error {
 	var request monthlyBudgetRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
 	if !canManageProjectSecrets(scope.credential) {
-		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Monthly budgets require owner or admin access", apiErrorResponse{Code: "forbidden", Message: "Monthly budgets require owner or admin access"})
+		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Monthly budgets require owner or admin access", hubapi.APIErrorResponse{Code: "forbidden", Message: "Monthly budgets require owner or admin access"})
 	}
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)
 	if s.database == nil || s.database.billingRepository == nil {
-		return s.nativeAPIError(c, workItemStorageUnavailable())
+		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
 	return s.updateMonthlyBudgetRecord(c, scope, request)
 }
@@ -62,9 +63,9 @@ func (s *Service) organizationMonthlyBudgetScope(c echo.Context) error {
 }
 
 func (s *Service) instanceMonthlyBudgetScope(c echo.Context) error {
-	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
 	c.Set("native_scope", scope)

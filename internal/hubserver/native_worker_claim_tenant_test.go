@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -208,7 +209,7 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 	tokenHash := apikey.HashToken(secret)
 	expires := startedAt.Add(time.Hour)
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example runner", Hash: tokenHash, Fingerprint: tokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: startedAt, UpdatedAt: startedAt, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example runner", Hash: tokenHash, Fingerprint: hubapi.TokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: startedAt, UpdatedAt: startedAt, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credentialID, ProjectID: project.ID}); err != nil {
@@ -233,7 +234,7 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: credentialID, Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
+	scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
 	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "heartbeat-race-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	plan, err := service.readNativeClaimPlan(t.Context(), scope, request, startedAt)
 	if err != nil || !nativeClaimIssueContractAllowed(plan) {
@@ -286,13 +287,13 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 		{"expired heartbeat", expired, "machine_not_found"},
 	} {
 		err := runnerIdentityClaimRefusal(test.identity, scope, machineID, clock.Now())
-		var refusal *nativeError
+		var refusal *hubapi.NativeError
 		switch {
 		case test.code == "" && err != nil:
 			t.Fatalf("%s refusal = %v, want none", test.name, err)
 		case test.code == "machine_not_found" && !errors.Is(err, tracker.ErrMachineNotFound):
 			t.Fatalf("%s refusal = %v, want machine not found", test.name, err)
-		case test.code == "runner_disabled" && (!errors.As(err, &refusal) || refusal.Code != test.code || refusal.status != http.StatusConflict):
+		case test.code == "runner_disabled" && (!errors.As(err, &refusal) || refusal.Code != test.code || refusal.Status != http.StatusConflict):
 			t.Fatalf("%s refusal = %v, want 409 %s", test.name, err, test.code)
 		}
 	}
@@ -361,7 +362,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			t.Fatal(err)
 		}
 	}
-	draftScope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
+	draftScope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 	draftPage, err := service.readBoardRecords(t.Context(), draftScope, url.Values{"limit": {"200"}, "include": {"board"}})
 	if err != nil || len(draftPage.Cards) != 2 {
 		t.Fatalf("draft board cards=%d error=%v", len(draftPage.Cards), err)
@@ -392,7 +393,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			if err != nil {
 				return err
 			}
-			batchCandidates = append(batchCandidates, claimstore.Candidate{OrganizationID: item.OrganizationID, ProjectID: item.ProjectID, WorkItemID: item.NativeID, ID: item.ID, Revision: item.Revision, State: valueOrEmpty(item.WorkflowStateName)})
+			batchCandidates = append(batchCandidates, claimstore.Candidate{OrganizationID: item.OrganizationID, ProjectID: item.ProjectID, WorkItemID: item.NativeID, ID: item.ID, Revision: item.Revision, State: hubapi.ValueOrEmpty(item.WorkflowStateName)})
 		}
 		rows, err := batchReader.ClaimPreviewPlanRows(t.Context(), project.ID, batchCandidates)
 		if err != nil {
@@ -411,7 +412,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	expires := now.Add(time.Hour)
 	report := providercapacity.Report{Provider: "example-provider", Backend: "example-backend", AccountAlias: "example-account", SharedAccountAlias: "shared-account", Billing: "subscription", Models: []string{"example-model"}, MaxConcurrent: 1, Availability: "exhausted", ObservedAt: now}
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "credential_runner", Name: "Example runner", Hash: tokenHash, Fingerprint: tokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: "credential_runner", Name: "Example runner", Hash: tokenHash, Fingerprint: hubapi.TokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: "credential_runner", ProjectID: project.ID}); err != nil {
@@ -442,7 +443,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	base := projectPath + "/" + string(project.ID)
 	requirement := providercapacity.Requirement{Role: "code", Backend: report.Backend, Model: report.Models[0]}
 	request := tracker.NativeClaim{LandingCapacity: 1, PolicyID: descriptor.ID, WorkItemID: items[0].WorkItemID, MachineID: binding.MachineID, SessionID: "session_first", TTLSeconds: 300, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, ProviderCandidates: []tracker.NativeCapacityCandidate{{WorkItemID: items[0].WorkItemID, Revision: items[0].Revision, Requirement: requirement}}}
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: "credential_runner", Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: binding, OrganizationID: organization.ID}}}
+	scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: "credential_runner", Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: binding, OrganizationID: organization.ID}}}
 	plan, err := service.readNativeClaimPlan(t.Context(), scope, request, now)
 	if err != nil || !nativeClaimIssueContractAllowed(plan) {
 		t.Fatalf("read claim plan = %+v, error %v", plan, err)
@@ -787,7 +788,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	eventPath := base + "/work-items/" + string(items[0].WorkItemID) + "/events"
 	started := tracker.NativeRunEvent{
 		Mutation: tracker.Mutation{IdempotencyKey: "native-run-start"}, Type: "run.started", SchemaVersion: 1,
-		Data: tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: descriptor.ID, Sequence: 1,
+		Data: tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: descriptor.ID, Sequence: 1,
 			Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: report.Backend, Model: report.Models[0]}},
 	}
 	startedAt := clock.value.Truncate(time.Second).Add(123456789 * time.Nanosecond)
@@ -1158,7 +1159,7 @@ func TestTenantClaimUsesConcurrencyNotSubscriptionQuotaState(t *testing.T) {
 			return err
 		}
 		expires := now.Add(time.Hour)
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "credential_runner", Name: "Example runner", Hash: tokenHash, Fingerprint: tokenFingerprint(tokenHash), Scope: "worker", ProjectAccess: "selected", Kind: "service", CreatedAt: now.Add(-time.Minute), UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "credential_runner", Name: "Example runner", Hash: tokenHash, Fingerprint: hubapi.TokenFingerprint(tokenHash), Scope: "worker", ProjectAccess: "selected", Kind: "service", CreatedAt: now.Add(-time.Minute), UpdatedAt: now, ExpiresAt: &expires}); err != nil {
 			return err
 		}
 		if _, err := w.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: project, Name: "Example project", Profile: "native", CreatedAt: now}); err != nil {
@@ -1306,7 +1307,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 			setIntegration(test.enabled, test.repository)
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request)
 			requireNativeStatus(t, response, http.StatusConflict)
-			var refused nativeError
+			var refused hubapi.NativeError
 			decodeHubResponse(t, response, &refused)
 			if refused.Code != "no_claimable_work" {
 				t.Fatalf("incompatible current repository allowed claim: %+v", refused)
@@ -1326,7 +1327,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 		approveHubTestPolicy(t, f.service, f.base+"/policy", changed)
 		response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request)
 		requireNativeStatus(t, response, http.StatusConflict)
-		var refused nativeError
+		var refused hubapi.NativeError
 		decodeHubResponse(t, response, &refused)
 		if refused.Code != "policy_mismatch" {
 			t.Fatalf("stale compatible policy refusal=%+v", refused)
@@ -1404,7 +1405,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 			tokenHash := apikey.HashToken(secret)
 			expires := startedAt.Add(time.Hour)
 			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example runner", Hash: tokenHash, Fingerprint: tokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: startedAt, UpdatedAt: startedAt, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization.ID, ID: credentialID, Name: "Example runner", Hash: tokenHash, Fingerprint: hubapi.TokenFingerprint(tokenHash), Scope: "worker", NativeOnly: true, CreatedAt: startedAt, UpdatedAt: startedAt, ExpiresAt: &expires, ProjectAccess: "selected", Kind: "service"}); err != nil {
 					return err
 				}
 				if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credentialID, ProjectID: project.ID}); err != nil {
@@ -1429,12 +1430,12 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: organization.ID, project: project.ID, credential: apiCredential{ID: credentialID, Hash: tokenHash, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
+			scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
 			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "contract-scan-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 
 			targeted := request
 			_, err = service.claimNativeIssueTenant(t.Context(), scope, targeted, 5*time.Minute)
-			var refusal *nativeError
+			var refusal *hubapi.NativeError
 			if !errors.As(err, &refusal) || refusal.Code != "issue_contract_unsatisfied" {
 				t.Fatalf("targeted invalid claim error = %v", err)
 			}

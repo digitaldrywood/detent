@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -32,7 +33,7 @@ func (s *Service) readRegistrationClaimStateTenant(ctx context.Context, scope na
 		if err != nil {
 			return err
 		}
-		if credential.OrganizationID != scope.organization || credential.Scope != string(apiScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, now) || !runnerIdentityMatchesHeldLease(identity, scope.organization, snapshot.RunnerID, scope.credential.ID, scope.credential.Runner.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
+		if credential.OrganizationID != scope.organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, now) || !runnerIdentityMatchesHeldLease(identity, scope.organization, snapshot.RunnerID, scope.credential.ID, scope.credential.Runner.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
 			return runnerUnauthorized()
 		}
 		allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
@@ -40,14 +41,14 @@ func (s *Service) readRegistrationClaimStateTenant(ctx context.Context, scope na
 			return err
 		}
 		if !allowed {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		if err := readRunnerResponseRouting(ctx, r, identity, snapshot); err != nil {
 			return err
 		}
 		reader, ok := r.(runnerstore.ClaimStateReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		page, err = reader.RunnerClaimState(ctx, identity.RunnerID, scope.project, after, releasedExecutionsPageSize, now)
 		if err != nil {

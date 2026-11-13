@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -35,7 +36,7 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 	var previousRecoveryCursor string
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service.localOrganization = string(org)
-		credential := apiCredential{ID: "reader", Hash: apikey.HashToken(string(org) + "_reader"), Scope: apiScopeOperator}
+		credential := hubapi.APICredential{ID: "reader", Hash: apikey.HashToken(string(org) + "_reader"), Scope: hubapi.APIScopeOperator}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", Slug: string(org), CreatedAt: now}); err != nil {
 				return err
@@ -250,7 +251,7 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 				t.Cleanup(func() {
 					service.config.RunDetails = details
 					if removed {
-						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
+						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 						defer cancel()
 						if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 							return w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: org, TokenID: credential.ID, ProjectID: change.ProjectID})
@@ -291,7 +292,7 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 				current.credential.HostedRole = test.role
 				item, err := service.resolveOperatorNativeReadItem(t.Context(), nil, current, test.reference)
 				if err != nil {
-					err = safeWorkReadError(err)
+					err = hubapi.SafeWorkReadError(err)
 				}
 				if test.want != nil {
 					if !errors.Is(err, test.want) {
@@ -510,7 +511,7 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 		if _, err := (operatorWorkReads{service: service, scope: scope}).ReadWork(ctx, operatortool.WorkItem, operatortool.WorkReadRequest{ProjectID: "example", Reference: "wi_hidden_1", View: "recovery", Limit: 1}); err == nil {
 			t.Fatal("recovery accepted wrong authorized project")
 		}
-		if _, err := service.resolveOperatorNativeReadItem(t.Context(), nil, scope, "wi_hidden_1"); !isNativeNotFound(err) {
+		if _, err := service.resolveOperatorNativeReadItem(t.Context(), nil, scope, "wi_hidden_1"); !hubapi.IsNativeNotFound(err) {
 			t.Fatalf("wrong authorized project error=%v", err)
 		}
 		updated := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_example_1", Number: 1, Revision: 2}, Title: "Current title", Body: "Current body", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "reader"}, CreatedAt: now, UpdatedAt: now}

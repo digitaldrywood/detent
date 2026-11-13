@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -157,7 +158,7 @@ func TestRestoredOrganizationHTTPRoutes(t *testing.T) {
 						requireNativeStatus(t, created, http.StatusOK)
 						var issue tracker.NativeIssue
 						decodeHubResponse(t, created, &issue)
-						token := newNativeID("unsub")
+						token := hubapi.NewID("unsub")
 						admin := hostedPostgresAdmin(t, service)
 						if _, err := admin.ExecContext(t.Context(), `INSERT INTO issue_subscriptions(organization_id,work_item_id,user_id,token) VALUES($1,$2,'user_owner',$3)`, service.accessOrganization(), issue.WorkItemID, token); err != nil {
 							t.Fatal(err)

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -91,7 +92,7 @@ type projectActionRunReceipt struct {
 }
 
 func actionKeybindingTaken() error {
-	return nativePublicInvalid("The keybinding is already used by another action")
+	return hubapi.NativePublicInvalid("The keybinding is already used by another action")
 }
 
 // actionRunReadOnly refuses a run on a workspace held read-only while its
@@ -99,10 +100,10 @@ func actionKeybindingTaken() error {
 // one the model is editing (the workspace session contract's read-only rule, applied to a
 // command rather than to a terminal).
 func actionRunReadOnly() error {
-	return &nativeError{
+	return &hubapi.NativeError{
 		Code: "read_only", Message: "A run is refused while the attempt is still using this worktree",
-		status:        http.StatusConflict,
-		publicMessage: true,
+		Status:        http.StatusConflict,
+		PublicMessage: true,
 	}
 }
 
@@ -111,16 +112,16 @@ func actionRunReadOnly() error {
 // surface refusals are: the workspace is real and readable, and this one
 // surface is not available on it.
 func actionRunCapabilityMissing() error {
-	return &nativeError{
+	return &hubapi.NativeError{
 		Code: "capability_missing", Message: "The workspace does not serve project actions",
-		status:        http.StatusConflict,
-		publicMessage: true,
+		Status:        http.StatusConflict,
+		PublicMessage: true,
 	}
 }
 
 // listProjectActions implements GET {nativeBase}/actions.
 func (s *Service) listProjectActions(c echo.Context) error {
-	if err := validateNativeQuery(c.QueryParams()); err != nil {
+	if err := hubapi.ValidateNativeQuery(c.QueryParams()); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	value, err := s.readActions(c.Request().Context(), nativeRequestScope(c))
@@ -133,7 +134,7 @@ func (s *Service) listProjectActions(c echo.Context) error {
 // createProjectAction implements POST {nativeBase}/actions.
 func (s *Service) createProjectAction(c echo.Context) error {
 	var request projectActionRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandCreateAction(c.Request().Context(), nativeRequestScope(c), request)
@@ -146,7 +147,7 @@ func (s *Service) createProjectAction(c echo.Context) error {
 // patchProjectAction implements PATCH {nativeBase}/actions/:action.
 func (s *Service) patchProjectAction(c echo.Context) error {
 	var request projectActionPatch
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandPatchAction(c.Request().Context(), nativeRequestScope(c), c.Param("action"), request)
@@ -171,7 +172,7 @@ func (s *Service) deleteProjectAction(c echo.Context) error {
 // a client opens the exec channel for it.
 func (s *Service) createProjectActionRun(c echo.Context) error {
 	var request projectActionRunRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	value, err := s.commandRunAction(c.Request().Context(), nativeRequestScope(c), c.Param("action"), request)
@@ -195,12 +196,12 @@ func (s *Service) createProjectActionRun(c echo.Context) error {
 // panel shows a recent window, and adding one later changes nothing a client
 // already reads.
 func (s *Service) listProjectActionRuns(c echo.Context) error {
-	if err := validateNativeQuery(c.QueryParams()); err != nil {
+	if err := hubapi.ValidateNativeQuery(c.QueryParams()); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	limit, err := parsePageLimit(c.QueryParam("limit"))
+	limit, err := hubapi.ParsePageLimit(c.QueryParam("limit"))
 	if err != nil {
-		return s.nativeAPIError(c, nativePublicInvalid("Page limit is invalid"))
+		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Page limit is invalid"))
 	}
 	value, err := s.readActionRuns(c.Request().Context(), nativeRequestScope(c), c.Param("action"), limit)
 	if err != nil {
@@ -236,7 +237,7 @@ func (s *Service) getProjectActionRunOutput(c echo.Context) error {
 // readActionRunForRequest resolves the run the path names inside the caller's
 // scope, so a run of another project is simply not found.
 func (s *Service) readActionRunForRequest(c echo.Context) (actionRunRecord, error) {
-	if err := validateNativeQuery(c.QueryParams()); err != nil {
+	if err := hubapi.ValidateNativeQuery(c.QueryParams()); err != nil {
 		return actionRunRecord{}, err
 	}
 	return s.readActionRun(c.Request().Context(), nativeRequestScope(c), c.Param("action"), c.Param("run"))
@@ -266,7 +267,7 @@ func (w *workspaceService) sweepActionRuns(ctx context.Context) {
 	err := w.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(postgres.RelayActionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		page, err = owner.ActiveActionRunPage(ctx, afterProject, afterID, actionRunSweepBatch)
@@ -288,7 +289,7 @@ func (w *workspaceService) sweepActionRuns(ctx context.Context) {
 			err := w.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
 				owner, ok := writer.(postgres.RelayActionWriter)
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				_, err := owner.FailOrphanedActionRun(ctx, postgres.OrphanedActionRunInput{OrganizationID: organization, ProjectID: run.ProjectID, ID: run.ID, ExpectedRevision: run.Revision, Now: w.now()})
 				return err
@@ -365,13 +366,13 @@ func (s *Service) readActions(ctx context.Context, scope nativeScope) (json.RawM
 }
 
 func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionID string, limit int) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var rows []postgres.ActionRun
 	var sequence int64
 	repository, ok := s.config.AccessRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
@@ -379,7 +380,7 @@ func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionI
 		}
 		owner, ok := reader.(postgres.RelayActionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if _, err := owner.ProjectAction(ctx, scope.project, actionID); err != nil {
 			return err
@@ -394,7 +395,7 @@ func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionI
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	response := projectActionRunList{ChangeSequence: sequence, Items: make([]workspacesession.Run, 0, len(rows))}
 	for _, row := range rows {
@@ -408,7 +409,7 @@ func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionI
 }
 
 func (s *Service) readActionRun(ctx context.Context, scope nativeScope, actionID, runID string) (actionRunRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var row postgres.ActionRun
 	err := s.accessRead(ctx, scope.organization, func(reader tenantstore.Reader) error {
@@ -417,7 +418,7 @@ func (s *Service) readActionRun(ctx context.Context, scope nativeScope, actionID
 		}
 		owner, ok := reader.(postgres.RelayActionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if _, err := owner.ProjectAction(ctx, scope.project, actionID); err != nil {
 			return err
@@ -427,10 +428,10 @@ func (s *Service) readActionRun(ctx context.Context, scope nativeScope, actionID
 		return err
 	})
 	if err != nil {
-		return actionRunRecord{}, projectRecordError(err)
+		return actionRunRecord{}, hubapi.ProjectRecordError(err)
 	}
 	if row.ActionID != actionID {
-		return actionRunRecord{}, nativeNotFound()
+		return actionRunRecord{}, hubapi.NativeNotFound()
 	}
 	return s.actionRunRecord(ctx, row, true)
 }
@@ -473,15 +474,15 @@ func (s *Service) actionRunRecord(ctx context.Context, row postgres.ActionRun, o
 
 func (s *Service) queueActionRunRecord(ctx context.Context, scope nativeScope, actionID string, request projectActionRunRequest) (json.RawMessage, error) {
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
 	operation := nativeOperation(scope, "POST", "/actions/"+url.PathEscape(actionID)+"/runs")
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -496,7 +497,7 @@ func (s *Service) queueActionRunRecord(ctx context.Context, scope nativeScope, a
 	if err != nil {
 		return nil, err
 	}
-	id := newNativeID("actionrun")
+	id := hubapi.NewID("actionrun")
 	raw, err := json.Marshal(projectActionRunReceipt{RunID: id})
 	if err != nil {
 		return nil, err
@@ -517,7 +518,7 @@ func (s *Service) queueActionRunRecord(ctx context.Context, scope nativeScope, a
 		stored, err := writer.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if stored.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			replay = &stored
 			return nil
@@ -530,21 +531,21 @@ func (s *Service) queueActionRunRecord(ctx context.Context, scope nativeScope, a
 		}
 		owner, ok := writer.(postgres.RelayActionWriter)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		action, err := owner.ProjectAction(ctx, scope.project, actionID)
 		if err != nil {
 			return err
 		}
 		if request.ExpectedActionRevision != 0 && int64(request.ExpectedActionRevision) != action.Action.Revision {
-			return nativeConflict(tracker.Revision(action.Action.Revision))
+			return hubapi.NativeConflict(tracker.Revision(action.Action.Revision))
 		}
 		workspace, err := service.readRelayWorkspaceForActor(ctx, writer, scope, strings.TrimSpace(request.WorkspaceID))
 		if err != nil {
 			return err
 		}
 		if !workspacesession.Bound(workspace.State) {
-			return nativeStaleExecution("The workspace is not bound to a runner")
+			return hubapi.NativeStaleExecution("The workspace is not bound to a runner")
 		}
 		if workspace.ReadOnly {
 			return actionRunReadOnly()
@@ -566,7 +567,7 @@ func (s *Service) queueActionRunRecord(ctx context.Context, scope nativeScope, a
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	if replay != nil {
 		return content.Receipt(ctx, *replay)

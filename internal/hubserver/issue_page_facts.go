@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -17,20 +18,20 @@ type nativePageFact struct {
 	override             bool
 }
 type nativePageQuery struct {
-	nativeQueryer
+	hubapi.NativeQueryer
 	facts        map[string]nativePageFact
 	organization tracker.OrganizationID
 	project      tracker.ProjectID
 	item         string
 }
 
-func prepareNativePageQuery(ctx context.Context, q nativeQueryer, scope nativeScope, item string, families ...string) (nativeQueryer, error) {
+func prepareNativePageQuery(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope, item string, families ...string) (hubapi.NativeQueryer, error) {
 	if slices.Contains(families, "native_board_filter_facts") && !slices.Contains(families, "native_board_filter_values") {
 		families = append(families, "native_board_filter_values")
 	}
-	prepared := &nativePageQuery{nativeQueryer: q, facts: map[string]nativePageFact{}, organization: scope.organization, project: scope.project, item: item}
+	prepared := &nativePageQuery{NativeQueryer: q, facts: map[string]nativePageFact{}, organization: scope.organization, project: scope.project, item: item}
 	if prior, ok := q.(*nativePageQuery); ok {
-		prepared.nativeQueryer = prior.nativeQueryer
+		prepared.NativeQueryer = prior.NativeQueryer
 		if prior.organization == scope.organization && prior.project == scope.project && prior.item == item {
 			for key, fact := range prior.facts {
 				prepared.facts[key] = fact
@@ -41,7 +42,7 @@ func prepareNativePageQuery(ctx context.Context, q nativeQueryer, scope nativeSc
 		if _, ok := prepared.facts[family]; ok {
 			continue
 		}
-		f, err := readLegacyPageFact(ctx, prepared.nativeQueryer, scope, item, family)
+		f, err := readLegacyPageFact(ctx, prepared.NativeQueryer, scope, item, family)
 		if err != nil {
 			return nil, err
 		}
@@ -50,7 +51,7 @@ func prepareNativePageQuery(ctx context.Context, q nativeQueryer, scope nativeSc
 	return prepared, nil
 }
 
-func readLegacyPageFact(ctx context.Context, q nativeQueryer, scope nativeScope, item, family string) (_ nativePageFact, resultErr error) {
+func readLegacyPageFact(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope, item, family string) (_ nativePageFact, resultErr error) {
 	if family == "report_attempts" || family == "report_events" {
 		return readLegacyReportFact(ctx, q, scope, family)
 	}

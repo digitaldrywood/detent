@@ -10,62 +10,63 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func accessTokenResponse(row accessstore.Credential) tokenResponse {
-	result := tokenResponse{Kind: row.Kind, ProjectAccess: hostedProjectAccess(row.ProjectAccess), Projects: []string{}, Grants: []tokenGrantResponse{}, ExpiresAt: row.ExpiresAt, KeyScope: apikey.Scope(row.KeyScope), NativeOnly: row.NativeOnly, RevokedAt: row.RevokedAt, ID: row.ID, Name: row.Name, Scope: apiScope(row.Scope), Fingerprint: row.Fingerprint, CreatedAt: row.CreatedAt}
+func accessTokenResponse(row accessstore.Credential) hubapi.TokenResponse {
+	result := hubapi.TokenResponse{Kind: row.Kind, ProjectAccess: hubapi.HostedProjectAccess(row.ProjectAccess), Projects: []string{}, Grants: []hubapi.TokenGrantResponse{}, ExpiresAt: row.ExpiresAt, KeyScope: apikey.Scope(row.KeyScope), NativeOnly: row.NativeOnly, RevokedAt: row.RevokedAt, ID: row.ID, Name: row.Name, Scope: hubapi.APIScope(row.Scope), Fingerprint: row.Fingerprint, CreatedAt: row.CreatedAt}
 	if row.RotatedAt != nil {
 		result.RotatedAt = *row.RotatedAt
 	}
 	return result
 }
 
-func (s *Service) createAccessToken(ctx context.Context, request tokenRequest) (tokenResponse, error) {
+func (s *Service) createAccessToken(ctx context.Context, request hubapi.TokenRequest) (hubapi.TokenResponse, error) {
 	request.Name = strings.TrimSpace(request.Name)
 	if request.Name == "" || len(request.Name) > 200 || !validAPIScope(request.Scope) {
-		return tokenResponse{}, nativePublicInvalid("Token name and scope are required")
+		return hubapi.TokenResponse{}, hubapi.NativePublicInvalid("Token name and scope are required")
 	}
 	now := s.config.now()
 	token, err := s.config.generateToken()
 	if err != nil {
-		return tokenResponse{}, err
+		return hubapi.TokenResponse{}, err
 	}
 	hash := apikey.HashToken(token)
-	row := accessstore.Credential{OrganizationID: s.accessOrganization(), ID: strings.TrimSpace(s.config.newTokenID()), Name: request.Name, Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: string(request.Scope), CreatedAt: now, UpdatedAt: now, ExpiresAt: request.ExpiresAt, ProjectAccess: "selected", Kind: "service"}
+	row := accessstore.Credential{OrganizationID: s.accessOrganization(), ID: strings.TrimSpace(s.config.newTokenID()), Name: request.Name, Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: string(request.Scope), CreatedAt: now, UpdatedAt: now, ExpiresAt: request.ExpiresAt, ProjectAccess: "selected", Kind: "service"}
 	if row.ID == "" {
-		return tokenResponse{}, nativePublicInvalid("Token identity is required")
+		return hubapi.TokenResponse{}, hubapi.NativePublicInvalid("Token identity is required")
 	}
 	var scope nativeScope
 	if request.Issuer != nil {
 		issuer := *request.Issuer
 		if issuer.Hosted == nil || issuer.Hosted.SupportActor != "" || issuer.HostedKeyScope != "" {
-			return tokenResponse{}, auth.ErrHostedIdentity
+			return hubapi.TokenResponse{}, auth.ErrHostedIdentity
 		}
-		if request.Scope != apiScopeOperator && request.Scope != apiScopeAdmin || (request.Scope == apiScopeAdmin) != (request.KeyScope == apikey.ScopeAdmin) || !hostedRoleAllows(issuer.HostedRole, request.KeyScope, "credentials") {
-			return tokenResponse{}, nativePublicInvalid("Select a scope allowed by your current role")
+		if request.Scope != hubapi.APIScopeOperator && request.Scope != hubapi.APIScopeAdmin || (request.Scope == hubapi.APIScopeAdmin) != (request.KeyScope == apikey.ScopeAdmin) || !hostedRoleAllows(issuer.HostedRole, request.KeyScope, "credentials") {
+			return hubapi.TokenResponse{}, hubapi.NativePublicInvalid("Select a scope allowed by your current role")
 		}
 		if request.ExpiresAt != nil && (!request.ExpiresAt.After(now) || request.ExpiresAt.After(now.Add(90*24*time.Hour))) {
-			return tokenResponse{}, nativePublicInvalid("Select no expiry or an expiry within 90 days")
+			return hubapi.TokenResponse{}, hubapi.NativePublicInvalid("Select no expiry or an expiry within 90 days")
 		}
 		access, message := resolveHostedProjectAccess(request.ProjectAccess, request.ProjectIDs)
 		if message != "" {
-			return tokenResponse{}, nativePublicInvalid(message)
+			return hubapi.TokenResponse{}, hubapi.NativePublicInvalid(message)
 		}
 		identity, current, err := s.hostedMutationIdentity(ctx, issuer)
 		if err != nil {
-			return tokenResponse{}, operatorAuthorizationError(err)
+			return hubapi.TokenResponse{}, operatorAuthorizationError(err)
 		}
 		if identity.Subject != issuer.Hosted.Subject || current.ID != issuer.HostedMembership {
-			return tokenResponse{}, auth.ErrHostedIdentity
+			return hubapi.TokenResponse{}, auth.ErrHostedIdentity
 		}
 		row.Kind = request.Kind
 		if row.Kind == "" {
 			row.Kind = "personal"
 		}
 		if row.Kind != "personal" && row.Kind != "service" {
-			return tokenResponse{}, nativePublicInvalid("Choose a personal or service key")
+			return hubapi.TokenResponse{}, hubapi.NativePublicInvalid("Choose a personal or service key")
 		}
 		row.NativeOnly, row.UserID, row.MembershipID, row.KeyScope, row.ProjectAccess = true, issuer.Hosted.Subject, issuer.HostedMembership, string(request.KeyScope), string(access)
 		scope = nativeScope{organization: row.OrganizationID, credential: issuer, action: "credentials", requireHostedAdmin: request.KeyScope == apikey.ScopeAdmin}
@@ -79,12 +80,12 @@ func (s *Service) createAccessToken(ctx context.Context, request tokenRequest) (
 			if err != nil {
 				return err
 			}
-			if !hostedRoleAllows(lesserHostedRole(member.Role, scope.credential.HostedRole), request.KeyScope, "credentials") {
+			if !hostedRoleAllows(hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole), request.KeyScope, "credentials") {
 				return auth.ErrHostedIdentity
 			}
 			for _, project := range request.ProjectIDs {
 				if !hostedSafeID(project) {
-					return nativeNotFound()
+					return hubapi.NativeNotFound()
 				}
 				scope.project = tracker.ProjectID(project)
 				if err := s.authorizeAccessScope(ctx, w, scope, false); err != nil {
@@ -94,7 +95,7 @@ func (s *Service) createAccessToken(ctx context.Context, request tokenRequest) (
 		}
 		if err := w.CreateAccessCredential(ctx, row); err != nil {
 			if errors.Is(err, corestore.ErrUniqueViolation) {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			return err
 		}
@@ -106,7 +107,7 @@ func (s *Service) createAccessToken(ctx context.Context, request tokenRequest) (
 		return nil
 	})
 	if err != nil {
-		return tokenResponse{}, err
+		return hubapi.TokenResponse{}, err
 	}
 	response := accessTokenResponse(row)
 	response.Token = token
@@ -114,19 +115,19 @@ func (s *Service) createAccessToken(ctx context.Context, request tokenRequest) (
 	return response, nil
 }
 
-func (s *Service) rotateAccessToken(ctx context.Context, id string) (tokenResponse, error) {
+func (s *Service) rotateAccessToken(ctx context.Context, id string) (hubapi.TokenResponse, error) {
 	token, err := s.config.generateToken()
 	if err != nil {
-		return tokenResponse{}, err
+		return hubapi.TokenResponse{}, err
 	}
 	now := s.config.now()
 	hash := apikey.HashToken(token)
-	var response tokenResponse
+	var response hubapi.TokenResponse
 	err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
 		if err := s.authorizeCredentialMaintenanceWrite(ctx, w, s.accessOrganization()); err != nil {
 			return err
 		}
-		if err := w.RotateAccessCredential(ctx, id, hash, tokenFingerprint(hash), now); err != nil {
+		if err := w.RotateAccessCredential(ctx, id, hash, hubapi.TokenFingerprint(hash), now); err != nil {
 			return err
 		}
 		row, err := w.AccessCredential(ctx, id)
@@ -134,13 +135,13 @@ func (s *Service) rotateAccessToken(ctx context.Context, id string) (tokenRespon
 		return err
 	})
 	if err != nil {
-		return tokenResponse{}, err
+		return hubapi.TokenResponse{}, err
 	}
 	response.Token = token
 	return response, nil
 }
 
-func (s *Service) accessHostedKeys(ctx context.Context, credential apiCredential) ([]hostedAPIKey, error) {
+func (s *Service) accessHostedKeys(ctx context.Context, credential hubapi.APICredential) ([]hostedAPIKey, error) {
 	credential, err := s.hostedKeyCredentialFor(ctx, credential)
 	if err != nil {
 		return nil, err
@@ -165,12 +166,12 @@ func (s *Service) accessHostedKeys(ctx context.Context, credential apiCredential
 			if row.UserID != credential.Hosted.Subject || row.MembershipID != credential.HostedMembership {
 				continue
 			}
-			key := hostedAPIKey{Kind: row.Kind, ProjectAccess: hostedProjectAccess(row.ProjectAccess), ID: row.ID, Name: row.Name, Scope: apikey.Scope(row.KeyScope), CreatedAt: formatHubTime(row.CreatedAt), Fingerprint: row.Fingerprint, Revoked: row.RevokedAt != nil, Projects: []string{}}
+			key := hostedAPIKey{Kind: row.Kind, ProjectAccess: hubapi.HostedProjectAccess(row.ProjectAccess), ID: row.ID, Name: row.Name, Scope: apikey.Scope(row.KeyScope), CreatedAt: hubapi.FormatHubTime(row.CreatedAt), Fingerprint: row.Fingerprint, Revoked: row.RevokedAt != nil, Projects: []string{}}
 			if row.ExpiresAt != nil {
-				key.Expiry = new(formatHubTime(*row.ExpiresAt))
+				key.Expiry = new(hubapi.FormatHubTime(*row.ExpiresAt))
 			}
 			if row.RevokedAt != nil {
-				key.RevokedAt = new(formatHubTime(*row.RevokedAt))
+				key.RevokedAt = new(hubapi.FormatHubTime(*row.RevokedAt))
 			}
 			if row.ProjectAccess == "selected" {
 				var project tracker.ProjectID

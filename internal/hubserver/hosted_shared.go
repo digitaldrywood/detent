@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/readableurl"
@@ -96,25 +97,25 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		request := c.Request()
 		entry := s.config.Hosted.SharedEntry
 		if !cloudassert.CanonicalPath(request.URL) {
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
-		limit := SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
+		limit := hubapi.SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
 		body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
 		if err != nil {
-			return s.refusedAPIError(c, http.StatusBadRequest, "invalid_request", "Request body could not be read", apiErrorResponse{Code: "invalid_request", Message: "Request body could not be read"})
+			return s.refusedAPIError(c, http.StatusBadRequest, "invalid_request", "Request body could not be read", hubapi.APIErrorResponse{Code: "invalid_request", Message: "Request body could not be read"})
 		}
 		if int64(len(body)) > limit {
-			return s.refusedAPIError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body is too large", apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
+			return s.refusedAPIError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body is too large", hubapi.APIErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
 		}
 		request.Body = io.NopCloser(bytes.NewReader(body))
 		claims, err := entry.verifier.Verify(request.Header.Get(cloudassert.Header), request.Method, request.URL.RequestURI(), body)
 		if err != nil {
-			return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "entry_assertion_required", Message: "Requests must arrive through the authenticated shared entry"})
+			return c.JSON(http.StatusUnauthorized, hubapi.APIErrorResponse{Code: "entry_assertion_required", Message: "Requests must arrive through the authenticated shared entry"})
 		}
 		request.Header.Del(cloudassert.Header)
 		bearer := request.Header.Get(echo.HeaderAuthorization) != ""
 		if claims.Kind == cloudassert.KindBrowser && bearer || claims.Kind == cloudassert.KindMachine && !bearer {
-			return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "entry_assertion_required", Message: "Requests must arrive through the authenticated shared entry"})
+			return c.JSON(http.StatusUnauthorized, hubapi.APIErrorResponse{Code: "entry_assertion_required", Message: "Requests must arrive through the authenticated shared entry"})
 		}
 		request.Header.Del("Cookie")
 		organization := s.config.Hosted.OrganizationID
@@ -133,18 +134,18 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 			path = strings.TrimPrefix(path, "/"+first)
 			c.Set("readable_organization_slug", first)
 		default:
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 		if path != request.URL.Path {
 			if strings.HasPrefix(path, "/organizations/") || strings.HasPrefix(path, "/internal/") || hostedSharedEntryRoutes[path] {
-				return s.nativeAPIError(c, nativeNotFound())
+				return s.nativeAPIError(c, hubapi.NativeNotFound())
 			}
 			request.URL.Path, request.URL.RawPath = path, ""
 		}
 		internal := strings.HasPrefix(path, "/internal/")
 		keyInternal := claims.Kind == cloudassert.KindKey && (path == "/internal/v1/keys/catalog" || path == "/internal/v1/keys/call")
 		if internal != (claims.Kind == cloudassert.KindService || keyInternal) {
-			return s.nativeAPIError(c, nativeNotFound())
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 		healthProbe := claims.Kind == cloudassert.KindService && request.Method == http.MethodPost && path == "/internal/v1/health"
 		if !healthProbe {
@@ -187,7 +188,7 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 				if c.Response().Committed || result != nil {
 					return result
 				}
-				return c.JSON(http.StatusInternalServerError, apiErrorResponse{Code: "audit_unavailable", Message: "Key audit is unavailable"})
+				return c.JSON(http.StatusInternalServerError, hubapi.APIErrorResponse{Code: "audit_unavailable", Message: "Key audit is unavailable"})
 			}
 			return result
 		}
@@ -264,10 +265,10 @@ type hostedSharedBillingQuery struct {
 
 func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 	if claims, ok := hostedSharedClaims(c); !ok || claims.Kind != cloudassert.KindService {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	cfg := s.hostedBillingConfig()
 	result := hostedSharedBilling{Status: "free"}
@@ -289,7 +290,7 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 		}
 		result.CustomerID = binding.CustomerID
 		var query hostedSharedBillingQuery
-		if err := decodeAPIJSON(c, &query); err != nil {
+		if err := hubapi.DecodeAPIJSON(c, &query); err != nil {
 			return s.invalidAPIRequest(c, err)
 		}
 		if query.Reconcile && binding.CustomerID != "" && s.billing != nil {
@@ -298,10 +299,10 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 			s.billing.mu.Unlock()
 			if reconcileErr != nil {
 				s.logStripeFailure(ctx, reconcileErr)
-				return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing could not be reconciled"})
+				return c.JSON(http.StatusServiceUnavailable, hubapi.APIErrorResponse{Code: "billing_unavailable", Message: "Billing could not be reconciled"})
 			}
 		}
-		checkoutCtx, cancelCheckout := context.WithTimeout(ctx, hubReadTimeout)
+		checkoutCtx, cancelCheckout := context.WithTimeout(ctx, hubapi.ReadTimeout)
 		defer cancelCheckout()
 		if err := s.database.readBillingTenant(checkoutCtx, func(reader tenantstore.Reader) error {
 			account, err := reader.BillingAccount(checkoutCtx)
@@ -339,11 +340,11 @@ type hostedSharedBillingEventRequest struct {
 
 func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 	if claims, ok := hostedSharedClaims(c); !ok || claims.Kind != cloudassert.KindService {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	cfg := s.hostedBillingConfig()
 	var request hostedSharedBillingEventRequest
-	if err := decodeAPIJSON(c, &request); err != nil || cfg == nil || !strings.HasPrefix(request.EventID, "evt_") || !hostedSafeID(request.EventID) || request.EventType == "" || len(request.EventType) > 128 {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil || cfg == nil || !strings.HasPrefix(request.EventID, "evt_") || !hostedSafeID(request.EventID) || request.EventType == "" || len(request.EventType) > 128 {
 		return s.invalidAPIRequest(c, errors.New("invalid billing event"))
 	}
 	binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
@@ -351,7 +352,7 @@ func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 		return s.nativeAPIError(c, operatorAuthorizationError(err))
 	}
 	if err != nil || binding.CustomerID != request.CustomerID {
-		return s.refusedAPIError(c, http.StatusConflict, "customer_mismatch", "The event customer is not bound to this organization", apiErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
+		return s.refusedAPIError(c, http.StatusConflict, "customer_mismatch", "The event customer is not bound to this organization", hubapi.APIErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
 	}
 	err = s.database.writeBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
 		_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: request.EventID, Type: request.EventType, ReceivedAt: s.config.now().UTC()})
@@ -379,11 +380,11 @@ type hostedSharedOwner struct {
 func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	var request hostedSharedOwner
 	name := ""
-	if err := decodeAPIJSON(c, &request); err == nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err == nil {
 		name = strings.TrimSpace(request.OrganizationName)
 	}
 	if claims.Subject == "" || claims.Email == "" || name == "" || len(name) > 120 {
@@ -395,17 +396,17 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		return s.nativeAPIError(c, operatorAuthorizationError(err))
 	}
 	if err != nil || provider == "" {
-		return s.refusedAPIError(c, http.StatusConflict, "unallocated", "The tenant has no provider organization", apiErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
+		return s.refusedAPIError(c, http.StatusConflict, "unallocated", "The tenant has no provider organization", hubapi.APIErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
 	}
 	membership, err := s.hostedMembership(ctx, &auth.HostedIdentity{Subject: claims.Subject, OrganizationID: provider})
 	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 		return s.nativeAPIError(c, operatorAuthorizationError(err))
 	}
 	if err != nil || membership.Role.Slug != "owner" {
-		return s.refusedAPIError(c, http.StatusForbidden, "owner_unverified", "The provider does not report this identity as an owner", apiErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
+		return s.refusedAPIError(c, http.StatusForbidden, "owner_unverified", "The provider does not report this identity as an owner", hubapi.APIErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
 	}
 	if s.config.TenantRepository == nil {
-		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", nativeRunEventStorageUnavailable())
+		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", hubapi.NativeRunEventStorageUnavailable())
 	}
 	identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true}
 	var prepared accessMemberPreparation
@@ -422,7 +423,7 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		if len(members) == 1 && members[0].UserID == claims.Subject && members[0].Role == "owner" && members[0].Active {
 			return c.NoContent(http.StatusNoContent)
 		}
-		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
+		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", hubapi.APIErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
 	}
 	prepared, err = s.prepareAccessMember(ctx, identity)
 	if err != nil {
@@ -454,7 +455,7 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if errors.Is(err, errHostedOwnerAlreadyBootstrapped) {
-		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", apiErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
+		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", hubapi.APIErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
 	}
 	if err != nil {
 		return s.nativeAPIError(c, operatorAuthorizationError(err))
@@ -468,14 +469,14 @@ type hostedSharedRevocation struct {
 
 func (s *Service) revokeHostedSharedSessions(c echo.Context) error {
 	if claims, ok := hostedSharedClaims(c); !ok || claims.Kind != cloudassert.KindService {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	var request hostedSharedRevocation
-	if err := decodeAPIJSON(c, &request); err != nil || len(request.Bindings) == 0 || len(request.Bindings) > 100 {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil || len(request.Bindings) == 0 || len(request.Bindings) > 100 {
 		return s.invalidAPIRequest(c, errors.New("invalid revocation"))
 	}
 	ctx := c.Request().Context()
-	now := formatHubTime(s.config.now())
+	now := hubapi.FormatHubTime(s.config.now())
 	for _, binding := range request.Bindings {
 		if len(binding) != 64 {
 			return s.invalidAPIRequest(c, errors.New("invalid binding"))
@@ -488,7 +489,7 @@ func (s *Service) revokeHostedSharedSessions(c echo.Context) error {
 }
 
 func (s *Service) revokeHostedSharedBinding(ctx context.Context, binding, now string) error {
-	at, err := parseTimeValue(now)
+	at, err := hubapi.ParseTimeValue(now)
 	if err != nil {
 		return err
 	}
@@ -504,7 +505,7 @@ func (s *Service) revokeHostedSharedBinding(ctx context.Context, binding, now st
 
 func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
 	claims, ok := hostedSharedClaims(c)
-	return s.accessInvitesService().AcceptHTTP(c, claims, ok, accessinvites.HTTPOptions{Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, fromFeatureError(err)) }, Invalid: s.invalidAPIRequest, Refuse: func(c echo.Context, status int, code, message string, response any) error {
+	return s.accessInvitesService().AcceptHTTP(c, claims, ok, accessinvites.HTTPOptions{Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) }, Invalid: s.invalidAPIRequest, Refuse: func(c echo.Context, status int, code, message string, response any) error {
 		return s.refusedAPIError(c, status, code, message, response)
 	}})
 }

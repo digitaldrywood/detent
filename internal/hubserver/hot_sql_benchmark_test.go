@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -21,7 +22,7 @@ func BenchmarkNativeIssueProjection(b *testing.B) {
 	}); err != nil {
 		b.Fatal(err)
 	}
-	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, WorkItemID: row.NativeID, Revision: tracker.Revision(row.Revision), Number: int(row.Number)}, Title: row.Title, State: stringValue(row.WorkflowStateName), Archived: row.Archived, Actor: tracker.Actor{Kind: stringValue(row.ActorKind), PrincipalID: stringValue(row.ActorPrincipalID)}, CreatedAt: row.NativeCreatedAt, UpdatedAt: row.NativeUpdatedAt}
+	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, WorkItemID: row.NativeID, Revision: tracker.Revision(row.Revision), Number: int(row.Number)}, Title: row.Title, State: hubapi.StringValue(row.WorkflowStateName), Archived: row.Archived, Actor: tracker.Actor{Kind: hubapi.StringValue(row.ActorKind), PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}, CreatedAt: row.NativeCreatedAt, UpdatedAt: row.NativeUpdatedAt}
 	raw, err := json.Marshal(issue)
 	if err != nil {
 		b.Fatal(err)

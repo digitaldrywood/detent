@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/threadstore"
@@ -84,7 +85,7 @@ func TestPostgresThreadsPreservePostsPermissionsAndUnread(t *testing.T) {
 		for _, project := range []string{"project_first", "project_second"} {
 			timestamp := "2026-11-01T12:00:00.123456789Z"
 			source := threadstore.Import{Thread: threadstore.Record{Thread: teamThread{ID: "th_" + project, Scope: "issue", ProjectID: project, IssueID: "wi_" + project, Title: "Example imported research " + project, Status: "open", Creator: "credential_owner", CreatorName: "Example owner", CreatorClient: "Example client", PostCount: 2, Preview: "Preserved source post", CreatedAt: timestamp, UpdatedAt: timestamp, Participants: []teamParticipant{{PrincipalID: "credential_owner", Name: "Example owner", Client: "Example client"}}, References: []teamReference{{Kind: "issue", ID: "wi_" + project, ProjectID: project}}}, RequestKey: "create_" + project, InputHash: strings.Repeat("a", 64)}, Reads: []threadstore.Cursor{{Principal: "credential_reporter", LastSequence: 1}}}
-			postHash, err := nativeCommandHash(struct {
+			postHash, err := hubapi.CommandHash(struct {
 				Kind, Body string
 				References []teamReference
 			}{"note", "Preserved source post", []teamReference{{Kind: "issue", ID: "wi_" + project, ProjectID: project}}})

@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -141,7 +142,7 @@ func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope nativeSc
 	if err != nil {
 		return out, err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, FromState: from, ToState: terminal, Reason: "worker_progress"}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, FromState: from, ToState: terminal, Reason: "worker_progress"}})
 	if err != nil {
 		return out, err
 	}
@@ -192,7 +193,7 @@ func (p workspaceIssueClosePlan) write(ctx context.Context, w tenantstore.Writer
 // workspaceIsolationRefused is the refusal a bind or heartbeat gets when the
 // runner's terminal isolation is not one the organization allows.
 func workspaceIsolationRefused() error {
-	return &nativeError{Code: "forbidden", Message: "The runner's terminal isolation is not allowed by this organization", status: http.StatusForbidden, publicMessage: true}
+	return &hubapi.NativeError{Code: "forbidden", Message: "The runner's terminal isolation is not allowed by this organization", Status: http.StatusForbidden, PublicMessage: true}
 }
 
 // firstTerminalState reports the project's first terminal workflow state, the
@@ -217,7 +218,7 @@ func requireUnreservedLabels(ctx context.Context, labels []string) error {
 	}
 	for _, label := range labels {
 		if strings.EqualFold(strings.TrimSpace(label), workspaceItemLabel) {
-			return nativePublicInvalid("Label " + workspaceItemLabel + " is reserved")
+			return hubapi.NativePublicInvalid("Label " + workspaceItemLabel + " is reserved")
 		}
 	}
 	return nil

@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -109,8 +110,8 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 	return hubOperatorResult(report)
 }
 
-func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) readAnalyticsReport(ctx context.Context, credential hubapi.APICredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	projects, err := s.analyticsReadableProjects(ctx, credential, r)
 	if err != nil {
@@ -119,7 +120,7 @@ func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredent
 	return s.readAnalyticsReportFor(ctx, credential, r, w, projects)
 }
 
-func (s *Service) analyticsReadableProjects(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest) ([]string, error) {
+func (s *Service) analyticsReadableProjects(ctx context.Context, credential hubapi.APICredential, r operatortool.AnalyticsRequest) ([]string, error) {
 	projects, err := s.usageReadableProjects(ctx, credential)
 	if err != nil {
 		return nil, err
@@ -134,9 +135,9 @@ func (s *Service) analyticsReadableProjects(ctx context.Context, credential apiC
 	return filterProductivityProjects(projects, r.Projects), nil
 }
 
-func (s *Service) readAnalyticsReportFor(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, projects []string) (nativeAnalyticsReport, error) {
+func (s *Service) readAnalyticsReportFor(ctx context.Context, credential hubapi.APICredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, projects []string) (nativeAnalyticsReport, error) {
 	if s.config.TenantRepository == nil {
-		return nativeAnalyticsReport{}, workItemStorageUnavailable()
+		return nativeAnalyticsReport{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	_, _, err := analyticsPagingContext(ctx, r.PopulationCursor)
 	if err != nil {
@@ -418,7 +419,7 @@ func (s *Service) analyticsSnapshotPrincipal(ctx context.Context, r tenantstore.
 		principal = scope.actor().PrincipalID
 	}
 	if principal == "" {
-		return "", nativeNotFound()
+		return "", hubapi.NativeNotFound()
 	}
 	return principal, nil
 }
@@ -449,7 +450,7 @@ func (s *Service) analyticsCohortContext(ctx context.Context, scope nativeScope,
 	selection := &analyticsCohortSelection{Runners: slices.Clone(filter.Runners), Items: map[tracker.NativeWorkItemID]bool{}, Fingerprint: hex.EncodeToString(digest[:])}
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return ctx, workItemStorageUnavailable()
+		return ctx, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		principal, err := s.analyticsSnapshotPrincipal(ctx, reader, scope)
@@ -458,7 +459,7 @@ func (s *Service) analyticsCohortContext(ctx context.Context, scope nativeScope,
 		}
 		owner, ok := reader.(reportstore.CohortReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		items, err := owner.ReadCohortWorkItems(ctx, reportstore.OverviewQuery{Projects: []tracker.ProjectID{scope.project}, Principal: principal, From: w.From, To: w.To, Filter: filter, Limit: 5000})
 		if err != nil {

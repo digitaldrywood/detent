@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -151,7 +152,7 @@ func TestPostgresNativeSupportReadAudit(t *testing.T) {
 					}
 				})
 			}
-			service.echo.HEAD(nativeBase, service.getNativeProject, service.requireNativeScope(apiScopeWorker, apiScopeOperator))
+			service.echo.HEAD(hubapi.NativeBase, service.getNativeProject, service.requireNativeScope(hubapi.APIScopeWorker, hubapi.APIScopeOperator))
 			client := f.hostedSharedFixture
 			client.service = service
 			target := "/api/v2/organizations/" + organization + "/projects/" + string(f.project)
@@ -185,7 +186,7 @@ func TestPostgresNativeSupportReadAudit(t *testing.T) {
 						count(*) FILTER (WHERE session_id=$2 AND event IN ('action','key_call')),
 						count(*) FILTER (WHERE session_id='session_support' AND event='action' AND route=$3),
 						count(*) FILTER (WHERE session_id='session_support' AND event='action' AND route=$3 AND actual_actor='support@example.test' AND effective_user=$4 AND reason='customer-request' AND project_id=$5)
-						FROM hosted_audit WHERE organization_id=$1`, organization, key.ID, method+" "+nativeBase+suffix, user.identity.Subject, f.project).Scan(&ordinary, &support, &attributed); err != nil {
+						FROM hosted_audit WHERE organization_id=$1`, organization, key.ID, method+" "+hubapi.NativeBase+suffix, user.identity.Subject, f.project).Scan(&ordinary, &support, &attributed); err != nil {
 						t.Fatal(err)
 					}
 					if ordinary != 0 || support != 3 || attributed != 3 {
@@ -503,7 +504,7 @@ func TestEntryKeyAuditPreservesHandlerErrors(t *testing.T) {
 			c := echo.New().NewContext(request, recorder)
 			result := f.service.hostedSharedEntry(func(c echo.Context) error {
 				if test.committed {
-					if err := c.JSON(http.StatusForbidden, apiErrorResponse{Code: "handler_refused", Message: "Handler refused"}); err != nil {
+					if err := c.JSON(http.StatusForbidden, hubapi.APIErrorResponse{Code: "handler_refused", Message: "Handler refused"}); err != nil {
 						return err
 					}
 				}

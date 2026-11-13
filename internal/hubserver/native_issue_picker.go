@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -30,10 +31,10 @@ func nativeIssuePickerRequested(params map[string][]string) (bool, error) {
 		return false, nil
 	}
 	if len(values) != 1 || values[0] != nativeIssuePickerFields {
-		return false, nativePublicInvalid("fields supports picker")
+		return false, hubapi.NativePublicInvalid("fields supports picker")
 	}
 	if _, include := params["include"]; include {
-		return false, nativePublicInvalid("fields=picker cannot be combined with include")
+		return false, hubapi.NativePublicInvalid("fields=picker cannot be combined with include")
 	}
 	return true, nil
 }

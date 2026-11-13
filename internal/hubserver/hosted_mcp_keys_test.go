@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -31,7 +32,7 @@ type hostedKeyMCPFixture struct {
 	hostedSecurityFixture
 	user    hostedSecurityUser
 	browser func(string, string, url.Values) *httptest.ResponseRecorder
-	issuer  func(*testing.T) apiCredential
+	issuer  func(*testing.T) hubapi.APICredential
 }
 
 func newHostedKeyMCPFixture(t *testing.T, deployment, role string) (hostedKeyMCPFixture, context.Context) {
@@ -69,7 +70,7 @@ func newHostedKeyMCPFixture(t *testing.T, deployment, role string) (hostedKeyMCP
 		}
 		return f.request(t, user, method, path, form)
 	}
-	issuer := func(t *testing.T) apiCredential {
+	issuer := func(t *testing.T) hubapi.APICredential {
 		t.Helper()
 		if deployment == "shared" {
 			return shared.sessionCredential(t, user)
@@ -86,7 +87,7 @@ func newHostedKeyMCPFixture(t *testing.T, deployment, role string) (hostedKeyMCP
 func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
-			for _, access := range []hostedProjectAccess{hostedProjectsSelected, hostedProjectsAll} {
+			for _, access := range []hubapi.HostedProjectAccess{hubapi.HostedProjectsSelected, hubapi.HostedProjectsAll} {
 				t.Run(string(access), func(t *testing.T) {
 					for _, scenario := range []string{"read", "write", "admin", "key revoked", "key expired", "key grant removed", "user grant removed", "provider membership removed", "local membership removed", "membership replaced", "provider role downgraded", "local role downgraded", "write grant removed", "foreign organization", "foreign organization route", "foreign project", "unselected project", "issuer principal revoked", "issuer grant removed", "future project", "future project read key", "future project without user grant", "future project without issuer grant", "no projects at creation", "machine", "worker", "never expires read", "never expires write", "never expires admin", "never expires key revoked", "never expires provider membership removed", "never expires local membership removed", "never expires provider role downgraded", "never expires local role downgraded", "never expires user grant removed", "never expires key grant removed"} {
 						t.Run(scenario, func(t *testing.T) {
@@ -129,16 +130,16 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 							if scenario == "read" || scenario == "future project read key" {
 								keyScope = apikey.ScopeRead
 							}
-							scope := apiScopeOperator
+							scope := hubapi.APIScopeOperator
 							if scenario == "admin" {
-								scope = apiScopeAdmin
+								scope = hubapi.APIScopeAdmin
 								keyScope = apikey.ScopeAdmin
 							}
-							request := tokenRequest{Name: "external-client", Scope: scope, Issuer: &credential, KeyScope: keyScope, ExpiresAt: &expiry, ProjectIDs: []string{string(f.project)}, ProjectAccess: access}
+							request := hubapi.TokenRequest{Name: "external-client", Scope: scope, Issuer: &credential, KeyScope: keyScope, ExpiresAt: &expiry, ProjectIDs: []string{string(f.project)}, ProjectAccess: access}
 							if neverExpires {
 								request.ExpiresAt = nil
 							}
-							if access == hostedProjectsAll {
+							if access == hubapi.HostedProjectsAll {
 								request.ProjectIDs = nil
 							}
 							if scenario == "no projects at creation" {
@@ -158,12 +159,12 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								request.ProjectIDs = nil
 								request.ProjectAccess = ""
 								if scenario == "worker" {
-									request.Scope = apiScopeWorker
+									request.Scope = hubapi.APIScopeWorker
 								}
 							}
 							key, err := f.service.createAPITokenFor(t.Context(), request)
-							if access == hostedProjectsSelected && scenario == "no projects at creation" {
-								if !isNativeNotFound(err) {
+							if access == hubapi.HostedProjectsSelected && scenario == "no projects at creation" {
+								if !hubapi.IsNativeNotFound(err) {
 									t.Fatalf("selected key without an active project=%v", err)
 								}
 								return
@@ -248,7 +249,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								readDenied = true
 							case "key grant removed":
 								writeAccess(func(w tenantstore.Writer) error { return w.DeleteAccessTokenGrant(t.Context(), key.ID, f.project) })
-								readDenied = access == hostedProjectsSelected
+								readDenied = access == hubapi.HostedProjectsSelected
 							case "user grant removed":
 								writeAccess(func(w tenantstore.Writer) error {
 									return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, f.project)
@@ -329,7 +330,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								project = "prj_other"
 								createProject(tracker.ProjectID(project), credential.ID)
 								seedNativeFixturePolicy(t, f.service, "org_security/"+project)
-								readDenied = access == hostedProjectsSelected
+								readDenied = access == hubapi.HostedProjectsSelected
 								if scenario == "future project without user grant" {
 									writeAccess(func(w tenantstore.Writer) error {
 										return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, tracker.ProjectID(project))
@@ -527,7 +528,7 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 				user                   *hostedSecurityUser
 				csrf                   bool
 				status                 int
-				access                 hostedProjectAccess
+				access                 hubapi.HostedProjectAccess
 				days                   int
 				neverExpires           bool
 			}{
@@ -539,13 +540,13 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 				{"selected without projects", "read", `,"project_access":"selected"`, &owner, true, http.StatusUnprocessableEntity, "", 30, false},
 				{"unknown access", "read", `,"project_access":"unknown"`, &owner, true, http.StatusUnprocessableEntity, "", 30, false},
 				{"ambiguous all", "read", `,"project_access":"all","project_ids":["` + string(f.project) + `"]`, &owner, true, http.StatusUnprocessableEntity, "", 30, false},
-				{"owner legacy", "read", `,"project_ids":["` + string(f.project) + `"]`, &owner, true, http.StatusCreated, hostedProjectsSelected, 30, false},
-				{"viewer selected", "read", `,"project_access":"selected","project_ids":["` + string(f.project) + `"]`, &viewer, true, http.StatusCreated, hostedProjectsSelected, 30, false},
-				{"default all", "read", "", &owner, true, http.StatusCreated, hostedProjectsAll, 30, false},
-				{"empty default all", "read", `,"project_ids":[]`, &owner, true, http.StatusCreated, hostedProjectsAll, 30, false},
-				{"viewer all", "read", `,"project_access":"all"`, &viewer, true, http.StatusCreated, hostedProjectsAll, 30, false},
-				{"never expires", "read", "", &owner, true, http.StatusCreated, hostedProjectsAll, 0, true},
-				{"viewer never expires", "read", `,"project_access":"selected","project_ids":["` + string(f.project) + `"]`, &viewer, true, http.StatusCreated, hostedProjectsSelected, 0, true},
+				{"owner legacy", "read", `,"project_ids":["` + string(f.project) + `"]`, &owner, true, http.StatusCreated, hubapi.HostedProjectsSelected, 30, false},
+				{"viewer selected", "read", `,"project_access":"selected","project_ids":["` + string(f.project) + `"]`, &viewer, true, http.StatusCreated, hubapi.HostedProjectsSelected, 30, false},
+				{"default all", "read", "", &owner, true, http.StatusCreated, hubapi.HostedProjectsAll, 30, false},
+				{"empty default all", "read", `,"project_ids":[]`, &owner, true, http.StatusCreated, hubapi.HostedProjectsAll, 30, false},
+				{"viewer all", "read", `,"project_access":"all"`, &viewer, true, http.StatusCreated, hubapi.HostedProjectsAll, 30, false},
+				{"never expires", "read", "", &owner, true, http.StatusCreated, hubapi.HostedProjectsAll, 0, true},
+				{"viewer never expires", "read", `,"project_access":"selected","project_ids":["` + string(f.project) + `"]`, &viewer, true, http.StatusCreated, hubapi.HostedProjectsSelected, 0, true},
 				{"zero expiry", "read", "", &owner, true, http.StatusUnprocessableEntity, "", 0, false},
 				{"conflicting expiry", "read", "", &owner, true, http.StatusUnprocessableEntity, "", 30, true},
 				{"negative expiry", "read", "", &owner, true, http.StatusUnprocessableEntity, "", -1, false},
@@ -564,7 +565,7 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 					if response.Header().Get("Cache-Control") != "no-store" {
 						t.Fatal("key response must not be cached")
 					}
-					var key tokenResponse
+					var key hubapi.TokenResponse
 					decodeHubResponse(t, response, &key)
 					if (key.ExpiresAt == nil) != test.neverExpires {
 						t.Fatal("unexpected key expiry")
@@ -581,7 +582,7 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 						t.Fatal("unexpected stored key expiry")
 					}
 					wantProjects := 0
-					if test.access == hostedProjectsSelected {
+					if test.access == hubapi.HostedProjectsSelected {
 						wantProjects = 1
 					}
 					if key.ProjectAccess != test.access || len(key.Projects) != wantProjects {

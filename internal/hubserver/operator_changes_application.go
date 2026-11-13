@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -28,7 +29,7 @@ func (a hubChangeApplication) authorized(ctx context.Context, args operatortool.
 	if a.service.config.TenantRepository == nil || a.service.config.AccessRepository == nil {
 		return scope, operatortool.ErrServiceUnavailable
 	}
-	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin || scope.credential.Runner.RunnerID != "" {
+	if scope.credential.Scope != hubapi.APIScopeOperator && scope.credential.Scope != hubapi.APIScopeAdmin || scope.credential.Runner.RunnerID != "" {
 		return scope, operatortool.ErrAccessDenied
 	}
 	if err := a.service.requireHostedProject(ctx, nil, scope, write); err != nil {
@@ -60,11 +61,11 @@ func (a hubChangeApplication) result(scope nativeScope, args operatortool.Change
 
 func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args operatortool.ChangeArguments) (value operatortool.ChangeResult, resultErr error) {
 	ctx = a.service.contentContext(ctx)
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	defer func() {
 		if resultErr != nil {
-			if archive := nativeArchiveReadError(resultErr); archive != nil {
+			if archive := hubapi.NativeArchiveReadError(resultErr); archive != nil {
 				resultErr = archive
 			}
 			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), resultErr)
@@ -101,7 +102,7 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 				diff = stored.Diff
 			}
 			if err != nil {
-				err = projectRecordError(err)
+				err = hubapi.ProjectRecordError(err)
 			}
 			value.Diff, value.NextOffset = operatortool.ChangeDiffPage(diff, args)
 		case operatortool.GetNativeRun:
@@ -227,7 +228,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 			return result, operatortool.ErrInvalidArguments
 		}
 		request := bindArtifactServiceRequest{Mutation: command, Binding: *args.Binding}
-		options := nativeCommandOptions{OperationID: http.MethodPut + " " + result.URL + "/artifact-services/" + url.PathEscape(args.Binding.ServiceID)}
+		options := hubapi.NativeCommandOptions{OperationID: http.MethodPut + " " + result.URL + "/artifact-services/" + url.PathEscape(args.Binding.ServiceID)}
 		result.Receipt, err = s.executeProjectRecordMutation(ctx, scope, options, command, request)
 	case operatortool.CreateChange:
 		request := tracker.CreateChange{Mutation: command, Title: args.Title, Body: args.Body, LinkedIssues: args.LinkedIssues}
@@ -259,7 +260,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		if err != nil {
 			return result, err
 		}
-		result.WorkItemState = stringValue(item.WorkflowStateName)
+		result.WorkItemState = hubapi.StringValue(item.WorkflowStateName)
 		result, err = s.readBoundedChangeRecord(ctx, scope, args, result)
 		if err != nil {
 			return result, err
@@ -317,7 +318,7 @@ func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope n
 	if reference.Availability != "available" {
 		return nil, artifact.ErrExpired
 	}
-	hash, err := nativeCommandHash(args)
+	hash, err := hubapi.CommandHash(args)
 	if err != nil {
 		return nil, err
 	}
@@ -341,8 +342,8 @@ func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope n
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(item.ActorPrincipalID)}) {
-			return nativeNotFound()
+		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+			return hubapi.NativeNotFound()
 		}
 		current, err := w.ArtifactReference(ctx, scope.project, item.NativeID, args.ArtifactID, args.Revision)
 		if err != nil {
@@ -364,7 +365,7 @@ func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope n
 		existing, err := w.Receipt(ctx, scope.credential.ID, operation, args.RequestID)
 		if err == nil {
 			if existing.RequestHash != hash {
-				return nativeConflict(0)
+				return hubapi.NativeConflict(0)
 			}
 			return nil
 		}
@@ -375,7 +376,7 @@ func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope n
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	return raw, nil
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -33,16 +34,16 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope nativeScope,
 		return nil, err
 	}
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
-		return nil, workspaceUnavailable()
+		return nil, hubapi.WorkspaceUnavailable()
 	}
 	request, err = normalizeWorkspaceRequest(request)
 	if err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
-	hash, err := nativeCommandHash(request)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
 	}
@@ -82,19 +83,19 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope nativeScope,
 				return nil, receiptstore.ErrExpired
 			}
 			if previous.RequestHash != hash {
-				return nil, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
+				return nil, &hubapi.NativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: http.StatusConflict, PublicMessage: true}
 			}
 			return content.Receipt(ctx, previous)
 		}
 		now := s.config.now().UTC().Truncate(time.Microsecond)
-		record := workspaceRecord{ID: newNativeID("ws"), OrganizationID: scope.organization, ProjectID: scope.project, SubjectWorkItemID: string(subject.NativeID), AttemptID: strings.TrimSpace(request.AttemptID), Ref: strings.TrimSpace(request.Ref), State: workspacesession.StateRequested, Requires: request.Requires, ReadOnly: readOnly, IdleTimeoutSeconds: service.config.IdleTimeoutSeconds(), ExpiresAt: now.Add(service.config.MaxLifetime), RequestedExpiresAt: now.Add(service.config.RequestTimeout), CreatedBy: scope.credential.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
+		record := workspaceRecord{ID: hubapi.NewID("ws"), OrganizationID: scope.organization, ProjectID: scope.project, SubjectWorkItemID: string(subject.NativeID), AttemptID: strings.TrimSpace(request.AttemptID), Ref: strings.TrimSpace(request.Ref), State: workspacesession.StateRequested, Requires: request.Requires, ReadOnly: readOnly, IdleTimeoutSeconds: service.config.IdleTimeoutSeconds(), ExpiresAt: now.Add(service.config.MaxLifetime), RequestedExpiresAt: now.Add(service.config.RequestTimeout), CreatedBy: scope.credential.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
 		project, err := s.readProjectRecord(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
 		state, found := firstDispatchableState(tracker.NativeProject{States: project.States})
 		if !found {
-			return nil, nativePublicInvalid("The project has no dispatchable workflow state for a workspace session")
+			return nil, hubapi.NativePublicInvalid("The project has no dispatchable workflow state for a workspace session")
 		}
 		create := tracker.CreateIssue{Title: workspaceItemTitle(record.ID), Body: workspaceItemBody(record), State: state, Labels: []string{workspaceItemLabel}}
 		plan, err := s.loadWorkItemPlan(ctx, scope, "", "", create)
@@ -126,7 +127,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope nativeScope,
 		if err != nil {
 			return nil, err
 		}
-		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, Type: "issue.created", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: 1}})
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, Type: "issue.created", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: 1}})
 		if err != nil {
 			return nil, err
 		}
@@ -166,7 +167,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope nativeScope,
 				return err
 			}
 			if currentProject.Core.DeletedAt != nil || currentProject.Core.Profile != "native" {
-				return nativeNotFound()
+				return hubapi.NativeNotFound()
 			}
 			if !sameWorkItemProjectPlan(plan.project, currentProject) {
 				return corestore.ErrSerializationFailure
@@ -177,7 +178,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope nativeScope,
 					return receiptstore.ErrExpired
 				}
 				if previous.RequestHash != hash {
-					return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
+					return &hubapi.NativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: http.StatusConflict, PublicMessage: true}
 				}
 				replay = previous
 				return s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusCreated)
@@ -207,7 +208,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope nativeScope,
 			}
 			owner, ok := w.(postgres.WorkspaceWriter)
 			if !ok {
-				return workspaceUnavailable()
+				return hubapi.WorkspaceUnavailable()
 			}
 			if record.AttemptID != "" {
 				id, err := owner.WorkspaceOpenAttempt(ctx, scope.project, record.AttemptID)
@@ -262,7 +263,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope nativeScope,
 			continue
 		}
 		if err != nil {
-			return nil, projectRecordError(err)
+			return nil, hubapi.ProjectRecordError(err)
 		}
 		if replay.CommandKey != "" {
 			return content.Receipt(ctx, replay)
@@ -290,7 +291,7 @@ func (s *Service) readAttachment(ctx context.Context, scope nativeScope, convers
 }
 
 func (s *Service) readRecording(ctx context.Context, scope nativeScope, workspaceID, id string) (terminalRecordingRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	service, err := s.requireWorkspaces()
 	if err != nil {
@@ -304,7 +305,7 @@ func (s *Service) readRecording(ctx context.Context, scope nativeScope, workspac
 		}
 		owner, ok := reader.(postgres.RelayActionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		row, err = owner.TerminalRecording(ctx, scope.project, id)
@@ -312,16 +313,16 @@ func (s *Service) readRecording(ctx context.Context, scope nativeScope, workspac
 			return err
 		}
 		if row.WorkspaceID != workspaceID {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		recording = terminalRecordingFromPostgres(row)
 		if !terminalRecordingReadable(scope, recording) {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		return nil
 	})
 	if err != nil {
-		return terminalRecordingRecord{}, projectRecordError(err)
+		return terminalRecordingRecord{}, hubapi.ProjectRecordError(err)
 	}
 	ref := attachment.ArchiveReference{Key: row.CastObjectKey, SHA256: row.CastSha256, CompressedSize: row.CastBytes, UncompressedSize: row.CastContentBytes, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
 	if ref.Validate(string(scope.organization)) != nil || ref.UncompressedSize > workspacesession.MaxRecordingBytes {
@@ -339,7 +340,7 @@ func (s *Service) readRecording(ctx context.Context, scope nativeScope, workspac
 	return recording, nil
 }
 func (s *Service) readRecordings(ctx context.Context, scope nativeScope, workspaceID, relaySessionID string, limit int) ([]TerminalRecording, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	service, err := s.requireWorkspaces()
 	if err != nil {
@@ -352,14 +353,14 @@ func (s *Service) readRecordings(ctx context.Context, scope nativeScope, workspa
 		}
 		owner, ok := reader.(postgres.RelayActionReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		rows, err = owner.RecentTerminalRecordings(ctx, scope.project, workspaceID, relaySessionID, terminalRecordingPage)
 		return err
 	})
 	if err != nil {
-		return nil, projectRecordError(err)
+		return nil, hubapi.ProjectRecordError(err)
 	}
 	result := []TerminalRecording{}
 	for _, row := range rows {
@@ -376,9 +377,9 @@ func (s *Service) readRecordings(ctx context.Context, scope nativeScope, workspa
 
 // runner grants are required for headless execution too. A token retains the
 // dashboard's existing non-person restrictions on interactive terminals.
-func (s *Service) requireOperatorRunners(ctx context.Context, _ nativeQueryer, scope nativeScope) error {
-	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin {
-		return nativeNotFound()
+func (s *Service) requireOperatorRunners(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope) error {
+	if scope.credential.Scope != hubapi.APIScopeOperator && scope.credential.Scope != hubapi.APIScopeAdmin {
+		return hubapi.NativeNotFound()
 	}
 	if scope.credential.Hosted == nil {
 		return nil
@@ -392,7 +393,7 @@ func (s *Service) requireOperatorRunners(ctx context.Context, _ nativeQueryer, s
 			return err
 		}
 		if !grant.ManageRunner {
-			return nativeNotFound()
+			return hubapi.NativeNotFound()
 		}
 		return nil
 	})

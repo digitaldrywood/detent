@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -152,7 +153,7 @@ func (f hostedSharedFixture) serve(t *testing.T, r hostedSharedRequest) *httptes
 	return response
 }
 
-func (f hostedSharedFixture) sessionCredential(t *testing.T, user hostedSecurityUser) apiCredential {
+func (f hostedSharedFixture) sessionCredential(t *testing.T, user hostedSecurityUser) hubapi.APICredential {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, "/organizations/org_security/organization", nil)
 	claims := f.claims(&user, cloudassert.KindBrowser, request.Method, request.URL.RequestURI(), nil)

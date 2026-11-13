@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -28,7 +29,7 @@ func (s *Service) authorizeNativeWorkflowScope(ctx context.Context, reader acces
 	if err != nil {
 		return err
 	}
-	if member.UserID != "" && lesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
+	if member.UserID != "" && hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
 		return auth.ErrHostedIdentity
 	}
 	return nil
@@ -39,7 +40,7 @@ func validateNativeWorkflowPolicy(project projectstore.Record, descriptor policy
 		return nil
 	}
 	if !found || descriptor.Workflow == nil || descriptor.Validate() != nil {
-		return policyMismatch("The configured workflow requires its approved policy")
+		return hubapi.PolicyMismatch("The configured workflow requires its approved policy")
 	}
 	workflowRevision := descriptor.Workflow.Revision
 	if workflowRevision == "" {
@@ -48,7 +49,7 @@ func validateNativeWorkflowPolicy(project projectstore.Record, descriptor policy
 	if descriptor.Workflow.Source != project.Core.WorkflowSource || workflowRevision != project.Core.WorkflowSourceRevision || !slices.EqualFunc(canonicalWorkflowStates(nativeTriageStates(descriptor.Workflow.States)), canonicalWorkflowStates(project.States), func(a, b policy.State) bool {
 		return a.Name == b.Name && a.Terminal == b.Terminal && a.Dispatchable == b.Dispatchable && a.OperatorOnly == b.OperatorOnly && slices.Equal(a.Transitions, b.Transitions)
 	}) {
-		return policyMismatch("The configured workflow differs from its approved policy")
+		return hubapi.PolicyMismatch("The configured workflow differs from its approved policy")
 	}
 	return nil
 }
@@ -145,7 +146,7 @@ func (s *Service) prepareHumanWorkflowCancellation(ctx context.Context, scope na
 		return nil, false, nil
 	}
 	if s.config.NativeRunEvents == nil {
-		return nil, false, nativeRunEventStorageUnavailable()
+		return nil, false, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var lease leasestore.Lease
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {

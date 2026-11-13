@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -199,7 +200,7 @@ func TestChangeTypedColumnsOwnEvidenceFilters(t *testing.T) {
 				refuseWithoutEvidence("201 unprojected current reviews with known prior approval")
 			}
 			retained := current
-			retained.ID, retained.Number, retained.AttemptID = newNativeID("version"), current.Number+1, "typed-attempt"
+			retained.ID, retained.Number, retained.AttemptID = hubapi.NewID("version"), current.Number+1, "typed-attempt"
 			raw, err := json.Marshal(retained)
 			if err != nil {
 				t.Fatal(err)
@@ -241,9 +242,9 @@ func TestChangeTypedColumnsOwnEvidenceFilters(t *testing.T) {
 
 func (f changeFixture) anotherChange(t *testing.T) changeFixture {
 	t.Helper()
-	issue := f.create(t, newNativeID("other-work"))
+	issue := f.create(t, hubapi.NewID("other-work"))
 	path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
-	response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("other-change")}, Title: "Other change"})
+	response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("other-change")}, Title: "Other change"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var change tracker.ChangeRequest
 	decodeHubResponse(t, response, &change)
@@ -539,7 +540,7 @@ func changeColumnSideDataFixture(t *testing.T, f changeFixture, old, current tra
 		historyRepairImport(t, target, historyRepairImportSource(t, target, fixture), 1)
 		return target
 	}
-	current.ID, current.Number = newNativeID("version"), current.Number+1
+	current.ID, current.Number = hubapi.NewID("version"), current.Number+1
 	row, err := content.PrepareVersion(t.Context(), f.project.OrganizationID, historyTestJSON(t, current))
 	if err != nil {
 		t.Fatal(err)
@@ -617,7 +618,7 @@ func TestChangeColumnsSelectRecoveryComments(t *testing.T) {
 						if comment.EditedBy != nil {
 							editor = string(historyTestJSON(t, comment.EditedBy))
 						}
-						fixture.add("native_comments", map[string]any{"id": comment.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": id, "revision": 1, "sequence": i + 1, "body": comment.Body, "actor_json": string(historyTestJSON(t, comment.Actor)), "edited_by_json": editor, "change_actor_kind": nil, "change_edited_by_kind": nil, "created_at": formatHubTime(at), "updated_at": formatHubTime(at)})
+						fixture.add("native_comments", map[string]any{"id": comment.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": id, "revision": 1, "sequence": i + 1, "body": comment.Body, "actor_json": string(historyTestJSON(t, comment.Actor)), "edited_by_json": editor, "change_actor_kind": nil, "change_edited_by_kind": nil, "created_at": hubapi.FormatHubTime(at), "updated_at": hubapi.FormatHubTime(at)})
 						fixture.add("collaboration_versions", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": id, "record_id": comment.ID, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, comment))})
 					}
 				}
@@ -904,7 +905,7 @@ func changeColumnWorkflow(t *testing.T, f nativeFixture, item tracker.NativeIssu
 	var ids [3]string
 	for i, data := range []tracker.CollaborationData{{FromState: "Done", ToState: "Todo"}, {FromState: "Merging", ToState: "Rework"}, {FromState: "Todo", ToState: "In Progress"}} {
 		data.Revision = item.Revision
-		value := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: item.WorkItemID, AggregateType: "issue", Type: "workflow.transitioned", SchemaVersion: 1, Actor: analyticsTestScope(t, f).actor(), RecordedAt: at.Add(time.Duration(i) * time.Second), Data: data}
+		value := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: item.WorkItemID, AggregateType: "issue", Type: "workflow.transitioned", SchemaVersion: 1, Actor: analyticsTestScope(t, f).actor(), RecordedAt: at.Add(time.Duration(i) * time.Second), Data: data}
 		row, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, value))
 		if err != nil {
 			t.Fatal(err)
@@ -932,7 +933,7 @@ func changeColumnHistoricalWorkflow(t *testing.T, f nativeFixture, at time.Time,
 		for i, data := range []tracker.CollaborationData{{FromState: "Done", ToState: "Todo"}, {FromState: "Merging", ToState: "Rework"}, {FromState: "Todo", ToState: "In Progress"}} {
 			data.Revision = 2
 			eventIDs[i] = fmt.Sprintf("%s_transition_%d", item, i)
-			fixture.add("collaboration_events", map[string]any{"id": eventIDs[i], "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": i + 3, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, data)), "event_revision": 2, "from_state": nil, "to_state": nil, "recorded_at": formatHubTime(at.Add(time.Duration(i) * time.Second))})
+			fixture.add("collaboration_events", map[string]any{"id": eventIDs[i], "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": i + 3, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, data)), "event_revision": 2, "from_state": nil, "to_state": nil, "recorded_at": hubapi.FormatHubTime(at.Add(time.Duration(i) * time.Second))})
 		}
 		ids[item] = eventIDs
 		for revision := 1; revision <= 2; revision++ {
@@ -945,14 +946,14 @@ func changeColumnHistoricalWorkflow(t *testing.T, f nativeFixture, at time.Time,
 		}
 	}
 	for i, row := range fixture.records["issues"] {
-		for key, value := range map[string]string{"workflow_state_id": "2", "event_sequence": "5", "updated_at": formatHubTime(at.Add(2 * time.Second)), "native_updated_at": formatHubTime(at.Add(2 * time.Second)), "last_activity_at": formatHubTime(at.Add(2 * time.Second))} {
+		for key, value := range map[string]string{"workflow_state_id": "2", "event_sequence": "5", "updated_at": hubapi.FormatHubTime(at.Add(2 * time.Second)), "native_updated_at": hubapi.FormatHubTime(at.Add(2 * time.Second)), "last_activity_at": hubapi.FormatHubTime(at.Add(2 * time.Second))} {
 			row.Values[key] = storagecatalog.Cell{Encoding: "utf8", Data: []byte(value)}
 		}
 		fixture.records["issues"][i] = row
 	}
 	for i, row := range fixture.records["queue_entries"] {
 		row.Values["state"] = storagecatalog.Cell{Encoding: "utf8", Data: []byte("In Progress")}
-		row.Values["updated_at"] = storagecatalog.Cell{Encoding: "utf8", Data: []byte(formatHubTime(at.Add(2 * time.Second)))}
+		row.Values["updated_at"] = storagecatalog.Cell{Encoding: "utf8", Data: []byte(hubapi.FormatHubTime(at.Add(2 * time.Second)))}
 		fixture.records["queue_entries"][i] = row
 	}
 	extend(fixture, ids)
@@ -1081,15 +1082,15 @@ func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
 
 func changeColumnAttempt(t *testing.T, f changeFixture, receipt *tracker.NativeLandingReceipt, local int64, writeReceipt, tamper bool) leasestore.Attempt {
 	t.Helper()
-	leaseID := newNativeID("lease")
+	leaseID := hubapi.NewID("lease")
 	lease := coordinatorActionLease(t, f.service, f.project.OrganizationID, f.issue.WorkItemID, leaseID)
-	data := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: local, Phase: "completed", HeartbeatAt: f.service.config.now(), Landing: receipt}}
+	data := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: local, Phase: "completed", HeartbeatAt: f.service.config.now(), Landing: receipt}}
 	content := eventstore.NewContent(f.service.runDetailStore())
 	ref, err := content.PreparePayload(t.Context(), f.project.OrganizationID, historyTestJSON(t, data))
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}))
+	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}))
 	if err != nil {
 		t.Fatal(err)
 	}

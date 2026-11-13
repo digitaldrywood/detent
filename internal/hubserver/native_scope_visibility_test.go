@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -88,7 +89,7 @@ func TestInvisibleProjectMatchesMissingResource(t *testing.T) {
 			response := test.request(t)
 			requireNativeStatus(t, response, test.status)
 			if test.code != "" {
-				var failure apiErrorResponse
+				var failure hubapi.APIErrorResponse
 				decodeHubResponse(t, response, &failure)
 				if failure.Code != test.code {
 					t.Fatalf("error code = %q, want %q", failure.Code, test.code)

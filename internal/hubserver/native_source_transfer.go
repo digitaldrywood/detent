@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -31,7 +32,7 @@ type sourceRecoveryView = tracker.NativeSourceRecovery
 type sourceRecoveryRunner = tracker.NativeSourceRecoveryRunner
 
 func (s *Service) getNativeSourceRecovery(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
 	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, c.Param("item"))
@@ -58,7 +59,7 @@ type nativeSourceRecoverySnapshot struct {
 func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nativeScope, item string, supplied ...tracker.NativeIssue) (sourceRecoveryView, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok || len(supplied) > 1 {
-		return sourceRecoveryView{}, nativeRunEventStorageUnavailable()
+		return sourceRecoveryView{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var snapshot nativeSourceRecoverySnapshot
 	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -78,13 +79,13 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 		}
 		leases, ok := r.(leasestore.UnreleasedIssueLeaseReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		snapshot.unreleasedLease, err = leases.HasUnreleasedIssueLease(ctx, snapshot.item.ID)
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{Kind: stringValue(snapshot.item.ActorKind), PrincipalID: stringValue(snapshot.item.ActorPrincipalID)}) {
+		if !scope.reporterOwns(tracker.Actor{Kind: hubapi.StringValue(snapshot.item.ActorKind), PrincipalID: hubapi.StringValue(snapshot.item.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		if len(supplied) == 0 {
@@ -92,7 +93,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 			if err != nil {
 				return err
 			}
-		} else if supplied[0].WorkItemID != snapshot.item.NativeID || supplied[0].OrganizationID != scope.organization || supplied[0].ProjectID != scope.project || int64(supplied[0].Revision) != snapshot.item.Revision || supplied[0].State != stringValue(snapshot.item.WorkflowStateName) || supplied[0].Archived != snapshot.item.Archived {
+		} else if supplied[0].WorkItemID != snapshot.item.NativeID || supplied[0].OrganizationID != scope.organization || supplied[0].ProjectID != scope.project || int64(supplied[0].Revision) != snapshot.item.Revision || supplied[0].State != hubapi.StringValue(snapshot.item.WorkflowStateName) || supplied[0].Archived != snapshot.item.Archived {
 			return corestore.ErrSerializationFailure
 		}
 		change, err := r.LatestChange(ctx, scope.project, snapshot.item.NativeID)
@@ -111,11 +112,11 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 		}
 		reader, ok := r.(leasestore.CheckpointAttemptReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		attempt, err := reader.SourceCheckpointAttempt(ctx, snapshot.item.ID)
 		if err == nil && attempt.CheckpointPreservesSource == nil {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		if err == nil && (attempt.CheckpointObjectKey == nil || !*attempt.CheckpointPreservesSource) {
 			return artifact.ErrIntegrity
@@ -178,7 +179,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 		return nil
 	})
 	if err != nil {
-		return sourceRecoveryView{}, projectRecordError(err)
+		return sourceRecoveryView{}, hubapi.ProjectRecordError(err)
 	}
 	var issue tracker.NativeIssue
 	if len(supplied) != 0 {
@@ -260,8 +261,8 @@ func (s *Service) readRuntimeSourceRecoveryTenant(ctx context.Context, scope nat
 		err = corestore.ErrSerializationFailure
 	}
 	if err != nil {
-		var failure *nativeError
-		if errors.As(err, &failure) && failure.status < http.StatusInternalServerError {
+		var failure *hubapi.NativeError
+		if errors.As(err, &failure) && failure.Status < http.StatusInternalServerError {
 			return err
 		}
 		if ctx.Err() != nil {
@@ -286,7 +287,7 @@ func (s *Service) readRuntimeSourceRecoveryTenant(ctx context.Context, scope nat
 
 func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, scope nativeScope, after string) ([]sourceRecoveryRunner, string, error) {
 	if len(after) > 256 {
-		return nil, "", nativePublicInvalid("Destination cursor exceeds 256 bytes")
+		return nil, "", hubapi.NativePublicInvalid("Destination cursor exceeds 256 bytes")
 	}
 	approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
 	if err != nil {
@@ -335,7 +336,7 @@ func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, sc
 		return nil
 	})
 	if err != nil {
-		return nil, "", projectRecordError(err)
+		return nil, "", hubapi.ProjectRecordError(err)
 	}
 	return destinations, next, nil
 }
@@ -364,7 +365,7 @@ func (s *Service) verifiedNativeSourceTenant(ctx context.Context, scope nativeSc
 
 func (s *Service) transferNativeSource(c echo.Context) error {
 	var request sourceTransferRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.transferNativeSourceCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
@@ -375,7 +376,7 @@ func (s *Service) transferNativeSource(c echo.Context) error {
 }
 
 func sourceRecoveryRefusal(message string) error {
-	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
+	return &hubapi.NativeError{Code: "invalid_request", Message: message, Status: http.StatusUnprocessableEntity, PublicMessage: true}
 }
 
 func (s *Service) authorizeSourceTransferTenant(ctx context.Context, r tenantstore.Reader, scope nativeScope) error {
@@ -387,7 +388,7 @@ func (s *Service) authorizeSourceTransferTenant(ctx context.Context, r tenantsto
 		if err != nil {
 			return err
 		}
-		switch lesserHostedRole(member.Role, scope.credential.HostedRole) {
+		switch hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole) {
 		case "owner", "admin":
 		case "member":
 			grant, err := r.AccessProjectGrant(ctx, member.UserID, scope.project)
@@ -403,20 +404,20 @@ func (s *Service) authorizeSourceTransferTenant(ctx context.Context, r tenantsto
 
 func (s *Service) selectNativeSourceTransferTenant(ctx context.Context, scope nativeScope, item string, request sourceTransferRequest) (sourceRecoveryView, error) {
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return sourceRecoveryView{}, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return sourceRecoveryView{}, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return sourceRecoveryView{}, err
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return s.authorizeSourceTransferTenant(ctx, r, scope) }); err != nil {
-		return sourceRecoveryView{}, projectRecordError(err)
+		return sourceRecoveryView{}, hubapi.ProjectRecordError(err)
 	}
 	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, item)
 	if err != nil {
 		return view, err
 	}
 	if request.ExpectedRevision <= 0 || request.ExpectedRevision != view.Revision {
-		return view, nativeConflict(view.Revision)
+		return view, hubapi.NativeConflict(view.Revision)
 	}
 	if request.VersionID == "" || request.VersionID != view.VersionID {
 		return view, sourceRecoveryRefusal("Re-read the current source version before transfer")
@@ -439,7 +440,7 @@ func (s *Service) selectNativeSourceTransferTenant(ctx context.Context, scope na
 			return s.validateSourceDestinationTenant(ctx, r, scope, request.DestinationRunnerID, approval.Policy.Requirements)
 		})
 		if err != nil {
-			return view, projectRecordError(err)
+			return view, hubapi.ProjectRecordError(err)
 		}
 	}
 	return view, nil
@@ -448,7 +449,7 @@ func (s *Service) selectNativeSourceTransferTenant(ctx context.Context, scope na
 func (s *Service) validateSourceDestinationTenant(ctx context.Context, r tenantstore.Reader, scope nativeScope, id string, requirements policy.Requirements) error {
 	reader, ok := r.(runnerstore.SourceRecoveryDestinationReader)
 	if !ok {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	now := s.config.now().UTC()
 	candidate, err := reader.SourceRecoveryDestination(ctx, scope.project, id, now)

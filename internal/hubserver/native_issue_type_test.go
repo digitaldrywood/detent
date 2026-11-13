@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -137,7 +138,7 @@ func TestNativeIssueTypes(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: string(runner.MachineID), SessionID: test.name + "-session", LeaseID: newNativeID("lease"), TTL: time.Minute})
+				lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: string(runner.MachineID), SessionID: test.name + "-session", LeaseID: hubapi.NewID("lease"), TTL: time.Minute})
 				if err != nil {
 					return err
 				}
@@ -349,7 +350,7 @@ func TestNativeIssueReportContext(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, body)
 			requireNativeStatus(t, response, test.status)
 			if test.status != http.StatusOK {
-				var failure apiErrorResponse
+				var failure hubapi.APIErrorResponse
 				decodeHubResponse(t, response, &failure)
 				if failure.Code != "invalid_request" || strings.Contains(failure.Message, "secret") {
 					t.Fatalf("failure=%#v", failure)

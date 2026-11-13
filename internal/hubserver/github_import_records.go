@@ -8,15 +8,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func importJobResponse(row projectstore.GitHubImport) GitHubImport {
-	result := GitHubImport{ID: row.ID, IssueNumber: int(row.IssueNumber), WorkItemID: row.WorkItemID, Stage: row.Stage, Cursor: row.Cursor, Revision: tracker.Revision(row.Revision), Pages: int(row.Pages), Status: row.Status, Gaps: row.Gaps, LastError: row.LastError, RetryAfter: row.RetryAfter, ObservedAt: formatHubTime(row.ObservedAt), IntakePending: row.IntakePending, EditSequence: row.EditSequence}
+	result := GitHubImport{ID: row.ID, IssueNumber: int(row.IssueNumber), WorkItemID: row.WorkItemID, Stage: row.Stage, Cursor: row.Cursor, Revision: tracker.Revision(row.Revision), Pages: int(row.Pages), Status: row.Status, Gaps: row.Gaps, LastError: row.LastError, RetryAfter: row.RetryAfter, ObservedAt: hubapi.FormatHubTime(row.ObservedAt), IntakePending: row.IntakePending, EditSequence: row.EditSequence}
 	if row.SourceUpdatedAt != nil {
-		result.SourceUpdatedAt = formatHubTime(*row.SourceUpdatedAt)
+		result.SourceUpdatedAt = hubapi.FormatHubTime(*row.SourceUpdatedAt)
 	}
 	return result
 }
@@ -32,7 +33,7 @@ func (s *Service) readGitHubImportRecord(ctx context.Context, scope nativeScope,
 		result, err = owner.GitHubImport(ctx, scope.project, id)
 		return err
 	})
-	return importJobResponse(result), projectRecordError(err)
+	return importJobResponse(result), hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) readGitHubImportRecords(ctx context.Context, scope nativeScope, id string, after int64, limit int) ([]projectstore.GitHubImportRecord, error) {
@@ -46,7 +47,7 @@ func (s *Service) readGitHubImportRecords(ctx context.Context, scope nativeScope
 		result, err = owner.GitHubImportRecords(ctx, scope.project, id, after, limit)
 		return err
 	})
-	return result, projectRecordError(err)
+	return result, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) decodeGitHubImportRecord(ctx context.Context, row projectstore.GitHubImportRecord) (GitHubImportRecord, error) {

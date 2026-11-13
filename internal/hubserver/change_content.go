@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -40,7 +41,7 @@ type changeContent struct {
 	readOrganization string
 	readReference    func(context.Context, string) (attachment.ArchiveReference, error)
 	prepared         map[string]attachment.ArchiveReference
-	query            nativeQueryer
+	query            hubapi.NativeQueryer
 	payloads         map[string][]byte
 	references       map[string]attachment.ArchiveReference
 	ids              map[string]string
@@ -205,7 +206,7 @@ func readChangeContentObject(ctx context.Context, organization string, ref attac
 		if found && cachedRef == ref {
 			return bytes.Clone(cached), nil
 		}
-		return nil, &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
+		return nil, &claimHydration{run: func(ctx context.Context, _ hubapi.NativeQueryer) error {
 			raw, err := readChangeContent(ctx, organization, ref)
 			if err != nil {
 				return err
@@ -258,7 +259,7 @@ func (s *Service) registerChangeContent(ctx context.Context, organization string
 		return err
 	}
 	if s.config.TenantRepository == nil {
-		return attachmentAccountingUnavailable()
+		return hubapi.AttachmentAccountingUnavailable()
 	}
 	return s.config.TenantRepository.WriteTenant(ctx, tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
 		return s.registerChangeContentRecord(ctx, w, organization, ref, billable)
@@ -298,14 +299,14 @@ func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore
 			return err
 		}
 	}
-	object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: tracker.OrganizationID(organization), ID: newNativeID("archive"), Reference: ref, CreatedAt: now})
+	object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: tracker.OrganizationID(organization), ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: now})
 	if err != nil {
 		return err
 	}
 	if billable {
 		usage, err := w.ChargeArchiveObject(ctx, object.ID, limit)
 		if errors.Is(err, corestore.ErrNotFound) {
-			return attachmentAccountingUnavailable()
+			return hubapi.AttachmentAccountingUnavailable()
 		}
 		if err != nil {
 			return err
@@ -329,7 +330,7 @@ func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore
 
 func (s *Service) checkChangeContentAllowance(ctx context.Context, organization string, refs map[string]attachment.ArchiveReference, next attachment.ArchiveReference) error {
 	if s.config.TenantRepository == nil {
-		return attachmentAccountingUnavailable()
+		return hubapi.AttachmentAccountingUnavailable()
 	}
 	plans := s.database.plans()
 	if plans == nil || changeContentCompletion(ctx) {
@@ -344,7 +345,7 @@ func (s *Service) checkChangeContentAllowance(ctx context.Context, organization 
 		if limit, limited := entitlement.Allowances["collaboration_bytes"]; limited {
 			used, err := r.CollaborationBytes(ctx)
 			if errors.Is(err, corestore.ErrNotFound) {
-				return attachmentAccountingUnavailable()
+				return hubapi.AttachmentAccountingUnavailable()
 			}
 			if err != nil {
 				return err

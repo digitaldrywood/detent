@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -290,8 +291,8 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					_, err = f.service.importGitHubSnapshotRecord(t.Context(), scope, fmt.Sprintf("%d-repeat", number), tracker.GitHubIssuePreview{
 						URL: snapshot.URL, Number: sourceNumber, ID: snapshot.Provenance.ExternalID,
 					}, snapshot, "Triage", []string{"different-label"})
-					var conflict *nativeError
-					if !errors.As(err, &conflict) || conflict.status != http.StatusConflict {
+					var conflict *hubapi.NativeError
+					if !errors.As(err, &conflict) || conflict.Status != http.StatusConflict {
 						t.Fatalf("different create input reused the receipt: %v", err)
 					}
 					refreshNativeDuplicateSearchFixture(t, f.service, scope.organization)

@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -190,7 +191,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			bundle := changeTestSource(t, &input)
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes/"+change.ID+"/versions", testHubAdminToken, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "progress-version"}, ChangeVersionInput: input, SourceBundle: bundle})
 			requireNativeStatus(t, response, http.StatusOK)
-			commandReceipt := newNativeID("receipt")
+			commandReceipt := hubapi.NewID("receipt")
 			var oldestAttempt string
 			for i := range test.attempts {
 				if i > 0 {
@@ -199,7 +200,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				if i == 0 {
 					oldestAttempt = f.attempt
 				}
-				event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 2, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, Outcome: "failed"}}
+				event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 2, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, Outcome: "failed"}}
 				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.now(), Validation: &gate.CommandResult{ReceiptID: commandReceipt, Command: "go test ./example", ExitCode: 2, Stage: gate.StageSourceFinalization, HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: "TestExample: expected repaired value, got old value"}}
 				if i == 0 || i > test.staleRunning {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, event), http.StatusOK)
@@ -328,7 +329,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			transitioned, err := native.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("transition")}, ExpectedRevision: current.Revision, State: "In Progress", Reason: "worker_progress", ReasonDetail: "dispatch start"})
+			transitioned, err := native.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("transition")}, ExpectedRevision: current.Revision, State: "In Progress", Reason: "worker_progress", ReasonDetail: "dispatch start"})
 			if err != nil || transitioned.Revision != current.Revision+1 {
 				t.Fatalf("dispatch transition: issue=%+v err=%v", transitioned, err)
 			}
@@ -514,7 +515,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			f := newDispatchGuardFixture(t)
 			scope := analyticsTestScope(t, f.nativeFixture)
 			admin := hostedPostgresAdmin(t, f.service)
-			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{
+			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{
 				Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "failed",
 				TerminalFailure: &tracker.NativeTerminalFailure{Error: "422: landing requires security audit evidence for its exact base and head", ErrorClass: "publication", Stage: "publication", ObservedAt: f.now},
 			}}
@@ -537,7 +538,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
 			if test.success {
 				checkpoint := event
-				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", newNativeID("checkpoint"), ""
+				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", hubapi.NewID("checkpoint"), ""
 				checkpoint.Data.Finalization, checkpoint.Data.Disposition = nil, nil
 				checkpoint.Data.Handoff = nativeTestCheckpoint()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, checkpoint), http.StatusOK)
@@ -545,7 +546,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, event), http.StatusOK)
 			f.release(t)
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &f.lease)
 			params := url.Values{"policy": {f.policy}, "instance": {string(f.lease.MachineID)}}
@@ -556,7 +557,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				decodeHubResponse(t, response, &view)
 				return view
 			}
-			started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: newNativeID("run"), AttemptID: newNativeID("attempt"), PolicyID: f.policy}}
+			started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: hubapi.NewID("run"), AttemptID: hubapi.NewID("attempt"), PolicyID: f.policy}}
 			if test.active {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, started), http.StatusOK)
 			}
@@ -566,7 +567,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				var current tracker.NativeIssue
 				decodeHubResponse(t, response, &current)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, testHubAdminToken, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("long-body")}, ExpectedRevision: current.Revision, Body: &longBody}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, testHubAdminToken, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("long-body")}, ExpectedRevision: current.Revision, Body: &longBody}), http.StatusOK)
 			}
 			if test.fullContext {
 				for i := range progresscheck.MaxComments {
@@ -608,16 +609,16 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			if test.changed {
 				if test.evidenceChange == "issue.edited" {
 					longBody = strings.Replace(longBody, "Required result: original", "Required result: changed", 1)
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, testHubAdminToken, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("edited-body")}, ExpectedRevision: current.Revision, Body: &longBody}), http.StatusOK)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, testHubAdminToken, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("edited-body")}, ExpectedRevision: current.Revision, Body: &longBody}), http.StatusOK)
 					fresh := read()
 					freshID, err := fresh.Request.ID()
 					if err != nil || fresh.Request.Context != view.Request.Context || freshID == id {
 						t.Fatalf("truncated edit lost invalidation: same context=%v same ID=%v err=%v", fresh.Request.Context == view.Request.Context, freshID == id, err)
 					}
 				} else if test.evidenceChange == "change.created" {
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes", testHubAdminToken, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("source")}, Title: "Updated source"}), http.StatusOK)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes", testHubAdminToken, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("source")}, Title: "Updated source"}), http.StatusOK)
 				} else if strings.HasPrefix(test.evidenceChange, "run.") {
-					started.Type, started.IdempotencyKey, started.Data.Sequence = test.evidenceChange, newNativeID("evidence"), 2
+					started.Type, started.IdempotencyKey, started.Data.Sequence = test.evidenceChange, hubapi.NewID("evidence"), 2
 					if test.evidenceChange == "run.finished" {
 						started.Data.Outcome = "failed"
 					} else {

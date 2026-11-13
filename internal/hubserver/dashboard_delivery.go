@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -264,12 +265,12 @@ func (d *dashboardDelivery) projectState(ctx context.Context, key dashboardProje
 	state := dashboardProjectState{}
 	repository := d.service.config.TenantRepository
 	if repository == nil {
-		state.err = workItemStorageUnavailable()
+		state.err = hubapi.NativeWorkItemStorageUnavailable()
 	} else {
 		state.err = repository.ReadTenant(ctx, key.organization, corestore.Serving, func(r tenantstore.Reader) error {
 			reader, ok := r.(viewstore.BoardDeliveryReader)
 			if !ok {
-				return workItemStorageUnavailable()
+				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			current, err := reader.BoardDeliveryState(ctx, key.project, subjects, now)
 			if err != nil {
@@ -393,7 +394,7 @@ func (d *dashboardDelivery) deliver(ctx context.Context) {
 		if sub.terminal || !sub.more && sub.epoch == d.epoch {
 			continue
 		}
-		readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+		readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 		now := d.service.config.now()
 		state := d.projectState(readCtx, sub.projectKey(), now)
 		access, observed := state.access[sub]
@@ -502,12 +503,12 @@ func (s *Service) dashboardPage(ctx context.Context, d *dashboardDelivery, sub *
 		return false, err
 	}
 	if credential.HostedRole != sub.scope.credential.HostedRole {
-		return false, nativeNotFound()
+		return false, hubapi.NativeNotFound()
 	}
 	scope := sub.scope
 	scope.credential = credential
 	if s.config.TenantRepository == nil {
-		return false, workItemStorageUnavailable()
+		return false, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if sub.board {
 		return s.dashboardBoardRecordPage(ctx, d, sub, scope)

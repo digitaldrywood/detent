@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -92,7 +93,7 @@ func TestHostedImportTypedReads(t *testing.T) {
 	for _, organization := range organizations {
 		fixture := newSource(organization)
 		for _, subject := range []string{"target", "other", "inactive"} {
-			fixture.add("api_tokens", map[string]any{"id": "hosted_" + apikey.HashToken(subject)[:32], "name": subject, "token_hash": apikey.HashToken(string(organization) + subject), "token_fingerprint": tokenFingerprint(apikey.HashToken(string(organization) + subject)), "scope": "operator", "native_only": true, "created_at": stamp, "updated_at": stamp, "operator_project_access": "selected", "key_kind": "personal", "hosted_user_id": subject, "hosted_membership_id": "membership_" + subject, "operator_key_scope": "write"})
+			fixture.add("api_tokens", map[string]any{"id": "hosted_" + apikey.HashToken(subject)[:32], "name": subject, "token_hash": apikey.HashToken(string(organization) + subject), "token_fingerprint": hubapi.TokenFingerprint(apikey.HashToken(string(organization) + subject)), "scope": "operator", "native_only": true, "created_at": stamp, "updated_at": stamp, "operator_project_access": "selected", "key_kind": "personal", "hosted_user_id": subject, "hosted_membership_id": "membership_" + subject, "operator_key_scope": "write"})
 			fixture.add("hosted_members", map[string]any{"user_id": subject, "email": subject + "@example.test", "membership_id": "membership_" + subject, "role": "member", "active": subject != "inactive", "principal_id": "hosted_" + apikey.HashToken(subject)[:32], "created_at": stamp, "updated_at": stamp})
 		}
 		for _, entry := range sessions {
@@ -244,7 +245,7 @@ func TestHostedImportTypedReads(t *testing.T) {
 				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 					principal := "hosted_" + apikey.HashToken("current_inactive")[:32]
 					hash := apikey.HashToken(string(organization) + "current_inactive")
-					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: principal, Name: "Current inactive member", Hash: hash, Fingerprint: tokenFingerprint(hash), Scope: "operator", NativeOnly: true, Kind: "personal", UserID: "current_inactive", MembershipID: "membership_current_inactive", KeyScope: "write", ProjectAccess: "selected", CreatedAt: inactiveAt, UpdatedAt: inactiveAt}); err != nil {
+					if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: principal, Name: "Current inactive member", Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: "operator", NativeOnly: true, Kind: "personal", UserID: "current_inactive", MembershipID: "membership_current_inactive", KeyScope: "write", ProjectAccess: "selected", CreatedAt: inactiveAt, UpdatedAt: inactiveAt}); err != nil {
 						return err
 					}
 					if err := w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "current_inactive", Email: "current_inactive@example.test", MembershipID: "membership_current_inactive", Role: "member", Active: false, PrincipalID: principal, CreatedAt: inactiveAt, UpdatedAt: inactiveAt}); err != nil {

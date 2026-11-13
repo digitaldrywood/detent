@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -293,7 +294,7 @@ func TestReviewTerminalLease(t *testing.T) {
 				if test.landed && (!test.otherLeaseOnly || index == 0) {
 					now := time.Now().UTC().Truncate(time.Microsecond)
 					content := eventstore.NewContent(service.runDetailStore())
-					changeID, versionID := newNativeID("change"), newNativeID("version")
+					changeID, versionID := hubapi.NewID("change"), hubapi.NewID("version")
 					changeRaw, err := json.Marshal(tracker.ChangeRequest{ID: changeID, OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: lease.WorkItemID, Title: "Example", Revision: 1, CreatedAt: now, UpdatedAt: now})
 					if err != nil {
 						t.Fatal(err)

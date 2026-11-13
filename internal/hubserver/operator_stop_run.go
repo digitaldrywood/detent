@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -53,7 +54,7 @@ func (e nativeOperatorExecutor) stopRun(ctx context.Context, call operatortool.C
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
-	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: request.ProjectID, ResourceID: request.Identifier, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: newNativeID("mcp")}
+	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: request.ProjectID, ResourceID: request.Identifier, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: hubapi.NewID("mcp")}
 	m, err = m.Bind(request.RequestID, arguments)
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
@@ -85,7 +86,7 @@ func (e nativeOperatorExecutor) executeStopRun(ctx context.Context, action chat.
 	}
 	raw, err := e.service.stopNativeRunCommand(mutation.WithContext(ctx, m), scope, request.RequestID, request)
 	if err != nil {
-		var failure *nativeError
+		var failure *hubapi.NativeError
 		if errors.As(err, &failure) && failure.Code == "revision_conflict" {
 			return chat.ActionExecution{}, &operatortool.ConflictError{Code: failure.Code, Message: failure.Message, CurrentRevision: int64(failure.CurrentRevision)}
 		}

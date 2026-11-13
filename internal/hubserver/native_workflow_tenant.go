@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -42,7 +43,7 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 }
 
 func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope nativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments) (json.RawMessage, error) {
-	batchRouting := scope.integrationOwned && scope.integrationRepository != "" && scope.githubIntakeRevision != nil && scope.githubIntakeRevision.batchID != "" && scope.githubIntakeRevision.revision > 0 && scope.credential.Scope == apiScopeAdmin && scope.credential.Runner.RunnerID == "" && request.Reason == "user_requested" && request.State != "Cancelled" && stop == nil
+	batchRouting := scope.integrationOwned && scope.integrationRepository != "" && scope.githubIntakeRevision != nil && scope.githubIntakeRevision.batchID != "" && scope.githubIntakeRevision.revision > 0 && scope.credential.Scope == hubapi.APIScopeAdmin && scope.credential.Runner.RunnerID == "" && request.Reason == "user_requested" && request.State != "Cancelled" && stop == nil
 	if batchRouting {
 		batch, err := s.loadGitHubBatchRecord(ctx, scope)
 		if err != nil {
@@ -74,22 +75,22 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			return nil, runnerUnauthorized()
 		}
 	}
-	human := (scope.credential.Scope == apiScopeOperator || scope.credential.Scope == apiScopeAdmin) && scope.credential.Runner.RunnerID == "" && scope.actor().Kind == "human" || batchRouting
+	human := (scope.credential.Scope == hubapi.APIScopeOperator || scope.credential.Scope == hubapi.APIScopeAdmin) && scope.credential.Runner.RunnerID == "" && scope.actor().Kind == "human" || batchRouting
 	recordedRecovery := !human && request.Reason == "dependency_ready"
-	if !human && (scope.credential.Scope != apiScopeWorker || scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization || scope.credential.EntryKey != nil) {
+	if !human && (scope.credential.Scope != hubapi.APIScopeWorker || scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization || scope.credential.EntryKey != nil) {
 		return nil, runnerUnauthorized()
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.ExpectedRevision <= 0 || !human && (request.LeaseID == "" || request.FencingToken <= 0) {
-		return nil, nativePublicInvalid("A current revision and idempotency key are required; workers also require a lease and fencing token")
+		return nil, hubapi.NativePublicInvalid("A current revision and idempotency key are required; workers also require a lease and fencing token")
 	}
 	if human && request.Reason != "user_requested" || !human && !recordedRecovery && request.Reason != "worker_progress" && request.Reason != string(gate.ReasonValidatorRework) {
-		return nil, nativePublicInvalid("Transition reason is not allowed for this caller")
+		return nil, hubapi.NativePublicInvalid("Transition reason is not allowed for this caller")
 	}
 	if len(request.ReasonDetail) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(request.ReasonDetail) {
-		return nil, nativePublicInvalid("Transition reason detail must be bounded UTF-8 text")
+		return nil, hubapi.NativePublicInvalid("Transition reason detail must be bounded UTF-8 text")
 	}
 	if !human && strings.EqualFold(request.State, "Cancelled") {
-		return nil, workItemStorageUnavailable()
+		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if human && scope.credential.HostedRole == "reporter" && request.State != "Cancelled" {
 		return nil, operatortool.ErrAccessDenied
@@ -99,7 +100,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		scope.action = operatortool.StopRun
 	}
 	scope.actionItem, scope.actionTarget = item, request.State
-	options := nativeCommandOptions{OperationID: nativeOperation(scope, http.MethodPost, "/work-items/"+item+"/workflow"), Item: item, RequireLease: true, Feature: "collaboration"}
+	options := hubapi.NativeCommandOptions{OperationID: nativeOperation(scope, http.MethodPost, "/work-items/"+item+"/workflow"), Item: item, RequireLease: true, Feature: "collaboration"}
 	if stop != nil {
 		options.OperationID = nativeOperation(scope, http.MethodPost, "/work-items/"+item+"/stop-run")
 	}
@@ -108,7 +109,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		ConversationID string                       `json:"conversation_id,omitempty"`
 		Stop           *coordinatorStopRunArguments `json:"stop,omitempty"`
 	}{Transition: request, Stop: stop}
-	hash, err := nativeCommandHash(payload)
+	hash, err := hubapi.CommandHash(payload)
 	if err != nil {
 		return nil, err
 	}
@@ -143,13 +144,13 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		compatible := issue.Profile == "github_compatible" && human && !batchRouting
 		if issue.Profile == "native" && request.WorkflowLabel != "" {
-			return nil, nativePublicInvalid("Native workflow transitions do not accept a workflow label")
+			return nil, hubapi.NativePublicInvalid("Native workflow transitions do not accept a workflow label")
 		}
 		if compatible && strings.TrimSpace(request.WorkflowLabel) == "" {
-			return nil, nativePublicInvalid("Compatibility workflow transitions require an explicit workflow label")
+			return nil, hubapi.NativePublicInvalid("Compatibility workflow transitions require an explicit workflow label")
 		}
 		if issue.Profile != "native" && !compatible || issue.Archived || int64(request.ExpectedRevision) != row.Revision {
-			return nil, nativeConflict(tracker.Revision(row.Revision))
+			return nil, hubapi.NativeConflict(tracker.Revision(row.Revision))
 		}
 		var linkedSource *eventstore.LinkedSource
 		if human && issue.LinkedSource != nil {
@@ -180,7 +181,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			return nil, corestore.ErrNotFound
 		}
 		if human && !batchRouting && linkedSource != nil && issue.LinkedSource.Status != "complete" && dispatchableProjectState(project, request.State) {
-			return nil, nativeWorkflowInvalid("Linked source intake must complete before executable work")
+			return nil, hubapi.NativeWorkflowInvalid("Linked source intake must complete before executable work")
 		}
 		if err := validateNativeWorkflowTransition(project.States, issue.State, request.State, scope.credential.Scope); err != nil {
 			return nil, err
@@ -188,12 +189,12 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		var recovery *leasestore.RecordedRecovery
 		if recordedRecovery {
 			if !dispatchableProjectState(project, request.State) {
-				return nil, nativeConflict(tracker.Revision(row.Revision))
+				return nil, hubapi.NativeConflict(tracker.Revision(row.Revision))
 			}
 			recovery, err = s.prepareRecordedRecoveryTenant(ctx, scope, row, issue, request)
 			if err != nil {
 				if errors.Is(err, corestore.ErrRevisionConflict) {
-					return nil, nativeConflict(tracker.Revision(row.Revision))
+					return nil, hubapi.NativeConflict(tracker.Revision(row.Revision))
 				}
 				return nil, err
 			}
@@ -302,7 +303,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if awaitsFiler {
 			data.Verification = tracker.VerificationPending
 		}
-		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: data})
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: data})
 		if err != nil {
 			return nil, err
 		}
@@ -320,7 +321,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			return nil, err
 		}
 		plan := workItemRecordPlan{project: project, current: row, issue: issue, eventType: "workflow.transitioned"}
-		fields := workItemRecordFields{Body: stringValue(row.BodyObjectKey), Contract: row.IssueContractObjectKey, Report: row.ReportContextObjectKey}
+		fields := workItemRecordFields{Body: hubapi.StringValue(row.BodyObjectKey), Contract: row.IssueContractObjectKey, Report: row.ReportContextObjectKey}
 		var contractPayload *eventstore.Receipt
 		if human && issue.IssueContract != nil {
 			raw, err := json.Marshal(issue.IssueContract)
@@ -358,7 +359,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		var workflowOutbound *projectstore.GitHubOutbound
 		if compatible {
-			key, err := nativeCommandHash(struct{ Operation, ActorID, CommandKey string }{options.OperationID, scope.credential.ID, request.IdempotencyKey})
+			key, err := hubapi.CommandHash(struct{ Operation, ActorID, CommandKey string }{options.OperationID, scope.credential.ID, request.IdempotencyKey})
 			if err != nil {
 				return nil, err
 			}
@@ -413,13 +414,13 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if err != nil {
 				return err
 			}
-			if human && scope.credential.HostedRole == "reporter" && (request.State != "Cancelled" || !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(locked.ActorPrincipalID)})) {
+			if human && scope.credential.HostedRole == "reporter" && (request.State != "Cancelled" || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(locked.ActorPrincipalID)})) {
 				return corestore.ErrNotFound
 			}
 			previous, err := w.Receipt(ctx, scope.credential.ID, options.OperationID, request.IdempotencyKey)
 			if err == nil {
 				if previous.RequestHash != hash {
-					return nativeConflict(0)
+					return hubapi.NativeConflict(0)
 				}
 				return corestore.ErrSerializationFailure
 			}
@@ -452,7 +453,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				}
 				locker, ok := w.(leasestore.UnreleasedIssueLeaseLocker)
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				lease, leaseErr := locker.LockUnreleasedIssueLease(ctx, row.ID)
 				if leaseErr != nil && !errors.Is(leaseErr, corestore.ErrNotFound) && !errors.Is(leaseErr, sql.ErrNoRows) {
@@ -479,7 +480,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			} else {
 				locker, ok := w.(leasestore.FencedLeaseLocker)
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				identity, err := w.RunnerForLease(ctx, string(request.LeaseID))
 				if err != nil {
@@ -496,7 +497,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 					return err
 				}
-				if err != nil || credential.OrganizationID != scope.organization || credential.Scope != string(apiScopeWorker) || credential.Kind != "service" {
+				if err != nil || credential.OrganizationID != scope.organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" {
 					return runnerUnauthorized()
 				}
 				currentTime := s.config.now().UTC()
@@ -579,7 +580,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if workflowOutbound != nil {
 				owner, ok := w.(projectstore.GitHubOutboxWriter)
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				if err := owner.EnqueueGitHubOutbound(ctx, *workflowOutbound); err != nil {
 					return err
@@ -588,7 +589,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if sourceCancellation != nil {
 				owner, ok := w.(projectstore.GitHubOutboxWriter)
 				if !ok {
-					return workItemStorageUnavailable()
+					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				if err := owner.EnqueueGitHubOutbound(ctx, *sourceCancellation); err != nil {
 					return err
@@ -610,9 +611,9 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		if err != nil {
 			if recordedRecovery && errors.Is(err, corestore.ErrRevisionConflict) {
-				return nil, nativeConflict(tracker.Revision(row.Revision))
+				return nil, hubapi.NativeConflict(tracker.Revision(row.Revision))
 			}
-			return nil, projectRecordError(err)
+			return nil, hubapi.ProjectRecordError(err)
 		}
 		if human {
 			s.signalNativeDispatch(scope)
@@ -635,7 +636,7 @@ func (s *Service) humanWorkflowReceipt(ctx context.Context, scope nativeScope, i
 		if err != nil {
 			return err
 		}
-		if scope.credential.HostedRole == "reporter" && !scope.reporterOwns(tracker.Actor{PrincipalID: stringValue(row.ActorPrincipalID)}) {
+		if scope.credential.HostedRole == "reporter" && !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		receipt, err = w.Receipt(ctx, scope.credential.ID, operation, key)
@@ -647,7 +648,7 @@ func (s *Service) humanWorkflowReceipt(ctx context.Context, scope nativeScope, i
 		}
 		found = true
 		if receipt.RequestHash != hash {
-			return nativeConflict(0)
+			return hubapi.NativeConflict(0)
 		}
 		now := s.config.now().UTC()
 		if !receipt.ResponseExpired && receipt.ResponseReplayUntilNs > 0 && receipt.ResponseReplayUntilNs <= now.UnixNano() {
@@ -664,13 +665,13 @@ func (s *Service) humanWorkflowReceipt(ctx context.Context, scope nativeScope, i
 		return nil
 	})
 	if err != nil {
-		return receipt, false, projectRecordError(err)
+		return receipt, false, hubapi.ProjectRecordError(err)
 	}
 	if !found {
 		return receipt, false, nil
 	}
 	if receipt.RequestHash != hash {
-		return receipt, false, nativeConflict(0)
+		return receipt, false, hubapi.NativeConflict(0)
 	}
 	return receipt, true, nil
 }
@@ -691,7 +692,7 @@ func (s *Service) readTenantProjectRecord(ctx context.Context, scope nativeScope
 		project, err = r.ProjectRecord(ctx, scope.project)
 		return err
 	})
-	return project, projectRecordError(err)
+	return project, hubapi.ProjectRecordError(err)
 }
 
 func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue, project *projectstore.Record, previousState string, request tracker.Transition, stopState, workflowLabel *string) (policystore.Revision, bool, error) {
@@ -722,7 +723,7 @@ func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, sco
 	if found {
 		workflow, err = config.ApplyNativePolicy(workflow, descriptor)
 		if err != nil {
-			return policystore.Revision{}, false, policyMismatch(err.Error())
+			return policystore.Revision{}, false, hubapi.PolicyMismatch(err.Error())
 		}
 	}
 	if workflowLabel != nil {
@@ -735,7 +736,7 @@ func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, sco
 				return revision, found, labelErr
 			}
 			if label != strings.TrimSpace(request.WorkflowLabel) {
-				return revision, found, nativePublicInvalid("Workflow label must match the approved target state mapping")
+				return revision, found, hubapi.NativePublicInvalid("Workflow label must match the approved target state mapping")
 			}
 		}
 		if labelErr == nil && workflowLabel != nil {
@@ -763,7 +764,7 @@ func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, sco
 		return revision, found, err
 	}
 	if evaluation := contract.Evaluate(nativeContractIssue(*issue)); len(evaluation.Missing) > 0 {
-		return revision, found, nativeWorkflowInvalid(strings.Join(evaluation.Missing, ", ") + ". File into Backlog/Triage to draft it first.")
+		return revision, found, hubapi.NativeWorkflowInvalid(strings.Join(evaluation.Missing, ", ") + ". File into Backlog/Triage to draft it first.")
 	}
 	return revision, found, nil
 }
@@ -772,10 +773,10 @@ func approvedCompatibilityWorkflowLabel(workflow config.Workflow, found bool, st
 	label, mapped := workflow.Config.Tracker.StateMap.Map[state].(string)
 	label = strings.TrimSpace(label)
 	if !found || !workflow.Config.Tracker.StateMap.IsMap || !mapped || label == "" {
-		return "", nativePublicInvalid("Compatibility workflow transitions require an approved state-to-label mapping")
+		return "", hubapi.NativePublicInvalid("Compatibility workflow transitions require an approved state-to-label mapping")
 	}
 	if len(label) > 200 || !utf8.ValidString(label) || strings.ContainsAny(label, "\r\n\x00") || !strings.HasPrefix(strings.ToLower(label), defaultLabelPrefix) {
-		return "", nativePublicInvalid("Workflow label must match the approved target state mapping")
+		return "", hubapi.NativePublicInvalid("Workflow label must match the approved target state mapping")
 	}
 	return label, nil
 }
@@ -783,7 +784,7 @@ func approvedCompatibilityWorkflowLabel(workflow config.Workflow, found bool, st
 func (s *Service) prepareCompatibilityWorkflowLabel(ctx context.Context, scope nativeScope, issue tracker.NativeIssue, project projectstore.Record, label, key string, now time.Time) (*projectstore.GitHubOutbound, error) {
 	repository, number, err := cutoverSourceReference(issue)
 	if err != nil || !project.Settings.RepositoryEnabled || !strings.EqualFold(repository, strings.TrimSpace(project.Settings.Repository)) {
-		return nil, nativePublicInvalid("Compatibility workflow transitions require an enabled matching repository source")
+		return nil, hubapi.NativePublicInvalid("Compatibility workflow transitions require an enabled matching repository source")
 	}
 	desired, err := json.Marshal(WorkflowLabelDesired{Label: label, ManagedPrefix: defaultLabelPrefix})
 	if err != nil {

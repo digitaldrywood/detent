@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -76,7 +77,7 @@ func TestBoardProjectionBoundsReporterRelationshipsAcrossTenants(t *testing.T) {
 				t.Fatalf("typed projection lost tenant or byte budget: %+v", row)
 			}
 			for _, role := range []string{"", "reporter"} {
-				scope := nativeScope{organization: org, project: fixture.project.ID, credential: apiCredential{HostedRole: role, HostedPrincipal: "owner"}}
+				scope := nativeScope{organization: org, project: fixture.project.ID, credential: hubapi.APICredential{HostedRole: role, HostedPrincipal: "owner"}}
 				card, err := boardModelCard(scope, row)
 				if err != nil {
 					return err

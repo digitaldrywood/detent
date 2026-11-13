@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -83,7 +84,7 @@ func workspaceRequirement(name string, r workspaceToolRequest, write bool) opera
 	}
 	return requirement
 }
-func (s *Service) checkOperatorResource(ctx context.Context, query nativeQueryer, scope nativeScope, r operatortool.Requirement) error {
+func (s *Service) checkOperatorResource(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, r operatortool.Requirement) error {
 	kind := r.ResourceKind
 	if strings.HasPrefix(kind, "runners:") {
 		if err := s.requireOperatorRunners(ctx, query, scope); err != nil {
@@ -112,7 +113,7 @@ func (s *Service) checkOperatorResource(ctx context.Context, query nativeQueryer
 		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			owner, ok := reader.(actionstore.Reader)
 			if !ok {
-				return nativeRunEventStorageUnavailable()
+				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			_, err := owner.ProjectAction(ctx, scope.project, r.ResourceID)
 			return err
@@ -133,7 +134,7 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		return operatortool.NewAuthorizedExecutor(nil).Execute(ctx, call)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
-	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, Action: call.Name, Source: "mcp", CorrelationID: newNativeID("correlation"), Confirmation: "none"}
+	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, Action: call.Name, Source: "mcp", CorrelationID: hubapi.NewID("correlation"), Confirmation: "none"}
 	outcome := "failed"
 	if !definition.Annotations.ReadOnly {
 		defer func() { e.auditMutation(ctx, m, outcome) }()
@@ -467,7 +468,7 @@ func (e workspaceOperatorExecutor) connectionResult(ctx context.Context, call op
 
 func (s *Service) readWorkspaceTool(ctx context.Context, scope nativeScope, name string, r workspaceToolRequest) (result json.RawMessage, resultErr error) {
 	defer func() {
-		if archive := nativeArchiveReadError(resultErr); archive != nil {
+		if archive := hubapi.NativeArchiveReadError(resultErr); archive != nil {
 			resultErr = archive
 		}
 	}()
@@ -738,10 +739,10 @@ func boundedOperatorHistory(raw json.RawMessage, snapshot bool, err error) (json
 }
 
 func (w *workspaceService) readOperatorWorkspaceForActor(ctx context.Context, scope nativeScope, id string) (workspaceRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if workspacesession.ValidateID(id) != nil {
-		return workspaceRecord{}, nativeNotFound()
+		return workspaceRecord{}, hubapi.NativeNotFound()
 	}
 	var row postgres.WorkspaceSession
 	err := w.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -757,7 +758,7 @@ func (w *workspaceService) readOperatorWorkspaceForActor(ctx context.Context, sc
 		}
 		owner, ok := reader.(postgres.WorkspaceReader)
 		if !ok {
-			return workspaceUnavailable()
+			return hubapi.WorkspaceUnavailable()
 		}
 		row, err = owner.WorkspaceSession(ctx, scope.project, id)
 		if err != nil {
@@ -765,5 +766,5 @@ func (w *workspaceService) readOperatorWorkspaceForActor(ctx context.Context, sc
 		}
 		return workspaceReadableSubject(ctx, reader, scope, row.SubjectWorkItemID)
 	})
-	return workspaceTenantRecord(row), projectRecordError(err)
+	return workspaceTenantRecord(row), hubapi.ProjectRecordError(err)
 }

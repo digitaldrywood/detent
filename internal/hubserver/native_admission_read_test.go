@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
@@ -161,7 +162,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 					if !ok {
 						return errors.New("GitHub import writer unavailable")
 					}
-					record, err := imports.CreateGitHubImport(t.Context(), projectstore.GitHubImport{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: newNativeID("import"), IssueNumber: 1, Stage: "issue", Status: "pending", ObservedAt: now})
+					record, err := imports.CreateGitHubImport(t.Context(), projectstore.GitHubImport{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: hubapi.NewID("import"), IssueNumber: 1, Stage: "issue", Status: "pending", ObservedAt: now})
 					if err != nil {
 						return err
 					}
@@ -562,7 +563,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 
 func writeAdmissionIssue(t *testing.T, f nativeFixture, issue tracker.NativeIssue, change func(*tracker.NativeIssue)) tracker.NativeIssue {
 	t.Helper()
-	row, _, err := f.service.readWorkItemRecord(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}, string(issue.WorkItemID))
+	row, _, err := f.service.readWorkItemRecord(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}, string(issue.WorkItemID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +584,7 @@ func writeAdmissionIssue(t *testing.T, f nativeFixture, issue tracker.NativeIssu
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := json.Marshal(tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "work_item", AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: issue.UpdatedAt, Data: tracker.CollaborationData{Revision: issue.Revision, Fields: []string{"body", "labels"}}})
+	data, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "work_item", AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: issue.UpdatedAt, Data: tracker.CollaborationData{Revision: issue.Revision, Fields: []string{"body", "labels"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

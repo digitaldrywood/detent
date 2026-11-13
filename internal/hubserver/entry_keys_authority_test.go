@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
@@ -35,7 +36,7 @@ func TestEntryKeyCallReusesRequestAuthentication(t *testing.T) {
 			probe := &authorityReaderProbe{err: tenantauth.ErrUnavailable}
 			service := &Service{config: Config{TenantRepository: probe, now: time.Now, Logger: slog.New(slog.DiscardHandler)}}
 			if authenticated {
-				c.Set("hub_api_credential", apiCredential{ID: "key", Scope: apiScopeOperator, EntryKey: &apikey.KeyAuthority{ID: "key"}, HostedKeyScope: "invalid"})
+				c.Set("hub_api_credential", hubapi.APICredential{ID: "key", Scope: hubapi.APIScopeOperator, EntryKey: &apikey.KeyAuthority{ID: "key"}, HostedKeyScope: "invalid"})
 			}
 			err = service.entryKeyCall(c)
 			if !authenticated {

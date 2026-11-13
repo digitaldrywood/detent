@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -72,7 +73,7 @@ func TestReporterNativeCommands(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				id := tracker.ProjectID(newNativeID("prj"))
+				id := tracker.ProjectID(hubapi.NewID("prj"))
 				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
 					_, err := r.ProjectRecord(t.Context(), id)
 					return err
@@ -150,7 +151,7 @@ func TestReporterNativeCommands(t *testing.T) {
 			for _, issueType := range []string{"", "question"} {
 				refused := request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "missing-type-" + issueType}, Title: "Tester report", Type: issueType})
 				requireNativeStatus(t, refused, http.StatusUnprocessableEntity)
-				var failure apiErrorResponse
+				var failure hubapi.APIErrorResponse
 				decodeHubResponse(t, refused, &failure)
 				if failure.Code != "invalid_request" || !strings.Contains(failure.Message, "bug") || !strings.Contains(failure.Message, "change_request") {
 					t.Fatalf("failure=%#v", failure)

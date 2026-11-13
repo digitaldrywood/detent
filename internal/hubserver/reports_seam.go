@@ -18,8 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func maxTime(a, b time.Time) time.Time { return hubapi.MaxTime(a, b) }
-
 const maxAnalyticsPopulation = reports.MaxAnalyticsPopulation
 
 type nativeAnalyticsBucket = reports.NativeAnalyticsBucket
@@ -66,7 +64,7 @@ type analyticsQualityInputs = reports.AnalyticsQualityInputs
 
 func projectAnalyticsQualityInputs(p0 reports.AnalyticsQualityInputs, p1 operatortool.AnalyticsRequest, p2 operatortool.AnalyticsWindow) (reports.AnalyticsQuality, error) {
 	r0, r1 := reports.ProjectAnalyticsQualityInputs(p0, p1, p2)
-	return r0, fromFeatureError(r1)
+	return r0, hubapi.FromFeatureError(r1)
 }
 func summarizeAnalyticsQuality(p0 []reports.NativeAnalyticsLanding, p1 []reports.QualityHistoryEvent, p2 []reports.QualityDiscussion, p3 operatortool.AnalyticsWindow) reports.AnalyticsQuality {
 	return reports.SummarizeAnalyticsQuality(p0, p1, p2, p3)
@@ -94,7 +92,7 @@ type analyticsResidenceTimeline = reports.AnalyticsResidenceTimeline
 
 func projectAnalyticsResidencePopulation(p0 map[string]tracker.NativeState, p1 []reports.AnalyticsResidenceIssue, p2 bool, p3 operatortool.AnalyticsRequest, p4 *reports.NativeAnalyticsProject) error {
 	r0 := reports.ProjectAnalyticsResidencePopulation(p0, p1, p2, p3, p4)
-	return fromFeatureError(r0)
+	return hubapi.FromFeatureError(r0)
 }
 
 type analyticsLiveIssuesKey = reports.AnalyticsLiveIssuesKey
@@ -194,19 +192,19 @@ type postgresReportUsage = reports.PostgresReportUsage
 
 func readPostgresReportUsage(p0 context.Context, p1 tenantstore.Reader, p2 reportstore.OverviewQuery, p3 []reportstore.OverviewFact, p4 operatortool.AnalyticsWindow, p5 operatortool.AnalyticsWindow) (reports.PostgresReportUsage, error) {
 	r0, r1 := reports.ReadPostgresReportUsage(p0, p1, p2, p3, p4, p5)
-	return r0, fromFeatureError(r1)
+	return r0, hubapi.FromFeatureError(r1)
 }
 func postgresReportUsageRows(p0 []reportstore.UsageFact) (map[string][]usagereport.Row, error) {
 	r0, r1 := reports.PostgresReportUsageRows(p0)
-	return r0, fromFeatureError(r1)
+	return r0, hubapi.FromFeatureError(r1)
 }
 func applyPostgresReportUsage(p0 *reports.HostedReportsReport, p1 []reportstore.OverviewFact, p2 []reportstore.AttemptFact, p3 []reportstore.UsageFact, p4 operatortool.AnalyticsWindow, p5 operatortool.AnalyticsWindow, p6 bool) error {
 	r0 := reports.ApplyPostgresReportUsage(p0, p1, p2, p3, p4, p5, p6)
-	return fromFeatureError(r0)
+	return hubapi.FromFeatureError(r0)
 }
 func readPostgresReportCompletionCosts(p0 context.Context, p1 tenantstore.Reader, p2 reportstore.OverviewQuery, p3 []reportstore.OverviewFact, p4 operatortool.AnalyticsWindow, p5 operatortool.AnalyticsWindow, p6 bool) (map[reportstore.CompletionCostItem]reportstore.CompletionCostFact, error) {
 	r0, r1 := reports.ReadPostgresReportCompletionCosts(p0, p1, p2, p3, p4, p5, p6)
-	return r0, fromFeatureError(r1)
+	return r0, hubapi.FromFeatureError(r1)
 }
 func applyPostgresReportCompletionCosts(p0 *reports.HostedReportsReport, p1 []reportstore.OverviewFact, p2 map[reportstore.CompletionCostItem]reportstore.CompletionCostFact, p3 operatortool.AnalyticsWindow, p4 operatortool.AnalyticsWindow, p5 bool) {
 	reports.ApplyPostgresReportCompletionCosts(p0, p1, p2, p3, p4, p5)
@@ -216,7 +214,7 @@ type analyticsPagingKey = reports.AnalyticsPagingKey
 
 func analyticsPagingContext(p0 context.Context, p1 string) (context.Context, *reports.AnalyticsPaging, error) {
 	r0, r1, r2 := reports.AnalyticsPagingContext(p0, p1)
-	return r0, r1, fromFeatureError(r2)
+	return r0, r1, hubapi.FromFeatureError(r2)
 }
 func analyticsPagingFromContext(p0 context.Context) *reports.AnalyticsPaging {
 	return reports.AnalyticsPagingFromContext(p0)
@@ -266,11 +264,11 @@ func reportsQueryValues(p0 url.Values, p1 string) []string {
 }
 func parseReportsFilter(p0 url.Values) (reports.ReportsFilter, error) {
 	r0, r1 := reports.ParseReportsFilter(p0)
-	return r0, fromFeatureError(r1)
+	return r0, hubapi.FromFeatureError(r1)
 }
 func reportsWindow(p0 url.Values, p1 time.Time) (operatortool.AnalyticsWindow, error) {
 	r0, r1 := reports.ReportsWindow(p0, p1)
-	return r0, fromFeatureError(r1)
+	return r0, hubapi.FromFeatureError(r1)
 }
 
 type reportsScopeKey = reports.ReportsScopeKey

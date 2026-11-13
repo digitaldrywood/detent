@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -20,7 +21,7 @@ func (s *Service) getReleaseDeliveryStatus(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if issue.ReleaseDelivery == nil {
-		return s.nativeAPIError(c, nativeNotFound())
+		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	verifier, ok := s.config.ReconcileBackend.(ReleaseDeliveryVerifier)
 	if !ok {
@@ -35,12 +36,12 @@ func (s *Service) getReleaseDeliveryStatus(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if current.Revision != issue.Revision || current.ReleaseDelivery == nil || *current.ReleaseDelivery != *issue.ReleaseDelivery {
-		return s.nativeAPIError(c, nativeConflict(current.Revision))
+		return s.nativeAPIError(c, hubapi.NativeConflict(current.Revision))
 	}
 	return c.JSON(http.StatusOK, status)
 }
 
-func readReleaseDelivery(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (tracker.ReleaseDelivery, bool, error) {
+func readReleaseDelivery(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, item string) (tracker.ReleaseDelivery, bool, error) {
 	var d tracker.ReleaseDelivery
 	var at string
 	var version sql.NullString
@@ -56,26 +57,26 @@ FROM release_deliveries WHERE organization_id = ? AND project_id = ? AND work_it
 		return d, false, err
 	}
 	d.VersionID = version.String
-	d.AssociatedAt, err = parseTimeValue(at)
+	d.AssociatedAt, err = hubapi.ParseTimeValue(at)
 	return d, err == nil, err
 }
 
 func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, item string, r tracker.AssociateReleasePick) error {
-	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin || scope.credential.Runner.RunnerID != "" {
-		return nativeNotFound()
+	if scope.credential.Scope != hubapi.APIScopeOperator && scope.credential.Scope != hubapi.APIScopeAdmin || scope.credential.Runner.RunnerID != "" {
+		return hubapi.NativeNotFound()
 	}
 	if err := validateReleasePick(r); err != nil {
 		return err
 	}
 	if s.config.TenantRepository == nil {
-		return workItemStorageUnavailable()
+		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	connector, _, _, err := s.projectRepositoryBinding(ctx, nil, scope)
 	if err != nil {
 		return err
 	}
 	if connector == nil || r.Repository != "https://github.com/"+connector.Repository {
-		return nativePublicInvalid("Release PR repository must match the project's configured repository")
+		return hubapi.NativePublicInvalid("Release PR repository must match the project's configured repository")
 	}
 	existing, found, err := s.readReleaseDeliveryRecord(ctx, scope, item)
 	if err != nil {
@@ -96,7 +97,7 @@ func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, ite
 	}
 	if err := verify(); err != nil {
 		if errors.Is(err, ErrReleasePickMismatch) {
-			return nativePublicInvalid("Release PR provenance verification failed")
+			return hubapi.NativePublicInvalid("Release PR provenance verification failed")
 		}
 		return fmt.Errorf("verify release PR: %w", err)
 	}
@@ -105,7 +106,7 @@ func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, ite
 
 func (s *Service) associateReleasePick(c echo.Context) error {
 	var r tracker.AssociateReleasePick
-	if err := decodeAPIJSON(c, &r); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &r); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	if err := s.prepareReleasePick(c.Request().Context(), nativeRequestScope(c), c.Param("item"), r); err != nil {

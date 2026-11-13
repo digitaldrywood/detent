@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
@@ -25,7 +26,7 @@ type preparedValidatorReview struct {
 }
 
 func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, source eventstore.Version, request tracker.ReviewChange) (*preparedValidatorReview, tracker.MachineID, error) {
-	if scope.credential.Scope != apiScopeWorker || request.Validator == nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
+	if scope.credential.Scope != hubapi.APIScopeWorker || request.Validator == nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
 		machine, err := validateValidatorReviewEvidence(scope, change, version, request, validatorReviewEvidence{})
 		return nil, machine, err
 	}
@@ -39,7 +40,7 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 		resultID = request.SecurityAudit.SessionID
 	}
 	if source.ImplementingSessionID < 0 || source.SourceObjectKey == "" || source.ImplementingMachineID == "" {
-		return nil, "", nativePublicInvalid("worker review requires recorded source and review sessions")
+		return nil, "", hubapi.NativePublicInvalid("worker review requires recorded source and review sessions")
 	}
 	p := &preparedValidatorReview{}
 	var rows []eventstore.Evidence
@@ -54,7 +55,7 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 			if _, err := validateValidatorReviewEvidence(scope, change, version, request, validatorReviewEvidence{}); err != nil {
 				return err
 			}
-			return nativePublicInvalid("worker review requires a recorded review session")
+			return hubapi.NativePublicInvalid("worker review requires a recorded review session")
 		}
 		p.change, err = r.Change(ctx, change.ID)
 		if err != nil {
@@ -74,7 +75,7 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 		}
 		reader, ok := r.(runnersession.Reader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		p.session, err = reader.RunnerSession(ctx, scope.project, resultID)
 		if err != nil {
@@ -84,7 +85,7 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 			if request.SecurityAudit != nil {
 				return securityAuditRejection("security audit must come from a session separate from the implementing session under its active execution authority", "execution_session")
 			}
-			refusal := nativeInvalid("validator review must come from a session separate from the implementing session under its active execution authority")
+			refusal := hubapi.NativeInvalid("validator review must come from a session separate from the implementing session under its active execution authority")
 			if request.Validator != nil && request.ImplementationReview == nil {
 				return nativeRejection(refusal, "acceptance_validation", "validator.session_id")
 			}
@@ -98,7 +99,7 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 		}
 		reviews, ok := r.(eventstore.ValidatorReviewReader)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var complete bool
 		rows, complete, err = reviews.ValidatorReviewEvidence(ctx, change.ID, version.ID, p.change.EvidenceSequence, scope.credential.Runner.MachineID, resultID)
@@ -106,7 +107,7 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 			return fmt.Errorf("read review evidence: %w", err)
 		}
 		if !complete {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		return nil
 	})
@@ -119,7 +120,7 @@ func (s *Service) prepareValidatorReviewRecord(ctx context.Context, scope native
 	}
 	if err := s.verifyRunnerSessionFinalization(ctx, scope, p.session, session); err != nil {
 		if errors.Is(err, runnersession.ErrFinalizationIncomplete) {
-			return nil, "", nativePublicInvalid("session finalization is incomplete")
+			return nil, "", hubapi.NativePublicInvalid("session finalization is incomplete")
 		}
 		return nil, "", err
 	}
@@ -188,7 +189,7 @@ func (s *Service) lockValidatorReviewRecord(ctx context.Context, w tenantstore.W
 	}
 	reader, ok := w.(runnersession.Reader)
 	if !ok {
-		return nativeRunEventStorageUnavailable()
+		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	session, err := reader.RunnerSession(ctx, scope.project, p.session.ID)
 	if err != nil {

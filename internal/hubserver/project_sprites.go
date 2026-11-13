@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -187,7 +188,7 @@ func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, stat
 		}
 		failedAt := ""
 		if !started {
-			failedAt = formatHubTime(s.config.now())
+			failedAt = hubapi.FormatHubTime(s.config.now())
 		}
 		if err := s.recordSpriteWakeFacts(ctx, scope, candidate, failedAt, started); err != nil {
 			return woken, err
@@ -199,7 +200,7 @@ func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, stat
 }
 
 func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope nativeScope, state string, last *string) (spriteWakeCandidate, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	dispatchable, err := s.spriteWakeDispatchable(ctx, scope, state)
 	if err != nil || !dispatchable {
@@ -211,7 +212,7 @@ func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope nativeScope
 	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.SpriteReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		_, err := owner.SpritePool(ctx)
 		configured = err == nil
@@ -280,13 +281,13 @@ func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope nativeScope
 	return spriteWakeCandidate{}, false, nil
 }
 
-func (s *Service) spriteWakeSecret(ctx context.Context, _ nativeQueryer, scope nativeScope, name string) (nativeScope, hubsecrets.Envelope, error) {
+func (s *Service) spriteWakeSecret(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope, name string) (nativeScope, hubsecrets.Envelope, error) {
 	var provider string
 	managed := false
 	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.SpriteReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		member, err := owner.SpriteMember(ctx, name)
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -438,10 +439,10 @@ func spriteFactsForMachine(machine leasestore.Machine) machineSpriteFacts {
 		facts.Name = new(machine.SpriteName)
 	}
 	if machine.SpriteWokenAt != nil {
-		facts.WokenAt = new(formatHubTime(*machine.SpriteWokenAt))
+		facts.WokenAt = new(hubapi.FormatHubTime(*machine.SpriteWokenAt))
 	}
 	if machine.SpriteWakeFailedAt != nil {
-		facts.WakeFailedAt = new(formatHubTime(*machine.SpriteWakeFailedAt))
+		facts.WakeFailedAt = new(hubapi.FormatHubTime(*machine.SpriteWakeFailedAt))
 	}
 	return facts
 }

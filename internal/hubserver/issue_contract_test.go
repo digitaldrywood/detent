@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -276,7 +277,7 @@ func TestNativeIssueContract(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				heldLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: string(machine), RunnerID: credential.Runner.RunnerID, SessionID: "contract-hold", LeaseID: newNativeID("lease"), TTL: time.Hour})
+				heldLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: string(machine), RunnerID: credential.Runner.RunnerID, SessionID: "contract-hold", LeaseID: hubapi.NewID("lease"), TTL: time.Hour})
 				if err != nil {
 					return err
 				}
@@ -402,7 +403,7 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 			tenant := f.service.config.TenantRepository
 			organization := f.project.OrganizationID
 			if test.noPolicy {
-				projectID := tracker.ProjectID(newNativeID("prj"))
+				projectID := tracker.ProjectID(hubapi.NewID("prj"))
 				if err := tenant.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 					credential, err := w.CredentialByHash(t.Context(), apikey.HashToken(f.token))
 					if err != nil {

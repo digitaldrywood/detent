@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -117,7 +118,7 @@ func TestPostgresGitHubImportRequiresEntitlement(t *testing.T) {
 			response := performHubAPIRequest(t, service, http.MethodPost, path, string(tt.org)+"_"+tt.role, map[string]any{"idempotency_key": tt.role, "issue_number": number})
 			requireNativeStatus(t, response, tt.status)
 			if tt.code != "" {
-				var result apiErrorResponse
+				var result hubapi.APIErrorResponse
 				decodeHubResponse(t, response, &result)
 				if result.Code != tt.code {
 					t.Fatalf("code=%s want %s", result.Code, tt.code)

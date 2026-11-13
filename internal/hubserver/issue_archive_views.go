@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -31,7 +32,7 @@ func readIssueArchiveSection(ctx context.Context, reader attachmentstore.Storage
 	}
 	ref := record.Archive.Reference
 	if ref.Validate(string(scope.organization)) != nil || (ref.SchemaVersion != 1 && ref.SchemaVersion != 2) {
-		return result, nativeNotFound()
+		return result, hubapi.NativeNotFound()
 	}
 	result.Revision = record.Stamp.Revision
 	result.SHA256 = ref.SHA256

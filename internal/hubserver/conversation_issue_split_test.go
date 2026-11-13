@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 func TestValidateCoordinatorIssueSplit(t *testing.T) {
@@ -62,7 +63,7 @@ func TestValidateCoordinatorIssueSplit(t *testing.T) {
 				t.Fatalf("validation=%v, want valid=%v", err, test.valid)
 			}
 			if err != nil {
-				var native *nativeError
+				var native *hubapi.NativeError
 				if !errors.As(err, &native) {
 					t.Fatalf("validation error = %v, want native validation", err)
 				}

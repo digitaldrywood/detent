@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -34,7 +35,7 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope nativeS
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(eventstore.ProgressEvidenceReader)
 		if !ok {
-			return workItemStorageUnavailable()
+			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
 		evidenceSequence, err = owner.ProgressEvidenceSequence(ctx, scope.project, before.NativeID)
@@ -69,7 +70,7 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope nativeS
 			return nil
 		})
 		if err != nil {
-			return progresscheck.Request{}, 0, projectRecordError(err)
+			return progresscheck.Request{}, 0, hubapi.ProjectRecordError(err)
 		}
 		request.InstanceVersion = version
 	}
@@ -78,7 +79,7 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope nativeS
 		return progresscheck.Request{}, 0, err
 	}
 	if before.Revision != after.Revision || int64(recovery.Issue.Revision) != before.Revision {
-		return progresscheck.Request{}, 0, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+		return progresscheck.Request{}, 0, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 	}
 	if before.EventSequence != after.EventSequence {
 		var currentSequence int64
@@ -90,7 +91,7 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope nativeS
 			return progresscheck.Request{}, 0, err
 		}
 		if currentSequence != evidenceSequence {
-			return progresscheck.Request{}, 0, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+			return progresscheck.Request{}, 0, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict}
 		}
 	}
 	return request, after.EventSequence, nil
@@ -112,7 +113,7 @@ func (s *Service) nativeProgressDefectReceiptTenant(ctx context.Context, scope n
 				if err != nil {
 					return err
 				}
-				state := stringValue(blocker.WorkflowStateName)
+				state := hubapi.StringValue(blocker.WorkflowStateName)
 				if relationship.CreatedAt.After(defectCreated) || relationship.CreatedAt.Equal(defectCreated) && relationship.WorkItemID > defectID {
 					defectID, defectState, defectCreated = relationship.WorkItemID, state, relationship.CreatedAt
 				}
@@ -126,7 +127,7 @@ func (s *Service) nativeProgressDefectReceiptTenant(ctx context.Context, scope n
 		return corestore.ErrInvalidPage
 	})
 	if err != nil {
-		return progresscheck.Receipt{}, false, projectRecordError(err)
+		return progresscheck.Receipt{}, false, hubapi.ProjectRecordError(err)
 	}
 	if defectID == "" || defectState != "Done" {
 		return progresscheck.Receipt{}, false, nil
@@ -159,7 +160,7 @@ func (s *Service) getNativeProgress(c echo.Context) error {
 
 func (s *Service) publishNativeProgress(c echo.Context) error {
 	var input progresscheck.Publication
-	if err := decodeAPIJSON(c, &input); err != nil {
+	if err := hubapi.DecodeAPIJSON(c, &input); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
@@ -169,13 +170,13 @@ func (s *Service) publishNativeProgress(c echo.Context) error {
 	}
 	id, err := request.ID()
 	if err != nil {
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
 	}
 	if id != input.RequestID {
-		return s.nativeAPIError(c, &nativeError{Code: "revision_conflict", status: http.StatusConflict})
+		return s.nativeAPIError(c, &hubapi.NativeError{Code: "revision_conflict", Status: http.StatusConflict})
 	}
 	if !request.NeedsCheck() {
-		return s.nativeAPIError(c, nativeInvalid("Progress decision requires a non-progressing previous attempt"))
+		return s.nativeAPIError(c, hubapi.NativeInvalid("Progress decision requires a non-progressing previous attempt"))
 	}
 	owner := nativeProgressOwner{service: s, scope: scope, request: request, leaseID: input.LeaseID, fencingToken: input.FencingToken, guardRevision: &sequence, expectedRevision: input.ExpectedRevision}
 	record, err := owner.Publish(c.Request().Context(), progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: input.Decision})
