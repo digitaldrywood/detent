@@ -974,6 +974,9 @@ func TestHostedInvitationConcurrentKeyInvitesOnce(t *testing.T) {
 	close(responses)
 	ids := map[string]bool{}
 	for response := range responses {
+		if response.Code == http.StatusConflict && strings.Contains(response.Body.String(), `"code":"idempotency_in_progress"`) {
+			continue
+		}
 		if response.Code != http.StatusCreated {
 			t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 		}
@@ -983,6 +986,15 @@ func TestHostedInvitationConcurrentKeyInvitesOnce(t *testing.T) {
 	}
 	if len(ids) != 1 || f.providerInvitations() != 1 {
 		t.Fatalf("invitations %v, provider invitations %d", ids, f.providerInvitations())
+	}
+	retry := f.rawAPI(t, "owner", http.MethodPost, path, body, headers)
+	if retry.Code != http.StatusCreated {
+		t.Fatalf("retry status = %d: %s", retry.Code, retry.Body.String())
+	}
+	var replay hostedInvitationView
+	browserHostedDecode(t, retry, &replay)
+	if !ids[replay.ID] || f.providerInvitations() != 1 {
+		t.Fatalf("retry invitation %s, invitations %v, provider invitations %d", replay.ID, ids, f.providerInvitations())
 	}
 }
 
