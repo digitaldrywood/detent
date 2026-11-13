@@ -203,6 +203,11 @@ func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if result, err := admin.ExecContext(t.Context(), "UPDATE project_settings SET duplicate_challenge=false WHERE organization_id='org_security' AND project_id=$1", f.project); err != nil {
+		t.Fatal(err)
+	} else if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("duplicate-challenge fixture affected=%d error=%v", affected, err)
+	}
 	var firstChange string
 	for _, key := range []string{"first", "second"} {
 		t.Run(key, func(t *testing.T) {
