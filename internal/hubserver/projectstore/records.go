@@ -122,6 +122,9 @@ func TriageStates(states []tracker.NativeState) []tracker.NativeState {
 			triage.Transitions = append(triage.Transitions, state.Transitions...)
 			continue
 		}
+		if state.Transitions == nil {
+			state.Transitions = []string{}
+		}
 		result = append(result, state)
 	}
 	for _, state := range result {
