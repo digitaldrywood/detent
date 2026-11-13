@@ -713,6 +713,7 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 				continue
 			}
 			t.Run(fmt.Sprintf("runners_%d_admissions_%d", runners, admissions), func(t *testing.T) {
+				t.Parallel()
 				f, probe := newDispatchWaitFixture(t, "scale")
 				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 				workers := make([]runnerFixture, runners)
