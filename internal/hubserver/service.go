@@ -121,7 +121,6 @@ type healthResponse struct {
 	SchemaFactsComplete      bool                    `json:"schema_facts_complete"`
 	Version                  string                  `json:"version,omitempty"`
 	Commit                   string                  `json:"commit,omitempty"`
-	Outbox                   OutboxHealth            `json:"outbox"`
 	Repositories             RepositoryHealthSummary `json:"repositories"`
 }
 

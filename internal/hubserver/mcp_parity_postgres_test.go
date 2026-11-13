@@ -555,6 +555,7 @@ func TestPostgresMCPCatalogAuthorities(t *testing.T) {
 		{"project_native_summary", "local owner shared member admin"},
 		{"project_secret_metadata", "local owner shared member viewer staff admin"},
 		{"remove_project_secret", "local owner shared staff admin"},
+		{"outbox_health", ""},
 		{"repository_freshness", ""},
 		{"revoke_project_policy", ""},
 		{"start_git_hub_import", "local owner shared member admin"},

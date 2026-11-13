@@ -881,7 +881,7 @@ once. The steps below bind the IDs up front instead.
 | `collaborate` | Create/edit issues and comments, transition workflow and edit dependencies within authorized projects |
 
 Grants must explicitly list at least one project and operation. No empty list
-means “all.” Enrolled runners cannot use v1, global health/outbox APIs, tenant
+means “all.” Enrolled runners cannot use v1, global health APIs, tenant
 administration or token-management endpoints. Administrators may replace project
 access through runner routing settings; operation grants require fresh enrollment.
 Generic token grants cannot widen runner authority. Claims, lease mutations and
@@ -1244,9 +1244,8 @@ can continue using their legacy configuration until their native cutover.
 
 | Endpoint | Minimum scope | Purpose |
 | --- | --- | --- |
-| `GET /health` | any scoped token | Service, schema, repository, and outbox health |
+| `GET /health` | any scoped token | Service, schema and repository health |
 | `GET /api/v1/repositories/freshness` | any scoped token | Repository synchronization health page |
-| `GET /api/v1/outbox/health` | any scoped token | Outbox counts and operator-action page |
 
 Worker events and operator mutations expose typed state changes only. They do not provide a generic GitHub request or arbitrary mutation surface.
 

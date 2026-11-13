@@ -160,7 +160,6 @@ func TestAPIRefusals(t *testing.T) {
 		{"token access", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"private-token"}`, "invalid_request", "Choose all or selected project access", http.StatusUnprocessableEntity, keyRefusal(true)},
 		{"token selected projects", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"selected"}`, "invalid_request", "Selected project access requires at least one project", http.StatusUnprocessableEntity, keyRefusal(true)},
 		{"token all projects", "/api/v1/tokens", `{"name":"private-token","scope":"read","project_access":"all","project_ids":["private-project"]}`, "invalid_request", "All project access cannot include selected project IDs", http.StatusUnprocessableEntity, keyRefusal(true)},
-		{"outbox limit", "/api/v1/outbox/health?limit=0", "", "invalid_query", "limit must be between 1 and 200", http.StatusUnprocessableEntity, (*Service).outboxHealth},
 		{"attachment metadata", hubapi.NativeBase + "/attempts/:attempt/attachment-metadata", `{}`, "invalid_request", "Invalid attachment metadata", http.StatusUnprocessableEntity, (*Service).recordCloudAttachment},
 		{"archive query", hubapi.NativeBase + "/work-items?archive_url=private-token", "", "invalid_request", "archive_url supports true or false", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
 		{"repeated archive query", hubapi.NativeBase + "/work-items?archive_url=true&archive_url=false", "", "invalid_request", "archive_url supports true or false", http.StatusUnprocessableEntity, (*Service).listNativeIssues},
@@ -174,7 +173,6 @@ func TestAPIRefusals(t *testing.T) {
 			c.SetParamValues("attempt_example")
 			return s.nativeAPIError(c, s.checkAttachmentEvidence(c, nil))
 		}},
-		{"outbox cursor", "/api/v1/outbox/health?cursor=private-token", "", "invalid_cursor", "Outbox cursor is invalid", http.StatusUnprocessableEntity, (*Service).outboxHealth},
 		{"claim ID", hubapi.NativeBase + "/claims", `{"work_item_id":-1}`, "invalid_request", "Request body contains an invalid field type", http.StatusUnprocessableEntity, (*Service).claimNativeIssue},
 		{"claim body limit", hubapi.NativeBase + "/claims", `{"session_id":"` + strings.Repeat("x", hubapi.MaxAPIRequestBodyBytes) + `"}`, "payload_too_large", "Request body is too large", http.StatusRequestEntityTooLarge, (*Service).claimNativeIssue},
 		{"claim TTL", hubapi.NativeBase + "/claims", `{"ttl_seconds":-1,"protocol_major":2,"capabilities":["native_issues","scoped_collaboration"]}`, "invalid_request", "Lease TTL is invalid", http.StatusUnprocessableEntity, (*Service).claimNativeIssue},

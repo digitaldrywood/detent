@@ -855,7 +855,7 @@ do not paste bearer headers or content into diagnostic reports.
 | Expired/revoked identity | Unauthorized response and local identity expiry; renew before expiry, otherwise initialize/enroll a new binding and approve changed ID selectors |
 | Policy mismatch | Hub policy descriptor/approval and locally resolved policy ID; inspect trusted repository/workflow changes and obtain explicit administrator approval |
 | Storage outage | Artifact error (`storage_unreachable`, integrity/missing/expiry reason), service maintenance logs and `verify-storage`; restore configured storage access, preserve pending catalog/outbox, never advertise unverified bytes |
-| GitHub compatibility/projection failure | `/api/v1/outbox/health`, `/api/v1/repositories/freshness`, `/health` and GitHub profile; distinguish disabled transport, missing permissions, rate budget, stale projection, conflict and dead-letter/operator action before retrying |
+| GitHub compatibility/projection failure | `/api/v1/repositories/freshness`, `/health` and GitHub profile; distinguish disabled transport, missing permissions, rate budget, stale projection and conflict before retrying |
 | Startup/schema failure | systemd exit status and private journal and PostgreSQL startup diagnostics; check runtime roles, row-level security, schema and binary versions |
 
 ## Project Sprites credentials

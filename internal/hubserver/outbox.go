@@ -73,23 +73,6 @@ type WorkflowStateChange struct {
 	Mutation        WorkflowLabelMutation
 }
 
-type OutboxHealth struct {
-	Pending         int              `json:"pending"`
-	Retrying        int              `json:"retrying"`
-	Processing      int              `json:"processing"`
-	DeadLetters     int              `json:"dead_letters"`
-	OldestPendingAt *time.Time       `json:"oldest_pending_at,omitempty"`
-	OperatorActions []OperatorAction `json:"operator_actions,omitempty"`
-}
-
-type OperatorAction struct {
-	ID             int64        `json:"id"`
-	IdempotencyKey string       `json:"idempotency_key"`
-	Kind           MutationKind `json:"kind"`
-	TargetNodeID   string       `json:"target_node_id,omitempty"`
-	Action         string       `json:"action"`
-}
-
 type outboxRecord struct {
 	idempotencyKey string
 	repositoryID   int64
@@ -118,8 +101,4 @@ func (s *Service) ProcessOutbox(ctx context.Context) (bool, error) {
 
 func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found bool, resultErr error) {
 	return OutboxItem{}, false, ErrOutboxDisabled
-}
-
-func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
-	return OutboxHealth{}, ErrOutboxDisabled
 }

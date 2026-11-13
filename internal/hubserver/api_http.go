@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -150,48 +149,4 @@ func apiTTL(seconds int64) (time.Duration, error) {
 		return 0, errors.New("ttl_seconds must be between 1 and 86400")
 	}
 	return time.Duration(seconds) * time.Second, nil
-}
-
-func (s *Service) outboxHealth(c echo.Context) error {
-	limit, err := hubapi.ParsePageLimit(c.QueryParam("limit"))
-	if err != nil {
-		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_query", "limit must be between 1 and 200", hubapi.APIErrorResponse{Code: "invalid_query", Message: "limit must be between 1 and 200"})
-	}
-	cursor, err := decodeTimelineCursor(c.QueryParam("cursor"))
-	if err != nil {
-		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_cursor", "Outbox cursor is invalid", hubapi.APIErrorResponse{Code: "invalid_cursor", Message: "Outbox cursor is invalid"})
-	}
-	response, err := s.readOutboxHealthPage(c.Request().Context(), limit, cursor)
-	if err != nil {
-		return s.internalAPIError(c, "outbox_health_unavailable", "Outbox health could not be read", err)
-	}
-	return c.JSON(http.StatusOK, response)
-}
-
-func (s *Service) readOutboxHealthPage(ctx context.Context, limit int, cursor timelineCursor) (outboxHealthResponse, error) {
-	health, err := s.OutboxHealth(ctx)
-	if err != nil {
-		return outboxHealthResponse{}, err
-	}
-	actions := health.OperatorActions[:0]
-	for _, action := range health.OperatorActions {
-		if action.ID > cursor.ID {
-			actions = append(actions, action)
-		}
-	}
-	health.OperatorActions = actions
-	response := outboxHealthResponse{OutboxHealth: health}
-	if len(response.OperatorActions) > limit {
-		response.OperatorActions = response.OperatorActions[:limit]
-		response.NextCursor, err = encodeTimelineCursor(timelineCursor{Version: 1, ID: response.OperatorActions[len(response.OperatorActions)-1].ID})
-		if err != nil {
-			return outboxHealthResponse{}, err
-		}
-	}
-	return response, nil
-}
-
-type outboxHealthResponse struct {
-	OutboxHealth
-	NextCursor string `json:"next_cursor,omitempty"`
 }

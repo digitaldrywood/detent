@@ -514,7 +514,6 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 		{"impersonated identity", http.MethodGet, r.identityPath(), nil, http.StatusNotFound},
 		{"v1 downgrade", http.MethodGet, "/api/v1/work-items", nil, http.StatusForbidden},
 		{"collaboration without grant", http.MethodPost, f.base + "/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "denied"}, Title: "denied", State: "Todo"}, http.StatusForbidden},
-		{"global outbox", http.MethodGet, "/api/v1/outbox/health", nil, http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, test.method, test.path, other.redemption.Credential, test.body), test.want)
