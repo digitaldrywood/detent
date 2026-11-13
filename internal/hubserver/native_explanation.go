@@ -129,10 +129,10 @@ func boundedNativeExplanation(evidence tracker.NativeRuntimeEvidence, failure *e
 	result.Sources = []explain.SourceStatus{{Name: "explanation_evidence_truncated", State: explain.SourceUnavailable}}
 	result.Evidence, result.Reasons, result.LatestTransition, result.FailureSignature = nil, nil, nil, nil
 	result.Eligibility.Refusals, result.Eligibility.Latest, result.Eligibility.Current = nil, nil, nil
-	result.RequiredGate.Reason = boundedFailureText(result.RequiredGate.Reason, 4096)
+	result.RequiredGate.Reason = hubapi.BoundedFailureText(result.RequiredGate.Reason, 4096)
 	result.RequiredGate.Failures, result.RequiredGate.Running = nil, nil
 	if result.RequiredGate.ExternalMerge != nil {
-		result.RequiredGate.ExternalMerge.Detail = boundedFailureText(result.RequiredGate.ExternalMerge.Detail, 4096)
+		result.RequiredGate.ExternalMerge.Detail = hubapi.BoundedFailureText(result.RequiredGate.ExternalMerge.Detail, 4096)
 	}
 	raw, err = json.Marshal(result)
 	if err != nil {
@@ -167,7 +167,7 @@ func explanationLanding(value *tracker.NativeLandingReceipt) *tracker.NativeLand
 		for _, values := range []*[]string{&ci.RequiredChecks, &ci.PendingChecks, &ci.MissingChecks, &ci.FailedChecks} {
 			*values = slices.Clone((*values)[:min(len(*values), 16)])
 			for i := range *values {
-				(*values)[i] = boundedFailureText((*values)[i], 256)
+				(*values)[i] = hubapi.BoundedFailureText((*values)[i], 256)
 			}
 		}
 		result.CI = &ci

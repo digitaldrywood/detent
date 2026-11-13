@@ -163,9 +163,6 @@ const maxFailureExampleLength = reports.MaxFailureExampleLength
 type nativeFailureSignature = reports.NativeFailureSignature
 type nativeFailure = reports.NativeFailure
 
-func boundedFailureText(p0 string, p1 int) string {
-	return reports.BoundedFailureText(p0, p1)
-}
 func failureFirstLine(p0 string) string {
 	return reports.FailureFirstLine(p0)
 }

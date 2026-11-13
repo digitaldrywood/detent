@@ -108,7 +108,7 @@ func (s *Service) readNativeFailuresTenant(ctx context.Context, scope hubscope.N
 			continue
 		}
 		cost := totals[attempt.ID]
-		out = append(out, nativeFailure{Signature: strings.Clone(normalizeFailureSignature(example)), AttemptID: attempt.ID, WorkItem: string(attempt.WorkItemID), At: at, Started: attempt.StartedAt, Finished: attempt.UpdatedAt, Example: strings.Clone(boundedFailureText(failureFirstLine(example), maxFailureExampleLength)), Class: class, Cost: cost.Cost, Tokens: cost.Tokens})
+		out = append(out, nativeFailure{Signature: strings.Clone(normalizeFailureSignature(example)), AttemptID: attempt.ID, WorkItem: string(attempt.WorkItemID), At: at, Started: attempt.StartedAt, Finished: attempt.UpdatedAt, Example: strings.Clone(hubapi.BoundedFailureText(failureFirstLine(example), maxFailureExampleLength)), Class: class, Cost: cost.Cost, Tokens: cost.Tokens})
 	}
 	if page.Next.ID != "" {
 		if len(key) == 0 {

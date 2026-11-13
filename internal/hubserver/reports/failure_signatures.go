@@ -7,11 +7,11 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -67,18 +67,6 @@ type NativeFailure struct {
 	Tokens    int64     `json:"-"`
 }
 
-func BoundedFailureText(value string, limit int) string {
-	value = strings.ToValidUTF8(value, "�")
-	if len(value) <= limit {
-		return value
-	}
-	end := limit
-	for !utf8.RuneStart(value[end]) {
-		end--
-	}
-	return value[:end]
-}
-
 func FailureFirstLine(value string) string {
 	first, _, _ := strings.Cut(value, "\n")
 	return strings.TrimSpace(first)
@@ -103,7 +91,7 @@ func NormalizeFailureSignature(value string) string {
 			value = replacement.pattern.ReplaceAllString(value, replacement.value)
 		}
 	}
-	return BoundedFailureText(value, maxFailureSignatureLength)
+	return hubapi.BoundedFailureText(value, maxFailureSignatureLength)
 }
 
 func FailureFromAttempt(a tracker.NativeRunData, status string) (string, string) {
@@ -181,7 +169,7 @@ func GroupNativeFailures(failures []NativeFailure) []NativeFailureSignature {
 		if f.At.Before(v.FirstSeen) {
 			v.FirstSeen = f.At
 		}
-		example := BoundedFailureText(FailureFirstLine(f.Example), MaxFailureExampleLength)
+		example := hubapi.BoundedFailureText(FailureFirstLine(f.Example), MaxFailureExampleLength)
 		if f.At.After(v.LastSeen) || f.At.Equal(v.LastSeen) && (v.Example == "" || example < v.Example) {
 			v.LastSeen, v.Example = f.At, example
 		}
