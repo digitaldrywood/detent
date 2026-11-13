@@ -282,7 +282,7 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 		}
 	}
 	if cfg != nil {
-		result.Enabled, result.AccountID, result.Mode = true, cfg.AccountID, cfg.mode()
+		result.Enabled, result.AccountID, result.Mode = true, cfg.AccountID, cfg.CreditMode()
 		binding, err := s.database.hostedBillingBinding(ctx, cfg)
 		if err != nil && !errors.Is(err, errHostedBillingUnbound) {
 			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)

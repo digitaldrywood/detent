@@ -1,4 +1,4 @@
-package hubserver
+package hostedplans
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -27,24 +28,24 @@ type publishedRuntimeCatalogWriter interface {
 	ApplyPublishedRuntimeCatalog(context.Context, string, billingstore.RuntimeRevision, []billingstore.Plan, []billingstore.Price, []billingstore.PlanAudit) error
 }
 
-func (d *database) applyRuntimeRecords(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool) error {
-	return d.applyRuntimeRecordsAtRevision(ctx, plans, prices, actor, reason, stage, validate, hostedRuntimeReplacePlans, nil)
+func (d *Service) ApplyRuntimeRecords(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool) error {
+	return d.ApplyRuntimeRecordsAtRevision(ctx, plans, prices, actor, reason, stage, validate, hostedRuntimeReplacePlans, nil)
 }
 
-func (d *database) applyRuntimeRecordsAtRevision(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool, planMode hostedRuntimePlanMode, expected *string) error {
+func (d *Service) ApplyRuntimeRecordsAtRevision(ctx context.Context, plans HostedPlansConfig, prices []HostedBillingPrice, actor, reason, stage string, validate bool, planMode hostedRuntimePlanMode, expected *string) error {
 	if d.billingAuditStore == nil {
 		return errors.New("hosted billing audit storage is unavailable")
 	}
-	commands := []hostedPlanCommand{}
+	commands := []PlanCommand{}
 	for _, plan := range plans.Plans {
-		plan = normalizeHostedPlan(plan)
-		commands = append(commands, hostedPlanCommand{ID: "seed_" + uuid.NewString(), Action: "create_plan", Plan: plan.PlanReference, Definition: &plan, Reason: reason})
+		plan = NormalizePlan(plan)
+		commands = append(commands, PlanCommand{ID: "seed_" + uuid.NewString(), Action: "create_plan", Plan: plan.PlanReference, Definition: &plan, Reason: reason})
 	}
 	action := "reload"
 	if stage != "" {
 		action = "prepare_reload"
 	}
-	commands = append(commands, hostedPlanCommand{ID: "reload_" + uuid.NewString(), Action: action, Reason: reason})
+	commands = append(commands, PlanCommand{ID: "reload_" + uuid.NewString(), Action: action, Reason: reason})
 	audits := make([]billingstore.PlanAudit, len(commands))
 	for i, command := range commands {
 		raw, err := json.Marshal(command)
@@ -58,12 +59,12 @@ func (d *database) applyRuntimeRecordsAtRevision(ctx context.Context, plans Host
 		digest := sha256.Sum256(raw)
 		audits[i] = billingstore.PlanAudit{OrganizationID: d.hostedOrganization, CommandID: command.ID, RequestHash: hex.EncodeToString(digest[:]), ActorID: actor, Action: command.Action, RecordedAt: d.now().UTC(), Reference: billingstore.AuditReferenceFromArchive(ref)}
 	}
-	revision, err := d.archiveRuntime(ctx, plans, prices, stage, stage == "")
+	revision, err := d.ArchiveRuntime(ctx, plans, prices, stage, stage == "")
 	if err != nil {
 		return err
 	}
 	rollback := errors.New("runtime validation rollback")
-	write := d.writeBillingTenant
+	write := d.WriteBillingTenant
 	if expected != nil {
 		write = func(ctx context.Context, apply func(tenantstore.Writer) error) error {
 			return d.billingRepository.WriteTenant(ctx, d.hostedOrganization, corestore.Background, apply)
@@ -103,7 +104,7 @@ func (d *database) applyRuntimeRecordsAtRevision(ctx context.Context, plans Host
 			}
 			catalog := make([]billingstore.Plan, 0, len(plans.Plans))
 			for _, plan := range plans.Plans {
-				plan = normalizeHostedPlan(plan)
+				plan = NormalizePlan(plan)
 				catalog = append(catalog, billingstore.Plan{OrganizationID: d.hostedOrganization, PlanReference: billingstore.PlanReference{ID: plan.ID, Version: plan.Version}, Name: plan.Name, MonthlyUSDCents: plan.MonthlyUSDCents, Features: plan.Features, Allowances: plan.Allowances})
 			}
 			mappings := make([]billingstore.Price, 0, len(prices))
@@ -178,7 +179,7 @@ func (d *database) applyRuntimeRecordsAtRevision(ctx context.Context, plans Host
 	return err
 }
 
-func (d *database) validateConfiguredPlanReferences(ctx context.Context, r billingstore.Reader, plans HostedPlansConfig) error {
+func (d *Service) validateConfiguredPlanReferences(ctx context.Context, r billingstore.Reader, plans HostedPlansConfig) error {
 	refs := make([]billingstore.PlanReference, 0, len(plans.Plans))
 	for _, plan := range plans.Plans {
 		refs = append(refs, billingstore.PlanReference{ID: plan.ID, Version: plan.Version})
@@ -190,5 +191,5 @@ func (d *database) validateConfiguredPlanReferences(ctx context.Context, r billi
 	if err != nil {
 		return err
 	}
-	return nativePublicInvalid(fmt.Sprintf("Hosted plan configuration omits referenced plan %s version %d; restore the definition before startup or reload", ref.ID, ref.Version))
+	return hubapi.PublicInvalid(fmt.Sprintf("Hosted plan configuration omits referenced plan %s version %d; restore the definition before startup or reload", ref.ID, ref.Version))
 }

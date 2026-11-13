@@ -209,9 +209,9 @@ func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billi
 
 func (s *Service) ensureHostedCustomerRecord(ctx context.Context, actor string, cfg *HostedBillingConfig, provider billing.CustomerProvider, organization string) (billing.Binding, error) {
 	d := s.database
-	key := "detent-customer-" + cfg.AccountID + "-" + cfg.mode() + "-" + organization
+	key := "detent-customer-" + cfg.AccountID + "-" + cfg.CreditMode() + "-" + organization
 	now := s.config.now().UTC()
-	intent := billingstore.CustomerIntent{OrganizationID: d.hostedOrganization, AccountID: cfg.AccountID, Mode: cfg.mode(), IdempotencyKey: key, State: "pending", CreatedAt: now, UpdatedAt: now}
+	intent := billingstore.CustomerIntent{OrganizationID: d.hostedOrganization, AccountID: cfg.AccountID, Mode: cfg.CreditMode(), IdempotencyKey: key, State: "pending", CreatedAt: now, UpdatedAt: now}
 	if err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.CreateBillingCustomerIntent(ctx, intent) }); err != nil {
 		return billing.Binding{}, err
 	}
@@ -226,7 +226,7 @@ func (s *Service) ensureHostedCustomerRecord(ctx context.Context, actor string, 
 	if existing.State == "conflict" {
 		return billing.Binding{}, billing.ErrCustomerConflict
 	}
-	if existing.AccountID != cfg.AccountID || existing.Mode != cfg.mode() || existing.IdempotencyKey != key {
+	if existing.AccountID != cfg.AccountID || existing.Mode != cfg.CreditMode() || existing.IdempotencyKey != key {
 		return billing.Binding{}, errors.New("a pending billing customer belongs to a different account or mode")
 	}
 	customer, err := provider.EnsureCustomer(ctx, billing.CustomerRequest{AccountID: cfg.AccountID, OrganizationID: organization, IdempotencyKey: key})
@@ -240,7 +240,7 @@ func (s *Service) ensureHostedCustomerRecord(ctx context.Context, actor string, 
 	if err != nil {
 		return billing.Binding{}, err
 	}
-	audit, err := json.Marshal(map[string]string{"status": "customer_bound", "mode": cfg.mode()})
+	audit, err := json.Marshal(map[string]string{"status": "customer_bound", "mode": cfg.CreditMode()})
 	if err != nil {
 		return billing.Binding{}, err
 	}
@@ -255,10 +255,10 @@ func (s *Service) ensureHostedCustomerRecord(ctx context.Context, actor string, 
 	err = d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
 		account, err := writer.BillingAccount(ctx)
 		if errors.Is(err, corestore.ErrNotFound) {
-			account = billingstore.Account{OrganizationID: d.hostedOrganization, Mode: cfg.mode(), Binding: billing.Binding{OrganizationID: organization, AccountID: cfg.AccountID, CustomerID: customer}, Status: "free"}
+			account = billingstore.Account{OrganizationID: d.hostedOrganization, Mode: cfg.CreditMode(), Binding: billing.Binding{OrganizationID: organization, AccountID: cfg.AccountID, CustomerID: customer}, Status: "free"}
 		} else if err != nil {
 			return err
-		} else if account.Binding.AccountID != cfg.AccountID || account.Binding.CustomerID != customer || account.Mode != cfg.mode() {
+		} else if account.Binding.AccountID != cfg.AccountID || account.Binding.CustomerID != customer || account.Mode != cfg.CreditMode() {
 			return billing.ErrCustomerConflict
 		}
 		if err := writer.SetBillingAccount(ctx, account); err != nil {

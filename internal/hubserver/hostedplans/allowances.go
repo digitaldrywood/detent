@@ -1,4 +1,4 @@
-package hubserver
+package hostedplans
 
 import (
 	"context"
@@ -16,19 +16,19 @@ import (
 
 var ErrBillingUsageUnavailable = errors.New("billing usage requires the selected tenant transaction")
 
-type hostedConsumptionRecord struct {
-	usage       map[string]int64
-	unavailable []string
+type ConsumptionRecord struct {
+	Usage       map[string]int64
+	Unavailable []string
 }
 
-func (d *database) readHostedConsumptionRecord(ctx context.Context, reader tenantstore.Reader, now time.Time, metrics ...string) (hostedConsumptionRecord, error) {
-	result := hostedConsumptionRecord{usage: map[string]int64{}}
-	plans := d.plans()
+func (d *Service) ReadConsumptionRecord(ctx context.Context, reader tenantstore.Reader, now time.Time, metrics ...string) (ConsumptionRecord, error) {
+	result := ConsumptionRecord{Usage: map[string]int64{}}
+	plans := d.Plans()
 	if plans != nil && plans.WindowSeconds <= 0 {
 		return result, ErrBillingUsageUnavailable
 	}
 	if len(metrics) == 0 {
-		metrics = append([]string{"events_total", "usage_windows"}, hostedAllowanceNames()...)
+		metrics = append([]string{"events_total", "usage_windows"}, AllowanceNames()...)
 	}
 	selected := map[string]bool{}
 	for _, metric := range metrics {
@@ -49,7 +49,7 @@ func (d *database) readHostedConsumptionRecord(ctx context.Context, reader tenan
 			}
 		}
 		if selected["usage_windows"] {
-			for _, metric := range hostedAllowanceNames() {
+			for _, metric := range AllowanceNames() {
 				if metric != "artifact_retained_bytes" && metric != "artifact_reserved_bytes" {
 					names[metric] = true
 				}
@@ -126,41 +126,41 @@ func (d *database) readHostedConsumptionRecord(ctx context.Context, reader tenan
 			}
 		}
 		if known {
-			result.usage[metric] = used
+			result.Usage[metric] = used
 		} else {
-			result.unavailable = append(result.unavailable, metric)
+			result.Unavailable = append(result.Unavailable, metric)
 		}
 	}
 	if selected["usage_windows"] {
 		for metric, amount := range byMetric {
 			if metric != "artifact_retained_bytes" && metric != "artifact_reserved_bytes" {
-				result.usage[metric] = amount
+				result.Usage[metric] = amount
 			}
 		}
 	}
 	return result, nil
 }
 
-func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, now time.Time, metrics ...string) (map[string]int64, error) {
-	runtimePlans := d.plans()
+func (d *Service) Consumption(ctx context.Context, query Queryer, now time.Time, metrics ...string) (map[string]int64, error) {
+	runtimePlans := d.Plans()
 	result := make(map[string]int64)
 	if runtimePlans == nil {
 		return result, nil
 	}
 	if d.billingRepository != nil {
-		var selected hostedConsumptionRecord
-		err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		var selected ConsumptionRecord
+		err := d.ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
 			var err error
-			selected, err = d.readHostedConsumptionRecord(ctx, reader, now, metrics...)
+			selected, err = d.ReadConsumptionRecord(ctx, reader, now, metrics...)
 			return err
 		})
 		if err != nil {
 			return nil, err
 		}
-		if len(selected.unavailable) != 0 {
-			return selected.usage, ErrBillingUsageUnavailable
+		if len(selected.Unavailable) != 0 {
+			return selected.Usage, ErrBillingUsageUnavailable
 		}
-		return selected.usage, nil
+		return selected.Usage, nil
 	}
 	queries := map[string]string{
 		"members":             "SELECT count(*) FROM hosted_members WHERE active = 1",
@@ -232,7 +232,7 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 	return result, errors.Join(rows.Err(), rows.Close())
 }
 
-func countHostedAfter(ctx context.Context, query nativeQueryer, statement string, after time.Time, args ...any) (int64, error) {
+func countHostedAfter(ctx context.Context, query Queryer, statement string, after time.Time, args ...any) (int64, error) {
 	rows, err := query.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return 0, err
@@ -255,8 +255,8 @@ func countHostedAfter(ctx context.Context, query nativeQueryer, statement string
 	return count, errors.Join(rows.Err(), rows.Close())
 }
 
-func (d *database) recordHostedUsage(ctx context.Context, tx *sql.Tx, now time.Time, metric string, amount int64) error {
-	runtimePlans := d.plans()
+func (d *Service) RecordUsage(ctx context.Context, tx *sql.Tx, now time.Time, metric string, amount int64) error {
+	runtimePlans := d.Plans()
 	if runtimePlans == nil || amount == 0 {
 		return nil
 	}

@@ -521,7 +521,7 @@ func (s *Service) billingActionBinding(price string) string {
 		Account, Mode, Portal, Return string
 		Prices                        []HostedBillingPrice
 		Price                         string
-	}{cfg.AccountID, cfg.mode(), cfg.PortalConfigurationID, s.hostedBillingReturn(true), cfg.Prices, price})
+	}{cfg.AccountID, cfg.CreditMode(), cfg.PortalConfigurationID, s.hostedBillingReturn(true), cfg.Prices, price})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
@@ -552,7 +552,7 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 		Disabled, Enabled                                           bool
 		Threshold                                                   int64
 		Pack                                                        HostedCreditPack
-	}{Account: cfg.AccountID, Mode: cfg.mode(), Return: s.hostedBillingReturn(true), Customer: cfg.CustomerID, Disabled: cfg.CheckoutDisabled, Pack: pack}
+	}{Account: cfg.AccountID, Mode: cfg.CreditMode(), Return: s.hostedBillingReturn(true), Customer: cfg.CustomerID, Disabled: cfg.CheckoutDisabled, Pack: pack}
 	if name == operatortool.CreditAutoFund {
 		{
 			err := s.database.readBillingTenant(readCtx, func(reader tenantstore.Reader) error {

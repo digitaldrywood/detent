@@ -63,7 +63,7 @@ func (s *Service) billingMaintenance(ctx context.Context, tenant BillingTenant) 
 	d := &database{billingRepository: maintenanceBillingRepository{s.database.billingRepository}, billingAuditStore: hubmaintenance.LimitDetails(s.database.billingAuditStore), hostedOrganization: tracker.OrganizationID(tenant.Tenant.Organization), now: now, newLeaseID: leaseID}
 	d.hostedRuntime.Store(&hostedRuntimeConfig{Revision: tenant.Revision, Plans: tenant.Plans, Billing: tenant.Config})
 	if tenant.Config != nil {
-		d.aiCreditMode = tenant.Config.mode()
+		d.aiCreditMode = tenant.Config.CreditMode()
 	}
 	return &Service{database: d, config: Config{Hosted: &HostedConfig{OrganizationID: tenant.Tenant.Organization, Billing: tenant.Config}, now: now, newLeaseID: leaseID}}, nil
 }
@@ -279,7 +279,7 @@ func (s *Service) hostedStripeWebhook(c echo.Context) error {
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusBadRequest, "Billing webhook body could not be read within the size limit")
 	}
-	event, err := billing.VerifyModeEvent(body, c.Request().Header.Get("Stripe-Signature"), cfg.WebhookSecret, s.config.now(), cfg.mode() == billing.ModeLive)
+	event, err := billing.VerifyModeEvent(body, c.Request().Header.Get("Stripe-Signature"), cfg.WebhookSecret, s.config.now(), cfg.CreditMode() == billing.ModeLive)
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusBadRequest, "Billing webhook signature, timestamp or mode is invalid")
 	}

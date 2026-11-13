@@ -61,7 +61,7 @@ func (s *Service) checkoutBilling(ctx context.Context, authorize billingAuthoriz
 	if !approved {
 		return billingDestination{}, billingFailure(http.StatusBadRequest, "Choose an approved subscription plan")
 	}
-	command := hostedCommand{actor: credential.ID, operation: "billing.checkout", key: key, input: struct{ Price, Account, Mode, ReturnURL string }{price, cfg.AccountID, cfg.mode(), s.hostedBillingReturn(true)}}
+	command := hostedCommand{actor: credential.ID, operation: "billing.checkout", key: key, input: struct{ Price, Account, Mode, ReturnURL string }{price, cfg.AccountID, cfg.CreditMode(), s.hostedBillingReturn(true)}}
 	if key != "" {
 		_, response, err := s.claimHostedOperation(ctx, command)
 		if err != nil && !errors.Is(err, mutation.ErrUncertain) {
@@ -145,7 +145,7 @@ func (s *Service) portalBilling(ctx context.Context, authorize billingAuthorizat
 	command := hostedCommand{actor: credential.ID, operation: "billing.portal", key: key, input: struct {
 		Configuration, ReturnURL, Mode string
 		Binding                        billing.Binding
-	}{cfg.PortalConfigurationID, s.hostedBillingReturn(true), cfg.mode(), binding}}
+	}{cfg.PortalConfigurationID, s.hostedBillingReturn(true), cfg.CreditMode(), binding}}
 	if key != "" {
 		_, response, err := s.claimHostedOperation(ctx, command)
 		if err != nil {

@@ -3,60 +3,12 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"slices"
-	"strings"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
-
-func ValidateHostedRuntimeUpdate(update HostedRuntimeUpdate) error {
-	if update.Reason == "" || len(update.Reason) > 500 || update.Plans == nil {
-		return nativePublicInvalid("A bounded reload reason and explicit plan configuration are required")
-	}
-	if !update.Plans.IsZero() {
-		if err := update.Plans.validate(); err != nil {
-			return err
-		}
-	}
-	if len(update.Prices) > 20 {
-		return errors.New("too many hosted billing prices")
-	}
-	seen := make(map[string]bool, len(update.Prices))
-	for _, price := range update.Prices {
-		found := slices.ContainsFunc(update.Plans.Plans, func(plan HostedPlan) bool { return plan.PlanReference == price.Plan })
-		if !strings.HasPrefix(price.PriceID, "price_") || !hostedSafeID(price.PriceID) || seen[price.PriceID] || strings.TrimSpace(price.Label) == "" || len(price.Label) > 80 || !found || price.Plan == update.Plans.Base {
-			return errors.New("hosted billing prices require unique approved paid plans and bounded labels")
-		}
-		seen[price.PriceID] = true
-	}
-	return nil
-}
-
-type hostedRuntimeConfig struct {
-	Revision string
-	Plans    HostedPlansConfig
-	Billing  *HostedBillingConfig
-}
-
-type HostedRuntimeUpdate struct {
-	Plans        *HostedPlansConfig   `json:"plans"`
-	Prices       []HostedBillingPrice `json:"prices"`
-	Reason       string               `json:"reason"`
-	ValidateOnly bool                 `json:"validate_only"`
-	StageID      string               `json:"stage_id,omitempty"`
-}
-
-func (d *database) runtimeState() *hostedRuntimeConfig { return d.hostedRuntime.Load() }
-func (d *database) plans() *HostedPlansConfig {
-	state := d.runtimeState()
-	if state == nil || state.Plans.IsZero() {
-		return nil
-	}
-	return &state.Plans
-}
 
 func (s *Service) hostedBillingConfig() *HostedBillingConfig {
 	if s.config.Hosted == nil {
@@ -116,7 +68,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 		}
 	}
 	if !plans.IsZero() {
-		if err := plans.validate(); err != nil {
+		if err := plans.Validate(); err != nil {
 			return nativePublicInvalid("Reloaded entitlement configuration is invalid")
 		}
 	}
@@ -125,7 +77,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 		next := *current
 		next.Prices = slices.Clone(update.Prices)
 		config = &next
-		if err := config.validate(&plans); err != nil {
+		if err := config.Validate(&plans); err != nil {
 			return nativePublicInvalid("Reloaded billing prices are invalid")
 		}
 	} else if len(update.Prices) != 0 {

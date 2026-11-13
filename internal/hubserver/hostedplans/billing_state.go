@@ -1,4 +1,4 @@
-package hubserver
+package hostedplans
 
 import (
 	"context"
@@ -11,10 +11,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-type hostedBillingState struct {
+type BillingState struct {
 	Snapshot    billing.Snapshot `json:"subscription"`
 	Status      string           `json:"status"`
 	Plan        PlanReference    `json:"plan"`
@@ -23,7 +24,7 @@ type hostedBillingState struct {
 	GraceUntil  time.Time        `json:"grace_until"`
 }
 
-func (s hostedBillingState) equal(other hostedBillingState) bool {
+func (s BillingState) equal(other BillingState) bool {
 	stored := func(value time.Time) time.Time { return value.Truncate(time.Microsecond) }
 	for _, pair := range [][2]time.Time{
 		{s.PaidThrough, other.PaidThrough}, {s.AccessUntil, other.AccessUntil}, {s.GraceUntil, other.GraceUntil},
@@ -39,8 +40,8 @@ func (s hostedBillingState) equal(other hostedBillingState) bool {
 	return s == other
 }
 
-func resolveHostedBilling(config *HostedBillingConfig, previous hostedBillingState, snapshot billing.Snapshot, now time.Time) hostedBillingState {
-	state := hostedBillingState{Snapshot: snapshot, Status: snapshot.Status}
+func ResolveBilling(config *HostedBillingConfig, previous BillingState, snapshot billing.Snapshot, now time.Time) BillingState {
+	state := BillingState{Snapshot: snapshot, Status: snapshot.Status}
 	for _, price := range config.Prices {
 		if price.PriceID == snapshot.PriceID {
 			state.Plan = price.Plan
@@ -98,12 +99,12 @@ func resolveHostedBilling(config *HostedBillingConfig, previous hostedBillingSta
 	return state
 }
 
-func (d *database) readHostedBilling(ctx context.Context) (hostedBillingState, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (d *Service) ReadBilling(ctx context.Context) (BillingState, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 
-	var result hostedBillingState
-	err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+	var result BillingState
+	err := d.ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
 		account, err := reader.BillingAccount(ctx)
 		if errors.Is(err, corestore.ErrNotFound) {
 			result.Status = "free"
@@ -112,13 +113,13 @@ func (d *database) readHostedBilling(ctx context.Context) (hostedBillingState, e
 		if err != nil {
 			return err
 		}
-		result = hostedBillingState{Snapshot: account.Snapshot, Status: account.Status, Plan: PlanReference{ID: account.Plan.ID, Version: account.Plan.Version}, PaidThrough: account.PaidThrough, AccessUntil: account.AccessUntil, GraceUntil: account.GraceUntil}
+		result = BillingState{Snapshot: account.Snapshot, Status: account.Status, Plan: PlanReference{ID: account.Plan.ID, Version: account.Plan.Version}, PaidThrough: account.PaidThrough, AccessUntil: account.AccessUntil, GraceUntil: account.GraceUntil}
 		return nil
 	})
 	return result, err
 }
 
-func (d *database) commitHostedBilling(ctx context.Context, state hostedBillingState, through int64, unprocessedEventIDs []string, now time.Time) error {
+func (d *Service) CommitBilling(ctx context.Context, state BillingState, through int64, unprocessedEventIDs []string, now time.Time) error {
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -135,12 +136,12 @@ func (d *database) commitHostedBilling(ctx context.Context, state hostedBillingS
 		return fmt.Errorf("store hosted billing reconciliation audit: %w", err)
 	}
 	ref := billingstore.AuditReferenceFromArchive(archive)
-	return d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+	return d.WriteBillingTenant(ctx, func(writer tenantstore.Writer) error {
 		account, err := writer.BillingAccount(ctx)
 		if err != nil {
 			return err
 		}
-		previous := hostedBillingState{Snapshot: account.Snapshot, Status: account.Status, Plan: PlanReference{ID: account.Plan.ID, Version: account.Plan.Version}, PaidThrough: account.PaidThrough, AccessUntil: account.AccessUntil, GraceUntil: account.GraceUntil}
+		previous := BillingState{Snapshot: account.Snapshot, Status: account.Status, Plan: PlanReference{ID: account.Plan.ID, Version: account.Plan.Version}, PaidThrough: account.PaidThrough, AccessUntil: account.AccessUntil, GraceUntil: account.GraceUntil}
 		if !previous.equal(state) {
 			if err := writer.CreateBillingAudit(ctx, billingstore.Audit{OrganizationID: d.hostedOrganization, ActorID: "stripe", Action: "subscription_reconciled", RecordedAt: now, Reference: ref}); err != nil {
 				return err

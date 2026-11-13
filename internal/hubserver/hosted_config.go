@@ -87,7 +87,7 @@ func (c *HostedConfig) validate() error {
 		if c.PlanID != "" || c.StorageQuotaBytes != 0 || c.EventQuota != 0 {
 			return errors.New("use entitlements instead of legacy plan metadata fields")
 		}
-		if err := c.Plans.validate(); err != nil {
+		if err := c.Plans.Validate(); err != nil {
 			return err
 		}
 	}
@@ -96,7 +96,7 @@ func (c *HostedConfig) validate() error {
 		defaults := defaultHostedPlans(c)
 		plans = &defaults
 	}
-	return c.Billing.validate(plans)
+	return c.Billing.Validate(plans)
 }
 
 func (c *HostedConfig) deployment() (string, int64) {
@@ -109,12 +109,6 @@ func (c *HostedConfig) deployment() (string, int64) {
 func hostedPublicURL(value string) bool {
 	u, err := url.Parse(value)
 	return err == nil && u != nil && u.Host != "" && u.User == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == "" && (u.Scheme == "https" || u.Scheme == "http" && listenerAddressLoopback(u.Host))
-}
-
-func hostedSafeID(value string) bool {
-	return value != "" && len(value) <= 128 && strings.IndexFunc(value, func(r rune) bool {
-		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-'
-	}) == -1
 }
 
 func hostedEmailListed(emails []string, value string) bool {

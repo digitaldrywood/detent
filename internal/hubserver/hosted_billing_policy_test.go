@@ -204,7 +204,7 @@ func TestHostedBillingConfiguration(t *testing.T) {
 			config := *f.service.config.Hosted.Billing
 			config.Prices = slices.Clone(config.Prices)
 			test.edit(&config)
-			if err := config.validate(f.service.config.Hosted.Plans); err == nil {
+			if err := config.Validate(f.service.config.Hosted.Plans); err == nil {
 				t.Fatal("invalid billing configuration accepted")
 			}
 		})
@@ -226,7 +226,7 @@ func TestHostedBillingConfiguration(t *testing.T) {
 			changed.CreditCostMultiplier = test.multiplier
 			changed.Provider = &hostedCreditProvider{hostedBillingProvider: &hostedBillingProvider{}}
 			changed.CreditPacks = []HostedCreditPack{{PriceID: "price_credit", Label: "AI credit pack", USDCents: 500}}
-			if err := changed.validate(config.Plans); err != nil {
+			if err := changed.Validate(config.Plans); err != nil {
 				t.Fatal(err)
 			}
 			if err := f.service.database.configureHostedBilling(t.Context(), &config); err != nil {

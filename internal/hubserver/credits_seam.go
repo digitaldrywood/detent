@@ -99,19 +99,6 @@ func (s *Service) chatUsageRows(ctx context.Context, window usageWindow, project
 	return rows, nil
 }
 
-func (plan HostedPlan) includedAICreditMicros() *int64 {
-	amount := int64(0)
-	tier, ok := hostedTierFor(plan.PlanReference)
-	if !ok || !tier.offered || plan.ID == "free" {
-		return &amount
-	}
-	if plan.MonthlyUSDCents == nil {
-		return nil
-	}
-	amount = max(0, *plan.MonthlyUSDCents) * 1000
-	return &amount
-}
-
 type aiCreditTransaction = credits.Transaction
 type aiCreditView = credits.View
 type includedAICredits credits.Included
@@ -150,7 +137,7 @@ func (d *database) creditDeps(deps credits.Deps) credits.Deps {
 	deps.ReadIncluded = d.plans() != nil
 	deps.Plan = func(ctx context.Context, r billingstore.Reader, ref billingstore.PlanReference) (credits.Plan, error) {
 		plan, err := d.readHostedPlanRecord(ctx, r, PlanReference{ID: ref.ID, Version: ref.Version})
-		return credits.Plan{Name: plan.Name, AllowanceMicros: plan.includedAICreditMicros()}, err
+		return credits.Plan{Name: plan.Name, AllowanceMicros: plan.IncludedAICreditMicros()}, err
 	}
 	return deps
 }
@@ -164,7 +151,7 @@ func (s *Service) creditsService() *credits.Service {
 		ReadIncluded: s.database.plans() != nil, Mode: s.database.aiCreditMode, Now: s.config.now, ReadReason: s.database.readBillingReason,
 		Plan: func(ctx context.Context, r billingstore.Reader, ref billingstore.PlanReference) (credits.Plan, error) {
 			plan, err := s.database.readHostedPlanRecord(ctx, r, PlanReference{ID: ref.ID, Version: ref.Version})
-			return credits.Plan{Name: plan.Name, AllowanceMicros: plan.includedAICreditMicros()}, err
+			return credits.Plan{Name: plan.Name, AllowanceMicros: plan.IncludedAICreditMicros()}, err
 		},
 	}
 	if cfg := s.hostedBillingConfig(); cfg != nil {

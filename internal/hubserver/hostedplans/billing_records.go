@@ -1,4 +1,4 @@
-package hubserver
+package hostedplans
 
 import (
 	"context"
@@ -12,8 +12,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-func (d *database) readHostedPlanRecord(ctx context.Context, r billingstore.Reader, ref PlanReference) (HostedPlan, error) {
-	return d.loadHostedPlan(ctx, ref, func(ctx context.Context, ref PlanReference) (HostedPlan, string, error) {
+func (d *Service) ReadPlanRecord(ctx context.Context, r billingstore.Reader, ref PlanReference) (HostedPlan, error) {
+	return d.LoadPlan(ctx, ref, func(ctx context.Context, ref PlanReference) (HostedPlan, string, error) {
 		row, err := r.BillingPlan(ctx, billingstore.PlanReference{ID: ref.ID, Version: ref.Version})
 		if err == nil {
 			var visible bool
@@ -29,21 +29,21 @@ func (d *database) readHostedPlanRecord(ctx context.Context, r billingstore.Read
 	})
 }
 
-func (d *database) readBillingTenant(ctx context.Context, run func(tenantstore.Reader) error) error {
+func (d *Service) ReadBillingTenant(ctx context.Context, run func(tenantstore.Reader) error) error {
 	if d.billingRepository == nil {
 		return errors.New("billing repository is unavailable")
 	}
 	return d.billingRepository.ReadTenant(ctx, d.hostedOrganization, corestore.Serving, run)
 }
 
-func (d *database) writeBillingTenant(ctx context.Context, run func(tenantstore.Writer) error) error {
+func (d *Service) WriteBillingTenant(ctx context.Context, run func(tenantstore.Writer) error) error {
 	if d.billingRepository == nil {
 		return errors.New("billing repository is unavailable")
 	}
 	return d.billingRepository.WriteTenant(ctx, d.hostedOrganization, corestore.Serving, run)
 }
 
-func (d *database) archiveBillingReason(ctx context.Context, reason string) (billingstore.AuditReference, error) {
+func (d *Service) ArchiveBillingReason(ctx context.Context, reason string) (billingstore.AuditReference, error) {
 	if d.billingAuditStore == nil {
 		return billingstore.AuditReference{}, errors.New("billing detail storage is unavailable")
 	}
@@ -60,7 +60,7 @@ func (d *database) archiveBillingReason(ctx context.Context, reason string) (bil
 	return billingstore.AuditReferenceFromArchive(archive), nil
 }
 
-func (d *database) readBillingReason(ctx context.Context, ref billingstore.AuditReference) (string, error) {
+func (d *Service) ReadBillingReason(ctx context.Context, ref billingstore.AuditReference) (string, error) {
 	if ref.Key == "" {
 		return "", nil
 	}
@@ -80,12 +80,12 @@ func (d *database) readBillingReason(ctx context.Context, ref billingstore.Audit
 	return detail.Reason, nil
 }
 
-var errHostedEntitlementsDisabled = errors.New("hosted entitlements are disabled")
+var ErrEntitlementsDisabled = errors.New("hosted entitlements are disabled")
 
-func (d *database) hostedEntitlementRecord(ctx context.Context, r billingstore.Reader, now time.Time) (HostedEntitlement, error) {
+func (d *Service) EntitlementRecord(ctx context.Context, r billingstore.Reader, now time.Time) (HostedEntitlement, error) {
 	result := HostedEntitlement{OrganizationID: string(d.hostedOrganization), Source: "base", Grants: []HostedGrant{}}
-	if d.plans() == nil {
-		return result, errHostedEntitlementsDisabled
+	if d.Plans() == nil {
+		return result, ErrEntitlementsDisabled
 	}
 	assignment, err := r.BillingAssignment(ctx)
 	if err != nil {
@@ -104,7 +104,7 @@ func (d *database) hostedEntitlementRecord(ctx context.Context, r billingstore.R
 	for _, grant := range grants {
 		result.Grants = append(result.Grants, HostedGrant{ID: grant.ID, Plan: PlanReference{ID: grant.Plan.ID, Version: grant.Plan.Version}, Scope: grant.Scope, StartsAt: grant.StartsAt, ExpiresAt: grant.ExpiresAt, RevokedAt: grant.RevokedAt})
 	}
-	return d.resolveHostedEntitlement(ctx, now, result, func(ctx context.Context, ref PlanReference) (HostedPlan, error) {
-		return d.readHostedPlanRecord(ctx, r, ref)
+	return d.ResolveEntitlement(ctx, now, result, func(ctx context.Context, ref PlanReference) (HostedPlan, error) {
+		return d.ReadPlanRecord(ctx, r, ref)
 	})
 }

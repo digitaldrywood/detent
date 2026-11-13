@@ -30,7 +30,7 @@ func (s *Service) hostedPlanUsageTenant(ctx context.Context, unlimited ...string
 		if err != nil {
 			return err
 		}
-		result.Usage, result.Unavailable = usage.usage, usage.unavailable
+		result.Usage, result.Unavailable = usage.Usage, usage.Unavailable
 		return nil
 	})
 	return result, err

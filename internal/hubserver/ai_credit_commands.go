@@ -56,7 +56,7 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 	}
 	key := "detent-credit-" + s.config.newLeaseID()
 	if requestID != "" {
-		digest := sha256.Sum256([]byte(s.config.Hosted.OrganizationID + "\x00" + cfg.mode() + "\x00" + requestID))
+		digest := sha256.Sum256([]byte(s.config.Hosted.OrganizationID + "\x00" + cfg.CreditMode() + "\x00" + requestID))
 		key = fmt.Sprintf("detent-credit-%x", digest)
 	}
 
@@ -67,14 +67,14 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
-		purchase = billingstore.CreditPurchase{OrganizationID: s.database.hostedOrganization, Key: key, Mode: cfg.mode(), PriceID: pack.PriceID, USDCents: pack.USDCents, State: "pending", CreatedAt: s.config.now().UTC()}
+		purchase = billingstore.CreditPurchase{OrganizationID: s.database.hostedOrganization, Key: key, Mode: cfg.CreditMode(), PriceID: pack.PriceID, USDCents: pack.USDCents, State: "pending", CreatedAt: s.config.now().UTC()}
 		if err := s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.CreateBillingCreditPurchase(ctx, purchase) }); err != nil {
 			return billingDestination{}, err
 		}
 	} else if err != nil {
 		return billingDestination{}, err
 	}
-	if purchase.PriceID != pack.PriceID || purchase.USDCents != pack.USDCents || purchase.Mode != cfg.mode() || purchase.Automatic {
+	if purchase.PriceID != pack.PriceID || purchase.USDCents != pack.USDCents || purchase.Mode != cfg.CreditMode() || purchase.Automatic {
 		return billingDestination{}, billingFailure(http.StatusConflict, "The purchase key already refers to another credit pack")
 	}
 	session := purchase.Session
@@ -132,7 +132,7 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 	command := hostedCommand{actor: credential.ID, operation: "billing.credit_auto_fund", key: key, input: struct {
 		Account, Mode string
 		Settings      creditFundingInput
-	}{cfg.AccountID, cfg.mode(), request}}
+	}{cfg.AccountID, cfg.CreditMode(), request}}
 	if key != "" {
 		_, response, err := s.claimHostedOperation(ctx, command)
 		if err != nil {

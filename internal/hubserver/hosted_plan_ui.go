@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"net/http"
 	"slices"
 	"strconv"
@@ -10,65 +9,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
-
-func (d *database) hostedPlanUsage(ctx context.Context, now time.Time, allowanceNames ...string) (HostedEntitlement, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	return d.readHostedPlanUsage(ctx, nil, now, allowanceNames...)
-}
-
-func (d *database) readHostedPlanUsage(ctx context.Context, query nativeQueryer, now time.Time, allowanceNames ...string) (HostedEntitlement, error) {
-	if d.billingRepository != nil {
-		return d.readHostedPlanUsageRecord(ctx, now, allowanceNames...)
-	}
-	entitlement, err := d.hostedEntitlement(ctx, query, now)
-	if err != nil {
-		return entitlement, err
-	}
-	var metrics []string
-	if len(allowanceNames) > 0 {
-		metrics = append(metrics, "usage_windows")
-		for _, name := range allowanceNames {
-			if _, limited := entitlement.Allowances[name]; limited {
-				metrics = append(metrics, name)
-			}
-		}
-	}
-	entitlement.Usage, err = d.hostedConsumption(ctx, query, now, metrics...)
-	delete(entitlement.Usage, "events_total")
-	return entitlement, err
-}
-
-func (d *database) readHostedPlanUsageRecord(ctx context.Context, now time.Time, allowanceNames ...string) (HostedEntitlement, error) {
-	var result HostedEntitlement
-	err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
-		var err error
-		result, err = d.hostedEntitlementRecord(ctx, reader, now)
-		if err != nil {
-			return err
-		}
-		var metrics []string
-		if len(allowanceNames) != 0 {
-			metrics = append(metrics, "usage_windows")
-			for _, metric := range allowanceNames {
-				if _, limited := result.Allowances[metric]; limited {
-					metrics = append(metrics, metric)
-				}
-			}
-		}
-		usage, err := d.readHostedConsumptionRecord(ctx, reader, now, metrics...)
-		if err != nil {
-			return err
-		}
-		result.Usage, result.Unavailable = usage.usage, usage.unavailable
-		delete(result.Usage, "events_total")
-		return nil
-	})
-	return result, err
-}
 
 func (s *Service) hostedPlanPage(c echo.Context) error {
 	credential, err := s.hostedAdministrator(c)
@@ -114,14 +56,4 @@ func (s *Service) hostedPlanPage(c echo.Context) error {
 		data.PlanGrants = append(data.PlanGrants, status+" · "+strings.Join(grant.Scope, ", "))
 	}
 	return s.renderHosted(c, http.StatusOK, data)
-}
-
-func hostedPlanPrice(cents *int64) string {
-	if cents == nil {
-		return "Custom or legacy complimentary access"
-	}
-	if *cents == 0 {
-		return "$0 per organization/month · no card required"
-	}
-	return "$" + strconv.FormatFloat(float64(*cents)/100, 'f', -1, 64) + " per organization/month"
 }

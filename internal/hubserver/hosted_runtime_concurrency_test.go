@@ -16,7 +16,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -91,45 +90,6 @@ func (p runtimeRevisionProbe) MissingConfiguredBillingPlan(context.Context, []bi
 	return billingstore.PlanReference{}, corestore.ErrNotFound
 }
 
-func TestSharedRuntimeSnapshotCacheBoundsAndFlights(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		plans := pilotHostedPlans()
-		raw, err := json.Marshal(HostedRuntimeUpdate{Plans: &plans})
-		if err != nil {
-			t.Fatal(err)
-		}
-		release := make(chan struct{})
-		objects := &runtimeObjectProbe{release: release, raw: raw}
-		snapshots, err := NewHostedRuntimeSnapshots(&runtimeReadProbe{}, objects)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var wg sync.WaitGroup
-		var once sync.Once
-		unblock := func() { once.Do(func() { close(release) }); wg.Wait() }
-		defer unblock()
-		for _, organization := range []string{"org_first", "org_first", "org_second"} {
-			wg.Go(func() {
-				if _, err := snapshots.Load(t.Context(), hubmaintenance.Tenant{Organization: organization, Generation: 1}); err != nil {
-					t.Error(err)
-				}
-			})
-		}
-		synctest.Wait()
-		if objects.calls.Load() != 2 {
-			t.Fatalf("tenant-scoped flights loaded %d objects; want 2", objects.calls.Load())
-		}
-		unblock()
-		for generation := range int64(150) {
-			if _, err := snapshots.Load(t.Context(), hubmaintenance.Tenant{Organization: "org_first", Generation: generation + 2}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if len(snapshots.cache) != 128 {
-			t.Fatalf("snapshot cache grew to %d entries", len(snapshots.cache))
-		}
-	})
-}
 func runtimeProbeService(repo tenantstore.Repository) *Service {
 	d := &database{billingRepository: repo, postgres: &postgres.Repository{}, logger: discardLogger(), now: time.Now}
 	d.hostedRuntime.Store(&hostedRuntimeConfig{Revision: "loaded", Plans: pilotHostedPlans()})
