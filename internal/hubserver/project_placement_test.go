@@ -979,6 +979,14 @@ func TestClaimSourceAvailabilityFollowsCurrentSource(t *testing.T) {
 	if evidence.LatestDecision == nil || evidence.LatestDecision.Data.Decision == nil || *evidence.LatestDecision.Data.Decision != (tracker.NativeSchedulerDecision{RunnerID: other.binding.RunnerID, Source: "native_runner_routing", Outcome: "skipped", Reason: want, At: evidence.LatestDecision.Data.Decision.At, WorkItemRevision: evidence.LatestDecision.Data.Decision.WorkItemRevision}) {
 		t.Fatalf("source refusal decision=%#v", evidence.LatestDecision)
 	}
+	for _, entry := range evidence.Admission {
+		if refused := entry.Outcome == "skipped" && entry.Reason == want; refused != (entry.RunnerID == other.binding.RunnerID) {
+			t.Fatalf("admission explanation disagrees with the claim source decision: %#v", entry)
+		}
+	}
+	if len(evidence.Admission) != 2 {
+		t.Fatalf("admission explanation entries=%#v", evidence.Admission)
+	}
 	release(holder, claim(holder, "holder-second", http.StatusOK))
 	input := changeTestInput()
 	publish("sourced-version", input, changeTestSource(t, &input), unsourced.ID, change.ID)

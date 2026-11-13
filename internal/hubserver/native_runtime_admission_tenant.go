@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimsource"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -248,6 +249,12 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 			evidence.Unavailable = append(evidence.Unavailable, "project_landing_capacity")
 		}
 	}
+	var source hubrecords.ClaimSourceFacts
+	if len(candidates.Items) > 0 && evidence.CurrentLease == nil {
+		if source, err = claimsource.Read(ctx, claimsource.Deps{Repository: s.config.TenantRepository, Details: s.runDetailStore(), Checkpoint: s.readNativeAttemptCheckpointTenant}, scope.Organization, scope.Project, corestore.WorkItem{ID: candidates.Items[0].ID, NativeID: issue.WorkItemID}); err != nil {
+			evidence.Unavailable, source = append(evidence.Unavailable, "claim_source_availability"), hubrecords.ClaimSourceFacts{}
+		}
+	}
 	runners := runtimeRunnersFromSnapshot(capacity, scope, now)
 	for index, record := range records {
 		runner := runners[index]
@@ -310,6 +317,8 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 		case answered != nil:
 			entry.Outcome, entry.ReasonCode, entry.Reason, entry.AnsweredExclusion = "skipped", "no_claimable_work", nativeAnsweredExclusionReason(*answered), answered
 			entry.Unavailable = append(entry.Unavailable, "other_native_candidate_exclusions")
+		case source.Loaded && claimSourceRefusal(source, runner) != "":
+			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", claimSourceRefusal(source, runner)
 		case !found:
 			entry.Unavailable = append(entry.Unavailable, "runner_specific_candidate_selection")
 		case !runtimeAdmissionSelects(selected, candidates.Items[0]):
@@ -500,6 +509,13 @@ func nativeRuntimeStateExclusion(project projectstore.Record, state string) stri
 		if !candidate.Dispatchable {
 			return fmt.Sprintf("Native workflow state %s is not dispatchable", state)
 		}
+	}
+	return ""
+}
+
+func claimSourceRefusal(source hubrecords.ClaimSourceFacts, runner runnerauth.Runner) string {
+	if allowed, reason := claimsource.Allowed(source, string(runner.MachineID), runner.RunnerID); !allowed {
+		return reason
 	}
 	return ""
 }
