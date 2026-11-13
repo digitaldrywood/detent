@@ -238,6 +238,35 @@ func (o nativeProgressOwner) lockProgressRelationships(ctx context.Context, writ
 }
 
 func (o nativeProgressOwner) publishTenant(ctx context.Context, record progresscheck.Record) (progresscheck.Record, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return progresscheck.Record{}, err
+		}
+		published, err := o.publishTenantOnce(ctx, record)
+		if !errors.Is(err, corestore.ErrSerializationFailure) {
+			return published, err
+		}
+		if o.scope.credential.Scope != apiScopeWorker || o.leaseID == "" || o.fencingToken <= 0 {
+			return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+		}
+		current, sequence, err := o.service.nativeProgressRequestTenant(ctx, o.scope, record.IssueID, o.request.PolicyID, o.request.Instance)
+		if err != nil {
+			return progresscheck.Record{}, err
+		}
+		id, err := current.ID()
+		if err != nil {
+			return progresscheck.Record{}, err
+		}
+		if id != record.RequestID {
+			return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+		}
+		if o.guardRevision != nil {
+			o.guardRevision = &sequence
+		}
+	}
+}
+
+func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progresscheck.Record) (progresscheck.Record, error) {
 	if record.ProjectID != string(o.scope.project) || record.IssueID != o.request.IssueID {
 		return progresscheck.Record{}, errors.New("progress decision scope differs")
 	}
@@ -259,8 +288,11 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 		if err != nil {
 			return progresscheck.Record{}, err
 		}
-		if currentID != record.RequestID || revision != *o.guardRevision {
+		if currentID != record.RequestID {
 			return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+		}
+		if revision != *o.guardRevision {
+			return progresscheck.Record{}, corestore.ErrSerializationFailure
 		}
 		startingSequence = revision
 	} else {
@@ -399,7 +431,7 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 	}
 	record.CommentID = comment.ID
 	if comment.Sequence > startingSequence+1 {
-		return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+		return progresscheck.Record{}, corestore.ErrSerializationFailure
 	}
 	expectedSequence := startingSequence
 	currentRequest, currentSequence, err := o.service.nativeProgressRequestTenant(ctx, o.scope, record.IssueID, o.request.PolicyID, o.request.Instance)
@@ -410,8 +442,11 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 	if err != nil {
 		return progresscheck.Record{}, err
 	}
-	if currentRequestID != record.RequestID || currentSequence != expectedSequence {
+	if currentRequestID != record.RequestID {
 		return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+	}
+	if currentSequence != expectedSequence {
+		return progresscheck.Record{}, corestore.ErrSerializationFailure
 	}
 	raw, err := json.Marshal(record)
 	if err != nil {
@@ -459,7 +494,7 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 			return err
 		}
 		if current.EventSequence != expectedSequence {
-			return &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+			return corestore.ErrSerializationFailure
 		}
 		if defectMutation.write != nil {
 			if err := defectMutation.write(writer); err != nil {

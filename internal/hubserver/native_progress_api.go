@@ -32,11 +32,6 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope nativeS
 	if err != nil {
 		return progresscheck.Request{}, 0, err
 	}
-	recovery, err := s.readNativeRecoveryCommentsTenant(ctx, scope, item, true)
-	if err != nil {
-		return progresscheck.Request{}, 0, err
-	}
-	request := progresscheck.NativeRequest(recovery, policy, instance)
 	var evidenceSequence int64
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(eventstore.ProgressEvidenceReader)
@@ -44,11 +39,16 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope nativeS
 			return workItemStorageUnavailable()
 		}
 		var err error
-		evidenceSequence, err = owner.ProgressEvidenceSequence(ctx, scope.project, recovery.Issue.WorkItemID)
+		evidenceSequence, err = owner.ProgressEvidenceSequence(ctx, scope.project, before.NativeID)
 		return err
 	}); err != nil {
 		return progresscheck.Request{}, 0, err
 	}
+	recovery, err := s.readNativeRecoveryCommentsTenant(ctx, scope, item, true)
+	if err != nil {
+		return progresscheck.Request{}, 0, err
+	}
+	request := progresscheck.NativeRequest(recovery, policy, instance)
 	request.EvidenceRevision = strconv.FormatInt(evidenceSequence, 10)
 	defectReceipt, hasDefectReceipt, err := s.nativeProgressDefectReceiptTenant(ctx, scope, item)
 	if err != nil {
@@ -79,8 +79,21 @@ func (s *Service) nativeProgressRequestTenant(ctx context.Context, scope nativeS
 	if err != nil {
 		return progresscheck.Request{}, 0, err
 	}
-	if before.Revision != after.Revision || before.EventSequence != after.EventSequence || int64(recovery.Issue.Revision) != before.Revision {
+	if before.Revision != after.Revision || int64(recovery.Issue.Revision) != before.Revision {
 		return progresscheck.Request{}, 0, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+	}
+	if before.EventSequence != after.EventSequence {
+		var currentSequence int64
+		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			var err error
+			currentSequence, err = reader.(eventstore.ProgressEvidenceReader).ProgressEvidenceSequence(ctx, scope.project, before.NativeID)
+			return err
+		}); err != nil {
+			return progresscheck.Request{}, 0, err
+		}
+		if currentSequence != evidenceSequence {
+			return progresscheck.Request{}, 0, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+		}
 	}
 	return request, after.EventSequence, nil
 }
