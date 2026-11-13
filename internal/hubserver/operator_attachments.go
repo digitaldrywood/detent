@@ -104,7 +104,7 @@ func (e nativeOperatorExecutor) attachmentOperation(ctx context.Context, call op
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 	if call.Name == operatortool.ReferenceAttachment {
-		err := e.service.referenceCloudAttachmentCommand(mutation.WithContext(ctx, m), scope, r.AttachmentID, attachment.SourceReference{WorkItemID: r.WorkItemID, CommentID: r.CommentID})
+		err := e.service.referenceCloudAttachmentCommand(mutation.WithContext(ctx, m), scope, r.AttachmentID, attachment.SourceReference{WorkItemID: r.WorkItemID, CommentID: r.CommentID}, tracker.Mutation{})
 		if err != nil {
 			return operatortool.Result{}, hubSafeChangeError(err)
 		}

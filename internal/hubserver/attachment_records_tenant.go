@@ -678,7 +678,7 @@ func (s *Service) authorizeAttachmentCommentLease(ctx context.Context, w tenants
 	return nil
 }
 
-func (s *Service) referenceCloudAttachmentTenant(ctx context.Context, scope hubscope.NativeScope, id string, input attachment.SourceReference) error {
+func (s *Service) referenceCloudAttachmentTenant(ctx context.Context, scope hubscope.NativeScope, id string, input attachment.SourceReference, fence tracker.Mutation) error {
 	scope.Action = operatortool.ReferenceAttachment
 	row, version, err := s.readWorkItemRecord(ctx, scope, input.WorkItemID)
 	if err != nil {
@@ -712,6 +712,14 @@ func (s *Service) referenceCloudAttachmentTenant(ctx context.Context, scope hubs
 		}
 		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
+		}
+		if scope.Credential.Scope == hubapi.APIScopeWorker {
+			if fence.LeaseID == "" || fence.FencingToken <= 0 {
+				return tracker.ErrStaleFencingToken
+			}
+			if err := s.authorizeAttachmentCommentLease(ctx, w, scope, current, fence); err != nil {
+				return err
+			}
 		}
 		return w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.Project, AttachmentID: id, WorkItemID: row.NativeID, CommentID: input.CommentID})
 	})

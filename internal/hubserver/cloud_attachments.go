@@ -151,20 +151,22 @@ func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope hubsco
 
 func (s *Service) referenceCloudAttachment(c echo.Context) error {
 	var input struct {
-		WorkItemID string `json:"work_item_id"`
-		CommentID  string `json:"comment_id"`
+		WorkItemID   string               `json:"work_item_id"`
+		CommentID    string               `json:"comment_id"`
+		LeaseID      tracker.LeaseID      `json:"lease_id"`
+		FencingToken tracker.FencingToken `json:"fencing_token"`
 	}
 	if err := c.Bind(&input); err != nil || input.WorkItemID == "" {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("A work item is required"))
 	}
-	if err := s.referenceCloudAttachmentCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("attachment"), attachment.SourceReference{WorkItemID: input.WorkItemID, CommentID: input.CommentID}); err != nil {
+	if err := s.referenceCloudAttachmentCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("attachment"), attachment.SourceReference{WorkItemID: input.WorkItemID, CommentID: input.CommentID}, tracker.Mutation{LeaseID: input.LeaseID, FencingToken: input.FencingToken}); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope hubscope.NativeScope, id string, input attachment.SourceReference) error {
-	return s.referenceCloudAttachmentTenant(ctx, scope, id, input)
+func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope hubscope.NativeScope, id string, input attachment.SourceReference, fence tracker.Mutation) error {
+	return s.referenceCloudAttachmentTenant(ctx, scope, id, input, fence)
 }
 
 func (s *Service) expiredCloudAttachments(c echo.Context) error {

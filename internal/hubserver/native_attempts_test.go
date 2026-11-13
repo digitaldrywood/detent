@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -23,8 +24,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -1125,6 +1128,123 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNativeWorkerMutationsRequireCurrentItemFence(t *testing.T) {
+	t.Parallel()
+	clock := &leaseTestClock{value: time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)}
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now}), "", "fence")
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	leased, other := f.create(t, "leased"), f.create(t, "other")
+	runners := [2]runnerFixture{}
+	for index := range runners {
+		runners[index] = prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
+		runners[index].enroll(t)
+		runners[index].reportCapacity(t)
+	}
+	worker := runners[0].redemption.Credential
+	claim := func(runner runnerFixture, item tracker.NativeWorkItemID, session string) tracker.NativeLease {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, tracker.NativeClaim{
+			PolicyID: hubTestPolicy().ID, WorkItemID: item, MachineID: runner.binding.MachineID, SessionID: session,
+			TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
+		})
+		requireNativeStatus(t, response, http.StatusOK)
+		var lease tracker.NativeLease
+		decodeHubResponse(t, response, &lease)
+		return lease
+	}
+	path := f.base + "/work-items/" + string(leased.WorkItemID)
+	released := claim(runners[0], leased.WorkItemID, "released-session")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", worker, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "owned-comment", LeaseID: released.ID, FencingToken: released.FencingToken}, Body: "worker progress"})
+	requireNativeStatus(t, response, http.StatusOK)
+	var owned tracker.NativeComment
+	decodeHubResponse(t, response, &owned)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(released.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: released.FencingToken, Reason: "completed"}), http.StatusNoContent)
+	otherItem := claim(runners[0], other.WorkItemID, "other-session")
+	claim(runners[1], leased.WorkItemID, "current-session")
+	credential, _, err := f.service.authenticateAPIToken(t.Context(), worker, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerScope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
+	attachmentID := conversation.NewAttachmentID()
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: f.project.OrganizationID, Kind: "attachment", Metadata: attachment.Metadata{ID: attachmentID, ProjectID: string(f.project.ID), Uploader: credential.ID, Name: "evidence.txt", ContentType: "text/plain", Size: 10, SHA256: strings.Repeat("a", 64), CreatedAt: clock.Now()}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := readWorkItem(t, f, leased.WorkItemID, "")
+	for _, fence := range []struct {
+		name     string
+		mutation tracker.Mutation
+	}{
+		{"omitted", tracker.Mutation{}},
+		{"released lease", tracker.Mutation{LeaseID: released.ID, FencingToken: released.FencingToken}},
+		{"current lease on another item", tracker.Mutation{LeaseID: otherItem.ID, FencingToken: otherItem.FencingToken}},
+	} {
+		for _, test := range []struct {
+			kind   string
+			status int
+			code   string
+			apply  func(tracker.Mutation) (int, string)
+		}{
+			{"comment", http.StatusConflict, "stale_fencing_token", func(mutation tracker.Mutation) (int, string) {
+				return nativeResponseCode(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", worker, tracker.CreateComment{Mutation: mutation, Body: "stale comment"}))
+			}},
+			{"comment edit", http.StatusConflict, "stale_fencing_token", func(mutation tracker.Mutation) (int, string) {
+				return nativeResponseCode(t, performHubAPIRequest(t, f.service, http.MethodPatch, path+"/comments/"+owned.ID, worker, tracker.UpdateComment{Mutation: mutation, ExpectedRevision: owned.Revision, Body: "stale comment edit"}))
+			}},
+			{"edit", http.StatusConflict, "stale_fencing_token", func(mutation tracker.Mutation) (int, string) {
+				title := "Stale edit"
+				return nativeResponseCode(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, worker, tracker.UpdateIssue{Mutation: mutation, ExpectedRevision: before.Revision, Title: &title}))
+			}},
+			{"state change", map[bool]int{true: http.StatusUnprocessableEntity, false: http.StatusConflict}[fence.mutation.LeaseID == ""], map[bool]string{true: "invalid_request", false: "stale_fencing_token"}[fence.mutation.LeaseID == ""], func(mutation tracker.Mutation) (int, string) {
+				return nativeResponseCode(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", worker, tracker.Transition{Mutation: mutation, ExpectedRevision: before.Revision, State: "Done", Reason: "worker_progress"}))
+			}},
+			{"attachment reference", http.StatusConflict, "stale_fencing_token", func(mutation tracker.Mutation) (int, string) {
+				err := f.service.referenceCloudAttachmentCommand(t.Context(), workerScope, attachmentID, attachment.SourceReference{WorkItemID: string(leased.WorkItemID)}, mutation)
+				if errors.Is(err, tracker.ErrStaleFencingToken) {
+					return http.StatusConflict, "stale_fencing_token"
+				}
+				return 0, fmt.Sprint(err)
+			}},
+		} {
+			t.Run(fence.name+"/"+test.kind, func(t *testing.T) {
+				mutation := fence.mutation
+				mutation.IdempotencyKey = strings.ReplaceAll(fence.name+"-"+test.kind, " ", "-")
+				if status, code := test.apply(mutation); status != test.status || code != test.code {
+					t.Fatalf("status=%d code=%s, want %d %s", status, code, test.status, test.code)
+				}
+			})
+		}
+	}
+	after := readWorkItem(t, f, leased.WorkItemID, "")
+	if after.Revision != before.Revision || after.State != before.State || after.Title != before.Title || after.Body != before.Body {
+		t.Fatalf("unfenced mutation changed the leased item: before=%+v after=%+v", before, after)
+	}
+	comments, err := f.service.readCommentRecords(t.Context(), analyticsTestScope(t, f), string(leased.WorkItemID), nil)
+	if err != nil || len(comments.Items) != 1 || comments.Items[0].ID != owned.ID || comments.Items[0].Body != owned.Body || comments.Items[0].Revision != owned.Revision {
+		t.Fatalf("unfenced mutation changed the leased item comments: %+v error=%v", comments.Items, err)
+	}
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		references, err := r.AttachmentReferences(t.Context(), f.project.ID, attachmentID, 2)
+		if err == nil && len(references) != 0 {
+			return fmt.Errorf("unfenced attachment reference persisted: %+v", references)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func nativeResponseCode(t *testing.T, response *httptest.ResponseRecorder) (int, string) {
+	t.Helper()
+	var failure hubapi.NativeError
+	if response.Code >= http.StatusBadRequest {
+		decodeHubResponse(t, response, &failure)
+	}
+	return response.Code, failure.Code
 }
 
 func TestNativeConcurrentOrderedEvents(t *testing.T) {

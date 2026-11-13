@@ -1197,6 +1197,11 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 					return err
 				}
 			}
+			if _, editComment := input.(tracker.UpdateComment); editComment && options.RequireLease && scope.Credential.Scope == hubapi.APIScopeWorker {
+				if err := s.authorizeAttachmentCommentLease(ctx, w, scope, plan.Current, command); err != nil {
+					return err
+				}
+			}
 			if !plan.Existing {
 				if _, comment := input.(tracker.CreateComment); comment && scope.Credential.Scope == hubapi.APIScopeWorker {
 					if err := s.authorizeAttachmentCommentLease(ctx, w, scope, plan.Current, command); err != nil {
