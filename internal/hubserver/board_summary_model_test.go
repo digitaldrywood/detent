@@ -223,7 +223,24 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	now = now.Add(31 * time.Minute)
+	now = now.Add(30 * time.Minute)
+	if err := service.refreshBoardRecord(t.Context(), "org_first", candidates["org_first"][1], now); err != nil {
+		t.Fatal(err)
+	}
+	boundary := read("org_first")
+	if boundary["*"].Shipped1h != 1 || boundary["Done"].Shipped1h != 1 {
+		t.Fatalf("inclusive completion boundary lost shipped item: %+v", boundary)
+	}
+	if err := repository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.BoardItem(t.Context(), projects["org_first"], candidates["org_first"][1].WorkItemID)
+		if err == nil && (row.RefreshAfter == nil || !row.RefreshAfter.After(now)) {
+			t.Fatalf("completion boundary remains immediately due: %+v", row.RefreshAfter)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Microsecond)
 	if err := service.refreshBoardRecord(t.Context(), "org_first", candidates["org_first"][1], now); err != nil {
 		t.Fatal(err)
 	}

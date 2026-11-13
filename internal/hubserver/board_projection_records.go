@@ -445,7 +445,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		}
 		if record.Terminal && record.ClosedAt != nil {
 			for index, span := range nativeShippedWindowSpans {
-				expires := record.ClosedAt.Add(span.span)
+				expires := record.ClosedAt.Add(span.span).Add(time.Microsecond)
 				if now.Before(expires) && !record.ClosedAt.After(now) {
 					record.WindowMask |= 1 << index
 					if record.RefreshAfter == nil || expires.Before(*record.RefreshAfter) {
