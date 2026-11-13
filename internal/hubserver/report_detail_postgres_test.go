@@ -324,7 +324,7 @@ func TestPostgresReportMissingImportsRemainUnknown(t *testing.T) {
 }
 
 func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository, _ := projectRecordPostgresWithAdmin(t, 4)
 	ctx := t.Context()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	project := tracker.ProjectID("project_partial_reports")
