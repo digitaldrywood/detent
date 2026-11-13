@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -19,13 +18,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -68,30 +67,13 @@ type settingsFixture struct {
 	token      string
 }
 
-func secretKeys(t *testing.T) *hubsecrets.Keyring {
-	t.Helper()
-	keys, err := hubsecrets.FromEnvironment(func(name string) string {
-		switch name {
-		case "DETENT_HUB_SECRET_KEYS":
-			return `{"1":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x6b}, 32)) + `"}`
-		case "DETENT_HUB_SECRET_KEY_VERSION":
-			return "1"
-		}
-		return ""
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return keys
-}
-
 func openHub(t *testing.T, cfg hubserver.Config) (*hubserver.Service, *sql.DB, *postgres.Repository, hubserver.Config) {
 	t.Helper()
 	admin := hubtest.Database(t)
 	connection := hubtest.PostgresConfig(t, admin, hubtest.WithMaxConnections(4))
 	cfg.DatabaseBackend, cfg.Postgres = hubserver.DatabasePostgres, &connection
 	cfg.InitialAdminToken = []byte(testHubAdminToken)
-	cfg.SecretKeys = secretKeys(t)
+	cfg.SecretKeys = hubfixture.SecretKeys(t)
 	cfg.RunDetails = hubtest.NewDetails()
 	cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	if cfg.Clock == nil {
@@ -177,58 +159,6 @@ func (f settingsFixture) otherOrganization(t *testing.T, name string) tracker.Or
 	return organization
 }
 
-func newHubAPIRequest(t *testing.T, method, path, token string, payload any) *http.Request {
-	t.Helper()
-	var body []byte
-	if payload != nil {
-		var err error
-		body, err = json.Marshal(payload)
-		if err != nil {
-			t.Fatalf("marshal request: %v", err)
-		}
-	}
-	request := httptest.NewRequest(method, path, bytes.NewReader(body))
-	if payload != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	if token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-	return request
-}
-
-func performHubAPIRequest(t *testing.T, service *hubserver.Service, method, path, token string, payload any) *httptest.ResponseRecorder {
-	t.Helper()
-	response := httptest.NewRecorder()
-	service.Handler().ServeHTTP(response, newHubAPIRequest(t, method, path, token, payload))
-	return response
-}
-
-func performHubWorkCall(t *testing.T, service *hubserver.Service, path, token, name string, input any) *httptest.ResponseRecorder {
-	t.Helper()
-	request := newHubAPIRequest(t, http.MethodPost, path, token, input)
-	request.Header.Set("Mcp-Protocol-Version", "2026-07-28")
-	request.Header.Set("Mcp-Method", "tools/call")
-	request.Header.Set("Mcp-Name", name)
-	response := httptest.NewRecorder()
-	service.Handler().ServeHTTP(response, request)
-	return response
-}
-
-func requireNativeStatus(t *testing.T, response *httptest.ResponseRecorder, want int) {
-	t.Helper()
-	if response.Code != want {
-		t.Fatalf("status=%d body=%s want=%d", response.Code, response.Body.String(), want)
-	}
-}
-
-func decodeHubResponse(t *testing.T, response *httptest.ResponseRecorder, output any) {
-	t.Helper()
-	if err := json.Unmarshal(response.Body.Bytes(), output); err != nil {
-		t.Fatal(err)
-	}
-}
-
 type hostedProvider struct {
 	auth.HostedProvider
 	mu      sync.Mutex
@@ -302,7 +232,7 @@ func (f *hostedFixture) api(t *testing.T, account, method, path string, value an
 	t.Helper()
 	response := httptest.NewRecorder()
 	f.service.Handler().ServeHTTP(response, f.request(t, account, method, path, value))
-	requireNativeStatus(t, response, want)
+	hubfixture.RequireStatus(t, response, want)
 	return response
 }
 

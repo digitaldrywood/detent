@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/orgsettings"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
@@ -50,17 +51,17 @@ func TestOrganizationModelRecordsWithoutSQLite(t *testing.T) {
 			})
 			readModels := func(t *testing.T, path string) (projectsettings.ModelSelection, error) {
 				t.Helper()
-				response := performHubAPIRequest(t, service, http.MethodGet, path, token, nil)
+				response := hubfixture.Request(t, service.Handler(), http.MethodGet, path, token, nil)
 				var selection projectsettings.ModelSelection
 				if response.Code != http.StatusOK {
 					return selection, fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
 				}
-				decodeHubResponse(t, response, &selection)
+				hubfixture.Decode(t, response, &selection)
 				return selection, nil
 			}
 			mutate := func(t *testing.T, path string, request orgsettings.ModelRequest) error {
 				t.Helper()
-				response := performHubAPIRequest(t, service, http.MethodPut, path, token, request)
+				response := hubfixture.Request(t, service.Handler(), http.MethodPut, path, token, request)
 				if response.Code != http.StatusOK {
 					return fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
 				}

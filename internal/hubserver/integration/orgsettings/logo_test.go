@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/orgsettings"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -41,10 +42,10 @@ func TestOrganizationLogoLifecycle(t *testing.T) {
 				if !remove {
 					body["content_base64"] = content.Bytes()
 				}
-				response := performHubAPIRequest(t, f.service, http.MethodPut, base+"/logo", testHubAdminToken, body)
-				requireNativeStatus(t, response, http.StatusOK)
+				response := hubfixture.Request(t, f.service.Handler(), http.MethodPut, base+"/logo", testHubAdminToken, body)
+				hubfixture.RequireStatus(t, response, http.StatusOK)
 				var logo orgsettings.Logo
-				decodeHubResponse(t, response, &logo)
+				hubfixture.Decode(t, response, &logo)
 				if logo.Revision != tracker.Revision(i+2) || (logo.ImageKey == "") != remove {
 					t.Fatalf("saved logo=%+v", logo)
 				}
@@ -58,7 +59,7 @@ func TestOrganizationLogoLifecycle(t *testing.T) {
 					if err := deleteErr; err != nil || !deleted {
 						t.Fatalf("old logo was not deleted: %v", err)
 					}
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/attachment-metadata/"+previous, testHubAdminToken, nil), http.StatusNotFound)
+					hubfixture.RequireStatus(t, hubfixture.Request(t, f.service.Handler(), http.MethodGet, base+"/attachment-metadata/"+previous, testHubAdminToken, nil), http.StatusNotFound)
 				}
 				if !remove {
 					stored := store.objects[string(organization)+"/"+logo.ImageKey]
@@ -66,8 +67,8 @@ func TestOrganizationLogoLifecycle(t *testing.T) {
 					if err != nil || config.Width != 128 || config.Height != 128 || logo.ImageSHA256 == "" || logo.URL == "" {
 						t.Fatalf("invalid logo=%+v image=%+v: %v", logo, config, err)
 					}
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/attachment-metadata/"+logo.ImageKey, testHubAdminToken, nil), http.StatusOK)
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/logo-metadata", testHubAdminToken, nil), http.StatusOK)
+					hubfixture.RequireStatus(t, hubfixture.Request(t, f.service.Handler(), http.MethodGet, base+"/attachment-metadata/"+logo.ImageKey, testHubAdminToken, nil), http.StatusOK)
+					hubfixture.RequireStatus(t, hubfixture.Request(t, f.service.Handler(), http.MethodGet, base+"/logo-metadata", testHubAdminToken, nil), http.StatusOK)
 					if err := f.repository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
 						row, err := r.Attachment(t.Context(), "", logo.ImageKey)
 						if err != nil {
@@ -92,10 +93,10 @@ func TestOrganizationLogoLifecycle(t *testing.T) {
 					}); err != nil {
 						t.Fatal(err)
 					}
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/logo-metadata", testHubAdminToken, nil), http.StatusOK)
+					hubfixture.RequireStatus(t, hubfixture.Request(t, f.service.Handler(), http.MethodGet, base+"/logo-metadata", testHubAdminToken, nil), http.StatusOK)
 				}
-				replay := performHubAPIRequest(t, f.service, http.MethodPut, base+"/logo", testHubAdminToken, body)
-				requireNativeStatus(t, replay, http.StatusOK)
+				replay := hubfixture.Request(t, f.service.Handler(), http.MethodPut, base+"/logo", testHubAdminToken, body)
+				hubfixture.RequireStatus(t, replay, http.StatusOK)
 				if !bytes.Equal(response.Body.Bytes(), replay.Body.Bytes()) {
 					t.Fatal("logo replay changed")
 				}
@@ -160,7 +161,7 @@ func TestOrganizationLogoRefusals(t *testing.T) {
 			case "replay":
 				store.afterPut = func(context.Context) error {
 					store.afterPut = nil
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, path, token, body), http.StatusOK)
+					hubfixture.RequireStatus(t, hubfixture.Request(t, f.service.Handler(), http.MethodPut, path, token, body), http.StatusOK)
 					return nil
 				}
 			case "upload":
@@ -172,12 +173,12 @@ func TestOrganizationLogoRefusals(t *testing.T) {
 				}
 			}
 			response := httptest.NewRecorder()
-			request := newHubAPIRequest(t, http.MethodPut, path, token, body)
+			request := hubfixture.NewRequest(t, http.MethodPut, path, token, body)
 			if hosted != nil {
 				request = hosted.request(t, "owner", http.MethodPut, path, body)
 			}
 			f.service.Handler().ServeHTTP(response, request.WithContext(ctx))
-			requireNativeStatus(t, response, test.status)
+			hubfixture.RequireStatus(t, response, test.status)
 			wantObjects := 0
 			if test.status == 200 {
 				wantObjects = 1
@@ -222,13 +223,13 @@ func TestOrganizationLogoMCP(t *testing.T) {
 		if !remove {
 			args["content_base64"] = content.Bytes()
 		}
-		response := performHubWorkCall(t, f.service, path, testHubAdminToken, "set_organization_logo", map[string]any{"jsonrpc": "2.0", "id": i + 1, "method": "tools/call", "params": map[string]any{"name": "set_organization_logo", "arguments": args, "_meta": json.RawMessage(fleetProtocolMeta)}})
+		response := hubfixture.WorkCall(t, f.service.Handler(), path, testHubAdminToken, "set_organization_logo", map[string]any{"jsonrpc": "2.0", "id": i + 1, "method": "tools/call", "params": map[string]any{"name": "set_organization_logo", "arguments": args, "_meta": json.RawMessage(fleetProtocolMeta)}})
 		var envelope struct {
 			Result struct {
 				IsError bool `json:"isError"`
 			} `json:"result"`
 		}
-		decodeHubResponse(t, response, &envelope)
+		hubfixture.Decode(t, response, &envelope)
 		if response.Code != 200 || envelope.Result.IsError {
 			t.Fatal(response.Body.String())
 		}
