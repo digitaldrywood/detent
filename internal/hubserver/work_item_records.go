@@ -629,6 +629,7 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 			return plan, err
 		}
 		plan.comment = tracker.NativeComment{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.current.NativeID, ID: newNativeID("cmt"), Revision: 1, Sequence: plan.current.EventSequence + 1, Body: request.Body, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now}
+		plan.previousContent = ""
 		plan.create = true
 		plan.eventType = "comment.created"
 	case tracker.UpdateComment:
