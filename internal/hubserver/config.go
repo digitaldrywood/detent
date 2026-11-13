@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -48,7 +47,6 @@ var (
 )
 
 type Config struct {
-	migrate                     func(context.Context, *sql.DB, *slog.Logger) (int64, error)
 	TenantRepository            tenantstore.Repository
 	ChangeVersionAuthority      ChangeVersionAuthority
 	BillingRepository           tenantstore.Repository
