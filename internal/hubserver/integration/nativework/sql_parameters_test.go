@@ -1,4 +1,4 @@
-package hubserver
+package nativework_test
 
 import (
 	"database/sql"
@@ -6,11 +6,12 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 )
 
 func openSQLParameterTestDatabase(t *testing.T) *sql.DB {
 	t.Helper()
-	_, db := projectRecordPostgresWithAdmin(t, 2)
+	_, db := hubfixture.RepositoryWithAdmin(t, 2)
 	return db
 }
 

@@ -1,4 +1,4 @@
-package hubserver
+package nativework_test
 
 import (
 	"context"
@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -26,10 +26,10 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 	t.Parallel()
 	for _, writer := range []string{"title", "body", "discussion", "review", "artifacts", "evidence"} {
 		t.Run(writer, func(t *testing.T) {
-			f := newChangeFixture(t, nil)
-			other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
-			otherIssue := other.create(t, "other-work")
-			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+			f := hubfixture.NewChange(t, nil)
+			other := hubfixture.NewNative(t, f.Hub, f.Project.OrganizationID, "other")
+			otherIssue := other.Create(t, "other-work")
+			credential, err := f.Credential(t, f.Token)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -44,49 +44,49 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 				if deleted {
 					m.DeletedAt = &m.CreatedAt
 				}
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := f.Hub.Config.TenantRepository.WriteTenant(t.Context(), project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					return w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: project.OrganizationID, Metadata: m, Kind: "attachment"})
 				}); err != nil {
 					t.Fatal(err)
 				}
 				return m
 			}
-			image := upload(f.project, "image/png", false)
-			pdf := upload(f.project, "application/pdf", false)
-			text := upload(f.project, "text/plain", false)
-			deleted := upload(f.project, "image/png", true)
-			foreign := upload(other.project, "image/png", false)
-			foreignBody := "https://figma.com/design/example " + foreign.Markdown(string(other.project.OrganizationID))
-			response := performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/work-items/"+string(otherIssue.WorkItemID)+"/changes", other.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "other-change"}, Title: "Other visual", Body: foreignBody})
-			requireNativeStatus(t, response, http.StatusOK)
+			image := upload(f.Project, "image/png", false)
+			pdf := upload(f.Project, "application/pdf", false)
+			text := upload(f.Project, "text/plain", false)
+			deleted := upload(f.Project, "image/png", true)
+			foreign := upload(other.Project, "image/png", false)
+			foreignBody := "https://figma.com/design/example " + foreign.Markdown(string(other.Project.OrganizationID))
+			response := f.Hub.Request(t, http.MethodPost, other.Base+"/work-items/"+string(otherIssue.WorkItemID)+"/changes", other.Token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "other-change"}, Title: "Other visual", Body: foreignBody})
+			hubfixture.RequireStatus(t, response, http.StatusOK)
 			var otherChange tracker.ChangeRequest
-			decodeHubResponse(t, response, &otherChange)
+			hubfixture.Decode(t, response, &otherChange)
 			if otherChange.Body != foreignBody {
 				t.Fatal("other project is not usable")
 			}
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-				return w.BindAttachment(t.Context(), attachmentstore.Reference{ProjectID: f.project.ID, AttachmentID: image.ID, WorkItemID: f.issue.WorkItemID})
+			if err := f.Hub.Config.TenantRepository.WriteTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.BindAttachment(t.Context(), attachmentstore.Reference{ProjectID: f.Project.ID, AttachmentID: image.ID, WorkItemID: f.Issue.WorkItemID})
 			}); err != nil {
 				t.Fatal(err)
 			}
 
-			discussionPath := f.path + "/discussion"
+			discussionPath := f.Path + "/discussion"
 			if writer == "discussion" {
-				linked := f.create(t, "linked-work")
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.path[:strings.LastIndex(f.path, "/")], f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "linked-change"}, Title: "Linked change", LinkedIssues: []tracker.NativeWorkItemID{linked.WorkItemID}})
-				requireNativeStatus(t, response, http.StatusOK)
-				decodeHubResponse(t, response, &f.change)
-				f.path = f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes/" + f.change.ID
-				discussionPath = f.base + "/work-items/" + string(linked.WorkItemID) + "/changes/" + f.change.ID + "/discussion"
+				linked := f.Create(t, "linked-work")
+				response := f.Hub.Request(t, http.MethodPost, f.Path[:strings.LastIndex(f.Path, "/")], f.Token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "linked-change"}, Title: "Linked change", LinkedIssues: []tracker.NativeWorkItemID{linked.WorkItemID}})
+				hubfixture.RequireStatus(t, response, http.StatusOK)
+				hubfixture.Decode(t, response, &f.Change)
+				f.Path = f.Base + "/work-items/" + string(f.Issue.WorkItemID) + "/changes/" + f.Change.ID
+				discussionPath = f.Base + "/work-items/" + string(linked.WorkItemID) + "/changes/" + f.Change.ID + "/discussion"
 			}
 
-			current := f.publish(t, "initial", "")
+			current := f.Publish(t, "initial", "")
 			const visual = "https://figma.com/design/example"
 			artifact := func(uri string) tracker.ChangeArtifact {
 				return tracker.ChangeArtifact{Kind: "artifact", URI: uri, SHA256: image.SHA256, Availability: "available"}
 			}
 			canonical := func(m attachment.Metadata) string {
-				return "/organizations/" + string(f.project.OrganizationID) + "/api/v2/projects/" + m.ProjectID + "/attachments/" + m.ID
+				return "/organizations/" + string(f.Project.OrganizationID) + "/api/v2/projects/" + m.ProjectID + "/attachments/" + m.ID
 			}
 			build := func(key, body string, artifacts []tracker.ChangeArtifact) (string, any) {
 				mutation := tracker.Mutation{IdempotencyKey: key}
@@ -96,27 +96,27 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 					if writer == "title" {
 						request.Title, request.Body = body, "Change body"
 					}
-					return f.path[:strings.LastIndex(f.path, "/")], request
+					return f.Path[:strings.LastIndex(f.Path, "/")], request
 				case "discussion":
 					return discussionPath, tracker.DiscussChange{Mutation: mutation, Body: body}
 				case "review":
-					return f.path + "/versions/" + current.ID + "/reviews", tracker.ReviewChange{Mutation: mutation, Decision: "commented", Body: body}
+					return f.Path + "/versions/" + current.ID + "/reviews", tracker.ReviewChange{Mutation: mutation, Decision: "commented", Body: body}
 				case "artifacts":
-					input := changeTestInput()
+					input := hubfixture.ChangeInput()
 					input.Artifacts = artifacts
-					return f.path + "/versions", tracker.PublishChangeVersion{Mutation: mutation, ExpectedVersionID: current.ID, ChangeVersionInput: input}
+					return f.Path + "/versions", tracker.PublishChangeVersion{Mutation: mutation, ExpectedVersionID: current.ID, ChangeVersionInput: input}
 				default:
-					request := changeTestResult(current)
+					request := hubfixture.CheckResult(current)
 					request.Mutation, request.Evidence = mutation, artifacts
-					return f.path + "/versions/" + current.ID + "/checks", request
+					return f.Path + "/versions/" + current.ID + "/checks", request
 				}
 			}
 			send := func(path string, request any, want int) *httptest.ResponseRecorder {
 				t.Helper()
-				response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, request)
-				requireNativeStatus(t, response, want)
+				response := f.Hub.Request(t, http.MethodPost, path, f.Token, request)
+				hubfixture.RequireStatus(t, response, want)
 				if writer == "artifacts" && want == http.StatusOK {
-					decodeHubResponse(t, response, &current)
+					hubfixture.Decode(t, response, &current)
 				}
 				return response
 			}
@@ -125,38 +125,38 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 			provenance := &tracker.Provenance{Provider: "github", ExternalID: "example-comment", AuthorID: "example-author", CreatedAt: time.Now(), UpdatedAt: time.Now(), ObservedAt: time.Now()}
 			if writer == "discussion" {
 				request := tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "legacy-provenance"}, Body: visual, Provenance: provenance}
-				send(f.path+"/discussion", request, http.StatusOK)
+				send(f.Path+"/discussion", request, http.StatusOK)
 			}
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-				project, err := w.ProjectRecord(t.Context(), f.project.ID)
+			if err := f.Hub.Config.TenantRepository.WriteTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), f.Project.ID)
 				if err != nil {
 					return err
 				}
-				return w.UpdateProjectContent(t.Context(), f.project.ID, project.Core.ContentSettingsRevision, true)
+				return w.UpdateProjectContent(t.Context(), f.Project.ID, project.Core.ContentSettingsRevision, true)
 			}); err != nil {
 				t.Fatal(err)
 			}
 			send(legacyPath, legacy, http.StatusOK)
 			if writer == "discussion" {
-				send(f.path+"/discussion", tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "provenance-replay"}, Body: visual, Provenance: provenance}, http.StatusOK)
+				send(f.Path+"/discussion", tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "provenance-replay"}, Body: visual, Provenance: provenance}, http.StatusOK)
 				provenance.ExternalID = "new-example-comment"
 			}
 			if writer == "evidence" {
-				current = f.publish(t, "new-check", current.ID)
+				current = f.Publish(t, "new-check", current.ID)
 			}
 			snapshot := func() string {
 				t.Helper()
 				var change string
 				var versions, evidence, refs, history, revisions, receipts, changes, retained int
 				var row eventstore.Change
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := f.Hub.Config.TenantRepository.ReadTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
-					row, err = r.Change(t.Context(), f.change.ID)
+					row, err = r.Change(t.Context(), f.Change.ID)
 					return err
 				}); err != nil {
 					t.Fatal(err)
 				}
-				value, err := eventstore.NewContent(f.service.runDetailStore()).Change(t.Context(), row)
+				value, err := eventstore.NewContent(f.Hub.Config.RunDetails).Change(t.Context(), row)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -165,7 +165,7 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 					t.Fatal(err)
 				}
 				change = string(encoded)
-				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT
+				if err := f.Hub.Admin.QueryRowContext(t.Context(), `SELECT
      (SELECT count(*) FROM change_versions), (SELECT count(*) FROM change_evidence),
      (SELECT count(*) FROM attachment_item_references), (SELECT count(*) FROM collaboration_events),
      (SELECT count(*) FROM collaboration_versions), (SELECT count(*) FROM native_commands),
@@ -183,12 +183,12 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 				artifacts  []tracker.ChangeArtifact
 			}{
 				{name: "URL only", body: visual + "?secret=hidden", artifacts: []tracker.ChangeArtifact{artifact(visual)}},
-				{name: "unrelated upload", body: visual + "\n\n" + image.Markdown(string(f.project.OrganizationID)), artifacts: []tracker.ChangeArtifact{artifact(canonical(image)), artifact("https://example.test/screen.png")}},
-				{name: "wrong MIME", body: visual + " " + text.Markdown(string(f.project.OrganizationID)), artifacts: []tracker.ChangeArtifact{artifact(canonical(text))}},
+				{name: "unrelated upload", body: visual + "\n\n" + image.Markdown(string(f.Project.OrganizationID)), artifacts: []tracker.ChangeArtifact{artifact(canonical(image)), artifact("https://example.test/screen.png")}},
+				{name: "wrong MIME", body: visual + " " + text.Markdown(string(f.Project.OrganizationID)), artifacts: []tracker.ChangeArtifact{artifact(canonical(text))}},
 				{name: "missing", body: visual + " ![upload](attachment:att_0123456789abcdef0123456789abcdef)", artifacts: []tracker.ChangeArtifact{artifact("attachment:att_0123456789abcdef0123456789abcdef")}},
-				{name: "deleted", body: visual + " " + deleted.Markdown(string(f.project.OrganizationID)), artifacts: []tracker.ChangeArtifact{artifact(canonical(deleted))}},
+				{name: "deleted", body: visual + " " + deleted.Markdown(string(f.Project.OrganizationID)), artifacts: []tracker.ChangeArtifact{artifact(canonical(deleted))}},
 				{name: "cross project", body: visual + " ![upload](attachment:" + foreign.ID + ")", artifacts: []tracker.ChangeArtifact{artifact("attachment:" + foreign.ID)}},
-				{name: "cross project canonical", body: visual + " " + foreign.Markdown(string(f.project.OrganizationID)), artifacts: []tracker.ChangeArtifact{artifact(canonical(foreign))}},
+				{name: "cross project canonical", body: visual + " " + foreign.Markdown(string(f.Project.OrganizationID)), artifacts: []tracker.ChangeArtifact{artifact(canonical(foreign))}},
 			}
 			if writer == "artifacts" || writer == "evidence" {
 				cases[2].artifacts[0].SHA256 = text.SHA256
@@ -243,7 +243,7 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 				})
 			}
 			t.Run("publication rollback", func(t *testing.T) {
-				fresh := upload(f.project, "image/png", false)
+				fresh := upload(f.Project, "image/png", false)
 				table := "change_evidence"
 				if writer == "title" || writer == "body" {
 					table = "change_requests"
@@ -251,19 +251,19 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 				if writer == "artifacts" {
 					table = "change_versions"
 				}
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "CREATE FUNCTION refuse_visual_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture refusal'; END $$; CREATE TRIGGER refuse_visual_publication BEFORE INSERT ON "+table+" FOR EACH ROW EXECUTE FUNCTION refuse_visual_publication()"); err != nil {
+				if _, err := f.Hub.Admin.ExecContext(t.Context(), "CREATE FUNCTION refuse_visual_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture refusal'; END $$; CREATE TRIGGER refuse_visual_publication BEFORE INSERT ON "+table+" FOR EACH ROW EXECUTE FUNCTION refuse_visual_publication()"); err != nil {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
 					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 					defer cancel()
-					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(cleanup, "DROP TRIGGER refuse_visual_publication ON "+table+"; DROP FUNCTION refuse_visual_publication()"); err != nil {
+					if _, err := f.Hub.Admin.ExecContext(cleanup, "DROP TRIGGER refuse_visual_publication ON "+table+"; DROP FUNCTION refuse_visual_publication()"); err != nil {
 						t.Error(err)
 					}
 				})
 				before := snapshot()
 				a := artifact("attachment:" + fresh.ID)
-				path, request := build("rollback", visual+" "+fresh.Markdown(string(f.project.OrganizationID)), []tracker.ChangeArtifact{a})
+				path, request := build("rollback", visual+" "+fresh.Markdown(string(f.Project.OrganizationID)), []tracker.ChangeArtifact{a})
 				send(path, request, http.StatusInternalServerError)
 				if after := snapshot(); before != after {
 					t.Fatalf("failed publication changed records: %s -> %s", before, after)
@@ -272,22 +272,22 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 
 			for i, m := range []attachment.Metadata{image, pdf} {
 				if writer == "evidence" && i > 0 {
-					current = f.publish(t, fmt.Sprintf("check-version-%d", i), current.ID)
+					current = f.Publish(t, fmt.Sprintf("check-version-%d", i), current.ID)
 				}
 				uri := "attachment:" + m.ID
 				if i > 0 {
 					uri = canonical(m)
 				}
-				body := visual + " " + m.Markdown(string(f.project.OrganizationID)) + ". [Source](https://github.com/example-org/example-project/pull/1)"
+				body := visual + " " + m.Markdown(string(f.Project.OrganizationID)) + ". [Source](https://github.com/example-org/example-project/pull/1)"
 				accepted := artifact(uri)
 				accepted.SHA256 = m.SHA256
 				path, request := build(fmt.Sprintf("paired-%d", i), body, []tracker.ChangeArtifact{accepted})
 				send(path, request, http.StatusOK)
 				var bound bool
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-					references, err := r.AttachmentReferences(t.Context(), f.project.ID, m.ID, corestore.MaxPageSize)
+				if err := f.Hub.Config.TenantRepository.ReadTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					references, err := r.AttachmentReferences(t.Context(), f.Project.ID, m.ID, corestore.MaxPageSize)
 					for _, reference := range references {
-						bound = bound || reference.WorkItemID == f.issue.WorkItemID && reference.CommentID == "" && reference.RetainWithWorkItem
+						bound = bound || reference.WorkItemID == f.Issue.WorkItemID && reference.CommentID == "" && reference.RetainWithWorkItem
 					}
 					return err
 				}); err != nil || !bound {
@@ -301,7 +301,7 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 				}
 			} else {
 				if writer == "evidence" {
-					current = f.publish(t, "nonvisual-check", current.ID)
+					current = f.Publish(t, "nonvisual-check", current.ID)
 				}
 				var nonvisual []tracker.ChangeArtifact
 				for _, kind := range []string{"code", "diff", "manifest", "test", "log", "checkpoint"} {
@@ -315,18 +315,18 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 				path, request := build("nonvisual", "", nonvisual)
 				send(path, request, http.StatusOK)
 			}
-			issuePath := f.base + "/work-items/" + string(f.issue.WorkItemID)
-			response = performHubAPIRequest(t, f.service, http.MethodPatch, issuePath, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "replace-issue-body"}, ExpectedRevision: f.issue.Revision, Body: new("Replacement" + issueContractTestSections)})
-			requireNativeStatus(t, response, http.StatusOK)
+			issuePath := f.Base + "/work-items/" + string(f.Issue.WorkItemID)
+			response = f.Hub.Request(t, http.MethodPatch, issuePath, f.Token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "replace-issue-body"}, ExpectedRevision: f.Issue.Revision, Body: new("Replacement" + hubfixture.IssueContractSections)})
+			hubfixture.RequireStatus(t, response, http.StatusOK)
 			var retained int
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.Hub.Config.TenantRepository.ReadTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 				for _, id := range []string{image.ID, pdf.ID} {
-					references, err := r.AttachmentReferences(t.Context(), f.project.ID, id, corestore.MaxPageSize)
+					references, err := r.AttachmentReferences(t.Context(), f.Project.ID, id, corestore.MaxPageSize)
 					if err != nil {
 						return err
 					}
 					for _, reference := range references {
-						if reference.WorkItemID == f.issue.WorkItemID && reference.RetainWithWorkItem {
+						if reference.WorkItemID == f.Issue.WorkItemID && reference.RetainWithWorkItem {
 							retained++
 						}
 					}

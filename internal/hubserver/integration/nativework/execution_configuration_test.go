@@ -1,4 +1,4 @@
-package hubserver
+package nativework_test
 
 import (
 	"encoding/json"
@@ -8,12 +8,13 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/policy"
 )
 
 func TestExecutionConfigurationCompatibility(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "execution-configuration")
+	f := hubfixture.NewNative(t, nil, "", "execution-configuration")
 	workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
 		Workflow:  []byte("Approved instructions.\n"),
 		Config:    []byte("schema: 1\ntracker:\n  kind: hub_native\ngate:\n  run: make verify-example\nworker:\n  extra_network_domains: [example.test]\n  allow_local_binding: true\n"),
@@ -26,8 +27,8 @@ func TestExecutionConfigurationCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-	worker := f.worker(t, "execution-worker")
+	hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", descriptor)
+	worker := f.Worker(t, "execution-worker")
 	var running config.Workflow
 	for _, test := range []struct {
 		name, version string
@@ -39,17 +40,17 @@ func TestExecutionConfigurationCompatibility(t *testing.T) {
 		{name: "unsupported runner", version: "2", status: http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			path := f.base + "/policy"
+			path := f.Base + "/policy"
 			if test.version != "" {
 				path += "?execution_configuration=" + test.version
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodGet, path, worker, nil)
-			requireNativeStatus(t, response, test.status)
+			response := f.Hub.Request(t, http.MethodGet, path, worker, nil)
+			hubfixture.RequireStatus(t, response, test.status)
 			if test.status != http.StatusOK {
 				return
 			}
 			var modern policy.Approval
-			decodeHubResponse(t, response, &modern)
+			hubfixture.Decode(t, response, &modern)
 			if (modern.ExecutionConfiguration != nil) != test.resolved {
 				t.Fatal("Hub ignored requested protocol version")
 			}
@@ -94,11 +95,11 @@ func TestExecutionConfigurationCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	approveHubTestPolicy(t, f.service, f.base+"/policy", updatedDescriptor)
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy?execution_configuration=1", worker, nil)
-	requireNativeStatus(t, response, http.StatusOK)
+	hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", updatedDescriptor)
+	response := f.Hub.Request(t, http.MethodGet, f.Base+"/policy?execution_configuration=1", worker, nil)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
 	var updated policy.Approval
-	decodeHubResponse(t, response, &updated)
+	hubfixture.Decode(t, response, &updated)
 	next, err := config.ApplyExecutionConfiguration(config.Workflow{Config: config.Default()}, updated.Policy, updated.ExecutionConfiguration)
 	if err != nil {
 		t.Fatal(err)

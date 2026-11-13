@@ -1,26 +1,29 @@
-package hubserver
+package nativework_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestProjectAging(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
-	read := func(f nativeFixture) ProjectIntegration {
+	f := hubfixture.NewDefaultNative(t, hubserver.Config{})
+	other := hubfixture.NewNative(t, f.Hub, f.Project.OrganizationID, "other-project")
+	read := func(f hubfixture.Native) hubserver.ProjectIntegration {
 		t.Helper()
-		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/integration", f.token, nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		var value ProjectIntegration
-		decodeHubResponse(t, response, &value)
+		response := f.Hub.Request(t, http.MethodGet, f.Base+"/integration", f.Token, nil)
+		hubfixture.RequireStatus(t, response, http.StatusOK)
+		var value hubserver.ProjectIntegration
+		hubfixture.Decode(t, response, &value)
 		return value
 	}
 	initial := read(f)
@@ -29,17 +32,17 @@ func TestProjectAging(t *testing.T) {
 	}
 	request := updateProjectIntegrationRequest{AgingEnabled: new(true), ExpectedRevision: initial.Revision, Intake: initial.Intake, Projection: initial.Projection, RepositoryEnabled: initial.RepositoryEnabled}
 	request.IdempotencyKey = "enable-aging"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, request), http.StatusOK)
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPut, f.Base+"/integration", hubfixture.AdminToken, request), http.StatusOK)
 	if !read(f).AgingEnabled || read(other).AgingEnabled {
 		t.Fatal("aging change did not remain scoped to its project")
 	}
 	request.IdempotencyKey = "stale-aging"
 	request.AgingEnabled = new(false)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, request), http.StatusConflict)
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPut, f.Base+"/integration", hubfixture.AdminToken, request), http.StatusConflict)
 	current := read(f)
 	request.ExpectedRevision = current.Revision
 	request.IdempotencyKey = "disable-aging"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, request), http.StatusOK)
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPut, f.Base+"/integration", hubfixture.AdminToken, request), http.StatusOK)
 	if read(f).AgingEnabled || read(other).AgingEnabled {
 		t.Fatal("aging was not disabled")
 	}
@@ -49,12 +52,12 @@ func TestNativeCandidateAging(t *testing.T) {
 	now := time.Date(2026, time.November, 11, 20, 0, 0, 0, time.UTC)
 	var clock atomic.Value
 	clock.Store(now.Add(-10 * time.Hour))
-	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return clock.Load().(time.Time) }})
-	older := f.create(t, "older-created")
+	f := hubfixture.NewDefaultNative(t, hubserver.Config{Clock: func() time.Time { return clock.Load().(time.Time) }})
+	older := f.Create(t, "older-created")
 	clock.Store(now.Add(-9 * time.Hour))
-	waiting := f.create(t, "longer-waiting")
+	waiting := f.Create(t, "longer-waiting")
 	clock.Store(now)
-	repository := f.service.config.TenantRepository
+	repository := f.Hub.Config.TenantRepository
 	for _, test := range []struct {
 		name     string
 		enabled  bool
@@ -72,8 +75,8 @@ func TestNativeCandidateAging(t *testing.T) {
 		{name: "future wait earns nothing", enabled: true, wait: -24 * time.Hour, want: older.WorkItemID},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-				project, err := w.ProjectRecord(t.Context(), f.project.ID)
+			if err := repository.WriteTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), f.Project.ID)
 				if err != nil {
 					return err
 				}
@@ -89,7 +92,7 @@ func TestNativeCandidateAging(t *testing.T) {
 					if priority == 0 {
 						priority = 2
 					}
-					facts, err := w.WorkItemFacts(t.Context(), f.project.ID, issue.WorkItemID)
+					facts, err := w.WorkItemFacts(t.Context(), f.Project.ID, issue.WorkItemID)
 					if err != nil {
 						return err
 					}
@@ -97,7 +100,7 @@ func TestNativeCandidateAging(t *testing.T) {
 					if err := w.PutWorkItemFacts(t.Context(), facts); err != nil {
 						return err
 					}
-					queue, err := w.QueueEntry(t.Context(), f.project.ID, issue.WorkItemID, string(f.project.ID))
+					queue, err := w.QueueEntry(t.Context(), f.Project.ID, issue.WorkItemID, string(f.Project.ID))
 					if err != nil {
 						return err
 					}
@@ -112,9 +115,9 @@ func TestNativeCandidateAging(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			query := claimstore.CandidateQuery{ProjectID: f.project.ID, Scope: string(f.project.ID), AvailableAt: now, Limit: 1}
+			query := claimstore.CandidateQuery{ProjectID: f.Project.ID, Scope: string(f.Project.ID), AvailableAt: now, Limit: 1}
 			var page, next claimstore.CandidatePage
-			if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := repository.ReadTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
 				page, err = r.CandidatePage(t.Context(), query)
 				return err
@@ -129,7 +132,7 @@ func TestNativeCandidateAging(t *testing.T) {
 				t.Fatalf("first candidate = %s, want %s", got, test.want)
 			}
 			query.After = page.Next
-			err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			err := repository.ReadTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
 				next, err = r.CandidatePage(t.Context(), query)
 				return err
@@ -140,13 +143,13 @@ func TestNativeCandidateAging(t *testing.T) {
 		})
 	}
 	for _, state := range []string{"Done", "Todo", "In Progress"} {
-		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(waiting.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "aging-" + state}, ExpectedRevision: waiting.Revision, State: state, Reason: "user_requested"})
-		requireNativeStatus(t, response, http.StatusOK)
-		decodeHubResponse(t, response, &waiting)
+		response := f.Hub.Request(t, http.MethodPost, f.Base+"/work-items/"+string(waiting.WorkItemID)+"/workflow", f.Token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "aging-" + state}, ExpectedRevision: waiting.Revision, State: state, Reason: "user_requested"})
+		hubfixture.RequireStatus(t, response, http.StatusOK)
+		hubfixture.Decode(t, response, &waiting)
 		var facts claimstore.WorkItemFacts
-		if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(t.Context(), f.Project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			facts, err = r.WorkItemFacts(t.Context(), f.project.ID, waiting.WorkItemID)
+			facts, err = r.WorkItemFacts(t.Context(), f.Project.ID, waiting.WorkItemID)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -160,4 +163,18 @@ func TestNativeCandidateAging(t *testing.T) {
 			t.Fatalf("%s wait = %v", state, wait)
 		}
 	}
+}
+
+type updateProjectIntegrationRequest struct {
+	AgingEnabled              *bool           `json:"aging_enabled,omitempty"`
+	DuplicateChallenge        *bool           `json:"duplicate_challenge,omitempty"`
+	ArchiveCompletedAfterDays json.RawMessage `json:"archive_completed_after_days,omitempty"`
+	ArchiveCancelledAfterDays json.RawMessage `json:"archive_cancelled_after_days,omitempty"`
+	tracker.Mutation
+	States            *[]tracker.NativeState `json:"states,omitempty"`
+	WorkflowMarkdown  *string                `json:"workflow_markdown,omitempty"`
+	ExpectedRevision  tracker.Revision       `json:"expected_revision,string"`
+	Intake            string                 `json:"intake"`
+	Projection        string                 `json:"projection"`
+	RepositoryEnabled bool                   `json:"repository_enabled"`
 }

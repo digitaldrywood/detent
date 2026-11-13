@@ -1,4 +1,4 @@
-package hubserver
+package nativework_test
 
 import (
 	"fmt"
@@ -8,17 +8,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 // patchLabels replaces the issue's labels and returns what the hub stored.
-func patchLabels(t *testing.T, f nativeFixture, issue tracker.NativeIssue, key string, labels []string) tracker.NativeIssue {
+func patchLabels(t *testing.T, f hubfixture.Native, issue tracker.NativeIssue, key string, labels []string) tracker.NativeIssue {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), f.token,
-		tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, ExpectedRevision: issue.Revision, Labels: &labels})
-	requireNativeStatus(t, response, http.StatusOK)
+	response := f.Hub.Request(t, http.MethodPatch, f.Base+"/work-items/"+string(issue.WorkItemID), f.Token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, ExpectedRevision: issue.Revision, Labels: &labels})
+	hubfixture.RequireStatus(t, response, http.StatusOK)
 	var updated tracker.NativeIssue
-	decodeHubResponse(t, response, &updated)
+	hubfixture.Decode(t, response, &updated)
 	return updated
 }
 
@@ -26,9 +27,9 @@ func patchLabels(t *testing.T, f nativeFixture, issue tracker.NativeIssue, key s
 // removed rather than replaced.
 func TestNativeIssueAssigneesAndPriorityClear(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	issue := f.create(t, "assignable")
-	path := f.base + "/work-items/" + string(issue.WorkItemID)
+	f := hubfixture.NewDefaultNative(t, hubserver.Config{})
+	issue := f.Create(t, "assignable")
+	path := f.Base + "/work-items/" + string(issue.WorkItemID)
 
 	// The patches below are raw JSON on purpose: what this endpoint had to
 	// learn is an encoding — a member that may be a number, a null or a word
@@ -39,27 +40,27 @@ func TestNativeIssueAssigneesAndPriorityClear(t *testing.T) {
 		body := fmt.Sprintf(`{"idempotency_key":%q,"expected_revision":"%d"%s}`, key, revision, member)
 		request := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Authorization", "Bearer "+f.token)
+		request.Header.Set("Authorization", "Bearer "+f.Token)
 		response := httptest.NewRecorder()
-		f.service.Handler().ServeHTTP(response, request)
+		f.Hub.Handler().ServeHTTP(response, request)
 		return response
 	}
 	patchRaw := func(t *testing.T, key string, revision tracker.Revision, member string) tracker.NativeIssue {
 		t.Helper()
 		response := send(t, key, revision, member)
-		requireNativeStatus(t, response, http.StatusOK)
+		hubfixture.RequireStatus(t, response, http.StatusOK)
 		var updated tracker.NativeIssue
-		decodeHubResponse(t, response, &updated)
+		hubfixture.Decode(t, response, &updated)
 		return updated
 	}
 
 	assignees := []string{"owner@example.test", "viewer@example.test"}
-	response := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{
+	response := f.Hub.Request(t, http.MethodPatch, path, f.Token, tracker.UpdateIssue{
 		Mutation: tracker.Mutation{IdempotencyKey: "assign"}, ExpectedRevision: issue.Revision, Assignees: &assignees,
 	})
-	requireNativeStatus(t, response, http.StatusOK)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
 	var assigned tracker.NativeIssue
-	decodeHubResponse(t, response, &assigned)
+	hubfixture.Decode(t, response, &assigned)
 	if len(assigned.Assignees) != 2 || assigned.Assignees[0] != "owner@example.test" {
 		t.Fatalf("assignees = %v", assigned.Assignees)
 	}
@@ -92,10 +93,10 @@ func TestNativeIssueAssigneesAndPriorityClear(t *testing.T) {
 			}
 			// Clearing a priority is a fact about the issue, so it lands in
 			// the history the activity feed reads.
-			history := performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?limit=100", f.token, nil)
-			requireNativeStatus(t, history, http.StatusOK)
+			history := f.Hub.Request(t, http.MethodGet, path+"/history?limit=100", f.Token, nil)
+			hubfixture.RequireStatus(t, history, http.StatusOK)
 			var page tracker.Page[tracker.CollaborationEvent]
-			decodeHubResponse(t, history, &page)
+			hubfixture.Decode(t, history, &page)
 			recorded := false
 			for _, event := range page.Items {
 				if event.Type == "issue.edited" && event.Data.Revision == cleared.Revision && slices.Contains(event.Data.Fields, "priority") {
@@ -111,14 +112,14 @@ func TestNativeIssueAssigneesAndPriorityClear(t *testing.T) {
 	// A priority that is neither a number, null nor "none" is refused rather
 	// than silently ignored.
 	rejected := send(t, "bad-priority", latestRevision(t, f, issue.WorkItemID), `,"priority":"urgent"`)
-	requireNativeStatus(t, rejected, http.StatusUnprocessableEntity)
+	hubfixture.RequireStatus(t, rejected, http.StatusUnprocessableEntity)
 }
 
-func latestRevision(t *testing.T, f nativeFixture, id tracker.NativeWorkItemID) tracker.Revision {
+func latestRevision(t *testing.T, f hubfixture.Native, id tracker.NativeWorkItemID) tracker.Revision {
 	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
-	requireNativeStatus(t, response, http.StatusOK)
+	response := f.Hub.Request(t, http.MethodGet, f.Base+"/work-items/"+string(id), f.Token, nil)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
-	decodeHubResponse(t, response, &issue)
+	hubfixture.Decode(t, response, &issue)
 	return issue.Revision
 }

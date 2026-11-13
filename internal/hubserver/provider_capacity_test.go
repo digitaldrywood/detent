@@ -1297,3 +1297,13 @@ func TestProviderCapacityReportDisappearance(t *testing.T) {
 		})
 	}
 }
+
+func patchLabels(t *testing.T, f nativeFixture, issue tracker.NativeIssue, key string, labels []string) tracker.NativeIssue {
+	t.Helper()
+	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), f.token,
+		tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, ExpectedRevision: issue.Revision, Labels: &labels})
+	requireNativeStatus(t, response, http.StatusOK)
+	var updated tracker.NativeIssue
+	decodeHubResponse(t, response, &updated)
+	return updated
+}
