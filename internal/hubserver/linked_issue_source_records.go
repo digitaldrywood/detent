@@ -23,6 +23,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const linkedIssueIntakeAttempts = 4
+
 func requireLinkedIssueLease(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item corestore.WorkItem, mutation tracker.Mutation, now time.Time) error {
 	if mutation.LeaseID == "" || mutation.FencingToken <= 0 {
 		return tracker.ErrStaleFencingToken
@@ -171,6 +173,15 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 }
 
 func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.NativeScope, itemID tracker.NativeWorkItemID, operation string, request tracker.GitHubIntake) (json.RawMessage, error) {
+	for attempt := 1; ; attempt++ {
+		raw, err := s.applyLinkedIssueRecordOnce(ctx, scope, itemID, operation, request)
+		if !errors.Is(err, corestore.ErrSerializationFailure) || attempt == linkedIssueIntakeAttempts {
+			return raw, err
+		}
+	}
+}
+
+func (s *Service) applyLinkedIssueRecordOnce(ctx context.Context, scope hubscope.NativeScope, itemID tracker.NativeWorkItemID, operation string, request tracker.GitHubIntake) (json.RawMessage, error) {
 	ctx = hubcontent.IsolateContentContext(s.runDetailContext(ctx))
 	if scope.Credential.Scope != hubapi.APIScopeWorker && scope.Credential.Scope != hubapi.APIScopeAdmin && scope.Credential.Scope != hubapi.APIScopeOperator {
 		return nil, hubapi.NativeNotFound()
@@ -311,6 +322,9 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 			return nil, err
 		}
 		issuePlan = hubrecords.WorkItemRecordPlan{Project: project, Current: row, Issue: issue, Fields: []string{"source_intake"}, EventType: "github.imported"}
+		if _, _, err := s.validateWorkItemRecordFilingTenant(ctx, scope, issuePlan); err != nil {
+			return nil, err
+		}
 		fields, err = s.prepareWorkItemFields(ctx, scope.Organization, issuePlan)
 		if err != nil {
 			return nil, err
@@ -355,7 +369,6 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	trustedBeforeCommit := scope.ScheduledRepair.TrustedLinkedImport()
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
@@ -451,8 +464,8 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 		return err
 	})
 	if err != nil {
-		if trustedBeforeCommit && !scope.ScheduledRepair.TrustedLinkedImport() && errors.Is(err, corestore.ErrSerializationFailure) {
-			return s.applyLinkedIssueRecord(ctx, scope, itemID, operation, request)
+		if errors.Is(err, corestore.ErrSerializationFailure) {
+			return nil, err
 		}
 		return nil, hubapi.ProjectRecordError(err)
 	}
