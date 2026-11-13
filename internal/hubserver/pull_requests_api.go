@@ -27,17 +27,6 @@ func pullRequestRefreshLimited() error {
 
 // Reads.
 
-// projectConnector reads the project's GitHub connector binding. It answers a
-// nil connector for a project that has no repository bound or has the
-// repository disabled, which is the pull request contract's "projects without a GitHub connector".
-func (s *Service) projectConnector(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, error) {
-	connector, repositoryID, enabled, err := s.projectRepositoryBinding(ctx, query, scope)
-	if err != nil || !enabled || repositoryID == 0 {
-		return nil, 0, err
-	}
-	return connector, repositoryID, nil
-}
-
 // projectRepositoryBinding reads the configured source repository independently
 // of whether its GitHub tracker integration is enabled. Explicit native release
 // delivery verifies this binding without enabling that integration.
