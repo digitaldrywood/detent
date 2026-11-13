@@ -169,6 +169,7 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 		{name: "ordinary human review remains oversized", sourceVerdict: "pass", oversizedHuman: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newChangeFixture(t, nil)
 			var version, historical tracker.ChangeVersion
 			if test.historicalReview {
