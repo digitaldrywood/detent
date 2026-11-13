@@ -49,7 +49,10 @@ func (s *Service) prepareChangeVersionRun(ctx context.Context, scope nativeScope
 			return err
 		}
 		publishing := prepared.attempt.Status == "running" && scope.credential.Scope == apiScopeWorker && scope.credential.Runner.RunnerID != ""
-		if prepared.attempt.ID != request.AttemptID || prepared.attempt.IssueID != prepared.workItem.ID || prepared.attempt.RunID != request.RunID || prepared.attempt.Status != "succeeded" && !publishing || prepared.attempt.DispatchGeneration < 0 {
+		if prepared.attempt.ID != request.AttemptID || prepared.attempt.IssueID != prepared.workItem.ID || prepared.attempt.RunID != request.RunID {
+			return corestore.ErrNotFound
+		}
+		if prepared.attempt.Status != "succeeded" && !publishing || prepared.attempt.DispatchGeneration < 0 {
 			return nativeExecutionConflict("Version source must identify the current publishing or successful attempt for this work item")
 		}
 		prepared.lease, err = r.Lease(ctx, prepared.attempt.LeaseID)
