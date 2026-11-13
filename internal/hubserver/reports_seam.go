@@ -281,10 +281,3 @@ func reportsScopeFrom(p0 context.Context) (reports.ReportsScope, bool) {
 
 type reportsFacet = reports.ReportsFacet
 type reportsFacets = reports.ReportsFacets
-type pipelineReport = reports.PipelineReport
-type analyticsQualityEscape = reports.AnalyticsQualityEscape
-type analyticsQualityCounts = reports.AnalyticsQualityCounts
-type reportsOpenWork = reports.ReportsOpenWork
-type analyticsPaging = reports.AnalyticsPaging
-type reportClass = reports.ReportClass
-type reportsScope = reports.ReportsScope

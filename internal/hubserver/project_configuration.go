@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -547,17 +546,6 @@ func configurationProjectRow(organization tracker.OrganizationID, runner string,
 		policyID = view.EffectivePolicy.ID
 	}
 	return postgres.ConfigurationProject{OrganizationID: organization, RunnerID: runner, ProjectID: tracker.ProjectID(view.ProjectID), ConfigRevision: view.ConfigRevision, PolicyID: policyID, State: state, Paused: view.Paused, AllowLocalBinding: view.AllowLocalBinding, LocalIntakeEnabled: view.LocalIntakeEnabled, PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize, UpdatedAt: now}
-}
-
-type preparedProjectConfiguration struct {
-	view         *runnerauth.ProjectConfiguration
-	digest       string
-	raw          string
-	legacyRaw    sql.NullString
-	legacyDigest string
-	document     sql.NullString
-	replacement  string
-	mapRevision  int64
 }
 
 func pruneExpiredProjectDiagnostics(diagnostics *runnerauth.ProjectDiagnostics, now time.Time) bool {

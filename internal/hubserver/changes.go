@@ -14,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -260,9 +259,4 @@ func changeVersionResponse(version tracker.ChangeVersion) tracker.ChangeVersion 
 	version.Checks = append([]tracker.ChangeCheckExpectation{}, version.Checks...)
 	version.ReviewPolicy.RequiredChecks = append([]tracker.ChangeCheckSpec{}, version.ReviewPolicy.RequiredChecks...)
 	return version
-}
-
-type changeSummaryPolicy struct {
-	approval policy.Approval
-	rules    tracker.ChangeReviewPolicy
 }

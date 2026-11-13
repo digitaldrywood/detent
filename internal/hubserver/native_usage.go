@@ -36,8 +36,6 @@ const (
 	// maxNativeUsageNameBytes bounds a provider or model identifier.
 	maxNativeUsageNameBytes = 128
 	usagePeriodLayout       = usagereport.PeriodLayout
-	// usageDayLayout is how a daily report bucket is written.
-	usageDayLayout = usagereport.DayLayout
 )
 
 // validateNativeRunUsage checks the usage a run event carries. Usage belongs

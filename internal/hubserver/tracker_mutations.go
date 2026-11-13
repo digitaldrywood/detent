@@ -2,14 +2,7 @@ package hubserver
 
 import (
 	"time"
-
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type leaseRecord struct {
-	issueID tracker.WorkItemID
-	session tracker.SessionSummary
-}
 
 func (d *database) currentTime() (time.Time, error) {
 	now := d.now().UTC()

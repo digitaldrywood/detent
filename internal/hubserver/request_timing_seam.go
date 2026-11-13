@@ -10,7 +10,6 @@ import (
 )
 
 type requestTiming = requesttiming.Timing
-type timingSpan = requesttiming.Span
 type timedJSONSerializer = requesttiming.JSONSerializer
 
 func withRequestTiming(ctx context.Context, timing *requestTiming) context.Context {

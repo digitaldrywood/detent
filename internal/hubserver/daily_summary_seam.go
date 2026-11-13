@@ -16,8 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type dailySummaryPreference = dailysummary.Preference
-
 type dailySummaryReports struct{}
 
 func (dailySummaryReports) ValidateUsage(facts []reportstore.UsageFact) error {

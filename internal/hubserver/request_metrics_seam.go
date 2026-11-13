@@ -13,13 +13,10 @@ import (
 type tenantRequestMetrics = requestmetrics.Service
 type requestMetricKey = requestmetrics.Key
 type requestLatency = requestmetrics.Latency
-type requestMetricTop = requestmetrics.Top
 type requestMetricsReport = requestmetrics.Report
 type routeLatencyBucket = requestmetrics.Bucket
 type routeLatencyHistory = requestmetrics.History
-type runnerRequestWindow = requestmetrics.RunnerWindow
 type hostedRequestUsage = requestmetrics.Usage
-type requestMetricsResponse = requestmetrics.Response
 type RequestMetrics = requestmetrics.RequestMetrics
 type runnerRequestBudgetContext = requestmetrics.RunnerBudgetContext
 

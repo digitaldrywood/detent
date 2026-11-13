@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -389,10 +388,6 @@ type hostedCommand struct {
 	actor, operation, key string
 	input                 any
 }
-
-// hostedPendingCommand is the response a claimed key holds until its
-// mutation completes. No real response has this shape.
-const hostedPendingCommand = receiptstore.PendingPayload
 
 func (s *Service) claimHostedOperation(ctx context.Context, command hostedCommand) (bool, json.RawMessage, error) {
 	return s.claimHostedOperationRecord(ctx, command.forContext(ctx))

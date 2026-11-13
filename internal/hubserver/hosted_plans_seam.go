@@ -36,8 +36,6 @@ type hostedBillingState = hostedplans.BillingState
 type hostedPlanCommand = hostedplans.PlanCommand
 type hostedEntitlementReport = hostedplans.EntitlementReport
 type hostedLimitError = hostedplans.LimitError
-type hostedTier = hostedplans.Tier
-type hostedGrantRecord = hostedplans.GrantRecord
 
 func resolveHostedBilling(p0 *hostedplans.HostedBillingConfig, p1 hostedplans.BillingState, p2 billing.Snapshot, p3 time.Time) hostedplans.BillingState {
 	return hostedplans.ResolveBilling(p0, p1, p2, p3)

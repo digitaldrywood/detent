@@ -2035,31 +2035,6 @@
         ]
       }
     },
-    "internal/hubserver/change_columns.go": {
-      "disposition": "serving",
-      "families": [
-        "core",
-        "event",
-        "lease",
-        "source"
-      ],
-      "inventory": {
-        "operations": {
-          "changeColumnUpdates:SQL": 10
-        },
-        "tables": [
-          "hub/change_evidence",
-          "hub/change_landing_receipts",
-          "hub/change_requests",
-          "hub/change_versions",
-          "hub/collaboration_events",
-          "hub/issues",
-          "hub/native_attempts",
-          "hub/native_comments",
-          "hub/quality_landings"
-        ]
-      }
-    },
     "internal/hubserver/change_content.go": {
       "disposition": "serving",
       "families": [
@@ -2549,37 +2524,6 @@
         ]
       }
     },
-    "internal/hubserver/hosted_import_fields.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "analytics",
-        "billing",
-        "collaboration",
-        "core",
-        "fleet",
-        "policy",
-        "source"
-      ],
-      "inventory": {
-        "operations": {
-          "hostedImportProjections:SQL": 11
-        },
-        "tables": [
-          "hub/artifact_services",
-          "hub/github_import_records",
-          "hub/github_outbox",
-          "hub/hosted_artifact_usage",
-          "hub/hosted_audit",
-          "hub/hosted_plans",
-          "hub/hosted_sessions",
-          "hub/issues",
-          "hub/onboarding_issue_intake",
-          "hub/runner_identities",
-          "hub/usage_cost_observations"
-        ]
-      }
-    },
     "internal/hubserver/hosted_login.go": {
       "disposition": "serving",
       "families": [
@@ -2891,24 +2835,6 @@
         "tables": []
       }
     },
-    "internal/hubserver/native_issue_pages.go": {
-      "disposition": "serving",
-      "families": [
-        "board",
-        "claim",
-        "core"
-      ],
-      "inventory": {
-        "operations": {
-          "nativeClosedIssuePageProjection:SQL": 1,
-          "nativeIssuePageProjection:SQL": 1
-        },
-        "tables": [
-          "hub/native_workflow_ranks",
-          "hub/queue_entries"
-        ]
-      }
-    },
     "internal/hubserver/native_issue_retention.go": {
       "disposition": "non-storage",
       "families": [
@@ -2939,23 +2865,6 @@
           "readNativeIssueProjection:SQL": 2
         },
         "tables": []
-      }
-    },
-    "internal/hubserver/native_progress_api.go": {
-      "disposition": "serving",
-      "families": [
-        "claim",
-        "core",
-        "lease",
-        "policy"
-      ],
-      "inventory": {
-        "operations": {
-          "nativeProgressAttemptsSQL:SQL": 1
-        },
-        "tables": [
-          "hub/native_attempts"
-        ]
       }
     },
     "internal/hubserver/native_relationships.go": {

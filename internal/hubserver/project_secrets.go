@@ -23,12 +23,6 @@ type projectSecretStatus struct {
 	KeyVersion       int    `json:"key_version,omitempty"`
 }
 
-type projectSecretRow struct {
-	organization, project, kind string
-	table, updatedAt            string
-	envelope                    hubsecrets.Envelope
-}
-
 func secretAAD(organization, project, kind string) []byte {
 	// Array framing makes tenant, project and kind unambiguous and binds both
 	// the value and the wrapped data key to their original row.

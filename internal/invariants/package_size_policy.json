@@ -43,8 +43,8 @@
       "test_lines": 72
     },
     "internal/hubserver": {
-      "source_files": 474,
-      "source_lines": 111047,
+      "source_files": 462,
+      "source_lines": 110409,
       "test_files": 504,
       "test_lines": 221920
     },

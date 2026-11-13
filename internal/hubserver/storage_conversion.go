@@ -12,8 +12,6 @@ import (
 const backgroundStorageBudget = storageconversion.BackgroundBudget
 const storageConversionRows = storageconversion.MaxRows
 
-var errStorageBatchFull = storageconversion.ErrBatchFull
-
 func (s *Service) convertPostgresStorage(ctx context.Context, tenant hubmaintenance.Tenant, limit int) (int, error) {
 	if limit < 1 {
 		return 0, nil

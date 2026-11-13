@@ -12,14 +12,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-type nativeCandidateSnapshot struct {
-	AnsweredExclusion      *tracker.NativeAnsweredExclusion
-	StateExclusion         string
-	IDs                    []tracker.WorkItemID
-	UnresolvedDependencies []tracker.NativeDependency
-	Unavailable            []string
-}
-
 func (s *Service) nativeClaimAnsweredExclusion(ctx context.Context, scope nativeScope, plan nativeClaimPlan, now time.Time) (*tracker.NativeAnsweredExclusion, error) {
 	if !nativeClaimAnswerRequired(plan) || plan.latestAttempt.ClaimDisposition == nil {
 		return nil, nil

@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -1180,10 +1179,6 @@ func defaultChangeReviewPolicy(descriptor policy.Descriptor) tracker.ChangeRevie
 // gate, the way the default does, so a descriptor approval may rewrite it.
 func followsRepositoryGate(rules tracker.ChangeReviewPolicy) bool {
 	return rules.ID != "" && len(rules.RequiredChecks) == 0
-}
-
-type policyQuerier interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 type projectPolicyRead struct {

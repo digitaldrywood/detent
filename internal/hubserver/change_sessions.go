@@ -1,8 +1,6 @@
 package hubserver
 
 import (
-	"database/sql"
-
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -15,10 +13,4 @@ func nativeRuntimeSession(runtime *tracker.NativeRuntimeObservation) int64 {
 		return -1
 	}
 	return runtime.Activity.SessionID
-}
-
-type changeSessionAuthority struct {
-	session sql.NullInt64
-	machine tracker.MachineID
-	raw     string
 }

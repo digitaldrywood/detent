@@ -36,14 +36,9 @@ func (s *Service) readActivityReport(ctx context.Context, credential apiCredenti
 	return out, fromFeatureError(err)
 }
 
-type analyticsResidenceSample = reportdata.ResidenceSample
-
 func readDiagnosticObjects[T, R any](records []T, read func(T) (R, error)) ([]R, []error) {
 	return reportdata.ReadObjects(records, read)
 }
-
-type reportsStage = reportdata.Stage
-type reportsSpend = reportdata.Spend
 
 func sampledDuration(values []float64) operatortool.AnalyticsDuration {
 	return reportdata.SampledDuration(values)

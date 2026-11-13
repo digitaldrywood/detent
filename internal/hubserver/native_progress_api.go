@@ -15,8 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const nativeProgressAttemptsSQL = `SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND status <> 'running' ORDER BY fencing_token DESC LIMIT ?`
-
 type nativeProgressView struct {
 	Request progresscheck.Request `json:"request"`
 	Record  *progresscheck.Record `json:"record,omitempty"`

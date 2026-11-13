@@ -9,11 +9,3 @@ type dashboardChange struct {
 	Status         string `json:"status"`
 	RelatedID      string `json:"related_id,omitempty"`
 }
-
-type dashboardChangePage struct {
-	NextSequence int64             `json:"next_sequence"`
-	Sequence     int64             `json:"sequence"`
-	Floor        int64             `json:"floor"`
-	Gap          bool              `json:"gap"`
-	Changes      []dashboardChange `json:"changes"`
-}

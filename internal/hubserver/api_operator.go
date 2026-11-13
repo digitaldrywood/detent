@@ -10,12 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type workflowMutationRequest struct {
-	WorkflowStateID int64  `json:"workflow_state_id"`
-	Label           string `json:"label"`
-	IdempotencyKey  string `json:"idempotency_key"`
-}
-
 type mutationResponse struct {
 	WorkItemID tracker.WorkItemID `json:"work_item_id"`
 	Kind       string             `json:"kind"`

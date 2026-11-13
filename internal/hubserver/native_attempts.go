@@ -200,16 +200,6 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	return nil
 }
 
-type nativeAttemptUpdate struct {
-	data            tracker.NativeRunData
-	digest          string
-	status          string
-	exists          bool
-	duplicate       bool
-	history         bool
-	usageCorrection bool
-}
-
 func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObservation) bool {
 	if previous == nil || observation == nil {
 		return previous != observation

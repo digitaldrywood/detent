@@ -9,13 +9,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const pullRequestViewTTL = pullrequests.ViewTTL
-const pullRequestRefreshInterval = pullrequests.RefreshInterval
-
-type pullRequestMergeable = pullrequests.Mergeable
-type pullRequestRef = pullrequests.Ref
-type pullRequestCheck = pullrequests.Check
-type pullRequestReview = pullrequests.Review
 type pullRequestConnector = pullrequests.Connector
 type pullRequestView = pullrequests.View
 

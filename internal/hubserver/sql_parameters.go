@@ -167,8 +167,3 @@ func querySQL(ctx context.Context, query nativeQueryer, statement string, args .
 	}
 	return query.QueryContext(ctx, statement, args...)
 }
-
-type sqlParameterRow struct {
-	row *sql.Row
-	err error
-}

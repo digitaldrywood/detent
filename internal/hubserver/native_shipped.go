@@ -6,23 +6,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const (
-	nativeShippedState    = "Done"
-	nativeCancelledState  = "Cancelled"
-	nativeBoardTimeLayout = "2006-01-02T15:04:05.000000000Z"
-)
-
-type nativeShippedIssue struct {
-	ID       string
-	ClosedAt time.Time
-}
-
-type nativeClosedPopulation struct {
-	Shipped     []nativeShippedIssue
-	Cancelled   int
-	CancelledAt []time.Time
-}
-
 var nativeShippedWindowSpans = []struct {
 	name string
 	span time.Duration

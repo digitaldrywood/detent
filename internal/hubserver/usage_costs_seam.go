@@ -24,13 +24,9 @@ type usageWindow = usagecosts.Window
 type costObservation = usagecosts.Observation
 type attributedCostObservation = usagecosts.AttributedObservation
 type monthlyCostTotal = usagecosts.Total
-type monthlyProjectCost = usagecosts.ProjectCost
-type monthlyCostSource = usagecosts.Source
 type monthlyCostReport = usagecosts.Report
 type costResource = usagecosts.Resource
-type costCoverageGap = usagecosts.CoverageGap
 type runnerUsageFacts = usagecosts.RunnerFacts
-type runnerUsageObservation = usagecosts.RunnerObservation
 type spriteUsageRequest = usagecosts.SpriteRequest
 
 func normalizeCostObservation(o *costObservation, now time.Time) error {
@@ -122,7 +118,6 @@ type UsagePrice = usagecosts.Price
 type UsageConfig usagecosts.Prices
 
 const defaultUsageCurrency = usagecosts.DefaultCurrency
-const tokensPerPriceUnit = usagecosts.TokensPerPriceUnit
 
 func (c UsageConfig) normalized() UsageConfig { return UsageConfig(usagecosts.Prices(c).Normalized()) }
 func (c UsageConfig) price(model string) (UsagePrice, bool) {

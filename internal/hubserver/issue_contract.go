@@ -118,8 +118,6 @@ type nativeScheduledRepair struct {
 	importReason string
 }
 
-type scheduledImportsKey struct{}
-
 func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nativeScope, snapshot tracker.GitHubIssueSnapshot) *nativeScheduledRepair {
 	origin, machine := issueorigin.Parse(snapshot.Body)
 	if !machine || origin.Kind != "doctor" || origin.Instance != "github-actions" {

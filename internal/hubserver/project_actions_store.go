@@ -11,24 +11,6 @@ import (
 // Like the workspace store, every write takes a transaction from the
 // caller.
 
-// actionRecord is one row of project_actions.
-type actionRecord struct {
-	ID                    string
-	OrganizationID        tracker.OrganizationID
-	ProjectID             tracker.ProjectID
-	Name                  string
-	Command               string
-	Keybinding            string
-	Icon                  string
-	PreviewURL            string
-	OpenPreview           bool
-	RunOnWorktreeCreation bool
-	CreatedBy             string
-	Revision              int64
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
-}
-
 // actionRunRecord is one row of project_action_runs. Output is the stored
 // bytes rather than a handle, which is what migration 00030 explains.
 type actionRunRecord struct {
@@ -81,13 +63,6 @@ func actionRunOutputPath(r actionRunRecord) string {
 	return "/api/v2/organizations/" + string(r.OrganizationID) + "/projects/" + string(r.ProjectID) +
 		"/actions/" + r.ActionID + "/runs/" + r.ID + "/output"
 }
-
-const actionColumns = `id, organization_id, project_id, name, command, keybinding, icon, preview_url,
- open_preview, run_on_worktree_creation, created_by, revision, created_at, updated_at`
-
-const actionRunColumns = `id, action_id, organization_id, project_id, workspace_id, command, status,
- exit_code, reason, started_at, finished_at, output, output_bytes, output_artifact, truncated,
- created_by, claimed_by, revision, created_at, updated_at`
 
 // actionRunSweepBatch bounds one sweep of orphaned runs.
 //

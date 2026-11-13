@@ -241,8 +241,6 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 	return s.readNativeRuntimeTenant(ctx, scope, item, attemptID, admission...)
 }
 
-const nativeRuntimeObjectLimit = 256
-
 type nativeRuntimePreparationKey struct{}
 
 type nativeRuntimeObjectKey struct {

@@ -70,10 +70,6 @@ type githubWebhookRepository = githubwebhook.Repository
 type githubWebhookActor = githubwebhook.Actor
 type githubWebhookComment = githubwebhook.Comment
 type githubWebhookIssue = githubwebhook.Issue
-type githubWebhookPullRequest = githubwebhook.PullRequest
-type githubWebhookRef = githubwebhook.Ref
-type githubWebhookReview = githubwebhook.Review
-type githubWebhookCheck = githubwebhook.Check
 
 func linkedSnapshotFromSource(source IssueSource, now time.Time) tracker.GitHubIssueSnapshot {
 	return githubwebhook.SnapshotFromSource(source, now)

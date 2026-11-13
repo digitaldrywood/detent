@@ -9,7 +9,6 @@ import (
 
 type healthSubject = healthsignals.Subject
 type healthEvidence = healthsignals.Evidence
-type healthScheduledEvidence = healthsignals.ScheduledEvidence
 type healthScheduledValidation = healthsignals.ScheduledValidation
 type healthSlackFailure = healthsignals.SlackFailure
 type healthFinding = healthsignals.Finding

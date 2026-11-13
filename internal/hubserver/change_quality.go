@@ -49,21 +49,6 @@ func validateQualityBasis(snapshot *tracker.LandingQualitySnapshot, escape track
 	return nil
 }
 
-type preparedQualityEscape struct {
-	version, occurrence string
-	snapshot            qualityEscapeSnapshot
-	scheduled           *preparedScheduledEscape
-}
-
-type preparedScheduledEscape struct {
-	id, body string
-	comment  bool
-}
-
-type qualityEscapeSnapshot struct {
-	version, landing, event, from, to, at string
-}
-
 type tenantQualityWitness struct {
 	item    corestore.WorkItem
 	comment *corestore.Comment
