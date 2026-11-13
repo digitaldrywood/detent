@@ -547,9 +547,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		{
 			name: "wrong provider organization", account: "owner", want: conversationClosedAccessRevoked,
 			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_tenant SET provider_id='org_other' WHERE organization_id=$1", scope.organization); err != nil {
-					t.Fatal(err)
-				}
+				tamperHostedBinding(t, hostedPostgresAdmin(t, f.service), "UPDATE hosted_tenant SET provider_id='org_other' WHERE organization_id=$1", scope.organization)
 			},
 		},
 		{

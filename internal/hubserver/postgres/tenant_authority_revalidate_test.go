@@ -26,7 +26,17 @@ func TestRevalidationRejectsChangedAuthorityAndHoldsLocks(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.change != "" {
-				if _, err := db.ExecContext(t.Context(), test.change); err != nil {
+				tx, err := db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "SET LOCAL session_replication_role = replica"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), test.change); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
 					t.Fatal(err)
 				}
 			}

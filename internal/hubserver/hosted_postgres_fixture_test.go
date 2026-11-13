@@ -10,6 +10,24 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func tamperHostedBinding(t *testing.T, admin *sql.DB, statement string, args ...any) {
+	t.Helper()
+	tx, err := admin.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), "SET LOCAL session_replication_role = replica"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), statement, args...); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func openHostedPostgresService(t *testing.T, cfg Config) *Service {
 	t.Helper()
 	cfg = hostedPostgresConfig(t, cfg)

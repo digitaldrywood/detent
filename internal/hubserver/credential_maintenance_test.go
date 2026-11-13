@@ -211,9 +211,7 @@ func TestCredentialMaintenanceConfiguration(t *testing.T) {
 				statement = "UPDATE hosted_tenant SET allocation_generation=1 WHERE organization_id=$1"
 			}
 			if statement != "" {
-				if _, err := admin.ExecContext(t.Context(), statement, f.service.accessOrganization()); err != nil {
-					t.Fatal(err)
-				}
+				tamperHostedBinding(t, admin, statement, f.service.accessOrganization())
 			}
 			if err := f.service.Close(); err != nil {
 				t.Fatal(err)
