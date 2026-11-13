@@ -3,12 +3,14 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
@@ -222,8 +224,15 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		evidence.Scheduling.Outcome = "claimed"
 		evidence.Scheduling.Reason = "A current fenced lease owns this item"
 	}
-	if evidence.CurrentLease == nil && !contract.Allowed {
+	nonExecutable := connector.NonExecutableReason(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels})
+	if nonExecutable == "" {
+		nonExecutable = nativeRuntimeStateExclusion(plan.project, issue.State)
+	}
+	if evidence.CurrentLease == nil && !contract.Allowed && nonExecutable == "" {
 		evidence.Scheduling.Outcome, evidence.Scheduling.Reason = "skipped", contract.Reason
+	}
+	if evidence.CurrentLease == nil && nonExecutable != "" {
+		evidence.Scheduling.Outcome, evidence.Scheduling.Reason = "skipped", nonExecutable
 	}
 	landingReady, landingLimit := runtimeLandingCapacity(capacity.Providers, scope.project)
 	if !explanationRead(ctx) && capacity.Truncated {
@@ -266,6 +275,8 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		}
 		exclusions := runner.Exclusions(scope.project, descriptor.Requirements, false)
 		switch {
+		case nonExecutable != "":
+			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "inactive_state", nonExecutable
 		case len(exclusions) > 0:
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", exclusions[0].Code, exclusions[0].Message
 		case runnerVersionError(minimumRunnerVersion(s.config.Version), record.MachineVersion) != nil:
@@ -464,4 +475,19 @@ func nativeAnsweredExclusionReason(answered tracker.NativeAnsweredExclusion) str
 		return "The existing native claim candidate query does not select this item; waiting on review evidence for the published current Change version"
 	}
 	return "The existing native claim candidate query does not select this item; current answered exclusion: " + answered.Kind
+}
+
+func nativeRuntimeStateExclusion(project projectstore.Record, state string) string {
+	for _, candidate := range project.States {
+		if !stringsEqualFold(candidate.Name, state) {
+			continue
+		}
+		if candidate.Terminal {
+			return fmt.Sprintf("Native workflow state %s is terminal", state)
+		}
+		if !candidate.Dispatchable {
+			return fmt.Sprintf("Native workflow state %s is not dispatchable", state)
+		}
+	}
+	return ""
 }
