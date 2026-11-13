@@ -66,6 +66,10 @@ type ExecLauncher struct {
 	Logger       *slog.Logger
 	RestartLimit int
 
+	now       func() time.Time
+	after     func(time.Duration) <-chan time.Time
+	newTicker func(time.Duration) (<-chan time.Time, func())
+
 	mu               sync.Mutex
 	closed           bool
 	running          map[string]*supervisedTenant
@@ -257,7 +261,7 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-l.retryAfter(backoff):
 		}
 		backoff = min(backoff*2, time.Minute)
 	}
@@ -309,9 +313,9 @@ func (l *ExecLauncher) runTenant(ctx context.Context, spec TenantSpec, cmd *exec
 }
 
 func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <-chan error, cancel context.CancelFunc) error {
-	ticker := time.NewTicker(tenantProbeInterval)
-	defer ticker.Stop()
-	lastHealthy := time.Now()
+	ticks, stopTicker := l.probeTicker()
+	defer stopTicker()
+	lastHealthy := l.probeNow()
 	served := false
 	for {
 		select {
@@ -321,7 +325,7 @@ func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <
 		case <-ctx.Done():
 			l.setServing(spec.Organization.ID, false)
 			return <-result
-		case <-ticker.C:
+		case <-ticks:
 			probe, stop := context.WithTimeout(ctx, platformCallTimeout)
 			err := spec.Check(probe)
 			stop()
@@ -330,12 +334,12 @@ func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <
 				return <-result
 			}
 			if errors.Is(err, errTenantMigrating) {
-				lastHealthy = time.Now()
+				lastHealthy = l.probeNow()
 				continue
 			}
 			if err == nil {
 				l.setServing(spec.Organization.ID, true)
-				lastHealthy, served = time.Now(), true
+				lastHealthy, served = l.probeNow(), true
 				continue
 			}
 			l.setServing(spec.Organization.ID, false)
@@ -343,7 +347,7 @@ func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <
 			if !served {
 				window = tenantStartupGrace
 			}
-			if time.Since(lastHealthy) < window {
+			if l.probeNow().Sub(lastHealthy) < window {
 				continue
 			}
 			l.logger().Warn("tenant Hub unreachable; stopping for restart", "organization", spec.Organization.ID, "error", err)
@@ -351,6 +355,28 @@ func (l *ExecLauncher) waitTenant(ctx context.Context, spec TenantSpec, result <
 			return errors.Join(fmt.Errorf("tenant Hub serving health: %w", err), <-result)
 		}
 	}
+}
+
+func (l *ExecLauncher) probeNow() time.Time {
+	if l.now != nil {
+		return l.now()
+	}
+	return time.Now()
+}
+
+func (l *ExecLauncher) probeTicker() (<-chan time.Time, func()) {
+	if l.newTicker != nil {
+		return l.newTicker(tenantProbeInterval)
+	}
+	ticker := time.NewTicker(tenantProbeInterval)
+	return ticker.C, ticker.Stop
+}
+
+func (l *ExecLauncher) retryAfter(delay time.Duration) <-chan time.Time {
+	if l.after != nil {
+		return l.after(delay)
+	}
+	return time.After(delay)
 }
 
 func (l *ExecLauncher) restartLimit() int {

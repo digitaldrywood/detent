@@ -252,16 +252,17 @@ func TestExecLauncherStopsSupervisingAfterRestartLimit(t *testing.T) {
 
 func waitLauncherFailure(t *testing.T, launcher *ExecLauncher, id string) error {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		if failure := launcher.Failure(id); failure != nil {
-			return failure
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("supervisor never stopped restarting a tenant that exits immediately")
-		}
-		time.Sleep(20 * time.Millisecond)
+	launcher.mu.Lock()
+	tenant := launcher.running[id]
+	launcher.mu.Unlock()
+	if tenant != nil {
+		<-tenant.done
 	}
+	failure := launcher.Failure(id)
+	if failure == nil {
+		t.Fatal("supervisor never stopped restarting a tenant that exits immediately")
+	}
+	return failure
 }
 
 func TestExecLauncherKeepsRestartingReadyTenants(t *testing.T) {
@@ -278,12 +279,23 @@ func TestExecLauncherKeepsRestartingReadyTenants(t *testing.T) {
 			directory := t.TempDir()
 			logs := &lockedBuffer{}
 			launcher := &ExecLauncher{Binary: "/usr/bin/false", RestartLimit: tc.limit, Logger: slog.New(slog.NewTextHandler(logs, nil)), Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
+			retries := make(chan struct{}, 2)
+			launcher.after = func(time.Duration) <-chan time.Time {
+				select {
+				case retries <- struct{}{}:
+				default:
+				}
+				tick := make(chan time.Time, 1)
+				tick <- time.Now()
+				return tick
+			}
 			spec := TenantSpec{Organization: Organization{ID: "org_ready", State: "ready"}, Directory: directory, Socket: filepath.Join(directory, "t.sock")}
 			if err := launcher.Start(t.Context(), spec); err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = launcher.Close() })
-			time.Sleep(2500 * time.Millisecond)
+			<-retries
+			<-retries
 			if failure := launcher.Failure("org_ready"); failure != nil {
 				t.Fatalf("a ready tenant gave up after a crash burst: %v", failure)
 			}
@@ -331,6 +343,20 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 				"DETENT_TEST_BINARY=" + os.Args[0], "DETENT_TEST_ADDRESS=" + listener.Addr().String(), "DETENT_TEST_LOCK_ROOT=" + directory,
 			}, Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
 			t.Cleanup(func() { _ = launcher.Close() })
+			probeTicks := make(chan time.Time)
+			probeReads := make(chan struct{}, 1)
+			var probeTime atomic.Int64
+			probeTime.Store(time.Now().UnixNano())
+			if test.name == "unreachable child" {
+				launcher.now = func() time.Time {
+					now := time.Unix(0, probeTime.Load())
+					probeReads <- struct{}{}
+					return now
+				}
+				launcher.newTicker = func(time.Duration) (<-chan time.Time, func()) {
+					return probeTicks, func() {}
+				}
+			}
 			var connections []net.Conn
 			var paths []string
 			for i := range test.tenants {
@@ -394,6 +420,14 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 					done <- nil
 				}
 			}()
+			if test.name == "unreachable child" {
+				<-probeReads
+				probeTicks <- time.Unix(0, probeTime.Load())
+				<-probeReads
+				probeTime.Add(int64(tenantUnavailableTimeout))
+				probeTicks <- time.Unix(0, probeTime.Load())
+				<-probeReads
+			}
 			for i, conn := range connections {
 				phase, err := bufio.NewReader(conn).ReadString('\n')
 				if err != nil || phase != "stopping\n" {
