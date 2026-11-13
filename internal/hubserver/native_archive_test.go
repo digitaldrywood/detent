@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -64,7 +65,7 @@ func seedArchiveIssues(t *testing.T, service *Service, scope hubscope.NativeScop
 		if issue.Terminal {
 			issue.ClosedAt = &now
 		}
-		fields, err := service.prepareWorkItemFields(t.Context(), scope.Organization, workItemRecordPlan{issue: issue, create: true})
+		fields, err := service.prepareWorkItemFields(t.Context(), scope.Organization, hubrecords.WorkItemRecordPlan{Issue: issue, Create: true})
 		if err != nil {
 			t.Fatal(err)
 		}

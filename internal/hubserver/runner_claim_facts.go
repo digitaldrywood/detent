@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -35,21 +36,21 @@ func attemptClaimFacts(attempt leasestore.Attempt, disposition string, unresolve
 	return leasestore.AttemptClaimFacts{AttemptID: attempt.ID, Sequence: attempt.Sequence, Status: attempt.Status, PayloadObjectKey: attempt.PayloadObjectKey, CheckpointObjectKey: attempt.CheckpointObjectKey, Disposition: disposition, UnresolvedOnly: unresolvedOnly}
 }
 
-func (s *Service) prepareAttemptClaimFacts(ctx context.Context, snapshot tenantAttemptSnapshot) (leasestore.AttemptClaimFacts, error) {
+func (s *Service) prepareAttemptClaimFacts(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot) (leasestore.AttemptClaimFacts, error) {
 	run, err := s.readNativeAttemptRunTenant(ctx, snapshot)
 	if err != nil {
 		return leasestore.AttemptClaimFacts{}, err
 	}
-	if err := nativeAttemptRunMismatch(snapshot, run); err != nil {
+	if err := hubrecords.NativeAttemptRunMismatch(snapshot, run); err != nil {
 		return leasestore.AttemptClaimFacts{}, fmt.Errorf("recover attempt claim facts: %w", err)
 	}
-	status, statusErr := nativeRunAttemptStatus(tracker.NativeRunEvent{Type: snapshot.event.Type, Data: run})
-	if statusErr != nil || status != snapshot.attempt.Status {
+	status, statusErr := nativeRunAttemptStatus(tracker.NativeRunEvent{Type: snapshot.Event.Type, Data: run})
+	if statusErr != nil || status != snapshot.Attempt.Status {
 		return leasestore.AttemptClaimFacts{}, fmt.Errorf("recover attempt claim status: %w", artifact.ErrIntegrity)
 	}
 	checkpoint, err := s.readNativeAttemptCheckpointTenant(ctx, snapshot)
 	if err != nil {
 		return leasestore.AttemptClaimFacts{}, err
 	}
-	return attemptClaimFacts(snapshot.attempt, nativeAttemptClaimDisposition(run, checkpoint, snapshot.event.ProjectID), true), nil
+	return attemptClaimFacts(snapshot.Attempt, nativeAttemptClaimDisposition(run, checkpoint, snapshot.Event.ProjectID), true), nil
 }

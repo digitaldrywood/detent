@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -793,7 +794,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 					}
 				}
 				var run tracker.NativeRunData
-				if err := decodeRunDetail(ctx, nil, ref.Key, &run); err != nil || !reflect.DeepEqual(run, runs[org]) {
+				if err := hubrecords.DecodeRunDetail(ctx, nil, ref.Key, &run); err != nil || !reflect.DeepEqual(run, runs[org]) {
 					t.Fatalf("typed run decode=%+v error=%v", run, err)
 				}
 				var history tracker.CollaborationData

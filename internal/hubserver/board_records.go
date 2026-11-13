@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -151,7 +152,7 @@ func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.Native
 		if compatible {
 			return nil
 		}
-		if err := validateNativeIssueQuery(params); err != nil {
+		if err := hubrecords.ValidateNativeIssueQuery(params); err != nil {
 			return err
 		}
 		var err error
@@ -737,7 +738,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope hubscope.NativeS
 				continue
 			}
 		}
-		issue = relationshipOmittedIssue(issue)
+		issue = hubrecords.RelationshipOmittedIssue(issue)
 		issue.Change, issue.ListChange, issue.PullRequest = nil, nil, nil
 		issue.Queue, issue.Workpad = nil, nil
 		for _, field := range []string{"change", "list_change", "pull_request"} {

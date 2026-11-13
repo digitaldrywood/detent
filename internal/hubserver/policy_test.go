@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -1236,8 +1237,8 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			}
 			if test.barrier {
 				plan, err := f.service.readNativeClaimPlan(t.Context(), scope, tracker.NativeClaim{WorkItemID: current.issue.WorkItemID, PolicyID: wantPolicy, MachineID: lease.MachineID, SessionID: "landing-evaluation", Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}, f.service.config.now())
-				if err != nil || plan.changeReady || plan.changeRecord.ID != current.change.ID {
-					t.Fatalf("stale landing eligibility ready=%t evaluated_change=%q error=%v", plan.changeReady, plan.changeRecord.ID, err)
+				if err != nil || plan.ChangeReady || plan.ChangeRecord.ID != current.change.ID {
+					t.Fatalf("stale landing eligibility ready=%t evaluated_change=%q error=%v", plan.ChangeReady, plan.ChangeRecord.ID, err)
 				}
 			}
 			for i, change := range changes {
@@ -1647,7 +1648,7 @@ func TestApprovedPolicyClaimExposure(t *testing.T) {
 			if err != nil || !found {
 				t.Fatalf("read stored policy: %v", err)
 			}
-			resolved, err := projectPolicyWorkflow(t.Context(), policyScope, approved.Policy)
+			resolved, err := hubrecords.ProjectPolicyWorkflow(t.Context(), policyScope, approved.Policy)
 			contract := resolved.Config
 			if err != nil || contract.Budget.EffectiveBillingMode() != mode || contract.Plan.Enabled || contract.Gate.SecurityAudit.Enabled != descriptor.Gates.SecurityAudit || contract.Gate.Validator.Enabled != descriptor.Gates.Validator {
 				t.Fatalf("issue contract configuration = %+v, error = %v", contract, err)
@@ -1786,7 +1787,7 @@ func TestProjectPolicyCache(t *testing.T) {
 		{name: "same policy in two projects stays scoped", count: 1, otherScope: true},
 		{name: "same policy in two databases stays scoped", count: 1, otherDB: true},
 		{name: "returned maps and slices are isolated", count: 1, mutate: true},
-		{name: "oldest entry evicted at fixed bound", count: projectPolicyCacheLimit + 1},
+		{name: "oldest entry evicted at fixed bound", count: hubrecords.ProjectPolicyCacheLimit + 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -1805,9 +1806,9 @@ func TestProjectPolicyCache(t *testing.T) {
 			decodes := 0
 			decode := func(raw string) (*config.ResolvedNativePolicy, error) {
 				decodes++
-				return decodeResolvedProjectPolicy(raw)
+				return hubrecords.DecodeResolvedProjectPolicy(raw)
 			}
-			db := &database{policies: projectPolicyCache{decode: decode}}
+			db := &database{policies: hubrecords.ProjectPolicyCache{Decode: decode}}
 			ctx := db.policyContext(t.Context())
 			scope := "organization/project"
 			read := func(ctx context.Context, scope string, descriptor policy.Descriptor) policy.Descriptor {
@@ -1827,7 +1828,7 @@ func TestProjectPolicyCache(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cached, err := projectPolicyWorkflow(ctx, scope, first)
+			cached, err := hubrecords.ProjectPolicyWorkflow(ctx, scope, first)
 			if err != nil || !reflect.DeepEqual(cached, applied) {
 				t.Fatalf("cached authored workflow differs from application: %v", err)
 			}
@@ -1846,7 +1847,7 @@ func TestProjectPolicyCache(t *testing.T) {
 				}
 			}
 			for i := 1; i < test.count; i++ {
-				if i == projectPolicyCacheLimit {
+				if i == hubrecords.ProjectPolicyCacheLimit {
 					read(ctx, scope, descriptor)
 				}
 				other := hubTestPolicy()
@@ -1864,26 +1865,26 @@ func TestProjectPolicyCache(t *testing.T) {
 				read(ctx, "organization/other-project", descriptor)
 			}
 			if test.otherDB {
-				other := &database{policies: projectPolicyCache{decode: decode}}
+				other := &database{policies: hubrecords.ProjectPolicyCache{Decode: decode}}
 				read(other.policyContext(t.Context()), scope, descriptor)
 			}
-			if test.count > projectPolicyCacheLimit {
-				if len(db.policies.entries) != projectPolicyCacheLimit {
-					t.Fatalf("cache entries = %d", len(db.policies.entries))
+			if test.count > hubrecords.ProjectPolicyCacheLimit {
+				if len(db.policies.Entries) != hubrecords.ProjectPolicyCacheLimit {
+					t.Fatalf("cache entries = %d", len(db.policies.Entries))
 				}
-				if _, found := db.policies.entries[projectPolicyCacheKey{scope: scope, id: descriptor.ID}]; found {
+				if _, found := db.policies.Entries[hubrecords.ProjectPolicyCacheKey{Scope: scope, ID: descriptor.ID}]; found {
 					t.Fatal("oldest policy retained past bound")
 				}
 			}
 			if got := read(ctx, scope, descriptor); !reflect.DeepEqual(got, descriptor) {
 				t.Fatal("cached descriptor changed")
 			}
-			again, err := projectPolicyWorkflow(ctx, scope, descriptor)
+			again, err := hubrecords.ProjectPolicyWorkflow(ctx, scope, descriptor)
 			if err != nil || !reflect.DeepEqual(again, applied) {
 				t.Fatalf("cached workflow changed after read: %v", err)
 			}
 			want := test.count
-			if test.otherDB || test.otherScope && test.count == 1 || test.count > projectPolicyCacheLimit {
+			if test.otherDB || test.otherScope && test.count == 1 || test.count > hubrecords.ProjectPolicyCacheLimit {
 				want++
 			}
 			if decodes != want {
@@ -1932,24 +1933,24 @@ func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
 					resume()
 					synctest.Wait()
 					if t.Failed() {
-						db.policies.mu.Lock()
-						for key, pending := range db.policies.inflight {
+						db.policies.Mu.Lock()
+						for key, pending := range db.policies.Inflight {
 							select {
-							case <-pending.done:
+							case <-pending.Done:
 							default:
-								pending.err = errors.New("test cleanup released pending decode")
-								close(pending.done)
+								pending.Err = errors.New("test cleanup released pending decode")
+								close(pending.Done)
 							}
-							delete(db.policies.inflight, key)
+							delete(db.policies.Inflight, key)
 						}
-						db.policies.mu.Unlock()
+						db.policies.Mu.Unlock()
 					}
 					readers.Wait()
 				})
 				var decodes atomic.Int32
 				decodeErr := errors.New("example decode failure")
 				const panicValue = "example private policy input"
-				db.policies.decode = func(input string) (*config.ResolvedNativePolicy, error) {
+				db.policies.Decode = func(input string) (*config.ResolvedNativePolicy, error) {
 					if input == string(raw) && decodes.Add(1) == 1 {
 						close(started)
 						<-release
@@ -1960,7 +1961,7 @@ func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
 							return nil, decodeErr
 						}
 					}
-					return decodeResolvedProjectPolicy(input)
+					return hubrecords.DecodeResolvedProjectPolicy(input)
 				}
 				ctx := db.policyContext(t.Context())
 				scope := "organization/project"
@@ -1989,10 +1990,10 @@ func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
 				readers.Add(1)
 				go read()
 				<-started
-				if !db.policies.mu.TryLock() {
+				if !db.policies.Mu.TryLock() {
 					t.Fatal("shared cache mutex held during decode")
 				}
-				db.policies.mu.Unlock()
+				db.policies.Mu.Unlock()
 				for range count - 1 {
 					readers.Add(1)
 					go read()
@@ -2021,12 +2022,12 @@ func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
 					t.Fatalf("paused decodes = %d, want 1", got)
 				}
 				if test.evict {
-					for i := range projectPolicyCacheLimit {
+					for i := range hubrecords.ProjectPolicyCacheLimit {
 						if _, err := decodeProjectPolicy(ctx, fmt.Sprintf("replacement/%d", i), other.ID, string(otherRaw), policy.Approval{}); err != nil {
 							t.Fatal(err)
 						}
 					}
-					if _, ok := db.policies.entries[projectPolicyCacheKey{scope: scope, id: other.ID}]; ok {
+					if _, ok := db.policies.Entries[hubrecords.ProjectPolicyCacheKey{Scope: scope, ID: other.ID}]; ok {
 						t.Fatal("warm entry survived eviction during decode")
 					}
 				}
@@ -2074,28 +2075,28 @@ func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
 					}
 				}
 				if test.evict {
-					if len(db.policies.entries) != projectPolicyCacheLimit || len(db.policies.inflight) != 0 {
+					if len(db.policies.Entries) != hubrecords.ProjectPolicyCacheLimit || len(db.policies.Inflight) != 0 {
 						t.Fatal("completed decode violated cache bound or retained pending entry")
 					}
-					if _, ok := db.policies.entries[projectPolicyCacheKey{scope: scope, id: other.ID}]; ok {
+					if _, ok := db.policies.Entries[hubrecords.ProjectPolicyCacheKey{Scope: scope, ID: other.ID}]; ok {
 						t.Fatal("completed decode restored an evicted entry")
 					}
-					if _, ok := db.policies.entries[projectPolicyCacheKey{scope: "replacement/0", id: other.ID}]; ok {
+					if _, ok := db.policies.Entries[hubrecords.ProjectPolicyCacheKey{Scope: "replacement/0", ID: other.ID}]; ok {
 						t.Fatal("completed decode did not evict the oldest replacement")
 					}
-					for i := 1; i < projectPolicyCacheLimit; i++ {
-						if _, ok := db.policies.entries[projectPolicyCacheKey{scope: fmt.Sprintf("replacement/%d", i), id: other.ID}]; !ok {
+					for i := 1; i < hubrecords.ProjectPolicyCacheLimit; i++ {
+						if _, ok := db.policies.Entries[hubrecords.ProjectPolicyCacheKey{Scope: fmt.Sprintf("replacement/%d", i), ID: other.ID}]; !ok {
 							t.Fatal("completed decode evicted a newer replacement")
 						}
 					}
-					seen := make(map[projectPolicyCacheKey]bool)
-					for _, key := range db.policies.order {
-						if _, ok := db.policies.entries[key]; !ok || seen[key] {
+					seen := make(map[hubrecords.ProjectPolicyCacheKey]bool)
+					for _, key := range db.policies.Order {
+						if _, ok := db.policies.Entries[key]; !ok || seen[key] {
 							t.Fatal("eviction left stale or duplicate cache ordering")
 						}
 						seen[key] = true
 					}
-					if len(seen) != len(db.policies.entries) {
+					if len(seen) != len(db.policies.Entries) {
 						t.Fatal("completed decode published an orphaned cache entry")
 					}
 				}
@@ -2320,7 +2321,7 @@ func TestPostgresObservedPolicyPreservesHubTriageAndOccupiedWorkflow(t *testing.
 					}
 					record.Settings.Repository = "example-org/example-project"
 					record.Settings.CheckoutRepository = "example-org/example-project"
-					record.States = nativeTriageStates(original.Workflow.States)
+					record.States = hubrecords.NativeTriageStates(original.Workflow.States)
 					before, err = w.UpdateProjectRecord(t.Context(), record)
 					if err != nil {
 						return err
@@ -2367,7 +2368,7 @@ func TestPostgresObservedPolicyPreservesHubTriageAndOccupiedWorkflow(t *testing.
 								t.Errorf("conflict changed project metadata, states or transitions: before=%+v after=%+v", before, after)
 							}
 						} else {
-							if !reflect.DeepEqual(after.States, nativeTriageStates(candidate.Workflow.States)) {
+							if !reflect.DeepEqual(after.States, hubrecords.NativeTriageStates(candidate.Workflow.States)) {
 								t.Errorf("Hub Triage was not preserved: %+v", after.States)
 							}
 							if after.Core.WorkflowSourceRevision != candidate.Workflow.Revision {
@@ -2426,7 +2427,7 @@ func TestNativeWorkflowPolicyCanonicalStates(t *testing.T) {
 			descriptor := hubTestPolicy()
 			descriptor.Workflow = &policy.Workflow{Source: "example-workflow.yaml", Revision: strings.Repeat("a", 40), States: nativeFixtureStates()}
 			descriptor = descriptor.WithID()
-			project := projectstore.Record{Core: corestore.Project{WorkflowSource: descriptor.Workflow.Source, WorkflowSourceRevision: descriptor.Workflow.Revision}, States: nativeTriageStates(descriptor.Workflow.States)}
+			project := projectstore.Record{Core: corestore.Project{WorkflowSource: descriptor.Workflow.Source, WorkflowSourceRevision: descriptor.Workflow.Revision}, States: hubrecords.NativeTriageStates(descriptor.Workflow.States)}
 			slices.Reverse(project.States)
 			for i := range project.States {
 				project.States[i].Transitions = slices.Clone(project.States[i].Transitions)
@@ -2494,7 +2495,7 @@ func readTestTenantProjectPolicy(ctx context.Context, s *Service, path string) (
 func requireTestTenantProjectPolicy(ctx context.Context, s *Service, path string) (policy.Approval, error) {
 	approval, found, err := readTestTenantProjectPolicy(ctx, s, path)
 	if err == nil && !found {
-		err = errNoApprovedRepositoryPolicy
+		err = hubrecords.ErrNoApprovedRepositoryPolicy
 	}
 	return approval, err
 }

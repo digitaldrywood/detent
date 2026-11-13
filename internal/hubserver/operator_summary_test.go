@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -34,7 +35,7 @@ func updateOperatorSummaryFixtureIssue(t *testing.T, service *Service, scope hub
 	}
 	update(&issue)
 	issue.Revision++
-	fields, err := service.prepareWorkItemFields(t.Context(), scope.Organization, workItemRecordPlan{issue: issue})
+	fields, err := service.prepareWorkItemFields(t.Context(), scope.Organization, hubrecords.WorkItemRecordPlan{Issue: issue})
 	if err != nil {
 		t.Fatal(err)
 	}

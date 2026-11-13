@@ -15,16 +15,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) changeReviewPolicyRecord(ctx context.Context, scope hubscope.NativeScope) (tracker.ChangeReviewPolicy, error) {
-	var rows currentChangePolicyRows
+	var rows hubrecords.CurrentChangePolicyRows
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		rows, err = readChangeSummaryPolicyRows(ctx, r, scope)
+		rows, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 		return err
 	})
 	if err != nil {
@@ -34,8 +35,8 @@ func (s *Service) changeReviewPolicyRecord(ctx context.Context, scope hubscope.N
 	return approved.ReviewPolicy, hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) currentChangePolicyRows(ctx context.Context, scope hubscope.NativeScope) (currentChangePolicyRows, error) {
-	var rows currentChangePolicyRows
+func (s *Service) currentChangePolicyRows(ctx context.Context, scope hubscope.NativeScope) (hubrecords.CurrentChangePolicyRows, error) {
+	var rows hubrecords.CurrentChangePolicyRows
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		rows, err = readCurrentChangePolicyRows(ctx, r, scope)
@@ -79,13 +80,13 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	var rows currentChangePolicyRows
+	var rows hubrecords.CurrentChangePolicyRows
 	var current eventstore.ReviewPolicy
 	var oldRules tracker.ChangeReviewPolicy
 	currentStored := false
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		rows, err = readChangeSummaryPolicyRows(ctx, r, scope)
+		rows, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 		return err
 	})
 	if err != nil {
@@ -98,7 +99,7 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 	if request.Policy.PolicyID != approval.Policy.ID {
 		return nil, hubapi.PolicyMismatch("Review policy must name the current repository policy")
 	}
-	current, currentStored = rows.Review, rows.hasReview
+	current, currentStored = rows.Review, rows.HasReview
 	oldRules = approval.ReviewPolicy
 	if oldRules.ID != request.ExpectedID && (request.ExpectedID != "" || !followsRepositoryGate(oldRules)) {
 		return nil, hubapi.PolicyMismatch("Review policy changed; supply its current identity")
@@ -142,7 +143,7 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 			return hubapi.PolicyMismatch("Approved repository policy changed during review-policy update")
 		}
 		currentReview, currentErr := w.ReviewPolicy(ctx, scope.Project)
-		if rows.hasReview {
+		if rows.HasReview {
 			if currentErr != nil || currentReview.ReviewPolicyID != rows.Review.ReviewPolicyID || currentReview.Revision != rows.Review.Revision || currentReview.PolicyRevisionID != rows.Review.PolicyRevisionID {
 				return hubapi.PolicyMismatch("Review policy changed during update")
 			}

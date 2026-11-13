@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -61,18 +62,18 @@ func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope hubsc
 	return nil
 }
 
-func (s *Service) publishEvidenceCompletion(ctx context.Context, w tenantstore.Writer, publication attachmentEvidencePublication) error {
-	if _, err := w.AdjustCollaborationBytes(ctx, publication.bytes, math.MaxInt64); err != nil {
+func (s *Service) publishEvidenceCompletion(ctx context.Context, w tenantstore.Writer, publication hubrecords.AttachmentEvidencePublication) error {
+	if _, err := w.AdjustCollaborationBytes(ctx, publication.Bytes, math.MaxInt64); err != nil {
 		return err
 	}
-	if err := writeWorkItemRecord(ctx, w, publication.plan, publication.fields); err != nil {
+	if err := hubrecords.WriteWorkItemRecord(ctx, w, publication.Plan, publication.Fields); err != nil {
 		return err
 	}
-	if _, err := w.CreateCollaborationVersion(ctx, publication.version); err != nil {
+	if _, err := w.CreateCollaborationVersion(ctx, publication.Version); err != nil {
 		return err
 	}
-	if _, err := w.AppendEvent(ctx, publication.event); err != nil {
+	if _, err := w.AppendEvent(ctx, publication.Event); err != nil {
 		return err
 	}
-	return w.PutSearch(ctx, publication.search, 0)
+	return w.PutSearch(ctx, publication.Search, 0)
 }

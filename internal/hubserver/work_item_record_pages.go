@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -487,7 +488,7 @@ func (s *Service) readWorkItemSourcePage(ctx context.Context, scope hubscope.Nat
 			if err != nil {
 				return err
 			}
-			issue.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(organization.Slug, project.Slug, issue.Number)}).WebURL
+			issue.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(organization.Slug, project.Slug, issue.Number)}).WebURL
 			return nil
 		}); err != nil {
 			return err

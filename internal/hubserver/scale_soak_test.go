@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -589,7 +590,7 @@ func TestScaleSoakSeed(t *testing.T) {
 			}
 		}
 		if err := seed.service.config.TenantRepository.ReadTenant(t.Context(), row.item.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-			owner, ok := r.(attemptArchiveReader)
+			owner, ok := r.(hubrecords.AttemptArchiveReader)
 			if !ok {
 				return hubapi.NativeRunEventStorageUnavailable()
 			}

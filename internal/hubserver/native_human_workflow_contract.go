@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -28,7 +29,7 @@ func applyHumanWorkflowContract(issue *tracker.NativeIssue, previousState string
 		if signal.Status != workpad.StatusBlocked || signal.HumanAction == "" {
 			return hubapi.NativePublicInvalid("Issue contract hold requires a human action")
 		}
-		if issue.IssueContract != nil && issue.IssueContract.Exempt || contract.Evaluate(nativeContractIssue(*issue)).Satisfied() {
+		if issue.IssueContract != nil && issue.IssueContract.Exempt || contract.Evaluate(hubrecords.NativeContractIssue(*issue)).Satisfied() {
 			return hubapi.NativePublicInvalid("Issue contract hold does not match the issue")
 		}
 		if signal.Fields["issue_contract_return_state"] != target || previousState != target && !slices.Contains(workflow.Config.BacklogAdmission.Sources.States, previousState) {
@@ -47,7 +48,7 @@ func applyHumanWorkflowContract(issue *tracker.NativeIssue, previousState string
 		issue.IssueContract.HumanAction = ""
 	}
 	if issue.IssueContract != nil && issue.IssueContract.ReturnState == request.State {
-		if issue.IssueContract.HumanAction != "" || !contract.Evaluate(nativeContractIssue(*issue)).Satisfied() {
+		if issue.IssueContract.HumanAction != "" || !contract.Evaluate(hubrecords.NativeContractIssue(*issue)).Satisfied() {
 			return hubapi.NativePublicInvalid("Human confirmation is required to clear the issue contract hold")
 		}
 		issue.IssueContract.ReturnState = ""

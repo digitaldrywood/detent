@@ -33,10 +33,10 @@ func (s *Service) readRetainedAttemptTenant(ctx context.Context, scope hubscope.
 		IssueID, FencingToken, Sequence                     int64
 		ReleasedAt                                          *time.Time
 	}{
-		Organization: snapshot.attempt.OrganizationID, Project: snapshot.event.ProjectID, WorkItem: snapshot.event.WorkItemID,
-		AttemptID: snapshot.attempt.ID, RunID: snapshot.attempt.RunID, LeaseID: snapshot.attempt.LeaseID,
-		Status: snapshot.attempt.Status, PayloadObjectKey: snapshot.attempt.PayloadObjectKey, CheckpointObjectKey: snapshot.attempt.CheckpointObjectKey,
-		IssueID: snapshot.attempt.IssueID, FencingToken: snapshot.attempt.FencingToken, Sequence: snapshot.attempt.Sequence, ReleasedAt: snapshot.lease.ReleasedAt,
+		Organization: snapshot.Attempt.OrganizationID, Project: snapshot.Event.ProjectID, WorkItem: snapshot.Event.WorkItemID,
+		AttemptID: snapshot.Attempt.ID, RunID: snapshot.Attempt.RunID, LeaseID: snapshot.Attempt.LeaseID,
+		Status: snapshot.Attempt.Status, PayloadObjectKey: snapshot.Attempt.PayloadObjectKey, CheckpointObjectKey: snapshot.Attempt.CheckpointObjectKey,
+		IssueID: snapshot.Attempt.IssueID, FencingToken: snapshot.Attempt.FencingToken, Sequence: snapshot.Attempt.Sequence, ReleasedAt: snapshot.Lease.ReleasedAt,
 	}
 	raw, err := json.Marshal(source)
 	if err != nil {
@@ -45,11 +45,11 @@ func (s *Service) readRetainedAttemptTenant(ctx context.Context, scope hubscope.
 	digest := sha256.Sum256(raw)
 	sha := hex.EncodeToString(digest[:])
 	if pin == nil {
-		pin = &retainedAttemptReadPin{SourceSHA256: sha, At: s.config.now().UTC(), LeaseRenewedAt: snapshot.lease.RenewedAt, LeaseExpiresAt: snapshot.lease.ExpiresAt}
+		pin = &retainedAttemptReadPin{SourceSHA256: sha, At: s.config.now().UTC(), LeaseRenewedAt: snapshot.Lease.RenewedAt, LeaseExpiresAt: snapshot.Lease.ExpiresAt}
 	} else if pin.SourceSHA256 != sha || pin.At.IsZero() || pin.LeaseRenewedAt.IsZero() || !pin.LeaseExpiresAt.After(pin.LeaseRenewedAt) {
 		return tracker.NativeAttempt{}, nil, hubapi.NativeConflict(0)
 	}
-	snapshot.lease.RenewedAt, snapshot.lease.ExpiresAt = pin.LeaseRenewedAt, pin.LeaseExpiresAt
+	snapshot.Lease.RenewedAt, snapshot.Lease.ExpiresAt = pin.LeaseRenewedAt, pin.LeaseExpiresAt
 	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, pin.At)
 	return attempt, pin, err
 }

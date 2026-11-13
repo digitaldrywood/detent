@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -102,7 +103,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	var reviewedPolicy currentChangePolicyRows
+	var reviewedPolicy hubrecords.CurrentChangePolicyRows
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		reviewedPolicy, err = readCurrentChangePolicyRows(ctx, r, scope)
@@ -221,7 +222,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		}
 		updatedIssue := issue
 		updatedIssue.State = target
-		updatedIssue.Terminal = tenantProjectStateTerminal(project, target)
+		updatedIssue.Terminal = hubrecords.TenantProjectStateTerminal(project, target)
 		updatedIssue.ClosedAt = &now
 		updatedIssue.Revision++
 		updatedIssue.UpdatedAt = hubcontent.PayloadTimestamp(ctx, now)
@@ -480,7 +481,7 @@ func changeLandingQuality(issue tracker.NativeIssue, detail tracker.ChangeDetail
 	if err != nil {
 		return nil, err
 	}
-	snapshot := &tracker.LandingQualitySnapshot{IssueRevision: issue.Revision, IssueBody: issue.Body, Criteria: contract.AcceptanceCriteria(issue.Body), Missing: contract.Evaluate(nativeContractIssue(issue)).Missing, Evidence: []gate.CriterionEvidence{}}
+	snapshot := &tracker.LandingQualitySnapshot{IssueRevision: issue.Revision, IssueBody: issue.Body, Criteria: contract.AcceptanceCriteria(issue.Body), Missing: contract.Evaluate(hubrecords.NativeContractIssue(issue)).Missing, Evidence: []gate.CriterionEvidence{}}
 	for index := len(detail.Reviews) - 1; index >= 0; index-- {
 		review := detail.Reviews[index]
 		if review.CreatedAt.After(at) || review.Decision != "approved" || review.Validator == nil {

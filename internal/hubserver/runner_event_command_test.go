@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -256,7 +257,7 @@ FROM refs r LEFT JOIN archive_objects a ON a.organization_id=$1 AND a.object_key
 				if attempt.Sequence != bad.Data.Sequence-1 {
 					t.Fatalf("failed publication advanced attempt to %d", attempt.Sequence)
 				}
-				reader, ok := r.(nativeRunEventReader)
+				reader, ok := r.(hubrecords.NativeRunEventReader)
 				if !ok {
 					t.Fatal("missing run event reader")
 				}

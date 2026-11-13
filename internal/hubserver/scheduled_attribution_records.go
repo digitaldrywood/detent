@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -26,32 +27,32 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope hubscope
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	var records []scheduledAttributionRecord
-	var original workItemRecordPlan
+	var original hubrecords.WorkItemRecordPlan
 	if item != "" {
 		original, err = s.loadWorkItemPlan(ctx, scope, item, "", tracker.CreateComment{})
 		if err != nil {
 			return nil, err
 		}
-		if original.issue.Archived {
+		if original.Issue.Archived {
 			item = ""
 		} else {
 			plan := original
-			if plan.issue.State == "Done" {
-				if err := validateNativeWorkflowTransition(plan.project.States, "Done", "Rework", scope.Credential.Scope); err != nil {
+			if plan.Issue.State == "Done" {
+				if err := hubrecords.ValidateNativeWorkflowTransition(plan.Project.States, "Done", "Rework", scope.Credential.Scope); err != nil {
 					return nil, err
 				}
-				plan.issue.State = "Rework"
-				plan.issue.Terminal = tenantProjectStateTerminal(plan.project, "Rework")
-				plan.issue.Revision++
-				plan.issue.UpdatedAt = s.config.now()
-				plan.issue.LastActivityAt = plan.issue.UpdatedAt
-				plan.eventType = "workflow.transitioned"
+				plan.Issue.State = "Rework"
+				plan.Issue.Terminal = hubrecords.TenantProjectStateTerminal(plan.Project, "Rework")
+				plan.Issue.Revision++
+				plan.Issue.UpdatedAt = s.config.now()
+				plan.Issue.LastActivityAt = plan.Issue.UpdatedAt
+				plan.EventType = "workflow.transitioned"
 				p, err := s.prepareScheduledAttributionRecord(ctx, scope, plan, tracker.CollaborationData{FromState: "Done", ToState: "Rework", Reason: string(gate.ReasonValidatorRework)})
 				if err != nil {
 					return nil, err
 				}
 				records = append(records, p)
-				plan.current.EventSequence++
+				plan.Current.EventSequence++
 			}
 			plan, err = s.planWorkItemRecord(ctx, scope, plan, tracker.CreateComment{Body: request.Body})
 			if err != nil {
@@ -114,23 +115,23 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope hubscope
 			}
 		}
 		if item != "" {
-			if !sameWorkItemProjectPlan(original.project, project) {
+			if !hubrecords.SameWorkItemProjectPlan(original.Project, project) {
 				return corestore.ErrRevisionConflict
 			}
-			current, err := w.LockWorkItem(ctx, scope.Project, original.current.NativeID)
+			current, err := w.LockWorkItem(ctx, scope.Project, original.Current.NativeID)
 			if err != nil {
 				return err
 			}
-			if current.Archived || current.Revision != original.current.Revision || current.EventSequence != original.current.EventSequence {
+			if current.Archived || current.Revision != original.Current.Revision || current.EventSequence != original.Current.EventSequence {
 				return corestore.ErrRevisionConflict
 			}
 		}
 		for _, p := range records {
-			if err := writeWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
+			if err := hubrecords.WriteWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
 				return err
 			}
-			expected := p.plan.current.Revision
-			if p.plan.comment.ID != "" {
+			expected := p.plan.Current.Revision
+			if p.plan.Comment.ID != "" {
 				expected = 0
 			}
 			if err := w.PutSearch(ctx, p.search, expected); err != nil {

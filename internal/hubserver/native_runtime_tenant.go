@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -22,7 +23,7 @@ type nativeRuntimeTenantSnapshot struct {
 	project              projectstore.Record
 	item                 corestore.WorkItem
 	version              eventstore.CollaborationVersion
-	attempt              tenantAttemptSnapshot
+	attempt              hubrecords.TenantAttemptSnapshot
 	currentLease         *leasestore.Lease
 	attemptPolicy        policystore.Revision
 	currentPolicy        policystore.Revision
@@ -33,7 +34,7 @@ type nativeRuntimeTenantSnapshot struct {
 	decision             eventstore.Event
 	changeRecord         eventstore.Change
 	changeVersion        *eventstore.Version
-	changePolicy         currentChangePolicyRows
+	changePolicy         hubrecords.CurrentChangePolicyRows
 	boardSequence        int64
 	reservation          *claimstore.ProviderReservation
 }
@@ -174,7 +175,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.Na
 				}
 				snapshot.changeVersion = &current
 			}
-			snapshot.changePolicy, err = readChangeSummaryPolicyRows(ctx, r, scope)
+			snapshot.changePolicy, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 			if err != nil {
 				return err
 			}
@@ -196,8 +197,8 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.Na
 			}
 		}
 		snapshot.project, snapshot.item, snapshot.version = project, row, version
-		snapshot.attempt = tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
-		if err := readTenantAttemptPayload(ctx, r, &snapshot.attempt); err != nil {
+		snapshot.attempt = hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot.attempt); err != nil {
 			return err
 		}
 		if err := readTenantAttemptEvidence(ctx, r, &snapshot.attempt); err != nil {
@@ -267,15 +268,15 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.Na
 		}
 	}
 	now := s.config.now().UTC()
-	attempt.Current = snapshot.attempt.lease.ReleasedAt == nil && !now.Before(snapshot.attempt.lease.RenewedAt) && now.Before(snapshot.attempt.lease.ExpiresAt)
+	attempt.Current = snapshot.attempt.Lease.ReleasedAt == nil && !now.Before(snapshot.attempt.Lease.RenewedAt) && now.Before(snapshot.attempt.Lease.ExpiresAt)
 	if attempt.Runtime != nil {
 		attempt.RuntimeFreshness = "available"
 		heartbeat := attempt.Runtime.HeartbeatAt
-		if heartbeat.IsZero() || now.Before(heartbeat) || snapshot.attempt.attempt.Status == "running" && (!attempt.Current || now.Sub(heartbeat) >= snapshot.attempt.lease.ExpiresAt.Sub(snapshot.attempt.lease.RenewedAt)) {
+		if heartbeat.IsZero() || now.Before(heartbeat) || snapshot.attempt.Attempt.Status == "running" && (!attempt.Current || now.Sub(heartbeat) >= snapshot.attempt.Lease.ExpiresAt.Sub(snapshot.attempt.Lease.RenewedAt)) {
 			attempt.RuntimeFreshness = "expired"
 		}
 	}
-	attempt.Status = snapshot.attempt.attempt.Status
+	attempt.Status = snapshot.attempt.Attempt.Status
 	if attempt.Status == "running" && !attempt.Current {
 		attempt.Status = "interrupted"
 	}

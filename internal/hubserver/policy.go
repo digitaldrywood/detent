@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -18,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -25,8 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-var errNoApprovedRepositoryPolicy = &hubapi.NativeError{Code: "policy_not_approved", Message: "No approved repository policy; resolve the customer definition and ask an administrator to approve its descriptor", Status: http.StatusConflict}
 
 const projectPolicyObservationLimit = 512
 
@@ -75,7 +73,7 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if version != "" && approval.Policy.ID != "" {
-		workflow, err := projectPolicyWorkflow(ctx, scope, approval.Policy)
+		workflow, err := hubrecords.ProjectPolicyWorkflow(ctx, scope, approval.Policy)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -601,7 +599,7 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope hubsc
 		if err != nil {
 			return err
 		}
-		if !sameNativeClaimProjectPolicy(current, planned) {
+		if !hubrecords.SameNativeClaimProjectPolicy(current, planned) {
 			return corestore.ErrRevisionConflict
 		}
 		project, err := writer.ProjectRecord(ctx, scope.Project)
@@ -1030,7 +1028,7 @@ func reconcileTenantWorkflowPolicy(ctx context.Context, writer tenantstore.Write
 	if revision == "" {
 		revision = descriptor.SourceRevision
 	}
-	states := nativeTriageStates(descriptor.Workflow.States)
+	states := hubrecords.NativeTriageStates(descriptor.Workflow.States)
 	if project.Core.WorkflowSource == descriptor.Workflow.Source && project.Core.WorkflowSourceRevision == revision && reflect.DeepEqual(project.States, states) {
 		return nil
 	}
@@ -1045,7 +1043,7 @@ func sameProjectPolicySnapshot(current, planned policystore.Revision) bool {
 	if current.PolicyID == "" || planned.PolicyID == "" {
 		return current.PolicyID == planned.PolicyID
 	}
-	return sameNativeClaimProjectPolicy(current, planned)
+	return hubrecords.SameNativeClaimProjectPolicy(current, planned)
 }
 
 func (s *Service) createTenantWorkflowApply(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, project projectstore.Record, previousID string, previous policy.Descriptor, descriptor policy.Descriptor, actor, runner string, appliedAt time.Time, landing eventstore.PolicyLanding) error {
@@ -1187,40 +1185,8 @@ type projectPolicyRead struct {
 	ObservedPoliciesOmitted      int                     `json:"observed_policies_omitted,omitempty"`
 }
 
-const projectPolicyCacheLimit = 256
-
-type projectPolicyCacheKey struct {
-	scope string
-	id    string
-}
-
-type projectPolicyCache struct {
-	mu       sync.Mutex
-	entries  map[projectPolicyCacheKey]*workflowconfig.ResolvedNativePolicy
-	inflight map[projectPolicyCacheKey]*projectPolicyDecode
-	order    []projectPolicyCacheKey
-	oldest   int
-	decode   func(string) (*workflowconfig.ResolvedNativePolicy, error)
-}
-
-type projectPolicyDecode struct {
-	done  chan struct{}
-	value *workflowconfig.ResolvedNativePolicy
-	err   error
-}
-
-type projectPolicyCacheContextKey struct{}
-
-func projectPolicyCacheFromContext(ctx context.Context) *projectPolicyCache {
-	cache, ok := ctx.Value(projectPolicyCacheContextKey{}).(*projectPolicyCache)
-	if !ok {
-		return nil
-	}
-	return cache
-}
-
 func (d *database) policyContext(ctx context.Context) context.Context {
-	return context.WithValue(ctx, projectPolicyCacheContextKey{}, &d.policies)
+	return context.WithValue(ctx, hubrecords.ProjectPolicyCacheContextKey{}, &d.policies)
 }
 
 func (s *Service) policyCacheMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -1230,95 +1196,14 @@ func (s *Service) policyCacheMiddleware(next echo.HandlerFunc) echo.HandlerFunc 
 	}
 }
 
-func decodeResolvedProjectPolicy(raw string) (*workflowconfig.ResolvedNativePolicy, error) {
-	var descriptor policy.Descriptor
-	if err := json.Unmarshal([]byte(raw), &descriptor); err != nil {
-		return nil, err
-	}
-	return workflowconfig.ResolveNativePolicy(descriptor)
-}
-
-func (c *projectPolicyCache) resolve(scope, id, raw string) (*workflowconfig.ResolvedNativePolicy, error) {
-	if c == nil {
-		return decodeResolvedProjectPolicy(raw)
-	}
-	c.mu.Lock()
-	key := projectPolicyCacheKey{scope: scope, id: id}
-	if value, ok := c.entries[key]; ok {
-		c.mu.Unlock()
-		return value, nil
-	}
-	if pending, ok := c.inflight[key]; ok {
-		c.mu.Unlock()
-		<-pending.done
-		return pending.value, pending.err
-	}
-	pending := &projectPolicyDecode{done: make(chan struct{})}
-	if c.inflight == nil {
-		c.inflight = make(map[projectPolicyCacheKey]*projectPolicyDecode)
-	}
-	c.inflight[key] = pending
-	decode := c.decode
-	c.mu.Unlock()
-	if decode == nil {
-		decode = decodeResolvedProjectPolicy
-	}
-	value, err := func() (*workflowconfig.ResolvedNativePolicy, error) {
-		defer func() {
-			if value := recover(); value != nil {
-				c.mu.Lock()
-				pending.err = errors.New("decode project policy panicked")
-				delete(c.inflight, key)
-				close(pending.done)
-				c.mu.Unlock()
-				panic(value)
-			}
-		}()
-		return decode(raw)
-	}()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	pending.value, pending.err = value, err
-	delete(c.inflight, key)
-	close(pending.done)
-	if err != nil {
-		return nil, err
-	}
-	if c.entries == nil {
-		c.entries = make(map[projectPolicyCacheKey]*workflowconfig.ResolvedNativePolicy)
-	}
-	if len(c.order) == projectPolicyCacheLimit {
-		delete(c.entries, c.order[c.oldest])
-		c.order[c.oldest] = key
-		c.oldest = (c.oldest + 1) % projectPolicyCacheLimit
-	} else {
-		c.order = append(c.order, key)
-	}
-	c.entries[key] = value
-	return value, nil
-}
-
 func decodeProjectPolicy(ctx context.Context, scope, id, raw string, result policy.Approval) (policy.Approval, error) {
-	cache := projectPolicyCacheFromContext(ctx)
-	resolved, err := cache.resolve(scope, id, raw)
+	cache := hubrecords.ProjectPolicyCacheFromContext(ctx)
+	resolved, err := cache.Resolve(scope, id, raw)
 	if err != nil {
 		return result, err
 	}
 	result.Policy = resolved.Descriptor()
 	return result, nil
-}
-
-func projectPolicyWorkflow(ctx context.Context, scope string, descriptor policy.Descriptor) (workflowconfig.Workflow, error) {
-	cache := projectPolicyCacheFromContext(ctx)
-	if cache != nil {
-		cache.mu.Lock()
-		resolved := cache.entries[projectPolicyCacheKey{scope: scope, id: descriptor.ID}]
-		cache.mu.Unlock()
-		if resolved != nil {
-			return resolved.Workflow()
-		}
-	}
-	return workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, descriptor)
 }
 
 func validateCloudWorkflowPolicy(markdown string, descriptor policy.Descriptor) error {

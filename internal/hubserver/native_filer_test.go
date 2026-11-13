@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -34,7 +35,7 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
-	states := append(nativeTriageStates(nativeFixtureStates()), tracker.NativeState{Name: "Cancelled", Terminal: true})
+	states := append(hubrecords.NativeTriageStates(nativeFixtureStates()), tracker.NativeState{Name: "Cancelled", Terminal: true})
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), scope.Project)
 		if err != nil {
@@ -350,7 +351,7 @@ func TestHostedPersonalKeyCreatedBy(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				project.States = nativeTriageStates(nativeFixtureStates())
+				project.States = hubrecords.NativeTriageStates(nativeFixtureStates())
 				_, err = w.UpdateProjectRecord(t.Context(), project)
 				return err
 			}); err != nil {

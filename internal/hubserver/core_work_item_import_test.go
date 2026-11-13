@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -100,9 +101,9 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 				t.Fatal(err)
 			}
 			direct.add("change_content_objects", map[string]any{"object_key": ref.Key, "object_sha256": ref.SHA256, "object_bytes": ref.CompressedSize, "content_bytes": ref.UncompressedSize})
-			detail := newRunDetailReference(ref, string(org), runDetailEntry(*data.Run))
+			detail := hubrecords.NewRunDetailReference(ref, string(org), hubrecords.RunDetailEntry(*data.Run))
 			detail.ObjectKey = ref.Key
-			stored, err := json.Marshal(storedRun{NativeRunData: compactRun(*data.Run), Detail: detail})
+			stored, err := json.Marshal(hubrecords.StoredRun{NativeRunData: hubrecords.CompactRun(*data.Run), Detail: detail})
 			if err != nil {
 				t.Fatal(err)
 			}

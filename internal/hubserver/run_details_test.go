@@ -37,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -118,7 +119,7 @@ func TestNativeRunDetailRetainsHostLandingTransition(t *testing.T) {
 	for _, target := range []string{"", "Rework", "Done"} {
 		t.Run(target, func(t *testing.T) {
 			archived := tracker.NativeRunData{AttemptID: "attempt", RunID: "run", LeaseID: "lease", FencingToken: 1, Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{VersionID: "version", FromState: "old", Gate: &gate.CommandResult{Output: "retained output"}}}}
-			stored := storedRun{NativeRunData: compactRun(archived), Detail: &runDetailReference{AttachmentID: "attachment", Entry: "attempt:0"}}
+			stored := hubrecords.StoredRun{NativeRunData: hubrecords.CompactRun(archived), Detail: &hubrecords.RunDetailReference{AttachmentID: "attachment", Entry: "attempt:0"}}
 			stored.Runtime.Landing.FromState, stored.Runtime.Landing.TargetState = "Merging", target
 			raw, err := json.Marshal(stored)
 			if err != nil {
@@ -126,7 +127,7 @@ func TestNativeRunDetailRetainsHostLandingTransition(t *testing.T) {
 			}
 			ctx := context.WithValue(t.Context(), hubcontent.RunDetailContextKey{}, &hubcontent.RunDetailContext{Cache: map[string]map[string]tracker.NativeRunData{"attachment": {"attempt:0": archived}}})
 			var got tracker.NativeRunData
-			if err := decodeRunDetail(ctx, nil, string(raw), &got); err != nil {
+			if err := hubrecords.DecodeRunDetail(ctx, nil, string(raw), &got); err != nil {
 				t.Fatal(err)
 			}
 			if got.Runtime.Landing.FromState != "Merging" || got.Runtime.Landing.TargetState != target || got.Runtime.Landing.Gate.Output != "retained output" {
@@ -1226,7 +1227,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 						})
 					}
 					t.Run("archive cancellation and canonical fallback", func(t *testing.T) {
-						snapshot := tenantAttemptSnapshot{attempt: latest.attempt, event: latest.event, payload: &latest.payload}
+						snapshot := hubrecords.TenantAttemptSnapshot{Attempt: latest.attempt, Event: latest.event, Payload: &latest.payload}
 						ctx, cancel := context.WithCancel(t.Context())
 						cancel()
 						var archive *hubapi.NativeArchiveError
@@ -1242,7 +1243,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 							store.objects[latest.payload.Key] = original
 							store.mu.Unlock()
 						})
-						snapshot.payload, snapshot.recoverPayload = nil, true
+						snapshot.Payload, snapshot.RecoverPayload = nil, true
 						_, err := service.readNativeAttemptRunTenant(t.Context(), snapshot)
 						if !errors.Is(err, artifact.ErrIntegrity) || !errors.Is(err, artifact.ErrStorage) || !errors.Is(err, artifact.ErrMissing) || !errors.As(err, &archive) {
 							t.Fatalf("canonical fallback error = %v", err)
@@ -1356,7 +1357,7 @@ func TestRunDetailSegmentResolvesPreparedReferenceBeforeCommit(t *testing.T) {
 	prepared := map[string]tracker.NativeRunData{"attempt_prepared:2": {AttemptID: "attempt_prepared", Sequence: 2}}
 	owner := &hubcontent.RunDetailContext{Store: store, Organization: organization, Cache: map[string]map[string]tracker.NativeRunData{}, Reference: &ref, Runs: prepared}
 	ctx := context.WithValue(t.Context(), hubcontent.RunDetailContextKey{}, owner)
-	runs, err := readRunDetailSegment(ctx, nil, newRunDetailReference(ref, organization, "attempt_prepared:2"))
+	runs, err := hubrecords.ReadRunDetailSegment(ctx, nil, hubrecords.NewRunDetailReference(ref, organization, "attempt_prepared:2"))
 	if err != nil || runs["attempt_prepared:2"].Sequence != 2 {
 		t.Fatalf("prepared detail before commit = %v, %v", runs, err)
 	}
@@ -1368,8 +1369,8 @@ func TestRunDetailSegmentRejectsLegacyArchiveWithoutDatabaseReader(t *testing.T)
 	organization := "org_archive"
 	owner := &hubcontent.RunDetailContext{Store: store, Organization: organization, Cache: map[string]map[string]tracker.NativeRunData{}}
 	ctx := context.WithValue(t.Context(), hubcontent.RunDetailContextKey{}, owner)
-	detail := &runDetailReference{AttachmentID: "att_legacy", Organization: organization, Entry: "attempt_legacy:1"}
-	if _, err := readRunDetailSegment(ctx, nil, detail); !errors.Is(err, errRunDetailStoreUnavailable) {
+	detail := &hubrecords.RunDetailReference{AttachmentID: "att_legacy", Organization: organization, Entry: "attempt_legacy:1"}
+	if _, err := hubrecords.ReadRunDetailSegment(ctx, nil, detail); !errors.Is(err, hubrecords.ErrRunDetailStoreUnavailable) {
 		t.Fatalf("legacy archive without typed owner error = %v", err)
 	}
 }
@@ -1589,7 +1590,7 @@ func readRunDetailAttemptRecord(t *testing.T, f nativeFixture, id string) leases
 	return row
 }
 
-func readReferencedRun(t *testing.T, f nativeFixture, attempt string) storedRun {
+func readReferencedRun(t *testing.T, f nativeFixture, attempt string) hubrecords.StoredRun {
 	t.Helper()
 	row := readRunDetailAttemptRecord(t, f, attempt)
 	var item corestore.WorkItem
@@ -1608,12 +1609,12 @@ func readReferencedRun(t *testing.T, f nativeFixture, attempt string) storedRun 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.payload == nil {
+	if snapshot.Payload == nil {
 		t.Fatal("attempt lost its registered payload reference")
 	}
-	detail := newRunDetailReference(*snapshot.payload, string(f.project.OrganizationID), runDetailEntry(run))
+	detail := hubrecords.NewRunDetailReference(*snapshot.Payload, string(f.project.OrganizationID), hubrecords.RunDetailEntry(run))
 	detail.ObjectKey = row.PayloadObjectKey
-	return storedRun{NativeRunData: run, Detail: detail}
+	return hubrecords.StoredRun{NativeRunData: run, Detail: detail}
 }
 
 func TestAttemptHydrationIntegrityStages(t *testing.T) {
@@ -1622,48 +1623,50 @@ func TestAttemptHydrationIntegrityStages(t *testing.T) {
 		name  string
 		stage string
 		field string
-		edit  func(*tracker.CollaborationEvent, *tenantAttemptSnapshot, *memoryRunDetails)
+		edit  func(*tracker.CollaborationEvent, *hubrecords.TenantAttemptSnapshot, *memoryRunDetails)
 	}{
-		{name: "missing run", stage: "hydrate attempt run", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) { v.Data.Run = nil }},
-		{name: "run id", stage: "hydrate attempt identity", field: "run_id", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+		{name: "missing run", stage: "hydrate attempt run", edit: func(v *tracker.CollaborationEvent, _ *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
+			v.Data.Run = nil
+		}},
+		{name: "run id", stage: "hydrate attempt identity", field: "run_id", edit: func(v *tracker.CollaborationEvent, _ *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
 			v.Data.Run.RunID = "private-run"
 		}},
-		{name: "attempt id", stage: "hydrate attempt identity", field: "attempt_id", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+		{name: "attempt id", stage: "hydrate attempt identity", field: "attempt_id", edit: func(v *tracker.CollaborationEvent, _ *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
 			v.Data.Run.AttemptID = "private-attempt"
 		}},
-		{name: "lease id", stage: "hydrate attempt identity", field: "lease_id", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+		{name: "lease id", stage: "hydrate attempt identity", field: "lease_id", edit: func(v *tracker.CollaborationEvent, _ *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
 			v.Data.Run.LeaseID = "private-lease"
 		}},
-		{name: "fence", stage: "hydrate attempt identity", field: "fencing_token", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+		{name: "fence", stage: "hydrate attempt identity", field: "fencing_token", edit: func(v *tracker.CollaborationEvent, _ *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
 			v.Data.Run.FencingToken++
 		}},
-		{name: "sequence", stage: "hydrate attempt identity", field: "sequence", edit: func(v *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, _ *memoryRunDetails) {
+		{name: "sequence", stage: "hydrate attempt identity", field: "sequence", edit: func(v *tracker.CollaborationEvent, _ *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
 			v.Data.Run.Sequence++
 		}},
-		{name: "attachment evidence", stage: "hydrate attempt evidence", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
-			s.evidence = true
-			s.evidenceRows = []attachmentstore.Record{{OrganizationID: "private-organization", EvidenceCaption: "private-caption"}}
+		{name: "attachment evidence", stage: "hydrate attempt evidence", edit: func(_ *tracker.CollaborationEvent, s *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.Evidence = true
+			s.EvidenceRows = []attachmentstore.Record{{OrganizationID: "private-organization", EvidenceCaption: "private-caption"}}
 		}},
-		{name: "event identity", stage: "validate event identity", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
-			s.event.ID = "private-event"
+		{name: "event identity", stage: "validate event identity", edit: func(_ *tracker.CollaborationEvent, s *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.Event.ID = "private-event"
 		}},
-		{name: "push projection", stage: "validate event push projection", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
-			s.event.PushKnown = true
-			s.event.PushHeadSHA = "private-head"
+		{name: "push projection", stage: "validate event push projection", edit: func(_ *tracker.CollaborationEvent, s *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.Event.PushKnown = true
+			s.Event.PushHeadSHA = "private-head"
 		}},
-		{name: "landing projection", stage: "validate event landing projection", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
-			s.event.LandingWaiting = true
+		{name: "landing projection", stage: "validate event landing projection", edit: func(_ *tracker.CollaborationEvent, s *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.Event.LandingWaiting = true
 		}},
-		{name: "reference", stage: "validate history reference", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
-			s.event.PayloadObjectKey = "private-object-key"
+		{name: "reference", stage: "validate history reference", edit: func(_ *tracker.CollaborationEvent, s *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.Event.PayloadObjectKey = "private-object-key"
 		}},
-		{name: "length", stage: "validate history content length", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, _ *memoryRunDetails) {
-			s.event.PayloadContentBytes++
+		{name: "length", stage: "validate history content length", edit: func(_ *tracker.CollaborationEvent, s *hubrecords.TenantAttemptSnapshot, _ *memoryRunDetails) {
+			s.Event.PayloadContentBytes++
 		}},
-		{name: "decode", stage: "decode history payload", edit: func(_ *tracker.CollaborationEvent, s *tenantAttemptSnapshot, m *memoryRunDetails) {
-			m.data[s.event.PayloadObjectKey] = bytes.Repeat([]byte("!"), int(s.event.PayloadContentBytes))
+		{name: "decode", stage: "decode history payload", edit: func(_ *tracker.CollaborationEvent, s *hubrecords.TenantAttemptSnapshot, m *memoryRunDetails) {
+			m.data[s.Event.PayloadObjectKey] = bytes.Repeat([]byte("!"), int(s.Event.PayloadContentBytes))
 		}},
-		{name: "read", stage: "read history payload", edit: func(_ *tracker.CollaborationEvent, _ *tenantAttemptSnapshot, m *memoryRunDetails) {
+		{name: "read", stage: "read history payload", edit: func(_ *tracker.CollaborationEvent, _ *hubrecords.TenantAttemptSnapshot, m *memoryRunDetails) {
 			m.beforeRead = func(context.Context) error { return &attachment.ArchiveReadError{Err: artifact.ErrIntegrity} }
 		}},
 	} {
@@ -1671,7 +1674,7 @@ func TestAttemptHydrationIntegrityStages(t *testing.T) {
 			store := &memoryRunDetails{}
 			service := &Service{config: Config{RunDetails: store, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}}
 			value := tracker.CollaborationEvent{ID: "event", OrganizationID: "org", ProjectID: "project", AggregateID: "item", Type: "run.updated", SchemaVersion: 1, Data: tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt", RunID: "run", LeaseID: "lease", FencingToken: 7, Sequence: 2}}}
-			snapshot := tenantAttemptSnapshot{attempt: leasestore.Attempt{OrganizationID: "org", ID: "attempt", RunID: "run", Sequence: 2}, lease: leasestore.Lease{LeaseID: "lease", FencingToken: 7}}
+			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: leasestore.Attempt{OrganizationID: "org", ID: "attempt", RunID: "run", Sequence: 2}, Lease: leasestore.Lease{LeaseID: "lease", FencingToken: 7}}
 			content := eventstore.NewContent(store)
 			prepare := func() eventstore.Event {
 				raw, err := json.Marshal(value)
@@ -1684,13 +1687,13 @@ func TestAttemptHydrationIntegrityStages(t *testing.T) {
 				}
 				return row
 			}
-			snapshot.event = prepare()
+			snapshot.Event = prepare()
 			if _, err := service.hydrateNativeAttemptTenant(t.Context(), snapshot, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			test.edit(&value, &snapshot, store)
 			if test.name == "missing run" || test.stage == "hydrate attempt identity" {
-				snapshot.event = prepare()
+				snapshot.Event = prepare()
 			}
 			got, err := service.hydrateNativeAttemptTenant(t.Context(), snapshot, time.Now())
 			if !errors.Is(err, artifact.ErrIntegrity) {

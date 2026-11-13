@@ -63,39 +63,6 @@ func nativeCreatedBy(scope hubscope.NativeScope, params url.Values) (string, err
 	return actor.PrincipalID, nil
 }
 
-func validateNativeIssueQuery(params url.Values) error {
-	single := url.Values{}
-	for key, values := range params {
-		switch key {
-		case "type":
-			if len(values) > 2 {
-				return hubapi.NativePublicInvalid("type must be bug or change_request")
-			}
-			for _, value := range values {
-				if err := validateNativeIssueType(value, true); err != nil {
-					return err
-				}
-			}
-		case "verification":
-			if len(values) > 2 {
-				return nativeVerificationFilterInvalid()
-			}
-			for _, value := range values {
-				if value != tracker.VerificationPending && value != tracker.VerificationVerified {
-					return nativeVerificationFilterInvalid()
-				}
-			}
-		case "state", "label", "assignee", "priority":
-			if len(values) > 32 || len(strings.Join(values, "\x00")) > 4096 {
-				return hubapi.NativePublicInvalid("Query contains an unsupported field or value")
-			}
-		default:
-			single[key] = values
-		}
-	}
-	return hubapi.ValidateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "completed_from", "completed_to", "sort", "created_after", "created_before", "updated_after", "created_by", "fields")
-}
-
 // parseNativeIssueIncludes reads the include query and reports whether it asks
 // for workspace items. Unknown members are refused rather than ignored so a
 // client typo is visible.
@@ -174,8 +141,4 @@ func (s *Service) listNativeHistory(c echo.Context) error {
 
 func (s *Service) readHistory(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
 	return s.readHistoryTenant(ctx, scope, item, params)
-}
-
-func nativeVerificationFilterInvalid() error {
-	return &hubapi.NativeError{Code: "invalid_request", Message: "verification must be pending or verified", Status: http.StatusUnprocessableEntity, PublicMessage: true}
 }

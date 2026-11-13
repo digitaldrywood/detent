@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -277,13 +278,13 @@ func (s *Service) validateWorkItemChallengeReplay(ctx context.Context, scope hub
 		if err != nil {
 			return err
 		}
-		if current.Core.DeletedAt != nil || !sameWorkItemProjectPlan(project, current) {
+		if current.Core.DeletedAt != nil || !hubrecords.SameWorkItemProjectPlan(project, current) {
 			return hubapi.NativeConflict(0)
 		}
 		currentPolicy, err := w.ProjectPolicy(ctx, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) && !found {
 			err = nil
-		} else if err == nil && (!found || !sameNativeClaimProjectPolicy(revision, currentPolicy)) {
+		} else if err == nil && (!found || !hubrecords.SameNativeClaimProjectPolicy(revision, currentPolicy)) {
 			return hubapi.NativeConflict(0)
 		}
 		if err != nil {
@@ -315,7 +316,7 @@ func (s *Service) prepareWorkItemDuplicateLinks(ctx context.Context, scope hubsc
 	for _, candidate := range confirmation.selected {
 		issue.Revision++
 		related := confirmation.issues[candidate.WorkItemID]
-		issue.Related = append(slices.Clone(issue.Related), tracker.NativeDependency{ID: related.WorkItemID, ProjectID: related.ProjectID, Number: related.Number, Title: related.Title, State: related.State, Terminal: related.Terminal, Dispatchable: dispatchableProjectState(project, related.State), Identifier: string(related.ProjectID) + "#" + strconv.Itoa(related.Number), WebURL: related.WebURL})
+		issue.Related = append(slices.Clone(issue.Related), tracker.NativeDependency{ID: related.WorkItemID, ProjectID: related.ProjectID, Number: related.Number, Title: related.Title, State: related.State, Terminal: related.Terminal, Dispatchable: hubrecords.DispatchableProjectState(project, related.State), Identifier: string(related.ProjectID) + "#" + strconv.Itoa(related.Number), WebURL: related.WebURL})
 		raw, err := json.Marshal(issue)
 		if err != nil {
 			return nil, err
@@ -398,7 +399,7 @@ func (s *Service) prepareWorkItemDuplicateConfirmation(ctx context.Context, scop
 			}
 			confirmation.selected = append(confirmation.selected, candidate)
 			state := hubapi.StringValue(item.WorkflowStateName)
-			confirmation.issues[candidate.WorkItemID] = s.nativeIssueResponse(tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.NativeID, Number: int(item.Number), Revision: tracker.Revision(item.Revision)}, Title: item.Title, State: state, Terminal: tenantProjectStateTerminal(project, state), WebURL: issueBrowserPath(organization.Slug, project.Core.Slug, int(item.Number))})
+			confirmation.issues[candidate.WorkItemID] = s.nativeIssueResponse(tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.NativeID, Number: int(item.Number), Revision: tracker.Revision(item.Revision)}, Title: item.Title, State: state, Terminal: hubrecords.TenantProjectStateTerminal(project, state), WebURL: hubrecords.IssueBrowserPath(organization.Slug, project.Core.Slug, int(item.Number))})
 		}
 		return nil
 	})
@@ -535,36 +536,36 @@ func lockWorkItemDuplicateSource(ctx context.Context, w tenantstore.Writer, proj
 }
 
 type workItemMachinePriority struct {
-	plan     workItemRecordPlan
-	fields   workItemRecordFields
+	plan     hubrecords.WorkItemRecordPlan
+	fields   hubrecords.WorkItemRecordFields
 	version  eventstore.CollaborationVersion
 	event    eventstore.Event
 	document searchstore.Document
 }
 
-func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope hubscope.NativeScope, occurrence workItemRecordPlan, priority *int) (*workItemMachinePriority, error) {
-	if err := requireNativeEdit(occurrence.issue, occurrence.issue.Revision); err != nil {
+func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope hubscope.NativeScope, occurrence hubrecords.WorkItemRecordPlan, priority *int) (*workItemMachinePriority, error) {
+	if err := hubrecords.RequireNativeEdit(occurrence.Issue, occurrence.Issue.Revision); err != nil {
 		return nil, err
 	}
-	plan := workItemRecordPlan{project: occurrence.project, current: occurrence.current, issue: occurrence.issue, fields: []string{"priority"}, eventType: "issue.edited"}
-	plan.issue.Priority = priority
-	plan.issue.Revision++
-	plan.issue.UpdatedAt = s.config.now().UTC().Truncate(time.Microsecond)
-	plan.issue.LastActivityAt = plan.issue.UpdatedAt
+	plan := hubrecords.WorkItemRecordPlan{Project: occurrence.Project, Current: occurrence.Current, Issue: occurrence.Issue, Fields: []string{"priority"}, EventType: "issue.edited"}
+	plan.Issue.Priority = priority
+	plan.Issue.Revision++
+	plan.Issue.UpdatedAt = s.config.now().UTC().Truncate(time.Microsecond)
+	plan.Issue.LastActivityAt = plan.Issue.UpdatedAt
 	fields, err := s.prepareWorkItemFields(ctx, scope.Organization, plan)
 	if err != nil {
 		return nil, err
 	}
-	raw, err := json.Marshal(plan.issue)
+	raw, err := json.Marshal(plan.Issue)
 	if err != nil {
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, RecordID: string(plan.issue.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
+	version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, RecordID: string(plan.Issue.WorkItemID), Revision: int64(plan.Issue.Revision)}, raw)
 	if err != nil {
 		return nil, err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.issue.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.Issue.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.EventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.Issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.Issue.Revision, Fields: plan.Fields}})
 	if err != nil {
 		return nil, err
 	}
@@ -572,8 +573,8 @@ func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope hubs
 	if err != nil {
 		return nil, err
 	}
-	document := searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + string(plan.issue.WorkItemID), SourceID: string(plan.issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}
-	document, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, document, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+	document := searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, ID: "issue:" + string(plan.Issue.WorkItemID), SourceID: string(plan.Issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}
+	document, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, document, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 	if err != nil {
 		return nil, err
 	}
@@ -581,7 +582,7 @@ func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope hubs
 }
 
 func (p *workItemMachinePriority) write(ctx context.Context, w tenantstore.Writer) error {
-	if err := writeWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
+	if err := hubrecords.WriteWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
 		return err
 	}
 	if _, err := w.CreateCollaborationVersion(ctx, p.version); err != nil {
@@ -590,5 +591,5 @@ func (p *workItemMachinePriority) write(ctx context.Context, w tenantstore.Write
 	if _, err := w.AppendEvent(ctx, p.event); err != nil {
 		return err
 	}
-	return w.PutSearch(ctx, p.document, p.plan.current.Revision)
+	return w.PutSearch(ctx, p.document, p.plan.Current.Revision)
 }

@@ -9,15 +9,10 @@ import (
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type linkedSourceURLKey struct{}
-
-func nativeTriageStates(states []tracker.NativeState) []tracker.NativeState {
-	return projectstore.TriageStates(states)
-}
 
 func linkedSourceNumber(source string) int {
 	_, _, number, err := tracker.ParseGitHubIssueURL(source)

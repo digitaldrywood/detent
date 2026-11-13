@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -185,9 +186,9 @@ func placementFixtureState(t *testing.T, f nativeFixture, item tracker.NativeIss
 	return item
 }
 
-func placementFixtureRunners(t *testing.T, f nativeFixture, scope hubscope.NativeScope) ([]placementRunner, error) {
+func placementFixtureRunners(t *testing.T, f nativeFixture, scope hubscope.NativeScope) ([]hubrecords.PlacementRunner, error) {
 	t.Helper()
-	var rows []placementRunner
+	var rows []hubrecords.PlacementRunner
 	err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		rows, err = readPlacementRunners(t.Context(), r, scope, f.service.config.now())
@@ -616,10 +617,10 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 				}
 			}
 			if decision.ReadyTodo != test.wantDemand || decision.LocalFree != test.wantLocal || decision.Pending != test.wantPending {
-				t.Fatalf("decision=%+v; want demand=%d local=%d pending=%d", decision.placementDecision, test.wantDemand, test.wantLocal, test.wantPending)
+				t.Fatalf("decision=%+v; want demand=%d local=%d pending=%d", decision.PlacementDecision, test.wantDemand, test.wantLocal, test.wantPending)
 			}
 			if test.model == "gpt-6-astra" && (decision.SpriteTarget != 1 || decision.SpriteFree != 1) {
-				t.Fatalf("heterogeneous demand decision=%+v; want one Sprite slot", decision.placementDecision)
+				t.Fatalf("heterogeneous demand decision=%+v; want one Sprite slot", decision.PlacementDecision)
 			}
 		})
 	}
@@ -732,7 +733,7 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 			if placement.SpriteLimit() > 0 {
 				decision, err := f.service.readPlacementSnapshot(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, f.service.config.now(), nil)
 				if err != nil || decision.Reason != "Configured maximum Sprite concurrency is full" || decision.SpriteTarget != 0 {
-					t.Fatalf("concurrency diagnostic=%+v err=%v", decision.placementDecision, err)
+					t.Fatalf("concurrency diagnostic=%+v err=%v", decision.PlacementDecision, err)
 				}
 			}
 		})
@@ -808,7 +809,7 @@ func TestPlacementIgnoresExhaustedSubscriptionQuota(t *testing.T) {
 				t.Fatal(err)
 			}
 			if decision.Provisionable != 0 || decision.LocalFree != 1 || decision.SpriteFree != 1 {
-				t.Fatalf("exhausted Sprite account decision=%+v", decision.placementDecision)
+				t.Fatalf("exhausted Sprite account decision=%+v", decision.PlacementDecision)
 			}
 			r, status := local, http.StatusOK
 			if claimant == "sprite" {

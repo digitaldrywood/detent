@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -284,10 +285,10 @@ type historicalGitHubImportPlan struct {
 	issue      tracker.NativeIssue
 	writeIssue bool
 	create     bool
-	fields     workItemRecordFields
+	fields     hubrecords.WorkItemRecordFields
 	version    eventstore.CollaborationVersion
 	event      eventstore.Event
-	comments   []linkedIssueCommentPlan
+	comments   []hubrecords.LinkedIssueCommentPlan
 	search     searchstore.Document
 }
 
@@ -369,7 +370,7 @@ func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope hubsc
 			plan.issue.ClosedAt = &closed
 		}
 		plan.writeIssue = true
-		plan.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, workItemRecordPlan{issue: plan.issue})
+		plan.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, hubrecords.WorkItemRecordPlan{Issue: plan.issue})
 		if err != nil {
 			return plan, err
 		}
@@ -442,7 +443,7 @@ func applyHistoricalGitHubImport(ctx context.Context, w tenantstore.Writer, proj
 	if err != nil {
 		return err
 	}
-	if !sameWorkItemProjectPlan(project, currentProject) {
+	if !hubrecords.SameWorkItemProjectPlan(project, currentProject) {
 		return corestore.ErrRevisionConflict
 	}
 	if !plan.create {
@@ -505,18 +506,18 @@ func applyHistoricalGitHubImport(ctx context.Context, w tenantstore.Writer, proj
 		}
 	}
 	for _, comment := range plan.comments {
-		if _, err := w.CommentBySource(ctx, project.Core.ID, plan.item.NativeID, *comment.row.SourceKey); err == nil {
+		if _, err := w.CommentBySource(ctx, project.Core.ID, plan.item.NativeID, *comment.Row.SourceKey); err == nil {
 			return corestore.ErrRevisionConflict
 		} else if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if _, err := w.CreateComment(ctx, comment.row); err != nil {
+		if _, err := w.CreateComment(ctx, comment.Row); err != nil {
 			return err
 		}
-		if _, err := w.CreateCollaborationVersion(ctx, comment.version); err != nil {
+		if _, err := w.CreateCollaborationVersion(ctx, comment.Version); err != nil {
 			return err
 		}
-		if _, err := w.AppendEvent(ctx, comment.event); err != nil {
+		if _, err := w.AppendEvent(ctx, comment.Event); err != nil {
 			return err
 		}
 	}

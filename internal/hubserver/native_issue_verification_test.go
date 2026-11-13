@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -115,38 +116,38 @@ func (v verificationFixture) file(t *testing.T, filer, key string, actor *tracke
 		issue = v.move(t, issue, "Todo")
 	}
 	if actor != nil || body != "" {
-		plan := workItemRecordPlan{issue: issue, fields: []string{"body", "actor"}}
+		plan := hubrecords.WorkItemRecordPlan{Issue: issue, Fields: []string{"body", "actor"}}
 		if err := v.service.config.TenantRepository.ReadTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
 			var err error
-			plan.current, err = reader.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
+			plan.Current, err = reader.WorkItem(t.Context(), issue.ProjectID, issue.WorkItemID)
 			if err != nil {
 				return err
 			}
-			plan.project, err = reader.ProjectRecord(t.Context(), issue.ProjectID)
+			plan.Project, err = reader.ProjectRecord(t.Context(), issue.ProjectID)
 			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
 		if actor != nil {
-			plan.issue.Actor = *actor
+			plan.Issue.Actor = *actor
 		}
 		if body != "" {
-			plan.issue.Body = body
+			plan.Issue.Body = body
 		}
-		plan.issue.Revision++
+		plan.Issue.Revision++
 		fields, err := v.service.prepareWorkItemFields(t.Context(), issue.OrganizationID, plan)
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw, err := json.Marshal(plan.issue)
+		raw, err := json.Marshal(plan.Issue)
 		if err != nil {
 			t.Fatal(err)
 		}
-		version, err := eventstore.NewContent(v.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
+		version, err := eventstore.NewContent(v.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(plan.Issue.Revision)}, raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: v.service.config.now(), Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: v.service.config.now(), Data: tracker.CollaborationData{Revision: plan.Issue.Revision, Fields: plan.Fields}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,18 +155,18 @@ func (v verificationFixture) file(t *testing.T, filer, key string, actor *tracke
 		if err != nil {
 			t.Fatal(err)
 		}
-		document, err := searchstore.NewContent(v.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+		document, err := searchstore.NewContent(v.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := v.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
-			if err := writeWorkItemRecord(t.Context(), writer, plan, fields); err != nil {
+			if err := hubrecords.WriteWorkItemRecord(t.Context(), writer, plan, fields); err != nil {
 				return err
 			}
 			if _, err := writer.CreateCollaborationVersion(t.Context(), version); err != nil {
 				return err
 			}
-			if err := writer.PutSearch(t.Context(), document, plan.current.Revision); err != nil {
+			if err := writer.PutSearch(t.Context(), document, plan.Current.Revision); err != nil {
 				return err
 			}
 			_, err := writer.AppendEvent(t.Context(), event)
@@ -173,7 +174,7 @@ func (v verificationFixture) file(t *testing.T, filer, key string, actor *tracke
 		}); err != nil {
 			t.Fatal(err)
 		}
-		issue = plan.issue
+		issue = plan.Issue
 	}
 	for _, apply := range prepare {
 		apply(issue)

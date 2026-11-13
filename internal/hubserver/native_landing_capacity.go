@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -42,7 +43,7 @@ type nativeLandingRenewal struct {
 	lease       leasestore.Lease
 	change      eventstore.Change
 	version     eventstore.Version
-	policy      currentChangePolicyRows
+	policy      hubrecords.CurrentChangePolicyRows
 	until       time.Time
 	evaluatedAt time.Time
 }
@@ -74,7 +75,7 @@ func (s *Service) prepareNativeLandingRenewal(ctx context.Context, scope hubscop
 		if err != nil {
 			return err
 		}
-		p.policy, err = readChangeSummaryPolicyRows(ctx, r, scope)
+		p.policy, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 		return err
 	})
 	if err != nil {
@@ -132,7 +133,7 @@ func (s *Service) reserveNativeLandingRenewal(ctx context.Context, w tenantstore
 		if err != nil {
 			return 0, err
 		}
-		policy, err := readChangeSummaryPolicyRows(ctx, w, scope)
+		policy, err := hubrecords.ReadChangeSummaryPolicyRows(ctx, w, scope)
 		if err != nil {
 			return 0, err
 		}

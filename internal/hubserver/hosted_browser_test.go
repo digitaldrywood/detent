@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -1508,7 +1509,7 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			project.States = nativeTriageStates(states)
+			project.States = hubrecords.NativeTriageStates(states)
 			_, err = w.UpdateProjectRecord(t.Context(), project)
 			return err
 		}); err != nil {

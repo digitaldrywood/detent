@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -134,7 +135,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 						card.Change.Status = detail.Summary.Status
 					}
 				}
-				card.Issue.WebURL = issueBrowserPath(organizationSlug, projectSlug, card.Issue.Number)
+				card.Issue.WebURL = hubrecords.IssueBrowserPath(organizationSlug, projectSlug, card.Issue.Number)
 				card.Issue = s.nativeIssueResponse(scope.ReporterIssue(card.Issue))
 				card.StatusLine = nativeBoardStatusLine(card)
 				*item.card = &card

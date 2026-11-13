@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -88,7 +89,7 @@ func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversa
 	if err != nil {
 		return nil, err
 	}
-	if err := validateNativeWorkflowTransition(project.States, issue.State, args.Destination, scope.Credential.Scope); err != nil {
+	if err := hubrecords.ValidateNativeWorkflowTransition(project.States, issue.State, args.Destination, scope.Credential.Scope); err != nil {
 		return nil, err
 	}
 	request := coordinatorStopRunArguments{ProjectID: string(record.ProjectID), Identifier: string(issue.WorkItemID), ExpectedRevision: issue.Revision, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Destination: args.Destination, Priority: args.Priority, Reason: args.Reason}

@@ -65,7 +65,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope hubscop
 	if err != nil {
 		return nil, err
 	}
-	if run.Sequence != snapshot.attempt.Sequence || run.ClaimReleasedAt == nil || run.TerminalFailure != nil && run.TerminalFailure.Stage == "lease_release" && run.CleanupAcknowledgedAt == nil {
+	if run.Sequence != snapshot.Attempt.Sequence || run.ClaimReleasedAt == nil || run.TerminalFailure != nil && run.TerminalFailure.Stage == "lease_release" && run.CleanupAcknowledgedAt == nil {
 		return nil, sourceRecoveryRefusal("Source execution has no acknowledged release")
 	}
 	approval, pinned, err := s.readTenantProjectPolicyRevision(ctx, scope.Organization, scope.Project)
@@ -144,7 +144,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope hubscop
 		if err != nil {
 			return err
 		}
-		if attempt.Sequence != snapshot.attempt.Sequence || attempt.PayloadObjectKey != snapshot.attempt.PayloadObjectKey || attempt.LeaseID != snapshot.attempt.LeaseID || attempt.FencingToken != snapshot.attempt.FencingToken {
+		if attempt.Sequence != snapshot.Attempt.Sequence || attempt.PayloadObjectKey != snapshot.Attempt.PayloadObjectKey || attempt.LeaseID != snapshot.Attempt.LeaseID || attempt.FencingToken != snapshot.Attempt.FencingToken {
 			return hubapi.NativeConflict(view.Revision - 1)
 		}
 		if attempt.Status != "succeeded" && attempt.Status != "failed" && attempt.Status != "cancelled" {

@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -113,7 +114,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 		if err != nil {
 			return nil, err
 		}
-		if err := validateNativeWorkflowTransition(project.States, issue.State, targetState, scope.Credential.Scope); err != nil {
+		if err := hubrecords.ValidateNativeWorkflowTransition(project.States, issue.State, targetState, scope.Credential.Scope); err != nil {
 			return nil, err
 		}
 	}

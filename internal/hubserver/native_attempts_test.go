@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -566,7 +567,7 @@ func copyNativeAttemptFixture(t *testing.T, f nativeFixture, worker string, issu
 		if err != nil {
 			return err
 		}
-		reader, ok := r.(attemptArchiveReader)
+		reader, ok := r.(hubrecords.AttemptArchiveReader)
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}

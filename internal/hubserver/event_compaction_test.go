@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -387,7 +388,7 @@ func TestEventCompactionRollback(t *testing.T) {
 		t.Fatalf("rollback lost activity payloads: %d", spans)
 	}
 	if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		_, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), row.PayloadObjectKey)
+		_, err := r.(hubrecords.AttemptArchiveReader).ArchiveObjectByKey(t.Context(), row.PayloadObjectKey)
 		if !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("rollback retained archive ownership: %v", err)
 		}

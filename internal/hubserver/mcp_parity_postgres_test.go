@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -636,7 +637,7 @@ func TestPostgresMCPImportParity(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				record.States = nativeTriageStates(nativeFixtureStates())
+				record.States = hubrecords.NativeTriageStates(nativeFixtureStates())
 				record.Settings.Repository = "example-org/example-project"
 				record.Settings.CheckoutRepository = "example-org/example-project"
 				record.Settings.Intake = "manual"

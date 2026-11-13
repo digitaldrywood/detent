@@ -14,29 +14,16 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type tenantAttemptSnapshot struct {
-	artifactsPayload  *attachment.ArchiveReference
-	checkpointPayload *attachment.ArchiveReference
-	recoverPayload    bool
-	payload           *attachment.ArchiveReference
-	attempt           leasestore.Attempt
-	lease             leasestore.Lease
-	event             eventstore.Event
-	evidence          bool
-	evidenceRows      []attachmentstore.Record
-}
 
 func (s *Service) readNativeAttemptTenant(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
 	snapshot, err := s.readNativeAttemptSnapshotTenant(ctx, scope, item, id)
@@ -46,11 +33,11 @@ func (s *Service) readNativeAttemptTenant(ctx context.Context, scope hubscope.Na
 	return s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.now())
 }
 
-func (s *Service) readNativeAttemptSnapshotTenant(ctx context.Context, scope hubscope.NativeScope, item, id string) (tenantAttemptSnapshot, error) {
-	var snapshot tenantAttemptSnapshot
+func (s *Service) readNativeAttemptSnapshotTenant(ctx context.Context, scope hubscope.NativeScope, item, id string) (hubrecords.TenantAttemptSnapshot, error) {
+	var snapshot hubrecords.TenantAttemptSnapshot
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return tenantAttemptSnapshot{}, hubapi.NativeRunEventStorageUnavailable()
+		return hubrecords.TenantAttemptSnapshot{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
@@ -70,32 +57,32 @@ func (s *Service) readNativeAttemptSnapshotTenant(ctx context.Context, scope hub
 		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
 		}
-		snapshot.attempt, err = r.Attempt(ctx, id)
+		snapshot.Attempt, err = r.Attempt(ctx, id)
 		if err != nil {
 			return err
 		}
-		if snapshot.attempt.IssueID != workItem.ID {
+		if snapshot.Attempt.IssueID != workItem.ID {
 			return hubapi.NativeNotFound()
 		}
-		r, err = readAttemptMetadataSnapshot(ctx, r, scope, item, []leasestore.Attempt{snapshot.attempt}, true)
+		r, err = readAttemptMetadataSnapshot(ctx, r, scope, item, []leasestore.Attempt{snapshot.Attempt}, true)
 		if err != nil {
 			return err
 		}
-		snapshot.lease, err = r.Lease(ctx, snapshot.attempt.LeaseID)
+		snapshot.Lease, err = r.Lease(ctx, snapshot.Attempt.LeaseID)
 		if err != nil {
 			return err
 		}
-		if snapshot.lease.IssueID != workItem.ID || snapshot.lease.FencingToken != snapshot.attempt.FencingToken {
+		if snapshot.Lease.IssueID != workItem.ID || snapshot.Lease.FencingToken != snapshot.Attempt.FencingToken {
 			return corestore.ErrNotFound
 		}
-		snapshot.event, err = r.LatestRunEvent(ctx, scope.Project, snapshot.attempt.ID)
-		if err == nil && snapshot.event.WorkItemID != tracker.NativeWorkItemID(item) {
+		snapshot.Event, err = r.LatestRunEvent(ctx, scope.Project, snapshot.Attempt.ID)
+		if err == nil && snapshot.Event.WorkItemID != tracker.NativeWorkItemID(item) {
 			return corestore.ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		if err := readTenantAttemptPayload(ctx, r, &snapshot); err != nil {
+		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
 			return err
 		}
 		return readTenantAttemptEvidence(ctx, r, &snapshot)
@@ -143,7 +130,7 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope hubscop
 		}
 	}
 
-	var snapshots []tenantAttemptSnapshot
+	var snapshots []hubrecords.TenantAttemptSnapshot
 	var page leasestore.AttemptPage
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
@@ -176,7 +163,7 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope hubscop
 		if err != nil {
 			return err
 		}
-		snapshots = make([]tenantAttemptSnapshot, 0, len(page.Items))
+		snapshots = make([]hubrecords.TenantAttemptSnapshot, 0, len(page.Items))
 		for _, attempt := range page.Items {
 			if attempt.IssueID != workItem.ID {
 				return corestore.ErrNotFound
@@ -195,8 +182,8 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope hubscop
 			if event.WorkItemID != tracker.NativeWorkItemID(item) {
 				return corestore.ErrNotFound
 			}
-			snapshot := tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
-			if err := readTenantAttemptPayload(ctx, r, &snapshot); err != nil {
+			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+			if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
 				return err
 			}
 			if view != "recorded_blockers" && !attemptSummaryRead(ctx) {
@@ -225,9 +212,9 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope hubscop
 		attempt.Identity = nativeAttemptDisplayIdentity(attempt)
 		attempt.Runtime = attempt.Runtime.WithoutActivitySpans()
 		next := cursor
-		next.After = strconv.FormatInt(snapshot.attempt.FencingToken, 10)
+		next.After = strconv.FormatInt(snapshot.Attempt.FencingToken, 10)
 		if typedCursor.Oldest {
-			next.After = strconv.FormatInt(snapshot.attempt.FencingToken, 10)
+			next.After = strconv.FormatInt(snapshot.Attempt.FencingToken, 10)
 		}
 		nextCursor, err := encodeNativeCursor(next, key)
 		if err != nil {
@@ -264,38 +251,38 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope hubscop
 	return result, nil
 }
 
-func (s *Service) readNativeAttemptCheckpointTenant(ctx context.Context, snapshot tenantAttemptSnapshot) (*tracker.NativeCheckpoint, error) {
-	attempt := snapshot.attempt
+func (s *Service) readNativeAttemptCheckpointTenant(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot) (*tracker.NativeCheckpoint, error) {
+	attempt := snapshot.Attempt
 	var checkpoint *tracker.NativeCheckpoint
 	if attempt.CheckpointObjectKey != nil {
 		var raw []byte
 		var err error
-		if snapshot.checkpointPayload != nil {
-			raw, err = s.runDetailStore().ReadDetail(ctx, string(attempt.OrganizationID), *snapshot.checkpointPayload)
+		if snapshot.CheckpointPayload != nil {
+			raw, err = s.runDetailStore().ReadDetail(ctx, string(attempt.OrganizationID), *snapshot.CheckpointPayload)
 		} else {
 			owner, ok := s.runDetailStore().(attachment.CanonicalDetailStore)
 			if !ok {
 				return nil, hubapi.NativeRunEventStorageUnavailable()
 			}
-			raw, err = owner.ReadCanonicalDetail(ctx, string(attempt.OrganizationID), string(snapshot.event.ProjectID), *attempt.CheckpointObjectKey)
+			raw, err = owner.ReadCanonicalDetail(ctx, string(attempt.OrganizationID), string(snapshot.Event.ProjectID), *attempt.CheckpointObjectKey)
 		}
 		if err != nil {
-			return nil, nativeAttemptArchiveReadError(snapshot.checkpointPayload, err)
+			return nil, nativeAttemptArchiveReadError(snapshot.CheckpointPayload, err)
 		}
-		checkpoint, err = decodeAttemptCheckpoint(ctx, attempt, raw, func(ctx context.Context, detail *runDetailReference) ([]byte, error) {
+		checkpoint, err = decodeAttemptCheckpoint(ctx, attempt, raw, func(ctx context.Context, detail *hubrecords.RunDetailReference) ([]byte, error) {
 			return s.readAttemptCheckpointDetail(ctx, snapshot, detail)
 		})
 		if err != nil {
-			return nil, nativeAttemptArchiveReadError(snapshot.checkpointPayload, err)
+			return nil, nativeAttemptArchiveReadError(snapshot.CheckpointPayload, err)
 		}
 		if attempt.CheckpointPreservesSource != nil && *attempt.CheckpointPreservesSource != checkpoint.PreservesSource() {
-			return nil, nativeAttemptArchiveReadError(snapshot.checkpointPayload, artifact.ErrIntegrity)
+			return nil, nativeAttemptArchiveReadError(snapshot.CheckpointPayload, artifact.ErrIntegrity)
 		}
 	}
 	return checkpoint, nil
 }
 
-func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenantAttemptSnapshot, now time.Time) (tracker.NativeAttempt, error) {
+func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot, now time.Time) (tracker.NativeAttempt, error) {
 	if s.runDetailStore() == nil {
 		return tracker.NativeAttempt{}, hubapi.NativeRunEventStorageUnavailable()
 	}
@@ -303,13 +290,13 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	if err != nil {
 		return tracker.NativeAttempt{}, err
 	}
-	attempt := snapshot.attempt
-	lease := snapshot.lease
+	attempt := snapshot.Attempt
+	lease := snapshot.Lease
 	checkpoint, err := s.readNativeAttemptCheckpointTenant(ctx, snapshot)
 	if err != nil {
 		return tracker.NativeAttempt{}, err
 	}
-	if err := nativeAttemptRunMismatch(snapshot, run); err != nil {
+	if err := hubrecords.NativeAttemptRunMismatch(snapshot, run); err != nil {
 		return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt identity: %w", err)
 	}
 	result := tracker.NativeAttempt{NativeRunData: run, LocalAttemptID: attempt.LocalAttemptID, Status: attempt.Status, StartedAt: attempt.StartedAt, UpdatedAt: attempt.UpdatedAt,
@@ -317,11 +304,11 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 		LeaseRenewedAt: lease.RenewedAt, LeaseExpiresAt: lease.ExpiresAt, Current: lease.ReleasedAt == nil && !now.Before(lease.RenewedAt) && now.Before(lease.ExpiresAt),
 		Checkpoint: checkpoint, RuntimeFreshness: "unavailable",
 		TerminalFailureAvailability: "unavailable", FinalizationAvailability: "unavailable", Unavailable: []string{"evidence"}}
-	if snapshot.evidence {
+	if snapshot.Evidence {
 		var evidence []tracker.NativeEvidence
 		budget := 1 << 20
-		for _, record := range snapshot.evidenceRows {
-			if record.OrganizationID != attempt.OrganizationID || record.Metadata.ProjectID != string(snapshot.event.ProjectID) || record.Metadata.WorkItemID != string(snapshot.event.WorkItemID) || record.EvidenceAttemptID != attempt.ID || record.Metadata.Validate() != nil {
+		for _, record := range snapshot.EvidenceRows {
+			if record.OrganizationID != attempt.OrganizationID || record.Metadata.ProjectID != string(snapshot.Event.ProjectID) || record.Metadata.WorkItemID != string(snapshot.Event.WorkItemID) || record.EvidenceAttemptID != attempt.ID || record.Metadata.Validate() != nil {
 				return tracker.NativeAttempt{}, fmt.Errorf("hydrate attempt evidence: %w", artifact.ErrIntegrity)
 			}
 			file := tracker.NativeEvidence{AttachmentID: record.Metadata.ID, Caption: record.EvidenceCaption, Reference: record.Metadata.Markdown(string(attempt.OrganizationID))}
@@ -339,8 +326,8 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 		result.Unavailable = slices.DeleteFunc(result.Unavailable, func(value string) bool { return value == "evidence" })
 	}
 	result.ArtifactIDs = run.ArtifactIDs
-	if snapshot.artifactsPayload != nil {
-		ref := *snapshot.artifactsPayload
+	if snapshot.ArtifactsPayload != nil {
+		ref := *snapshot.ArtifactsPayload
 		raw, err := s.runDetailStore().ReadDetail(ctx, string(attempt.OrganizationID), ref)
 		if err != nil {
 			return tracker.NativeAttempt{}, nativeAttemptArchiveReadError(&ref, err)
@@ -379,8 +366,8 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	}
 	if result.Runtime != nil && result.Runtime.Landing != nil {
 		ref := result.Runtime.Landing
-		scope := hubscope.NativeScope{Organization: snapshot.attempt.OrganizationID, Project: snapshot.event.ProjectID}
-		landing, owner, err := s.readNativeLandingObservation(ctx, scope, snapshot.event.WorkItemID, tracker.NativeChangeReference{ChangeID: ref.ChangeID, VersionID: ref.VersionID, HeadSHA: ref.HeadSHA})
+		scope := hubscope.NativeScope{Organization: snapshot.Attempt.OrganizationID, Project: snapshot.Event.ProjectID}
+		landing, owner, err := s.readNativeLandingObservation(ctx, scope, snapshot.Event.WorkItemID, tracker.NativeChangeReference{ChangeID: ref.ChangeID, VersionID: ref.VersionID, HeadSHA: ref.HeadSHA})
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return tracker.NativeAttempt{}, err
 		}
@@ -391,168 +378,25 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	return result, nil
 }
 
-func nativeAttemptRunMatches(snapshot tenantAttemptSnapshot, run tracker.NativeRunData) bool {
-	return nativeAttemptRunMismatch(snapshot, run) == nil
+func nativeAttemptRunMatches(snapshot hubrecords.TenantAttemptSnapshot, run tracker.NativeRunData) bool {
+	return hubrecords.NativeAttemptRunMismatch(snapshot, run) == nil
 }
 
-type nativeAttemptIdentityValues struct {
-	Expected int64
-	Actual   int64
-}
-
-type nativeAttemptIdentityMismatch struct {
-	AttemptID  string
-	WorkItemID tracker.NativeWorkItemID
-	Field      string
-	Values     *nativeAttemptIdentityValues
-}
-
-func (e *nativeAttemptIdentityMismatch) Error() string {
-	return artifact.ErrIntegrity.Error() + ": " + e.Field
-}
-
-func (*nativeAttemptIdentityMismatch) Unwrap() error { return artifact.ErrIntegrity }
-
-func nativeAttemptRunMismatch(snapshot tenantAttemptSnapshot, run tracker.NativeRunData) *nativeAttemptIdentityMismatch {
-	attempt, lease := snapshot.attempt, snapshot.lease
-	mismatch := func(field string, values *nativeAttemptIdentityValues) *nativeAttemptIdentityMismatch {
-		return &nativeAttemptIdentityMismatch{AttemptID: attempt.ID, WorkItemID: snapshot.event.WorkItemID, Field: field, Values: values}
-	}
-	switch {
-	case run.AttemptID != attempt.ID:
-		return mismatch("attempt_id", nil)
-	case run.RunID != attempt.RunID:
-		return mismatch("run_id", nil)
-	case run.LeaseID != tracker.LeaseID(lease.LeaseID):
-		return mismatch("lease_id", nil)
-	case run.FencingToken != tracker.FencingToken(lease.FencingToken):
-		return mismatch("fencing_token", &nativeAttemptIdentityValues{Expected: lease.FencingToken, Actual: int64(run.FencingToken)})
-	case attempt.LocalAttemptID > 0 && run.Runtime != nil && run.Runtime.LocalAttemptID > 0 && run.Runtime.LocalAttemptID != attempt.LocalAttemptID:
-		return mismatch("local_attempt_id", &nativeAttemptIdentityValues{Expected: attempt.LocalAttemptID, Actual: run.Runtime.LocalAttemptID})
-	case run.Sequence == attempt.Sequence:
-		return nil
-	case attempt.Status != "cancelled" || attempt.Sequence != run.Sequence+1 || run.Outcome != "":
-		return mismatch("sequence", &nativeAttemptIdentityValues{Expected: attempt.Sequence, Actual: run.Sequence})
-	case lease.ReleasedAt == nil:
-		return mismatch("released_at", nil)
-	case !attempt.UpdatedAt.Equal(*lease.ReleasedAt):
-		return mismatch("updated_at", &nativeAttemptIdentityValues{Expected: attempt.UpdatedAt.UnixMicro(), Actual: lease.ReleasedAt.UnixMicro()})
-	default:
-		return nil
-	}
-}
-
-func readTenantAttemptEvidence(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
-	records, err := r.AttachmentEvidence(ctx, snapshot.event.ProjectID, snapshot.event.WorkItemID, snapshot.attempt.ID, 201)
+func readTenantAttemptEvidence(ctx context.Context, r tenantstore.Reader, snapshot *hubrecords.TenantAttemptSnapshot) error {
+	records, err := r.AttachmentEvidence(ctx, snapshot.Event.ProjectID, snapshot.Event.WorkItemID, snapshot.Attempt.ID, 201)
 	if err != nil {
 		return err
 	}
 	if len(records) > 200 {
 		return hubapi.NativePublicInvalid("Attempt evidence exceeds the 200-reference read bound")
 	}
-	snapshot.evidence, snapshot.evidenceRows = true, records
+	snapshot.Evidence, snapshot.EvidenceRows = true, records
 	return nil
 }
 
-type attemptArchiveReader interface {
-	ArchiveObjectByKey(context.Context, string) (artifactstore.ArchiveObject, error)
-}
-
-func readTenantAttemptPayload(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
-	if err := readTenantAttemptRunPayload(ctx, r, snapshot); err != nil {
-		return err
-	}
-	if err := readTenantAttemptCheckpointPayload(ctx, r, snapshot); err != nil {
-		return err
-	}
-	if snapshot.attempt.ArtifactsObjectKey == nil {
-		return nil
-	}
-	reader, ok := r.(attemptArchiveReader)
-	if !ok {
-		return hubapi.NativeRunEventStorageUnavailable()
-	}
-	object, err := reader.ArchiveObjectByKey(ctx, *snapshot.attempt.ArtifactsObjectKey)
-	if errors.Is(err, corestore.ErrNotFound) {
-		return artifact.ErrIntegrity
-	}
-	if err != nil {
-		return err
-	}
-	if object.OrganizationID != snapshot.attempt.OrganizationID || object.Reference.Key != *snapshot.attempt.ArtifactsObjectKey || object.Reference.Validate(string(snapshot.attempt.OrganizationID)) != nil {
-		return artifact.ErrIntegrity
-	}
-	snapshot.artifactsPayload = &object.Reference
-	return nil
-}
-
-func readTenantAttemptCheckpointPayload(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
-	if snapshot.attempt.CheckpointObjectKey == nil {
-		return nil
-	}
-	reader, ok := r.(attemptArchiveReader)
-	if !ok {
-		return hubapi.NativeRunEventStorageUnavailable()
-	}
-	object, err := reader.ArchiveObjectByKey(ctx, *snapshot.attempt.CheckpointObjectKey)
-	if errors.Is(err, corestore.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if object.OrganizationID != snapshot.attempt.OrganizationID || object.Reference.Key != *snapshot.attempt.CheckpointObjectKey || object.Reference.Validate(string(snapshot.attempt.OrganizationID)) != nil {
-		return artifact.ErrIntegrity
-	}
-	snapshot.checkpointPayload = &object.Reference
-	return nil
-}
-
-func readTenantAttemptRunPayload(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
-	reader, ok := r.(attemptArchiveReader)
-	if !ok {
-		return hubapi.NativeRunEventStorageUnavailable()
-	}
-	object, err := reader.ArchiveObjectByKey(ctx, snapshot.attempt.PayloadObjectKey)
-	if errors.Is(err, corestore.ErrNotFound) {
-		return readTenantAttemptAttachmentPayload(ctx, r, snapshot)
-	}
-	if err != nil {
-		return err
-	}
-	if object.OrganizationID != snapshot.attempt.OrganizationID || object.Reference.Key != snapshot.attempt.PayloadObjectKey || object.Reference.Validate(string(snapshot.attempt.OrganizationID)) != nil {
-		return artifact.ErrIntegrity
-	}
-	snapshot.payload = &object.Reference
-	return nil
-}
-
-func readTenantAttemptAttachmentPayload(ctx context.Context, r tenantstore.Reader, snapshot *tenantAttemptSnapshot) error {
-	attempt := snapshot.attempt
-	id := newRunDetailReference(attachment.ArchiveReference{Key: attempt.PayloadObjectKey}, string(attempt.OrganizationID), "").AttachmentID
-	row, err := r.Attachment(ctx, snapshot.event.ProjectID, id)
-	if errors.Is(err, corestore.ErrNotFound) {
-		snapshot.recoverPayload = true
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	ref := attachment.ArchiveReference{Key: row.ObjectKey, SHA256: row.Metadata.SHA256, CompressedSize: row.Metadata.Size,
-		UncompressedSize: row.UncompressedSize, Codec: row.Codec, SchemaVersion: int(row.SchemaVersion),
-		Kind: row.Kind, Retention: row.Retention, BindingID: row.StorageBindingID, CustomerOwned: row.CustomerOwned}
-	if row.OrganizationID != attempt.OrganizationID || row.Metadata.ProjectID != string(snapshot.event.ProjectID) || row.Metadata.ID != id ||
-		row.Metadata.DeletedAt != nil || row.ObjectDeletedAt != nil || ref.Key != attempt.PayloadObjectKey || ref.Validate(string(attempt.OrganizationID)) != nil ||
-		ref.SchemaVersion != 1 || ref.BindingID != "" || ref.CustomerOwned {
-		return artifact.ErrIntegrity
-	}
-	snapshot.payload = &ref
-	return nil
-}
-
-func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot tenantAttemptSnapshot) (tracker.NativeRunData, error) {
-	if snapshot.payload == nil && !snapshot.recoverPayload {
-		value, err := eventstore.NewContent(s.runDetailStore()).Event(ctx, snapshot.event)
+func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot) (tracker.NativeRunData, error) {
+	if snapshot.Payload == nil && !snapshot.RecoverPayload {
+		value, err := eventstore.NewContent(s.runDetailStore()).Event(ctx, snapshot.Event)
 		if err != nil {
 			return tracker.NativeRunData{}, err
 		}
@@ -563,21 +407,21 @@ func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot tenan
 	}
 	var raw []byte
 	var err error
-	if snapshot.recoverPayload {
+	if snapshot.RecoverPayload {
 		owner, ok := s.runDetailStore().(attachment.CanonicalDetailStore)
-		if !ok || snapshot.event.OrganizationID != snapshot.attempt.OrganizationID {
+		if !ok || snapshot.Event.OrganizationID != snapshot.Attempt.OrganizationID {
 			return tracker.NativeRunData{}, artifact.ErrIntegrity
 		}
-		raw, err = owner.ReadCanonicalDetail(ctx, string(snapshot.attempt.OrganizationID), string(snapshot.event.ProjectID), snapshot.attempt.PayloadObjectKey)
+		raw, err = owner.ReadCanonicalDetail(ctx, string(snapshot.Attempt.OrganizationID), string(snapshot.Event.ProjectID), snapshot.Attempt.PayloadObjectKey)
 	} else {
-		raw, err = s.runDetailStore().ReadDetail(ctx, string(snapshot.attempt.OrganizationID), *snapshot.payload)
+		raw, err = s.runDetailStore().ReadDetail(ctx, string(snapshot.Attempt.OrganizationID), *snapshot.Payload)
 	}
 	if err != nil {
-		return tracker.NativeRunData{}, nativeAttemptArchiveReadError(snapshot.payload, err)
+		return tracker.NativeRunData{}, nativeAttemptArchiveReadError(snapshot.Payload, err)
 	}
 	var run tracker.NativeRunData
-	if snapshot.payload != nil && int64(len(raw)) != snapshot.payload.UncompressedSize || json.Unmarshal(raw, &run) != nil {
-		return run, nativeAttemptArchiveReadError(snapshot.payload, artifact.ErrIntegrity)
+	if snapshot.Payload != nil && int64(len(raw)) != snapshot.Payload.UncompressedSize || json.Unmarshal(raw, &run) != nil {
+		return run, nativeAttemptArchiveReadError(snapshot.Payload, artifact.ErrIntegrity)
 	}
 	return run, nil
 }
@@ -602,7 +446,7 @@ func nativeAttemptArchiveReadError(ref *attachment.ArchiveReference, err error) 
 	return errors.Join(artifact.ErrIntegrity, err, &hubapi.NativeArchiveError{Archive: descriptor})
 }
 
-func decodeAttemptCheckpoint(ctx context.Context, attempt leasestore.Attempt, raw []byte, resolve func(context.Context, *runDetailReference) ([]byte, error)) (*tracker.NativeCheckpoint, error) {
+func decodeAttemptCheckpoint(ctx context.Context, attempt leasestore.Attempt, raw []byte, resolve func(context.Context, *hubrecords.RunDetailReference) ([]byte, error)) (*tracker.NativeCheckpoint, error) {
 	var wrapper checkpointPayload
 	if err := json.Unmarshal(raw, &wrapper); err != nil {
 		return nil, errors.Join(artifact.ErrIntegrity, err)
@@ -639,18 +483,18 @@ func decodeAttemptCheckpoint(ctx context.Context, attempt leasestore.Attempt, ra
 		err = json.Unmarshal(resolved, &entries)
 		run = entries[detail.Entry]
 	}
-	if err != nil || runDetailEntry(run) != detail.Entry || run.AttemptID != attempt.ID || string(run.LeaseID) != attempt.LeaseID || int64(run.FencingToken) != attempt.FencingToken || run.RunID != attempt.RunID || run.Sequence < 1 || run.Sequence > attempt.Sequence || run.Handoff == nil {
+	if err != nil || hubrecords.RunDetailEntry(run) != detail.Entry || run.AttemptID != attempt.ID || string(run.LeaseID) != attempt.LeaseID || int64(run.FencingToken) != attempt.FencingToken || run.RunID != attempt.RunID || run.Sequence < 1 || run.Sequence > attempt.Sequence || run.Handoff == nil {
 		return nil, errors.Join(artifact.ErrIntegrity, err)
 	}
 	return run.Handoff, nil
 }
 
-func (s *Service) readAttemptCheckpointDetail(ctx context.Context, snapshot tenantAttemptSnapshot, detail *runDetailReference) ([]byte, error) {
-	attempt := snapshot.attempt
+func (s *Service) readAttemptCheckpointDetail(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot, detail *hubrecords.RunDetailReference) ([]byte, error) {
+	attempt := snapshot.Attempt
 	var ref attachment.ArchiveReference
 	err := s.config.TenantRepository.ReadTenant(ctx, attempt.OrganizationID, corestore.Background, func(r tenantstore.Reader) error {
 		if detail.ObjectKey != "" {
-			owner, ok := r.(attemptArchiveReader)
+			owner, ok := r.(hubrecords.AttemptArchiveReader)
 			if !ok {
 				return hubapi.NativeRunEventStorageUnavailable()
 			}
@@ -663,11 +507,11 @@ func (s *Service) readAttemptCheckpointDetail(ctx context.Context, snapshot tena
 			}
 			ref = object.Reference
 		} else {
-			row, err := r.Attachment(ctx, snapshot.event.ProjectID, detail.AttachmentID)
+			row, err := r.Attachment(ctx, snapshot.Event.ProjectID, detail.AttachmentID)
 			if err != nil {
 				return err
 			}
-			if row.OrganizationID != attempt.OrganizationID || row.Metadata.ProjectID != string(snapshot.event.ProjectID) || row.Metadata.ID != detail.AttachmentID || row.Metadata.DeletedAt != nil || row.ObjectDeletedAt != nil {
+			if row.OrganizationID != attempt.OrganizationID || row.Metadata.ProjectID != string(snapshot.Event.ProjectID) || row.Metadata.ID != detail.AttachmentID || row.Metadata.DeletedAt != nil || row.ObjectDeletedAt != nil {
 				return artifact.ErrIntegrity
 			}
 			ref = attachment.ArchiveReference{Key: row.ObjectKey, SHA256: row.Metadata.SHA256, CompressedSize: row.Metadata.Size, UncompressedSize: row.UncompressedSize, Codec: row.Codec, SchemaVersion: int(row.SchemaVersion), Kind: row.Kind, Retention: row.Retention, BindingID: row.StorageBindingID, CustomerOwned: row.CustomerOwned}
@@ -685,7 +529,7 @@ func (s *Service) readAttemptCheckpointDetail(ctx context.Context, snapshot tena
 
 func (s *Service) populateCheckpointSource(ctx context.Context, organization tracker.OrganizationID, after string) (string, error) {
 	var page leasestore.CheckpointSourcePage
-	var snapshot tenantAttemptSnapshot
+	var snapshot hubrecords.TenantAttemptSnapshot
 	var cleanupErr, checkpointErr error
 	var cleanupNeeded, checkpointNeeded bool
 	var runnerID string
@@ -699,38 +543,38 @@ func (s *Service) populateCheckpointSource(ctx context.Context, organization tra
 		if err != nil || page.Candidate == nil {
 			return err
 		}
-		snapshot.attempt, err = r.Attempt(ctx, page.Candidate.AttemptID)
+		snapshot.Attempt, err = r.Attempt(ctx, page.Candidate.AttemptID)
 		if err != nil {
 			return err
 		}
-		cleanupNeeded = snapshot.attempt.WorkerCleanupRequired == nil || snapshot.attempt.RuntimeSummarySequence != snapshot.attempt.Sequence
-		checkpointNeeded = snapshot.attempt.CheckpointObjectKey != nil && snapshot.attempt.CheckpointPreservesSource == nil
+		cleanupNeeded = snapshot.Attempt.WorkerCleanupRequired == nil || snapshot.Attempt.RuntimeSummarySequence != snapshot.Attempt.Sequence
+		checkpointNeeded = snapshot.Attempt.CheckpointObjectKey != nil && snapshot.Attempt.CheckpointPreservesSource == nil
 		if !cleanupNeeded && !checkpointNeeded {
 			return corestore.ErrRevisionConflict
 		}
-		snapshot.event = eventstore.Event{OrganizationID: organization, ProjectID: page.Candidate.ProjectID, WorkItemID: page.Candidate.WorkItemID}
+		snapshot.Event = eventstore.Event{OrganizationID: organization, ProjectID: page.Candidate.ProjectID, WorkItemID: page.Candidate.WorkItemID}
 		if cleanupNeeded {
-			snapshot.lease, cleanupErr = r.Lease(ctx, snapshot.attempt.LeaseID)
+			snapshot.Lease, cleanupErr = r.Lease(ctx, snapshot.Attempt.LeaseID)
 			if cleanupErr == nil {
-				runner, runnerErr := r.RunnerForLease(ctx, snapshot.lease.LeaseID)
+				runner, runnerErr := r.RunnerForLease(ctx, snapshot.Lease.LeaseID)
 				cleanupErr = runnerErr
 				runnerID = runner.RunnerID
 			}
 			if cleanupErr == nil {
-				snapshot.event, cleanupErr = r.LatestRunEvent(ctx, page.Candidate.ProjectID, snapshot.attempt.ID)
+				snapshot.Event, cleanupErr = r.LatestRunEvent(ctx, page.Candidate.ProjectID, snapshot.Attempt.ID)
 			}
-			if cleanupErr == nil && (snapshot.event.WorkItemID != page.Candidate.WorkItemID || snapshot.lease.IssueID != snapshot.attempt.IssueID || snapshot.lease.FencingToken != snapshot.attempt.FencingToken) {
+			if cleanupErr == nil && (snapshot.Event.WorkItemID != page.Candidate.WorkItemID || snapshot.Lease.IssueID != snapshot.Attempt.IssueID || snapshot.Lease.FencingToken != snapshot.Attempt.FencingToken) {
 				cleanupErr = artifact.ErrIntegrity
 			}
 			if cleanupErr == nil {
-				cleanupErr = readTenantAttemptRunPayload(ctx, r, &snapshot)
+				cleanupErr = hubrecords.ReadTenantAttemptRunPayload(ctx, r, &snapshot)
 			}
 		}
 		if checkpointNeeded {
 			if cleanupErr != nil {
-				snapshot.event = eventstore.Event{OrganizationID: organization, ProjectID: page.Candidate.ProjectID, WorkItemID: page.Candidate.WorkItemID}
+				snapshot.Event = eventstore.Event{OrganizationID: organization, ProjectID: page.Candidate.ProjectID, WorkItemID: page.Candidate.WorkItemID}
 			}
-			checkpointErr = readTenantAttemptCheckpointPayload(ctx, r, &snapshot)
+			checkpointErr = hubrecords.ReadTenantAttemptCheckpointPayload(ctx, r, &snapshot)
 		}
 		return nil
 	})
@@ -742,7 +586,7 @@ func (s *Service) populateCheckpointSource(ctx context.Context, organization tra
 	if cleanupNeeded && cleanupErr == nil {
 		var run tracker.NativeRunData
 		run, cleanupErr = s.readNativeAttemptRunTenant(ctx, snapshot)
-		if cleanupErr == nil && (!nativeAttemptRunMatches(snapshot, run) || run.RunnerID != runnerID || string(run.MachineID) != snapshot.lease.MachineID) {
+		if cleanupErr == nil && (!nativeAttemptRunMatches(snapshot, run) || run.RunnerID != runnerID || string(run.MachineID) != snapshot.Lease.MachineID) {
 			cleanupErr = artifact.ErrIntegrity
 		}
 		if cleanupErr == nil {
@@ -770,7 +614,7 @@ func (s *Service) populateCheckpointSource(ctx context.Context, organization tra
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		if cleanup != nil {
-			if err := w.SetAttemptRuntimeHeartbeat(ctx, snapshot.attempt.ID, snapshot.attempt.Sequence, heartbeat, *cleanup); err != nil {
+			if err := w.SetAttemptRuntimeHeartbeat(ctx, snapshot.Attempt.ID, snapshot.Attempt.Sequence, heartbeat, *cleanup); err != nil {
 				return err
 			}
 		}
@@ -779,7 +623,7 @@ func (s *Service) populateCheckpointSource(ctx context.Context, organization tra
 			if !ok {
 				return hubapi.NativeWorkItemStorageUnavailable()
 			}
-			return owner.SetCheckpointSource(ctx, leasestore.CheckpointSourceFact{AttemptID: snapshot.attempt.ID, IssueID: snapshot.attempt.IssueID, Sequence: snapshot.attempt.Sequence, CheckpointObjectKey: *snapshot.attempt.CheckpointObjectKey, PreservesSource: *checkpoint})
+			return owner.SetCheckpointSource(ctx, leasestore.CheckpointSourceFact{AttemptID: snapshot.Attempt.ID, IssueID: snapshot.Attempt.IssueID, Sequence: snapshot.Attempt.Sequence, CheckpointObjectKey: *snapshot.Attempt.CheckpointObjectKey, PreservesSource: *checkpoint})
 		}
 		return nil
 	})

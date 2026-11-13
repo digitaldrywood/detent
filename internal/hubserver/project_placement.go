@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -29,34 +30,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type placementDecision struct {
-	Policy        policy.Placement `json:"policy"`
-	ReadyTodo     int              `json:"ready_todo"`
-	LocalFree     int              `json:"local_free"`
-	SpriteFree    int              `json:"sprite_free"`
-	SpriteUsed    int              `json:"sprite_used"`
-	Pending       int              `json:"pending"`
-	SpriteTarget  int              `json:"sprite_target"`
-	Provisionable int              `json:"provisionable"`
-	ProviderFree  *int             `json:"provider_free,omitempty"`
-	Reason        string           `json:"reason"`
-}
-
-type placementRunner struct {
-	runnerauth.Runner
-	Sprite, Pending, Paused bool
-	Enrollment              string
-}
-
-type placementSnapshot struct {
-	placementDecision
-	Runners      []placementRunner
-	Requirements policy.Requirements
-	Items        map[tracker.WorkItemID]providercapacity.Requirement
-	Local        map[tracker.WorkItemID]int
-	resolver     *runner.BoardIdentityResolver
-}
 
 func readPlacementPolicy(ctx context.Context, r tenantstore.Reader) (policy.Placement, int, error) {
 	owner, ok := r.(postgres.SpriteReader)
@@ -106,7 +79,7 @@ func readSpriteMembers(ctx context.Context, owner postgres.SpriteReader) ([]post
 	}
 }
 
-func readPlacementRunners(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, now time.Time) ([]placementRunner, error) {
+func readPlacementRunners(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, now time.Time) ([]hubrecords.PlacementRunner, error) {
 	reader, ok := r.(runnerstore.RoutingPageReader)
 	if !ok {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
@@ -115,7 +88,7 @@ func readPlacementRunners(ctx context.Context, r tenantstore.Reader, scope hubsc
 	if err != nil {
 		return nil, err
 	}
-	result := []placementRunner{}
+	result := []hubrecords.PlacementRunner{}
 	for offset := 0; ; offset += corestore.MaxPageSize {
 		var page []runnerstore.RoutingRecord
 		var err error
@@ -138,7 +111,7 @@ func readPlacementRunners(ctx context.Context, r tenantstore.Reader, scope hubsc
 				}
 			}
 			runner := runnerFromRoutingRecord(record, now, urgent)
-			current := placementRunner{Runner: runner, Enrollment: record.Record.Identity.EnrollmentID, Sprite: record.Record.Machine.SpriteName == runner.Hostname && validSpritesSlug(record.Record.Machine.SpriteName)}
+			current := hubrecords.PlacementRunner{Runner: runner, Enrollment: record.Record.Identity.EnrollmentID, Sprite: record.Record.Machine.SpriteName == runner.Hostname && validSpritesSlug(record.Record.Machine.SpriteName)}
 			current.Paused = current.Sprite && now.Sub(runner.LastHeartbeatAt) >= spriteRunnerIdle
 			woke := record.Record.Machine.SpriteWokenAt
 			current.Pending = current.Paused && woke != nil && !now.Before(*woke) && now.Sub(*woke) < time.Minute
@@ -167,7 +140,7 @@ type placementSource struct {
 	models            policystore.OrganizationModels
 	placement         policy.Placement
 	ceiling           int
-	runners           []placementRunner
+	runners           []hubrecords.PlacementRunner
 	spriteUsed        int
 	items             []placementIssueSource
 	members           []postgres.SpriteMember
@@ -263,7 +236,7 @@ type placementCapacity struct {
 	accounts []scopedProviderAccount
 }
 
-func placementRunnerCompatible(r placementRunner, project tracker.ProjectID, requirements policy.Requirements, now time.Time, paused bool) bool {
+func placementRunnerCompatible(r hubrecords.PlacementRunner, project tracker.ProjectID, requirements policy.Requirements, now time.Time, paused bool) bool {
 	if paused && r.Paused && !r.Pending && r.Health != "revoked" && r.Health != "expired" {
 		r.Health, r.ConnectionHealth = "online", "online"
 		r.Paused = false
@@ -282,7 +255,7 @@ func newPlacementCapacity() *placementCapacity {
 	return &placementCapacity{hosts: make(map[tracker.MachineID]int), runners: make(map[string]int)}
 }
 
-func (c *placementCapacity) available(r placementRunner, project tracker.ProjectID, requirements policy.Requirements, provider providercapacity.Requirement, now time.Time, consume bool) int {
+func (c *placementCapacity) available(r hubrecords.PlacementRunner, project tracker.ProjectID, requirements policy.Requirements, provider providercapacity.Requirement, now time.Time, consume bool) int {
 	if !placementRunnerCompatible(r, project, requirements, now, false) {
 		return 0
 	}
@@ -316,12 +289,12 @@ func (c *placementCapacity) available(r placementRunner, project tracker.Project
 	return free
 }
 
-func (s *Service) readPlacementSnapshot(ctx context.Context, scope hubscope.NativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate) (placementSnapshot, error) {
+func (s *Service) readPlacementSnapshot(ctx context.Context, scope hubscope.NativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate) (hubrecords.PlacementSnapshot, error) {
 	return s.readPlacementSnapshotWithCapacity(ctx, scope, now, overrides, newPlacementCapacity(), make(map[string]bool))
 }
 
-func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope hubscope.NativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, localCapacity *placementCapacity, counted map[string]bool) (placementSnapshot, error) {
-	var result placementSnapshot
+func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope hubscope.NativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, localCapacity *placementCapacity, counted map[string]bool) (hubrecords.PlacementSnapshot, error) {
+	var result hubrecords.PlacementSnapshot
 	source, err := s.readPlacementSource(ctx, scope, now)
 	if err != nil {
 		return result, err
@@ -338,7 +311,7 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope h
 	if err != nil {
 		return result, err
 	}
-	workflow, err := projectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), descriptor)
+	workflow, err := hubrecords.ProjectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), descriptor)
 	if err != nil {
 		return result, err
 	}
@@ -353,7 +326,7 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope h
 	if err != nil {
 		return result, err
 	}
-	result.resolver = resolver
+	result.Resolver = resolver
 	exposure := budget.CostExposure{SpriteInfrastructure: true, RunnerAPI: workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered}
 	decision, err := checkMonthlyBudget(ctx, nil, scope, exposure, false, now, s.config.TenantRepository)
 	if err != nil {
@@ -397,7 +370,7 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope h
 			continue
 		}
 		compatible := ceiling > 0 && result.Requirements.RunnerID == "" && result.Requirements.MachineID == "" && len(result.Requirements.RequiredTags) == 0
-		if slices.ContainsFunc(result.Runners, func(r placementRunner) bool { return r.Sprite && len(r.ProviderCapacity) > 0 }) {
+		if slices.ContainsFunc(result.Runners, func(r hubrecords.PlacementRunner) bool { return r.Sprite && len(r.ProviderCapacity) > 0 }) {
 			compatible = false
 		}
 		for _, r := range result.Runners {
@@ -461,10 +434,12 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope h
 			continue
 		}
 		enrollment, state := member.EnrollmentID, member.State
-		if state == "enrolled" && slices.ContainsFunc(result.Runners, func(r placementRunner) bool { return r.Enrollment == enrollment && len(r.ProviderCapacity) > 0 }) {
+		if state == "enrolled" && slices.ContainsFunc(result.Runners, func(r hubrecords.PlacementRunner) bool {
+			return r.Enrollment == enrollment && len(r.ProviderCapacity) > 0
+		}) {
 			continue
 		}
-		if !counted[enrollment] && !slices.ContainsFunc(result.Runners, func(r placementRunner) bool { return r.Enrollment == enrollment && r.Used > 0 }) {
+		if !counted[enrollment] && !slices.ContainsFunc(result.Runners, func(r hubrecords.PlacementRunner) bool { return r.Enrollment == enrollment && r.Used > 0 }) {
 			counted[enrollment] = true
 			result.Pending++
 			bootstrapPending++
@@ -552,11 +527,7 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope h
 
 var errClaimPlacementSnapshotRequired = errors.New("local-first claim placement requires a placement snapshot")
 
-type claimPlacementSnapshot struct {
-	snapshot *placementSnapshot
-}
-
-func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, identity runnerstore.Identity, machine leasestore.Machine, plan nativeClaimPlan, overrides []tracker.NativeCapacityCandidate, workspace bool, joining string, now time.Time, snapshot *placementSnapshot) (bool, string, error) {
+func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, identity runnerstore.Identity, machine leasestore.Machine, plan hubrecords.NativeClaimPlan, overrides []tracker.NativeCapacityCandidate, workspace bool, joining string, now time.Time, snapshot *hubrecords.PlacementSnapshot) (bool, string, error) {
 	allowed, err := spriteAllocationRunnerAllowedFacts(ctx, r, scope, identity, machine, true)
 	if err != nil {
 		return false, "", err
@@ -587,20 +558,20 @@ func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope hubs
 	if snapshot == nil {
 		return false, "", errClaimPlacementSnapshotRequired
 	}
-	id := tracker.WorkItemID(plan.item.ID)
+	id := tracker.WorkItemID(plan.Item.ID)
 	if snapshot.Local[id] > 0 {
 		return false, "Local-first placement has compatible free local capacity", nil
 	}
 	_, ready := snapshot.Items[id]
-	if !ready && snapshot.resolver != nil {
-		issue := plan.issue
-		identity, err := snapshot.resolver.Identity(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State})
+	if !ready && snapshot.Resolver != nil {
+		issue := plan.Issue
+		identity, err := snapshot.Resolver.Identity(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State})
 		if err != nil {
 			return false, "Configured provider requirement is unavailable", nil
 		}
 		requirement := providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}
 		for _, candidate := range overrides {
-			if candidate.WorkItemID == plan.item.NativeID && int64(candidate.Revision) == plan.item.Revision {
+			if candidate.WorkItemID == plan.Item.NativeID && int64(candidate.Revision) == plan.Item.Revision {
 				requirement = candidate.Requirement
 			}
 		}
@@ -619,8 +590,8 @@ func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope hubs
 	return allowed, fmt.Sprintf("%s: ready Todo=%d, threshold=%d, local free=%d, Sprite used=%d, overflow slots=%d", reason, snapshot.ReadyTodo, placement.TodoThreshold, snapshot.LocalFree, used, placement.OverflowSlots), nil
 }
 
-func (s *Service) readOrganizationPlacementSnapshot(ctx context.Context, scope hubscope.NativeScope, now time.Time) (placementSnapshot, error) {
-	result := placementSnapshot{Items: make(map[tracker.WorkItemID]providercapacity.Requirement), Local: make(map[tracker.WorkItemID]int)}
+func (s *Service) readOrganizationPlacementSnapshot(ctx context.Context, scope hubscope.NativeScope, now time.Time) (hubrecords.PlacementSnapshot, error) {
+	result := hubrecords.PlacementSnapshot{Items: make(map[tracker.WorkItemID]providercapacity.Requirement), Local: make(map[tracker.WorkItemID]int)}
 	var placement policy.Placement
 	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		var err error

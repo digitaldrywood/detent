@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -209,7 +210,7 @@ func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope hubscope.Na
 	}
 	now := s.config.now()
 	configured := false
-	var runners []placementRunner
+	var runners []hubrecords.PlacementRunner
 	err = s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.SpriteReader)
 		if !ok {
@@ -226,7 +227,7 @@ func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope hubscope.Na
 	if err != nil {
 		return spriteWakeCandidate{}, false, err
 	}
-	var placement placementSnapshot
+	var placement hubrecords.PlacementSnapshot
 	if configured {
 		placement, err = s.readPlacementSnapshot(ctx, scope, now, nil)
 		if err != nil {
@@ -236,7 +237,7 @@ func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope hubscope.Na
 			return spriteWakeCandidate{}, false, nil
 		}
 	}
-	slices.SortFunc(runners, func(a, b placementRunner) int {
+	slices.SortFunc(runners, func(a, b hubrecords.PlacementRunner) int {
 		if n := strings.Compare(a.Hostname, b.Hostname); n != 0 {
 			return n
 		}

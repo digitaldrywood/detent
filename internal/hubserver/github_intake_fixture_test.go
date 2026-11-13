@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,7 +21,7 @@ func gitHubWebhookRecordFixture(t *testing.T) (*Service, *time.Time, map[tracker
 	items := make(map[tracker.ProjectID]tracker.NativeWorkItemID)
 	for _, project := range []tracker.ProjectID{"first", "second"} {
 		if err := repository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
-			record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org", ID: project, Name: string(project), Profile: "native"}, States: nativeTriageStates(nativeFixtureStates())})
+			record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org", ID: project, Name: string(project), Profile: "native"}, States: hubrecords.NativeTriageStates(nativeFixtureStates())})
 			if err != nil {
 				return err
 			}

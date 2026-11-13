@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -55,10 +56,10 @@ type spriteLoginStep struct {
 
 type spritePoolView struct {
 	spritePoolSettings
-	IsolationTierUnavailableReason string             `json:"isolation_tier_unavailable_reason,omitempty"`
-	Members                        []spritePoolMember `json:"members"`
-	Decision                       *placementDecision `json:"placement_decision,omitempty"`
-	RunnerSetupDeclared            *bool              `json:"runner_setup_declared"`
+	IsolationTierUnavailableReason string                        `json:"isolation_tier_unavailable_reason,omitempty"`
+	Members                        []spritePoolMember            `json:"members"`
+	Decision                       *hubrecords.PlacementDecision `json:"placement_decision,omitempty"`
+	RunnerSetupDeclared            *bool                         `json:"runner_setup_declared"`
 }
 
 func (s *Service) registerSpritePoolRoutes(e *echo.Echo) {
@@ -89,7 +90,7 @@ func (s *Service) spritePoolResponse(ctx context.Context, scope hubscope.NativeS
 	if err != nil {
 		return view, err
 	}
-	view.Decision = &decision.placementDecision
+	view.Decision = &decision.PlacementDecision
 	if err := s.describeSpritePoolMembers(ctx, scope, view.Members); err != nil {
 		return view, err
 	}
@@ -307,7 +308,7 @@ func (s *Service) executeSpritePoolSettingsCommand(ctx context.Context, scope hu
 				}
 			}
 			if oldBootstrapKey != nil {
-				archives, ok := w.(attemptArchiveReader)
+				archives, ok := w.(hubrecords.AttemptArchiveReader)
 				if !ok {
 					return hubapi.NativeWorkItemStorageUnavailable()
 				}
@@ -746,7 +747,7 @@ func (s *Service) readSpritePoolSnapshot(ctx context.Context, scope hubscope.Nat
 			return err
 		}
 		if row.BootstrapObjectKey != nil {
-			archives, ok := r.(attemptArchiveReader)
+			archives, ok := r.(hubrecords.AttemptArchiveReader)
 			if !ok {
 				return hubapi.NativeWorkItemStorageUnavailable()
 			}

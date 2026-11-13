@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -141,7 +142,7 @@ func newBatchFixtureForProject(t *testing.T, f nativeFixture) *batchFixture {
 		}
 		project.Settings.RepositoryEnabled = true
 		project.Settings.Repository, project.Settings.CheckoutRepository, project.Settings.Intake = "example-org/example-project", "example-org/example-project", "manual"
-		project.States = nativeTriageStates(append(project.States, tracker.NativeState{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo"}}, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo", "Backlog"}}))
+		project.States = hubrecords.NativeTriageStates(append(project.States, tracker.NativeState{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo"}}, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo", "Backlog"}}))
 		_, err = writer.UpdateProjectRecord(t.Context(), project)
 		return err
 	}); err != nil {
@@ -2066,7 +2067,7 @@ func TestGitHubBatchSourceCloseOptIn(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				want := "Tracked in Detent: https://cloud.example" + issueBrowserPath(slug, f.project.Slug, 2)
+				want := "Tracked in Detent: https://cloud.example" + hubrecords.IssueBrowserPath(slug, f.project.Slug, 2)
 				if desired.Body != want || !desired.CloseSource || desired.StateReason != "" || desired.IssueNumber != 13 || row.ProjectID != f.project.ID || row.WorkItemID != item.WorkItemID {
 					t.Fatalf("close payload=%+v row=%+v want body=%s", desired, row, want)
 				}

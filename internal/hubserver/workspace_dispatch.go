@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -102,8 +103,8 @@ func joinWords(values []string) string {
 }
 
 type workspaceIssueClosePlan struct {
-	plan    workItemRecordPlan
-	fields  workItemRecordFields
+	plan    hubrecords.WorkItemRecordPlan
+	fields  hubrecords.WorkItemRecordFields
 	version eventstore.CollaborationVersion
 	event   eventstore.Event
 	search  searchstore.Document
@@ -119,31 +120,31 @@ func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope hubscope
 	if err != nil {
 		return out, err
 	}
-	terminal, found := firstTerminalState(tracker.NativeProject{States: plan.project.States})
-	if !found || plan.issue.State == terminal {
+	terminal, found := firstTerminalState(tracker.NativeProject{States: plan.Project.States})
+	if !found || plan.Issue.State == terminal {
 		return out, nil
 	}
-	from := plan.issue.State
-	plan.issue.State, plan.issue.Terminal = terminal, true
-	plan.issue.Revision++
-	plan.issue.UpdatedAt, plan.issue.LastActivityAt = now, now
-	plan.issue.ClosedAt = &now
-	plan.fields = []string{"state"}
+	from := plan.Issue.State
+	plan.Issue.State, plan.Issue.Terminal = terminal, true
+	plan.Issue.Revision++
+	plan.Issue.UpdatedAt, plan.Issue.LastActivityAt = now, now
+	plan.Issue.ClosedAt = &now
+	plan.Fields = []string{"state"}
 	out.plan, out.move = plan, true
 	out.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
 	if err != nil {
 		return out, err
 	}
-	raw, err := json.Marshal(plan.issue)
+	raw, err := json.Marshal(plan.Issue)
 	if err != nil {
 		return out, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	out.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, RecordID: item, Revision: int64(plan.issue.Revision)}, raw)
+	out.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, RecordID: item, Revision: int64(plan.Issue.Revision)}, raw)
 	if err != nil {
 		return out, err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, FromState: from, ToState: terminal, Reason: "worker_progress"}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.Issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.Issue.Revision, FromState: from, ToState: terminal, Reason: "worker_progress"}})
 	if err != nil {
 		return out, err
 	}
@@ -151,7 +152,7 @@ func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope hubscope
 	if err != nil {
 		return out, err
 	}
-	out.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + item, SourceID: item, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+	out.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, ID: "issue:" + item, SourceID: item, Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 	return out, err
 }
 
@@ -159,21 +160,21 @@ func (p workspaceIssueClosePlan) write(ctx context.Context, w tenantstore.Writer
 	if !p.move {
 		return nil
 	}
-	project, err := w.ProjectRecord(ctx, p.plan.issue.ProjectID)
+	project, err := w.ProjectRecord(ctx, p.plan.Issue.ProjectID)
 	if err != nil {
 		return err
 	}
-	if !sameWorkItemProjectPlan(p.plan.project, project) {
+	if !hubrecords.SameWorkItemProjectPlan(p.plan.Project, project) {
 		return corestore.ErrSerializationFailure
 	}
-	current, err := w.LockWorkItem(ctx, p.plan.issue.ProjectID, p.plan.issue.WorkItemID)
+	current, err := w.LockWorkItem(ctx, p.plan.Issue.ProjectID, p.plan.Issue.WorkItemID)
 	if err != nil {
 		return err
 	}
-	if current.Revision != p.plan.current.Revision || current.EventSequence != p.plan.current.EventSequence {
+	if current.Revision != p.plan.Current.Revision || current.EventSequence != p.plan.Current.EventSequence {
 		return corestore.ErrSerializationFailure
 	}
-	if err := writeWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
+	if err := hubrecords.WriteWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
 		return err
 	}
 	if _, err := w.CreateCollaborationVersion(ctx, p.version); err != nil {

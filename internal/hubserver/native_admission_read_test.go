@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -202,7 +203,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				descriptor = descriptor.WithID()
 			}
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-			plan := nativeClaimPlan{issue: issue, descriptor: descriptor}
+			plan := hubrecords.NativeClaimPlan{Issue: issue, Descriptor: descriptor}
 			evaluation, err := nativeRuntimeIssueContractEvaluation(plan)
 			if err != nil {
 				t.Fatal(err)
@@ -572,7 +573,7 @@ func writeAdmissionIssue(t *testing.T, f nativeFixture, issue tracker.NativeIssu
 	issue.Revision++
 	issue.UpdatedAt = f.service.config.now()
 	issue.LastActivityAt = issue.UpdatedAt
-	fields, err := f.service.prepareWorkItemFields(t.Context(), f.project.OrganizationID, workItemRecordPlan{issue: issue})
+	fields, err := f.service.prepareWorkItemFields(t.Context(), f.project.OrganizationID, hubrecords.WorkItemRecordPlan{Issue: issue})
 	if err != nil {
 		t.Fatal(err)
 	}

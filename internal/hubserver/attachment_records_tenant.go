@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -241,25 +242,16 @@ func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.
 	}
 }
 
-type attachmentEvidencePublication struct {
-	plan    workItemRecordPlan
-	fields  workItemRecordFields
-	version eventstore.CollaborationVersion
-	event   eventstore.Event
-	search  searchstore.Document
-	bytes   int64
-}
-
-func (s *Service) prepareAttachmentEvidencePublication(ctx context.Context, scope hubscope.NativeScope, input *attachment.EvidenceRequest, metadata attachment.Metadata) (attachmentEvidencePublication, error) {
-	result := attachmentEvidencePublication{}
+func (s *Service) prepareAttachmentEvidencePublication(ctx context.Context, scope hubscope.NativeScope, input *attachment.EvidenceRequest, metadata attachment.Metadata) (hubrecords.AttachmentEvidencePublication, error) {
+	result := hubrecords.AttachmentEvidencePublication{}
 	if input == nil {
 		return result, nil
 	}
 	return s.prepareEvidenceComment(ctx, scope, input.WorkItemID, escapeEvidenceCaption(input.Caption)+"\n\n"+metadata.Markdown(string(scope.Organization)), 0)
 }
 
-func (s *Service) prepareEvidenceComment(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, body string, offset int64) (attachmentEvidencePublication, error) {
-	result := attachmentEvidencePublication{}
+func (s *Service) prepareEvidenceComment(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, body string, offset int64) (hubrecords.AttachmentEvidencePublication, error) {
+	result := hubrecords.AttachmentEvidencePublication{}
 	row, version, err := s.readWorkItemRecord(ctx, scope, string(item))
 	if err != nil {
 		return result, err
@@ -267,8 +259,8 @@ func (s *Service) prepareEvidenceComment(ctx context.Context, scope hubscope.Nat
 	return s.prepareEvidenceCommentRecord(ctx, scope, row, version, body, offset)
 }
 
-func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, version eventstore.CollaborationVersion, body string, offset int64) (attachmentEvidencePublication, error) {
-	result := attachmentEvidencePublication{}
+func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubscope.NativeScope, row corestore.WorkItem, version eventstore.CollaborationVersion, body string, offset int64) (hubrecords.AttachmentEvidencePublication, error) {
+	result := hubrecords.AttachmentEvidencePublication{}
 	issue, err := s.hydrateCanonicalWorkItemRecord(ctx, row, version)
 	if err != nil {
 		return result, err
@@ -276,8 +268,8 @@ func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubsco
 	row.EventSequence += offset
 	at := s.config.now().UTC().Truncate(time.Microsecond)
 	comment := tracker.NativeComment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, ID: hubapi.NewID("cmt"), Revision: 1, Sequence: row.EventSequence + 1, Body: body, Actor: scope.Actor(), CreatedAt: at, UpdatedAt: at}
-	result.plan = workItemRecordPlan{current: row, issue: issue, comment: comment, create: true, eventType: "comment.created"}
-	result.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, result.plan)
+	result.Plan = hubrecords.WorkItemRecordPlan{Current: row, Issue: issue, Comment: comment, Create: true, EventType: "comment.created"}
+	result.Fields, err = s.prepareWorkItemFields(ctx, scope.Organization, result.Plan)
 	if err != nil {
 		return result, err
 	}
@@ -286,7 +278,7 @@ func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubsco
 		return result, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	result.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, RecordID: comment.ID, Revision: 1}, raw)
+	result.Version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, RecordID: comment.ID, Revision: 1}, raw)
 	if err != nil {
 		return result, err
 	}
@@ -296,7 +288,7 @@ func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubsco
 	if err != nil {
 		return result, err
 	}
-	result.event, err = content.PrepareEvent(ctx, scope.Organization, eventRaw)
+	result.Event, err = content.PrepareEvent(ctx, scope.Organization, eventRaw)
 	if err != nil {
 		return result, err
 	}
@@ -308,8 +300,8 @@ func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubsco
 	if err != nil {
 		return result, err
 	}
-	result.bytes = int64(len(comment.Body) + len(raw) + len(dataRaw) + len(actorRaw))
-	result.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, ID: "comment:" + comment.ID, SourceID: comment.ID, Kind: "comment", Scope: "issue", Revision: 1, UpdatedAt: at}, searchstore.Text{Body: comment.Body})
+	result.Bytes = int64(len(comment.Body) + len(raw) + len(dataRaw) + len(actorRaw))
+	result.Search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, ID: "comment:" + comment.ID, SourceID: comment.ID, Kind: "comment", Scope: "issue", Revision: 1, UpdatedAt: at}, searchstore.Text{Body: comment.Body})
 	return result, err
 }
 func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {
@@ -383,7 +375,7 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 		record := attachmentstore.Record{OrganizationID: scope.Organization, Metadata: metadata, Kind: "attachment"}
 		if input.Evidence != nil {
 			record.Metadata.WorkItemID = string(input.Evidence.WorkItemID)
-			record.Metadata.CommentID = publication.plan.comment.ID
+			record.Metadata.CommentID = publication.Plan.Comment.ID
 			record.EvidenceAttemptID = input.Evidence.AttemptID
 			record.EvidenceCaption = input.Evidence.Caption
 		}
@@ -411,7 +403,7 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 			} else if !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}
-			if input.Evidence != nil && (row.ID != publication.plan.current.ID || row.Revision != publication.plan.current.Revision || row.EventSequence != publication.plan.current.EventSequence) {
+			if input.Evidence != nil && (row.ID != publication.Plan.Current.ID || row.Revision != publication.Plan.Current.Revision || row.EventSequence != publication.Plan.Current.EventSequence) {
 				return corestore.ErrSerializationFailure
 			}
 			{
@@ -419,7 +411,7 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 				if err != nil {
 					return err
 				}
-				usage, err := w.AdjustCollaborationBytes(ctx, metadata.Size+publication.bytes, limit)
+				usage, err := w.AdjustCollaborationBytes(ctx, metadata.Size+publication.Bytes, limit)
 				if errors.Is(err, corestore.ErrNotFound) {
 					return hubapi.AttachmentAccountingUnavailable()
 				}
@@ -434,16 +426,16 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 				return err
 			}
 			if input.Evidence != nil {
-				if err := writeWorkItemRecord(ctx, w, publication.plan, publication.fields); err != nil {
+				if err := hubrecords.WriteWorkItemRecord(ctx, w, publication.Plan, publication.Fields); err != nil {
 					return err
 				}
-				if _, err := w.CreateCollaborationVersion(ctx, publication.version); err != nil {
+				if _, err := w.CreateCollaborationVersion(ctx, publication.Version); err != nil {
 					return err
 				}
-				if _, err := w.AppendEvent(ctx, publication.event); err != nil {
+				if _, err := w.AppendEvent(ctx, publication.Event); err != nil {
 					return err
 				}
-				if err := w.PutSearch(ctx, publication.search, 0); err != nil {
+				if err := w.PutSearch(ctx, publication.Search, 0); err != nil {
 					return err
 				}
 			}
@@ -451,7 +443,7 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 				return err
 			}
 			if input.Evidence != nil {
-				if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.Project, AttachmentID: metadata.ID, WorkItemID: input.Evidence.WorkItemID, CommentID: publication.plan.comment.ID}); err != nil {
+				if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.Project, AttachmentID: metadata.ID, WorkItemID: input.Evidence.WorkItemID, CommentID: publication.Plan.Comment.ID}); err != nil {
 					return err
 				}
 			}
@@ -560,24 +552,19 @@ func (s *Service) readAttachmentRecordWith(ctx context.Context, r tenantstore.Re
 	return nil
 }
 
-type workItemAttachmentReferences struct {
-	previous []string
-	current  []string
-}
-
-func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope hubscope.NativeScope, plan workItemRecordPlan) (workItemAttachmentReferences, error) {
-	result := workItemAttachmentReferences{}
-	if plan.existing {
+func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan) (hubrecords.WorkItemAttachmentReferences, error) {
+	result := hubrecords.WorkItemAttachmentReferences{}
+	if plan.Existing {
 		return result, nil
 	}
-	body := plan.comment.Body
-	if plan.comment.ID == "" {
-		body = plan.issue.Title + "\n" + plan.issue.Body
+	body := plan.Comment.Body
+	if plan.Comment.ID == "" {
+		body = plan.Issue.Title + "\n" + plan.Issue.Body
 	}
 	for _, source := range []struct {
 		body string
 		ids  *[]string
-	}{{plan.previousContent, &result.previous}, {body, &result.current}} {
+	}{{plan.PreviousContent, &result.Previous}, {body, &result.Current}} {
 		references, err := cloudContentAttachmentReferences(source.body, scope)
 		if err != nil {
 			return result, err
@@ -591,8 +578,8 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 			return result, hubapi.NativePublicInvalid("Work item attachment references exceed the write bound")
 		}
 	}
-	if plan.comment.ID != "" && plan.comment.Deleted {
-		result.current = slices.Clone(result.previous)
+	if plan.Comment.ID != "" && plan.Comment.Deleted {
+		result.Current = slices.Clone(result.Previous)
 		return result, nil
 	}
 	readable := map[string]attachment.Metadata{}
@@ -611,10 +598,10 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 		readable[id] = metadata
 		return metadata, true, nil
 	}
-	if plan.project.Settings.RequireVisualAttachments && !scope.ImportedContent && body != plan.previousContent {
-		fields := []cloudContentField{{"body", plan.comment.Body}}
-		if plan.comment.ID == "" {
-			fields = []cloudContentField{{"title", plan.issue.Title}, {"body", plan.issue.Body}}
+	if plan.Project.Settings.RequireVisualAttachments && !scope.ImportedContent && body != plan.PreviousContent {
+		fields := []cloudContentField{{"body", plan.Comment.Body}}
+		if plan.Comment.ID == "" {
+			fields = []cloudContentField{{"title", plan.Issue.Title}, {"body", plan.Issue.Body}}
 		}
 		resolve := func(id string) (attachment.Metadata, error) {
 			metadata, _, err := read(id)
@@ -631,9 +618,9 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 			}
 		}
 	}
-	valid := result.current[:0]
-	for _, id := range result.current {
-		if slices.Contains(result.previous, id) {
+	valid := result.Current[:0]
+	for _, id := range result.Current {
+		if slices.Contains(result.Previous, id) {
 			valid = append(valid, id)
 			continue
 		}
@@ -645,7 +632,7 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 			valid = append(valid, id)
 		}
 	}
-	result.current = valid
+	result.Current = valid
 	return result, nil
 }
 

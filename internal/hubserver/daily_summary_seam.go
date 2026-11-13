@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/dailysummary"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -27,15 +28,15 @@ func (dailySummaryReports) ValidateUsage(facts []reportstore.UsageFact) error {
 type dailySummaryWorkItems struct{ service *Service }
 
 func (w dailySummaryWorkItems) AttemptSnapshot(ctx context.Context, reader tenantstore.Reader, attempt leasestore.Attempt, lease leasestore.Lease, event eventstore.Event) (any, error) {
-	snapshot := tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
-	if err := readTenantAttemptPayload(ctx, reader, &snapshot); err != nil {
+	snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+	if err := hubrecords.ReadTenantAttemptPayload(ctx, reader, &snapshot); err != nil {
 		return nil, err
 	}
 	return snapshot, nil
 }
 
 func (w dailySummaryWorkItems) Attempt(ctx context.Context, snapshot any, now time.Time) (tracker.NativeAttempt, error) {
-	value, ok := snapshot.(tenantAttemptSnapshot)
+	value, ok := snapshot.(hubrecords.TenantAttemptSnapshot)
 	if !ok {
 		return tracker.NativeAttempt{}, errors.New("daily summary attempt snapshot is unavailable")
 	}
@@ -53,7 +54,7 @@ func (s *Service) dailySummaryService() *dailysummary.Service {
 		Now:              s.config.now,
 		Organization:     s.accessOrganization,
 		HostedPath:       s.hostedPath,
-		IssuePath:        issueBrowserPath,
+		IssuePath:        hubrecords.IssueBrowserPath,
 		RenderText:       healthEmailText,
 		Reports:          dailySummaryReports{},
 		WorkItems:        dailySummaryWorkItems{service: s},

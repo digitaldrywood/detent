@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -36,26 +37,9 @@ func boundedChangeReviewResult(result *gate.ValidatorResult) *gate.ValidatorResu
 	bounded := *result
 	bounded.Commands = slices.Clone(bounded.Commands)
 	for i := range bounded.Commands {
-		bounded.Commands[i] = *boundedChangeCommand(&bounded.Commands[i])
+		bounded.Commands[i] = *hubrecords.BoundedChangeCommand(&bounded.Commands[i])
 	}
 	return &bounded
-}
-
-func boundedChangeCommand(command *gate.CommandResult) *gate.CommandResult {
-	if command == nil {
-		return nil
-	}
-	result := tracker.PublicGateResult(*command)
-	return &result
-}
-
-func boundedChangeLanding(landing *tracker.NativeLandingReceipt) *tracker.NativeLandingReceipt {
-	if landing == nil {
-		return nil
-	}
-	result := *landing
-	result.Gate = boundedChangeCommand(result.Gate)
-	return &result
 }
 
 func boundedChangeVersion(version tracker.ChangeVersion) tracker.ChangeVersion {
@@ -66,7 +50,7 @@ func boundedChangeVersion(version tracker.ChangeVersion) tracker.ChangeVersion {
 	}
 	version.Policy.Configuration = nil
 	version.Policy.Workflow = nil
-	version.Validation = boundedChangeCommand(version.Validation)
-	version.Landing = boundedChangeLanding(version.Landing)
+	version.Validation = hubrecords.BoundedChangeCommand(version.Validation)
+	version.Landing = hubrecords.BoundedChangeLanding(version.Landing)
 	return version
 }

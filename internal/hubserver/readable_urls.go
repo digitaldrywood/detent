@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -16,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -23,17 +23,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func issueBrowserPath(organization, project string, number int) string {
-	return "/" + organization + "/" + project + "/issues/" + strconv.Itoa(number)
-}
-
 func readIssueBrowserPath(ctx context.Context, query hubapi.NativeQueryer, id string) (string, error) {
 	var organization, project string
 	var number int
 	if err := query.QueryRowContext(ctx, `SELECT o.slug,p.slug,i.number FROM issues i JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id=i.project_id WHERE i.native_id=?`, id).Scan(&organization, &project, &number); err != nil {
 		return "", err
 	}
-	return issueBrowserPath(organization, project, number), nil
+	return hubrecords.IssueBrowserPath(organization, project, number), nil
 }
 
 func (s *Service) issueBrowserURL(ctx context.Context, organization tracker.OrganizationID, id string) (string, error) {

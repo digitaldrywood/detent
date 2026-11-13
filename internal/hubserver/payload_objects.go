@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 )
 
@@ -16,10 +15,4 @@ func contentWriting(ctx context.Context, writing bool) {
 		}
 		content.Mu.Unlock()
 	}
-}
-
-type payloadQueryKey struct{}
-
-func payloadQueryContext(ctx context.Context, q hubapi.NativeQueryer) context.Context {
-	return context.WithValue(ctx, payloadQueryKey{}, q)
 }

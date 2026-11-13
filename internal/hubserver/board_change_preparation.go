@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -16,8 +17,8 @@ import (
 
 type boardChangePreparation struct {
 	rows     map[tenantstore.BoardChangeRequest]tenantstore.BoardChangeRows
-	policy   currentChangePolicyRows
-	approval *ChangeVersionApproval
+	policy   hubrecords.CurrentChangePolicyRows
+	approval *hubrecords.ChangeVersionApproval
 	err      error
 	workload corestore.Workload
 }
@@ -72,13 +73,13 @@ func (s *Service) prepareBoardChangeRowsFor(ctx context.Context, scope hubscope.
 		if !hasChanges {
 			return nil
 		}
-		result.policy, err = readChangeSummaryPolicyRows(ctx, reader, scope)
+		result.policy, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, reader, scope)
 		return err
 	})
 	finishRows()
 	if result.err == nil && supported && hasChanges {
 		refs := []attachment.ArchiveReference{eventstore.Reference(result.policy.Project.PayloadObjectKey, result.policy.Project.PayloadSHA256, result.policy.Project.PayloadBytes, result.policy.Project.PayloadContentBytes)}
-		if result.policy.hasReview {
+		if result.policy.HasReview {
 			r := result.policy.Review
 			refs = append(refs, eventstore.Reference(r.PayloadObjectKey, r.PayloadSHA256, r.PayloadBytes, r.PayloadContentBytes))
 		}
@@ -121,7 +122,7 @@ func (p boardChangePreparation) summary(ctx context.Context, s *Service, scope h
 	detail, err := s.hydrateCurrentChangeDetailWithFacts(ctx, scope, item, *row.Change, row.Version, p.policy, now, &row, p.approval, p.workload)
 	return detail.Summary, err
 }
-func boardCurrentApproval(ctx context.Context, content *eventstore.Content, scope hubscope.NativeScope, rows currentChangePolicyRows, approval *ChangeVersionApproval) (ChangeVersionApproval, error) {
+func boardCurrentApproval(ctx context.Context, content *eventstore.Content, scope hubscope.NativeScope, rows hubrecords.CurrentChangePolicyRows, approval *hubrecords.ChangeVersionApproval) (hubrecords.ChangeVersionApproval, error) {
 	if approval != nil {
 		return *approval, nil
 	}

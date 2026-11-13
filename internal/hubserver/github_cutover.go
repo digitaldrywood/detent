@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -322,7 +323,7 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope hubscop
 	if raw, found, err := s.authorizedChangeRecordReceipt(ctx, scope, options.OperationID, request.IdempotencyKey, hash); found || err != nil {
 		return raw, err
 	}
-	if err := validateNativeStates(request.States); err != nil {
+	if err := hubrecords.ValidateNativeStates(request.States); err != nil {
 		return nil, err
 	}
 	initial := false
@@ -383,7 +384,7 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope hubscop
 		next.Core.ContentSettingsRevision++
 		next.Settings.Intake = "manual"
 		next.Settings.Revision++
-		next.States = nativeTriageStates(request.States)
+		next.States = hubrecords.NativeTriageStates(request.States)
 		receipt.Applied = true
 		receipt.Integration = projectIntegrationRecord(next)
 		receipt.Integration.WorkflowMarkdown, err = s.projectRecordWorkflow(ctx, snapshot.Project)
@@ -438,7 +439,7 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope hubscop
 		if err := outbox.SupersedeGitHubCompatibilityWrites(ctx, scope.Project, snapshot.Project.Settings.RepositoryEnabled, now); err != nil {
 			return err
 		}
-		_, err = owner.CommitProjectCutover(ctx, postgres.CutoverCommit{ExpectedContentRevision: snapshot.Project.Core.ContentSettingsRevision, States: nativeTriageStates(request.States), Queues: queues, Receipt: pgquery.StoreCutoverReceiptParams{OrganizationID: scope.Organization, ProjectID: scope.Project, Checkpoint: receipt.Checkpoint, SourceProfile: "github_compatible", ExpectedRevision: snapshot.Project.Settings.Revision, ReceiptObjectKey: stored.PayloadObjectKey, ReceiptSha256: stored.PayloadSHA256, ReceiptBytes: stored.PayloadBytes, ReceiptContentBytes: stored.PayloadContentBytes, ActorID: scope.Credential.ID, CreatedAt: now}})
+		_, err = owner.CommitProjectCutover(ctx, postgres.CutoverCommit{ExpectedContentRevision: snapshot.Project.Core.ContentSettingsRevision, States: hubrecords.NativeTriageStates(request.States), Queues: queues, Receipt: pgquery.StoreCutoverReceiptParams{OrganizationID: scope.Organization, ProjectID: scope.Project, Checkpoint: receipt.Checkpoint, SourceProfile: "github_compatible", ExpectedRevision: snapshot.Project.Settings.Revision, ReceiptObjectKey: stored.PayloadObjectKey, ReceiptSha256: stored.PayloadSHA256, ReceiptBytes: stored.PayloadBytes, ReceiptContentBytes: stored.PayloadContentBytes, ActorID: scope.Credential.ID, CreatedAt: now}})
 		if errors.Is(err, postgres.ErrCutoverQueuePosition) {
 			return hubapi.NativePublicInvalid("Choose one queue position per work item before cutover; existing ranks have been retained")
 		}
@@ -532,7 +533,7 @@ func (s *Service) prepareCutoverItems(ctx context.Context, scope hubscope.Native
 				}
 			}
 		}
-		if _, _, err := s.validateWorkItemRecordFilingTenant(ctx, scope, workItemRecordPlan{project: snapshot.Project, issue: next}); err != nil {
+		if _, _, err := s.validateWorkItemRecordFilingTenant(ctx, scope, hubrecords.WorkItemRecordPlan{Project: snapshot.Project, Issue: next}); err != nil {
 			return nil, err
 		}
 		raw, err := json.Marshal(next)

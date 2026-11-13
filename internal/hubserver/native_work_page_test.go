@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -292,7 +293,7 @@ func updateNativeWorkPageFixtureIssue(t *testing.T, f nativeFixture, id tracker.
 	update(&issue)
 	issue.Revision++
 	issue.UpdatedAt = f.service.config.now().UTC()
-	plan := workItemRecordPlan{current: row, project: project, issue: issue, fields: []string{"title", "labels", "assignees", "priority"}}
+	plan := hubrecords.WorkItemRecordPlan{Current: row, Project: project, Issue: issue, Fields: []string{"title", "labels", "assignees", "priority"}}
 	fields, err := f.service.prepareWorkItemFields(t.Context(), scope.Organization, plan)
 	if err != nil {
 		t.Fatal(err)
@@ -302,7 +303,7 @@ func updateNativeWorkPageFixtureIssue(t *testing.T, f nativeFixture, id tracker.
 		t.Fatal(err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := writeWorkItemRecord(t.Context(), w, plan, fields); err != nil {
+		if err := hubrecords.WriteWorkItemRecord(t.Context(), w, plan, fields); err != nil {
 			return err
 		}
 		_, err := w.CreateCollaborationVersion(t.Context(), version)

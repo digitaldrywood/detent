@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -329,7 +330,7 @@ func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				project.States = nativeTriageStates(nativeFixtureStates())
+				project.States = hubrecords.NativeTriageStates(nativeFixtureStates())
 				project.Settings.DuplicateChallenge = false
 				_, err = w.UpdateProjectRecord(t.Context(), project)
 				return err

@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -93,7 +94,7 @@ func (s *Service) applyScheduledRepairRecord(ctx context.Context, scope hubscope
 		}
 	}
 	origin, ok := issueorigin.Parse(issue.Body)
-	if !ok || !scheduledRepairOriginMatches(origin.Source, verified.Evidence) {
+	if !ok || !hubrecords.ScheduledRepairOriginMatches(origin.Source, verified.Evidence) {
 		return nil
 	}
 	if verified.ImportURL == "" {

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -92,7 +93,7 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 	}
 	plan, err = service.planWorkItemRecord(t.Context(), scope, plan, request)
 	var unavailable *hubapi.NativeError
-	if err != nil && (!errors.As(err, &unavailable) || unavailable.Status != http.StatusServiceUnavailable) || plan.project.Core.WorkflowSource == "" || plan.issue.IssueContract == nil || !plan.create || plan.issue.WorkItemID == "" {
+	if err != nil && (!errors.As(err, &unavailable) || unavailable.Status != http.StatusServiceUnavailable) || plan.Project.Core.WorkflowSource == "" || plan.Issue.IssueContract == nil || !plan.Create || plan.Issue.WorkItemID == "" {
 		t.Fatalf("expected complete configured-source plan: %v", err)
 	}
 	policyRevision, policyFound, err := service.validateWorkItemRecordFilingTenant(t.Context(), scope, plan)
@@ -103,16 +104,16 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(plan.issue)
+	raw, err := json.Marshal(plan.Issue)
 	if err != nil {
 		t.Fatal(err)
 	}
 	content := eventstore.NewContent(service.runDetailStore())
-	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: project, WorkItemID: plan.issue.WorkItemID, RecordID: string(plan.issue.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
+	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: project, WorkItemID: plan.Issue.WorkItemID, RecordID: string(plan.Issue.WorkItemID), Revision: int64(plan.Issue.Revision)}, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization, ProjectID: project, AggregateID: plan.issue.WorkItemID, Type: plan.eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization, ProjectID: project, AggregateID: plan.Issue.WorkItemID, Type: plan.EventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.Issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.Issue.Revision, Fields: plan.Fields}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +132,7 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 		if err != nil {
 			return err
 		}
-		if !sameWorkItemProjectPlan(plan.project, currentProject) {
+		if !hubrecords.SameWorkItemProjectPlan(plan.Project, currentProject) {
 			return corestore.ErrRevisionConflict
 		}
 		currentPolicy, err := w.ProjectPolicy(t.Context(), project)
@@ -141,10 +142,10 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 			}
 		} else if err != nil {
 			return err
-		} else if !policyFound || !sameNativeClaimProjectPolicy(policyRevision, currentPolicy) {
+		} else if !policyFound || !hubrecords.SameNativeClaimProjectPolicy(policyRevision, currentPolicy) {
 			return corestore.ErrRevisionConflict
 		}
-		if err := writeWorkItemRecord(t.Context(), w, plan, fields); err != nil {
+		if err := hubrecords.WriteWorkItemRecord(t.Context(), w, plan, fields); err != nil {
 			return err
 		}
 		if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
@@ -155,5 +156,5 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return plan.issue
+	return plan.Issue
 }

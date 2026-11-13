@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -173,7 +174,7 @@ func TestRunnerClaimFactsRecoverOnlyVerifiedCurrentSource(t *testing.T) {
 				if attempt.ClaimDisposition != nil {
 					t.Fatalf("legacy fixture already has claim facts: %+v", attempt)
 				}
-				legacyPlan := nativeClaimPlan{candidate: claimstore.Candidate{State: "Todo"}, item: item, latestAttempt: attempt, latestAttemptFound: true}
+				legacyPlan := hubrecords.NativeClaimPlan{Candidate: claimstore.Candidate{State: "Todo"}, Item: item, LatestAttempt: attempt, LatestAttemptFound: true}
 				_, unknownErr := service.hydrateNativeClaimPlan(t.Context(), hubscope.NativeScope{Organization: organization, Project: project}, tracker.NativeClaim{}, lease.RenewedAt.Add(time.Second), legacyPlan, nil)
 				var unknown *hubapi.NativeError
 				if !errors.As(unknownErr, &unknown) || unknown.Status != http.StatusServiceUnavailable {
@@ -231,27 +232,27 @@ func TestRunnerClaimFactsRecoverOnlyVerifiedCurrentSource(t *testing.T) {
 					}
 					if current.ClaimDisposition != nil {
 						plan := legacyPlan
-						plan.latestAttempt = current
+						plan.LatestAttempt = current
 						wantHeld := test.want == "human_action" || test.want == "permission_wait" || test.want == "recorded_acceptance"
 						if got := nativeClaimDispatchSatisfied(plan); got != wantHeld {
 							t.Fatalf("unrequested work held=%t want %t", got, wantHeld)
 						}
-						plan.item.DispatchRequestedAt = &now
+						plan.Item.DispatchRequestedAt = &now
 						if got := nativeClaimDispatchSatisfied(plan); got != (test.want != "progress") {
 							t.Fatalf("explicit generation consumed=%t for %q", got, test.want)
 						}
-						plan.item.Revision++
+						plan.Item.Revision++
 						if nativeClaimDispatchSatisfied(plan) {
 							t.Fatal("historical request consumed a newer item revision")
 						}
-						plan.latestAttempt.WorkItemRevision = plan.item.Revision
-						plan.latestAttempt.ClaimDisposition = new("progress")
+						plan.LatestAttempt.WorkItemRevision = plan.Item.Revision
+						plan.LatestAttempt.ClaimDisposition = new("progress")
 						if nativeClaimDispatchSatisfied(plan) {
 							t.Fatal("new progress consumed a historical request")
 						}
-						plan.latestAttempt = current
-						plan.item = item
-						plan.item.DispatchGeneration = current.DispatchGeneration + 1
+						plan.LatestAttempt = current
+						plan.Item = item
+						plan.Item.DispatchGeneration = current.DispatchGeneration + 1
 						if nativeClaimDispatchSatisfied(plan) {
 							t.Fatal("older result consumed a newer dispatch generation")
 						}
@@ -289,7 +290,7 @@ func TestRunnerClaimFactsRecoverOnlyVerifiedCurrentSource(t *testing.T) {
 								run := tracker.NativeRunData{AttemptID: attempt.ID, RunID: attempt.RunID, LeaseID: tracker.LeaseID(attempt.LeaseID), FencingToken: tracker.FencingToken(attempt.FencingToken), Sequence: attempt.Sequence, Handoff: checkpoint}
 								var body any = run
 								if format == "segment" {
-									body = map[string]tracker.NativeRunData{runDetailEntry(run): run}
+									body = map[string]tracker.NativeRunData{hubrecords.RunDetailEntry(run): run}
 								}
 								encoded, err := json.Marshal(body)
 								if err != nil {
@@ -299,7 +300,7 @@ func TestRunnerClaimFactsRecoverOnlyVerifiedCurrentSource(t *testing.T) {
 								if err != nil {
 									t.Fatal(err)
 								}
-								detail := newRunDetailReference(ref, string(organization), runDetailEntry(run))
+								detail := hubrecords.NewRunDetailReference(ref, string(organization), hubrecords.RunDetailEntry(run))
 								if format == "object" || format == "foreign_detail" || format == "wrong_entry" {
 									detail.ObjectKey = ref.Key
 								}

@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -70,7 +71,7 @@ func (f dispatchGuardFixture) candidate(t *testing.T) bool {
 	ctx := f.service.runDetailContext(t.Context())
 	request := tracker.NativeClaim{WorkItemID: f.issue.WorkItemID, PolicyID: f.policy, MachineID: f.runner.binding.MachineID, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	now := f.service.config.now()
-	var plan nativeClaimPlan
+	var plan hubrecords.NativeClaimPlan
 	err := f.service.config.TenantRepository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := f.service.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
@@ -84,12 +85,12 @@ func (f dispatchGuardFixture) candidate(t *testing.T) bool {
 		if len(page.Items) == 0 {
 			return ErrNoClaimableWork
 		}
-		plan, err = f.service.readNativeClaimPlanRows(ctx, scope, request, now, r, &page.Items[0], nativeClaimPlan{})
+		plan, err = f.service.readNativeClaimPlanRows(ctx, scope, request, now, r, &page.Items[0], hubrecords.NativeClaimPlan{})
 		return err
 	})
 	if err == nil {
-		if err = f.service.prepareNativeClaimLegacyAuditFacts(ctx, scope, []nativeClaimPlan{plan}); err == nil {
-			plans := []nativeClaimPlan{plan}
+		if err = f.service.prepareNativeClaimLegacyAuditFacts(ctx, scope, []hubrecords.NativeClaimPlan{plan}); err == nil {
+			plans := []hubrecords.NativeClaimPlan{plan}
 			if err = f.service.prepareNativeClaimApprovals(ctx, scope, plans); err == nil {
 				_, err = f.service.hydrateNativeClaimPlan(ctx, scope, request, now, plans[0], nil)
 			}
@@ -256,7 +257,7 @@ func rewriteDispatchAttemptFixture(t *testing.T, f dispatchGuardFixture, mutate 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := conversationTestAdmin(t, f.service).ExecContext(ctx, `UPDATE native_attempts SET payload_object_key=$1,claim_disposition=NULL WHERE organization_id=$2 AND id=$3 AND sequence=$4 AND payload_object_key=$5 AND lease_id=$6 AND fencing_token=$7 AND run_id=$8 AND status=$9`, ref.Key, scope.Organization, f.attempt, before.attempt.Sequence, before.attempt.PayloadObjectKey, before.attempt.LeaseID, before.attempt.FencingToken, before.attempt.RunID, before.attempt.Status)
+	result, err := conversationTestAdmin(t, f.service).ExecContext(ctx, `UPDATE native_attempts SET payload_object_key=$1,claim_disposition=NULL WHERE organization_id=$2 AND id=$3 AND sequence=$4 AND payload_object_key=$5 AND lease_id=$6 AND fencing_token=$7 AND run_id=$8 AND status=$9`, ref.Key, scope.Organization, f.attempt, before.Attempt.Sequence, before.Attempt.PayloadObjectKey, before.Attempt.LeaseID, before.Attempt.FencingToken, before.Attempt.RunID, before.Attempt.Status)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1057,7 +1058,7 @@ func TestNativeRecordedDependencyUsesCurrentEdges(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), `UPDATE native_attempts SET payload_object_key=$1,claim_disposition='' WHERE organization_id=$2 AND id=$3 AND sequence=$4 AND payload_object_key=$5 AND lease_id=$6 AND fencing_token=$7 AND run_id=$8 AND status=$9`, ref.Key, scope.Organization, f.attempt, before.attempt.Sequence, before.attempt.PayloadObjectKey, before.attempt.LeaseID, before.attempt.FencingToken, before.attempt.RunID, before.attempt.Status)
+	result, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), `UPDATE native_attempts SET payload_object_key=$1,claim_disposition='' WHERE organization_id=$2 AND id=$3 AND sequence=$4 AND payload_object_key=$5 AND lease_id=$6 AND fencing_token=$7 AND run_id=$8 AND status=$9`, ref.Key, scope.Organization, f.attempt, before.Attempt.Sequence, before.Attempt.PayloadObjectKey, before.Attempt.LeaseID, before.Attempt.FencingToken, before.Attempt.RunID, before.Attempt.Status)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1072,10 +1073,10 @@ func TestNativeRecordedDependencyUsesCurrentEdges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := before.attempt
+	expected := before.Attempt
 	expected.PayloadObjectKey = ref.Key
 	expected.ClaimDisposition = new("")
-	if cleared.Disposition != nil || !reflect.DeepEqual(after.attempt, expected) || !reflect.DeepEqual(after.lease, before.lease) {
+	if cleared.Disposition != nil || !reflect.DeepEqual(after.Attempt, expected) || !reflect.DeepEqual(after.Lease, before.Lease) {
 		t.Fatal("historical fixture changed attempt/lease identity or retained disposition")
 	}
 	original, err := f.service.readNativeAttemptRunTenant(t.Context(), before)

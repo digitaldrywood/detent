@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -24,7 +25,7 @@ func (s *Service) readExplanationCurrentChange(ctx context.Context, scope hubsco
 	}
 	var change eventstore.Change
 	var version *eventstore.Version
-	var policy currentChangePolicyRows
+	var policy hubrecords.CurrentChangePolicyRows
 	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeBulkExportItem(ctx, r, scope, item); err != nil {
 			return err
@@ -47,7 +48,7 @@ func (s *Service) readExplanationCurrentChange(ctx context.Context, scope hubsco
 			}
 			version = &current
 		}
-		policy, err = readChangeSummaryPolicyRows(ctx, r, scope)
+		policy, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 		return err
 	})
 	if err != nil {
@@ -72,7 +73,7 @@ func (s *Service) readExplanationCurrentChange(ctx context.Context, scope hubsco
 func attachRuntimeChangeDetail(result *tracker.NativeRuntimeEvidence, detail tracker.ChangeDetail) {
 	if len(detail.Versions) != 0 {
 		version := detail.Versions[0]
-		result.CurrentVersion = &tracker.NativeChangeVersionEvidence{NativeChangeReference: tracker.NativeChangeReference{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}, PublishedAt: version.CreatedAt, Validation: boundedChangeCommand(version.Validation), Landing: boundedChangeLanding(version.Landing)}
+		result.CurrentVersion = &tracker.NativeChangeVersionEvidence{NativeChangeReference: tracker.NativeChangeReference{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}, PublishedAt: version.CreatedAt, Validation: hubrecords.BoundedChangeCommand(version.Validation), Landing: hubrecords.BoundedChangeLanding(version.Landing)}
 	}
 	if detail.Summary.Status == "evidence_incomplete" {
 		result.Unavailable = append(result.Unavailable, "change_gate_history_truncated")
@@ -84,21 +85,11 @@ func attachRuntimeChangeDetail(result *tracker.NativeRuntimeEvidence, detail tra
 	result.Change = &detail
 }
 
-func explanationRun(data tracker.NativeRunData) tracker.NativeRunData {
-	result := compactRun(data)
-	runtime := data.Runtime.WithoutActivitySpans()
-	if runtime != nil && result.Runtime != nil {
-		result.Runtime.Landing = explanationLanding(runtime.Landing)
-	}
-	result.ArtifactIDs = result.ArtifactIDs[:min(len(result.ArtifactIDs), 16)]
-	return result
-}
-
 func boundedNativeExplanation(evidence tracker.NativeRuntimeEvidence, failure *explain.FailureSignature) (explain.IssueExplanation, error) {
 	evidence.Issue.IssueContract = nil
 	if version := evidence.CurrentVersion; version != nil {
 		current := *version
-		current.Landing = explanationLanding(version.Landing)
+		current.Landing = hubrecords.ExplanationLanding(version.Landing)
 		current.Validation = explanationCommand(version.Validation)
 		evidence.CurrentVersion = &current
 		if version.Validation != nil && (version.Validation.Pipeline != nil || version.Validation.Evidence != nil) {
@@ -150,27 +141,5 @@ func explanationCommand(value *gate.CommandResult) *gate.CommandResult {
 	}
 	result := *value
 	result.Pipeline, result.Evidence = nil, nil
-	return boundedChangeCommand(&result)
-}
-
-func explanationLanding(value *tracker.NativeLandingReceipt) *tracker.NativeLandingReceipt {
-	result := boundedChangeLanding(value)
-	if result == nil {
-		return nil
-	}
-	result.Pipeline, result.Packages, result.SecurityAudit = nil, nil, nil
-	if result.Gate != nil {
-		result.Gate.Evidence, result.Gate.Pipeline = nil, nil
-	}
-	if result.CI != nil {
-		ci := *result.CI
-		for _, values := range []*[]string{&ci.RequiredChecks, &ci.PendingChecks, &ci.MissingChecks, &ci.FailedChecks} {
-			*values = slices.Clone((*values)[:min(len(*values), 16)])
-			for i := range *values {
-				(*values)[i] = hubapi.BoundedFailureText((*values)[i], 256)
-			}
-		}
-		result.CI = &ci
-	}
-	return result
+	return hubrecords.BoundedChangeCommand(&result)
 }

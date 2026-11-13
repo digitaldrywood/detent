@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -630,8 +631,8 @@ func prepareDispatchIssuesFixture(t *testing.T, f nativeFixture, requests []trac
 		t.Fatal(err)
 	}
 	type preparedIssue struct {
-		plan    workItemRecordPlan
-		fields  workItemRecordFields
+		plan    hubrecords.WorkItemRecordPlan
+		fields  hubrecords.WorkItemRecordFields
 		version eventstore.CollaborationVersion
 		event   eventstore.Event
 	}
@@ -639,7 +640,7 @@ func prepareDispatchIssuesFixture(t *testing.T, f nativeFixture, requests []trac
 	issues := make([]tracker.NativeIssue, 0, len(requests))
 	content := eventstore.NewContent(f.service.runDetailStore())
 	for index, request := range requests {
-		plan, err := f.service.planWorkItemRecord(t.Context(), scope, workItemRecordPlan{project: project, issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{Number: index + 1}}}, request)
+		plan, err := f.service.planWorkItemRecord(t.Context(), scope, hubrecords.WorkItemRecordPlan{Project: project, Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{Number: index + 1}}}, request)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -647,15 +648,15 @@ func prepareDispatchIssuesFixture(t *testing.T, f nativeFixture, requests []trac
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw, err := json.Marshal(plan.issue)
+		raw, err := json.Marshal(plan.Issue)
 		if err != nil {
 			t.Fatal(err)
 		}
-		version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, RecordID: string(plan.issue.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
+		version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, RecordID: string(plan.Issue.WorkItemID), Revision: int64(plan.Issue.Revision)}, raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.issue.WorkItemID, AggregateType: "issue", Type: "issue.created", SchemaVersion: 1, Actor: plan.issue.Actor, RecordedAt: plan.issue.CreatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, ToState: plan.issue.State}})
+		raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.Issue.WorkItemID, AggregateType: "issue", Type: "issue.created", SchemaVersion: 1, Actor: plan.Issue.Actor, RecordedAt: plan.Issue.CreatedAt, Data: tracker.CollaborationData{Revision: plan.Issue.Revision, ToState: plan.Issue.State}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -664,12 +665,12 @@ func prepareDispatchIssuesFixture(t *testing.T, f nativeFixture, requests []trac
 			t.Fatal(err)
 		}
 		prepared = append(prepared, preparedIssue{plan: plan, fields: fields, version: version, event: event})
-		issues = append(issues, plan.issue)
+		issues = append(issues, plan.Issue)
 	}
 	return func() {
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			for _, item := range prepared {
-				if err := writeWorkItemRecord(t.Context(), w, item.plan, item.fields); err != nil {
+				if err := hubrecords.WriteWorkItemRecord(t.Context(), w, item.plan, item.fields); err != nil {
 					return err
 				}
 				if _, err := w.CreateCollaborationVersion(t.Context(), item.version); err != nil {
@@ -904,7 +905,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					probe.details.attemptKeys.Store(snapshot.attempt.PayloadObjectKey, true)
+					probe.details.attemptKeys.Store(snapshot.Attempt.PayloadObjectKey, true)
 				}
 				held := nativeAttemptFixtureLease(t, worker, issues[0], "held-source-session")
 				if held.WorkItemID != issues[0].WorkItemID {

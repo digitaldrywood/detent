@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -197,7 +198,7 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					if issue.State != "Todo" || issue.Priority == nil || *issue.Priority != 0 || len(issue.IssueContract.ConfirmedSections) != 5 {
 						t.Fatalf("admission = %+v", issue)
 					}
-					if !nativeClaimIssueContractAllowed(nativeClaimPlan{descriptor: descriptor, issue: issue}) {
+					if !nativeClaimIssueContractAllowed(hubrecords.NativeClaimPlan{Descriptor: descriptor, Issue: issue}) {
 						t.Fatal("verified import is not contract-claimable")
 					}
 				} else if issue.State != "Triage" || issue.Priority != nil || len(issue.IssueContract.ConfirmedSections) != 0 {
@@ -205,7 +206,7 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 				}
 				if !test.authorized {
 					contract, err := config.ResolvePolicyIssueContract(descriptor)
-					if err != nil || contract.Evaluate(nativeContractIssue(issue)).Satisfied() {
+					if err != nil || contract.Evaluate(hubrecords.NativeContractIssue(issue)).Satisfied() {
 						t.Fatalf("untrusted contract became eligible: %v", err)
 					}
 					project, err := f.service.readProjectRecord(t.Context(), scope)

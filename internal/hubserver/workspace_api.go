@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -338,7 +339,7 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope hubscope.Nati
 			}
 			return s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), http.StatusNoContent)
 		})
-		err = errors.Join(err, releaseWorkItemAuthority(authority))
+		err = errors.Join(err, hubrecords.ReleaseWorkItemAuthority(authority))
 		if errors.Is(err, corestore.ErrSerializationFailure) {
 			continue
 		}

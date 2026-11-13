@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -97,7 +98,7 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 	if err != nil {
 		return err
 	}
-	if plan.current.Archived || plan.current.Revision != candidate.Revision || plan.current.EventSequence != candidate.EventSequence {
+	if plan.Current.Archived || plan.Current.Revision != candidate.Revision || plan.Current.EventSequence != candidate.EventSequence {
 		return nil
 	}
 	var days int64
@@ -107,7 +108,7 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		days, eligible, err = owner.WorkItemRetentionPolicy(ctx, plan.current, plan.project.Settings.Revision, now)
+		days, eligible, err = owner.WorkItemRetentionPolicy(ctx, plan.Current, plan.Project.Settings.Revision, now)
 		return err
 	}); err != nil {
 		return err
@@ -123,16 +124,16 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 	if err != nil {
 		return err
 	}
-	raw, err := json.Marshal(plan.issue)
+	raw, err := json.Marshal(plan.Issue)
 	if err != nil {
 		return err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: scope.Project, WorkItemID: candidate.WorkItemID, RecordID: string(candidate.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
+	version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: scope.Project, WorkItemID: candidate.WorkItemID, RecordID: string(candidate.WorkItemID), Revision: int64(plan.Issue.Revision)}, raw)
 	if err != nil {
 		return err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: organization, ProjectID: scope.Project, AggregateID: candidate.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: tracker.Actor{Kind: "integration", PrincipalID: "auto_archive"}, RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields, Operation: "archive", ReasonDetail: fmt.Sprintf("Archived automatically after %d days", days)}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: organization, ProjectID: scope.Project, AggregateID: candidate.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.EventType, SchemaVersion: 1, Actor: tracker.Actor{Kind: "integration", PrincipalID: "auto_archive"}, RecordedAt: plan.Issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.Issue.Revision, Fields: plan.Fields, Operation: "archive", ReasonDetail: fmt.Sprintf("Archived automatically after %d days", days)}})
 	if err != nil {
 		return err
 	}
@@ -140,7 +141,7 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 	if err != nil {
 		return err
 	}
-	search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: organization, ProjectID: scope.Project, WorkItemID: candidate.WorkItemID, ID: "issue:" + string(candidate.WorkItemID), SourceID: string(candidate.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+	search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: organization, ProjectID: scope.Project, WorkItemID: candidate.WorkItemID, ID: "issue:" + string(candidate.WorkItemID), SourceID: string(candidate.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 	if err != nil {
 		return err
 	}
@@ -152,7 +153,7 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 		if err != nil {
 			return err
 		}
-		if !sameWorkItemProjectPlan(plan.project, project) {
+		if !hubrecords.SameWorkItemProjectPlan(plan.Project, project) {
 			return nil
 		}
 		current, err := w.LockWorkItem(ctx, scope.Project, candidate.WorkItemID)
@@ -167,21 +168,21 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 		if err != nil {
 			return err
 		}
-		if current.Revision != plan.current.Revision || current.EventSequence != plan.current.EventSequence || !eligible || currentDays != days {
+		if current.Revision != plan.Current.Revision || current.EventSequence != plan.Current.EventSequence || !eligible || currentDays != days {
 			return nil
 		}
-		if err := writeWorkItemRecord(ctx, w, plan, fields); err != nil {
+		if err := hubrecords.WriteWorkItemRecord(ctx, w, plan, fields); err != nil {
 			return err
 		}
 		if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
 			return err
 		}
-		if err := w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: organization, ProjectID: scope.Project, WorkItemID: candidate.WorkItemID, Revision: version.Revision, VersionSHA256: version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(plan.issue.Body)}); err != nil {
+		if err := w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: organization, ProjectID: scope.Project, WorkItemID: candidate.WorkItemID, Revision: version.Revision, VersionSHA256: version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(plan.Issue.Body)}); err != nil {
 			return err
 		}
 		if _, err := w.AppendEvent(ctx, event); err != nil {
 			return err
 		}
-		return w.PutSearch(ctx, search, plan.current.Revision)
+		return w.PutSearch(ctx, search, plan.Current.Revision)
 	})
 }

@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/artifact"
-	"github.com/digitaldrywood/detent/internal/diffbody"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,6 +15,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/diffbody"
 
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -201,15 +203,15 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 				t.Fatalf("imported checkpoint detail uploaders = %q, want %q", detailUploaders, wantDetailUploaders[organization])
 			}
 			for _, suffix := range []string{"", "_second"} {
-				var snapshot tenantAttemptSnapshot
+				var snapshot hubrecords.TenantAttemptSnapshot
 				if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
-					snapshot.attempt, err = r.Attempt(t.Context(), "attempt_execution_import"+suffix)
+					snapshot.Attempt, err = r.Attempt(t.Context(), "attempt_execution_import"+suffix)
 					if err != nil {
 						return err
 					}
-					snapshot.event = eventstore.Event{OrganizationID: organization, ProjectID: project}
-					return readTenantAttemptCheckpointPayload(t.Context(), r, &snapshot)
+					snapshot.Event = eventstore.Event{OrganizationID: organization, ProjectID: project}
+					return hubrecords.ReadTenantAttemptCheckpointPayload(t.Context(), r, &snapshot)
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -242,11 +244,11 @@ func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T
 					if imported.CheckpointObjectKey == nil || imported.CheckpointPreservesSource == nil || *imported.CheckpointPreservesSource != (suffix == "") {
 						t.Fatalf("verified imported checkpoint classification %s: %+v", suffix, imported)
 					}
-					snapshot := tenantAttemptSnapshot{attempt: imported, event: eventstore.Event{OrganizationID: organization, ProjectID: project}}
-					if err := readTenantAttemptCheckpointPayload(t.Context(), r, &snapshot); err != nil {
+					snapshot := hubrecords.TenantAttemptSnapshot{Attempt: imported, Event: eventstore.Event{OrganizationID: organization, ProjectID: project}}
+					if err := hubrecords.ReadTenantAttemptCheckpointPayload(t.Context(), r, &snapshot); err != nil {
 						return err
 					}
-					if snapshot.checkpointPayload == nil {
+					if snapshot.CheckpointPayload == nil {
 						t.Fatal("verified imported checkpoint reference was not registered")
 					}
 
@@ -360,7 +362,7 @@ func coreExecutionSourceCopy(t *testing.T, organization tracker.OrganizationID, 
 			run := tracker.NativeRunData{AttemptID: id, LeaseID: tracker.LeaseID("lease_execution_import" + suffix), FencingToken: tracker.FencingToken(40 + index), RunID: "run_execution_import" + suffix, Sequence: 1, Handoff: checkpoint}
 			var data any = run
 			if index == 1 {
-				data = map[string]tracker.NativeRunData{runDetailEntry(run): run}
+				data = map[string]tracker.NativeRunData{hubrecords.RunDetailEntry(run): run}
 			}
 			raw, err := json.Marshal(data)
 			if err != nil {
@@ -371,7 +373,7 @@ func coreExecutionSourceCopy(t *testing.T, organization tracker.OrganizationID, 
 				t.Fatal(err)
 			}
 			fixture.add("change_content_objects", map[string]any{"object_key": ref.Key, "object_sha256": ref.SHA256, "object_bytes": ref.CompressedSize, "content_bytes": ref.UncompressedSize, "pending_content": raw})
-			detail := newRunDetailReference(ref, string(organization), runDetailEntry(run))
+			detail := hubrecords.NewRunDetailReference(ref, string(organization), hubrecords.RunDetailEntry(run))
 			if index == 0 {
 				detail.ObjectKey = ref.Key
 			} else {

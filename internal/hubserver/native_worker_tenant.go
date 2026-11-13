@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -519,7 +520,7 @@ func (s *Service) prepareLeaseCancellationContent(ctx context.Context, organizat
 	if s.runDetailStore() == nil {
 		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
-	store := runEventDetailStore{DetailStore: s.runDetailStore()}
+	store := hubrecords.RunEventDetailStore{DetailStore: s.runDetailStore()}
 	if event.AttemptID != attempt.ID || event.RunID != attempt.RunID {
 		return nil, errLatestRunEventMismatch
 	}
@@ -552,7 +553,7 @@ func (s *Service) prepareAttemptCancellationContent(ctx context.Context, organiz
 }
 
 func (s *Service) prepareCancelledRunContent(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, lease leasestore.Lease, attempt leasestore.Attempt, workItem corestore.WorkItem, aggregate tracker.NativeWorkItemID, data tracker.NativeRunData, reason string, validate bool) (*preparedNativeLeaseCancellation, error) {
-	store := runEventDetailStore{DetailStore: s.runDetailStore()}
+	store := hubrecords.RunEventDetailStore{DetailStore: s.runDetailStore()}
 	data.Sequence = attempt.Sequence + 1
 	data.Outcome = "cancelled"
 	data.Handoff, data.ArtifactIDs = nil, nil

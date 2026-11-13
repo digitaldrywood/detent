@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -222,7 +223,7 @@ func (s *Service) hydrateTenantHistoryRelatedIssues(ctx context.Context, scope h
 			if workflowState := slices.IndexFunc(record.States, func(candidate tracker.NativeState) bool { return candidate.Name == state }); workflowState >= 0 {
 				terminal = record.States[workflowState].Terminal
 			}
-			link := &tracker.NativeDependency{ID: item.NativeID, ProjectID: item.ProjectID, Number: int(item.Number), Title: item.Title, State: state, Terminal: terminal, WebURL: issueBrowserPath(organization.Slug, record.Core.Slug, int(item.Number))}
+			link := &tracker.NativeDependency{ID: item.NativeID, ProjectID: item.ProjectID, Number: int(item.Number), Title: item.Title, State: state, Terminal: terminal, WebURL: hubrecords.IssueBrowserPath(organization.Slug, record.Core.Slug, int(item.Number))}
 			for _, position := range positions {
 				events[position].Data.RelatedIssue = link
 			}
@@ -262,7 +263,7 @@ func (s *Service) readTenantCollaborationEvent(ctx context.Context, record event
 			return tracker.CollaborationEvent{}, nil, err
 		}
 		if len(envelope.Data.Run) > 0 {
-			if err := decodeRunDetail(ctx, nil, string(envelope.Data.Run), event.Data.Run); err != nil {
+			if err := hubrecords.DecodeRunDetail(ctx, nil, string(envelope.Data.Run), event.Data.Run); err != nil {
 				return tracker.CollaborationEvent{}, nil, err
 			}
 		}

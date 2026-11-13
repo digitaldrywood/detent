@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/staticasset"
@@ -249,7 +250,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		params := c.Request().URL.Query()
 		params.Del("board")
 		params.Del("since")
-		if err := validateNativeIssueQuery(params); err != nil {
+		if err := hubrecords.ValidateNativeIssueQuery(params); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}

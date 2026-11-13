@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
@@ -572,7 +573,7 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter a project name and explicitly grant yourself project access")
 	}
 	if request.States != nil {
-		if err := validateNativeStates(request.States); err != nil {
+		if err := hubrecords.ValidateNativeStates(request.States); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}

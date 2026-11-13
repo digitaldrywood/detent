@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -414,7 +415,7 @@ func (f hostedSecurityFixture) seedIssue(t *testing.T, number int) tracker.Nativ
 	organization := f.service.accessOrganization()
 	now := f.service.config.now()
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: f.project, WorkItemID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: number, Revision: 1, Profile: "native"}, State: "Todo", Title: "private-issue-sentinel", Body: "private-body-sentinel", CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
-	fields, err := f.service.prepareWorkItemFields(t.Context(), organization, workItemRecordPlan{issue: issue, create: true})
+	fields, err := f.service.prepareWorkItemFields(t.Context(), organization, hubrecords.WorkItemRecordPlan{Issue: issue, Create: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +435,7 @@ func (f hostedSecurityFixture) seedIssue(t *testing.T, number int) tracker.Nativ
 		if err != nil {
 			return err
 		}
-		if err := writeClaimFactsAndQueue(t.Context(), w, workItemRecordPlan{project: project, issue: issue, create: true}, nil); err != nil {
+		if err := hubrecords.WriteClaimFactsAndQueue(t.Context(), w, hubrecords.WorkItemRecordPlan{Project: project, Issue: issue, Create: true}, nil); err != nil {
 			return err
 		}
 		_, err = w.CreateCollaborationVersion(t.Context(), version)

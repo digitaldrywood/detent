@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -73,20 +74,20 @@ func TestNativeAttemptAttachmentPayloadIntegrity(t *testing.T) {
 		{"object deleted", func(r *attachmentstore.Record) { r.ObjectDeletedAt = new(time.Time) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			snapshot := tenantAttemptSnapshot{attempt: leasestore.Attempt{OrganizationID: "org_example", PayloadObjectKey: ref.Key}, event: eventstore.Event{ProjectID: "prj_example"}}
+			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: leasestore.Attempt{OrganizationID: "org_example", PayloadObjectKey: ref.Key}, Event: eventstore.Event{ProjectID: "prj_example"}}
 			row := attachmentstore.Record{OrganizationID: "org_example", ObjectKey: ref.Key, UncompressedSize: ref.UncompressedSize,
 				Codec: ref.Codec, SchemaVersion: 1, Kind: ref.Kind, Retention: ref.Retention,
-				Metadata: attachment.Metadata{ID: newRunDetailReference(ref, "org_example", "").AttachmentID, ProjectID: "prj_example", SHA256: ref.SHA256, Size: ref.CompressedSize}}
+				Metadata: attachment.Metadata{ID: hubrecords.NewRunDetailReference(ref, "org_example", "").AttachmentID, ProjectID: "prj_example", SHA256: ref.SHA256, Size: ref.CompressedSize}}
 			if test.change != nil {
 				test.change(&row)
 			}
-			err := readTenantAttemptAttachmentPayload(t.Context(), attemptAttachmentReader{row: row}, &snapshot)
+			err := hubrecords.ReadTenantAttemptAttachmentPayload(t.Context(), attemptAttachmentReader{row: row}, &snapshot)
 			if test.change == nil {
-				if err != nil || snapshot.payload == nil || *snapshot.payload != ref {
-					t.Fatalf("canonical reference = %+v: %v", snapshot.payload, err)
+				if err != nil || snapshot.Payload == nil || *snapshot.Payload != ref {
+					t.Fatalf("canonical reference = %+v: %v", snapshot.Payload, err)
 				}
-			} else if !errors.Is(err, artifact.ErrIntegrity) || snapshot.payload != nil {
-				t.Fatalf("invalid metadata accepted: reference=%+v error=%v", snapshot.payload, err)
+			} else if !errors.Is(err, artifact.ErrIntegrity) || snapshot.Payload != nil {
+				t.Fatalf("invalid metadata accepted: reference=%+v error=%v", snapshot.Payload, err)
 			}
 		})
 	}
@@ -96,39 +97,39 @@ func TestNativeAttemptIdentityMismatchDiagnostics(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, field string
-		change      func(*tenantAttemptSnapshot, *tracker.NativeRunData)
+		change      func(*hubrecords.TenantAttemptSnapshot, *tracker.NativeRunData)
 		expected    int64
 		actual      int64
 	}{
 		{name: "matching"},
-		{name: "cancelled", change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) { s.attempt.Sequence++ }},
-		{name: "attempt", field: "attempt_id", change: func(_ *tenantAttemptSnapshot, r *tracker.NativeRunData) { r.AttemptID = "private-attempt" }},
-		{name: "run", field: "run_id", change: func(_ *tenantAttemptSnapshot, r *tracker.NativeRunData) { r.RunID = "private-run" }},
-		{name: "lease", field: "lease_id", change: func(_ *tenantAttemptSnapshot, r *tracker.NativeRunData) { r.LeaseID = "private-lease" }},
-		{name: "fence", field: "fencing_token", expected: 7, actual: 8, change: func(_ *tenantAttemptSnapshot, r *tracker.NativeRunData) { r.FencingToken++ }},
-		{name: "local attempt", field: "local_attempt_id", expected: 42, actual: 43, change: func(s *tenantAttemptSnapshot, r *tracker.NativeRunData) {
-			s.attempt.LocalAttemptID = 42
+		{name: "cancelled", change: func(s *hubrecords.TenantAttemptSnapshot, _ *tracker.NativeRunData) { s.Attempt.Sequence++ }},
+		{name: "attempt", field: "attempt_id", change: func(_ *hubrecords.TenantAttemptSnapshot, r *tracker.NativeRunData) { r.AttemptID = "private-attempt" }},
+		{name: "run", field: "run_id", change: func(_ *hubrecords.TenantAttemptSnapshot, r *tracker.NativeRunData) { r.RunID = "private-run" }},
+		{name: "lease", field: "lease_id", change: func(_ *hubrecords.TenantAttemptSnapshot, r *tracker.NativeRunData) { r.LeaseID = "private-lease" }},
+		{name: "fence", field: "fencing_token", expected: 7, actual: 8, change: func(_ *hubrecords.TenantAttemptSnapshot, r *tracker.NativeRunData) { r.FencingToken++ }},
+		{name: "local attempt", field: "local_attempt_id", expected: 42, actual: 43, change: func(s *hubrecords.TenantAttemptSnapshot, r *tracker.NativeRunData) {
+			s.Attempt.LocalAttemptID = 42
 			r.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 43}
 		}},
-		{name: "sequence", field: "sequence", expected: 4, actual: 2, change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) { s.attempt.Sequence += 2 }},
-		{name: "release timestamp absent", field: "released_at", change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) {
-			s.attempt.Sequence++
-			s.lease.ReleasedAt = nil
+		{name: "sequence", field: "sequence", expected: 4, actual: 2, change: func(s *hubrecords.TenantAttemptSnapshot, _ *tracker.NativeRunData) { s.Attempt.Sequence += 2 }},
+		{name: "release timestamp absent", field: "released_at", change: func(s *hubrecords.TenantAttemptSnapshot, _ *tracker.NativeRunData) {
+			s.Attempt.Sequence++
+			s.Lease.ReleasedAt = nil
 		}},
-		{name: "timestamp microsecond", field: "updated_at", change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) {
-			s.attempt.Sequence++
-			s.attempt.UpdatedAt = s.attempt.UpdatedAt.Add(time.Microsecond)
+		{name: "timestamp microsecond", field: "updated_at", change: func(s *hubrecords.TenantAttemptSnapshot, _ *tracker.NativeRunData) {
+			s.Attempt.Sequence++
+			s.Attempt.UpdatedAt = s.Attempt.UpdatedAt.Add(time.Microsecond)
 		}},
-		{name: "timestamp nanosecond", field: "updated_at", change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) {
-			s.attempt.Sequence++
-			s.attempt.UpdatedAt = s.attempt.UpdatedAt.Add(time.Nanosecond)
+		{name: "timestamp nanosecond", field: "updated_at", change: func(s *hubrecords.TenantAttemptSnapshot, _ *tracker.NativeRunData) {
+			s.Attempt.Sequence++
+			s.Attempt.UpdatedAt = s.Attempt.UpdatedAt.Add(time.Nanosecond)
 		}},
-		{name: "status", field: "sequence", expected: 3, actual: 2, change: func(s *tenantAttemptSnapshot, _ *tracker.NativeRunData) {
-			s.attempt.Sequence++
-			s.attempt.Status = "running"
+		{name: "status", field: "sequence", expected: 3, actual: 2, change: func(s *hubrecords.TenantAttemptSnapshot, _ *tracker.NativeRunData) {
+			s.Attempt.Sequence++
+			s.Attempt.Status = "running"
 		}},
-		{name: "outcome", field: "sequence", expected: 3, actual: 2, change: func(s *tenantAttemptSnapshot, r *tracker.NativeRunData) {
-			s.attempt.Sequence++
+		{name: "outcome", field: "sequence", expected: 3, actual: 2, change: func(s *hubrecords.TenantAttemptSnapshot, r *tracker.NativeRunData) {
+			s.Attempt.Sequence++
 			r.Outcome = "private-outcome"
 		}},
 	} {
@@ -136,10 +137,10 @@ func TestNativeAttemptIdentityMismatchDiagnostics(t *testing.T) {
 			for _, hosted := range []bool{false, true} {
 				t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
 					now := time.Date(2026, time.November, 6, 12, 0, 0, 123456000, time.UTC)
-					snapshot := tenantAttemptSnapshot{
-						attempt: leasestore.Attempt{ID: "attempt_example", OrganizationID: "org_example", RunID: "run_example", Sequence: 2, Status: "cancelled", UpdatedAt: now},
-						lease:   leasestore.Lease{LeaseID: "lease_example", FencingToken: 7, ReleasedAt: &now},
-						event:   eventstore.Event{WorkItemID: "wi_example"},
+					snapshot := hubrecords.TenantAttemptSnapshot{
+						Attempt: leasestore.Attempt{ID: "attempt_example", OrganizationID: "org_example", RunID: "run_example", Sequence: 2, Status: "cancelled", UpdatedAt: now},
+						Lease:   leasestore.Lease{LeaseID: "lease_example", FencingToken: 7, ReleasedAt: &now},
+						Event:   eventstore.Event{WorkItemID: "wi_example"},
 					}
 					run := tracker.NativeRunData{AttemptID: "attempt_example", RunID: "run_example", LeaseID: "lease_example", FencingToken: 7, Sequence: 2, CompletionBody: "private-content"}
 					if test.change != nil {
@@ -154,7 +155,7 @@ func TestNativeAttemptIdentityMismatchDiagnostics(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					snapshot.payload = &ref
+					snapshot.Payload = &ref
 					var logs bytes.Buffer
 					var handler slog.Handler = slog.NewJSONHandler(&logs, nil)
 					if hosted {
@@ -171,7 +172,7 @@ func TestNativeAttemptIdentityMismatchDiagnostics(t *testing.T) {
 					if !errors.Is(err, artifact.ErrIntegrity) || nativeAttemptRunMatches(snapshot, run) {
 						t.Fatalf("identity integrity rejection = %v", err)
 					}
-					var mismatch *nativeAttemptIdentityMismatch
+					var mismatch *hubrecords.NativeAttemptIdentityMismatch
 					if !errors.As(err, &mismatch) || mismatch.Field != test.field || mismatch.AttemptID != "attempt_example" {
 						t.Fatalf("typed identity mismatch = %v", err)
 					}
@@ -197,7 +198,7 @@ func TestNativeAttemptIdentityMismatchDiagnostics(t *testing.T) {
 						t.Fatalf("missing identity diagnostics: %+v", entry)
 					}
 					if test.field == "updated_at" {
-						if entry["expected_value"] != json.Number(strconv.FormatInt(snapshot.attempt.UpdatedAt.UnixMicro(), 10)) || entry["actual_value"] != json.Number(strconv.FormatInt(now.UnixMicro(), 10)) || entry["timestamp_unit"] != "microseconds" {
+						if entry["expected_value"] != json.Number(strconv.FormatInt(snapshot.Attempt.UpdatedAt.UnixMicro(), 10)) || entry["actual_value"] != json.Number(strconv.FormatInt(now.UnixMicro(), 10)) || entry["timestamp_unit"] != "microseconds" {
 							t.Fatalf("microsecond timestamp diagnostics: %+v", entry)
 						}
 					} else if test.field == "sequence" || test.field == "fencing_token" || test.field == "local_attempt_id" {
@@ -390,7 +391,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 				t.Fatal(err)
 			}
 			archive := attachmentstore.ArchiveRecord{OrganizationID: organization.ID, ProjectID: project.ID,
-				ID: newRunDetailReference(ref, string(organization.ID), "").AttachmentID, Uploader: "test_hub_admin", CreatedAt: now, Reference: ref}
+				ID: hubrecords.NewRunDetailReference(ref, string(organization.ID), "").AttachmentID, Uploader: "test_hub_admin", CreatedAt: now, Reference: ref}
 			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 				if _, err := w.AppendEvent(t.Context(), history); err != nil {
 					return err
@@ -419,7 +420,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-				_, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), ref.Key)
+				_, err := r.(hubrecords.AttemptArchiveReader).ArchiveObjectByKey(t.Context(), ref.Key)
 				if !errors.Is(err, corestore.ErrNotFound) {
 					return fmt.Errorf("import must preserve attachment-only payload metadata: %v", err)
 				}
@@ -810,7 +811,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					_, err = r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), attempt.PayloadObjectKey)
+					_, err = r.(hubrecords.AttemptArchiveReader).ArchiveObjectByKey(t.Context(), attempt.PayloadObjectKey)
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -822,7 +823,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						object, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), attempt.PayloadObjectKey)
+						object, err := r.(hubrecords.AttemptArchiveReader).ArchiveObjectByKey(t.Context(), attempt.PayloadObjectKey)
 						ref = object.Reference
 						return err
 					}); err != nil {
@@ -850,7 +851,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 						t.Fatal("request replay changed execution state or did not exercise receipt branch")
 					}
 					if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-						object, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), ref.Key)
+						object, err := r.(hubrecords.AttemptArchiveReader).ArchiveObjectByKey(t.Context(), ref.Key)
 						if err == nil && object.Reference != ref {
 							return errors.New("request replay metadata differs")
 						}
@@ -916,7 +917,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 						t.Fatalf("write replay=%v want=%v: %v", duplicate, wantReplay, err)
 					}
 					if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-						object, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), ref.Key)
+						object, err := r.(hubrecords.AttemptArchiveReader).ArchiveObjectByKey(t.Context(), ref.Key)
 						if err == nil && object.Reference != ref {
 							return errors.New("replayed metadata differs")
 						}
@@ -1132,7 +1133,7 @@ func (r attemptSnapshotReader) ArchiveObjectByKey(ctx context.Context, key strin
 	if r.owner.archiveErr != nil {
 		return artifactstore.ArchiveObject{}, r.owner.archiveErr
 	}
-	return r.Reader.(attemptArchiveReader).ArchiveObjectByKey(ctx, key)
+	return r.Reader.(hubrecords.AttemptArchiveReader).ArchiveObjectByKey(ctx, key)
 }
 
 type verifiedAttemptDetails struct{ memoryRunDetails }
@@ -1165,7 +1166,7 @@ func (r attemptSnapshotReader) Receipt(ctx context.Context, actor, operation, ke
 }
 
 func (r attemptSnapshotReader) RunEvent(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, id string) (eventstore.Event, error) {
-	return r.Reader.(nativeRunEventReader).RunEvent(ctx, project, item, id)
+	return r.Reader.(hubrecords.NativeRunEventReader).RunEvent(ctx, project, item, id)
 }
 
 func (s *verifiedAttemptDetails) ReadCanonicalDetail(ctx context.Context, org, project, key string) ([]byte, error) {

@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -47,7 +48,7 @@ func validateNativeWorkflowPolicy(project projectstore.Record, descriptor policy
 	if workflowRevision == "" {
 		workflowRevision = descriptor.SourceRevision
 	}
-	if descriptor.Workflow.Source != project.Core.WorkflowSource || workflowRevision != project.Core.WorkflowSourceRevision || !slices.EqualFunc(canonicalWorkflowStates(nativeTriageStates(descriptor.Workflow.States)), canonicalWorkflowStates(project.States), func(a, b policy.State) bool {
+	if descriptor.Workflow.Source != project.Core.WorkflowSource || workflowRevision != project.Core.WorkflowSourceRevision || !slices.EqualFunc(canonicalWorkflowStates(hubrecords.NativeTriageStates(descriptor.Workflow.States)), canonicalWorkflowStates(project.States), func(a, b policy.State) bool {
 		return a.Name == b.Name && a.Terminal == b.Terminal && a.Dispatchable == b.Dispatchable && a.OperatorOnly == b.OperatorOnly && slices.Equal(a.Transitions, b.Transitions)
 	}) {
 		return hubapi.PolicyMismatch("The configured workflow differs from its approved policy")

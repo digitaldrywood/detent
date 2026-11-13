@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -382,7 +383,7 @@ func TestHostedMetadataExcludesCustomerContent(t *testing.T) {
 	organization := service.accessOrganization()
 	at := expectedActivity.Add(-500 * time.Millisecond)
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project.Core.ID, WorkItemID: "wi_metadata", Number: 1, Revision: 1}, State: "Todo", Title: sentinel, Body: sentinel, WebURL: "https://private.example.test/" + sentinel, CreatedAt: at, UpdatedAt: at, LastActivityAt: at}
-	fields, err := service.prepareWorkItemFields(t.Context(), organization, workItemRecordPlan{issue: issue, create: true})
+	fields, err := service.prepareWorkItemFields(t.Context(), organization, hubrecords.WorkItemRecordPlan{Issue: issue, Create: true})
 	if err != nil {
 		t.Fatal(err)
 	}

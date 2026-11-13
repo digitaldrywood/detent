@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -24,7 +25,7 @@ func (s *Service) readRegistrationClaimStateTenant(ctx context.Context, scope hu
 		return err
 	}
 	var page runnerstore.ClaimStatePage
-	var candidates []tenantAttemptSnapshot
+	var candidates []hubrecords.TenantAttemptSnapshot
 	err = s.readRunnerResponseSnapshot(ctx, scope.Organization, scope.Credential.ID, snapshot.RunnerID, scope.Project, func(ctx context.Context, r tenantstore.Reader, now time.Time) error {
 		identity, err := r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
 		if err != nil {
@@ -70,11 +71,11 @@ func (s *Service) readRegistrationClaimStateTenant(ctx context.Context, scope hu
 	return nil
 }
 
-func registrationCleanupRequired(candidate tenantAttemptSnapshot, run tracker.NativeRunData, runner string) (bool, error) {
+func registrationCleanupRequired(candidate hubrecords.TenantAttemptSnapshot, run tracker.NativeRunData, runner string) (bool, error) {
 	if !nativeAttemptRunMatches(candidate, run) || run.RunnerID != runner {
 		return false, artifact.ErrIntegrity
 	}
-	if candidate.attempt.CleanupAcknowledgedAt != nil {
+	if candidate.Attempt.CleanupAcknowledgedAt != nil {
 		return false, nil
 	}
 
@@ -108,28 +109,28 @@ func (s *Service) advanceRunnerCleanupCursor(key releasedExecutionCursorKey, nex
 	}
 }
 
-func (s *Service) readRunnerCleanupCandidates(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, candidates []runnerauth.ReleasedExecution) ([]tenantAttemptSnapshot, error) {
-	values := make([]tenantAttemptSnapshot, 0, len(candidates))
+func (s *Service) readRunnerCleanupCandidates(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, candidates []runnerauth.ReleasedExecution) ([]hubrecords.TenantAttemptSnapshot, error) {
+	values := make([]hubrecords.TenantAttemptSnapshot, 0, len(candidates))
 	for _, candidate := range candidates {
-		var value tenantAttemptSnapshot
+		var value hubrecords.TenantAttemptSnapshot
 		err := func() error {
 			var err error
-			value.attempt, err = r.Attempt(ctx, candidate.AttemptID)
+			value.Attempt, err = r.Attempt(ctx, candidate.AttemptID)
 			if err != nil {
 				return err
 			}
-			value.lease, err = r.Lease(ctx, value.attempt.LeaseID)
+			value.Lease, err = r.Lease(ctx, value.Attempt.LeaseID)
 			if err != nil {
 				return err
 			}
-			value.event, err = r.LatestRunEvent(ctx, scope.Project, candidate.AttemptID)
+			value.Event, err = r.LatestRunEvent(ctx, scope.Project, candidate.AttemptID)
 			if err != nil {
 				return err
 			}
-			if value.event.WorkItemID != candidate.WorkItemID || value.lease.IssueID != value.attempt.IssueID || value.lease.ReleasedAt == nil || value.lease.FencingToken != value.attempt.FencingToken || value.lease.MachineID != string(scope.Credential.Runner.MachineID) {
+			if value.Event.WorkItemID != candidate.WorkItemID || value.Lease.IssueID != value.Attempt.IssueID || value.Lease.ReleasedAt == nil || value.Lease.FencingToken != value.Attempt.FencingToken || value.Lease.MachineID != string(scope.Credential.Runner.MachineID) {
 				return artifact.ErrIntegrity
 			}
-			return readTenantAttemptRunPayload(ctx, r, &value)
+			return hubrecords.ReadTenantAttemptRunPayload(ctx, r, &value)
 		}()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -148,7 +149,7 @@ func (s *Service) readRunnerCleanupCandidates(ctx context.Context, r tenantstore
 	return values, nil
 }
 
-func (s *Service) resolveRunnerCleanupCandidates(ctx context.Context, scope hubscope.NativeScope, runner string, candidates []tenantAttemptSnapshot, state *runnerauth.ClaimState) error {
+func (s *Service) resolveRunnerCleanupCandidates(ctx context.Context, scope hubscope.NativeScope, runner string, candidates []hubrecords.TenantAttemptSnapshot, state *runnerauth.ClaimState) error {
 	for _, candidate := range candidates {
 		run, err := s.readNativeAttemptRunTenant(ctx, candidate)
 		if err == nil && (!nativeAttemptRunMatches(candidate, run) || run.RunnerID != runner || run.MachineID != scope.Credential.Runner.MachineID) {
@@ -162,7 +163,7 @@ func (s *Service) resolveRunnerCleanupCandidates(ctx context.Context, scope hubs
 				return err
 			}
 			if s.config.Logger != nil {
-				s.config.Logger.Warn("runner cleanup proof unavailable", "organization_id", scope.Organization, "project_id", scope.Project, "attempt_id", candidate.attempt.ID, "error", err)
+				s.config.Logger.Warn("runner cleanup proof unavailable", "organization_id", scope.Organization, "project_id", scope.Project, "attempt_id", candidate.Attempt.ID, "error", err)
 			}
 			continue
 		}
@@ -173,12 +174,12 @@ func (s *Service) resolveRunnerCleanupCandidates(ctx context.Context, scope hubs
 			heartbeat = &value
 		}
 		if err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Background, func(w tenantstore.Writer) error {
-			return w.SetAttemptRuntimeHeartbeat(ctx, candidate.attempt.ID, candidate.attempt.Sequence, heartbeat, required)
+			return w.SetAttemptRuntimeHeartbeat(ctx, candidate.Attempt.ID, candidate.Attempt.Sequence, heartbeat, required)
 		}); err != nil {
 			return err
 		}
-		if required && candidate.attempt.CleanupAcknowledgedAt == nil {
-			state.ReleasedExecutions = append(state.ReleasedExecutions, runnerauth.ReleasedExecution{ProjectID: scope.Project, WorkItemID: candidate.event.WorkItemID, AttemptID: candidate.attempt.ID})
+		if required && candidate.Attempt.CleanupAcknowledgedAt == nil {
+			state.ReleasedExecutions = append(state.ReleasedExecutions, runnerauth.ReleasedExecution{ProjectID: scope.Project, WorkItemID: candidate.Event.WorkItemID, AttemptID: candidate.Attempt.ID})
 		}
 	}
 	slices.SortFunc(state.ReleasedExecutions, func(a, b runnerauth.ReleasedExecution) int { return strings.Compare(a.AttemptID, b.AttemptID) })

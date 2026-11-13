@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -513,7 +514,7 @@ func (s *Service) prepareConfigurationPayload(ctx context.Context, organization 
 	if err := s.registerChangeContent(ctx, string(organization), expected, true); err != nil {
 		return attachment.ArchiveReference{}, err
 	}
-	ref, err := eventstore.NewContent(runEventDetailStore{DetailStore: store}).PreparePayload(ctx, organization, raw)
+	ref, err := eventstore.NewContent(hubrecords.RunEventDetailStore{DetailStore: store}).PreparePayload(ctx, organization, raw)
 	if err != nil {
 		return attachment.ArchiveReference{}, errors.Join(errConfigurationPayloadUnavailable, err)
 	}

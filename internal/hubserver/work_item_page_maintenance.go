@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -161,7 +162,7 @@ func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker
 		for _, relation := range relations.Items {
 			browserURL := ""
 			if relation.OrganizationSlug != "" && relation.ProjectSlug != "" {
-				browserURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
+				browserURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
 			}
 			records = append(records, viewstore.RelationshipPageRecord{Relationship: relation, WebURL: browserURL, Identifier: string(relation.RelatedProjectID) + "#" + strconv.Itoa(relation.Number)})
 		}

@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -260,7 +261,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 								inline++
 								continue
 							}
-							object, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), key)
+							object, err := r.(hubrecords.AttemptArchiveReader).ArchiveObjectByKey(t.Context(), key)
 							if err != nil {
 								return err
 							}
@@ -328,7 +329,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 					allRefs := []attachment.ArchiveReference{}
 					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 						for _, key := range keys {
-							object, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), key)
+							object, err := r.(hubrecords.AttemptArchiveReader).ArchiveObjectByKey(t.Context(), key)
 							if err != nil {
 								return err
 							}

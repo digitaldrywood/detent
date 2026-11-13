@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -36,7 +37,7 @@ func linkedFixture(t *testing.T) nativeFixture {
 		}
 		project.Settings.Repository, project.Settings.CheckoutRepository, project.Settings.RepositoryEnabled = repository, repository, true
 		project.Settings.Intake = "manual"
-		project.States = nativeTriageStates(append(nativeFixtureStates(), tracker.NativeState{Name: "Cancelled", Terminal: true}))
+		project.States = hubrecords.NativeTriageStates(append(nativeFixtureStates(), tracker.NativeState{Name: "Cancelled", Terminal: true}))
 		_, err = w.UpdateProjectRecord(t.Context(), project)
 		return err
 	}); err != nil {
@@ -65,7 +66,7 @@ func TestLinkedIssueCreation(t *testing.T) {
 		}
 		project.Settings.Repository, project.Settings.CheckoutRepository, project.Settings.RepositoryEnabled = "", "", false
 		states := append([]tracker.NativeState{{Name: "Backlog", Transitions: []string{"Todo"}}}, nativeFixtureStates()...)
-		project.States = nativeTriageStates(append(states, tracker.NativeState{Name: "Cancelled", Terminal: true}))
+		project.States = hubrecords.NativeTriageStates(append(states, tracker.NativeState{Name: "Cancelled", Terminal: true}))
 		_, err = w.UpdateProjectRecord(t.Context(), project)
 		return err
 	}); err != nil {

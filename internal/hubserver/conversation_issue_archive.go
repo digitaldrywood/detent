@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -89,7 +90,7 @@ func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record con
 		if err != nil {
 			return nil, err
 		}
-		if err := requireNativeEdit(issue, issue.Revision); err != nil {
+		if err := hubrecords.RequireNativeEdit(issue, issue.Revision); err != nil {
 			return nil, err
 		}
 		if issue.Archived {
@@ -187,8 +188,8 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscop
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	type preparedItem struct {
-		plan    workItemRecordPlan
-		fields  workItemRecordFields
+		plan    hubrecords.WorkItemRecordPlan
+		fields  hubrecords.WorkItemRecordFields
 		version eventstore.CollaborationVersion
 		event   eventstore.Event
 		search  searchstore.Document
@@ -220,7 +221,7 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscop
 			if err != nil {
 				return nil, err
 			}
-			if plan.issue.Archived || plan.issue.State == "Merging" {
+			if plan.Issue.Archived || plan.Issue.State == "Merging" {
 				return nil, hubapi.NativePublicInvalid("The selected issue cannot be archived")
 			}
 			plan, err = s.planWorkItemRecord(ctx, scope, plan, input)
@@ -232,15 +233,15 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscop
 			if err != nil {
 				return nil, err
 			}
-			raw, err := json.Marshal(plan.issue)
+			raw, err := json.Marshal(plan.Issue)
 			if err != nil {
 				return nil, err
 			}
-			prepared.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, RecordID: item.WorkItemID, Revision: int64(plan.issue.Revision)}, raw)
+			prepared.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, RecordID: item.WorkItemID, Revision: int64(plan.Issue.Revision)}, raw)
 			if err != nil {
 				return nil, err
 			}
-			raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.issue.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields, Operation: "archive"}})
+			raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.Issue.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.EventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.Issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.Issue.Revision, Fields: plan.Fields, Operation: "archive"}})
 			if err != nil {
 				return nil, err
 			}
@@ -248,12 +249,12 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscop
 			if err != nil {
 				return nil, err
 			}
-			prepared.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + item.WorkItemID, SourceID: item.WorkItemID, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+			prepared.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, ID: "issue:" + item.WorkItemID, SourceID: item.WorkItemID, Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 			if err != nil {
 				return nil, err
 			}
 			items = append(items, prepared)
-			response = append(response, s.nativeIssueResponse(relationshipOmittedIssue(scope.ReporterIssue(plan.issue))))
+			response = append(response, s.nativeIssueResponse(hubrecords.RelationshipOmittedIssue(scope.ReporterIssue(plan.Issue))))
 		}
 		raw, err := json.Marshal(response)
 		if err != nil {
@@ -297,22 +298,22 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscop
 				return err
 			}
 			for _, item := range items {
-				if !sameWorkItemProjectPlan(item.plan.project, project) {
+				if !hubrecords.SameWorkItemProjectPlan(item.plan.Project, project) {
 					return corestore.ErrSerializationFailure
 				}
-				if err := writeWorkItemRecord(ctx, w, item.plan, item.fields); err != nil {
+				if err := hubrecords.WriteWorkItemRecord(ctx, w, item.plan, item.fields); err != nil {
 					return err
 				}
 				if _, err := w.CreateCollaborationVersion(ctx, item.version); err != nil {
 					return err
 				}
-				if err := w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.version.WorkItemID, Revision: item.version.Revision, VersionSHA256: item.version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(item.plan.issue.Body)}); err != nil {
+				if err := w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.version.WorkItemID, Revision: item.version.Revision, VersionSHA256: item.version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(item.plan.Issue.Body)}); err != nil {
 					return err
 				}
 				if _, err := w.AppendEvent(ctx, item.event); err != nil {
 					return err
 				}
-				if err := w.PutSearch(ctx, item.search, item.plan.current.Revision); err != nil {
+				if err := w.PutSearch(ctx, item.search, item.plan.Current.Revision); err != nil {
 					return err
 				}
 			}
@@ -322,7 +323,7 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscop
 			_, err = w.PutReceipt(ctx, receipt)
 			return err
 		})
-		err = errors.Join(err, releaseWorkItemAuthority(authority))
+		err = errors.Join(err, hubrecords.ReleaseWorkItemAuthority(authority))
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
 			continue
 		}

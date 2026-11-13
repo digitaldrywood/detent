@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -499,7 +500,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return nil, err
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
-		if strings.TrimSpace(r.Input.Name) == "" || len(r.Input.Name) > 200 || validateNativeStates(r.Input.States) != nil {
+		if strings.TrimSpace(r.Input.Name) == "" || len(r.Input.Name) > 200 || hubrecords.ValidateNativeStates(r.Input.States) != nil {
 			return nil, operatortool.ErrInvalidArguments
 		}
 		request := createNativeProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Name: r.Input.Name, States: r.Input.States, RequireDependencies: r.Input.RequireDependencies}

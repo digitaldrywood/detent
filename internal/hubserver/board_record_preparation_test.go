@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -43,7 +44,7 @@ func TestBoardRecordPreparationBoundsWorkersAndPreservesErrors(t *testing.T) {
 				}
 				if int(row.SourceRevision) == test.failure {
 					close(failed)
-					return tracker.NativeBoardCard{}, errNoApprovedRepositoryPolicy
+					return tracker.NativeBoardCard{}, hubrecords.ErrNoApprovedRepositoryPolicy
 				}
 				return tracker.NativeBoardCard{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{Number: int(row.SourceRevision)}}}, nil
 			})
@@ -68,7 +69,7 @@ func TestBoardRecordPreparationBoundsWorkersAndPreservesErrors(t *testing.T) {
 			for index := range test.used {
 				card, err := p.card(ctx, index)
 				if index == test.failure {
-					if !errors.Is(err, errNoApprovedRepositoryPolicy) {
+					if !errors.Is(err, hubrecords.ErrNoApprovedRepositoryPolicy) {
 						t.Fatalf("required failure=%v", err)
 					}
 					break

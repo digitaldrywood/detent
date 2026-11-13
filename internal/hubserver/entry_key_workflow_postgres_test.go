@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -83,7 +84,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	initialClock := clock
 	states := append(humanWorkflowFixtureStates(), tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}})
 	states = append(states, tracker.NativeState{Name: "Triage", Transitions: []string{"Todo", "Cancelled"}}, tracker.NativeState{Name: "Review", Transitions: []string{"Merging", "Rework", "Cancelled"}}, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Rework"}})
-	states = nativeTriageStates(states)
+	states = hubrecords.NativeTriageStates(states)
 	descriptor := hubTestPolicy()
 	descriptor.Workflow = &policy.Workflow{Source: "example-workflow.yaml", Revision: descriptor.SourceRevision, States: states}
 	descriptor = descriptor.WithID()
@@ -433,7 +434,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					issue.WebURL = target.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(organization.Slug, project.Core.Slug, issue.Number)}).WebURL
+					issue.WebURL = target.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(organization.Slug, project.Core.Slug, issue.Number)}).WebURL
 					board, list, relations, listBytes, err := boundBoardProjection(issue, viewstore.BoardReporterRelations{DependencyReady: true})
 					if err != nil {
 						t.Fatal(err)

@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -92,7 +93,7 @@ func newIntegrationFixture(t *testing.T, backend ImportBackend) nativeFixture {
 		}
 		project.Settings.Repository, project.Settings.CheckoutRepository = "example-org/example-project", "example-org/example-project"
 		project.Settings.Intake, project.Settings.DuplicateChallenge = "manual", false
-		project.States = nativeTriageStates(project.States)
+		project.States = hubrecords.NativeTriageStates(project.States)
 		_, err = w.UpdateProjectRecord(t.Context(), project)
 		return err
 	}); err != nil {

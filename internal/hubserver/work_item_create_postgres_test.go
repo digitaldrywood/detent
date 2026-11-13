@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -50,7 +51,7 @@ func TestPostgresCookieIssueLifecycle(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		project.States = nativeTriageStates(append(humanWorkflowFixtureStates(), tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}}))
+		project.States = hubrecords.NativeTriageStates(append(humanWorkflowFixtureStates(), tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}}))
 		project.Settings.DuplicateChallenge = true
 		_, err = w.UpdateProjectRecord(t.Context(), project)
 		return err
@@ -175,7 +176,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				t.Fatal(err)
 			}
 			project := tracker.ProjectID("project_" + string(org))
-			states := nativeTriageStates([]tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Verified"}}, {Name: "Verified", Terminal: true, Transitions: []string{"Todo"}}})
+			states := hubrecords.NativeTriageStates([]tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Verified"}}, {Name: "Verified", Terminal: true, Transitions: []string{"Todo"}}})
 			descriptor := hubTestPolicy()
 			descriptor.Workflow = &policy.Workflow{Source: "WORKFLOW.md", Revision: descriptor.SourceRevision, States: states}
 			descriptor = descriptor.WithID()

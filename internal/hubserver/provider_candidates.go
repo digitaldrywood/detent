@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -46,7 +47,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 		limit = 100
 	}
 	var candidates []claimstore.Candidate
-	var plans []nativeClaimPlan
+	var plans []hubrecords.NativeClaimPlan
 	var projectPolicy policystore.Revision
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
@@ -98,7 +99,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			return err
 		}
 		candidates = page.Items
-		shared := nativeClaimPlan{project: project, policy: projectPolicy}
+		shared := hubrecords.NativeClaimPlan{Project: project, Policy: projectPolicy}
 		batchReader, canBatch := r.(tenantstore.ClaimPreviewPlanRowsReader)
 		if canBatch && request.SessionID == "" && len(candidates) > 0 {
 			rows, err := batchReader.ClaimPreviewPlanRows(ctx, scope.Project, candidates)
@@ -166,16 +167,16 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 		refs = append(refs, eventstore.Reference(projectPolicy.PayloadObjectKey, projectPolicy.PayloadSHA256, projectPolicy.PayloadBytes, projectPolicy.PayloadContentBytes))
 	}
 	for _, plan := range plans {
-		v := plan.version
+		v := plan.Version
 		refs = append(refs, eventstore.Reference(v.PayloadObjectKey, v.PayloadSHA256, v.PayloadBytes, v.PayloadContentBytes))
-		if hubapi.StringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
-			c := plan.changeRecord
-			v := plan.changeVersion
+		if hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending {
+			c := plan.ChangeRecord
+			v := plan.ChangeVersion
 			refs = append(refs, eventstore.Reference(c.PayloadObjectKey, c.PayloadSHA256, c.PayloadBytes, c.PayloadContentBytes), eventstore.Reference(v.PayloadObjectKey, v.PayloadSHA256, v.PayloadBytes, v.PayloadContentBytes))
-			p := plan.changePolicy.Project
+			p := plan.ChangePolicy.Project
 			refs = append(refs, eventstore.Reference(p.PayloadObjectKey, p.PayloadSHA256, p.PayloadBytes, p.PayloadContentBytes))
-			if plan.changePolicy.hasReview {
-				r := plan.changePolicy.Review
+			if plan.ChangePolicy.HasReview {
+				r := plan.ChangePolicy.Review
 				refs = append(refs, eventstore.Reference(r.PayloadObjectKey, r.PayloadSHA256, r.PayloadBytes, r.PayloadContentBytes))
 			}
 		}
@@ -191,10 +192,10 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	}
 	for index := range plans {
 		claim := request.NativeClaim
-		claim.WorkItemID = plans[index].candidate.WorkItemID
+		claim.WorkItemID = plans[index].Candidate.WorkItemID
 		plan, err := s.hydrateNativeClaimPlan(ctx, scope, claim, now, plans[index], descriptor)
 		if errors.Is(err, ErrNoClaimableWork) {
-			plans[index] = nativeClaimPlan{}
+			plans[index] = hubrecords.NativeClaimPlan{}
 			continue
 		}
 		if err != nil {
@@ -206,16 +207,16 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	landingCapacityAvailable := false
 	page := tracker.NativeCapacityPage{Items: []tracker.NativeIssue{}}
 	for _, plan := range plans {
-		if plan.candidate.WorkItemID == "" {
+		if plan.Candidate.WorkItemID == "" {
 			continue
 		}
-		if !nativeClaimIssueContractAllowed(plan) || hubapi.StringsEqualFold(plan.candidate.State, "Merging") && !plan.changeReady {
+		if !nativeClaimIssueContractAllowed(plan) || hubapi.StringsEqualFold(plan.Candidate.State, "Merging") && !plan.ChangeReady {
 			continue
 		}
-		if plan.landingPending && !plan.changeReady {
+		if plan.LandingPending && !plan.ChangeReady {
 			continue
 		}
-		if plan.landingRequired || request.LandingCapacity > 0 {
+		if plan.LandingRequired || request.LandingCapacity > 0 {
 			if !landingCapacityChecked {
 				landingCapacityAvailable, err = s.nativeClaimLandingCapacityAvailable(ctx, scope.Organization, scope.Project, request.LandingCapacity, now)
 				if err != nil {
@@ -227,7 +228,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 				continue
 			}
 		}
-		page.Items = append(page.Items, s.nativeIssueResponse(plan.issue))
+		page.Items = append(page.Items, s.nativeIssueResponse(plan.Issue))
 	}
 	if len(candidates) == limit {
 		page.Next = tracker.WorkItemID(candidates[len(candidates)-1].ID)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -996,7 +997,7 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 	var run, transition eventstore.Event
 	var questions []healthstore.QuestionSource
 	var conversationRecord conversationstore.Conversation
-	var plan *nativeClaimPlan
+	var plan *hubrecords.NativeClaimPlan
 	complete := true
 	found := false
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
@@ -1081,7 +1082,7 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 				return err
 			}
 			scope := hubscope.NativeScope{Organization: organization, Project: reference.ProjectID}
-			value, err := s.readNativeClaimPlanRows(ctx, scope, tracker.NativeClaim{PolicyID: policyRecord.PolicyID, WorkItemID: item.NativeID}, now, reader, &page.Items[0], nativeClaimPlan{})
+			value, err := s.readNativeClaimPlanRows(ctx, scope, tracker.NativeClaim{PolicyID: policyRecord.PolicyID, WorkItemID: item.NativeID}, now, reader, &page.Items[0], hubrecords.NativeClaimPlan{})
 			if err != nil {
 				return err
 			}
@@ -1142,14 +1143,14 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 	}
 	if plan != nil {
 		scope := hubscope.NativeScope{Organization: organization, Project: reference.ProjectID}
-		plans := []nativeClaimPlan{*plan}
+		plans := []hubrecords.NativeClaimPlan{*plan}
 		if err := s.prepareNativeClaimLegacyAuditFacts(ctx, scope, plans); err != nil {
 			return err
 		}
 		if err := s.prepareNativeClaimApprovals(ctx, scope, plans); err != nil {
 			return err
 		}
-		value, err := s.hydrateNativeClaimPlan(ctx, scope, tracker.NativeClaim{PolicyID: plan.policy.PolicyID, WorkItemID: item.NativeID}, now, plans[0], nil)
+		value, err := s.hydrateNativeClaimPlan(ctx, scope, tracker.NativeClaim{PolicyID: plan.Policy.PolicyID, WorkItemID: item.NativeID}, now, plans[0], nil)
 		if err != nil && !errors.Is(err, ErrNoClaimableWork) {
 			return err
 		}

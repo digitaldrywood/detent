@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -65,7 +66,7 @@ func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope hubs
 	if err != nil {
 		return chat.Action{}, workflowSafeError(err)
 	}
-	if err := validateNativeWorkflowTransition(states, issue.State, request.TargetState, scope.Credential.Scope); err != nil {
+	if err := hubrecords.ValidateNativeWorkflowTransition(states, issue.State, request.TargetState, scope.Credential.Scope); err != nil {
 		if issue.State == request.TargetState && slices.ContainsFunc(states, func(state tracker.NativeState) bool {
 			return state.Name == issue.State && state.Dispatchable && !state.Terminal
 		}) {

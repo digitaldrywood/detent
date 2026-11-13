@@ -9,12 +9,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func prepareCoreNeutralRunDetail(ctx context.Context, source *coreNeutralImport, organization tracker.OrganizationID, objects attachment.DetailStore, raw []byte, content *hubcontent.ChangeContent, owner *hubcontent.RunDetailContext) error {
 	var envelope struct {
-		Detail *runDetailReference `json:"detail"`
+		Detail *hubrecords.RunDetailReference `json:"detail"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return err

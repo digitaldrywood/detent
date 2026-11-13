@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -582,10 +583,10 @@ func TestPostgresSourceTransferCommitsAndReplays(t *testing.T) {
 					return err
 				}
 				canonicalKey = attempt.PayloadObjectKey
-				if _, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), canonicalKey); !errors.Is(err, corestore.ErrNotFound) {
+				if _, err := r.(hubrecords.AttemptArchiveReader).ArchiveObjectByKey(t.Context(), canonicalKey); !errors.Is(err, corestore.ErrNotFound) {
 					t.Fatalf("fixture must lack archive metadata: %v", err)
 				}
-				id := newRunDetailReference(attachment.ArchiveReference{Key: canonicalKey}, string(org), "").AttachmentID
+				id := hubrecords.NewRunDetailReference(attachment.ArchiveReference{Key: canonicalKey}, string(org), "").AttachmentID
 				if _, err := r.Attachment(t.Context(), "project", id); !errors.Is(err, corestore.ErrNotFound) {
 					t.Fatalf("fixture must lack attachment metadata: %v", err)
 				}

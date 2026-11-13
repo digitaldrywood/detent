@@ -11,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -138,13 +137,6 @@ func (s *Service) createNativeProject(c echo.Context) error {
 	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential}
 	c.Set("native_scope", scope)
 	return s.nativeMutation(c, request.Mutation, request, nil)
-}
-
-func validateNativeStates(states []tracker.NativeState) error {
-	if err := policy.ValidateStates(states); err != nil {
-		return hubapi.NativeWorkflowInvalid(err.Error())
-	}
-	return nil
 }
 
 func (s *Service) grantNativeToken(c echo.Context) error {

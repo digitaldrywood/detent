@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -605,7 +606,7 @@ func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
 	decodeHubResponse(t, detailResponse, &detail)
 	approve := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "policy-race-approve"}, ExpectedRevision: detail.Change.Revision, ExpectedVersionID: version.ID, Decision: "approved", Body: "Reviewed current source"}
 
-	var policyRows currentChangePolicyRows
+	var policyRows hubrecords.CurrentChangePolicyRows
 	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		policyRows, err = readCurrentChangePolicyRows(t.Context(), r, scope)
@@ -614,7 +615,7 @@ func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
 		t.Fatal(err)
 	}
 	originalRules := defaultChangeReviewPolicy(policy)
-	if policyRows.hasReview {
+	if policyRows.HasReview {
 		var err error
 		originalRules, err = eventstore.NewContent(service.runDetailStore()).ReviewPolicy(t.Context(), policyRows.Review)
 		if err != nil {
@@ -629,7 +630,7 @@ func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectedReviewID := ""
-	if policyRows.hasReview {
+	if policyRows.HasReview {
 		expectedReviewID = policyRows.Review.ReviewPolicyID
 	}
 	interleaved := &projectUpdateBeforeWriteRepository{Repository: repository}

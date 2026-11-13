@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -693,13 +694,13 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Run(string(org)+"/missing review policy with two required checks", func(t *testing.T) {
-			var rows currentChangePolicyRows
+			var rows hubrecords.CurrentChangePolicyRows
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				rows, err = readChangeSummaryPolicyRows(t.Context(), r, scope)
+				rows, err = hubrecords.ReadChangeSummaryPolicyRows(t.Context(), r, scope)
 				return err
-			}); err != nil || rows.hasReview {
-				t.Fatalf("missing review policy fixture: hasReview=%v error=%v", rows.hasReview, err)
+			}); err != nil || rows.HasReview {
+				t.Fatalf("missing review policy fixture: hasReview=%v error=%v", rows.HasReview, err)
 			}
 			authority := tenantChangeVersionAuthority{repository: repository, content: content}
 			_, err := authority.Prepare(t.Context(), scope, tracker.ChangeRequest{OrganizationID: org, ProjectID: scope.Project}, tracker.PublishChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: checkedDescriptor.ID}}, now)
@@ -833,7 +834,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			}},
 			{name: "publication authorization", read: func() error {
 				return repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-					return authority.Authorize(t.Context(), w, scope, detail.Change, tracker.PublishChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: nextDescriptor.ID}}, ChangeVersionApproval{Policy: nextDescriptor, ReviewPolicy: rules}, now)
+					return authority.Authorize(t.Context(), w, scope, detail.Change, tracker.PublishChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: nextDescriptor.ID}}, hubrecords.ChangeVersionApproval{Policy: nextDescriptor, ReviewPolicy: rules}, now)
 				})
 			}},
 			{name: "review approval policy", read: func() error {
@@ -859,7 +860,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			if org == foreign.Organization {
 				foreign.Organization = "org_second"
 			}
-			_, err := readChangeSummaryPolicyRows(t.Context(), r, foreign)
+			_, err := hubrecords.ReadChangeSummaryPolicyRows(t.Context(), r, foreign)
 			return err
 		}); !errors.Is(err, corestore.ErrTenantMismatch) {
 			t.Fatalf("%s: cross-tenant summary policy accepted: %v", org, err)

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -175,7 +176,7 @@ func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *t
 				return nil
 			}
 			if current.CastObjectKey != ref.Key {
-				archive, ok := writer.(attemptArchiveReader)
+				archive, ok := writer.(hubrecords.AttemptArchiveReader)
 				if !ok {
 					return hubapi.NativeWorkItemStorageUnavailable()
 				}

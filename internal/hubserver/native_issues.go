@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
@@ -148,7 +149,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 			return issue, 0, err
 		}
 	}
-	issue.WebURL = issueBrowserPath(organizationSlug, projectSlug, issue.Number)
+	issue.WebURL = hubrecords.IssueBrowserPath(organizationSlug, projectSlug, issue.Number)
 	issue.Type = issueType.String
 	if reportContext.Valid && !compact {
 		if err := json.Unmarshal([]byte(reportContext.String), &issue.ReportContext); err != nil {
@@ -297,26 +298,6 @@ func nativeIssueChangeIncluded(value string) (bool, error) {
 	return included, nil
 }
 
-func validateNativeContent(title, body string, labels, assignees []string, priority *int) error {
-	if strings.TrimSpace(title) == "" || len(title) > 500 || len(body) > 256<<10 {
-		return hubapi.NativePublicInvalid("Title must contain 1 to 500 bytes and body at most 256 KiB")
-	}
-	if priority != nil && (*priority < 0 || *priority > 3) {
-		return hubapi.NativePublicInvalid("Priority must be between 0 and 3")
-	}
-	for _, values := range [][]string{labels, assignees} {
-		if len(values) > 100 {
-			return hubapi.NativePublicInvalid("At most 100 labels or assignees are supported")
-		}
-		for _, value := range values {
-			if strings.TrimSpace(value) == "" || len(value) > 200 {
-				return hubapi.NativePublicInvalid("Labels and assignees must contain 1 to 200 bytes")
-			}
-		}
-	}
-	return nil
-}
-
 func validateNativeProvenance(scope hubscope.NativeScope, provenance *tracker.Provenance) error {
 	if provenance == nil {
 		return nil
@@ -372,13 +353,6 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 	return c.JSONBlob(http.StatusOK, result)
 }
 
-func validateNativeIssueType(value string, required bool) error {
-	if value == "" && !required || value == "bug" || value == "change_request" {
-		return nil
-	}
-	return &hubapi.NativeError{Code: "invalid_request", Message: "type must be bug or change_request", Status: http.StatusUnprocessableEntity, PublicMessage: true}
-}
-
 func validateNativeReportContext(report *tracker.ReportContext) error {
 	if report == nil || report.Validate() == nil {
 		return nil
@@ -414,19 +388,6 @@ func validateNativeIssueState(scope hubscope.NativeScope, project tracker.Native
 		}
 	}
 	return hubapi.NativePublicInvalid("Workflow state does not exist")
-}
-
-func requireNativeEdit(issue tracker.NativeIssue, expected tracker.Revision) error {
-	if issue.Profile != "native" {
-		return hubapi.NativePublicInvalid("Compatibility project content is externally owned")
-	}
-	if expected <= 0 {
-		return hubapi.NativePublicInvalid("Expected revision must be positive")
-	}
-	if expected != issue.Revision {
-		return hubapi.NativeConflict(issue.Revision)
-	}
-	return nil
 }
 
 func nativeDoneState(state string) bool {
@@ -473,22 +434,6 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 	return s.transitionNativeIssueTenant(ctx, scope, item, request)
 }
 
-func validateNativeWorkflowTransition(states []tracker.NativeState, current, target string, scope hubapi.APIScope) error {
-	allowed := false
-	for _, state := range states {
-		if state.Name == target && state.OperatorOnly && scope == hubapi.APIScopeWorker {
-			return hubapi.NativePublicInvalid("Workflow target requires an operator")
-		}
-		if state.Name == current && slices.Contains(state.Transitions, target) {
-			allowed = true
-		}
-	}
-	if !allowed {
-		return &hubapi.NativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", Status: http.StatusUnprocessableEntity, PublicMessage: true}
-	}
-	return nil
-}
-
 func (s *Service) changeNativeDependency(c echo.Context) error {
 	var request tracker.DependencyMutation
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
@@ -530,7 +475,7 @@ func (s *Service) nativeIssueRecordBrowserPath(ctx context.Context, scope hubsco
 		if err != nil {
 			return err
 		}
-		path = issueBrowserPath(organization.Slug, project.Slug, int(item.Number))
+		path = hubrecords.IssueBrowserPath(organization.Slug, project.Slug, int(item.Number))
 		return nil
 	})
 	return path, hubapi.ProjectRecordError(err)

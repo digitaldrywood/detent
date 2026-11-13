@@ -53,7 +53,7 @@ func (s *Service) prepareRecordedRecoveryTenant(ctx context.Context, scope hubsc
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	report, err := content.Event(ctx, snapshot.event)
+	report, err := content.Event(ctx, snapshot.Event)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func (s *Service) prepareRecordedRecoveryTenant(ctx context.Context, scope hubsc
 	if !instance && len(refs) == 0 || len(refs) > corestore.MaxPageSize {
 		return nil, corestore.ErrRevisionConflict
 	}
-	prepared := &leasestore.RecordedRecovery{ProjectID: scope.Project, WorkItemID: issue.WorkItemID, Attempt: snapshot.attempt, ReportEventID: snapshot.event.ID, ReportSequence: snapshot.event.Sequence, ReportRevision: max(snapshot.event.EventRevision, snapshot.attempt.WorkItemRevision), WorkflowEventID: lane.ID, WorkflowSequence: lane.Sequence, WorkflowObjectKey: lane.PayloadObjectKey, DependencyNumbers: []int64{}}
+	prepared := &leasestore.RecordedRecovery{ProjectID: scope.Project, WorkItemID: issue.WorkItemID, Attempt: snapshot.Attempt, ReportEventID: snapshot.Event.ID, ReportSequence: snapshot.Event.Sequence, ReportRevision: max(snapshot.Event.EventRevision, snapshot.Attempt.WorkItemRevision), WorkflowEventID: lane.ID, WorkflowSequence: lane.Sequence, WorkflowObjectKey: lane.PayloadObjectKey, DependencyNumbers: []int64{}}
 	for _, ref := range refs {
 		number, err := strconv.ParseInt(strings.TrimPrefix(ref, string(scope.Project)+"#"), 10, 64)
 		if err != nil || number <= 0 {

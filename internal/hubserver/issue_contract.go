@@ -6,11 +6,11 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/config"
-	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -20,10 +20,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func nativeContractIssue(issue tracker.NativeIssue) connector.Issue {
-	return connector.Issue{Title: issue.Title, Description: issue.Body, IssueContract: issue.IssueContract}
-}
-
 type nativeContractEvaluation struct {
 	Allowed    bool
 	ReasonCode string
@@ -31,8 +27,8 @@ type nativeContractEvaluation struct {
 	Missing    []string
 }
 
-func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope hubscope.NativeScope, plan workItemRecordPlan) (policystore.Revision, bool, error) {
-	reporterCreate := scope.Credential.HostedRole == "reporter" && plan.create
+func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan) (policystore.Revision, bool, error) {
+	reporterCreate := scope.Credential.HostedRole == "reporter" && plan.Create
 	var revision policystore.Revision
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
@@ -43,9 +39,9 @@ func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope 
 		return revision, false, err
 	}
 	found := err == nil
-	_, machine := issueorigin.Parse(plan.issue.Body)
-	exempt := !reporterCreate && (machine || plan.issue.LinkedSource != nil && plan.issue.LinkedSource.Status != "complete" || strings.EqualFold(plan.issue.State, "Triage") || plan.issue.IssueContract != nil && plan.issue.IssueContract.Exempt || strings.Contains(strings.ToLower(plan.issue.Body), "detent:no-dispatch"))
-	if exempt && (!plan.create || plan.project.Core.WorkflowSource == "") {
+	_, machine := issueorigin.Parse(plan.Issue.Body)
+	exempt := !reporterCreate && (machine || plan.Issue.LinkedSource != nil && plan.Issue.LinkedSource.Status != "complete" || strings.EqualFold(plan.Issue.State, "Triage") || plan.Issue.IssueContract != nil && plan.Issue.IssueContract.Exempt || strings.Contains(strings.ToLower(plan.Issue.Body), "detent:no-dispatch"))
+	if exempt && (!plan.Create || plan.Project.Core.WorkflowSource == "") {
 		return revision, found, nil
 	}
 	descriptor := policy.Descriptor{}
@@ -55,8 +51,8 @@ func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope 
 			return revision, found, err
 		}
 	}
-	if plan.create {
-		if err := validateConfiguredWorkflowPolicy(plan.project, descriptor, found); err != nil {
+	if plan.Create {
+		if err := validateConfiguredWorkflowPolicy(plan.Project, descriptor, found); err != nil {
 			return revision, found, err
 		}
 	}
@@ -74,7 +70,7 @@ func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope 
 	if target == "" {
 		target = "Todo"
 	}
-	if !reporterCreate && !strings.EqualFold(plan.issue.State, target) {
+	if !reporterCreate && !strings.EqualFold(plan.Issue.State, target) {
 		return revision, found, nil
 	}
 	contract, err := config.ResolvePolicyIssueContract(descriptor)
@@ -86,22 +82,22 @@ func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope 
 		if err != nil {
 			return revision, found, err
 		}
-		reporterContract := config.IssueContract{Sections: reporterContracts[plan.issue.Type]}
-		missing := reporterSectionsMissing(reporterContract.Evaluate(nativeContractIssue(plan.issue)).Missing, plan.issue.ReportContext)
+		reporterContract := config.IssueContract{Sections: reporterContracts[plan.Issue.Type]}
+		missing := reporterSectionsMissing(reporterContract.Evaluate(hubrecords.NativeContractIssue(plan.Issue)).Missing, plan.Issue.ReportContext)
 		if len(missing) > 0 {
 			return revision, found, hubapi.NativePublicInvalid("Add or complete these required Reporter sections: " + strings.Join(missing, ", "))
 		}
 	}
-	if strings.EqualFold(plan.issue.State, "Triage") {
+	if strings.EqualFold(plan.Issue.State, "Triage") {
 		return revision, found, nil
 	}
-	if !strings.EqualFold(plan.issue.State, target) {
+	if !strings.EqualFold(plan.Issue.State, target) {
 		return revision, found, nil
 	}
-	if plan.issue.IssueContract != nil && plan.issue.IssueContract.ReleaseDelivery != nil {
+	if plan.Issue.IssueContract != nil && plan.Issue.IssueContract.ReleaseDelivery != nil {
 		return revision, found, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	evaluation := contract.Evaluate(nativeContractIssue(plan.issue))
+	evaluation := contract.Evaluate(hubrecords.NativeContractIssue(plan.Issue))
 	if len(evaluation.Missing) > 0 {
 		return revision, found, hubapi.NativeWorkflowInvalid(strings.Join([]string{"Add or complete these required issue sections", strings.Join(evaluation.Missing, ", ")}, ": ") + ". File into Backlog/Triage to draft it first.")
 	}
@@ -141,7 +137,7 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope hubs
 	_, sourceRepository, _, err := tracker.ParseGitHubIssueURL(snapshot.URL)
 	repository, repoErr := s.scheduledRepository(ctx, scope)
 	result.ImportReason = "Scheduled CI import requires a verified failed job from the configured repository CI workflow"
-	if err != nil || repoErr != nil || len(evidence) != 1 || !strings.EqualFold(repository, sourceRepository) || !strings.EqualFold(repository, evidence[0].Repository) || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
+	if err != nil || repoErr != nil || len(evidence) != 1 || !strings.EqualFold(repository, sourceRepository) || !strings.EqualFold(repository, evidence[0].Repository) || !hubrecords.ScheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return result
 	}
 	workflow, branch, _, authorized := contract.ScheduledImportWorkflow()
@@ -162,7 +158,7 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope hubscope.Nat
 		return nil
 	}
 	evidence := gate.ParseScheduledEvidence(request.Body)
-	if len(evidence) != 1 || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
+	if len(evidence) != 1 || !hubrecords.ScheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return nil
 	}
 	approval, err := s.readTenantProjectPolicy(ctx, scope.Organization, scope.Project)
@@ -187,9 +183,4 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope hubscope.Nat
 		return nil
 	}
 	return &hubscope.NativeScheduledRepair{PolicyID: approval.Policy.ID, Evidence: *page.Scheduled}
-}
-
-func scheduledRepairOriginMatches(source string, evidence gate.ScheduledEvidence) bool {
-	runURL := "https://github.com/" + evidence.Repository + "/actions/runs/" + evidence.RunID
-	return source == runURL || source == runURL+"/attempts/"+evidence.RunAttempt
 }

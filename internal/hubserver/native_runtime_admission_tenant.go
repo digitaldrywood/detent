@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -46,8 +47,8 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 	var sourceCandidate claimstore.Candidate
 	var unresolved []tracker.NativeDependency
 	dependencyPartial := false
-	plan := nativeClaimPlan{issue: issue}
-	var answeredPlan nativeClaimPlan
+	plan := hubrecords.NativeClaimPlan{Issue: issue}
+	var answeredPlan hubrecords.NativeClaimPlan
 	truncated := false
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
@@ -120,7 +121,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 		if err != nil {
 			return err
 		}
-		plan.project = project
+		plan.Project = project
 		if issue.IssueContract != nil && issue.IssueContract.ReleaseDelivery != nil {
 			item, err := r.WorkItem(ctx, scope.Project, issue.WorkItemID)
 			if err != nil {
@@ -129,7 +130,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 			if item.Revision != int64(issue.Revision) {
 				return corestore.ErrRevisionConflict
 			}
-			plan.releaseDelivery, err = readReleaseDeliveryContractFacts(ctx, r, scope, issue.WorkItemID, project.States)
+			plan.ReleaseDelivery, err = readReleaseDeliveryContractFacts(ctx, r, scope, issue.WorkItemID, project.States)
 			if err != nil {
 				return err
 			}
@@ -159,7 +160,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 			if rows[0].Err != nil {
 				return rows[0].Err
 			}
-			answeredPlan = nativeClaimPlanFromBatch(nativeClaimPlan{project: project}, candidates.Items[0], rows[0])
+			answeredPlan = nativeClaimPlanFromBatch(hubrecords.NativeClaimPlan{Project: project}, candidates.Items[0], rows[0])
 		}
 		if project.Core.Profile == "github_compatible" {
 			item, err := r.WorkItem(ctx, scope.Project, issue.WorkItemID)
@@ -191,13 +192,13 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 	if err != nil {
 		return err
 	}
-	workflow, err := projectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), descriptor)
+	workflow, err := hubrecords.ProjectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), descriptor)
 	if err != nil {
 		return err
 	}
-	plan.descriptor = descriptor
+	plan.Descriptor = descriptor
 	var answered *tracker.NativeAnsweredExclusion
-	if answeredPlan.snapshotLoaded {
+	if answeredPlan.SnapshotLoaded {
 		answered, err = s.nativeClaimAnsweredExclusion(ctx, scope, answeredPlan, now)
 		if err != nil {
 			return err
@@ -207,7 +208,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 	if err != nil {
 		return err
 	}
-	if plan.project.Core.Profile == "github_compatible" && !nativeCompatibleClaimSource(plan.project, issue, sourceCandidate) {
+	if plan.Project.Core.Profile == "github_compatible" && !nativeCompatibleClaimSource(plan.Project, issue, sourceCandidate) {
 		contract = nativeContractEvaluation{ReasonCode: "no_claimable_work", Reason: "Current issue source must match the enabled project repository"}
 	}
 	evidence.Unavailable = slices.DeleteFunc(evidence.Unavailable, func(value string) bool {
@@ -229,7 +230,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 	}
 	nonExecutable := connector.NonExecutableReason(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels})
 	if nonExecutable == "" {
-		nonExecutable = nativeRuntimeStateExclusion(plan.project, issue.State)
+		nonExecutable = nativeRuntimeStateExclusion(plan.Project, issue.State)
 	}
 	if evidence.CurrentLease == nil && !contract.Allowed && nonExecutable == "" {
 		evidence.Scheduling.Outcome, evidence.Scheduling.Reason = "skipped", contract.Reason
@@ -359,19 +360,19 @@ func runtimeAdmissionSelects(selected tracker.NativeAdmissionContext, item claim
 	return !slices.ContainsFunc(item.Labels, func(value string) bool { return contains(selected.LabelExclude, value) })
 }
 
-func nativeRuntimeIssueContractEvaluation(plan nativeClaimPlan) (nativeContractEvaluation, error) {
+func nativeRuntimeIssueContractEvaluation(plan hubrecords.NativeClaimPlan) (nativeContractEvaluation, error) {
 	allowed := nativeContractEvaluation{Allowed: true}
-	if strings.Contains(strings.ToLower(plan.issue.Body), "detent:no-dispatch") {
+	if strings.Contains(strings.ToLower(plan.Issue.Body), "detent:no-dispatch") {
 		return nativeContractEvaluation{ReasonCode: "no_claimable_work", Reason: "The issue contains detent:no-dispatch; remove the marker to permit dispatch"}, nil
 	}
-	if plan.issue.LinkedSource != nil && plan.issue.LinkedSource.Status != "complete" || strings.EqualFold(plan.issue.State, "Triage") || plan.issue.IssueContract != nil && plan.issue.IssueContract.Exempt {
+	if plan.Issue.LinkedSource != nil && plan.Issue.LinkedSource.Status != "complete" || strings.EqualFold(plan.Issue.State, "Triage") || plan.Issue.IssueContract != nil && plan.Issue.IssueContract.Exempt {
 		return allowed, nil
 	}
-	contract, err := config.ResolvePolicyIssueContract(plan.descriptor)
+	contract, err := config.ResolvePolicyIssueContract(plan.Descriptor)
 	if err != nil {
 		return nativeContractEvaluation{}, err
 	}
-	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, plan.descriptor)
+	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, plan.Descriptor)
 	if err != nil {
 		return nativeContractEvaluation{}, err
 	}
@@ -379,13 +380,13 @@ func nativeRuntimeIssueContractEvaluation(plan nativeClaimPlan) (nativeContractE
 	if target == "" {
 		target = "Todo"
 	}
-	if !strings.EqualFold(plan.issue.State, target) {
+	if !strings.EqualFold(plan.Issue.State, target) {
 		return allowed, nil
 	}
-	if plan.issue.IssueContract != nil && plan.issue.IssueContract.ReleaseDelivery != nil && !releaseDeliveryContractFactsCurrent(plan, contract) {
+	if plan.Issue.IssueContract != nil && plan.Issue.IssueContract.ReleaseDelivery != nil && !releaseDeliveryContractFactsCurrent(plan, contract) {
 		return nativeContractEvaluation{ReasonCode: "issue_contract_unsatisfied", Reason: "The verified release delivery contract changed; current approved policy and exact associated delivery are required"}, nil
 	}
-	evaluation := contract.Evaluate(nativeContractIssue(plan.issue))
+	evaluation := contract.Evaluate(hubrecords.NativeContractIssue(plan.Issue))
 	if evaluation.Satisfied() {
 		return allowed, nil
 	}
@@ -473,7 +474,7 @@ func (s *Service) readRuntimeUnresolvedDependencies(ctx context.Context, r tenan
 		}
 		dependency := tracker.NativeDependency{ID: item.NativeID, ProjectID: item.ProjectID, Number: int(item.Number), Title: item.Title, Identifier: string(item.ProjectID) + "#" + strconv.FormatInt(item.Number, 10), State: stateName, Dispatchable: state.Dispatchable}
 		if organizationSlug != "" && target.record.Core.Slug != "" {
-			dependency.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(organizationSlug, target.record.Core.Slug, int(item.Number))}).WebURL
+			dependency.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(organizationSlug, target.record.Core.Slug, int(item.Number))}).WebURL
 		}
 		unresolved = append(unresolved, dependency)
 	}

@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/localboard"
@@ -99,7 +100,7 @@ func localBoardTarget(t *testing.T, service *Service, name string) nativeFixture
 		if err != nil {
 			return err
 		}
-		record.States = nativeTriageStates(append(nativeFixtureStates(), tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}}))
+		record.States = hubrecords.NativeTriageStates(append(nativeFixtureStates(), tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}}))
 		record.Settings.DuplicateChallenge = false
 		_, err = w.UpdateProjectRecord(t.Context(), record)
 		return err

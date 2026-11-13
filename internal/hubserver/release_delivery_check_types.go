@@ -3,6 +3,7 @@ package hubserver
 import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -17,10 +18,10 @@ type releaseDeliveryRows struct {
 	checkoutVerified bool
 	change, prior    eventstore.Change
 	sourceVersion    eventstore.Version
-	policy           currentChangePolicyRows
+	policy           hubrecords.CurrentChangePolicyRows
 	facts            eventstore.ReleaseDeliveryFacts
 	lease            leasestore.Lease
-	attempt          tenantAttemptSnapshot
+	attempt          hubrecords.TenantAttemptSnapshot
 	reviews          []eventstore.Evidence
 }
 
@@ -28,7 +29,7 @@ type releaseDeliveryCheck struct {
 	releaseDeliveryRows
 	issue      tracker.NativeIssue
 	existing   tracker.ReleaseDelivery
-	approval   ChangeVersionApproval
+	approval   hubrecords.ChangeVersionApproval
 	request    tracker.AssociateReleasePick
 	publishing bool
 }

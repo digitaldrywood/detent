@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -262,11 +263,11 @@ func TestRegistrationCleanupDoesNotInferAcknowledgment(t *testing.T) {
 		{"acknowledged wrong archived fence", time.Microsecond, "code", 123, true, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			snapshot := tenantAttemptSnapshot{attempt: leasestore.Attempt{ID: "attempt", RunID: "run", Sequence: 2, Status: "cancelled"}, lease: leasestore.Lease{LeaseID: "lease", FencingToken: 1, ReleasedAt: &released}, event: eventstore.Event{Type: "run.finished", RecordedAt: released.Add(tc.receipt)}}
+			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: leasestore.Attempt{ID: "attempt", RunID: "run", Sequence: 2, Status: "cancelled"}, Lease: leasestore.Lease{LeaseID: "lease", FencingToken: 1, ReleasedAt: &released}, Event: eventstore.Event{Type: "run.finished", RecordedAt: released.Add(tc.receipt)}}
 			run := tracker.NativeRunData{AttemptID: "attempt", RunID: "run", Sequence: 2, LeaseID: "lease", FencingToken: 1, RunnerID: "runner", Outcome: "cancelled", Identity: &tracker.NativeExecutionIdentity{Role: tc.role}, Runtime: &tracker.NativeRuntimeObservation{WorkerLaunch: &tracker.NativeWorkerLaunch{PID: tc.pid, ProcessStart: released.Add(-time.Hour)}}}
 			if tc.acknowledged {
 				at := released.Add(time.Microsecond)
-				snapshot.attempt.CleanupAcknowledgedAt = &at
+				snapshot.Attempt.CleanupAcknowledgedAt = &at
 			}
 			if tc.corrupt {
 				run.FencingToken = 2
@@ -300,7 +301,7 @@ func TestRegistrationCleanupRejectsStalePayload(t *testing.T) {
 		{"terminal payload", 1, 0, "cancelled", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			snapshot := tenantAttemptSnapshot{attempt: leasestore.Attempt{ID: "attempt", RunID: "run", Sequence: 2 + tc.gap, Status: "cancelled", UpdatedAt: released.Add(tc.delta)}, lease: leasestore.Lease{LeaseID: "lease", FencingToken: 1, ReleasedAt: &released}}
+			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: leasestore.Attempt{ID: "attempt", RunID: "run", Sequence: 2 + tc.gap, Status: "cancelled", UpdatedAt: released.Add(tc.delta)}, Lease: leasestore.Lease{LeaseID: "lease", FencingToken: 1, ReleasedAt: &released}}
 			run := tracker.NativeRunData{AttemptID: "attempt", RunID: "run", Sequence: 2, LeaseID: "lease", FencingToken: 1, RunnerID: "runner", Outcome: tc.outcome}
 			_, err := registrationCleanupRequired(snapshot, run, "runner")
 			if errors.Is(err, artifact.ErrIntegrity) != tc.invalid {
@@ -315,8 +316,8 @@ func TestRegistrationCleanupRejectsStalePayload(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			snapshot.attempt.LeaseID, snapshot.attempt.FencingToken = "lease", 1
-			_, _, err = readTenantRunCleanupData(t.Context(), content, &tenantRunCleanupPredecessor{attempt: snapshot.attempt, lease: snapshot.lease, event: event})
+			snapshot.Attempt.LeaseID, snapshot.Attempt.FencingToken = "lease", 1
+			_, _, err = readTenantRunCleanupData(t.Context(), content, &tenantRunCleanupPredecessor{attempt: snapshot.Attempt, lease: snapshot.Lease, event: event})
 			if errors.Is(err, artifact.ErrIntegrity) != tc.invalid {
 				t.Fatalf("cleanup archive error = %v, invalid=%t", err, tc.invalid)
 			}

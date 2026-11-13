@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -902,7 +903,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			if test.applied {
 				wantStates = candidate.Workflow.States
 			}
-			wantStates = nativeTriageStates(wantStates)
+			wantStates = hubrecords.NativeTriageStates(wantStates)
 			if err != nil || !reflect.DeepEqual(project.States, wantStates) {
 				t.Fatalf("workflow states = %+v, %v; want %+v", project.States, err, wantStates)
 			}

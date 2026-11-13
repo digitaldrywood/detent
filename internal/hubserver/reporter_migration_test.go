@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -123,7 +124,7 @@ func TestReporterAndTriageMigration(t *testing.T) {
 			}
 			if id == "prj_default_one" || id == "prj_default_two" {
 				for _, target := range []string{"Backlog", "Todo", "Cancelled"} {
-					if err := validateNativeWorkflowTransition(actual, "Triage", target, hubapi.APIScopeOperator); err != nil {
+					if err := hubrecords.ValidateNativeWorkflowTransition(actual, "Triage", target, hubapi.APIScopeOperator); err != nil {
 						t.Fatalf("%s Triage to %s: %v", id, target, err)
 					}
 					found := false

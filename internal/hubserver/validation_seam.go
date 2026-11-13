@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/validation"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,7 +21,7 @@ func (s *Service) validationServiceForScope(caller hubscope.NativeScope) *valida
 		FilterChange: func(ctx context.Context, scope hubapi.Scope, change tracker.ChangeRequest) (tracker.ChangeRequest, bool, error) {
 			return s.filterChangeRecord(ctx, caller, change)
 		},
-		RecordError: hubapi.ProjectRecordError, OriginMatches: scheduledRepairOriginMatches,
+		RecordError: hubapi.ProjectRecordError, OriginMatches: hubrecords.ScheduledRepairOriginMatches,
 
 		InvalidRequest: s.invalidAPIRequest,
 		Repository:     s.config.TenantRepository, Now: s.config.now, SecretKeys: s.config.SecretKeys,

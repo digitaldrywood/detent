@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -94,7 +95,7 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q hubapi.NativeQuerye
 			return sql.ErrNoRows
 		}
 		link.Identifier = string(link.ProjectID) + "#" + strconv.Itoa(link.Number)
-		link.WebURL = issueBrowserPath(organizationSlug, projectSlug, link.Number)
+		link.WebURL = hubrecords.IssueBrowserPath(organizationSlug, projectSlug, link.Number)
 		if closed.Valid {
 			at, err := hubapi.ParseTimeValue(closed.String)
 			if err != nil {

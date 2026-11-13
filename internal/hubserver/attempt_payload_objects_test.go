@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -703,7 +704,7 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			historyObjects := 0
 			originalContent := f.service.config.Content
 			f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
-				if ctx.Value(payloadRecoveryProbeKey{}) == probe && !request.Write && request.Reference.Key != attemptSnapshot.attempt.PayloadObjectKey {
+				if ctx.Value(payloadRecoveryProbeKey{}) == probe && !request.Write && request.Reference.Key != attemptSnapshot.Attempt.PayloadObjectKey {
 					historyObjects++
 				}
 				return objects.call(ctx, request)
@@ -1123,30 +1124,30 @@ func payloadAssertHistoricalAttemptReads(t *testing.T, data tracker.NativeRunDat
 				scope := hubscope.NativeScope{Organization: organization, Project: "prj_execution_import"}
 				item := "wi_execution_import" + suffix
 				id := "attempt_execution_import" + suffix
-				var snapshot tenantAttemptSnapshot
+				var snapshot hubrecords.TenantAttemptSnapshot
 				if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
-					snapshot.attempt, err = r.Attempt(t.Context(), id)
+					snapshot.Attempt, err = r.Attempt(t.Context(), id)
 					if err != nil {
 						return err
 					}
-					snapshot.lease, err = r.Lease(t.Context(), snapshot.attempt.LeaseID)
+					snapshot.Lease, err = r.Lease(t.Context(), snapshot.Attempt.LeaseID)
 					if err != nil {
 						return err
 					}
-					r, err = readAttemptMetadataSnapshot(t.Context(), r, scope, item, []leasestore.Attempt{snapshot.attempt}, false)
+					r, err = readAttemptMetadataSnapshot(t.Context(), r, scope, item, []leasestore.Attempt{snapshot.Attempt}, false)
 					if err != nil {
 						return err
 					}
-					snapshot.event.OrganizationID, snapshot.event.ProjectID, snapshot.event.WorkItemID = organization, scope.Project, tracker.NativeWorkItemID(item)
-					return readTenantAttemptPayload(t.Context(), r, &snapshot)
+					snapshot.Event.OrganizationID, snapshot.Event.ProjectID, snapshot.Event.WorkItemID = organization, scope.Project, tracker.NativeWorkItemID(item)
+					return hubrecords.ReadTenantAttemptPayload(t.Context(), r, &snapshot)
 				}); err != nil {
 					t.Fatal(err)
 				}
-				if snapshot.payload == nil || snapshot.checkpointPayload == nil || snapshot.artifactsPayload == nil {
+				if snapshot.Payload == nil || snapshot.CheckpointPayload == nil || snapshot.ArtifactsPayload == nil {
 					t.Fatal("historical payload import left inline or unowned attempt content")
 				}
-				for _, ref := range []attachment.ArchiveReference{*snapshot.payload, *snapshot.checkpointPayload, *snapshot.artifactsPayload} {
+				for _, ref := range []attachment.ArchiveReference{*snapshot.Payload, *snapshot.CheckpointPayload, *snapshot.ArtifactsPayload} {
 					if pass == 0 {
 						charged[ref.Key] = ref
 					} else if charged[ref.Key] != ref {

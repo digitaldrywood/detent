@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -45,7 +46,7 @@ func readTenantRunCleanupPredecessor(ctx context.Context, r tenantstore.Reader, 
 		return nil, false, err
 	}
 	previous := &tenantRunCleanupPredecessor{attempt: attempt, lease: lease, event: event, committed: map[int64]eventstore.Event{}}
-	reader, ok := r.(nativeRunEventReader)
+	reader, ok := r.(hubrecords.NativeRunEventReader)
 	if !ok {
 		return nil, false, hubapi.NativeRunEventStorageUnavailable()
 	}
@@ -88,7 +89,7 @@ func readTenantRunCleanupData(ctx context.Context, content *eventstore.Content, 
 			return nil, nil, artifact.ErrIntegrity
 		}
 		if sequence == previous.attempt.Sequence {
-			if !nativeAttemptRunMatches(tenantAttemptSnapshot{attempt: previous.attempt, lease: previous.lease, event: row}, *run) {
+			if !nativeAttemptRunMatches(hubrecords.TenantAttemptSnapshot{Attempt: previous.attempt, Lease: previous.lease, Event: row}, *run) {
 				return nil, nil, artifact.ErrIntegrity
 			}
 			copy := *run

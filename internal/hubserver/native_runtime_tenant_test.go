@@ -364,7 +364,7 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 		}
 	})
 	changed := false
-	service.config.RunDetails = &changeReadInterceptionStore{DetailStore: service.config.RunDetails, key: snapshots[0].attempt.PayloadObjectKey, afterRead: func(ctx context.Context) error {
+	service.config.RunDetails = &changeReadInterceptionStore{DetailStore: service.config.RunDetails, key: snapshots[0].Attempt.PayloadObjectKey, afterRead: func(ctx context.Context) error {
 		changed = true
 		return repository.WriteTenant(ctx, organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.DeleteAccessTokenGrant(ctx, credentialID, project.ID)

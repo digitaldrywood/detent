@@ -8,11 +8,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
-func (s *Service) checkReleasePublicationRules(ctx context.Context, scope hubscope.NativeScope, plan releaseDeliveryCheck, approved ChangeVersionApproval) error {
+func (s *Service) checkReleasePublicationRules(ctx context.Context, scope hubscope.NativeScope, plan releaseDeliveryCheck, approved hubrecords.ChangeVersionApproval) error {
 	historicalSource := false
 	if plan.publishing {
 		issue := plan.issue
@@ -24,7 +25,7 @@ func (s *Service) checkReleasePublicationRules(ctx context.Context, scope hubsco
 				return hubapi.NativePublicInvalid("Operator-only delivery cannot publish a release PR")
 			}
 		}
-		attempt := plan.attempt.attempt
+		attempt := plan.attempt.Attempt
 		if attempt.ID != "" && attempt.Status == "succeeded" && attempt.WorkItemRevision >= plan.current.Revision && attempt.DispatchGeneration >= plan.current.DispatchGeneration {
 			run, err := s.hydrateNativeAttemptTenant(ctx, plan.attempt, s.config.now())
 			if err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -67,7 +68,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 			issue.Number, issue.Revision = int(current.Number), tracker.Revision(current.Revision+1)
 			from = hubapi.StringValue(current.WorkflowStateName)
 		}
-		fields, err := f.service.prepareWorkItemFields(t.Context(), scope.Organization, workItemRecordPlan{issue: issue, create: !existing})
+		fields, err := f.service.prepareWorkItemFields(t.Context(), scope.Organization, hubrecords.WorkItemRecordPlan{Issue: issue, Create: !existing})
 		if err != nil {
 			t.Fatal(err)
 		}

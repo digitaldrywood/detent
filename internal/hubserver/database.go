@@ -12,13 +12,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type database struct {
-	policies               projectPolicyCache
+	policies               hubrecords.ProjectPolicyCache
 	dashboardCommitted     chan struct{}
 	analyticsRetryMu       sync.Mutex
 	analyticsRetryCursor   string

@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -52,7 +53,7 @@ type nativeSourceRecoverySnapshot struct {
 	item            corestore.WorkItem
 	itemVersion     eventstore.CollaborationVersion
 	version         *eventstore.Version
-	attempt         tenantAttemptSnapshot
+	attempt         hubrecords.TenantAttemptSnapshot
 	attemptFound    bool
 	unreleasedLease bool
 	runnerName      string
@@ -142,23 +143,23 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 		if attempt.OrganizationID != scope.Organization || attempt.IssueID != snapshot.item.ID {
 			return artifact.ErrIntegrity
 		}
-		snapshot.attemptFound, snapshot.attempt.attempt = true, attempt
-		snapshot.attempt.lease, err = r.Lease(ctx, attempt.LeaseID)
+		snapshot.attemptFound, snapshot.attempt.Attempt = true, attempt
+		snapshot.attempt.Lease, err = r.Lease(ctx, attempt.LeaseID)
 		if err != nil {
 			return err
 		}
-		lease := snapshot.attempt.lease
+		lease := snapshot.attempt.Lease
 		if lease.OrganizationID != scope.Organization || lease.IssueID != snapshot.item.ID || lease.FencingToken != attempt.FencingToken {
 			return artifact.ErrIntegrity
 		}
-		snapshot.attempt.event, err = r.LatestRunEvent(ctx, scope.Project, attempt.ID)
+		snapshot.attempt.Event, err = r.LatestRunEvent(ctx, scope.Project, attempt.ID)
 		if err != nil {
 			return err
 		}
-		if snapshot.attempt.event.OrganizationID != scope.Organization || snapshot.attempt.event.ProjectID != scope.Project || snapshot.attempt.event.WorkItemID != snapshot.item.NativeID || snapshot.attempt.event.AttemptID != attempt.ID {
+		if snapshot.attempt.Event.OrganizationID != scope.Organization || snapshot.attempt.Event.ProjectID != scope.Project || snapshot.attempt.Event.WorkItemID != snapshot.item.NativeID || snapshot.attempt.Event.AttemptID != attempt.ID {
 			return artifact.ErrIntegrity
 		}
-		if err := readTenantAttemptPayload(ctx, r, &snapshot.attempt); err != nil {
+		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot.attempt); err != nil {
 			return err
 		}
 		identity, err := r.RunnerForLease(ctx, attempt.LeaseID)
@@ -199,10 +200,10 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 		if err != nil {
 			return view, err
 		}
-		if err := nativeAttemptRunMismatch(snapshot.attempt, run); err != nil {
+		if err := hubrecords.NativeAttemptRunMismatch(snapshot.attempt, run); err != nil {
 			return view, err
 		}
-		if run.MachineID != tracker.MachineID(snapshot.attempt.lease.MachineID) {
+		if run.MachineID != tracker.MachineID(snapshot.attempt.Lease.MachineID) {
 			return view, artifact.ErrIntegrity
 		}
 		checkpoint, err := s.readNativeAttemptCheckpointTenant(ctx, snapshot.attempt)
@@ -213,10 +214,10 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 		if checkpoint != nil {
 			view.HeadSHA = checkpoint.HeadSHA
 		}
-		attempt := snapshot.attempt.attempt
+		attempt := snapshot.attempt.Attempt
 		unacknowledged := run.TerminalFailure != nil && run.TerminalFailure.Stage == "lease_release" && attempt.CleanupAcknowledgedAt == nil
-		interrupted = snapshot.attempt.lease.ReleasedAt != nil && unacknowledged
-		view.Quiesced = snapshot.attempt.lease.ReleasedAt != nil && !unacknowledged && (attempt.Status == "succeeded" || attempt.Status == "failed" || attempt.Status == "cancelled")
+		interrupted = snapshot.attempt.Lease.ReleasedAt != nil && unacknowledged
+		view.Quiesced = snapshot.attempt.Lease.ReleasedAt != nil && !unacknowledged && (attempt.Status == "succeeded" || attempt.Status == "failed" || attempt.Status == "cancelled")
 	}
 	if snapshot.version != nil {
 		row := *snapshot.version
@@ -327,7 +328,7 @@ func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, sc
 			runner.Used, runner.HostUsed = candidate.RunnerUsed, candidate.HostUsed
 			runner.ProjectUsed = map[tracker.ProjectID]int{scope.Project: candidate.ProjectUsed}
 			runner.ProviderCapacity = candidate.Providers
-			if placementRunnerCompatible(placementRunner{Runner: runner}, scope.Project, approval.Policy.Requirements, now, false) {
+			if placementRunnerCompatible(hubrecords.PlacementRunner{Runner: runner}, scope.Project, approval.Policy.Requirements, now, false) {
 				name := runner.DisplayName
 				if name == "" {
 					name = runner.Hostname
@@ -436,7 +437,7 @@ func (s *Service) selectNativeSourceTransferTenant(ctx context.Context, scope hu
 			return view, err
 		}
 		if approval.Policy.ID == "" {
-			return view, errNoApprovedRepositoryPolicy
+			return view, hubrecords.ErrNoApprovedRepositoryPolicy
 		}
 		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			return s.validateSourceDestinationTenant(ctx, r, scope, request.DestinationRunnerID, approval.Policy.Requirements)
@@ -469,7 +470,7 @@ func (s *Service) validateSourceDestinationTenant(ctx context.Context, r tenants
 	runner.Used, runner.HostUsed = candidate.RunnerUsed, candidate.HostUsed
 	runner.ProjectUsed = map[tracker.ProjectID]int{scope.Project: candidate.ProjectUsed}
 	runner.ProviderCapacity = candidate.Providers
-	if !placementRunnerCompatible(placementRunner{Runner: runner}, scope.Project, requirements, now, false) {
+	if !placementRunnerCompatible(hubrecords.PlacementRunner{Runner: runner}, scope.Project, requirements, now, false) {
 		return sourceRecoveryRefusal("Destination runner must be online, eligible and have available capacity")
 	}
 	if !candidate.Record.Isolation.SupportsOn(runner.IsolationTier, runner.OS) {

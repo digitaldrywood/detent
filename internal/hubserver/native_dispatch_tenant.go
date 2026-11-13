@@ -1,14 +1,17 @@
 package hubserver
 
-import "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+import (
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
+)
 
-func nativeClaimAnswerRequired(plan nativeClaimPlan) bool {
-	return !hubapi.StringsEqualFold(plan.candidate.State, "Rework") && plan.latestAttemptFound && plan.latestAttempt.Status == "succeeded" && plan.latestAttempt.WorkItemRevision >= plan.item.Revision && plan.latestAttempt.DispatchGeneration >= plan.item.DispatchGeneration && !plan.landingPending && !hubapi.StringsEqualFold(plan.candidate.State, "Merging")
+func nativeClaimAnswerRequired(plan hubrecords.NativeClaimPlan) bool {
+	return !hubapi.StringsEqualFold(plan.Candidate.State, "Rework") && plan.LatestAttemptFound && plan.LatestAttempt.Status == "succeeded" && plan.LatestAttempt.WorkItemRevision >= plan.Item.Revision && plan.LatestAttempt.DispatchGeneration >= plan.Item.DispatchGeneration && !plan.LandingPending && !hubapi.StringsEqualFold(plan.Candidate.State, "Merging")
 }
 
-func nativeClaimDispatchSatisfied(plan nativeClaimPlan) bool {
-	if !nativeClaimAnswerRequired(plan) || plan.latestAttempt.ClaimDisposition == nil || *plan.latestAttempt.ClaimDisposition == "progress" {
+func nativeClaimDispatchSatisfied(plan hubrecords.NativeClaimPlan) bool {
+	if !nativeClaimAnswerRequired(plan) || plan.LatestAttempt.ClaimDisposition == nil || *plan.LatestAttempt.ClaimDisposition == "progress" {
 		return false
 	}
-	return *plan.latestAttempt.ClaimDisposition != "" || plan.item.DispatchRequestedAt != nil
+	return *plan.LatestAttempt.ClaimDisposition != "" || plan.Item.DispatchRequestedAt != nil
 }

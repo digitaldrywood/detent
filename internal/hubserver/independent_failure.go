@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -42,7 +43,7 @@ type independentRepair struct {
 }
 
 type preparedIndependentRepairs struct {
-	source       workItemRecordPlan
+	source       hubrecords.WorkItemRecordPlan
 	repairs      []independentRepair
 	dependencies []tracker.NativeWorkItemID
 	refusal      string
@@ -70,7 +71,7 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 	if err != nil {
 		return nil, err
 	}
-	if plan.issue.Archived || tenantProjectStateTerminal(plan.project, plan.issue.State) {
+	if plan.Issue.Archived || hubrecords.TenantProjectStateTerminal(plan.Project, plan.Issue.State) {
 		return nil, nil
 	}
 	out := &preparedIndependentRepairs{source: plan}
@@ -108,7 +109,7 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 		if err != nil {
 			return nil, err
 		}
-		var repairPlan workItemRecordPlan
+		var repairPlan hubrecords.WorkItemRecordPlan
 		var original corestore.WorkItem
 		var priority *scheduledAttributionRecord
 		if selection.WorkItemID != "" {
@@ -116,18 +117,18 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 			if err != nil {
 				return nil, err
 			}
-			existing, stamped := issueorigin.Parse(repairPlan.issue.Body)
-			if !stamped || existing.Fingerprint != origin.Fingerprint || repairPlan.current.Revision != selection.Revision {
+			existing, stamped := issueorigin.Parse(repairPlan.Issue.Body)
+			if !stamped || existing.Fingerprint != origin.Fingerprint || repairPlan.Current.Revision != selection.Revision {
 				return nil, corestore.ErrSerializationFailure
 			}
-			original = repairPlan.current
-			repairPlan.issue.Terminal = selection.Terminal
-			if repairPlan.issue.WorkItemID == item {
+			original = repairPlan.Current
+			repairPlan.Issue.Terminal = selection.Terminal
+			if repairPlan.Issue.WorkItemID == item {
 				out.refusal = "Dependencies cannot form a cycle"
-			} else if repairPlan.issue.Terminal && (repairPlan.issue.State == "Cancelled" || strings.Contains(strings.ToLower(repairPlan.issue.Body), "detent:no-dispatch")) {
+			} else if repairPlan.Issue.Terminal && (repairPlan.Issue.State == "Cancelled" || strings.Contains(strings.ToLower(repairPlan.Issue.Body), "detent:no-dispatch")) {
 				out.refusal = "Repair owner is terminal and cannot accept new work"
-			} else if !repairPlan.issue.Terminal {
-				if request.Priority != nil && (repairPlan.issue.Priority == nil || *request.Priority < *repairPlan.issue.Priority) {
+			} else if !repairPlan.Issue.Terminal {
+				if request.Priority != nil && (repairPlan.Issue.Priority == nil || *request.Priority < *repairPlan.Issue.Priority) {
 					planned, err := s.prepareWorkItemMachinePriority(ctx, scope, repairPlan, request.Priority)
 					if err != nil {
 						return nil, err
@@ -150,15 +151,15 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 				return nil, err
 			}
 			if nextNumber == 0 {
-				nextNumber = repairPlan.issue.Number
+				nextNumber = repairPlan.Issue.Number
 			}
-			repairPlan.issue.Number = nextNumber
+			repairPlan.Issue.Number = nextNumber
 			nextNumber++
 			repairPlan, err = s.planWorkItemRecord(ctx, scope, repairPlan, request)
 			if err != nil {
 				return nil, err
 			}
-			repairPlan.current.NativeID = repairPlan.issue.WorkItemID
+			repairPlan.Current.NativeID = repairPlan.Issue.WorkItemID
 			policy, policyFound, err = s.validateWorkItemRecordFilingTenant(ctx, scope, repairPlan)
 			if err != nil {
 				return nil, err
@@ -170,7 +171,7 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 			if err != nil {
 				return nil, err
 			}
-			out.dependencies = append(out.dependencies, repairPlan.issue.WorkItemID)
+			out.dependencies = append(out.dependencies, repairPlan.Issue.WorkItemID)
 		}
 		out.repairs = append(out.repairs, repair)
 	}
@@ -189,16 +190,16 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 	}
 	slices.Sort(out.dependencies)
 	update := plan
-	update.issue.Dependencies = slices.Clone(plan.issue.Dependencies)
+	update.Issue.Dependencies = slices.Clone(plan.Issue.Dependencies)
 	for _, dependency := range out.dependencies {
-		if !slices.Contains(update.issue.Dependencies, dependency) {
-			update.issue.Dependencies = append(update.issue.Dependencies, dependency)
+		if !slices.Contains(update.Issue.Dependencies, dependency) {
+			update.Issue.Dependencies = append(update.Issue.Dependencies, dependency)
 		}
 	}
-	slices.Sort(update.issue.Dependencies)
-	update.issue.Revision++
-	update.issue.UpdatedAt, update.issue.LastActivityAt = now, now
-	update.fields, update.eventType = []string{"dependencies"}, "dependency.changed"
+	slices.Sort(update.Issue.Dependencies)
+	update.Issue.Revision++
+	update.Issue.UpdatedAt, update.Issue.LastActivityAt = now, now
+	update.Fields, update.EventType = []string{"dependencies"}, "dependency.changed"
 	data := tracker.CollaborationData{Operation: "add"}
 	prepared, err := s.prepareScheduledAttributionRecord(ctx, scope, update, data)
 	if err != nil {
@@ -225,14 +226,14 @@ func (s *Service) checkIndependentRepairs(ctx context.Context, w tenantstore.Wri
 	if err != nil {
 		return "", err
 	}
-	if project.Core.DeletedAt != nil || !sameWorkItemProjectPlan(plan.source.project, project) {
+	if project.Core.DeletedAt != nil || !hubrecords.SameWorkItemProjectPlan(plan.source.Project, project) {
 		return "", corestore.ErrSerializationFailure
 	}
-	current, err := w.LockWorkItem(ctx, scope.Project, plan.source.current.NativeID)
+	current, err := w.LockWorkItem(ctx, scope.Project, plan.source.Current.NativeID)
 	if err != nil {
 		return "", err
 	}
-	if current.Revision != plan.source.current.Revision || current.Archived || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
+	if current.Revision != plan.source.Current.Revision || current.Archived || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 		return "", corestore.ErrSerializationFailure
 	}
 	refusal := plan.refusal
@@ -270,11 +271,11 @@ func (s *Service) applyIndependentRepairs(ctx context.Context, w tenantstore.Wri
 	}
 	for _, repair := range plan.repairs {
 		p := repair.record
-		if p.plan.create && p.plan.comment.ID == "" {
+		if p.plan.Create && p.plan.Comment.ID == "" {
 			current, err := w.ProjectPolicy(ctx, scope.Project)
 			if errors.Is(err, corestore.ErrNotFound) && !repair.policyFound {
 				err = nil
-			} else if err == nil && (!repair.policyFound || !sameNativeClaimProjectPolicy(current, repair.policy)) {
+			} else if err == nil && (!repair.policyFound || !hubrecords.SameNativeClaimProjectPolicy(current, repair.policy)) {
 				return corestore.ErrSerializationFailure
 			}
 			if err != nil {
@@ -289,8 +290,8 @@ func (s *Service) applyIndependentRepairs(ctx context.Context, w tenantstore.Wri
 				return err
 			}
 		}
-		edge := corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.source.current.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: p.plan.issue.WorkItemID, Type: "dependency"}
-		if err := w.SetRelationship(ctx, edge, "add", p.plan.issue.UpdatedAt); err != nil {
+		edge := corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.source.Current.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: p.plan.Issue.WorkItemID, Type: "dependency"}
+		if err := w.SetRelationship(ctx, edge, "add", p.plan.Issue.UpdatedAt); err != nil {
 			return err
 		}
 	}
@@ -301,7 +302,7 @@ func (s *Service) applyIndependentRepairs(ctx context.Context, w tenantstore.Wri
 }
 
 func (s *Service) applyIndependentRecord(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, p scheduledAttributionRecord) error {
-	if err := writeWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
+	if err := hubrecords.WriteWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
 		return err
 	}
 	if _, err := w.CreateCollaborationVersion(ctx, p.version); err != nil {
@@ -310,15 +311,15 @@ func (s *Service) applyIndependentRecord(ctx context.Context, w tenantstore.Writ
 	if _, err := w.AppendEvent(ctx, p.event); err != nil {
 		return err
 	}
-	expected := p.plan.current.Revision
-	if p.plan.comment.ID != "" {
+	expected := p.plan.Current.Revision
+	if p.plan.Comment.ID != "" {
 		expected = 0
 	}
 	if err := w.PutSearch(ctx, p.search, expected); err != nil {
 		return err
 	}
-	if p.plan.comment.ID == "" {
-		return w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: p.version.WorkItemID, Revision: p.version.Revision, VersionSHA256: p.version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(p.plan.issue.Body)})
+	if p.plan.Comment.ID == "" {
+		return w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: p.version.WorkItemID, Revision: p.version.Revision, VersionSHA256: p.version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(p.plan.Issue.Body)})
 	}
 	return nil
 }

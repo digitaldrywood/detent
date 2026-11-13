@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -91,57 +92,49 @@ func requireLinkedIssueLease(ctx context.Context, r tenantstore.Reader, scope hu
 	return nil
 }
 
-type linkedIssueCommentPlan struct {
-	comment tracker.NativeComment
-	row     corestore.Comment
-	version eventstore.CollaborationVersion
-	event   eventstore.Event
-	bytes   int64
-}
-
-func (s *Service) prepareLinkedIssueCreation(ctx context.Context, scope hubscope.NativeScope, plan workItemRecordPlan) (workItemRecordPlan, error) {
-	if !plan.create || plan.existing || plan.linkedSource == nil || s.config.ImportBackend == nil || scope.IntegrationRepository != "" {
+func (s *Service) prepareLinkedIssueCreation(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan) (hubrecords.WorkItemRecordPlan, error) {
+	if !plan.Create || plan.Existing || plan.LinkedSource == nil || s.config.ImportBackend == nil || scope.IntegrationRepository != "" {
 		return plan, nil
 	}
-	snapshot, err := s.fetchLinkedSnapshot(ctx, scope, plan.linkedSource.URL)
+	snapshot, err := s.fetchLinkedSnapshot(ctx, scope, plan.LinkedSource.URL)
 	if err != nil {
 		return plan, err
 	}
 	if err := validateLinkedIssueSnapshot(*snapshot); err != nil {
 		return plan, err
 	}
-	if !plan.linkedSource.TitleSupplied {
-		plan.issue.Title = snapshot.Title
+	if !plan.LinkedSource.TitleSupplied {
+		plan.Issue.Title = snapshot.Title
 	}
-	if !plan.linkedSource.BodySupplied {
-		plan.issue.Body = snapshot.Body
+	if !plan.LinkedSource.BodySupplied {
+		plan.Issue.Body = snapshot.Body
 	}
-	plan.issue.Provenance = &snapshot.Provenance
-	plan.issue.ExternalReferences = nativeSourceReferences("", "", "", 0, "", snapshot.URL, plan.issue.Provenance)
-	plan.issue.ExternalReferences = append(plan.issue.ExternalReferences, tracker.GitHubIssueSourceReference(snapshot.URL, snapshot.URL))
-	if err := s.applyScheduledRepairRecord(ctx, scope, &plan.issue); err != nil {
+	plan.Issue.Provenance = &snapshot.Provenance
+	plan.Issue.ExternalReferences = nativeSourceReferences("", "", "", 0, "", snapshot.URL, plan.Issue.Provenance)
+	plan.Issue.ExternalReferences = append(plan.Issue.ExternalReferences, tracker.GitHubIssueSourceReference(snapshot.URL, snapshot.URL))
+	if err := s.applyScheduledRepairRecord(ctx, scope, &plan.Issue); err != nil {
 		return plan, err
 	}
 	for _, imported := range snapshot.Comments {
-		comment, err := s.prepareLinkedIssueComment(ctx, scope, plan.issue.WorkItemID, imported, 2+int64(len(plan.linkedComments)), plan.issue.CreatedAt)
+		comment, err := s.prepareLinkedIssueComment(ctx, scope, plan.Issue.WorkItemID, imported, 2+int64(len(plan.LinkedComments)), plan.Issue.CreatedAt)
 		if err != nil {
 			return plan, err
 		}
-		plan.linkedComments = append(plan.linkedComments, comment)
+		plan.LinkedComments = append(plan.LinkedComments, comment)
 	}
 	snapshot.Comments = nil
 	reference, err := eventstore.NewContent(s.runDetailStore()).PrepareLinkedIssueSnapshot(ctx, scope.Organization, *snapshot)
 	if err != nil {
 		return plan, err
 	}
-	plan.linkedSource.SnapshotObjectKey, plan.linkedSource.SnapshotSHA256 = reference.Key, reference.SHA256
-	plan.linkedSource.SnapshotBytes, plan.linkedSource.SnapshotContentBytes = reference.CompressedSize, reference.UncompressedSize
-	plan.issue.LinkedSource = &tracker.LinkedIssueSource{URL: snapshot.URL, Status: "complete", Snapshot: snapshot}
+	plan.LinkedSource.SnapshotObjectKey, plan.LinkedSource.SnapshotSHA256 = reference.Key, reference.SHA256
+	plan.LinkedSource.SnapshotBytes, plan.LinkedSource.SnapshotContentBytes = reference.CompressedSize, reference.UncompressedSize
+	plan.Issue.LinkedSource = &tracker.LinkedIssueSource{URL: snapshot.URL, Status: "complete", Snapshot: snapshot}
 	return plan, nil
 }
 
 func validateLinkedIssueSnapshot(snapshot tracker.GitHubIssueSnapshot) error {
-	if err := validateNativeContent(snapshot.Title, snapshot.Body, nil, nil, nil); err != nil {
+	if err := hubrecords.ValidateNativeContent(snapshot.Title, snapshot.Body, nil, nil, nil); err != nil {
 		return err
 	}
 	if err := validateImportProvenance(&snapshot.Provenance); err != nil {
@@ -160,7 +153,7 @@ func validateLinkedIssueSnapshot(snapshot tracker.GitHubIssueSnapshot) error {
 	return nil
 }
 
-func (s *Service) prepareLinkedIssueComment(ctx context.Context, scope hubscope.NativeScope, itemID tracker.NativeWorkItemID, imported tracker.GitHubIssueComment, sequence int64, now time.Time) (linkedIssueCommentPlan, error) {
+func (s *Service) prepareLinkedIssueComment(ctx context.Context, scope hubscope.NativeScope, itemID tracker.NativeWorkItemID, imported tracker.GitHubIssueComment, sequence int64, now time.Time) (hubrecords.LinkedIssueCommentPlan, error) {
 	content := eventstore.NewContent(s.runDetailStore())
 	key := imported.Provenance.Provider + ":" + imported.Provenance.ExternalID
 	commentID := hubcontent.PayloadNativeID(ctx, "cmt")
@@ -175,35 +168,35 @@ func (s *Service) prepareLinkedIssueComment(ctx context.Context, scope hubscope.
 	comment.Sequence = sequence
 	commentRaw, err := json.Marshal(comment)
 	if err != nil {
-		return linkedIssueCommentPlan{}, err
+		return hubrecords.LinkedIssueCommentPlan{}, err
 	}
 	bodyRaw, err := json.Marshal(comment.Body)
 	if err != nil {
-		return linkedIssueCommentPlan{}, err
+		return hubrecords.LinkedIssueCommentPlan{}, err
 	}
 	bodyKey, err := s.prepareWorkItemField(ctx, scope.Organization, bodyRaw)
 	if err != nil {
-		return linkedIssueCommentPlan{}, err
+		return hubrecords.LinkedIssueCommentPlan{}, err
 	}
 	provider, externalID := imported.Provenance.Provider, imported.Provenance.ExternalID
-	commentPlan := linkedIssueCommentPlan{comment: comment, row: corestore.Comment{OrganizationID: scope.Organization, ID: commentID, ProjectID: scope.Project, WorkItemID: itemID, Revision: 1, Sequence: comment.Sequence, BodyObjectKey: bodyKey, ActorKind: "integration", ActorPrincipalID: "github", ProvenanceProvider: &provider, ProvenanceExternalID: &externalID, SourceKey: &key, CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt}}
-	commentPlan.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemID, RecordID: commentID, Revision: 1}, commentRaw)
+	commentPlan := hubrecords.LinkedIssueCommentPlan{Comment: comment, Row: corestore.Comment{OrganizationID: scope.Organization, ID: commentID, ProjectID: scope.Project, WorkItemID: itemID, Revision: 1, Sequence: comment.Sequence, BodyObjectKey: bodyKey, ActorKind: "integration", ActorPrincipalID: "github", ProvenanceProvider: &provider, ProvenanceExternalID: &externalID, SourceKey: &key, CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt}}
+	commentPlan.Version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemID, RecordID: commentID, Revision: 1}, commentRaw)
 	if err != nil {
-		return linkedIssueCommentPlan{}, err
+		return hubrecords.LinkedIssueCommentPlan{}, err
 	}
 	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: itemID, ID: hubcontent.PayloadNativeID(ctx, "evt"), Type: "comment.created", SchemaVersion: 1, Actor: comment.Actor, RecordedAt: comment.CreatedAt, Data: tracker.CollaborationData{CommentID: commentID}})
 	if err != nil {
-		return linkedIssueCommentPlan{}, err
+		return hubrecords.LinkedIssueCommentPlan{}, err
 	}
-	commentPlan.event, err = content.PrepareEvent(ctx, scope.Organization, eventRaw)
+	commentPlan.Event, err = content.PrepareEvent(ctx, scope.Organization, eventRaw)
 	if err != nil {
-		return linkedIssueCommentPlan{}, err
+		return hubrecords.LinkedIssueCommentPlan{}, err
 	}
 	eventBytes, err := collaborationEventChargeBytes(eventRaw)
 	if err != nil {
-		return linkedIssueCommentPlan{}, err
+		return hubrecords.LinkedIssueCommentPlan{}, err
 	}
-	commentPlan.bytes = int64(len(commentRaw)+len(comment.Body)) + eventBytes
+	commentPlan.Bytes = int64(len(commentRaw)+len(comment.Body)) + eventBytes
 	return commentPlan, nil
 }
 
@@ -317,7 +310,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 	}
 	snapshot := request.Snapshot
 	snapshot.URL = canonical
-	newComments := make([]linkedIssueCommentPlan, 0, len(snapshot.Comments))
+	newComments := make([]hubrecords.LinkedIssueCommentPlan, 0, len(snapshot.Comments))
 	for _, imported := range snapshot.Comments {
 		key := imported.Provenance.Provider + ":" + imported.Provenance.ExternalID
 		lookupErr := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -344,8 +337,8 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 			return nil, err
 		}
 	}
-	var issuePlan workItemRecordPlan
-	var fields workItemRecordFields
+	var issuePlan hubrecords.WorkItemRecordPlan
+	var fields hubrecords.WorkItemRecordFields
 	var issueVersion eventstore.CollaborationVersion
 	var issueEvent eventstore.Event
 	var searchDocument searchstore.Document
@@ -355,7 +348,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 		if err != nil {
 			return nil, err
 		}
-		issuePlan = workItemRecordPlan{project: project, current: row, issue: issue, fields: []string{"source_intake"}, eventType: "github.imported"}
+		issuePlan = hubrecords.WorkItemRecordPlan{Project: project, Current: row, Issue: issue, Fields: []string{"source_intake"}, EventType: "github.imported"}
 		fields, err = s.prepareWorkItemFields(ctx, scope.Organization, issuePlan)
 		if err != nil {
 			return nil, err
@@ -386,7 +379,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 	if stale {
 		issue = originalIssue
 	}
-	response, err := json.Marshal(relationshipOmittedIssue(scope.ReporterIssue(issue)))
+	response, err := json.Marshal(hubrecords.RelationshipOmittedIssue(scope.ReporterIssue(issue)))
 	if err != nil {
 		return nil, err
 	}
@@ -462,24 +455,24 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 			}
 		}
 		for _, imported := range newComments {
-			key := imported.comment.Provenance.Provider + ":" + imported.comment.Provenance.ExternalID
+			key := imported.Comment.Provenance.Provider + ":" + imported.Comment.Provenance.ExternalID
 			if _, err := w.CommentBySource(ctx, scope.Project, itemID, key); err == nil {
 				continue
 			} else if !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}
-			if _, err := w.CreateComment(ctx, imported.row); err != nil {
+			if _, err := w.CreateComment(ctx, imported.Row); err != nil {
 				return err
 			}
-			if _, err := w.CreateCollaborationVersion(ctx, imported.version); err != nil {
+			if _, err := w.CreateCollaborationVersion(ctx, imported.Version); err != nil {
 				return err
 			}
-			if _, err := w.AppendEvent(ctx, imported.event); err != nil {
+			if _, err := w.AppendEvent(ctx, imported.Event); err != nil {
 				return err
 			}
 		}
 		if !stale {
-			if err := writeWorkItemRecord(ctx, w, issuePlan, fields); err != nil {
+			if err := hubrecords.WriteWorkItemRecord(ctx, w, issuePlan, fields); err != nil {
 				return err
 			}
 			if err := w.PutSearch(ctx, searchDocument, row.Revision); err != nil {

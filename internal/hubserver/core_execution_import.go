@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/diffbody"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
@@ -812,7 +813,7 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *coreNeutralImport, con
 		}
 		attempt.CheckpointObjectKey = &ref.Key
 		checkpointReference = ref
-		decoded, decodeErr := decodeAttemptCheckpoint(ctx, attempt, checkpoint, func(ctx context.Context, detail *runDetailReference) ([]byte, error) {
+		decoded, decodeErr := decodeAttemptCheckpoint(ctx, attempt, checkpoint, func(ctx context.Context, detail *hubrecords.RunDetailReference) ([]byte, error) {
 			key := detail.ObjectKey
 			var uploader string
 			if key == "" {

@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -449,14 +450,14 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	if err != nil || !nativeClaimIssueContractAllowed(plan) {
 		t.Fatalf("read claim plan = %+v, error %v", plan, err)
 	}
-	staleEvidenceSequence := plan.changeRecord
+	staleEvidenceSequence := plan.ChangeRecord
 	staleEvidenceSequence.EvidenceSequence++
-	if sameNativeClaimChangeRecord(plan.changeRecord, staleEvidenceSequence) {
+	if sameNativeClaimChangeRecord(plan.ChangeRecord, staleEvidenceSequence) {
 		t.Fatal("claim writer fence accepted a changed evidence sequence")
 	}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
-		plan.changePolicy, err = readCurrentChangePolicyRows(t.Context(), reader, scope)
+		plan.ChangePolicy, err = readCurrentChangePolicyRows(t.Context(), reader, scope)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -481,8 +482,8 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		return err
 	}
 	mergePlan := plan
-	mergePlan.candidate.State = "Merging"
-	mergePlans := []nativeClaimPlan{mergePlan}
+	mergePlan.Candidate.State = "Merging"
+	mergePlans := []hubrecords.NativeClaimPlan{mergePlan}
 	if err := repository.ReadTenantSnapshot(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error { return readNativeClaimChangeFacts(t.Context(), r, scope, mergePlans) }); err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +494,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}); err != nil {
 		t.Fatalf("claim hydration read missing historical version payload: %v", err)
 	}
-	if err := withMissingDetail(plan.changeVersion.PayloadObjectKey, func() error {
+	if err := withMissingDetail(plan.ChangeVersion.PayloadObjectKey, func() error {
 		_, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, mergePlan, &descriptor)
 		return err
 	}); err == nil {
@@ -552,7 +553,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := withMissingDetail(plan.changeVersion.PayloadObjectKey, func() error {
+	if err := withMissingDetail(plan.ChangeVersion.PayloadObjectKey, func() error {
 		for _, item := range items {
 			if err := service.refreshBoardRecord(t.Context(), organization.ID, viewstore.BoardCandidate{ProjectID: project.ID, WorkItemID: item.WorkItemID}, now.Add(time.Second)); !errors.Is(err, artifact.ErrMissing) {
 				return fmt.Errorf("board refresh did not refuse missing current version for %s: %v", item.WorkItemID, err)
@@ -700,10 +701,10 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			t.Fatalf("stale policy claim error=%v", err)
 		}
 		if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-			if _, err := r.ActiveLeaseForIssue(t.Context(), captured.item.ID); !errors.Is(err, corestore.ErrNotFound) {
+			if _, err := r.ActiveLeaseForIssue(t.Context(), captured.Item.ID); !errors.Is(err, corestore.ErrNotFound) {
 				return fmt.Errorf("rejected claim lease: %v", err)
 			}
-			if _, err := r.BillingMonthlyAdmission(t.Context(), tracker.WorkItemID(captured.item.ID)); !errors.Is(err, corestore.ErrNotFound) {
+			if _, err := r.BillingMonthlyAdmission(t.Context(), tracker.WorkItemID(captured.Item.ID)); !errors.Is(err, corestore.ErrNotFound) {
 				return fmt.Errorf("rejected claim billing admission: %v", err)
 			}
 			if _, err := r.SelectionCursor(t.Context(), binding.RunnerID, project.ID); !errors.Is(err, corestore.ErrNotFound) {
@@ -1067,40 +1068,40 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 }
 
 func TestNativeClaimPendingLandingRequiresLatestMatchingVersionReceipt(t *testing.T) {
-	base := nativeClaimPlan{
-		changeRecord:        eventstore.Change{ID: "change_example", CurrentVersionID: new("version_example")},
-		changeVersion:       eventstore.Version{ID: "version_example", HeadSHA: "head_example"},
-		item:                corestore.WorkItem{Revision: 4, DispatchGeneration: 2},
-		latestAttempt:       leasestore.Attempt{WorkItemRevision: 4, DispatchGeneration: 2},
-		latestAttemptFound:  true,
-		latestRunEventFound: true,
-		latestRunEvent:      eventstore.Event{LandingWaiting: true, LandingChangeID: "change_example", LandingVersionID: "version_example", LandingHeadSHA: "head_example"},
+	base := hubrecords.NativeClaimPlan{
+		ChangeRecord:        eventstore.Change{ID: "change_example", CurrentVersionID: new("version_example")},
+		ChangeVersion:       eventstore.Version{ID: "version_example", HeadSHA: "head_example"},
+		Item:                corestore.WorkItem{Revision: 4, DispatchGeneration: 2},
+		LatestAttempt:       leasestore.Attempt{WorkItemRevision: 4, DispatchGeneration: 2},
+		LatestAttemptFound:  true,
+		LatestRunEventFound: true,
+		LatestRunEvent:      eventstore.Event{LandingWaiting: true, LandingChangeID: "change_example", LandingVersionID: "version_example", LandingHeadSHA: "head_example"},
 	}
 	for _, test := range []struct {
 		name   string
-		mutate func(*nativeClaimPlan)
+		mutate func(*hubrecords.NativeClaimPlan)
 		want   bool
 	}{
 		{name: "exact current landing receipt", want: true},
-		{name: "not waiting", mutate: func(plan *nativeClaimPlan) { plan.latestRunEvent.LandingWaiting = false }},
-		{name: "different change", mutate: func(plan *nativeClaimPlan) { plan.latestRunEvent.LandingChangeID = "change_other" }},
-		{name: "different version", mutate: func(plan *nativeClaimPlan) { plan.latestRunEvent.LandingVersionID = "version_other" }},
-		{name: "different head", mutate: func(plan *nativeClaimPlan) { plan.latestRunEvent.LandingHeadSHA = "head_other" }},
-		{name: "historical version", mutate: func(plan *nativeClaimPlan) { plan.changeRecord.CurrentVersionID = new("version_new") }},
-		{name: "missing attempt", mutate: func(plan *nativeClaimPlan) { plan.latestAttemptFound = false }},
-		{name: "missing event", mutate: func(plan *nativeClaimPlan) { plan.latestRunEventFound = false }},
-		{name: "item revision advanced after the attempt", mutate: func(plan *nativeClaimPlan) { plan.item.Revision++ }},
-		{name: "dispatch generation advanced after the attempt", mutate: func(plan *nativeClaimPlan) { plan.item.DispatchGeneration++ }},
-		{name: "item revision and dispatch generation advanced after the attempt", mutate: func(plan *nativeClaimPlan) {
-			plan.item.Revision++
-			plan.item.DispatchGeneration++
+		{name: "not waiting", mutate: func(plan *hubrecords.NativeClaimPlan) { plan.LatestRunEvent.LandingWaiting = false }},
+		{name: "different change", mutate: func(plan *hubrecords.NativeClaimPlan) { plan.LatestRunEvent.LandingChangeID = "change_other" }},
+		{name: "different version", mutate: func(plan *hubrecords.NativeClaimPlan) { plan.LatestRunEvent.LandingVersionID = "version_other" }},
+		{name: "different head", mutate: func(plan *hubrecords.NativeClaimPlan) { plan.LatestRunEvent.LandingHeadSHA = "head_other" }},
+		{name: "historical version", mutate: func(plan *hubrecords.NativeClaimPlan) { plan.ChangeRecord.CurrentVersionID = new("version_new") }},
+		{name: "missing attempt", mutate: func(plan *hubrecords.NativeClaimPlan) { plan.LatestAttemptFound = false }},
+		{name: "missing event", mutate: func(plan *hubrecords.NativeClaimPlan) { plan.LatestRunEventFound = false }},
+		{name: "item revision advanced after the attempt", mutate: func(plan *hubrecords.NativeClaimPlan) { plan.Item.Revision++ }},
+		{name: "dispatch generation advanced after the attempt", mutate: func(plan *hubrecords.NativeClaimPlan) { plan.Item.DispatchGeneration++ }},
+		{name: "item revision and dispatch generation advanced after the attempt", mutate: func(plan *hubrecords.NativeClaimPlan) {
+			plan.Item.Revision++
+			plan.Item.DispatchGeneration++
 		}},
-		{name: "rework", mutate: func(plan *nativeClaimPlan) { plan.candidate.State = "Rework" }},
+		{name: "rework", mutate: func(plan *hubrecords.NativeClaimPlan) { plan.Candidate.State = "Rework" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plan := base
-			currentVersion := *base.changeRecord.CurrentVersionID
-			plan.changeRecord.CurrentVersionID = &currentVersion
+			currentVersion := *base.ChangeRecord.CurrentVersionID
+			plan.ChangeRecord.CurrentVersionID = &currentVersion
 			if test.mutate != nil {
 				test.mutate(&plan)
 			}
@@ -1129,8 +1130,8 @@ func TestNativeClaimLandingCapacityRequired(t *testing.T) {
 		{name: "unknown pending policy", pending: true, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			plan := nativeClaimPlan{candidate: claimstore.Candidate{State: test.state}, landingPending: test.pending}
-			plan.changePolicyRevision.GitHubPullRequest = test.github
+			plan := hubrecords.NativeClaimPlan{Candidate: claimstore.Candidate{State: test.state}, LandingPending: test.pending}
+			plan.ChangePolicyRevision.GitHubPullRequest = test.github
 			got, err := nativeClaimLandingCapacityRequired(plan)
 			if got != test.want || (err != nil) != test.wantError {
 				t.Fatalf("landing capacity required=%t error=%v, want %t error=%t", got, err, test.want, test.wantError)

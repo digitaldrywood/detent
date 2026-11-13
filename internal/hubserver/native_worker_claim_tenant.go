@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -33,44 +34,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-type nativeClaimPlan struct {
-	snapshotLoaded       bool
-	releaseDelivery      releaseDeliveryContractFacts
-	observations         *tenantstore.ChangeVersionRows
-	approval             *ChangeVersionApproval
-	candidate            claimstore.Candidate
-	project              projectstore.Record
-	policy               policystore.Revision
-	descriptor           policy.Descriptor
-	item                 corestore.WorkItem
-	issue                tracker.NativeIssue
-	version              eventstore.CollaborationVersion
-	linked               *tracker.LinkedIssueSource
-	linkedRecord         *eventstore.LinkedSource
-	change               tracker.NativeChangeReference
-	changeReady          bool
-	changeFacts          *tenantstore.BoardChangeRows
-	changeRecord         eventstore.Change
-	changePolicy         currentChangePolicyRows
-	changeVersion        eventstore.Version
-	changePolicyRevision policystore.Revision
-	latestAttempt        leasestore.Attempt
-	latestRunEvent       eventstore.Event
-	latestAttemptFound   bool
-	latestRunEventFound  bool
-	landingPending       bool
-	landingRequired      bool
-	replay               *leasestore.Lease
-	placement            *claimPlacementSnapshot
-}
-
 const nativeClaimCandidatePageSize = 100
 
 var errNativeClaimPlanRefused = fmt.Errorf("claim plan refused: %w", ErrNoClaimableWork)
 
 type nativeClaimCandidateScan struct {
-	plans    []nativeClaimPlan
-	replay   *nativeClaimPlan
+	plans    []hubrecords.NativeClaimPlan
+	replay   *hubrecords.NativeClaimPlan
 	pageNext claimstore.CandidateCursor
 	cursor   claimstore.SelectionCursor
 }
@@ -109,10 +79,10 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 		position := scan.cursor.Position
 		var descriptor *policy.Descriptor
 		var budgetRefusal error
-		placement := &claimPlacementSnapshot{}
+		placement := &hubrecords.ClaimPlacementSnapshot{}
 		for _, rows := range scan.plans {
-			candidate := rows.candidate
-			rows.placement = placement
+			candidate := rows.Candidate
+			rows.Placement = placement
 			plan, err := s.hydrateNativeClaimPlan(ctx, scope, request, now, rows, descriptor)
 			if errors.Is(err, ErrNoClaimableWork) {
 				position = claimCandidateCursor(candidate)
@@ -121,16 +91,16 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 			if err != nil {
 				return leasestore.Lease{}, err
 			}
-			descriptor = &plan.descriptor
+			descriptor = &plan.Descriptor
 			if !nativeClaimIssueContractAllowed(plan) {
 				s.config.Logger.InfoContext(ctx, "native claim candidate skipped",
 					"organization_id", scope.Organization, "project_id", scope.Project,
-					"work_item_id", candidate.WorkItemID, "work_item_revision", plan.item.Revision,
+					"work_item_id", candidate.WorkItemID, "work_item_revision", plan.Item.Revision,
 					"runner_id", scope.Credential.Runner.RunnerID, "reason", "issue_contract_unsatisfied")
 				position = claimCandidateCursor(candidate)
 				continue
 			}
-			if (hubapi.StringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending) && !plan.changeReady {
+			if (hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending) && !plan.ChangeReady {
 				position = claimCandidateCursor(candidate)
 				continue
 			}
@@ -216,7 +186,7 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	}
 	currentPolicy, err := r.ProjectPolicy(ctx, scope.Project)
 	if errors.Is(err, corestore.ErrNotFound) {
-		return result, errNoApprovedRepositoryPolicy
+		return result, hubrecords.ErrNoApprovedRepositoryPolicy
 	}
 	if err != nil {
 		return result, err
@@ -368,7 +338,7 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.
 		}
 		policy, err := r.ProjectPolicy(ctx, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) {
-			return errNoApprovedRepositoryPolicy
+			return hubrecords.ErrNoApprovedRepositoryPolicy
 		}
 		if err != nil {
 			return err
@@ -376,7 +346,7 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.
 		if policy.PolicyID != request.PolicyID {
 			return claimPolicyRefusal(ctx, r, scope.Project, request.PolicyID)
 		}
-		shared := nativeClaimPlan{project: project, policy: policy}
+		shared := hubrecords.NativeClaimPlan{Project: project, Policy: policy}
 		if request.SessionID != "" {
 			lease, err := r.LeaseBySession(ctx, request.SessionID)
 			if err == nil {
@@ -385,7 +355,7 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.
 					return err
 				}
 				candidate := claimstore.Candidate{OrganizationID: item.OrganizationID, ProjectID: item.ProjectID, WorkItemID: item.NativeID, ID: item.ID, Revision: item.Revision, State: hubapi.ValueOrEmpty(item.WorkflowStateName), CreatedAt: item.NativeCreatedAt}
-				shared.replay = &lease
+				shared.Replay = &lease
 				plan, err := s.readNativeClaimPlanRows(ctx, scope, request, now, r, &candidate, shared)
 				if err != nil {
 					return err
@@ -451,7 +421,7 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.
 				return row.Err
 			}
 			plan := nativeClaimPlanFromBatch(shared, page.Items[index], row)
-			if plan.item.Revision != plan.candidate.Revision || plan.item.Archived {
+			if plan.Item.Revision != plan.Candidate.Revision || plan.Item.Archived {
 				continue
 			}
 			if err := validateClaimSnapshotPolicy(scope, plan); err != nil {
@@ -468,7 +438,7 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.
 	if err == nil {
 		plans := scan.plans
 		if scan.replay != nil {
-			plans = []nativeClaimPlan{*scan.replay}
+			plans = []hubrecords.NativeClaimPlan{*scan.replay}
 		}
 		err = s.prepareNativeClaimLegacyAuditFacts(ctx, scope, plans)
 		if err == nil {
@@ -481,63 +451,63 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.
 	return scan, err
 }
 
-func nativeClaimPlanFromBatch(shared nativeClaimPlan, candidate claimstore.Candidate, row tenantstore.ClaimPreviewPlanRow) nativeClaimPlan {
+func nativeClaimPlanFromBatch(shared hubrecords.NativeClaimPlan, candidate claimstore.Candidate, row tenantstore.ClaimPreviewPlanRow) hubrecords.NativeClaimPlan {
 	plan := shared
-	plan.snapshotLoaded = true
-	plan.observations = row.Observations
-	plan.changePolicy = currentChangePolicyRows{Project: shared.policy}
+	plan.SnapshotLoaded = true
+	plan.Observations = row.Observations
+	plan.ChangePolicy = hubrecords.CurrentChangePolicyRows{Project: shared.Policy}
 	if row.ReviewPolicy != nil {
-		plan.changePolicy.Review = *row.ReviewPolicy
-		plan.changePolicy.hasReview = true
+		plan.ChangePolicy.Review = *row.ReviewPolicy
+		plan.ChangePolicy.HasReview = true
 	}
-	plan.candidate, plan.item, plan.version = candidate, row.Item, row.Version
-	plan.linkedRecord = row.LinkedSource
+	plan.Candidate, plan.Item, plan.Version = candidate, row.Item, row.Version
+	plan.LinkedRecord = row.LinkedSource
 	if row.Change != nil {
-		plan.changeRecord = *row.Change
+		plan.ChangeRecord = *row.Change
 	}
 	if row.ChangeVersion != nil {
-		plan.changeVersion = *row.ChangeVersion
+		plan.ChangeVersion = *row.ChangeVersion
 	}
 	if row.ChangePolicyRevision != nil {
-		plan.changePolicyRevision = *row.ChangePolicyRevision
+		plan.ChangePolicyRevision = *row.ChangePolicyRevision
 	}
 	if row.ChangeVersion != nil {
-		plan.change = tracker.NativeChangeReference{ChangeID: plan.changeRecord.ID, VersionID: plan.changeVersion.ID, HeadSHA: plan.changeVersion.HeadSHA}
+		plan.Change = tracker.NativeChangeReference{ChangeID: plan.ChangeRecord.ID, VersionID: plan.ChangeVersion.ID, HeadSHA: plan.ChangeVersion.HeadSHA}
 	}
 	if row.LatestAttempt != nil {
-		plan.latestAttempt, plan.latestAttemptFound = *row.LatestAttempt, true
+		plan.LatestAttempt, plan.LatestAttemptFound = *row.LatestAttempt, true
 	}
 	if row.LatestRunEvent != nil {
-		plan.latestRunEvent, plan.latestRunEventFound = *row.LatestRunEvent, true
+		plan.LatestRunEvent, plan.LatestRunEventFound = *row.LatestRunEvent, true
 	}
-	plan.landingPending = nativeClaimPendingLanding(plan)
+	plan.LandingPending = nativeClaimPendingLanding(plan)
 	return plan
 }
 
-func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, ttl time.Duration, now time.Time, plan nativeClaimPlan, cursor *claimstore.SelectionCursor) (leasestore.Lease, error) {
+func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, ttl time.Duration, now time.Time, plan hubrecords.NativeClaimPlan, cursor *claimstore.SelectionCursor) (leasestore.Lease, error) {
 	if !nativeClaimIssueContractAllowed(plan) {
 		return leasestore.Lease{}, &hubapi.NativeError{Code: "issue_contract_unsatisfied", Message: "Current issue contract does not allow dispatch", Status: http.StatusConflict}
 	}
-	if (hubapi.StringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending) && !plan.changeReady {
+	if (hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending) && !plan.ChangeReady {
 		return leasestore.Lease{}, ErrNoClaimableWork
 	}
 	if len(request.ProviderCandidates) > 0 && !slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) {
 		candidate := slices.IndexFunc(request.ProviderCandidates, func(candidate tracker.NativeCapacityCandidate) bool {
-			return candidate.WorkItemID == plan.candidate.WorkItemID
+			return candidate.WorkItemID == plan.Candidate.WorkItemID
 		})
-		if candidate < 0 || int64(request.ProviderCandidates[candidate].Revision) != plan.candidate.Revision {
+		if candidate < 0 || int64(request.ProviderCandidates[candidate].Revision) != plan.Candidate.Revision {
 			return leasestore.Lease{}, providerWait("provider_candidate_changed", "Work item changed after local model selection; refresh before claiming")
 		}
 	}
 	runnerAPI := true
-	if plan.descriptor.Configuration != nil {
-		workflow, err := projectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), plan.descriptor)
+	if plan.Descriptor.Configuration != nil {
+		workflow, err := hubrecords.ProjectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), plan.Descriptor)
 		if err != nil {
 			return leasestore.Lease{}, err
 		}
 		runnerAPI = workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered
 	}
-	decision := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.item.NativeID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.Credential.Runner.RunnerID, Source: "native_claim", Outcome: "claimed", Reason: "A current fenced lease owns this item", At: now, WorkItemRevision: tracker.Revision(plan.item.Revision)}}}
+	decision := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.Item.NativeID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.Credential.Runner.RunnerID, Source: "native_claim", Outcome: "claimed", Reason: "A current fenced lease owns this item", At: now, WorkItemRevision: tracker.Revision(plan.Item.Revision)}}}
 	decisionRaw, err := json.Marshal(decision)
 	if err != nil {
 		return leasestore.Lease{}, err
@@ -547,8 +517,8 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		return leasestore.Lease{}, err
 	}
 	var cancellation *preparedNativeLeaseCancellation
-	if plan.latestAttemptFound && plan.replay == nil {
-		cancellation, err = s.prepareExpiredNativeLeaseCancellation(ctx, scope, plan.item.ID, true)
+	if plan.LatestAttemptFound && plan.Replay == nil {
+		cancellation, err = s.prepareExpiredNativeLeaseCancellation(ctx, scope, plan.Item.ID, true)
 		if err != nil {
 			return leasestore.Lease{}, err
 		}
@@ -556,9 +526,9 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 	var lease leasestore.Lease
 	var isolationRefused bool
 	var placementRefusal string
-	placement := plan.placement
+	placement := plan.Placement
 	if placement == nil {
-		placement = &claimPlacementSnapshot{}
+		placement = &hubrecords.ClaimPlacementSnapshot{}
 	}
 	write := func(ctx context.Context, w tenantstore.Writer) error {
 		placementRefusal = ""
@@ -573,7 +543,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		if err := runnerIdentityClaimRefusal(identity, scope, request.MachineID, authoritativeNow); err != nil {
 			return err
 		}
-		if err := plan.descriptor.Requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags); err != nil {
+		if err := plan.Descriptor.Requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags); err != nil {
 			return &hubapi.NativeError{Code: "selector_no_match", Message: err.Error(), Status: http.StatusConflict}
 		}
 		if identity.State != "active" || identity.CapacityConfig == nil || !authoritativeNow.Before(identity.CapacityConfig.ObservedAt.Add(runnerauth.HeartbeatTimeout)) || authoritativeNow.Before(identity.CapacityConfig.ObservedAt) {
@@ -597,7 +567,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		if err := w.LockRelationshipGraph(ctx); err != nil {
 			return err
 		}
-		if plan.project.Core.Profile == "github_compatible" || slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) || request.LandingCapacity > 0 || plan.landingRequired || plan.issue.IssueContract != nil && plan.issue.IssueContract.ReleaseDelivery != nil {
+		if plan.Project.Core.Profile == "github_compatible" || slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) || request.LandingCapacity > 0 || plan.LandingRequired || plan.Issue.IssueContract != nil && plan.Issue.IssueContract.ReleaseDelivery != nil {
 			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
@@ -609,14 +579,14 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		if !nativeClaimProjectEnabled(project) {
 			return ErrNoClaimableWork
 		}
-		if project.Core.Profile == "github_compatible" && !sameWorkItemProjectPlan(plan.project, project) {
+		if project.Core.Profile == "github_compatible" && !hubrecords.SameWorkItemProjectPlan(plan.Project, project) {
 			return ErrNoClaimableWork
 		}
-		item, err := w.WorkItemByID(ctx, scope.Project, plan.candidate.ID)
+		item, err := w.WorkItemByID(ctx, scope.Project, plan.Candidate.ID)
 		if err != nil {
 			return err
 		}
-		if item.NativeID != plan.candidate.WorkItemID || item.Archived || plan.replay == nil && (item.Revision != plan.candidate.Revision || item.DispatchGeneration != plan.item.DispatchGeneration) {
+		if item.NativeID != plan.Candidate.WorkItemID || item.Archived || plan.Replay == nil && (item.Revision != plan.Candidate.Revision || item.DispatchGeneration != plan.Item.DispatchGeneration) {
 			return ErrNoClaimableWork
 		}
 		if project.Core.Profile == "github_compatible" {
@@ -624,9 +594,9 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			if err != nil {
 				return err
 			}
-			candidate := plan.candidate
+			candidate := plan.Candidate
 			candidate.Repository = facts.Repository
-			if !nativeCompatibleClaimSource(project, plan.issue, candidate) {
+			if !nativeCompatibleClaimSource(project, plan.Issue, candidate) {
 				return ErrNoClaimableWork
 			}
 		}
@@ -634,7 +604,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if err == nil && (plan.linkedRecord == nil || !sameNativeClaimLinkedSource(currentLinked, *plan.linkedRecord)) || errors.Is(err, corestore.ErrNotFound) && plan.linkedRecord != nil {
+		if err == nil && (plan.LinkedRecord == nil || !sameNativeClaimLinkedSource(currentLinked, *plan.LinkedRecord)) || errors.Is(err, corestore.ErrNotFound) && plan.LinkedRecord != nil {
 			return corestore.ErrRevisionConflict
 		}
 		workspaceItem, err := w.IsWorkspaceWorkItem(ctx, scope.Project, item.NativeID)
@@ -645,7 +615,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		if workspaceItem && !workspaceLane || !workspaceItem && slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability) && len(request.ProviderCandidates) == 0 {
 			return ErrNoClaimableWork
 		}
-		if workspaceItem && plan.replay == nil {
+		if workspaceItem && plan.Replay == nil {
 			allowed, err := s.nativeWorkspaceClaimAllowed(ctx, w, scope, item.NativeID, authoritativeNow)
 			if err != nil {
 				return err
@@ -658,16 +628,16 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		if err != nil {
 			return err
 		}
-		if item.Archived || plan.replay == nil && (item.Revision != plan.candidate.Revision || item.DispatchGeneration != plan.item.DispatchGeneration) {
+		if item.Archived || plan.Replay == nil && (item.Revision != plan.Candidate.Revision || item.DispatchGeneration != plan.Item.DispatchGeneration) {
 			return corestore.ErrRevisionConflict
 		}
-		if plan.issue.IssueContract != nil && plan.issue.IssueContract.ReleaseDelivery != nil {
-			if item.Revision != plan.item.Revision {
+		if plan.Issue.IssueContract != nil && plan.Issue.IssueContract.ReleaseDelivery != nil {
+			if item.Revision != plan.Item.Revision {
 				return corestore.ErrRevisionConflict
 			}
 			current := plan
-			current.project = project
-			current.releaseDelivery, err = readReleaseDeliveryContractFacts(ctx, w, scope, item.NativeID, project.States)
+			current.Project = project
+			current.ReleaseDelivery, err = readReleaseDeliveryContractFacts(ctx, w, scope, item.NativeID, project.States)
 			if err != nil {
 				return err
 			}
@@ -686,17 +656,17 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 				return err
 			}
 		}
-		replay := plan.replay
+		replay := plan.Replay
 		if replay == nil && replayErr == nil && replayOwner.RunnerID == identity.RunnerID {
 			replay = &replayLease
 		}
 		if replay == nil {
-			query := nativeTenantCandidateQuery(scope, request, plan.candidate.WorkItemID, authoritativeNow)
+			query := nativeTenantCandidateQuery(scope, request, plan.Candidate.WorkItemID, authoritativeNow)
 			page, err := w.CandidatePage(ctx, query)
 			if err != nil {
 				return err
 			}
-			if len(page.Items) != 1 || page.Items[0].Revision != plan.candidate.Revision {
+			if len(page.Items) != 1 || page.Items[0].Revision != plan.Candidate.Revision {
 				return ErrNoClaimableWork
 			}
 			latest, err := w.LatestAttempt(ctx, item.ID)
@@ -704,9 +674,9 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 				return err
 			}
 			current := plan
-			current.item = item
-			current.latestAttempt, current.latestAttemptFound = latest, err == nil
-			if nativeClaimAnswerRequired(current) && current.latestAttempt.ClaimDisposition == nil {
+			current.Item = item
+			current.LatestAttempt, current.LatestAttemptFound = latest, err == nil
+			if nativeClaimAnswerRequired(current) && current.LatestAttempt.ClaimDisposition == nil {
 				return hubapi.NativeRunEventStorageUnavailable()
 			}
 
@@ -714,40 +684,40 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 				return ErrNoClaimableWork
 			}
 		}
-		if hubapi.StringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
-			latest, err := w.LatestChange(ctx, scope.Project, plan.candidate.WorkItemID)
-			if err != nil || latest.ID != plan.change.ChangeID || latest.CurrentVersionID == nil || *latest.CurrentVersionID != plan.change.VersionID {
+		if hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending {
+			latest, err := w.LatestChange(ctx, scope.Project, plan.Candidate.WorkItemID)
+			if err != nil || latest.ID != plan.Change.ChangeID || latest.CurrentVersionID == nil || *latest.CurrentVersionID != plan.Change.VersionID {
 				if err != nil {
 					return err
 				}
 				return corestore.ErrRevisionConflict
 			}
-			current, err := w.LockChange(ctx, plan.changeRecord.ID)
+			current, err := w.LockChange(ctx, plan.ChangeRecord.ID)
 			if err != nil {
 				return err
 			}
-			if !sameNativeClaimChangeRecord(current, plan.changeRecord) {
+			if !sameNativeClaimChangeRecord(current, plan.ChangeRecord) {
 				return corestore.ErrRevisionConflict
 			}
-			version, err := w.Version(ctx, current.ID, plan.change.VersionID)
+			version, err := w.Version(ctx, current.ID, plan.Change.VersionID)
 			if err != nil {
 				return err
 			}
-			if version.PolicyRevisionID != plan.changeVersion.PolicyRevisionID || version.HeadSHA != plan.changeVersion.HeadSHA {
+			if version.PolicyRevisionID != plan.ChangeVersion.PolicyRevisionID || version.HeadSHA != plan.ChangeVersion.HeadSHA {
 				return corestore.ErrRevisionConflict
 			}
 			versionPolicy, err := w.ProjectPolicyRevision(ctx, scope.Project, version.PolicyRevisionID)
 			if err != nil {
 				return err
 			}
-			if !sameNativeClaimPolicyRevision(versionPolicy, plan.changePolicyRevision) {
+			if !hubrecords.SameNativeClaimPolicyRevision(versionPolicy, plan.ChangePolicyRevision) {
 				return corestore.ErrRevisionConflict
 			}
 			currentPolicy, err := readCurrentChangePolicyRows(ctx, w, scope)
 			if err != nil {
 				return err
 			}
-			if !sameNativeClaimChangePolicyRows(currentPolicy, plan.changePolicy) {
+			if !sameNativeClaimChangePolicyRows(currentPolicy, plan.ChangePolicy) {
 				return corestore.ErrRevisionConflict
 			}
 			if err := verifyNativeClaimLandingEvent(ctx, w, item.ID, plan); err != nil {
@@ -758,7 +728,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		if replay != nil && replay.LandingCapacity > 0 {
 			landingCapacity = int64(request.LandingCapacity)
 		}
-		if replay == nil && plan.landingRequired {
+		if replay == nil && plan.LandingRequired {
 			usage, err := w.LandingCapacityUsage(ctx, scope.Project, authoritativeNow)
 			if err != nil {
 				return err
@@ -796,7 +766,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			}
 			exposure = monthlyCostExposure(machine, workspaceItem, runnerAPI)
 			batch := ""
-			if hubapi.StringsEqualFold(plan.candidate.State, "Merging") && plan.changeReady && !plan.landingRequired {
+			if hubapi.StringsEqualFold(plan.Candidate.State, "Merging") && plan.ChangeReady && !plan.LandingRequired {
 				parts := strings.Split(request.SessionID, "/")
 				if len(parts) == 3 && parts[0] == "landing" && parts[1] != "" && parts[2] != "" {
 					batch = parts[1]
@@ -819,7 +789,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			if batch != "" {
 				joining = landingCapacityKey(identity.MachineID, string(scope.Project), request.SessionID)
 			}
-			allowed, reason, err := claimPlacementAllowed(ctx, w, scope, identity, machine, plan, request.ProviderCandidates, workspaceItem, joining, authoritativeNow, placement.snapshot)
+			allowed, reason, err := claimPlacementAllowed(ctx, w, scope, identity, machine, plan, request.ProviderCandidates, workspaceItem, joining, authoritativeNow, placement.Snapshot)
 			if err != nil {
 				return err
 			}
@@ -893,12 +863,12 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		}
 		currentPolicy, err := w.ProjectPolicy(ctx, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) {
-			return errNoApprovedRepositoryPolicy
+			return hubrecords.ErrNoApprovedRepositoryPolicy
 		}
 		if err != nil {
 			return err
 		}
-		if !sameNativeClaimPolicyRevision(currentPolicy, plan.policy) || currentPolicy.ApprovedBy != plan.policy.ApprovedBy || !currentPolicy.ApprovedAt.Equal(plan.policy.ApprovedAt) {
+		if !hubrecords.SameNativeClaimPolicyRevision(currentPolicy, plan.Policy) || currentPolicy.ApprovedBy != plan.Policy.ApprovedBy || !currentPolicy.ApprovedAt.Equal(plan.Policy.ApprovedAt) {
 			return corestore.ErrRevisionConflict
 		}
 		if lease.LeaseID != leaseID {
@@ -909,7 +879,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			if err != nil {
 				return err
 			}
-			if pinned.PolicyID != plan.policy.PolicyID {
+			if pinned.PolicyID != plan.Policy.PolicyID {
 				return tracker.ErrLeaseConflict
 			}
 			reservation, foundReservation, err := readTenantProviderReservation(ctx, w, tracker.LeaseID(lease.LeaseID))
@@ -926,7 +896,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			if _, err := w.AppendEvent(ctx, decisionRow); err != nil {
 				return err
 			}
-			if err := w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: scope.Organization, ProjectID: scope.Project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: plan.policy.PolicyID, BoundAt: authoritativeNow}); err != nil {
+			if err := w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: scope.Organization, ProjectID: scope.Project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: plan.Policy.PolicyID, BoundAt: authoritativeNow}); err != nil {
 				return err
 			}
 			if selectedReservation != nil {
@@ -975,18 +945,18 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		return nil
 	}
 	err = s.writeNativeClaimCommand(ctx, scope, write)
-	if errors.Is(err, errClaimPlacementSnapshotRequired) && placement.snapshot == nil {
+	if errors.Is(err, errClaimPlacementSnapshotRequired) && placement.Snapshot == nil {
 		snapshot, snapshotErr := s.readPlacementSnapshot(ctx, scope, now, request.ProviderCandidates)
 		if snapshotErr != nil {
 			return leasestore.Lease{}, snapshotErr
 		}
-		placement.snapshot = &snapshot
+		placement.Snapshot = &snapshot
 		err = s.writeNativeClaimCommand(ctx, scope, write)
 	}
 	if placementRefusal != "" && errors.Is(err, ErrNoClaimableWork) {
 		s.config.Logger.DebugContext(ctx, "native claim candidate skipped",
 			"organization_id", scope.Organization, "project_id", scope.Project,
-			"work_item_id", plan.candidate.WorkItemID, "runner_id", scope.Credential.Runner.RunnerID, "reason", placementRefusal)
+			"work_item_id", plan.Candidate.WorkItemID, "runner_id", scope.Credential.Runner.RunnerID, "reason", placementRefusal)
 	}
 	if errors.Is(err, ErrNoClaimableWork) && isolationRefused {
 		if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, false, "no_claimable_work"); recordErr != nil {
@@ -1117,54 +1087,54 @@ func readTenantProviderReservation(ctx context.Context, r claimstore.Reader, lea
 	return reservation, true, nil
 }
 
-func (s *Service) readNativeClaimPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (nativeClaimPlan, error) {
-	plan, err := s.readNativeClaimPlanRows(ctx, scope, request, now, nil, nil, nativeClaimPlan{})
+func (s *Service) readNativeClaimPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (hubrecords.NativeClaimPlan, error) {
+	plan, err := s.readNativeClaimPlanRows(ctx, scope, request, now, nil, nil, hubrecords.NativeClaimPlan{})
 	if err != nil {
-		return nativeClaimPlan{}, err
+		return hubrecords.NativeClaimPlan{}, err
 	}
-	if err := s.prepareNativeClaimLegacyAuditFacts(ctx, scope, []nativeClaimPlan{plan}); err != nil {
-		return nativeClaimPlan{}, err
+	if err := s.prepareNativeClaimLegacyAuditFacts(ctx, scope, []hubrecords.NativeClaimPlan{plan}); err != nil {
+		return hubrecords.NativeClaimPlan{}, err
 	}
-	plans := []nativeClaimPlan{plan}
+	plans := []hubrecords.NativeClaimPlan{plan}
 	if err := s.prepareNativeClaimApprovals(ctx, scope, plans); err != nil {
-		return nativeClaimPlan{}, err
+		return hubrecords.NativeClaimPlan{}, err
 	}
 	return s.hydrateNativeClaimPlan(ctx, scope, request, now, plans[0], nil)
 }
 
-func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, reader tenantstore.Reader, candidate *claimstore.Candidate, shared nativeClaimPlan) (nativeClaimPlan, error) {
+func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, reader tenantstore.Reader, candidate *claimstore.Candidate, shared hubrecords.NativeClaimPlan) (hubrecords.NativeClaimPlan, error) {
 	plan := shared
 	readRows := func(r tenantstore.Reader) error {
 		var err error
-		if plan.project.Core.ID == "" {
-			plan.project, err = r.ProjectRecord(ctx, scope.Project)
+		if plan.Project.Core.ID == "" {
+			plan.Project, err = r.ProjectRecord(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
-			if !nativeClaimProjectEnabled(plan.project) {
+			if !nativeClaimProjectEnabled(plan.Project) {
 				return ErrNoClaimableWork
 			}
-			plan.policy, err = r.ProjectPolicy(ctx, scope.Project)
+			plan.Policy, err = r.ProjectPolicy(ctx, scope.Project)
 			if errors.Is(err, corestore.ErrNotFound) {
-				return errNoApprovedRepositoryPolicy
+				return hubrecords.ErrNoApprovedRepositoryPolicy
 			}
 			if err != nil {
 				return err
 			}
-			if plan.policy.PolicyID != request.PolicyID {
+			if plan.Policy.PolicyID != request.PolicyID {
 				return claimPolicyRefusal(ctx, r, scope.Project, request.PolicyID)
 			}
 		}
-		if request.SessionID != "" && plan.replay == nil {
+		if request.SessionID != "" && plan.Replay == nil {
 			lease, err := r.LeaseBySession(ctx, request.SessionID)
 			if err == nil {
-				plan.replay = &lease
+				plan.Replay = &lease
 			} else if !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}
 		}
-		if plan.replay != nil {
-			lease := plan.replay
+		if plan.Replay != nil {
+			lease := plan.Replay
 			if lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || lease.MachineID != string(request.MachineID) {
 				return tracker.ErrLeaseConflict
 			}
@@ -1195,7 +1165,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope hubscope.Na
 			}
 			candidate = &page.Items[0]
 		}
-		if plan.project.Core.Profile == "github_compatible" && candidate.Repository == "" {
+		if plan.Project.Core.Profile == "github_compatible" && candidate.Repository == "" {
 			facts, err := r.WorkItemFacts(ctx, scope.Project, candidate.WorkItemID)
 			if err != nil {
 				return err
@@ -1225,7 +1195,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope hubscope.Na
 		if err := validateClaimSnapshotPolicy(scope, plan); err != nil {
 			return err
 		}
-		plans := []nativeClaimPlan{plan}
+		plans := []hubrecords.NativeClaimPlan{plan}
 		if err := readNativeClaimChangeFacts(ctx, r, scope, plans); err != nil {
 			return err
 		}
@@ -1253,30 +1223,30 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope hubscope.Na
 	return plan, err
 }
 
-func (s *Service) prepareNativeClaimApprovals(ctx context.Context, scope hubscope.NativeScope, plans []nativeClaimPlan) error {
-	var approval *ChangeVersionApproval
+func (s *Service) prepareNativeClaimApprovals(ctx context.Context, scope hubscope.NativeScope, plans []hubrecords.NativeClaimPlan) error {
+	var approval *hubrecords.ChangeVersionApproval
 	for i := range plans {
-		if (hubapi.StringsEqualFold(plans[i].candidate.State, "Merging") || plans[i].landingPending) && plans[i].changeRecord.ID != "" {
+		if (hubapi.StringsEqualFold(plans[i].Candidate.State, "Merging") || plans[i].LandingPending) && plans[i].ChangeRecord.ID != "" {
 			if approval == nil {
-				value, err := hydrateChangeSummaryPolicy(ctx, eventstore.NewContent(s.runDetailStoreFor(ctx)), scope, plans[i].changePolicy)
+				value, err := hydrateChangeSummaryPolicy(ctx, eventstore.NewContent(s.runDetailStoreFor(ctx)), scope, plans[i].ChangePolicy)
 				if err != nil {
 					return err
 				}
 				approval = &value
 			}
-			plans[i].approval = approval
+			plans[i].Approval = approval
 		}
 	}
 	return nil
 }
 
-func validateClaimSnapshotPolicy(scope hubscope.NativeScope, plan nativeClaimPlan) error {
-	project := plan.changePolicy.Project
+func validateClaimSnapshotPolicy(scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan) error {
+	project := plan.ChangePolicy.Project
 	if project.OrganizationID != scope.Organization || project.ProjectID != scope.Project || project.PolicyID == "" || project.ApprovedBy == "" || project.ApprovedAt.IsZero() {
 		return corestore.ErrTenantMismatch
 	}
-	if plan.changePolicy.hasReview {
-		review := plan.changePolicy.Review
+	if plan.ChangePolicy.HasReview {
+		review := plan.ChangePolicy.Review
 		if review.OrganizationID != scope.Organization || review.ProjectID != scope.Project || review.PolicyRevisionID == "" || review.ReviewPolicyID == "" || review.Revision < 1 || review.UpdatedBy == "" || review.UpdatedAt.IsZero() {
 			return corestore.ErrTenantMismatch
 		}
@@ -1284,16 +1254,16 @@ func validateClaimSnapshotPolicy(scope hubscope.NativeScope, plan nativeClaimPla
 	return nil
 }
 
-func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, plan nativeClaimPlan, descriptor *policy.Descriptor) (nativeClaimPlan, error) {
-	if !plan.snapshotLoaded {
+func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, plan hubrecords.NativeClaimPlan, descriptor *policy.Descriptor) (hubrecords.NativeClaimPlan, error) {
+	if !plan.SnapshotLoaded {
 		return plan, hubapi.NativeRunEventStorageUnavailable()
 	}
-	if plan.replay == nil && slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) {
+	if plan.Replay == nil && slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) {
 		if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 				return err
 			}
-			allowed, err := s.nativeWorkspaceClaimAllowed(ctx, r, scope, plan.item.NativeID, now)
+			allowed, err := s.nativeWorkspaceClaimAllowed(ctx, r, scope, plan.Item.NativeID, now)
 			if err != nil {
 				return err
 			}
@@ -1302,131 +1272,131 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope hubscope.Nat
 			}
 			return nil
 		}); err != nil {
-			return nativeClaimPlan{}, err
+			return hubrecords.NativeClaimPlan{}, err
 		}
 	}
-	if nativeClaimAnswerRequired(plan) && plan.latestAttempt.ClaimDisposition == nil {
-		return nativeClaimPlan{}, hubapi.NativeRunEventStorageUnavailable()
+	if nativeClaimAnswerRequired(plan) && plan.LatestAttempt.ClaimDisposition == nil {
+		return hubrecords.NativeClaimPlan{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var err error
-	if descriptor == nil && plan.approval != nil {
-		descriptor = &plan.approval.Policy
+	if descriptor == nil && plan.Approval != nil {
+		descriptor = &plan.Approval.Policy
 	}
 	if descriptor == nil {
-		loaded, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).ProjectPolicy(ctx, plan.policy)
+		loaded, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).ProjectPolicy(ctx, plan.Policy)
 		if err != nil {
-			return nativeClaimPlan{}, err
+			return hubrecords.NativeClaimPlan{}, err
 		}
 		descriptor = &loaded
 	}
-	plan.descriptor = *descriptor
-	if plan.descriptor.ID != request.PolicyID {
-		return nativeClaimPlan{}, hubapi.PolicyMismatch("Claim configuration does not match the current project policy")
+	plan.Descriptor = *descriptor
+	if plan.Descriptor.ID != request.PolicyID {
+		return hubrecords.NativeClaimPlan{}, hubapi.PolicyMismatch("Claim configuration does not match the current project policy")
 	}
-	if plan.policy.GitHubPullRequest == nil || *plan.policy.GitHubPullRequest != plan.descriptor.Gates.GitHubPullRequest {
-		return nativeClaimPlan{}, errNativeClaimPlanRefused
+	if plan.Policy.GitHubPullRequest == nil || *plan.Policy.GitHubPullRequest != plan.Descriptor.Gates.GitHubPullRequest {
+		return hubrecords.NativeClaimPlan{}, errNativeClaimPlanRefused
 	}
-	raw, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).CollaborationVersion(ctx, plan.version)
+	raw, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).CollaborationVersion(ctx, plan.Version)
 	if err != nil {
-		return nativeClaimPlan{}, err
+		return hubrecords.NativeClaimPlan{}, err
 	}
-	if err := json.Unmarshal(raw, &plan.issue); err != nil || plan.issue.OrganizationID != plan.item.OrganizationID || plan.issue.ProjectID != plan.item.ProjectID || plan.issue.WorkItemID != plan.item.NativeID || int64(plan.issue.Revision) != plan.item.Revision || int64(plan.issue.Number) != plan.item.Number || plan.issue.Title != plan.item.Title || plan.issue.Archived != plan.item.Archived || plan.issue.Actor.Kind != hubapi.ValueOrEmpty(plan.item.ActorKind) || plan.issue.Actor.PrincipalID != hubapi.ValueOrEmpty(plan.item.ActorPrincipalID) {
-		return nativeClaimPlan{}, corestore.ErrRevisionConflict
+	if err := json.Unmarshal(raw, &plan.Issue); err != nil || plan.Issue.OrganizationID != plan.Item.OrganizationID || plan.Issue.ProjectID != plan.Item.ProjectID || plan.Issue.WorkItemID != plan.Item.NativeID || int64(plan.Issue.Revision) != plan.Item.Revision || int64(plan.Issue.Number) != plan.Item.Number || plan.Issue.Title != plan.Item.Title || plan.Issue.Archived != plan.Item.Archived || plan.Issue.Actor.Kind != hubapi.ValueOrEmpty(plan.Item.ActorKind) || plan.Issue.Actor.PrincipalID != hubapi.ValueOrEmpty(plan.Item.ActorPrincipalID) {
+		return hubrecords.NativeClaimPlan{}, corestore.ErrRevisionConflict
 	}
 
 	if nativeClaimDispatchSatisfied(plan) {
-		return nativeClaimPlan{}, errNativeClaimPlanRefused
+		return hubrecords.NativeClaimPlan{}, errNativeClaimPlanRefused
 	}
 	if exclusion, err := s.nativeClaimAnsweredExclusion(ctx, scope, plan, now); err != nil {
-		return nativeClaimPlan{}, err
+		return hubrecords.NativeClaimPlan{}, err
 	} else if exclusion != nil {
-		return nativeClaimPlan{}, errNativeClaimPlanRefused
+		return hubrecords.NativeClaimPlan{}, errNativeClaimPlanRefused
 	}
-	plan.issue.State = hubapi.ValueOrEmpty(plan.item.WorkflowStateName)
-	plan.issue.LastActivityAt = plan.item.LastActivityAt
-	if plan.linkedRecord != nil {
-		record := plan.linkedRecord
+	plan.Issue.State = hubapi.ValueOrEmpty(plan.Item.WorkflowStateName)
+	plan.Issue.LastActivityAt = plan.Item.LastActivityAt
+	if plan.LinkedRecord != nil {
+		record := plan.LinkedRecord
 		linked := tracker.LinkedIssueSource{URL: record.URL, Status: "pending"}
 		if record.SnapshotObjectKey != "" {
 			snapshot, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).LinkedIssueSnapshot(ctx, scope.Organization, eventstore.Reference(record.SnapshotObjectKey, record.SnapshotSHA256, record.SnapshotBytes, record.SnapshotContentBytes))
 			if err != nil {
-				return nativeClaimPlan{}, err
+				return hubrecords.NativeClaimPlan{}, err
 			}
 			if snapshot.URL != record.URL {
-				return nativeClaimPlan{}, artifact.ErrIntegrity
+				return hubrecords.NativeClaimPlan{}, artifact.ErrIntegrity
 			}
 			linked.Status, linked.Snapshot = "complete", &snapshot
 		}
-		plan.linked = &linked
-		plan.issue.LinkedSource = &linked
+		plan.Linked = &linked
+		plan.Issue.LinkedSource = &linked
 	}
-	if plan.project.Core.Profile == "github_compatible" && !nativeCompatibleClaimSource(plan.project, plan.issue, plan.candidate) {
-		return nativeClaimPlan{}, errNativeClaimPlanRefused
+	if plan.Project.Core.Profile == "github_compatible" && !nativeCompatibleClaimSource(plan.Project, plan.Issue, plan.Candidate) {
+		return hubrecords.NativeClaimPlan{}, errNativeClaimPlanRefused
 	}
-	if hubapi.StringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
-		if plan.changeRecord.ID == "" || plan.changeRecord.CurrentVersionID == nil || *plan.changeRecord.CurrentVersionID != plan.changeVersion.ID || plan.changeVersion.ID != plan.change.VersionID || plan.changeVersion.HeadSHA != plan.change.HeadSHA {
+	if hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending {
+		if plan.ChangeRecord.ID == "" || plan.ChangeRecord.CurrentVersionID == nil || *plan.ChangeRecord.CurrentVersionID != plan.ChangeVersion.ID || plan.ChangeVersion.ID != plan.Change.VersionID || plan.ChangeVersion.HeadSHA != plan.Change.HeadSHA {
 			return plan, nil
 		}
 		detail, err := s.nativeClaimCurrentChangeDetail(ctx, scope, plan, now)
 		if err != nil {
-			return nativeClaimPlan{}, err
+			return hubrecords.NativeClaimPlan{}, err
 		}
-		state := changerequest.ReviewState(detail, plan.changeVersion.ID, plan.changeVersion.HeadSHA)
-		currentVersion := hubapi.ValueOrEmpty(plan.changeRecord.CurrentVersionID)
-		plan.changeReady = plan.changeRecord.OrganizationID == scope.Organization && plan.changeRecord.ProjectID == scope.Project && plan.changeRecord.WorkItemID == plan.candidate.WorkItemID && detail.Change.ID == plan.changeRecord.ID && int64(detail.Change.Revision) == plan.changeRecord.Revision && detail.Change.CurrentVersion == currentVersion && currentVersion == plan.changeVersion.ID && state.Current && !state.ChangesRequested && !state.RepairPending && nativeChangeLandingClaimable("Merging", &detail)
+		state := changerequest.ReviewState(detail, plan.ChangeVersion.ID, plan.ChangeVersion.HeadSHA)
+		currentVersion := hubapi.ValueOrEmpty(plan.ChangeRecord.CurrentVersionID)
+		plan.ChangeReady = plan.ChangeRecord.OrganizationID == scope.Organization && plan.ChangeRecord.ProjectID == scope.Project && plan.ChangeRecord.WorkItemID == plan.Candidate.WorkItemID && detail.Change.ID == plan.ChangeRecord.ID && int64(detail.Change.Revision) == plan.ChangeRecord.Revision && detail.Change.CurrentVersion == currentVersion && currentVersion == plan.ChangeVersion.ID && state.Current && !state.ChangesRequested && !state.RepairPending && nativeChangeLandingClaimable("Merging", &detail)
 	}
-	plan.landingRequired, err = nativeClaimLandingCapacityRequired(plan)
+	plan.LandingRequired, err = nativeClaimLandingCapacityRequired(plan)
 	if err != nil {
-		return nativeClaimPlan{}, err
+		return hubrecords.NativeClaimPlan{}, err
 	}
 	return plan, nil
 }
 
-func nativeClaimLandingCapacityRequired(plan nativeClaimPlan) (bool, error) {
-	if hubapi.StringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
-		if plan.changePolicyRevision.GitHubPullRequest == nil {
+func nativeClaimLandingCapacityRequired(plan hubrecords.NativeClaimPlan) (bool, error) {
+	if hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending {
+		if plan.ChangePolicyRevision.GitHubPullRequest == nil {
 			return false, ErrNoClaimableWork
 		}
-		return *plan.changePolicyRevision.GitHubPullRequest, nil
+		return *plan.ChangePolicyRevision.GitHubPullRequest, nil
 	}
 	return false, nil
 }
 
-func nativeClaimPendingLanding(plan nativeClaimPlan) bool {
-	if hubapi.StringsEqualFold(plan.candidate.State, "Rework") || !plan.latestAttemptFound || !plan.latestRunEventFound || !plan.latestRunEvent.LandingWaiting || plan.changeRecord.ID == "" || plan.changeRecord.CurrentVersionID == nil {
+func nativeClaimPendingLanding(plan hubrecords.NativeClaimPlan) bool {
+	if hubapi.StringsEqualFold(plan.Candidate.State, "Rework") || !plan.LatestAttemptFound || !plan.LatestRunEventFound || !plan.LatestRunEvent.LandingWaiting || plan.ChangeRecord.ID == "" || plan.ChangeRecord.CurrentVersionID == nil {
 		return false
 	}
-	if plan.latestAttempt.WorkItemRevision < plan.item.Revision || plan.latestAttempt.DispatchGeneration < plan.item.DispatchGeneration {
+	if plan.LatestAttempt.WorkItemRevision < plan.Item.Revision || plan.LatestAttempt.DispatchGeneration < plan.Item.DispatchGeneration {
 		return false
 	}
-	return plan.latestRunEvent.LandingChangeID == plan.changeRecord.ID && plan.latestRunEvent.LandingVersionID == plan.changeVersion.ID && plan.latestRunEvent.LandingHeadSHA == plan.changeVersion.HeadSHA && plan.changeVersion.ID == *plan.changeRecord.CurrentVersionID
+	return plan.LatestRunEvent.LandingChangeID == plan.ChangeRecord.ID && plan.LatestRunEvent.LandingVersionID == plan.ChangeVersion.ID && plan.LatestRunEvent.LandingHeadSHA == plan.ChangeVersion.HeadSHA && plan.ChangeVersion.ID == *plan.ChangeRecord.CurrentVersionID
 }
 
-func verifyNativeClaimLandingEvent(ctx context.Context, r tenantstore.Reader, issueID int64, plan nativeClaimPlan) error {
+func verifyNativeClaimLandingEvent(ctx context.Context, r tenantstore.Reader, issueID int64, plan hubrecords.NativeClaimPlan) error {
 	attempt, err := r.LatestAttempt(ctx, issueID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return err
 	}
 	if errors.Is(err, corestore.ErrNotFound) {
-		if plan.latestAttemptFound {
+		if plan.LatestAttemptFound {
 			return corestore.ErrRevisionConflict
 		}
 		return nil
 	}
-	if !plan.latestAttemptFound || attempt.ID != plan.latestAttempt.ID || attempt.FencingToken != plan.latestAttempt.FencingToken || attempt.Sequence != plan.latestAttempt.Sequence {
+	if !plan.LatestAttemptFound || attempt.ID != plan.LatestAttempt.ID || attempt.FencingToken != plan.LatestAttempt.FencingToken || attempt.Sequence != plan.LatestAttempt.Sequence {
 		return corestore.ErrRevisionConflict
 	}
-	event, err := r.LatestRunEvent(ctx, plan.candidate.ProjectID, attempt.ID)
+	event, err := r.LatestRunEvent(ctx, plan.Candidate.ProjectID, attempt.ID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return err
 	}
 	if errors.Is(err, corestore.ErrNotFound) {
-		if plan.latestRunEventFound {
+		if plan.LatestRunEventFound {
 			return corestore.ErrRevisionConflict
 		}
 		return nil
 	}
-	if !plan.latestRunEventFound || event.ID != plan.latestRunEvent.ID || event.Sequence != plan.latestRunEvent.Sequence || event.LandingWaiting != plan.latestRunEvent.LandingWaiting || event.LandingChangeID != plan.latestRunEvent.LandingChangeID || event.LandingVersionID != plan.latestRunEvent.LandingVersionID || event.LandingHeadSHA != plan.latestRunEvent.LandingHeadSHA {
+	if !plan.LatestRunEventFound || event.ID != plan.LatestRunEvent.ID || event.Sequence != plan.LatestRunEvent.Sequence || event.LandingWaiting != plan.LatestRunEvent.LandingWaiting || event.LandingChangeID != plan.LatestRunEvent.LandingChangeID || event.LandingVersionID != plan.LatestRunEvent.LandingVersionID || event.LandingHeadSHA != plan.LatestRunEvent.LandingHeadSHA {
 		return corestore.ErrRevisionConflict
 	}
 	return nil
@@ -1436,23 +1406,8 @@ func sameNativeClaimChangeRecord(left, right eventstore.Change) bool {
 	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.WorkItemID == right.WorkItemID && left.ID == right.ID && left.Revision == right.Revision && left.Title == right.Title && hubapi.ValueOrEmpty(left.CurrentVersionID) == hubapi.ValueOrEmpty(right.CurrentVersionID) && left.EvidenceSequence == right.EvidenceSequence && left.CreatedAt.Equal(right.CreatedAt) && left.UpdatedAt.Equal(right.UpdatedAt) && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
 }
 
-func sameNativeClaimChangePolicyRows(left, right currentChangePolicyRows) bool {
-	return sameNativeClaimProjectPolicy(left.Project, right.Project) && sameNativeClaimReviewPolicy(left.Review, right.Review) && left.hasReview == right.hasReview
-}
-
-func sameNativeClaimProjectPolicy(left, right policystore.Revision) bool {
-	return sameNativeClaimPolicyRevision(left, right) && left.ApprovedBy == right.ApprovedBy && left.ApprovedAt.Equal(right.ApprovedAt)
-}
-
-func sameNativeClaimPolicyRevision(left, right policystore.Revision) bool {
-	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.PolicyID == right.PolicyID && sameNativeClaimOptionalBool(left.GitHubPullRequest, right.GitHubPullRequest) && left.PayloadObjectKey == right.PayloadObjectKey && left.PayloadSHA256 == right.PayloadSHA256 && left.PayloadBytes == right.PayloadBytes && left.PayloadContentBytes == right.PayloadContentBytes
-}
-
-func sameNativeClaimOptionalBool(left, right *bool) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
+func sameNativeClaimChangePolicyRows(left, right hubrecords.CurrentChangePolicyRows) bool {
+	return hubrecords.SameNativeClaimProjectPolicy(left.Project, right.Project) && sameNativeClaimReviewPolicy(left.Review, right.Review) && left.HasReview == right.HasReview
 }
 
 func sameNativeClaimReviewPolicy(left eventstore.ReviewPolicy, right eventstore.ReviewPolicy) bool {
@@ -1548,7 +1503,7 @@ func (s *Service) nativeWorkspaceClaimAllowed(ctx context.Context, r tenantstore
 	return allowed, nil
 }
 
-func nativeClaimIssueContractAllowed(plan nativeClaimPlan) bool {
+func nativeClaimIssueContractAllowed(plan hubrecords.NativeClaimPlan) bool {
 	evaluation, err := nativeRuntimeIssueContractEvaluation(plan)
 	return err == nil && evaluation.Allowed
 }

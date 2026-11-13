@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -970,16 +971,16 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 			t.Fatalf("authenticate change operator: status=%d error=%v", status, err)
 		}
 		scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}
-		plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, ChangeVersionApproval{Policy: descriptor}, false, service.config.now().UTC())
+		plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, hubrecords.ChangeVersionApproval{Policy: descriptor}, false, service.config.now().UTC())
 		if err != nil || plan == nil || !plan.eligible {
 			t.Fatalf("prepare compatible change transition: plan=%+v error=%v", plan, err)
 		}
 		if plan.request.State != "Merging" || plan.request.WorkflowLabel != "detent:merging" || plan.outbound == nil {
 			t.Fatalf("change workflow omitted approved target label: %+v", plan.request)
 		}
-		selected := plan.plan.issue
+		selected := plan.plan.Issue
 		var stop string
-		if _, _, err := service.validateTenantTransitionIssueContract(t.Context(), scope, &selected, &plan.plan.project, "Human Review", plan.request, &stop, nil); err != nil {
+		if _, _, err := service.validateTenantTransitionIssueContract(t.Context(), scope, &selected, &plan.plan.Project, "Human Review", plan.request, &stop, nil); err != nil {
 			t.Fatalf("nil optional workflow label output: %v", err)
 		}
 		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -1095,7 +1096,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 				t.Fatalf("authenticate automated transition operator: status=%d error=%v", status, err)
 			}
 			scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}
-			plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, ChangeVersionApproval{Policy: selectedPolicy}, test.rework, service.config.now().UTC())
+			plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, hubrecords.ChangeVersionApproval{Policy: selectedPolicy}, test.rework, service.config.now().UTC())
 			if err != nil || plan == nil || !plan.eligible || plan.outbound != nil {
 				t.Fatalf("local automated transition refused or prepared external write: plan=%+v error=%v", plan, err)
 			}

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -22,8 +23,8 @@ import (
 )
 
 type preparedRunnerDependency struct {
-	plan    workItemRecordPlan
-	fields  workItemRecordFields
+	plan    hubrecords.WorkItemRecordPlan
+	fields  hubrecords.WorkItemRecordFields
 	version eventstore.CollaborationVersion
 	history eventstore.Event
 	search  searchstore.Document
@@ -83,10 +84,10 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.
 	if err != nil {
 		return nil, false, err
 	}
-	if plan.current.Revision != source.Revision || plan.current.EventSequence != source.EventSequence {
+	if plan.Current.Revision != source.Revision || plan.Current.EventSequence != source.EventSequence {
 		return nil, false, corestore.ErrSerializationFailure
 	}
-	plan.issue.Profile = plan.project.Core.Profile
+	plan.Issue.Profile = plan.Project.Core.Profile
 	refs := workpad.IssueDependencyRefs(signal, string(scope.Project))
 	if len(refs) == 0 {
 		return nil, false, nil
@@ -138,12 +139,12 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.
 		if existing[target.NativeID] {
 			continue
 		}
-		plan.current = result.final
-		plan.issue.Dependencies = slices.Clone(plan.issue.Dependencies)
-		plan.related = target
-		plan.relationshipOperate, plan.relationshipType = "add", "dependency"
-		plan.relationship = &corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: source.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: target.NativeID, Type: "dependency"}
-		plan, err = s.planWorkItemRecord(ctx, scope, plan, tracker.DependencyMutation{ExpectedRevision: plan.issue.Revision, RelatedWorkItemID: target.NativeID, Operation: "add"})
+		plan.Current = result.final
+		plan.Issue.Dependencies = slices.Clone(plan.Issue.Dependencies)
+		plan.Related = target
+		plan.RelationshipOperate, plan.RelationshipType = "add", "dependency"
+		plan.Relationship = &corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: source.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: target.NativeID, Type: "dependency"}
+		plan, err = s.planWorkItemRecord(ctx, scope, plan, tracker.DependencyMutation{ExpectedRevision: plan.Issue.Revision, RelatedWorkItemID: target.NativeID, Operation: "add"})
 		if err != nil {
 			return nil, false, err
 		}
@@ -152,19 +153,19 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.
 		if err != nil {
 			return nil, false, err
 		}
-		raw, err := json.Marshal(plan.issue)
+		raw, err := json.Marshal(plan.Issue)
 		if err != nil {
 			return nil, false, err
 		}
-		change.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: source.NativeID, RecordID: string(source.NativeID), Revision: int64(plan.issue.Revision)}, raw)
+		change.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: source.NativeID, RecordID: string(source.NativeID), Revision: int64(plan.Issue.Revision)}, raw)
 		if err != nil {
 			return nil, false, err
 		}
-		change.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: source.NativeID, ID: "issue:" + string(source.NativeID), SourceID: string(source.NativeID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+		change.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: source.NativeID, ID: "issue:" + string(source.NativeID), SourceID: string(source.NativeID), Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 		if err != nil {
 			return nil, false, err
 		}
-		raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: source.NativeID, Type: "dependency.changed", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, RelatedWorkItemID: target.NativeID, Operation: "add"}})
+		raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: source.NativeID, Type: "dependency.changed", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.Issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.Issue.Revision, RelatedWorkItemID: target.NativeID, Operation: "add"}})
 		if err != nil {
 			return nil, false, err
 		}
@@ -173,7 +174,7 @@ func (s *Service) prepareRunnerDependencies(ctx context.Context, scope hubscope.
 			return nil, false, err
 		}
 		result.changes = append(result.changes, change)
-		result.final.Revision = int64(plan.issue.Revision)
+		result.final.Revision = int64(plan.Issue.Revision)
 		result.final.EventSequence++
 		result.version = change.version
 	}
@@ -205,7 +206,7 @@ func (s *Service) writeRunnerDependenciesCommand(ctx context.Context, scope hubs
 		if err != nil {
 			return err
 		}
-		if project.Core.DeletedAt != nil || !sameWorkItemProjectPlan(dependencies.changes[0].plan.project, project) {
+		if project.Core.DeletedAt != nil || !hubrecords.SameWorkItemProjectPlan(dependencies.changes[0].plan.Project, project) {
 			return corestore.ErrSerializationFailure
 		}
 		endpoints := slices.Clone(dependencies.endpoints)
@@ -225,10 +226,10 @@ func (s *Service) writeRunnerDependenciesCommand(ctx context.Context, scope hubs
 
 func applyRunnerDependencies(ctx context.Context, w tenantstore.Writer, dependencies *preparedRunnerDependencies) error {
 	for _, change := range dependencies.changes {
-		if err := w.SetRelationship(ctx, *change.plan.relationship, "add", change.plan.issue.UpdatedAt); err != nil {
+		if err := w.SetRelationship(ctx, *change.plan.Relationship, "add", change.plan.Issue.UpdatedAt); err != nil {
 			return err
 		}
-		if err := writeWorkItemRecord(ctx, w, change.plan, change.fields); err != nil {
+		if err := hubrecords.WriteWorkItemRecord(ctx, w, change.plan, change.fields); err != nil {
 			return fmt.Errorf("write completion dependency item: %w", err)
 		}
 		if _, err := w.CreateCollaborationVersion(ctx, change.version); err != nil {
@@ -237,7 +238,7 @@ func applyRunnerDependencies(ctx context.Context, w tenantstore.Writer, dependen
 		if _, err := w.AppendEvent(ctx, change.history); err != nil {
 			return err
 		}
-		if err := w.PutSearch(ctx, change.search, change.plan.current.Revision); err != nil {
+		if err := w.PutSearch(ctx, change.search, change.plan.Current.Revision); err != nil {
 			return fmt.Errorf("write completion dependency search: %w", err)
 		}
 	}

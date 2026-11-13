@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -454,8 +455,8 @@ func (s *Service) planProjectRecordMutation(ctx context.Context, scope hubscope.
 		if strings.TrimSpace(request.Name) == "" || len(request.Name) > 200 {
 			return current, nil, hubapi.NativePublicInvalid("Project name is required and limited to 200 bytes")
 		}
-		states := nativeTriageStates(request.States)
-		if err := validateNativeStates(states); err != nil {
+		states := hubrecords.NativeTriageStates(request.States)
+		if err := hubrecords.ValidateNativeStates(states); err != nil {
 			return current, nil, err
 		}
 		identity, err := hubapi.CommandHash([]string{string(scope.Organization), scope.Credential.ID, "create_project", request.IdempotencyKey})

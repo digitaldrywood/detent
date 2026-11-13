@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -34,7 +35,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 			base := f.publish(t, "version", "")
 			count := 1
 			if family == "attempts" || family == "side data" {
-				count = changeLegacyReadLimit + 1
+				count = hubrecords.ChangeLegacyReadLimit + 1
 			}
 			fixture, target, versions := historyRepairSource(t, f, base, count)
 			version := versions[0]
@@ -49,7 +50,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 				review := tracker.ChangeReview{ID: "older-review", VersionID: version.ID, ImplementationReview: &gate.ValidatorResult{}}
 				fixture.add("change_evidence", map[string]any{"sequence": 1, "change_id": target.change.ID, "version_id": version.ID, "kind": "review", "source_key": "older-review", "record_json": string(historyTestJSON(t, review))})
 			}
-			for index := range changeLegacyReadLimit + 1 {
+			for index := range hubrecords.ChangeLegacyReadLimit + 1 {
 				id := fmt.Sprintf("legacy-%s-%03d", family, index)
 				switch family {
 				case "policy":
@@ -73,7 +74,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 			for range 2 {
 				changes := int64(1)
 				if family == "policy" {
-					changes += changeLegacyReadLimit + 1
+					changes += hubrecords.ChangeLegacyReadLimit + 1
 				}
 				historyRepairImport(t, target, source, changes)
 				if err := target.service.config.TenantRepository.ReadTenant(t.Context(), target.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -97,7 +98,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 						var after int64
 						var total int
 						for {
-							rows, err := r.Versions(t.Context(), target.change.ID, after, changeLegacyReadLimit)
+							rows, err := r.Versions(t.Context(), target.change.ID, after, hubrecords.ChangeLegacyReadLimit)
 							if err != nil {
 								return err
 							}
@@ -112,7 +113,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 							total += len(rows)
 							after = rows[len(rows)-1].Number
 						}
-						if total != changeLegacyReadLimit+1 {
+						if total != hubrecords.ChangeLegacyReadLimit+1 {
 							t.Fatalf("lost legacy attempts: %d", total)
 						}
 					case "policy":
@@ -134,7 +135,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						if len(rows) != changeLegacyReadLimit+1 {
+						if len(rows) != hubrecords.ChangeLegacyReadLimit+1 {
 							t.Fatalf("lost historical comment records: %d", len(rows))
 						}
 					case "landing attempt":
@@ -165,7 +166,7 @@ func TestRecoveryUnknownHistoryBudgetPreservesOlderEvidence(t *testing.T) {
 				if family == "landing exit" {
 					actor := tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}
 					appendTestHealthEventAs(t, f.nativeFixture, actor, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Merging", ToState: "Rework", Reason: "landing_refused"}, f.service.config.now())
-					for range changeLegacyReadLimit - 1 {
+					for range hubrecords.ChangeLegacyReadLimit - 1 {
 						appendTestHealthEventAs(t, f.nativeFixture, actor, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, f.service.config.now())
 					}
 					read := func(message string) {
@@ -197,7 +198,7 @@ func TestRecoveryUnknownHistoryBudgetPreservesOlderEvidence(t *testing.T) {
 				}
 				fixture, target, versions := historyRepairSource(t, f, version, 1)
 				version := versions[0]
-				for index := range changeLegacyReadLimit + 1 {
+				for index := range hubrecords.ChangeLegacyReadLimit + 1 {
 					id, conclusion := fmt.Sprintf("other-%03d", index), ""
 					if index == 0 {
 						id, conclusion = "wanted", "failure"
@@ -239,11 +240,11 @@ func TestRecoveryUnknownHistoryBudgetPreservesOlderEvidence(t *testing.T) {
 					}
 				}
 				source.Objects = source.SourceObjects
-				read(changeLegacyReadLimit, "boundary hid older evidence")
+				read(hubrecords.ChangeLegacyReadLimit, "boundary hid older evidence")
 				historyRepairImport(t, target, source, 1)
-				read(changeLegacyReadLimit+1, "legacy overflow hid older evidence")
+				read(hubrecords.ChangeLegacyReadLimit+1, "legacy overflow hid older evidence")
 				historyRepairImport(t, target, source, 1)
-				read(changeLegacyReadLimit+1, "converted history hid older evidence")
+				read(hubrecords.ChangeLegacyReadLimit+1, "converted history hid older evidence")
 			})
 		}
 	}
@@ -463,7 +464,7 @@ func historyRepairComment(t *testing.T, f changeFixture, id string, sequence int
 	if err != nil {
 		t.Fatal(err)
 	}
-	fields, err := f.service.prepareWorkItemFields(t.Context(), f.project.OrganizationID, workItemRecordPlan{comment: comment})
+	fields, err := f.service.prepareWorkItemFields(t.Context(), f.project.OrganizationID, hubrecords.WorkItemRecordPlan{Comment: comment})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,9 +494,9 @@ func (s *historyRepairPauseDetails) StoreDetail(ctx context.Context, organizatio
 
 func historyRepairValidationSource(t *testing.T, f changeFixture, base tracker.ChangeVersion, head string) (*coreNeutralFixture, changeFixture, []tracker.ChangeVersion, []leasestore.Attempt) {
 	t.Helper()
-	fixture, target, versions := historyRepairSource(t, f, base, changeLegacyReadLimit+2)
-	attempts := make([]leasestore.Attempt, 0, changeLegacyReadLimit+1)
-	for index := range changeLegacyReadLimit + 1 {
+	fixture, target, versions := historyRepairSource(t, f, base, hubrecords.ChangeLegacyReadLimit+2)
+	attempts := make([]leasestore.Attempt, 0, hubrecords.ChangeLegacyReadLimit+1)
+	for index := range hubrecords.ChangeLegacyReadLimit + 1 {
 		version := versions[index]
 		merge := strings.Repeat("b", 40)
 		if index == 0 {

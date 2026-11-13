@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -91,8 +92,8 @@ func (s *Service) planProjectRecordSettings(ctx context.Context, record projects
 		states = request.States
 	}
 	if states != nil {
-		record.States = nativeTriageStates(*states)
-		if err := validateNativeStates(record.States); err != nil {
+		record.States = hubrecords.NativeTriageStates(*states)
+		if err := hubrecords.ValidateNativeStates(record.States); err != nil {
 			return record, err
 		}
 	}

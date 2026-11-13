@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -304,7 +305,7 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope hubs
 			continue
 		}
 		for _, scheduled := range gate.ParseScheduledEvidence(body) {
-			if scheduled.OccurrenceKey == escape.OccurrenceID && scheduled.RunURL == escape.EvidenceReference && scheduledRepairOriginMatches(origin.Source, scheduled) && scheduled.Conclusion == "failure" {
+			if scheduled.OccurrenceKey == escape.OccurrenceID && scheduled.RunURL == escape.EvidenceReference && hubrecords.ScheduledRepairOriginMatches(origin.Source, scheduled) && scheduled.Conclusion == "failure" {
 				return &candidate, nil
 			}
 		}

@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -324,7 +325,7 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope hubscope.Na
 	}
 	evidence.ChangeSequence, evidence.Issue.ChangeSequence = sequence, sequence
 	if len(snapshots) > 0 {
-		evidence, err = s.readNativeRuntime(ctx, scope, item, snapshots[0].attempt.ID)
+		evidence, err = s.readNativeRuntime(ctx, scope, item, snapshots[0].Attempt.ID)
 		if err != nil {
 			return evidence, nil, false, err
 		}
@@ -345,7 +346,7 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope hubscope.Na
 		if err != nil {
 			return evidence, nil, false, err
 		}
-		example, class := failureFromAttempt(attempt.NativeRunData, snapshot.attempt.Status)
+		example, class := failureFromAttempt(attempt.NativeRunData, snapshot.Attempt.Status)
 		if example == "" {
 			continue
 		}
@@ -374,12 +375,12 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope hubscope.Na
 	return evidence, failures, partial, err
 }
 
-func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope hubscope.NativeScope, item string) ([]tenantAttemptSnapshot, int64, bool, error) {
+func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope hubscope.NativeScope, item string) ([]hubrecords.TenantAttemptSnapshot, int64, bool, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return nil, 0, false, hubapi.NativeRunEventStorageUnavailable()
 	}
-	var snapshots []tenantAttemptSnapshot
+	var snapshots []hubrecords.TenantAttemptSnapshot
 	var sequence int64
 	var partial bool
 	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -428,8 +429,8 @@ func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope hubsco
 			if event.OrganizationID != scope.Organization || event.ProjectID != scope.Project || event.WorkItemID != work.NativeID || event.AttemptID != attempt.ID {
 				return corestore.ErrNotFound
 			}
-			snapshot := tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
-			if err := readTenantAttemptPayload(ctx, r, &snapshot); err != nil {
+			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+			if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
 				return err
 			}
 			snapshots = append(snapshots, snapshot)
@@ -441,7 +442,7 @@ func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope hubsco
 
 func approvedProjectIssueContract(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, approval policy.Approval) (config.IssueContract, error) {
 	if approval.Policy.Authored != nil && len(approval.Policy.Authored.Files) > 0 {
-		workflow, err := projectPolicyWorkflow(ctx, string(organization)+"/"+string(project), approval.Policy)
+		workflow, err := hubrecords.ProjectPolicyWorkflow(ctx, string(organization)+"/"+string(project), approval.Policy)
 		if err != nil {
 			return config.IssueContract{}, err
 		}

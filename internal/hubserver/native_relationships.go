@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -52,7 +53,7 @@ AND r.relationship_type = 'related' AND (`+condition+`)`, args...)
 		if err := rows.Scan(&id, &link.ID, &link.ProjectID, &link.Identifier, &link.State, &link.Terminal, &link.Number, &link.Title, &organizationSlug, &projectSlug); err != nil {
 			return errors.Join(err, rows.Close())
 		}
-		link.WebURL = issueBrowserPath(organizationSlug, projectSlug, link.Number)
+		link.WebURL = hubrecords.IssueBrowserPath(organizationSlug, projectSlug, link.Number)
 		issue := items[id]
 		if issue == nil {
 			return sql.ErrNoRows

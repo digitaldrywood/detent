@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -1579,7 +1580,7 @@ func (s *Service) retainRelayArchive(ctx context.Context, writer tenantstore.Wri
 func (s *Service) relayArchiveReference(ctx context.Context, organization tracker.OrganizationID, expected attachment.ArchiveReference) (attachment.ArchiveReference, error) {
 	var actual attachment.ArchiveReference
 	err := s.accessRead(ctx, organization, func(reader tenantstore.Reader) error {
-		owner, ok := reader.(attemptArchiveReader)
+		owner, ok := reader.(hubrecords.AttemptArchiveReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}

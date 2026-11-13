@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -181,15 +182,15 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if project.Core.Profile != issue.Profile || project.Core.DeletedAt != nil {
 			return nil, corestore.ErrNotFound
 		}
-		if human && !batchRouting && linkedSource != nil && issue.LinkedSource.Status != "complete" && dispatchableProjectState(project, request.State) {
+		if human && !batchRouting && linkedSource != nil && issue.LinkedSource.Status != "complete" && hubrecords.DispatchableProjectState(project, request.State) {
 			return nil, hubapi.NativeWorkflowInvalid("Linked source intake must complete before executable work")
 		}
-		if err := validateNativeWorkflowTransition(project.States, issue.State, request.State, scope.Credential.Scope); err != nil {
+		if err := hubrecords.ValidateNativeWorkflowTransition(project.States, issue.State, request.State, scope.Credential.Scope); err != nil {
 			return nil, err
 		}
 		var recovery *leasestore.RecordedRecovery
 		if recordedRecovery {
-			if !dispatchableProjectState(project, request.State) {
+			if !hubrecords.DispatchableProjectState(project, request.State) {
 				return nil, hubapi.NativeConflict(tracker.Revision(row.Revision))
 			}
 			recovery, err = s.prepareRecordedRecoveryTenant(ctx, scope, row, issue, request)
@@ -215,7 +216,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		issue.Revision = tracker.Revision(row.Revision + 1)
 		issue.UpdatedAt = now
 		issue.LastActivityAt = now
-		issue.Terminal = tenantProjectStateTerminal(project, request.State)
+		issue.Terminal = hubrecords.TenantProjectStateTerminal(project, request.State)
 		if issue.Terminal {
 			if issue.ClosedAt == nil {
 				issue.ClosedAt = &now
@@ -286,7 +287,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if linkedSource != nil {
 			responseIssue.ExternalReferences = append(slices.Clone(responseIssue.ExternalReferences), tracker.GitHubIssueSourceReference(linkedSource.URL, linkedSource.URL))
 		}
-		responseRaw, err := json.Marshal(relationshipOmittedIssue(responseIssue))
+		responseRaw, err := json.Marshal(hubrecords.RelationshipOmittedIssue(responseIssue))
 		if err != nil {
 			return nil, err
 		}
@@ -321,8 +322,8 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err != nil {
 			return nil, err
 		}
-		plan := workItemRecordPlan{project: project, current: row, issue: issue, eventType: "workflow.transitioned"}
-		fields := workItemRecordFields{Body: hubapi.StringValue(row.BodyObjectKey), Contract: row.IssueContractObjectKey, Report: row.ReportContextObjectKey}
+		plan := hubrecords.WorkItemRecordPlan{Project: project, Current: row, Issue: issue, EventType: "workflow.transitioned"}
+		fields := hubrecords.WorkItemRecordFields{Body: hubapi.StringValue(row.BodyObjectKey), Contract: row.IssueContractObjectKey, Report: row.ReportContextObjectKey}
 		var contractPayload *eventstore.Receipt
 		if human && issue.IssueContract != nil {
 			raw, err := json.Marshal(issue.IssueContract)
@@ -398,7 +399,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if err != nil {
 				return err
 			}
-			if currentProject.Core.DeletedAt != nil || !sameWorkItemProjectPlan(project, currentProject) {
+			if currentProject.Core.DeletedAt != nil || !hubrecords.SameWorkItemProjectPlan(project, currentProject) {
 				return corestore.ErrSerializationFailure
 			}
 			currentPolicy, policyErr := w.ProjectPolicy(ctx, scope.Project)
@@ -545,7 +546,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 					return err
 				}
 			}
-			if err := writeWorkItemRecord(ctx, w, plan, fields); err != nil {
+			if err := hubrecords.WriteWorkItemRecord(ctx, w, plan, fields); err != nil {
 				return err
 			}
 			if !human && !recordedRecovery {
@@ -553,7 +554,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 					return err
 				}
 			}
-			if human && !activeLease && (previousState != request.State || stop != nil) && dispatchableProjectState(currentProject, request.State) {
+			if human && !activeLease && (previousState != request.State || stop != nil) && hubrecords.DispatchableProjectState(currentProject, request.State) {
 				if s.config.ConversationDispatch == nil {
 					return conversationDispatchUnavailable()
 				}
@@ -677,15 +678,6 @@ func (s *Service) humanWorkflowReceipt(ctx context.Context, scope hubscope.Nativ
 	return receipt, true, nil
 }
 
-func tenantProjectStateTerminal(project projectstore.Record, name string) bool {
-	for _, state := range project.States {
-		if state.Name == name {
-			return state.Terminal
-		}
-	}
-	return false
-}
-
 func (s *Service) readTenantProjectRecord(ctx context.Context, scope hubscope.NativeScope) (projectstore.Record, error) {
 	var project projectstore.Record
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -764,7 +756,7 @@ func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, sco
 	if err != nil {
 		return revision, found, err
 	}
-	if evaluation := contract.Evaluate(nativeContractIssue(*issue)); len(evaluation.Missing) > 0 {
+	if evaluation := contract.Evaluate(hubrecords.NativeContractIssue(*issue)); len(evaluation.Missing) > 0 {
 		return revision, found, hubapi.NativeWorkflowInvalid(strings.Join(evaluation.Missing, ", ") + ". File into Backlog/Triage to draft it first.")
 	}
 	return revision, found, nil

@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -99,11 +100,11 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 	var version eventstore.CollaborationVersion
 	var change eventstore.Change
 	var changeVersion *eventstore.Version
-	var policyRows currentChangePolicyRows
+	var policyRows hubrecords.CurrentChangePolicyRows
 	var comments []corestore.Comment
 	var commentVersions []eventstore.CollaborationVersion
 	var commentsTruncated bool
-	var snapshots []tenantAttemptSnapshot
+	var snapshots []hubrecords.TenantAttemptSnapshot
 	var attemptPage leasestore.AttemptPage
 	var progressAttempts []leasestore.Attempt
 	var checkpointCandidates []checkpointAttemptCandidate
@@ -162,7 +163,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 				}
 				changeVersion = &value
 			}
-			policyRows, err = readChangeSummaryPolicyRows(ctx, r, scope)
+			policyRows, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 			if err != nil {
 				return err
 			}
@@ -334,7 +335,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 		if err != nil {
 			return err
 		}
-		snapshots = make([]tenantAttemptSnapshot, 0, len(selectedAttempts))
+		snapshots = make([]hubrecords.TenantAttemptSnapshot, 0, len(selectedAttempts))
 		for _, attempt := range selectedAttempts {
 			if attempt.IssueID != row.ID {
 				return corestore.ErrNotFound
@@ -353,8 +354,8 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 			if event.WorkItemID != row.NativeID {
 				return corestore.ErrNotFound
 			}
-			snapshot := tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
-			if err := readTenantAttemptPayload(ctx, r, &snapshot); err != nil {
+			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+			if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
 				return err
 			}
 			snapshots = append(snapshots, snapshot)
@@ -410,10 +411,10 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 		if changeVersion != nil {
 			result.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: changeVersion.ID, HeadSHA: changeVersion.HeadSHA}
 			for _, snapshot := range snapshots {
-				if snapshot.attempt.ID != latestAttemptID {
+				if snapshot.Attempt.ID != latestAttemptID {
 					continue
 				}
-				plan := nativeClaimPlan{candidate: claimstore.Candidate{State: result.Issue.State}, item: row, changeRecord: change, changeVersion: *changeVersion, latestAttempt: snapshot.attempt, latestAttemptFound: true, latestRunEvent: snapshot.event, latestRunEventFound: snapshot.event.ID != ""}
+				plan := hubrecords.NativeClaimPlan{Candidate: claimstore.Candidate{State: result.Issue.State}, Item: row, ChangeRecord: change, ChangeVersion: *changeVersion, LatestAttempt: snapshot.Attempt, LatestAttemptFound: true, LatestRunEvent: snapshot.Event, LatestRunEventFound: snapshot.Event.ID != ""}
 				if nativeClaimPendingLanding(plan) {
 					result.Issue.ListChange = &tracker.NativeListChange{LandingPending: true, HeadSHA: changeVersion.HeadSHA}
 				}
@@ -494,7 +495,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 		}
 	}
 	if len(snapshots) > 0 {
-		selected[snapshots[0].attempt.ID] = struct{}{}
+		selected[snapshots[0].Attempt.ID] = struct{}{}
 	}
 	if excludeProgress {
 		selected = make(map[string]struct{}, len(progressAttempts))
@@ -523,7 +524,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 		snapshots = append(snapshots, snapshot)
 	}
 	for _, snapshot := range snapshots {
-		if _, ok := selected[snapshot.attempt.ID]; !ok {
+		if _, ok := selected[snapshot.Attempt.ID]; !ok {
 			continue
 		}
 		attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.now())
@@ -531,21 +532,21 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 			return result, fmt.Errorf("hydrate selected recovery attempt: %w", err)
 		}
 		attempt.Runtime = attempt.Runtime.WithoutActivitySpans()
-		if checkpoint, ok := checkpointsByAttempt[snapshot.attempt.ID]; ok {
+		if checkpoint, ok := checkpointsByAttempt[snapshot.Attempt.ID]; ok {
 			attempt.Checkpoint = &checkpoint
 		}
-		if snapshot.attempt.ID == landingAttemptID && landingValue != nil {
+		if snapshot.Attempt.ID == landingAttemptID && landingValue != nil {
 			if attempt.Runtime == nil {
 				attempt.Runtime = &tracker.NativeRuntimeObservation{}
 			}
 			attempt.Runtime.Landing = landingValue
 		}
-		hydrated[snapshot.attempt.ID] = attempt
+		hydrated[snapshot.Attempt.ID] = attempt
 	}
 	ordered := make([]leasestore.Attempt, 0, len(selected))
 	for _, snapshot := range snapshots {
-		if _, ok := selected[snapshot.attempt.ID]; ok {
-			ordered = append(ordered, snapshot.attempt)
+		if _, ok := selected[snapshot.Attempt.ID]; ok {
+			ordered = append(ordered, snapshot.Attempt)
 		}
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].FencingToken < ordered[j].FencingToken })
@@ -877,20 +878,20 @@ func recoveryMergeHistoryPageHasMore(page []eventstore.Event, index, pageLimit i
 	return len(page) == pageLimit
 }
 
-func findRecoveryAttemptSnapshot(snapshots []tenantAttemptSnapshot, attemptID string) bool {
+func findRecoveryAttemptSnapshot(snapshots []hubrecords.TenantAttemptSnapshot, attemptID string) bool {
 	for _, snapshot := range snapshots {
-		if snapshot.attempt.ID == attemptID {
+		if snapshot.Attempt.ID == attemptID {
 			return true
 		}
 	}
 	return false
 }
 
-func (s *Service) readNativeRecoveryAttemptSnapshot(ctx context.Context, scope hubscope.NativeScope, item string, issueID int64, attemptID string) (tenantAttemptSnapshot, error) {
-	var snapshot tenantAttemptSnapshot
+func (s *Service) readNativeRecoveryAttemptSnapshot(ctx context.Context, scope hubscope.NativeScope, item string, issueID int64, attemptID string) (hubrecords.TenantAttemptSnapshot, error) {
+	var snapshot hubrecords.TenantAttemptSnapshot
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return tenantAttemptSnapshot{}, hubapi.NativeRunEventStorageUnavailable()
+		return hubrecords.TenantAttemptSnapshot{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
@@ -903,35 +904,35 @@ func (s *Service) readNativeRecoveryAttemptSnapshot(ctx context.Context, scope h
 		if workItem.ID != issueID || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
-		snapshot.attempt, err = r.Attempt(ctx, attemptID)
+		snapshot.Attempt, err = r.Attempt(ctx, attemptID)
 		if err != nil {
 			return err
 		}
-		if snapshot.attempt.IssueID != issueID {
+		if snapshot.Attempt.IssueID != issueID {
 			return corestore.ErrNotFound
 		}
-		r, err = readAttemptMetadataSnapshot(ctx, r, scope, item, []leasestore.Attempt{snapshot.attempt}, false)
+		r, err = readAttemptMetadataSnapshot(ctx, r, scope, item, []leasestore.Attempt{snapshot.Attempt}, false)
 		if err != nil {
 			return err
 		}
-		snapshot.lease, err = r.Lease(ctx, snapshot.attempt.LeaseID)
+		snapshot.Lease, err = r.Lease(ctx, snapshot.Attempt.LeaseID)
 		if err != nil {
 			return err
 		}
-		if snapshot.lease.IssueID != issueID || snapshot.lease.FencingToken != snapshot.attempt.FencingToken {
+		if snapshot.Lease.IssueID != issueID || snapshot.Lease.FencingToken != snapshot.Attempt.FencingToken {
 			return corestore.ErrNotFound
 		}
-		snapshot.event, err = r.LatestRunEvent(ctx, scope.Project, attemptID)
-		if err == nil && (snapshot.event.WorkItemID != tracker.NativeWorkItemID(item) || snapshot.event.AttemptID != attemptID) {
+		snapshot.Event, err = r.LatestRunEvent(ctx, scope.Project, attemptID)
+		if err == nil && (snapshot.Event.WorkItemID != tracker.NativeWorkItemID(item) || snapshot.Event.AttemptID != attemptID) {
 			return corestore.ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		return readTenantAttemptPayload(ctx, r, &snapshot)
+		return hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot)
 	})
 	if err != nil {
-		return tenantAttemptSnapshot{}, hubapi.ProjectRecordError(err)
+		return hubrecords.TenantAttemptSnapshot{}, hubapi.ProjectRecordError(err)
 	}
 	return snapshot, nil
 }

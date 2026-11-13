@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
@@ -134,8 +135,8 @@ prepareReview:
 		detailStore = preparedContent
 	}
 	content := eventstore.NewContent(detailStore)
-	var approvedPolicyRows currentChangePolicyRows
-	var approval ChangeVersionApproval
+	var approvedPolicyRows hubrecords.CurrentChangePolicyRows
+	var approval hubrecords.ChangeVersionApproval
 	if request.Decision == "approved" || prepared != nil || request.Decision == "changes_requested" && versionID == change.CurrentVersion {
 		if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
@@ -423,7 +424,7 @@ func (store *reviewDetailStore) StoreDetail(ctx context.Context, organization st
 	if err := store.service.checkChangeContentAllowance(ctx, organization, store.prepared, expected); err != nil {
 		return attachment.ArchiveReference{}, err
 	}
-	actual, err := (runEventDetailStore{DetailStore: store.DetailStore}).StoreDetail(ctx, organization, raw)
+	actual, err := (hubrecords.RunEventDetailStore{DetailStore: store.DetailStore}).StoreDetail(ctx, organization, raw)
 	if err != nil {
 		return attachment.ArchiveReference{}, err
 	}

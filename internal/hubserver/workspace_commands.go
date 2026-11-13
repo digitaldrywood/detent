@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -108,7 +109,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 		if err != nil {
 			return nil, err
 		}
-		plan.issue.IssueContract.Exempt = true
+		plan.Issue.IssueContract.Exempt = true
 		policy, policyFound, err := s.validateWorkItemRecordFilingTenant(ctx, scope, plan)
 		if err != nil {
 			return nil, err
@@ -121,15 +122,15 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 		if err != nil {
 			return nil, err
 		}
-		issueRaw, err := json.Marshal(plan.issue)
+		issueRaw, err := json.Marshal(plan.Issue)
 		if err != nil {
 			return nil, err
 		}
-		version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, RecordID: string(plan.issue.WorkItemID), Revision: 1}, issueRaw)
+		version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, RecordID: string(plan.Issue.WorkItemID), Revision: 1}, issueRaw)
 		if err != nil {
 			return nil, err
 		}
-		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.issue.WorkItemID, Type: "issue.created", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: 1}})
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.Issue.WorkItemID, Type: "issue.created", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.Issue.UpdatedAt, Data: tracker.CollaborationData{Revision: 1}})
 		if err != nil {
 			return nil, err
 		}
@@ -137,7 +138,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 		if err != nil {
 			return nil, err
 		}
-		search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + string(plan.issue.WorkItemID), SourceID: string(plan.issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+		search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, ID: "issue:" + string(plan.Issue.WorkItemID), SourceID: string(plan.Issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: 1, UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 		if err != nil {
 			return nil, err
 		}
@@ -171,7 +172,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 			if currentProject.Core.DeletedAt != nil || currentProject.Core.Profile != "native" {
 				return hubapi.NativeNotFound()
 			}
-			if !sameWorkItemProjectPlan(plan.project, currentProject) {
+			if !hubrecords.SameWorkItemProjectPlan(plan.Project, currentProject) {
 				return corestore.ErrSerializationFailure
 			}
 			previous, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
@@ -205,7 +206,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 				}
 			} else if err != nil {
 				return err
-			} else if !policyFound || !sameNativeClaimProjectPolicy(policy, currentPolicy) {
+			} else if !policyFound || !hubrecords.SameNativeClaimProjectPolicy(policy, currentPolicy) {
 				return corestore.ErrSerializationFailure
 			}
 			owner, ok := w.(postgres.WorkspaceWriter)
@@ -234,7 +235,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 			if _, err := owner.CreateWorkspaceSession(ctx, postgres.WorkspaceCreate{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: record.ID, SubjectWorkItemID: record.SubjectWorkItemID, AttemptID: record.AttemptID, Ref: record.Ref, Requires: record.Requires, ReadOnly: record.ReadOnly, IdleTimeoutSeconds: int32(record.IdleTimeoutSeconds), ExpiresAt: record.ExpiresAt, RequestedExpiresAt: record.RequestedExpiresAt, CreatedBy: record.CreatedBy, CreatedAt: record.CreatedAt}); err != nil {
 				return err
 			}
-			if err := writeWorkItemRecord(ctx, w, plan, fields); err != nil {
+			if err := hubrecords.WriteWorkItemRecord(ctx, w, plan, fields); err != nil {
 				return err
 			}
 			if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
@@ -246,12 +247,12 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 			if err := w.PutSearch(ctx, search, 0); err != nil {
 				return err
 			}
-			for _, id := range attachmentIDs.current {
-				if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.Project, AttachmentID: id, WorkItemID: plan.issue.WorkItemID}); err != nil {
+			for _, id := range attachmentIDs.Current {
+				if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.Project, AttachmentID: id, WorkItemID: plan.Issue.WorkItemID}); err != nil {
 					return err
 				}
 			}
-			if err := owner.PutWorkspaceItem(ctx, claimstore.WorkspaceItem{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, WorkspaceID: record.ID, CreatedAt: now}); err != nil {
+			if err := owner.PutWorkspaceItem(ctx, claimstore.WorkspaceItem{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Issue.WorkItemID, WorkspaceID: record.ID, CreatedAt: now}); err != nil {
 				return err
 			}
 			if err := s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), http.StatusCreated); err != nil {
@@ -260,7 +261,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 			_, err = w.PutReceipt(ctx, receipt)
 			return err
 		})
-		err = errors.Join(err, releaseWorkItemAuthority(authority))
+		err = errors.Join(err, hubrecords.ReleaseWorkItemAuthority(authority))
 		if errors.Is(err, corestore.ErrSerializationFailure) {
 			continue
 		}

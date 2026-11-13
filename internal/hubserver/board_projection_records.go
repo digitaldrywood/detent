@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -42,7 +43,7 @@ type boardProjectionSnapshot struct {
 	item               corestore.WorkItem
 	version            eventstore.CollaborationVersion
 	transition         *eventstore.Event
-	attempt            *tenantAttemptSnapshot
+	attempt            *hubrecords.TenantAttemptSnapshot
 	attemptCount       int64
 	lease              *leasestore.Lease
 	runnerID           string
@@ -219,9 +220,9 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 		step = "latest_attempt"
 		attempt, err := r.LatestAttempt(ctx, snapshot.item.ID)
 		if err == nil {
-			value := tenantAttemptSnapshot{attempt: attempt}
+			value := hubrecords.TenantAttemptSnapshot{Attempt: attempt}
 			step = "attempt_lease"
-			value.lease, err = r.Lease(ctx, attempt.LeaseID)
+			value.Lease, err = r.Lease(ctx, attempt.LeaseID)
 			if err != nil {
 				return err
 			}
@@ -229,17 +230,17 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 			recoverClaim := attempt.Status == "succeeded" && attempt.ClaimDisposition == nil
 			if current || recoverClaim {
 				step = "run_event"
-				value.event, err = r.LatestRunEvent(ctx, candidate.ProjectID, attempt.ID)
+				value.Event, err = r.LatestRunEvent(ctx, candidate.ProjectID, attempt.ID)
 				if err != nil && (current || !errors.Is(err, corestore.ErrNotFound)) {
 					return err
 				}
-				if recoverClaim && value.event.ID != "" {
-					if err := readTenantAttemptPayload(ctx, r, &value); err != nil {
+				if recoverClaim && value.Event.ID != "" {
+					if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &value); err != nil {
 						return err
 					}
-				} else if value.event.ID != "" {
+				} else if value.Event.ID != "" {
 					step = "attempt_checkpoint"
-					if err := readTenantAttemptCheckpointPayload(ctx, r, &value); err != nil {
+					if err := hubrecords.ReadTenantAttemptCheckpointPayload(ctx, r, &value); err != nil {
 						return err
 					}
 				}
@@ -360,12 +361,12 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		card := tracker.NativeBoardCard{Issue: issue}
 		var latest *tracker.NativeAttempt
 		if historical := snapshot.attempt; historical != nil {
-			if historical.attempt.Status == "succeeded" && historical.attempt.ClaimDisposition == nil && historical.event.ID != "" {
+			if historical.Attempt.Status == "succeeded" && historical.Attempt.ClaimDisposition == nil && historical.Event.ID != "" {
 				facts, recoverErr := s.prepareAttemptClaimFacts(ctx, *historical)
 				if recoverErr == nil {
 					recoveredClaimFacts = &facts
 				} else if s.config.Logger != nil {
-					s.config.Logger.Warn("attempt claim facts remain unavailable", "organization_id", organization, "project_id", candidate.ProjectID, "work_item_id", candidate.WorkItemID, "attempt_id", historical.attempt.ID, "error", recoverErr)
+					s.config.Logger.Warn("attempt claim facts remain unavailable", "organization_id", organization, "project_id", candidate.ProjectID, "work_item_id", candidate.WorkItemID, "attempt_id", historical.Attempt.ID, "error", recoverErr)
 				}
 			}
 			step = "attempt_payload"
@@ -374,8 +375,8 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 				return err
 			}
 			if present {
-				if historical.attempt.Status == "running" && historical.attempt.RuntimeSummarySequence != historical.attempt.Sequence {
-					runtimeSummary = &leasestore.AttemptEvent{ID: historical.attempt.ID, Sequence: historical.attempt.Sequence}
+				if historical.Attempt.Status == "running" && historical.Attempt.RuntimeSummarySequence != historical.Attempt.Sequence {
+					runtimeSummary = &leasestore.AttemptEvent{ID: historical.Attempt.ID, Sequence: historical.Attempt.Sequence}
 					if attempt.Runtime != nil {
 						heartbeat := attempt.Runtime.HeartbeatAt
 						runtimeSummary.RuntimeHeartbeatAt = &heartbeat
@@ -384,16 +385,16 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 				latest = attempt
 				card.Attempt = &tracker.NativeBoardAttempt{Count: int(snapshot.attemptCount), ID: attempt.AttemptID, Status: attempt.Status, RunnerID: attempt.RunnerID, MachineID: string(attempt.MachineID), Identity: nativeAttemptDisplayIdentity(*attempt), StartedAt: attempt.StartedAt, ExpiresAt: attempt.LeaseExpiresAt}
 			} else {
-				status := historical.attempt.Status
+				status := historical.Attempt.Status
 				if status == "running" {
 					status = "interrupted"
 				}
-				card.Attempt = &tracker.NativeBoardAttempt{Count: int(snapshot.attemptCount), ID: historical.attempt.ID, Status: status, MachineID: historical.lease.MachineID, StartedAt: historical.attempt.StartedAt, ExpiresAt: historical.lease.ExpiresAt}
+				card.Attempt = &tracker.NativeBoardAttempt{Count: int(snapshot.attemptCount), ID: historical.Attempt.ID, Status: status, MachineID: historical.Lease.MachineID, StartedAt: historical.Attempt.StartedAt, ExpiresAt: historical.Lease.ExpiresAt}
 			}
 		}
 		if lease := snapshot.lease; lease != nil && lease.ReleasedAt == nil && !now.Before(lease.RenewedAt) && now.Before(lease.ExpiresAt) {
 			card.Execution = &tracker.NativeBoardExecution{ID: lease.LeaseID, ExpiresAt: lease.ExpiresAt}
-			if card.Attempt != nil && snapshot.attempt.lease.LeaseID == lease.LeaseID {
+			if card.Attempt != nil && snapshot.attempt.Lease.LeaseID == lease.LeaseID {
 				card.Execution.ID, card.Execution.Running = card.Attempt.ID, card.Attempt.Status == "running"
 				card.Execution.RunnerID, card.Execution.Identity, card.Execution.StartedAt = card.Attempt.RunnerID, card.Attempt.Identity, &card.Attempt.StartedAt
 				if latest != nil && latest.Runtime != nil && card.Execution.Running {
@@ -405,7 +406,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 			}
 		}
 		if card.Execution != nil && snapshot.lease != nil {
-			terminal := snapshot.attempt != nil && snapshot.attempt.lease.LeaseID == snapshot.lease.LeaseID && (snapshot.attempt.attempt.Status != "running" || latest != nil && latest.Runtime != nil && latest.Runtime.Phase == "completed")
+			terminal := snapshot.attempt != nil && snapshot.attempt.Lease.LeaseID == snapshot.lease.LeaseID && (snapshot.attempt.Attempt.Status != "running" || latest != nil && latest.Runtime != nil && latest.Runtime.Phase == "completed")
 			applyBoardExecutionDiagnostics(card.Execution, *snapshot.lease, latest, terminal, snapshot.runnerID, snapshot.diagnostics, string(candidate.WorkItemID), now)
 		}
 		if snapshot.change != nil {
@@ -443,7 +444,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		}
 		record := boardProjectionRecord(snapshot, card)
 		record.ProjectedAt = now
-		issue.WebURL = issueBrowserPath(snapshot.organizationSlug, snapshot.project.Core.Slug, issue.Number)
+		issue.WebURL = hubrecords.IssueBrowserPath(snapshot.organizationSlug, snapshot.project.Core.Slug, issue.Number)
 		step = "issue_change"
 		if err := s.prepareNativeIssueChangeRecord(ctx, snapshot, &issue); err != nil {
 			return err
@@ -501,15 +502,15 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 	return err
 }
 
-func boardAttemptCurrent(snapshot tenantAttemptSnapshot, now time.Time) bool {
-	return snapshot.attempt.Status == "running" && snapshot.lease.ReleasedAt == nil && now.Before(snapshot.lease.ExpiresAt)
+func boardAttemptCurrent(snapshot hubrecords.TenantAttemptSnapshot, now time.Time) bool {
+	return snapshot.Attempt.Status == "running" && snapshot.Lease.ReleasedAt == nil && now.Before(snapshot.Lease.ExpiresAt)
 }
 
-func (s *Service) boardAttemptDetails(ctx context.Context, snapshot tenantAttemptSnapshot, now time.Time) (*tracker.NativeAttempt, bool, error) {
+func (s *Service) boardAttemptDetails(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot, now time.Time) (*tracker.NativeAttempt, bool, error) {
 	if !boardAttemptCurrent(snapshot, now) {
 		return nil, false, nil
 	}
-	if snapshot.event.ID == "" {
+	if snapshot.Event.ID == "" {
 		return nil, false, corestore.ErrNotFound
 	}
 	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, now)

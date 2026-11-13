@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/readableurl"
@@ -159,7 +160,7 @@ func (s *Service) readableLegacyRecordPath(ctx context.Context, credential hubap
 	}
 	path := "/" + orgSlug + "/" + projectSlug
 	if kind != "project" {
-		path = issueBrowserPath(orgSlug, projectSlug, int(item.Number))
+		path = hubrecords.IssueBrowserPath(orgSlug, projectSlug, int(item.Number))
 		start := 3
 		if kind == "project_issue" {
 			start = 4

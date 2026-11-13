@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -488,7 +489,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 			return err
 		}
 		lockRecord := record
-		if defectMutation.plan.create && defectMutation.plan.comment.ID == "" && !defectMutation.plan.existing {
+		if defectMutation.plan.Create && defectMutation.plan.Comment.ID == "" && !defectMutation.plan.Existing {
 			lockRecord.DefectIssueID = ""
 		}
 		removals, err := o.lockProgressRelationships(ctx, writer, lockRecord)
@@ -534,7 +535,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 		receiptWritten = err == nil
 		return err
 	})
-	err = errors.Join(err, releaseWorkItemAuthority(authority))
+	err = errors.Join(err, hubrecords.ReleaseWorkItemAuthority(authority))
 	if err == nil && replayed {
 		retained, found, readErr := o.Load(ctx, record.ProjectID, record.IssueID, record.RequestID)
 		if readErr != nil {

@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -185,7 +186,7 @@ type preparedNativeRunEvent struct {
 	dependencies     *preparedRunnerDependencies
 	independent      *preparedIndependentRepairs
 	claimDisposition string
-	completion       *attachmentEvidencePublication
+	completion       *hubrecords.AttachmentEvidencePublication
 	authority        NativeRunEventAuthority
 	attempt          leasestore.AttemptEvent
 	history          eventstore.Event
@@ -220,7 +221,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 	if store == nil {
 		return nil, hubcontent.ErrContentStorageUnconfigured
 	}
-	store = runEventDetailStore{DetailStore: store}
+	store = hubrecords.RunEventDetailStore{DetailStore: store}
 	requestHash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
@@ -259,7 +260,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 	var previousRunEvent eventstore.Event
 	var previousRunEventFound bool
 	var cleanupPredecessor *tenantRunCleanupPredecessor
-	var checkpointSnapshot *tenantAttemptSnapshot
+	var checkpointSnapshot *hubrecords.TenantAttemptSnapshot
 	var usageFacts runnerUsageFacts
 	var usageFactsFound bool
 	var replay eventstore.Receipt
@@ -329,8 +330,8 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 			return err
 		}
 		if cleanupPredecessor != nil && cleanupPredecessor.attempt.CheckpointObjectKey != nil {
-			snapshot := tenantAttemptSnapshot{attempt: cleanupPredecessor.attempt, lease: cleanupPredecessor.lease, event: cleanupPredecessor.event}
-			if err := readTenantAttemptCheckpointPayload(ctx, r, &snapshot); err != nil {
+			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: cleanupPredecessor.attempt, Lease: cleanupPredecessor.lease, Event: cleanupPredecessor.event}
+			if err := hubrecords.ReadTenantAttemptCheckpointPayload(ctx, r, &snapshot); err != nil {
 				return err
 			}
 			checkpointSnapshot = &snapshot
@@ -762,7 +763,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 						offset++
 					}
 				}
-				var publication attachmentEvidencePublication
+				var publication hubrecords.AttachmentEvidencePublication
 				var err error
 				completionItem := workItem
 				if dependencies != nil {
@@ -776,7 +777,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 				if err != nil {
 					return nil, err
 				}
-				if publication.plan.current.EventSequence-offset != completionItem.EventSequence || publication.plan.current.Revision != completionItem.Revision {
+				if publication.Plan.Current.EventSequence-offset != completionItem.EventSequence || publication.Plan.Current.Revision != completionItem.Revision {
 					return nil, corestore.ErrSerializationFailure
 				}
 				preparedEvent.completion = &publication
@@ -1119,7 +1120,7 @@ func admitNativeRunEventBatch(ctx context.Context, r tenantstore.Reader, project
 			next++
 			continue
 		}
-		reader, ok := r.(nativeRunEventReader)
+		reader, ok := r.(hubrecords.NativeRunEventReader)
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
@@ -1135,10 +1136,6 @@ func admitNativeRunEventBatch(ctx context.Context, r tenantstore.Reader, project
 func nativeAttemptHistoryID(kind string, data tracker.NativeRunData) string {
 	digest := sha256.Sum256([]byte(kind + "\n" + data.AttemptID + "\n" + strconv.FormatInt(data.Sequence, 10)))
 	return "evt_" + hex.EncodeToString(digest[:16])
-}
-
-type nativeRunEventReader interface {
-	RunEvent(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (eventstore.Event, error)
 }
 
 func (s *Service) reconcileNativeRunEventReplay(ctx context.Context, scope hubscope.NativeScope, item string, events []tracker.NativeRunEvent, receipt eventstore.Receipt, snapshots ...*nativeRunReplaySnapshot) error {
@@ -1169,7 +1166,7 @@ func (s *Service) reconcileNativeRunEventReplay(ctx context.Context, scope hubsc
 	}
 	rows, attempts := snapshot.rows, snapshot.attempts
 
-	store := runEventDetailStore{DetailStore: s.runDetailStore()}
+	store := hubrecords.RunEventDetailStore{DetailStore: s.runDetailStore()}
 	refs := make([]attachment.ArchiveReference, len(rows))
 	for i, row := range rows {
 		value, err := eventstore.NewContent(store).Event(ctx, row)
@@ -1184,7 +1181,7 @@ func (s *Service) reconcileNativeRunEventReplay(ctx context.Context, scope hubsc
 		if err != nil {
 			return err
 		}
-		ref, err := store.restore(ctx, string(scope.Organization), raw)
+		ref, err := store.Restore(ctx, string(scope.Organization), raw)
 		if err != nil {
 			return err
 		}

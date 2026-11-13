@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -36,9 +37,9 @@ type localBoardImportPlan struct {
 }
 
 type localBoardImportMutation struct {
-	plan       workItemRecordPlan
+	plan       hubrecords.WorkItemRecordPlan
 	data       tracker.CollaborationData
-	fields     workItemRecordFields
+	fields     hubrecords.WorkItemRecordFields
 	version    eventstore.CollaborationVersion
 	event      eventstore.Event
 	search     searchstore.Document
@@ -216,10 +217,10 @@ func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.Na
 	provenance := &tracker.Provenance{Provider: record.Kind, ExternalID: record.Key, AuthorID: record.Author, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, ObservedAt: now}
 	current := plan.current
 	issue := plan.issue
-	appendMutation := func(p workItemRecordPlan, data tracker.CollaborationData) {
+	appendMutation := func(p hubrecords.WorkItemRecordPlan, data tracker.CollaborationData) {
 		plan.mutations = append(plan.mutations, localBoardImportMutation{plan: p, data: data})
-		if p.comment.ID == "" {
-			issue = p.issue
+		if p.Comment.ID == "" {
+			issue = p.Issue
 			current.NativeID = issue.WorkItemID
 			current.Revision = int64(issue.Revision)
 			current.WorkflowStateName = new(issue.State)
@@ -231,37 +232,37 @@ func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.Na
 		if err := validateWorkItemRecordCreateInput(ctx, scope, plan.project, request); err != nil {
 			return plan, err
 		}
-		p, err := s.planWorkItemRecord(ctx, scope, workItemRecordPlan{project: plan.project, issue: issue}, request)
+		p, err := s.planWorkItemRecord(ctx, scope, hubrecords.WorkItemRecordPlan{Project: plan.project, Issue: issue}, request)
 		if err != nil {
 			return plan, err
 		}
-		appendMutation(p, tracker.CollaborationData{Revision: p.issue.Revision})
+		appendMutation(p, tracker.CollaborationData{Revision: p.Issue.Revision})
 	} else if record.Kind == "github_local" && issue.State != plan.result.State {
-		p := workItemRecordPlan{project: plan.project, current: current, issue: issue, eventType: "workflow.transitioned"}
-		p.issue.State = plan.result.State
-		p.issue.Revision++
-		p.issue.UpdatedAt, p.issue.LastActivityAt = now, now
+		p := hubrecords.WorkItemRecordPlan{Project: plan.project, Current: current, Issue: issue, EventType: "workflow.transitioned"}
+		p.Issue.State = plan.result.State
+		p.Issue.Revision++
+		p.Issue.UpdatedAt, p.Issue.LastActivityAt = now, now
 		for _, state := range plan.project.States {
-			if state.Name == p.issue.State {
-				p.issue.Terminal = state.Terminal
+			if state.Name == p.Issue.State {
+				p.Issue.Terminal = state.Terminal
 			}
 		}
-		p.issue.ClosedAt = nil
-		if p.issue.Terminal {
-			p.issue.ClosedAt = &now
+		p.Issue.ClosedAt = nil
+		if p.Issue.Terminal {
+			p.Issue.ClosedAt = &now
 		}
-		appendMutation(p, tracker.CollaborationData{Revision: p.issue.Revision, FromState: issue.State, ToState: p.issue.State, Reason: "user_requested"})
+		appendMutation(p, tracker.CollaborationData{Revision: p.Issue.Revision, FromState: issue.State, ToState: p.Issue.State, Reason: "user_requested"})
 	}
 	for _, comment := range record.Comments {
 		source := *provenance
 		source.ExternalID = localboard.SourceKey(record.Key, "comment", record.Kind, comment.ID)
 		source.AuthorID = "detent"
 		source.CreatedAt, source.UpdatedAt = comment.CreatedAt, comment.UpdatedAt
-		p, err := s.planWorkItemRecord(ctx, scope, workItemRecordPlan{project: plan.project, current: current, issue: issue}, tracker.CreateComment{Body: comment.Body, Provenance: &source})
+		p, err := s.planWorkItemRecord(ctx, scope, hubrecords.WorkItemRecordPlan{Project: plan.project, Current: current, Issue: issue}, tracker.CreateComment{Body: comment.Body, Provenance: &source})
 		if err != nil {
 			return plan, err
 		}
-		appendMutation(p, tracker.CollaborationData{Revision: p.comment.Revision, CommentID: p.comment.ID})
+		appendMutation(p, tracker.CollaborationData{Revision: p.Comment.Revision, CommentID: p.Comment.ID})
 	}
 	plan.result.Dependencies = 0
 	for _, related := range plan.dependencies {
@@ -270,12 +271,12 @@ func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.Na
 		}
 		issue.Dependencies = slices.Clone(issue.Dependencies)
 		relationship := &corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: current.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: related.NativeID, Type: "dependency"}
-		p := workItemRecordPlan{project: plan.project, current: current, issue: issue, related: related, relationship: relationship, relationshipType: "dependency", relationshipOperate: "add"}
+		p := hubrecords.WorkItemRecordPlan{Project: plan.project, Current: current, Issue: issue, Related: related, Relationship: relationship, RelationshipType: "dependency", RelationshipOperate: "add"}
 		p, err := s.planWorkItemRecord(ctx, scope, p, tracker.DependencyMutation{ExpectedRevision: issue.Revision, RelatedWorkItemID: related.NativeID, Operation: "add"})
 		if err != nil {
 			return plan, err
 		}
-		appendMutation(p, tracker.CollaborationData{Revision: p.issue.Revision, RelatedWorkItemID: related.NativeID, Operation: "add"})
+		appendMutation(p, tracker.CollaborationData{Revision: p.Issue.Revision, RelatedWorkItemID: related.NativeID, Operation: "add"})
 		plan.result.Dependencies++
 	}
 	plan.result.WorkItemID = issue.WorkItemID
@@ -285,19 +286,19 @@ func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.Na
 
 func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope hubscope.NativeScope, m localBoardImportMutation, dry bool) (localBoardImportMutation, error) {
 	p := m.plan
-	id, item, revision, at := string(p.issue.WorkItemID), p.issue.WorkItemID, int64(p.issue.Revision), p.issue.UpdatedAt
-	text := searchstore.Text{Title: p.issue.Title, Body: p.issue.Body, Labels: p.issue.Labels}
+	id, item, revision, at := string(p.Issue.WorkItemID), p.Issue.WorkItemID, int64(p.Issue.Revision), p.Issue.UpdatedAt
+	text := searchstore.Text{Title: p.Issue.Title, Body: p.Issue.Body, Labels: p.Issue.Labels}
 	kind := "issue"
-	if p.comment.ID != "" {
-		id, item, revision, at = p.comment.ID, p.comment.WorkItemID, int64(p.comment.Revision), p.comment.UpdatedAt
+	if p.Comment.ID != "" {
+		id, item, revision, at = p.Comment.ID, p.Comment.WorkItemID, int64(p.Comment.Revision), p.Comment.UpdatedAt
 		kind = "comment"
-		text = searchstore.Text{Body: p.comment.Body}
+		text = searchstore.Text{Body: p.Comment.Body}
 	}
-	raw, err := json.Marshal(p.value())
+	raw, err := json.Marshal(p.Value())
 	if err != nil {
 		return m, err
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item, ID: hubapi.NewID("evt"), Type: p.eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: at, Data: m.data})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item, ID: hubapi.NewID("evt"), Type: p.EventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: at, Data: m.data})
 	if err != nil {
 		return m, err
 	}
@@ -310,24 +311,24 @@ func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope hubscope.
 		return m, err
 	}
 	m.bytes = int64(len(raw) + len(dataRaw) + len(actorRaw))
-	if p.comment.ID != "" {
-		m.bytes += int64(len(p.comment.Body))
-	} else if p.create {
-		labels, err := json.Marshal(p.issue.Labels)
+	if p.Comment.ID != "" {
+		m.bytes += int64(len(p.Comment.Body))
+	} else if p.Create {
+		labels, err := json.Marshal(p.Issue.Labels)
 		if err != nil {
 			return m, err
 		}
-		assignees, err := json.Marshal(p.issue.Assignees)
+		assignees, err := json.Marshal(p.Issue.Assignees)
 		if err != nil {
 			return m, err
 		}
-		m.bytes += int64(len(p.issue.Title) + len(p.issue.Body) + len(labels) + len(assignees))
+		m.bytes += int64(len(p.Issue.Title) + len(p.Issue.Body) + len(labels) + len(assignees))
 	}
 	if dry {
 		return m, nil
 	}
-	if p.comment.ID == "" {
-		m.identities = postgres.DeriveDoctorProposalIdentities(p.issue.Body)
+	if p.Comment.ID == "" {
+		m.identities = postgres.DeriveDoctorProposalIdentities(p.Issue.Body)
 	}
 	m.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, p)
 	if err != nil {
@@ -411,7 +412,7 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.Nat
 			if project.Core.DeletedAt != nil {
 				return corestore.ErrNotFound
 			}
-			if !sameWorkItemProjectPlan(plan.project, project) || project.Settings.CheckoutRepository != plan.project.Settings.CheckoutRepository {
+			if !hubrecords.SameWorkItemProjectPlan(plan.project, project) || project.Settings.CheckoutRepository != plan.project.Settings.CheckoutRepository {
 				return corestore.ErrSerializationFailure
 			}
 			endpoints := slices.Clone(plan.dependencies)
@@ -433,26 +434,26 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.Nat
 			}
 			for _, m := range plan.mutations {
 				p := m.plan
-				if p.current.NativeID != "" {
-					current, err := w.LockWorkItem(ctx, scope.Project, p.current.NativeID)
+				if p.Current.NativeID != "" {
+					current, err := w.LockWorkItem(ctx, scope.Project, p.Current.NativeID)
 					if err != nil {
 						return err
 					}
-					if current.Revision != p.current.Revision || current.EventSequence != p.current.EventSequence {
+					if current.Revision != p.Current.Revision || current.EventSequence != p.Current.EventSequence {
 						return corestore.ErrSerializationFailure
 					}
-					p.current = current
+					p.Current = current
 				}
-				if p.relationship != nil {
-					if err := w.SetRelationship(ctx, *p.relationship, "add", p.issue.UpdatedAt); err != nil {
+				if p.Relationship != nil {
+					if err := w.SetRelationship(ctx, *p.Relationship, "add", p.Issue.UpdatedAt); err != nil {
 						return err
 					}
 				}
-				if err := writeWorkItemRecord(ctx, w, p, m.fields); err != nil {
+				if err := hubrecords.WriteWorkItemRecord(ctx, w, p, m.fields); err != nil {
 					return err
 				}
-				previous := p.current.Revision
-				if p.comment.ID != "" {
+				previous := p.Current.Revision
+				if p.Comment.ID != "" {
 					previous = 0
 				}
 				if err := w.PutSearch(ctx, m.search, previous); err != nil {
@@ -461,7 +462,7 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.Nat
 				if _, err := w.CreateCollaborationVersion(ctx, m.version); err != nil {
 					return err
 				}
-				if p.comment.ID == "" {
+				if p.Comment.ID == "" {
 					binder, ok := w.(interface {
 						BindDoctorProposalIdentities(context.Context, postgres.DoctorProposalIdentityBinding) error
 					})
@@ -487,7 +488,7 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.Nat
 			}
 			return s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), 200)
 		})
-		err = errors.Join(err, releaseWorkItemAuthority(authority))
+		err = errors.Join(err, hubrecords.ReleaseWorkItemAuthority(authority))
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
 			continue
 		}

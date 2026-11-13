@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -186,7 +187,7 @@ func (s *Service) claimIssueEmail(ctx context.Context, now time.Time, cursor acc
 	if err != nil || !claimed || notice.Email == "" {
 		return auth.EmailMessage{}, page, err == nil && claimed, err
 	}
-	link := strings.TrimRight(s.config.Hosted.PublicURL, "/") + issueBrowserPath(notice.OrganizationSlug, notice.ProjectSlug, notice.Number)
+	link := strings.TrimRight(s.config.Hosted.PublicURL, "/") + hubrecords.IssueBrowserPath(notice.OrganizationSlug, notice.ProjectSlug, notice.Number)
 	message, err := s.renderIssueEmail(notice.Email, link, notice.Title, notice.Number, notice.Token, notice.Notices)
 	return message, page, true, err
 }

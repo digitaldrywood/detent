@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -218,7 +219,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 	if errors.Is(err, mutation.ErrConflict) {
 		return s.nativeAPIError(c, &hubapi.NativeError{Code: "idempotency_conflict", Message: "Request was already used with different content", Status: http.StatusConflict, PublicMessage: true}, attributes...)
 	}
-	var mismatch *nativeAttemptIdentityMismatch
+	var mismatch *hubrecords.NativeAttemptIdentityMismatch
 	if errors.As(err, &mismatch) {
 		attrs := []any{"error", err, "attempt_id", mismatch.AttemptID, "work_item_id", mismatch.WorkItemID, "identity_field", mismatch.Field}
 		if mismatch.Values != nil {

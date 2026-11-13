@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -1202,7 +1203,7 @@ func seedAnalyticsTestWorkItem(t *testing.T, service *Service, organization trac
 	t.Helper()
 	id = string(project) + "-" + id
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: tracker.NativeWorkItemID(id), Number: number, Revision: 1}, Title: title, Body: nativeContractTestBody, State: state, Type: "bug", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: at, UpdatedAt: at, LastActivityAt: at}
-	fields, err := service.prepareWorkItemFields(t.Context(), organization, workItemRecordPlan{issue: issue, create: true})
+	fields, err := service.prepareWorkItemFields(t.Context(), organization, hubrecords.WorkItemRecordPlan{Issue: issue, Create: true})
 	if err != nil {
 		t.Fatal(err)
 	}

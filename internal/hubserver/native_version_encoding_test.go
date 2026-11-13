@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -311,7 +312,7 @@ func TestNativeTransitionHistoryBytes(t *testing.T) {
 			t.Fatal(err)
 		}
 		original.WebURL = issue.WebURL
-		original = relationshipOmittedIssue(original)
+		original = hubrecords.RelationshipOmittedIssue(original)
 		canonical, err := json.Marshal(original)
 		if err != nil {
 			t.Fatal(err)

@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -808,7 +809,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					canonical, err := json.Marshal(plan.issue)
+					canonical, err := json.Marshal(plan.Issue)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -827,7 +828,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					}
 					switch test.projection {
 					case "six", "duplicate", "case duplicate":
-						body["dependencies"], err = json.Marshal(plan.issue.Dependencies)
+						body["dependencies"], err = json.Marshal(plan.Issue.Dependencies)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -860,11 +861,11 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					if test.projection == "case duplicate" {
 						legacy = append(legacy[:len(legacy)-1], []byte(`,"DEPENDENCIES":[]}`)...)
 					}
-					version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization.ID, ProjectID: f.project.ID, WorkItemID: plan.issue.WorkItemID, RecordID: string(plan.issue.WorkItemID), Revision: int64(plan.issue.Revision)}, canonical)
+					version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: organization.ID, ProjectID: f.project.ID, WorkItemID: plan.Issue.WorkItemID, RecordID: string(plan.Issue.WorkItemID), Revision: int64(plan.Issue.Revision)}, canonical)
 					if err != nil {
 						t.Fatal(err)
 					}
-					eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization.ID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: plan.issue.WorkItemID, Type: plan.eventType, SchemaVersion: 1, Actor: legacyScope.Actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+					eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization.ID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: plan.Issue.WorkItemID, Type: plan.EventType, SchemaVersion: 1, Actor: legacyScope.Actor(), RecordedAt: plan.Issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.Issue.Revision, Fields: plan.Fields}})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -876,7 +877,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					searchDocument, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: organization.ID, ProjectID: plan.issue.ProjectID, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + string(plan.issue.WorkItemID), SourceID: string(plan.issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+					searchDocument, err := searchstore.NewContent(service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: organization.ID, ProjectID: plan.Issue.ProjectID, WorkItemID: plan.Issue.WorkItemID, ID: "issue:" + string(plan.Issue.WorkItemID), SourceID: string(plan.Issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.Issue.Revision), UpdatedAt: plan.Issue.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -884,15 +885,15 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: organization.ID, ActorID: credential.ID, Operation: method + " " + resource, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: plan.issue.UpdatedAt, ResponseReplayUntilNs: plan.issue.UpdatedAt.Add(receiptstore.ReplayRetention).UnixNano()}, legacy)
+					receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: organization.ID, ActorID: credential.ID, Operation: method + " " + resource, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: plan.Issue.UpdatedAt, ResponseReplayUntilNs: plan.Issue.UpdatedAt.Add(receiptstore.ReplayRetention).UnixNano()}, legacy)
 					if err != nil {
 						t.Fatal(err)
 					}
 					if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-						if err := writeWorkItemRecord(t.Context(), w, plan, fields); err != nil {
+						if err := hubrecords.WriteWorkItemRecord(t.Context(), w, plan, fields); err != nil {
 							return err
 						}
-						if err := w.PutSearch(t.Context(), searchDocument, plan.current.Revision); err != nil {
+						if err := w.PutSearch(t.Context(), searchDocument, plan.Current.Revision); err != nil {
 							return err
 						}
 						if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
@@ -921,7 +922,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					var before corestore.WorkItem
 					if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 						var err error
-						before, err = r.WorkItem(t.Context(), f.project.ID, plan.issue.WorkItemID)
+						before, err = r.WorkItem(t.Context(), f.project.ID, plan.Issue.WorkItemID)
 						return err
 					}); err != nil {
 						t.Fatal(err)
@@ -962,7 +963,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					}
 					requireNativeStatus(t, performHubAPIRequest(t, service, method, resource, f.token, changed), http.StatusConflict)
 					if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-						after, err := r.WorkItem(t.Context(), f.project.ID, plan.issue.WorkItemID)
+						after, err := r.WorkItem(t.Context(), f.project.ID, plan.Issue.WorkItemID)
 						if err != nil {
 							return err
 						}
@@ -970,7 +971,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						if after.Revision != before.Revision || after.EventSequence != before.EventSequence || after.Title != plan.issue.Title || !reflect.DeepEqual(stored, receipt) {
+						if after.Revision != before.Revision || after.EventSequence != before.EventSequence || after.Title != plan.Issue.Title || !reflect.DeepEqual(stored, receipt) {
 							t.Fatalf("legacy replay changed its durable result: before=%+v after=%+v receipt=%+v", before, after, stored)
 						}
 						return nil
@@ -1286,7 +1287,7 @@ func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 	decodeHubResponse(t, response, &issue)
 	issue.IssueContract = &issuecontract.State{HumanAction: "Complete the issue contract", ReturnState: "Todo"}
 	issue.Revision++
-	plan := workItemRecordPlan{issue: issue}
+	plan := hubrecords.WorkItemRecordPlan{Issue: issue}
 	fields, err := service.prepareWorkItemFields(t.Context(), organization.ID, plan)
 	if err != nil {
 		t.Fatal(err)

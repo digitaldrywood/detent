@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
@@ -48,7 +49,7 @@ func (s *Service) readBulkExport(ctx context.Context, scope hubscope.NativeScope
 	if err := hubapi.ValidateNativeQuery(single, "open", "archived"); err != nil {
 		return page, err
 	}
-	if err := validateNativeIssueQuery(params); err != nil {
+	if err := hubrecords.ValidateNativeIssueQuery(params); err != nil {
 		return page, err
 	}
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/export"

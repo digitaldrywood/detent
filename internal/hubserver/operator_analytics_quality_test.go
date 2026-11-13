@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -185,7 +186,7 @@ func replaceAnalyticsTestIssueBody(t *testing.T, service *Service, scope hubscop
 	issue.Body = body
 	issue.Revision++
 	issue.UpdatedAt = service.config.now().UTC().Truncate(time.Microsecond)
-	fields, err := service.prepareWorkItemFields(t.Context(), scope.Organization, workItemRecordPlan{issue: issue})
+	fields, err := service.prepareWorkItemFields(t.Context(), scope.Organization, hubrecords.WorkItemRecordPlan{Issue: issue})
 	if err != nil {
 		t.Fatal(err)
 	}

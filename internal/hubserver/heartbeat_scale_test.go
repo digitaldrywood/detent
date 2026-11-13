@@ -533,11 +533,11 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 				t.Fatal(err)
 			}
 			checkpoint, err := f.service.readNativeAttemptCheckpointTenant(t.Context(), archived)
-			if err != nil || checkpoint == nil || archived.checkpointPayload == nil {
-				t.Fatalf("checkpoint is not archived: %+v error=%v", archived.attempt, err)
+			if err != nil || checkpoint == nil || archived.CheckpointPayload == nil {
+				t.Fatalf("checkpoint is not archived: %+v error=%v", archived.Attempt, err)
 			}
-			if archived.attempt.WorkerCleanupRequired == nil || !*archived.attempt.WorkerCleanupRequired || archived.attempt.RuntimeSummarySequence != archived.attempt.Sequence {
-				t.Fatalf("verified launch did not publish current cleanup fact: %+v", archived.attempt)
+			if archived.Attempt.WorkerCleanupRequired == nil || !*archived.Attempt.WorkerCleanupRequired || archived.Attempt.RuntimeSummarySequence != archived.Attempt.Sequence {
+				t.Fatalf("verified launch did not publish current cleanup fact: %+v", archived.Attempt)
 			}
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 				t.Fatal(err)
@@ -574,19 +574,19 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 				t.Fatalf("cleanup polling hydrated %d archive entries", reads)
 			}
 			store.mu.Lock()
-			originalCheckpoint := append([]byte(nil), store.data[archived.checkpointPayload.Key]...)
-			store.data[archived.checkpointPayload.Key] = []byte("{")
+			originalCheckpoint := append([]byte(nil), store.data[archived.CheckpointPayload.Key]...)
+			store.data[archived.CheckpointPayload.Key] = []byte("{")
 			store.keyReads = map[string]int{}
 			store.mu.Unlock()
 			t.Cleanup(func() {
 				store.mu.Lock()
-				store.data[archived.checkpointPayload.Key] = originalCheckpoint
+				store.data[archived.CheckpointPayload.Key] = originalCheckpoint
 				store.mu.Unlock()
 			})
 			checkpointReads := func() int {
 				store.mu.Lock()
 				defer store.mu.Unlock()
-				return store.keyReads[archived.checkpointPayload.Key]
+				return store.keyReads[archived.CheckpointPayload.Key]
 			}
 			attemptPath := f.base + "/work-items/" + string(issue.WorkItemID) + "/attempts/" + event.Data.AttemptID
 			response = performHubAPIRequest(t, f.service, http.MethodGet, attemptPath, worker, nil)

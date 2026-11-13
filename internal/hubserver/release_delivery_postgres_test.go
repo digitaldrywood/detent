@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -489,7 +490,7 @@ func writeReleaseAdmissionIssue(t *testing.T, f *releaseTenantFixture, issue tra
 	issue.Revision++
 	issue.UpdatedAt = f.f.service.config.now()
 	issue.LastActivityAt = issue.UpdatedAt
-	fields, err := f.f.service.prepareWorkItemFields(t.Context(), "org_security", workItemRecordPlan{issue: issue})
+	fields, err := f.f.service.prepareWorkItemFields(t.Context(), "org_security", hubrecords.WorkItemRecordPlan{Issue: issue})
 	if err != nil {
 		t.Fatal(err)
 	}

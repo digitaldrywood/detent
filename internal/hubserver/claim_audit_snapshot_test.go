@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -236,8 +237,8 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				t.Fatalf("candidates=%d want %d", len(scan.plans), index+1)
 			}
 			legacy := scan.plans[0]
-			legacy.changeFacts = nil
-			expected, err := service.hydrateCurrentChangeDetail(t.Context(), scope, legacy.candidate.WorkItemID, legacy.changeRecord, &legacy.changeVersion, legacy.changePolicy, now)
+			legacy.ChangeFacts = nil
+			expected, err := service.hydrateCurrentChangeDetail(t.Context(), scope, legacy.Candidate.WorkItemID, legacy.ChangeRecord, &legacy.ChangeVersion, legacy.ChangePolicy, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -260,7 +261,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if hydrated.changeRecord.OrganizationID != org {
+				if hydrated.ChangeRecord.OrganizationID != org {
 					t.Fatal("cross tenant change")
 				}
 			}
@@ -303,8 +304,8 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 
 					ids, revisions := []string{}, []string{}
 					for _, plan := range scan.plans {
-						ids = append(ids, fmt.Sprintf("%d", plan.candidate.ID))
-						revisions = append(revisions, fmt.Sprintf("%d", plan.candidate.Revision))
+						ids = append(ids, fmt.Sprintf("%d", plan.Candidate.ID))
+						revisions = append(revisions, fmt.Sprintf("%d", plan.Candidate.Revision))
 					}
 					for _, test := range []struct {
 						name, types, arguments string
@@ -386,41 +387,41 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 						})
 					}
 				})
-				observations := scan.plans[0].changeFacts.VersionObservations
+				observations := scan.plans[0].ChangeFacts.VersionObservations
 				if observations == nil || observations.Publication == nil || observations.Landing == nil || detail.Versions[0].External == nil || detail.Versions[0].Landing == nil || detail.Versions[0].Landing.TargetState != "Done" {
 					t.Fatalf("captured matching receipts lost: %+v", detail)
 				}
-				if absent := scan.plans[1].changeFacts.VersionObservations; absent == nil || absent.Publication != nil || absent.Landing != nil {
+				if absent := scan.plans[1].ChangeFacts.VersionObservations; absent == nil || absent.Publication != nil || absent.Landing != nil {
 					t.Fatalf("known absence=%+v", absent)
 				}
 				for _, test := range []struct {
 					name     string
-					mutate   func(*nativeClaimPlan)
+					mutate   func(*hubrecords.NativeClaimPlan)
 					want     error
 					notReady bool
 				}{
-					{"links overflow", func(p *nativeClaimPlan) {
-						facts := *p.changeFacts
+					{"links overflow", func(p *hubrecords.NativeClaimPlan) {
+						facts := *p.ChangeFacts
 						facts.Links = make([]tenantstore.BoardChangeLink, 33)
-						p.changeFacts = &facts
+						p.ChangeFacts = &facts
 					}, corestore.ErrInvalidPage, false},
-					{"evidence overflow", func(p *nativeClaimPlan) {
-						facts := *p.changeFacts
+					{"evidence overflow", func(p *hubrecords.NativeClaimPlan) {
+						facts := *p.ChangeFacts
 						facts.Evidence = make([]eventstore.Evidence, corestore.MaxPageSize+1)
-						p.changeFacts = &facts
+						p.ChangeFacts = &facts
 					}, corestore.ErrInvalidPage, false},
-					{"missing snapshot", func(p *nativeClaimPlan) { p.snapshotLoaded = false }, nil, true},
-					{"missing required disposition", func(p *nativeClaimPlan) {
-						p.candidate.State, p.landingPending = "Todo", false
-						p.latestAttempt.ClaimDisposition = nil
+					{"missing snapshot", func(p *hubrecords.NativeClaimPlan) { p.SnapshotLoaded = false }, nil, true},
+					{"missing required disposition", func(p *hubrecords.NativeClaimPlan) {
+						p.Candidate.State, p.LandingPending = "Todo", false
+						p.LatestAttempt.ClaimDisposition = nil
 					}, nil, true},
-					{"loaded required disposition", func(p *nativeClaimPlan) {
-						p.candidate.State, p.landingPending = "Todo", false
+					{"loaded required disposition", func(p *hubrecords.NativeClaimPlan) {
+						p.Candidate.State, p.LandingPending = "Todo", false
 					}, nil, false},
 				} {
 					t.Run(string(org)+"/"+test.name, func(t *testing.T) {
 						plan := scan.plans[0]
-						if plan.latestAttempt.ClaimDisposition == nil || *plan.latestAttempt.ClaimDisposition != "progress" {
+						if plan.LatestAttempt.ClaimDisposition == nil || *plan.LatestAttempt.ClaimDisposition != "progress" {
 							t.Fatal("snapshot lost the persisted claim disposition")
 						}
 						test.mutate(&plan)
@@ -465,7 +466,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 					t.Run(string(org)+"/"+tc.name, func(t *testing.T) {
 						captured := *observations
 						tc.mutate(&captured)
-						version, err := service.hydrateChangeVersionWithRows(t.Context(), scope, scan.plans[0].candidate.WorkItemID, scan.plans[0].changeVersion, &captured)
+						version, err := service.hydrateChangeVersionWithRows(t.Context(), scope, scan.plans[0].Candidate.WorkItemID, scan.plans[0].ChangeVersion, &captured)
 						if !errors.Is(err, tc.want) {
 							t.Fatalf("hydrate error=%v, want %v", err, tc.want)
 						}
@@ -491,7 +492,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 					} {
 						t.Run(string(org)+"/"+tc.name, func(t *testing.T) {
 							plan := scan.plans[0]
-							facts := *plan.changeFacts
+							facts := *plan.ChangeFacts
 							if !tc.captured {
 								facts.AuditDispositions = nil
 							}
@@ -500,7 +501,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 								hydrateScope.Credential = hubapi.APICredential{}
 							}
 							counter.workloads = nil
-							got, err := service.hydrateCurrentChangeDetailWithFacts(t.Context(), hydrateScope, plan.candidate.WorkItemID, plan.changeRecord, &plan.changeVersion, plan.changePolicy, now, &facts, nil, tc.workload)
+							got, err := service.hydrateCurrentChangeDetailWithFacts(t.Context(), hydrateScope, plan.Candidate.WorkItemID, plan.ChangeRecord, &plan.ChangeVersion, plan.ChangePolicy, now, &facts, nil, tc.workload)
 							if tc.allowed {
 								if err != nil || !reflect.DeepEqual(got, expected) {
 									t.Errorf("workload-aware detail differs: %v", err)
@@ -521,28 +522,28 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 				if index == 99 {
 					t.Run(string(org)+"/pending landing intent", func(t *testing.T) {
 						current := scan.plans[0]
-						if current.candidate.WorkItemID != "wi_000" || !current.latestAttemptFound || !current.latestRunEventFound || !current.latestRunEvent.LandingWaiting || current.latestAttempt.WorkItemRevision != current.item.Revision || current.latestAttempt.DispatchGeneration != current.item.DispatchGeneration || !current.landingPending {
-							t.Fatalf("current waiting landing is not pending: item=%s attempt_revision=%d item_revision=%d pending=%t", current.candidate.WorkItemID, current.latestAttempt.WorkItemRevision, current.item.Revision, current.landingPending)
+						if current.Candidate.WorkItemID != "wi_000" || !current.LatestAttemptFound || !current.LatestRunEventFound || !current.LatestRunEvent.LandingWaiting || current.LatestAttempt.WorkItemRevision != current.Item.Revision || current.LatestAttempt.DispatchGeneration != current.Item.DispatchGeneration || !current.LandingPending {
+							t.Fatalf("current waiting landing is not pending: item=%s attempt_revision=%d item_revision=%d pending=%t", current.Candidate.WorkItemID, current.LatestAttempt.WorkItemRevision, current.Item.Revision, current.LandingPending)
 						}
 						merging, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, current, &descriptor)
 						if err != nil {
 							t.Fatal(err)
 						}
 						waiting := current
-						waiting.candidate.State = "Todo"
+						waiting.Candidate.State = "Todo"
 						continuation, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, waiting, &descriptor)
 						if err != nil {
 							t.Fatal(err)
 						}
-						if !continuation.landingPending || continuation.changeReady != merging.changeReady || continuation.landingRequired != merging.landingRequired {
-							t.Fatalf("waiting continuation left the canonical landing path: pending=%t ready=%t want=%t capacity=%t want=%t", continuation.landingPending, continuation.changeReady, merging.changeReady, continuation.landingRequired, merging.landingRequired)
+						if !continuation.LandingPending || continuation.ChangeReady != merging.ChangeReady || continuation.LandingRequired != merging.LandingRequired {
+							t.Fatalf("waiting continuation left the canonical landing path: pending=%t ready=%t want=%t capacity=%t want=%t", continuation.LandingPending, continuation.ChangeReady, merging.ChangeReady, continuation.LandingRequired, merging.LandingRequired)
 						}
-						edited := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_000", Number: 1, Revision: tracker.Revision(current.item.Revision + 1)}, Title: "Edited example", State: "Merging", Actor: tracker.Actor{Kind: "human", PrincipalID: "test_hub_admin"}, CreatedAt: now, UpdatedAt: now}
+						edited := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_000", Number: 1, Revision: tracker.Revision(current.Item.Revision + 1)}, Title: "Edited example", State: "Merging", Actor: tracker.Actor{Kind: "human", PrincipalID: "test_hub_admin"}, CreatedAt: now, UpdatedAt: now}
 						raw, err := json.Marshal(edited)
 						if err != nil {
 							t.Fatal(err)
 						}
-						version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_000", RecordID: "wi_000", Revision: current.item.Revision + 1}, raw)
+						version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: org, ProjectID: "example", WorkItemID: "wi_000", RecordID: "wi_000", Revision: current.Item.Revision + 1}, raw)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -564,33 +565,33 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						var stale nativeClaimPlan
+						var stale hubrecords.NativeClaimPlan
 						for _, plan := range rescan.plans {
-							if plan.candidate.WorkItemID == "wi_000" {
+							if plan.Candidate.WorkItemID == "wi_000" {
 								stale = plan
 							}
 						}
-						if stale.item.Revision != current.item.Revision+1 || stale.latestAttempt.ID != current.latestAttempt.ID || stale.latestAttempt.WorkItemRevision != current.latestAttempt.WorkItemRevision || stale.latestRunEvent.ID != current.latestRunEvent.ID || !stale.latestRunEvent.LandingWaiting {
-							t.Fatalf("edit did not leave the recorded waiting attempt behind the item: item_revision=%d attempt=%s attempt_revision=%d event=%s", stale.item.Revision, stale.latestAttempt.ID, stale.latestAttempt.WorkItemRevision, stale.latestRunEvent.ID)
+						if stale.Item.Revision != current.Item.Revision+1 || stale.LatestAttempt.ID != current.LatestAttempt.ID || stale.LatestAttempt.WorkItemRevision != current.LatestAttempt.WorkItemRevision || stale.LatestRunEvent.ID != current.LatestRunEvent.ID || !stale.LatestRunEvent.LandingWaiting {
+							t.Fatalf("edit did not leave the recorded waiting attempt behind the item: item_revision=%d attempt=%s attempt_revision=%d event=%s", stale.Item.Revision, stale.LatestAttempt.ID, stale.LatestAttempt.WorkItemRevision, stale.LatestRunEvent.ID)
 						}
-						if stale.landingPending {
-							t.Fatalf("waiting receipt of attempt revision %d is still pending for item revision %d", stale.latestAttempt.WorkItemRevision, stale.item.Revision)
+						if stale.LandingPending {
+							t.Fatalf("waiting receipt of attempt revision %d is still pending for item revision %d", stale.LatestAttempt.WorkItemRevision, stale.Item.Revision)
 						}
 						canonical, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, stale, &descriptor)
 						if err != nil {
 							t.Fatal(err)
 						}
-						if canonical.landingPending || canonical.changeReady != merging.changeReady || canonical.landingRequired != merging.landingRequired {
-							t.Fatalf("stale waiting receipt changed the Merging path: pending=%t ready=%t want=%t capacity=%t want=%t", canonical.landingPending, canonical.changeReady, merging.changeReady, canonical.landingRequired, merging.landingRequired)
+						if canonical.LandingPending || canonical.ChangeReady != merging.ChangeReady || canonical.LandingRequired != merging.LandingRequired {
+							t.Fatalf("stale waiting receipt changed the Merging path: pending=%t ready=%t want=%t capacity=%t want=%t", canonical.LandingPending, canonical.ChangeReady, merging.ChangeReady, canonical.LandingRequired, merging.LandingRequired)
 						}
 						outside := stale
-						outside.candidate.State = "Todo"
+						outside.Candidate.State = "Todo"
 						dispatched, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, outside, &descriptor)
 						if err != nil {
 							t.Fatal(err)
 						}
-						if dispatched.landingPending || dispatched.changeReady || dispatched.landingRequired {
-							t.Fatalf("stale waiting receipt routed the edited item to landing: pending=%t ready=%t capacity=%t", dispatched.landingPending, dispatched.changeReady, dispatched.landingRequired)
+						if dispatched.LandingPending || dispatched.ChangeReady || dispatched.LandingRequired {
+							t.Fatalf("stale waiting receipt routed the edited item to landing: pending=%t ready=%t capacity=%t", dispatched.LandingPending, dispatched.ChangeReady, dispatched.LandingRequired)
 						}
 					})
 				}
@@ -636,12 +637,12 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 			t.Fatal(err)
 		}
 		request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: "wi_049", WorkflowStates: []string{"Merging"}}
-		scalar, err := service.readNativeClaimPlanRows(t.Context(), scope, request, now, nil, nil, nativeClaimPlan{})
+		scalar, err := service.readNativeClaimPlanRows(t.Context(), scope, request, now, nil, nil, hubrecords.NativeClaimPlan{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		scalar.changeFacts = nil
-		expected, err := service.hydrateCurrentChangeDetail(t.Context(), scope, scalar.candidate.WorkItemID, scalar.changeRecord, &scalar.changeVersion, scalar.changePolicy, now)
+		scalar.ChangeFacts = nil
+		expected, err := service.hydrateCurrentChangeDetail(t.Context(), scope, scalar.Candidate.WorkItemID, scalar.ChangeRecord, &scalar.ChangeVersion, scalar.ChangePolicy, now)
 		if err != nil {
 			t.Fatalf("scalar legacy audit without dispositions: %v", err)
 		}
@@ -693,7 +694,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := service.hydrateCurrentChangeDetail(t.Context(), scope, scalar.candidate.WorkItemID, scalar.changeRecord, &scalar.changeVersion, scalar.changePolicy, now); !errors.Is(err, corestore.ErrRevisionConflict) {
+		if _, err := service.hydrateCurrentChangeDetail(t.Context(), scope, scalar.Candidate.WorkItemID, scalar.ChangeRecord, &scalar.ChangeVersion, scalar.ChangePolicy, now); !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Errorf("scalar legacy foreign disposition: %v", err)
 		}
 		if _, err := service.readNativeClaimPlan(t.Context(), scope, request, now); !errors.Is(err, corestore.ErrRevisionConflict) {
@@ -735,13 +736,13 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 					t.Fatal(err)
 				}
 				request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index)), WorkflowStates: []string{"Merging"}}
-				plan, err := service.readNativeClaimPlanRows(t.Context(), scope, request, now, nil, nil, nativeClaimPlan{})
+				plan, err := service.readNativeClaimPlanRows(t.Context(), scope, request, now, nil, nil, hubrecords.NativeClaimPlan{})
 				if err != nil {
 					t.Fatal(err)
 				}
 				scalar := plan
-				scalar.changeFacts = nil
-				if _, err := service.hydrateCurrentChangeDetail(t.Context(), scope, scalar.candidate.WorkItemID, scalar.changeRecord, &scalar.changeVersion, scalar.changePolicy, now); !errors.Is(err, artifact.ErrIntegrity) {
+				scalar.ChangeFacts = nil
+				if _, err := service.hydrateCurrentChangeDetail(t.Context(), scope, scalar.Candidate.WorkItemID, scalar.ChangeRecord, &scalar.ChangeVersion, scalar.ChangePolicy, now); !errors.Is(err, artifact.ErrIntegrity) {
 					t.Errorf("scalar accepted typed %s mismatch: %v", tc.name, err)
 				}
 				if _, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, plan, &descriptor); !errors.Is(err, artifact.ErrIntegrity) {
@@ -1018,8 +1019,8 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 					if err != nil {
 						t.Fatalf("read persisted claim plan: %v", err)
 					}
-					if plan.candidate.State != "in progress" || !plan.latestRunEvent.LandingWaiting || plan.landingPending != seed.pending || plan.changeReady != seed.ready {
-						t.Errorf("persisted plan state=%q waiting=%t pending=%t ready=%t item_revision=%d item_generation=%d attempt_revision=%d attempt_generation=%d, want pending=%t ready=%t", plan.candidate.State, plan.latestRunEvent.LandingWaiting, plan.landingPending, plan.changeReady, plan.item.Revision, plan.item.DispatchGeneration, plan.latestAttempt.WorkItemRevision, plan.latestAttempt.DispatchGeneration, seed.pending, seed.ready)
+					if plan.Candidate.State != "in progress" || !plan.LatestRunEvent.LandingWaiting || plan.LandingPending != seed.pending || plan.ChangeReady != seed.ready {
+						t.Errorf("persisted plan state=%q waiting=%t pending=%t ready=%t item_revision=%d item_generation=%d attempt_revision=%d attempt_generation=%d, want pending=%t ready=%t", plan.Candidate.State, plan.LatestRunEvent.LandingWaiting, plan.LandingPending, plan.ChangeReady, plan.Item.Revision, plan.Item.DispatchGeneration, plan.LatestAttempt.WorkItemRevision, plan.LatestAttempt.DispatchGeneration, seed.pending, seed.ready)
 					}
 					lease, err := service.claimNativeIssueTenantWithPlan(t.Context(), runner, claim, 5*time.Minute, now, plan, nil)
 					if !seed.claimed {

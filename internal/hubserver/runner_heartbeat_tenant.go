@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -369,7 +370,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		return s.nativeAPIError(c, err)
 	}
 	var cleanupNext string
-	var cleanupCandidates []tenantAttemptSnapshot
+	var cleanupCandidates []hubrecords.TenantAttemptSnapshot
 	err = s.readRunnerResponseSnapshot(ctx, credential.Runner.OrganizationID, credential.ID, credential.Runner.RunnerID, projectID, func(ctx context.Context, r tenantstore.Reader, now time.Time) error {
 		identity, err := r.RunnerIdentityByCredential(ctx, credential.ID)
 		if err != nil {

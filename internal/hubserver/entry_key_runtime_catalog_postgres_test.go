@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -184,7 +185,7 @@ func seedEntryRuntimeAttempt(t *testing.T, s *Service, org tracker.OrganizationI
 		if err != nil {
 			return err
 		}
-		archive := attachmentstore.ArchiveRecord{OrganizationID: org, ProjectID: "project", ID: newRunDetailReference(payload, string(org), "").AttachmentID, Uploader: string(org) + "_owner", CreatedAt: now, Reference: payload}
+		archive := attachmentstore.ArchiveRecord{OrganizationID: org, ProjectID: "project", ID: hubrecords.NewRunDetailReference(payload, string(org), "").AttachmentID, Uploader: string(org) + "_owner", CreatedAt: now, Reference: payload}
 		if _, err := w.PrepareAttachmentArchive(t.Context(), archive); err != nil {
 			return err
 		}

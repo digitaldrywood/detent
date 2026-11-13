@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -436,7 +437,7 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 			if err != nil {
 				return err
 			}
-			item := coordinatorAttentionItem{WorkItemID: string(row.NativeID), ProjectID: row.ProjectID, Number: row.Number, Title: boundRunes(row.Title, coordinatorToolSummaryRunes), State: hubapi.StringValue(row.WorkflowStateName), UpdatedAt: hubapi.FormatHubTime(row.NativeUpdatedAt), URL: issueBrowserPath(org.Slug, project.Slug, int(row.Number))}
+			item := coordinatorAttentionItem{WorkItemID: string(row.NativeID), ProjectID: row.ProjectID, Number: row.Number, Title: boundRunes(row.Title, coordinatorToolSummaryRunes), State: hubapi.StringValue(row.WorkflowStateName), UpdatedAt: hubapi.FormatHubTime(row.NativeUpdatedAt), URL: hubrecords.IssueBrowserPath(org.Slug, project.Slug, int(row.Number))}
 			waiting := false
 			linked, err := r.ConversationByWorkItem(ctx, row.ProjectID, string(row.NativeID))
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -593,7 +594,7 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 		if err != nil {
 			return err
 		}
-		result.URL = issueBrowserPath(org.Slug, project.Core.Slug, int(row.Number))
+		result.URL = hubrecords.IssueBrowserPath(org.Slug, project.Core.Slug, int(row.Number))
 		result.WorkItemID, result.ProjectID, result.Number, result.Title, result.State = string(row.NativeID), row.ProjectID, row.Number, row.Title, hubapi.StringValue(row.WorkflowStateName)
 		result.UpdatedAt = hubapi.FormatHubTime(row.NativeUpdatedAt)
 		for _, state := range project.States {

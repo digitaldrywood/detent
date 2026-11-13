@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -257,8 +258,8 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				evaluation := contract.Evaluate(nativeContractIssue(scheduled))
-				if nativeClaimIssueContractAllowed(nativeClaimPlan{issue: scheduled, descriptor: approval.Policy}) || evaluation.Satisfied() || len(evaluation.Missing) == 0 {
+				evaluation := contract.Evaluate(hubrecords.NativeContractIssue(scheduled))
+				if nativeClaimIssueContractAllowed(hubrecords.NativeClaimPlan{Issue: scheduled, Descriptor: approval.Policy}) || evaluation.Satisfied() || len(evaluation.Missing) == 0 {
 					t.Fatalf("occurrence admitted incomplete issue: %+v", evaluation)
 				}
 			}

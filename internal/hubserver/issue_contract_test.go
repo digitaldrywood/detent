@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -54,11 +55,11 @@ func nativeIssueContractEvaluationForTest(ctx context.Context, service *Service,
 	if err != nil {
 		return nativeContractEvaluation{}, err
 	}
-	plan := nativeClaimPlan{item: row, issue: issue, project: project, descriptor: approval.Policy}
+	plan := hubrecords.NativeClaimPlan{Item: row, Issue: issue, Project: project, Descriptor: approval.Policy}
 	if issue.IssueContract != nil && issue.IssueContract.ReleaseDelivery != nil {
 		if err := service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			plan.releaseDelivery, err = readReleaseDeliveryContractFacts(ctx, r, scope, item, project.States)
+			plan.ReleaseDelivery, err = readReleaseDeliveryContractFacts(ctx, r, scope, item, project.States)
 			return err
 		}); err != nil {
 			return nativeContractEvaluation{}, err
@@ -225,7 +226,7 @@ func TestNativeIssueContract(t *testing.T) {
 				got, reason := evaluation.Allowed, evaluation.Reason
 				if err != nil || got != want {
 					contract, contractErr := config.ResolvePolicyIssueContract(descriptor)
-					t.Fatalf("claimable = %t, %v; want %t; contract %+v (%v), criteria %+v, evaluation %+v", got, err, want, contract, contractErr, issue.IssueContract, contract.Evaluate(nativeContractIssue(issue)))
+					t.Fatalf("claimable = %t, %v; want %t; contract %+v (%v), criteria %+v, evaluation %+v", got, err, want, contract, contractErr, issue.IssueContract, contract.Evaluate(hubrecords.NativeContractIssue(issue)))
 				}
 				if (reason == "") != want {
 					t.Fatalf("claimable=%t reason=%q", got, reason)
@@ -271,7 +272,7 @@ func TestNativeIssueContract(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			action := contract.HumanAction(nativeContractIssue(issue), contract.Evaluate(nativeContractIssue(issue)))
+			action := contract.HumanAction(hubrecords.NativeContractIssue(issue), contract.Evaluate(hubrecords.NativeContractIssue(issue)))
 			var heldLease leasestore.Lease
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				row, err := w.WorkItem(t.Context(), scope.Project, issue.WorkItemID)
@@ -581,7 +582,7 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 			}
 			if test.ordinary {
 				contract, err := config.ResolvePolicyIssueContract(descriptor)
-				if err != nil || len(issue.IssueContract.ConfirmedSections) != 0 || !contract.Evaluate(nativeContractIssue(issue)).NeedsConfirmation {
+				if err != nil || len(issue.IssueContract.ConfirmedSections) != 0 || !contract.Evaluate(hubrecords.NativeContractIssue(issue)).NeedsConfirmation {
 					t.Fatalf("ordinary report bypassed confirmation: %+v, %v", issue.IssueContract, err)
 				}
 				return
@@ -602,7 +603,7 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 				t.Fatalf("missing approved contract: %s", issue.Body)
 			}
 			contract, err := config.ResolvePolicyIssueContract(descriptor)
-			if err != nil || !contract.Evaluate(nativeContractIssue(issue)).Satisfied() {
+			if err != nil || !contract.Evaluate(hubrecords.NativeContractIssue(issue)).Satisfied() {
 				t.Fatalf("confirmed criteria were changed by diagnostic text: %v, %+v", err, issue.IssueContract)
 			}
 			if got, ok := issueorigin.Parse(issue.Body); !ok || got != origin {
@@ -621,7 +622,7 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var stored tracker.NativeIssue
 			decodeHubResponse(t, response, &stored)
-			claimable := nativeClaimIssueContractAllowed(nativeClaimPlan{descriptor: descriptor, issue: stored})
+			claimable := nativeClaimIssueContractAllowed(hubrecords.NativeClaimPlan{Descriptor: descriptor, Issue: stored})
 			if claimable == test.noDispatch {
 				t.Fatalf("claimable=%t", claimable)
 			}

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventbroker"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -58,15 +59,15 @@ type conversationLinkMutation struct {
 	inner *conversations.ConversationLinkMutation
 }
 
-func conversationLinkedWorkItem(plan workItemRecordPlan) conversations.LinkedWorkItem {
-	return conversations.LinkedWorkItem{Existing: plan.existing, Create: plan.create, Issue: plan.issue, ProjectName: plan.project.Core.Name}
+func conversationLinkedWorkItem(plan hubrecords.WorkItemRecordPlan) conversations.LinkedWorkItem {
+	return conversations.LinkedWorkItem{Existing: plan.Existing, Create: plan.Create, Issue: plan.Issue, ProjectName: plan.Project.Core.Name}
 }
 
-func (m *conversationLinkMutation) Prepare(ctx context.Context, plan workItemRecordPlan) error {
+func (m *conversationLinkMutation) Prepare(ctx context.Context, plan hubrecords.WorkItemRecordPlan) error {
 	return hubapi.FromFeatureError(m.inner.Prepare(ctx, conversationLinkedWorkItem(plan)))
 }
 
-func (m *conversationLinkMutation) Write(ctx context.Context, writer tenantstore.Writer, plan workItemRecordPlan) error {
+func (m *conversationLinkMutation) Write(ctx context.Context, writer tenantstore.Writer, plan hubrecords.WorkItemRecordPlan) error {
 	return hubapi.FromFeatureError(m.inner.Write(ctx, writer, conversationLinkedWorkItem(plan)))
 }
 

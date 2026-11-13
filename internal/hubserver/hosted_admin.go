@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -423,7 +424,7 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential huba
 // how the orchestrator names its review lane. Migrations 36, 38 and 39 move
 // projects created from the earlier templates onto this one.
 func HostedProjectStates() []tracker.NativeState {
-	return nativeTriageStates([]tracker.NativeState{
+	return hubrecords.NativeTriageStates([]tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done", "Cancelled"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done", "Cancelled"}},
 		{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done", "Cancelled"}},

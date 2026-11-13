@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -261,7 +262,7 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 			if len(ids) == 0 {
 				continue
 			}
-			point, ok := reader.(nativeRunEventReader)
+			point, ok := reader.(hubrecords.NativeRunEventReader)
 			if !ok {
 				return errors.New("PostgreSQL event reader is unavailable")
 			}

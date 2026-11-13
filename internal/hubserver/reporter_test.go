@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -419,7 +420,9 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
 			f, ctx := newHostedKeyMCPFixture(t, deployment, "reporter")
-			updateReporterProject(t, f.service, f.project, func(record *projectstore.Record) { record.States = nativeTriageStates(nativeFixtureStates()) })
+			updateReporterProject(t, f.service, f.project, func(record *projectstore.Record) {
+				record.States = hubrecords.NativeTriageStates(nativeFixtureStates())
+			})
 
 			executor := hostedOperatorExecutor{f.service}
 			definitions, err := executor.ListTools(ctx)

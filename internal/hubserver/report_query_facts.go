@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -68,7 +69,7 @@ func readLegacyReportFact(ctx context.Context, q hubapi.NativeQueryer, scope hub
 	if err != nil {
 		return f, err
 	}
-	defer func(rows *changeLegacyRows) { resultErr = errors.Join(resultErr, rows.Close()) }(rows)
+	defer func(rows *hubrecords.ChangeLegacyRows) { resultErr = errors.Join(resultErr, rows.Close()) }(rows)
 	type legacyRow struct {
 		values               []any
 		raw, status, updated string

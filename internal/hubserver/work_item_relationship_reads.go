@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -115,7 +116,7 @@ func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope hu
 			StartedAt:    relation.StartedAt,
 		}
 		if relation.OrganizationSlug != "" && relation.ProjectSlug != "" && s.config.Hosted != nil {
-			link.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
+			link.WebURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
 		}
 		switch relation.Type {
 		case "dependency":
@@ -416,7 +417,7 @@ func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope 
 		}
 		browserURL := ""
 		if relation.OrganizationSlug != "" && relation.ProjectSlug != "" && s.config.Hosted != nil {
-			browserURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: issueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
+			browserURL = s.nativeIssueResponse(tracker.NativeIssue{WebURL: hubrecords.IssueBrowserPath(relation.OrganizationSlug, relation.ProjectSlug, relation.Number)}).WebURL
 		}
 		link := tracker.NativeDependency{
 			Dispatchable: relation.Dispatchable,

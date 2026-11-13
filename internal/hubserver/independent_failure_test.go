@@ -104,7 +104,7 @@ func independentCreateOwner(t *testing.T, f nativeFixture, request tracker.Creat
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan.current.NativeID = plan.issue.WorkItemID
+	plan.Current.NativeID = plan.Issue.WorkItemID
 	record, err := f.service.prepareScheduledAttributionRecord(t.Context(), scope, plan, tracker.CollaborationData{})
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func independentCreateOwner(t *testing.T, f nativeFixture, request tracker.Creat
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return plan.issue
+	return plan.Issue
 }
 
 func independentReview(t *testing.T, f changeFixture, change tracker.ChangeRequest, review *tracker.ChangeReview, persist bool) error {

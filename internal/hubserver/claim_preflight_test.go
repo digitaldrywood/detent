@@ -260,7 +260,7 @@ func TestClaimRetryAfterCommittedDecisionUsesFreshEventIDs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		stale.candidate.Revision = -1
+		stale.Candidate.Revision = -1
 		if _, err := f.service.claimNativeIssueTenantWithPlan(t.Context(), scope, request, 5*time.Minute, now, stale, nil); !errors.Is(err, ErrNoClaimableWork) {
 			t.Fatalf("pass %d: %v, want committed decisions before stale plan refusal", pass, err)
 		}

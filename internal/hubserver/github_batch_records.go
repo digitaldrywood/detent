@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -380,7 +381,7 @@ func (s *Service) importGitHubSnapshotRecord(ctx context.Context, scope hubscope
 	}
 	scope.ScheduledRepair = s.observeImportedScheduledRepair(ctx, scope, snapshot)
 	if verified := scope.ScheduledRepair; verified != nil && verified.ImportReason == "" && verified.PolicyID != "" {
-		if err := validateNativeContent(snapshot.Title, snapshot.Body, nil, nil, nil); err != nil {
+		if err := hubrecords.ValidateNativeContent(snapshot.Title, snapshot.Body, nil, nil, nil); err != nil {
 			return tracker.NativeIssue{}, err
 		}
 		if err := validateImportProvenance(&snapshot.Provenance); err != nil {
@@ -810,7 +811,7 @@ func (s *Service) closeGitHubBatchSources(ctx context.Context, scope hubscope.Na
 		if err != nil {
 			return nil, err
 		}
-		url := strings.TrimRight(s.database.linkedSourceBase, "/") + issueBrowserPath(organizationSlug, project.Core.Slug, int(row.Number))
+		url := strings.TrimRight(s.database.linkedSourceBase, "/") + hubrecords.IssueBrowserPath(organizationSlug, project.Core.Slug, int(row.Number))
 		desired, err := json.Marshal(WorkpadDesired{Phase: "summary", Summary: true, Body: "Tracked in Detent: " + url, Marker: "<!-- detent-summary:" + string(item.WorkItemID) + ":intake -->", CloseSource: true, IssueNumber: item.Number})
 		if err != nil {
 			return nil, err

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -536,12 +537,12 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 			return s.nativeAPIError(c, err)
 		}
 	}
-	var policyRows currentChangePolicyRows
+	var policyRows hubrecords.CurrentChangePolicyRows
 	var workflowPlan *changeReviewWorkflow
 	if scope.Credential.Scope != hubapi.APIScopeWorker && version.ID == change.CurrentVersion {
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			policyRows, err = readChangeSummaryPolicyRows(ctx, r, scope)
+			policyRows, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 			return err
 		})
 		if err != nil {
@@ -599,7 +600,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 				if err != nil {
 					return err
 				}
-				rows, err := readChangeSummaryPolicyRows(ctx, w, scope)
+				rows, err := hubrecords.ReadChangeSummaryPolicyRows(ctx, w, scope)
 				if err != nil {
 					return err
 				}
@@ -978,7 +979,7 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope hubscope.Nativ
 	}
 	var versions []eventstore.Version
 	var evidence []eventstore.Evidence
-	var policyRows currentChangePolicyRows
+	var policyRows hubrecords.CurrentChangePolicyRows
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		versions, err = r.Versions(ctx, change.ID, 0, corestore.MaxPageSize)
@@ -1007,7 +1008,7 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope hubscope.Nativ
 				return corestore.ErrInvalidPage
 			}
 		}
-		policyRows, err = readChangeSummaryPolicyRows(ctx, r, scope)
+		policyRows, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 		return err
 	})
 	if err != nil {
@@ -1090,11 +1091,11 @@ func (s *Service) selectedChangeDetail(ctx context.Context, scope hubscope.Nativ
 	return result, err
 }
 
-func (s *Service) nativeClaimCurrentChangeDetail(ctx context.Context, scope hubscope.NativeScope, plan nativeClaimPlan, now time.Time) (tracker.ChangeDetail, error) {
-	if plan.changeFacts == nil || plan.changeFacts.VersionObservations == nil || plan.changeRecord.ID == "" || plan.changeRecord.CurrentVersionID == nil || *plan.changeRecord.CurrentVersionID != plan.changeVersion.ID || plan.changeVersion.ChangeID != plan.changeRecord.ID {
+func (s *Service) nativeClaimCurrentChangeDetail(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan, now time.Time) (tracker.ChangeDetail, error) {
+	if plan.ChangeFacts == nil || plan.ChangeFacts.VersionObservations == nil || plan.ChangeRecord.ID == "" || plan.ChangeRecord.CurrentVersionID == nil || *plan.ChangeRecord.CurrentVersionID != plan.ChangeVersion.ID || plan.ChangeVersion.ChangeID != plan.ChangeRecord.ID {
 		return tracker.ChangeDetail{}, corestore.ErrRevisionConflict
 	}
-	return s.hydrateCurrentChangeDetailWithFacts(ctx, scope, plan.candidate.WorkItemID, plan.changeRecord, &plan.changeVersion, plan.changePolicy, now, plan.changeFacts, plan.approval, corestore.Serving)
+	return s.hydrateCurrentChangeDetailWithFacts(ctx, scope, plan.Candidate.WorkItemID, plan.ChangeRecord, &plan.ChangeVersion, plan.ChangePolicy, now, plan.ChangeFacts, plan.Approval, corestore.Serving)
 }
 
 func (s *Service) selectedCurrentChangeSummary(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, id string, now time.Time) (tracker.ChangeSummary, error) {
@@ -1103,7 +1104,7 @@ func (s *Service) selectedCurrentChangeSummary(ctx context.Context, scope hubsco
 	}
 	var change eventstore.Change
 	var version *eventstore.Version
-	var policyRows currentChangePolicyRows
+	var policyRows hubrecords.CurrentChangePolicyRows
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		change, err = r.Change(ctx, id)
@@ -1120,7 +1121,7 @@ func (s *Service) selectedCurrentChangeSummary(ctx context.Context, scope hubsco
 			}
 			version = &row
 		}
-		policyRows, err = readChangeSummaryPolicyRows(ctx, r, scope)
+		policyRows, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 		return err
 	})
 	if err != nil {
@@ -1133,15 +1134,15 @@ func (s *Service) selectedCurrentChangeSummary(ctx context.Context, scope hubsco
 	return detail.Summary, err
 }
 
-func (s *Service) hydrateCurrentChangeDetail(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows currentChangePolicyRows, now time.Time) (tracker.ChangeDetail, error) {
+func (s *Service) hydrateCurrentChangeDetail(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows hubrecords.CurrentChangePolicyRows, now time.Time) (tracker.ChangeDetail, error) {
 	return s.hydrateCurrentChangeDetailWithFacts(ctx, scope, item, changeRecord, versionRecord, policyRows, now, nil, nil, corestore.Serving)
 }
 
-func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows currentChangePolicyRows, now time.Time, facts *tenantstore.BoardChangeRows, approval *ChangeVersionApproval, workload corestore.Workload) (tracker.ChangeDetail, error) {
+func (s *Service) hydrateCurrentChangeDetailWithFacts(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows hubrecords.CurrentChangePolicyRows, now time.Time, facts *tenantstore.BoardChangeRows, approval *hubrecords.ChangeVersionApproval, workload corestore.Workload) (tracker.ChangeDetail, error) {
 	return s.hydrateCurrentChangeDetailSelection(ctx, scope, item, changeRecord, versionRecord, policyRows, now, facts, approval, workload, false)
 }
 
-func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows currentChangePolicyRows, now time.Time, facts *tenantstore.BoardChangeRows, approval *ChangeVersionApproval, workload corestore.Workload, recovery bool) (tracker.ChangeDetail, error) {
+func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, changeRecord eventstore.Change, versionRecord *eventstore.Version, policyRows hubrecords.CurrentChangePolicyRows, now time.Time, facts *tenantstore.BoardChangeRows, approval *hubrecords.ChangeVersionApproval, workload corestore.Workload, recovery bool) (tracker.ChangeDetail, error) {
 	if changeRecord.CurrentVersionID == nil && versionRecord != nil || changeRecord.CurrentVersionID != nil && (versionRecord == nil || *changeRecord.CurrentVersionID != versionRecord.ID || versionRecord.ChangeID != changeRecord.ID) {
 		return tracker.ChangeDetail{}, corestore.ErrRevisionConflict
 	}

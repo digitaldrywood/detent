@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -428,7 +429,7 @@ func (s *Service) readBoundedChangeSummary(ctx context.Context, scope hubscope.N
 	var version tracker.ChangeVersion
 	var evidence []eventstore.Evidence
 	var prior bool
-	var rows currentChangePolicyRows
+	var rows hubrecords.CurrentChangePolicyRows
 	var checks []string
 	if current.ID != "" {
 		var err error
@@ -443,7 +444,7 @@ func (s *Service) readBoundedChangeSummary(ctx context.Context, scope hubscope.N
 	}
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		rows, err = readChangeSummaryPolicyRows(ctx, r, scope)
+		rows, err = hubrecords.ReadChangeSummaryPolicyRows(ctx, r, scope)
 		if err != nil {
 			return err
 		}
@@ -542,7 +543,7 @@ func (s *Service) readBoundedChangePushes(ctx context.Context, scope hubscope.Na
 				if err != nil {
 					return nil, err
 				}
-				if mismatch := nativeAttemptRunMismatch(snapshot, actual); mismatch != nil {
+				if mismatch := hubrecords.NativeAttemptRunMismatch(snapshot, actual); mismatch != nil {
 					return nil, mismatch
 				}
 				valid = actual.PolicyID == run.PolicyID && actual.PolicyID == version.PolicyID

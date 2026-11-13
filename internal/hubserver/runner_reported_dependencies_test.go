@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -142,35 +143,35 @@ func TestRunnerCompletionRecordsDependencyEdgesAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, lease := range f.leases {
-		var plan workItemRecordPlan
+		var plan hubrecords.WorkItemRecordPlan
 		var version eventstore.CollaborationVersion
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			plan.project, err = r.ProjectRecord(t.Context(), "prj_runner")
+			plan.Project, err = r.ProjectRecord(t.Context(), "prj_runner")
 			if err != nil {
 				return err
 			}
-			plan.current, err = r.WorkItem(t.Context(), "prj_runner", lease.WorkItemID)
+			plan.Current, err = r.WorkItem(t.Context(), "prj_runner", lease.WorkItemID)
 			if err != nil {
 				return err
 			}
-			version, err = r.CollaborationVersion(t.Context(), string(lease.WorkItemID), plan.current.Revision)
+			version, err = r.CollaborationVersion(t.Context(), string(lease.WorkItemID), plan.Current.Revision)
 			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
 		var err error
-		plan.issue, err = f.service.hydrateCanonicalWorkItemRecord(t.Context(), plan.current, version)
+		plan.Issue, err = f.service.hydrateCanonicalWorkItemRecord(t.Context(), plan.Current, version)
 		if err != nil {
 			t.Fatal(err)
 		}
-		plan.issue.CreatedAt, plan.issue.UpdatedAt = plan.current.CreatedAt, plan.current.UpdatedAt
-		document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: lease.WorkItemID, ID: "issue:" + string(lease.WorkItemID), SourceID: string(lease.WorkItemID), Kind: "issue", Scope: "issue", Revision: plan.current.Revision, UpdatedAt: plan.current.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+		plan.Issue.CreatedAt, plan.Issue.UpdatedAt = plan.Current.CreatedAt, plan.Current.UpdatedAt
+		document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: lease.WorkItemID, ID: "issue:" + string(lease.WorkItemID), SourceID: string(lease.WorkItemID), Kind: "issue", Scope: "issue", Revision: plan.Current.Revision, UpdatedAt: plan.Current.UpdatedAt}, searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-			if err := writeClaimFactsAndQueue(t.Context(), w, plan, nil); err != nil {
+			if err := hubrecords.WriteClaimFactsAndQueue(t.Context(), w, plan, nil); err != nil {
 				return err
 			}
 			return w.PutSearch(t.Context(), document, 0)
@@ -260,7 +261,7 @@ func TestRunnerCompletionRecordsDependencyEdgesAtomically(t *testing.T) {
 				}
 				now := time.Now().UTC()
 				comment := tracker.NativeComment{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: lease.WorkItemID, ID: hubapi.NewID("cmt"), Revision: 1, Sequence: source.EventSequence + 1, Body: "Example feedback", Actor: scope.Actor(), CreatedAt: now, UpdatedAt: now}
-				fields, err := f.service.prepareWorkItemFields(t.Context(), "org_startup", workItemRecordPlan{comment: comment})
+				fields, err := f.service.prepareWorkItemFields(t.Context(), "org_startup", hubrecords.WorkItemRecordPlan{Comment: comment})
 				if err != nil {
 					t.Fatal(err)
 				}

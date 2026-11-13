@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -182,7 +183,7 @@ func holdReleaseTenantDelivery(t *testing.T, f *releaseTenantFixture) tracker.Re
 	issue := f.delivery
 	issue.Body += "\n\ndetent:no-dispatch"
 	issue.Revision++
-	fields, err := f.f.service.prepareWorkItemFields(t.Context(), issue.OrganizationID, workItemRecordPlan{issue: issue})
+	fields, err := f.f.service.prepareWorkItemFields(t.Context(), issue.OrganizationID, hubrecords.WorkItemRecordPlan{Issue: issue})
 	if err != nil {
 		t.Fatal(err)
 	}

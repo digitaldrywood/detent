@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -27,7 +28,7 @@ func TestPostgresImportStarts(t *testing.T) {
 	service.database.hostedOrganization = "org"
 	for _, project := range []tracker.ProjectID{"first", "second"} {
 		err := repository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
-			record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org", ID: project, Name: string(project), Profile: "native"}, States: nativeTriageStates(nativeFixtureStates())})
+			record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org", ID: project, Name: string(project), Profile: "native"}, States: hubrecords.NativeTriageStates(nativeFixtureStates())})
 			if err != nil {
 				return err
 			}
@@ -238,7 +239,7 @@ func TestPostgresImportStarts(t *testing.T) {
 			var project projectstore.Record
 			if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				var err error
-				project, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.Organization, ID: projectID, Name: string(projectID), Slug: projectstore.Slug(string(projectID)), Profile: "github_compatible"}, States: nativeTriageStates(nativeFixtureStates())})
+				project, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.Organization, ID: projectID, Name: string(projectID), Slug: projectstore.Slug(string(projectID)), Profile: "github_compatible"}, States: hubrecords.NativeTriageStates(nativeFixtureStates())})
 				if err != nil {
 					return err
 				}

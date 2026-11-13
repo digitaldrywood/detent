@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -1012,19 +1013,19 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if actual.AttemptID != id || actual.RunID != snapshot.attempt.RunID || actual.LeaseID != tracker.LeaseID(snapshot.lease.LeaseID) || actual.FencingToken != tracker.FencingToken(snapshot.lease.FencingToken) || actual.Sequence != snapshot.attempt.Sequence {
+		if actual.AttemptID != id || actual.RunID != snapshot.Attempt.RunID || actual.LeaseID != tracker.LeaseID(snapshot.Lease.LeaseID) || actual.FencingToken != tracker.FencingToken(snapshot.Lease.FencingToken) || actual.Sequence != snapshot.Attempt.Sequence {
 			t.Fatal("historical attempt fixture lost independent identity")
 		}
-		if snapshot.payload == nil {
+		if snapshot.Payload == nil {
 			t.Fatal("historical fixture requires its registered immutable payload")
 		}
-		payload, err := service.runDetailStore().ReadDetail(t.Context(), string(scope.Organization), *snapshot.payload)
+		payload, err := service.runDetailStore().ReadDetail(t.Context(), string(scope.Organization), *snapshot.Payload)
 		if err != nil {
 			t.Fatal(err)
 		}
 		var checkpoint any
-		if snapshot.checkpointPayload != nil {
-			raw, err := service.runDetailStore().ReadDetail(t.Context(), string(scope.Organization), *snapshot.checkpointPayload)
+		if snapshot.CheckpointPayload != nil {
+			raw, err := service.runDetailStore().ReadDetail(t.Context(), string(scope.Organization), *snapshot.CheckpointPayload)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1039,9 +1040,9 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			t.Fatal(err)
 		}
 		fixture := newCoreNeutralFixture(t, scope.Organization, "issues", "native_attempts", "leases", "lease_policies")
-		fixture.add("issues", map[string]any{"id": snapshot.attempt.IssueID, "organization_id": scope.Organization, "project_id": scope.Project, "native_id": local.issue.WorkItemID})
-		fixture.add("native_attempts", map[string]any{"id": id, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": local.issue.WorkItemID, "lease_id": actual.LeaseID, "fencing_token": actual.FencingToken, "run_id": actual.RunID, "sequence": actual.Sequence, "status": snapshot.attempt.Status, "work_item_revision": snapshot.attempt.WorkItemRevision, "dispatch_generation": snapshot.attempt.DispatchGeneration, "data_json": string(payload), "checkpoint_json": checkpoint, "artifact_ids_json": "[]", "started_at": hubapi.FormatHubTime(snapshot.attempt.StartedAt), "updated_at": hubapi.FormatHubTime(snapshot.attempt.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
-		lease := snapshot.lease
+		fixture.add("issues", map[string]any{"id": snapshot.Attempt.IssueID, "organization_id": scope.Organization, "project_id": scope.Project, "native_id": local.issue.WorkItemID})
+		fixture.add("native_attempts", map[string]any{"id": id, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": local.issue.WorkItemID, "lease_id": actual.LeaseID, "fencing_token": actual.FencingToken, "run_id": actual.RunID, "sequence": actual.Sequence, "status": snapshot.Attempt.Status, "work_item_revision": snapshot.Attempt.WorkItemRevision, "dispatch_generation": snapshot.Attempt.DispatchGeneration, "data_json": string(payload), "checkpoint_json": checkpoint, "artifact_ids_json": "[]", "started_at": hubapi.FormatHubTime(snapshot.Attempt.StartedAt), "updated_at": hubapi.FormatHubTime(snapshot.Attempt.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
+		lease := snapshot.Lease
 		var released any
 		if lease.ReleasedAt != nil {
 			released = hubapi.FormatHubTime(*lease.ReleasedAt)
@@ -1063,7 +1064,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if prepared.Attempt.PayloadObjectKey != snapshot.attempt.PayloadObjectKey || prepared.Attempt.LeaseID != lease.LeaseID || prepared.Attempt.Sequence != actual.Sequence {
+			if prepared.Attempt.PayloadObjectKey != snapshot.Attempt.PayloadObjectKey || prepared.Attempt.LeaseID != lease.LeaseID || prepared.Attempt.Sequence != actual.Sequence {
 				t.Fatal("attempt import lost the stored payload or fence")
 			}
 			if err := repository.ImportCoreAttempt(t.Context(), prepared); err != nil {
@@ -1102,7 +1103,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			t.Fatal(err)
 		}
 		run, err := service.readNativeAttemptRunTenant(t.Context(), recovered)
-		if err != nil || !reflect.DeepEqual(run, actual) || !reflect.DeepEqual(recovered.attempt, snapshot.attempt) {
+		if err != nil || !reflect.DeepEqual(run, actual) || !reflect.DeepEqual(recovered.Attempt, snapshot.Attempt) {
 			t.Fatalf("historical import changed attempt payload or metadata: run=%+v error=%v", run, err)
 		}
 		if includePolicy {
@@ -1351,10 +1352,10 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						if snapshot.payload == nil {
+						if snapshot.Payload == nil {
 							t.Fatal("payload refusal fixture requires its registered immutable payload")
 						}
-						originalRef := *snapshot.payload
+						originalRef := *snapshot.Payload
 						payload, err := service.runDetailStore().ReadDetail(t.Context(), string(localScope.Organization), originalRef)
 						if err != nil {
 							t.Fatal(err)
@@ -1413,7 +1414,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 								t.Fatalf("missing attempt payload error = %v", err)
 							}
 						case "mismatched attempt payload":
-							var mismatch *nativeAttemptIdentityMismatch
+							var mismatch *hubrecords.NativeAttemptIdentityMismatch
 							if !errors.Is(err, artifact.ErrIntegrity) || !errors.As(err, &mismatch) || mismatch.Field != "run_id" || mismatch.AttemptID != localStart.Data.AttemptID || mismatch.WorkItemID != local.issue.WorkItemID {
 								t.Fatalf("mismatched attempt payload error = %v", err)
 							}

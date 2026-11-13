@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -166,7 +167,7 @@ func TestReportsTrackingIssues(t *testing.T) {
 			var sourceEvent eventstore.Event
 			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				sourceEvent, err = r.(nativeRunEventReader).RunEvent(t.Context(), scope.Project, failed.WorkItemID, nativeAttemptHistoryID(event.Type, event.Data))
+				sourceEvent, err = r.(hubrecords.NativeRunEventReader).RunEvent(t.Context(), scope.Project, failed.WorkItemID, nativeAttemptHistoryID(event.Type, event.Data))
 				return err
 			}); err != nil {
 				t.Fatal(err)

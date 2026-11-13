@@ -743,9 +743,9 @@ func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
 						t.Fatalf("selection progress write error=%v want committed=%v", err, want)
 					}
 				}
-				write(winner, winnerScan.plans[2].candidate, true)
-				write(loser, loserScan.plans[0].candidate, false)
-				write(loser, loserScan.plans[1].candidate, false)
+				write(winner, winnerScan.plans[2].Candidate, true)
+				write(loser, loserScan.plans[0].Candidate, false)
+				write(loser, loserScan.plans[1].Candidate, false)
 				var stored claimstore.SelectionCursor
 				read := func() {
 					t.Helper()
@@ -758,13 +758,13 @@ func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
 					}
 				}
 				read()
-				if stored.Position.WorkItemID != winnerScan.plans[2].candidate.WorkItemID || stored.Revision != initialRevision+1 {
+				if stored.Position.WorkItemID != winnerScan.plans[2].Candidate.WorkItemID || stored.Revision != initialRevision+1 {
 					t.Fatalf("CAS loser replaced winner progress: cursor=%s revision=%d", stored.Position.WorkItemID, stored.Revision)
 				}
 				winner.Revision = stored.Revision
-				write(winner, winnerScan.plans[3].candidate, true)
+				write(winner, winnerScan.plans[3].Candidate, true)
 				read()
-				if stored.Position.WorkItemID != winnerScan.plans[3].candidate.WorkItemID || stored.Revision != initialRevision+2 {
+				if stored.Position.WorkItemID != winnerScan.plans[3].Candidate.WorkItemID || stored.Revision != initialRevision+2 {
 					t.Fatalf("winner could not continue: cursor=%s revision=%d", stored.Position.WorkItemID, stored.Revision)
 				}
 				fresh := project.create(t, "work after cursor contention")

@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -36,7 +37,7 @@ func (s *Service) contentContext(ctx context.Context) context.Context {
 		}
 		var ref attachment.ArchiveReference
 		err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
-			reader, ok := r.(attemptArchiveReader)
+			reader, ok := r.(hubrecords.AttemptArchiveReader)
 			if !ok {
 				return hubcontent.ErrContentStorageUnconfigured
 			}

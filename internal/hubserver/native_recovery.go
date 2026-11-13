@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -145,7 +146,7 @@ func projectNativeRecovery(result *tracker.NativeRecovery) error {
 	}
 	if detail := result.ChangeDetail; detail != nil {
 		for i := range detail.Versions {
-			detail.Versions[i].Validation = boundedChangeCommand(detail.Versions[i].Validation)
+			detail.Versions[i].Validation = hubrecords.BoundedChangeCommand(detail.Versions[i].Validation)
 			landing, omitted, err := boundedRecoveryLanding(detail.Versions[i].Landing, &landingBudget)
 			if err != nil {
 				return err
@@ -187,7 +188,7 @@ func projectNativeRecovery(result *tracker.NativeRecovery) error {
 	}
 	for i := range result.Attempts {
 		if runtime := result.Attempts[i].Runtime; runtime != nil {
-			runtime.Validation = boundedChangeCommand(runtime.Validation)
+			runtime.Validation = hubrecords.BoundedChangeCommand(runtime.Validation)
 			landing, omitted, err := boundedRecoveryLanding(runtime.Landing, &landingBudget)
 			if err != nil {
 				return err
@@ -239,7 +240,7 @@ func boundedRecoveryAudit(audit *tracker.SecurityAuditReview) *tracker.SecurityA
 }
 
 func boundedRecoveryLanding(landing *tracker.NativeLandingReceipt, budget *int) (*tracker.NativeLandingReceipt, bool, error) {
-	result := boundedChangeLanding(landing)
+	result := hubrecords.BoundedChangeLanding(landing)
 	if result == nil || result.SecurityAudit == nil {
 		return result, false, nil
 	}

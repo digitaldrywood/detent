@@ -6,20 +6,21 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type scheduledAttributionRecord struct {
-	plan    workItemRecordPlan
-	fields  workItemRecordFields
+	plan    hubrecords.WorkItemRecordPlan
+	fields  hubrecords.WorkItemRecordFields
 	version eventstore.CollaborationVersion
 	event   eventstore.Event
 	search  searchstore.Document
 }
 
-func (s *Service) prepareScheduledAttributionRecord(ctx context.Context, scope hubscope.NativeScope, plan workItemRecordPlan, data tracker.CollaborationData) (scheduledAttributionRecord, error) {
+func (s *Service) prepareScheduledAttributionRecord(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan, data tracker.CollaborationData) (scheduledAttributionRecord, error) {
 	p := scheduledAttributionRecord{plan: plan}
 	var err error
 	p.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
@@ -27,26 +28,26 @@ func (s *Service) prepareScheduledAttributionRecord(ctx context.Context, scope h
 		return p, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	id, revision, at := string(plan.issue.WorkItemID), int64(plan.issue.Revision), plan.issue.UpdatedAt
+	id, revision, at := string(plan.Issue.WorkItemID), int64(plan.Issue.Revision), plan.Issue.UpdatedAt
 	kind := "issue"
-	value := any(plan.issue)
-	text := searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels}
-	if plan.comment.ID != "" {
-		id, revision, at, kind = plan.comment.ID, int64(plan.comment.Revision), plan.comment.UpdatedAt, "comment"
-		value = plan.comment
-		text = searchstore.Text{Body: plan.comment.Body}
-		data.CommentID = plan.comment.ID
+	value := any(plan.Issue)
+	text := searchstore.Text{Title: plan.Issue.Title, Body: plan.Issue.Body, Labels: plan.Issue.Labels}
+	if plan.Comment.ID != "" {
+		id, revision, at, kind = plan.Comment.ID, int64(plan.Comment.Revision), plan.Comment.UpdatedAt, "comment"
+		value = plan.Comment
+		text = searchstore.Text{Body: plan.Comment.Body}
+		data.CommentID = plan.Comment.ID
 	}
 	data.Revision = tracker.Revision(revision)
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return p, err
 	}
-	p.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.current.NativeID, RecordID: id, Revision: revision}, raw)
+	p.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Current.NativeID, RecordID: id, Revision: revision}, raw)
 	if err != nil {
 		return p, err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.current.NativeID, Type: plan.eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: at, Data: data})
+	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.Current.NativeID, Type: plan.EventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: at, Data: data})
 	if err != nil {
 		return p, err
 	}
@@ -54,6 +55,6 @@ func (s *Service) prepareScheduledAttributionRecord(ctx context.Context, scope h
 	if err != nil {
 		return p, err
 	}
-	p.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.current.NativeID, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
+	p.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.Current.NativeID, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
 	return p, err
 }

@@ -70,8 +70,8 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if plan.item.Revision != int64(issue.Revision) || plan.issue.Revision != issue.Revision || nativeClaimIssueContractAllowed(plan) != wantAllowed {
-					t.Fatalf("organization=%s step=%d revision=%d/%d allowed=%t want revision=%d allowed=%t", organization, step, plan.item.Revision, plan.issue.Revision, nativeClaimIssueContractAllowed(plan), issue.Revision, wantAllowed)
+				if plan.Item.Revision != int64(issue.Revision) || plan.Issue.Revision != issue.Revision || nativeClaimIssueContractAllowed(plan) != wantAllowed {
+					t.Fatalf("organization=%s step=%d revision=%d/%d allowed=%t want revision=%d allowed=%t", organization, step, plan.Item.Revision, plan.Issue.Revision, nativeClaimIssueContractAllowed(plan), issue.Revision, wantAllowed)
 				}
 				context := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}.Context(t.Context(), hubmaintenance.Tenant{Organization: string(organization), Generation: 1})
 				if err := service.maintainHealthWaitItem(context, organization, corestore.WorkItemReference{ProjectID: f.project.ID, WorkItemID: issue.WorkItemID}); err != nil {
@@ -169,8 +169,8 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if plan.item.Revision != int64(f.delivery.Revision) || plan.issue.Revision != f.delivery.Revision || nativeClaimIssueContractAllowed(plan) != wantAllowed {
-				t.Fatalf("step=%d revision=%d/%d allowed=%t want revision=%d allowed=%t", step, plan.item.Revision, plan.issue.Revision, nativeClaimIssueContractAllowed(plan), f.delivery.Revision, wantAllowed)
+			if plan.Item.Revision != int64(f.delivery.Revision) || plan.Issue.Revision != f.delivery.Revision || nativeClaimIssueContractAllowed(plan) != wantAllowed {
+				t.Fatalf("step=%d revision=%d/%d allowed=%t want revision=%d allowed=%t", step, plan.Item.Revision, plan.Issue.Revision, nativeClaimIssueContractAllowed(plan), f.delivery.Revision, wantAllowed)
 			}
 			context := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}.Context(t.Context(), hubmaintenance.Tenant{Organization: "org_security", Generation: 1})
 			if err := service.maintainHealthWaitItem(context, "org_security", corestore.WorkItemReference{ProjectID: f.f.project, WorkItemID: f.delivery.WorkItemID}); err != nil {

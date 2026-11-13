@@ -7,16 +7,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plans []nativeClaimPlan) error {
+func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plans []hubrecords.NativeClaimPlan) error {
 	ids := []string{}
 	for _, plan := range plans {
-		if (hubapi.StringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending) && plan.changeRecord.ID != "" {
-			ids = append(ids, plan.changeRecord.ID)
+		if (hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending) && plan.ChangeRecord.ID != "" {
+			ids = append(ids, plan.ChangeRecord.ID)
 		}
 	}
 	if len(ids) == 0 {
@@ -31,21 +32,21 @@ func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope
 		return err
 	}
 	for i := range plans {
-		if row, ok := rows[plans[i].changeRecord.ID]; ok {
-			row.VersionObservations = plans[i].observations
-			plans[i].changeFacts = &row
+		if row, ok := rows[plans[i].ChangeRecord.ID]; ok {
+			row.VersionObservations = plans[i].Observations
+			plans[i].ChangeFacts = &row
 		}
 	}
 
 	return nil
 }
 
-func (s *Service) prepareNativeClaimLegacyAuditFacts(ctx context.Context, scope hubscope.NativeScope, plans []nativeClaimPlan) error {
+func (s *Service) prepareNativeClaimLegacyAuditFacts(ctx context.Context, scope hubscope.NativeScope, plans []hubrecords.NativeClaimPlan) error {
 	runs := []int64{}
 	seen := map[int64]bool{}
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	for _, plan := range plans {
-		facts := plan.changeFacts
+		facts := plan.ChangeFacts
 		if facts == nil {
 			continue
 		}
@@ -53,7 +54,7 @@ func (s *Service) prepareNativeClaimLegacyAuditFacts(ctx context.Context, scope 
 			return corestore.ErrInvalidPage
 		}
 		for _, row := range facts.Evidence {
-			if row.Kind != "review" || row.VersionID == nil || *row.VersionID != plan.changeVersion.ID || row.ReviewKind != "" && row.ReviewSessionKnown {
+			if row.Kind != "review" || row.VersionID == nil || *row.VersionID != plan.ChangeVersion.ID || row.ReviewKind != "" && row.ReviewSessionKnown {
 				continue
 			}
 			raw, err := content.Evidence(ctx, row)
@@ -99,11 +100,11 @@ func (s *Service) prepareNativeClaimLegacyAuditFacts(ctx context.Context, scope 
 		return err
 	}
 	for _, plan := range plans {
-		if plan.changeFacts == nil {
+		if plan.ChangeFacts == nil {
 			continue
 		}
 		for id, values := range rows {
-			plan.changeFacts.AuditDispositions[id] = values
+			plan.ChangeFacts.AuditDispositions[id] = values
 		}
 	}
 	return nil

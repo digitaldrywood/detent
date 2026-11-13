@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -80,7 +81,7 @@ func (c *conversationTurnCoordinator) coordinatorMessages(ctx context.Context, f
 					if err != nil {
 						return err
 					}
-					path = issueBrowserPath(org.Slug, project.Slug, int(item.Number))
+					path = hubrecords.IssueBrowserPath(org.Slug, project.Slug, int(item.Number))
 				}
 				message.References = append(message.References, conversationMessageReference{Kind: reference.Kind, ID: reference.TargetID, Label: reference.Label, URL: path})
 			}
