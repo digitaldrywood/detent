@@ -222,8 +222,9 @@ type requestedClaimRefusal struct {
 }
 
 type claimRoutingRefusal struct {
-	code         string
+	code, reason string
 	requirements policy.Requirements
+	sourceFacts  hubrecords.ClaimSourceFacts
 }
 
 func recordableClaimRoutingRefusal(err error, requirements policy.Requirements) *claimRoutingRefusal {
@@ -265,6 +266,22 @@ func (r claimRoutingRefusal) holds(ctx context.Context, reader tenantstore.Reade
 			return false, err
 		}
 		return machine.Capacity <= 0, nil
+	case "source_unavailable":
+		if identityRefusal != nil {
+			return false, nil
+		}
+		item, err := reader.WorkItem(ctx, scope.Project, request.WorkItemID)
+		if err != nil {
+			return false, err
+		}
+		if err := claimSourceCurrent(ctx, reader, scope, item, r.sourceFacts); err != nil {
+			if errors.Is(err, corestore.ErrRevisionConflict) {
+				return false, nil
+			}
+			return false, err
+		}
+		allowed, reason := claimSourceAllowed(r.sourceFacts, string(identity.MachineID), identity.RunnerID)
+		return !allowed && reason == r.reason, nil
 	}
 	return false, nil
 }
@@ -273,7 +290,11 @@ func (s *Service) recordClaimRoutingRefusal(ctx context.Context, scope hubscope.
 	if refusal == nil || request.WorkItemID == "" {
 		return nil
 	}
-	err := s.recordRequestedClaimRefusal(ctx, scope, request, now, false, refusal.code, refusal)
+	reason := refusal.code
+	if refusal.reason != "" {
+		reason = refusal.reason
+	}
+	err := s.recordRequestedClaimRefusal(ctx, scope, request, now, false, reason, refusal)
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		return nil
 	}
@@ -639,6 +660,12 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 	if err != nil {
 		return leasestore.Lease{}, err
 	}
+	if plan.Replay == nil && !plan.Source.Loaded {
+		plan.Source, err = s.readClaimSourceFacts(ctx, scope, plan.Item)
+		if err != nil {
+			return leasestore.Lease{}, err
+		}
+	}
 	var cancellation *preparedNativeLeaseCancellation
 	if plan.LatestAttemptFound && plan.Replay == nil {
 		cancellation, err = s.prepareExpiredNativeLeaseCancellation(ctx, scope, plan.Item.ID, true)
@@ -648,13 +675,13 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 	}
 	var lease leasestore.Lease
 	var isolationRefused bool
-	var placementRefusal string
+	var placementRefusal, sourceRefusal string
 	placement := plan.Placement
 	if placement == nil {
 		placement = &hubrecords.ClaimPlacementSnapshot{}
 	}
 	write := func(ctx context.Context, w tenantstore.Writer) error {
-		placementRefusal = ""
+		placementRefusal, sourceRefusal = "", ""
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -912,6 +939,15 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			if batch != "" {
 				joining = landingCapacityKey(identity.MachineID, string(scope.Project), request.SessionID)
 			}
+			if !workspaceItem {
+				if err := claimSourceCurrent(ctx, w, scope, item, plan.Source); err != nil {
+					return err
+				}
+				if allowed, reason := claimSourceAllowed(plan.Source, string(identity.MachineID), identity.RunnerID); !allowed {
+					placementRefusal, sourceRefusal = reason, reason
+					return ErrNoClaimableWork
+				}
+			}
 			allowed, reason, err := claimPlacementAllowed(ctx, w, scope, identity, machine, plan, request.ProviderCandidates, workspaceItem, joining, authoritativeNow, placement.Snapshot)
 			if err != nil {
 				return err
@@ -1082,6 +1118,11 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		s.config.Logger.DebugContext(ctx, "native claim candidate skipped",
 			"organization_id", scope.Organization, "project_id", scope.Project,
 			"work_item_id", plan.Candidate.WorkItemID, "runner_id", scope.Credential.Runner.RunnerID, "reason", placementRefusal)
+	}
+	if sourceRefusal != "" && errors.Is(err, ErrNoClaimableWork) {
+		if recordErr := s.recordClaimRoutingRefusal(ctx, scope, request, now, &claimRoutingRefusal{code: "source_unavailable", reason: sourceRefusal, sourceFacts: plan.Source}); recordErr != nil {
+			return leasestore.Lease{}, recordErr
+		}
 	}
 	if errors.Is(err, ErrNoClaimableWork) && isolationRefused {
 		if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, false, "no_claimable_work", nil); recordErr != nil {

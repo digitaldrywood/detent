@@ -46,6 +46,17 @@ type NativeClaimPlan struct {
 	LandingRequired      bool                            `json:"-"`
 	Replay               *leasestore.Lease               `json:"-"`
 	Placement            *ClaimPlacementSnapshot         `json:"-"`
+	Source               ClaimSourceFacts                `json:"-"`
+}
+
+type ClaimSourceFacts struct {
+	Loaded                              bool
+	AttemptID, CheckpointObjectKey      string
+	Checkpoint                          *tracker.NativeCheckpoint
+	CheckpointMachine, CheckpointRunner string
+	ChangeID, VersionID                 string
+	VersionMachine, VersionRunner       string
+	VersionStored                       bool
 }
 
 func SameNativeClaimProjectPolicy(left, right policystore.Revision) bool {
