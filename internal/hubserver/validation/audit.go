@@ -36,13 +36,54 @@ func (s *Service) AuditRecord(ctx context.Context, scope hubapi.Scope, item trac
 	if item.OrganizationID != scope.Organization || item.ProjectID != scope.Project || item.WorkItemID == "" {
 		return nil, artifact.ErrIntegrity
 	}
-	if attempt == nil {
-		return s.AuditTenant(ctx, scope, string(item.WorkItemID), "", "", "")
+	attemptID := ""
+	if attempt != nil {
+		attemptID = attempt.AttemptID
+		if attemptID == "" {
+			return nil, artifact.ErrIntegrity
+		}
 	}
-	if attempt.AttemptID == "" {
-		return nil, artifact.ErrIntegrity
+	scheduledItem := ""
+	if strings.Contains(item.Body, "detent-checks") {
+		scheduledItem = string(item.WorkItemID)
 	}
-	return s.AuditTenant(ctx, scope, "", string(item.WorkItemID), "", attempt.AttemptID)
+	localItem := string(item.WorkItemID)
+	if attemptID == "" {
+		landed, err := s.auditItemHasChange(ctx, scope, item.WorkItemID)
+		if err != nil {
+			return nil, err
+		}
+		if !landed {
+			localItem = ""
+		}
+	}
+	return s.AuditTenant(ctx, scope, scheduledItem, localItem, "", attemptID)
+}
+
+func (s *Service) auditItemHasChange(ctx context.Context, scope hubapi.Scope, item tracker.NativeWorkItemID) (bool, error) {
+	if s.deps.Repository == nil {
+		return false, hubapi.WorkItemStorageUnavailable()
+	}
+	snapshotRepository, ok := s.deps.Repository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return false, hubapi.WorkItemStorageUnavailable()
+	}
+	found := false
+	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := scope.Authorize(ctx, r, false); err != nil {
+			return err
+		}
+		_, err := r.LatestChange(ctx, scope.Project, item)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		found = err == nil
+		return err
+	})
+	if err != nil {
+		return false, s.deps.RecordError(err)
+	}
+	return found, nil
 }
 
 func (s *Service) AuditTenant(ctx context.Context, scope hubapi.Scope, scheduledItem, localItem, changeID, attemptID string) (*tracker.ValidationAudit, error) {
