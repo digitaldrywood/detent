@@ -354,6 +354,15 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			flusher := execution.(interface{ FlushRuntime(context.Context) error })
+			flushErr := flusher.FlushRuntime(t.Context())
+			if overlap {
+				if !errors.Is(flushErr, context.DeadlineExceeded) {
+					t.Fatalf("deferred usage delivery error=%v", flushErr)
+				}
+			} else if flushErr != nil {
+				t.Fatal(flushErr)
+			}
 			if retrieve {
 				for _, attempt := range request.Attempts {
 					if attempt.ID == citation {
