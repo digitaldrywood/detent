@@ -501,6 +501,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if err != nil || !strings.Contains(string(version.Content), "first comment") || strings.Contains(string(version.Content), "edited first comment") {
 		t.Fatalf("saved comment revision=%s err=%v", version.Content, err)
 	}
+	operatorRefreshSearch(t, f)
 	listArgs := map[string]any{"project_id": string(f.project.ID), "query": "needle", "limit": 1}
 	var listing operatortool.WorkReadResult[tracker.Page[operatortool.NativeItem]]
 	result, err := call(operatortool.WorkList, listArgs)
@@ -1516,6 +1517,7 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 
 func operatorRefreshSearch(t *testing.T, f nativeFixture) {
 	t.Helper()
+	drainTestNativeBoard(t, f.service)
 	for range 128 {
 		more, err := searchstore.NewContent(f.service.runDetailStore()).RefreshOne(t.Context(), tenantSearchRepository{f.service.config.TenantRepository}, f.project.OrganizationID)
 		if err != nil {
