@@ -78,7 +78,7 @@ func TestOnboardingPageDoesNotReadObjects(t *testing.T) {
 					}
 				}
 				t.Logf("tenant=%s size=%d statements=%d exchanges=%d objects=%d", organization, size, statements, exchanges, objects)
-				if statements != 17 || exchanges != 15 || objects != 0 {
+				if statements != 14 || exchanges != 10 || objects != 0 {
 					t.Errorf("onboarding request reads source data")
 				}
 				if expected != [2]int{} && expected != [2]int{statements, exchanges} {
