@@ -586,6 +586,10 @@ func (s *Service) prepareWorkItemAttachmentReferences(ctx context.Context, scope
 			return result, nativePublicInvalid("Work item attachment references exceed the write bound")
 		}
 	}
+	if plan.comment.ID != "" && plan.comment.Deleted {
+		result.current = slices.Clone(result.previous)
+		return result, nil
+	}
 	readable := map[string]attachment.Metadata{}
 	read := func(id string) (attachment.Metadata, bool, error) {
 		if metadata, ok := readable[id]; ok {
