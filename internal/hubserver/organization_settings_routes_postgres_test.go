@@ -71,7 +71,13 @@ func TestPostgresOrganizationMembersAndSecretRoutes(t *testing.T) {
 		t.Fatal("secret metadata did not preserve presence without its value")
 	}
 	requireNativeStatus(t, f.request(t, member, http.MethodDelete, path, nil), http.StatusForbidden)
-	requireNativeStatus(t, f.request(t, owner, http.MethodDelete, path, nil), http.StatusNoContent)
+	response = f.request(t, owner, http.MethodDelete, path, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var removed projectSecretStatus
+	decodeHubResponse(t, response, &removed)
+	if removed.Kind != flySpritesToken || removed.Present || strings.Contains(response.Body.String(), spritesSecretSentinel) {
+		t.Fatal("secret deletion did not return absent metadata without its value")
+	}
 	response = f.request(t, owner, http.MethodGet, path, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &status)
