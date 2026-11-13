@@ -33,7 +33,7 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			backend := &scriptedReconcileBackend{}
-			f := newBrowserBindingFixture(t, backend)
+			f := newBrowserBindingFixture(t)
 
 			runner := enrollAppRunner(t, f, "Private checkout host", "test")
 			base := browserHostedOrganizationBase + "/projects/" + f.project
