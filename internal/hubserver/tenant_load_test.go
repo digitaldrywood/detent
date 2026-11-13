@@ -25,6 +25,7 @@ import (
 )
 
 func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "tenant-load")
 	items := []tracker.NativeIssue{f.create(t, "first"), f.create(t, "second")}
 	worker := f.worker(t, "worker")
@@ -102,6 +103,7 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 }
 
 func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC) }})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	installReportsBudgetTrace(t, f.service)

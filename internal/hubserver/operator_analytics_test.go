@@ -866,6 +866,7 @@ func nativeAnalyticsStdioCall(t *testing.T, ctx context.Context, executor mcp.Ex
 }
 
 func TestNativeAnalyticsCostPerOutcome(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name               string
 		usageRows          int
@@ -889,6 +890,7 @@ func TestNativeAnalyticsCostPerOutcome(t *testing.T) {
 		{name: "no shipped outcomes", usageRows: 2, populationObserved: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			now := time.Date(2026, 10, 6, 14, 0, 0, 0, time.UTC)
 			f := newHostedSecurityFixture(t, func(cfg *Config) { cfg.now = func() time.Time { return now }; cfg.RunDetails = &memoryRunDetails{} })
 			user := f.user(t, "analytics", "member", "analytics@example.test", "read", "")

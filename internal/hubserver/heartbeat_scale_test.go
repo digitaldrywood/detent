@@ -35,6 +35,7 @@ import (
 )
 
 func TestHeartbeatScaleBenchmark(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t)
 	const organization tracker.OrganizationID = "org_startup"
 	const project tracker.ProjectID = "prj_runner"
@@ -254,6 +255,7 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 }
 
 func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		capacity      int
@@ -494,6 +496,7 @@ func (r heartbeatResponseReader) RunnerClaimState(ctx context.Context, runner st
 }
 
 func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
+	t.Parallel()
 	for _, concurrent := range []int{1, 32} {
 		t.Run(fmt.Sprintf("responses=%d", concurrent), func(t *testing.T) {
 			store := &memoryRunDetails{}
@@ -642,6 +645,7 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 }
 
 func TestHeartbeatClaimSkipsUnknownLegacySource(t *testing.T) {
+	t.Parallel()
 	f := newPostgresDefaultNativeFixture(t, Config{})
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
@@ -834,6 +838,7 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 		pending    int
 	}{{0, false, 101}, {1000, false, 101}, {0, true, 101}, {1000, true, 101}, {0, true, 100}} {
 		t.Run(fmt.Sprintf("history=%d/unresolved=%v/pending=%d", test.history, test.unresolved, test.pending), func(t *testing.T) {
+			t.Parallel()
 			f := newPostgresDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}})
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)

@@ -21,6 +21,7 @@ import (
 )
 
 func TestProjectListAndRunnerReadContention(t *testing.T) {
+	t.Parallel()
 	var logs hostedLogBuffer
 	plans := hostedplans.CapacityPlans()
 	plans.Base = hostedplans.PlanReference{ID: "scale", Version: 1}

@@ -840,6 +840,7 @@ func TestChangeVersionRecordPublishesImmutableSourceAndRevisionAtomically(t *tes
 func TestChangeVersionRecordPublishesRunningSource(t *testing.T) {
 	for _, mode := range []string{"current", "audit", "independent audit", "independent audit pending", "independent audit over bound", "independent audit duplicate many", "independent audit self", "independent audit cycle", "independent audit terminal", "default approval", "default revert", "atomic rollback", "concurrent pin", "imported approval", "imported observation", "pinned"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			repository, admin := projectRecordPostgresWithAdmin(t, 4)
 			details := &memoryRunDetails{}
 			for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
