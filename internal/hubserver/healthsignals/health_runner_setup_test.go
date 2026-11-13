@@ -1,4 +1,4 @@
-package hubserver
+package healthsignals
 
 import (
 	"fmt"
@@ -13,16 +13,16 @@ import (
 func TestHealthRunnerSetupFindings(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 18, 14, 0, 0, 0, time.UTC)
-	setup := func(runner string, age time.Duration, n int, instance bool) []healthRateAttempt {
-		out := []healthRateAttempt{}
+	setup := func(runner string, age time.Duration, n int, instance bool) []RateAttempt {
+		out := []RateAttempt{}
 		for i := range n {
-			out = append(out, healthRateAttempt{ID: fmt.Sprint(runner, "-", age, "-", i), Item: fmt.Sprint("item-", i), Status: "failed", Runner: runner, Signature: "workspace hook after_create failed (exit status <n>)", InstanceSetupFailure: instance, At: now.Add(-age)})
+			out = append(out, RateAttempt{ID: fmt.Sprint(runner, "-", age, "-", i), Item: fmt.Sprint("item-", i), Status: "failed", Runner: runner, Signature: "workspace hook after_create failed (exit status <n>)", InstanceSetupFailure: instance, At: now.Add(-age)})
 		}
 		return out
 	}
 	for _, test := range []struct {
 		name     string
-		attempts []healthRateAttempt
+		attempts []RateAttempt
 		want     map[string]int
 	}{
 		{name: "repeated instance setup failures on one runner", attempts: setup("runner-air", 10*time.Minute, 3, true), want: map[string]int{"runner-air": 3}},
@@ -35,7 +35,7 @@ func TestHealthRunnerSetupFindings(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			got := map[string]int{}
-			for _, f := range evaluateHealthRates(now, []healthRateProject{{ID: "project", Attempts: test.attempts}}) {
+			for _, f := range EvaluateRates(now, []RateProject{{ID: "project", Attempts: test.attempts}}) {
 				if f.Signal != "runner_setup_failures" {
 					continue
 				}
@@ -52,7 +52,7 @@ func TestHealthRunnerSetupFindings(t *testing.T) {
 
 	t.Run("failures below threshold in each project aggregate per runner", func(t *testing.T) {
 		t.Parallel()
-		findings := evaluateHealthRates(now, []healthRateProject{{ID: "first", Attempts: setup("runner-air", 10*time.Minute, 2, true)}, {ID: "second", Attempts: setup("runner-air", 20*time.Minute, 2, true)}, {ID: "third", Attempts: setup("runner-mini", 10*time.Minute, 2, true)}})
+		findings := EvaluateRates(now, []RateProject{{ID: "first", Attempts: setup("runner-air", 10*time.Minute, 2, true)}, {ID: "second", Attempts: setup("runner-air", 20*time.Minute, 2, true)}, {ID: "third", Attempts: setup("runner-mini", 10*time.Minute, 2, true)}})
 		got := map[string]string{}
 		for _, f := range findings {
 			if f.Signal == "runner_setup_failures" {
@@ -66,8 +66,8 @@ func TestHealthRunnerSetupFindings(t *testing.T) {
 
 	t.Run("one finding per runner across projects", func(t *testing.T) {
 		t.Parallel()
-		findings := evaluateHealthRates(now, []healthRateProject{{ID: "first", Attempts: setup("runner-air", 10*time.Minute, 3, true)}, {ID: "second", Attempts: setup("runner-air", 10*time.Minute, 4, true)}})
-		var matched []healthFinding
+		findings := EvaluateRates(now, []RateProject{{ID: "first", Attempts: setup("runner-air", 10*time.Minute, 3, true)}, {ID: "second", Attempts: setup("runner-air", 10*time.Minute, 4, true)}})
+		var matched []Finding
 		for _, f := range findings {
 			if f.Signal == "runner_setup_failures" {
 				matched = append(matched, f)

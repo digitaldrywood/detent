@@ -1,14 +1,14 @@
-package hubserver
+package healthsignals
 
 import (
 	"cmp"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 // Seven days follow the project's workload; twenty samples keep sparse history quiet.
@@ -22,10 +22,10 @@ import (
 // five same-signature failures in an hour, twelve regardless of baseline, an
 // active item silent past the stall minimum, and no landing for six hours.
 const (
-	healthBaselineWindow     = 7 * 24 * time.Hour
+	BaselineWindow           = 7 * 24 * time.Hour
 	healthShortWindow        = time.Hour
-	healthLongWindow         = 6 * time.Hour
-	healthBaselineSamples    = 20
+	LongWindow               = 6 * time.Hour
+	BaselineSamples          = 20
 	healthBaselineQuantile   = 0.9
 	healthMedianQuantile     = 0.5
 	healthRetryCount         = 5
@@ -46,7 +46,7 @@ const (
 	healthAbsoluteFloor      = "absolute_floor"
 )
 
-type healthRateAttempt struct {
+type RateAttempt struct {
 	ID, Item, Status, Signature, Recovery, LandingKey, Runner string
 	At, Heartbeat, Started                                    time.Time
 	Session, Stage, SourceVersion                             string
@@ -55,31 +55,31 @@ type healthRateAttempt struct {
 	LandingAt                                                 time.Time
 }
 
-type healthItemCost struct {
+type ItemCost struct {
 	Cost  float64
 	Known bool
 }
 
-type healthRateProject struct {
+type RateProject struct {
 	ID               string
-	Attempts         []healthRateAttempt
-	Timelines        []analyticsResidenceTimeline
-	Costs            map[string]healthItemCost
-	BaselineCosts    map[string]healthItemCost
-	Runners          []healthRunner
+	Attempts         []RateAttempt
+	Timelines        []ResidenceTimeline
+	Costs            map[string]ItemCost
+	BaselineCosts    map[string]ItemCost
+	Runners          []Runner
 	Candidates       int
 	ResidencePartial bool
 }
 
-type healthQueueEvidence = healthstore.QueueEvidence
+type QueueEvidence = healthstore.QueueEvidence
 
-type healthBaselineUnavailable struct {
+type BaselineUnavailable struct {
 	Project string `json:"project_id"`
 	Signal  string `json:"signal"`
 	Lane    string `json:"lane,omitempty"`
 }
 
-type healthRateBaseline struct {
+type RateBaseline struct {
 	RetryCounts, RetryShort, RetryLong, Recoveries []float64
 	ConflictShort, ConflictLong                    []float64
 	Lanes                                          map[string][]float64
@@ -102,15 +102,7 @@ func healthQuantile(values []float64, q float64) float64 {
 	return sorted[lower] + (sorted[min(lower+1, len(sorted)-1)]-sorted[lower])*(index-float64(lower))
 }
 
-func healthRecoveryReason(text string) string {
-	_, reason, found := strings.Cut(text, "native checkpoint requires recovery: ")
-	if !found {
-		return ""
-	}
-	return normalizeFailureSignature(reason)
-}
-
-func healthAttemptBuckets(attempts []healthRateAttempt, from, to time.Time, width time.Duration) (counts, ratios, recoveries []float64) {
+func healthAttemptBuckets(attempts []RateAttempt, from, to time.Time, width time.Duration) (counts, ratios, recoveries []float64) {
 	type bucket struct {
 		failures, successes, recovery int
 		signatures                    map[string]int
@@ -147,7 +139,7 @@ func healthAttemptBuckets(attempts []healthRateAttempt, from, to time.Time, widt
 	return counts, ratios, recoveries
 }
 
-func healthConflictBuckets(attempts []healthRateAttempt, from, to time.Time, width time.Duration) []float64 {
+func healthConflictBuckets(attempts []RateAttempt, from, to time.Time, width time.Duration) []float64 {
 	type bucket struct{ total, conflicts int }
 	buckets := map[time.Time]bucket{}
 	for _, a := range attempts {
@@ -169,17 +161,17 @@ func healthConflictBuckets(attempts []healthRateAttempt, from, to time.Time, wid
 	return values
 }
 
-func buildHealthRateBaseline(now time.Time, p healthRateProject) healthRateBaseline {
-	to := now.Add(-healthLongWindow)
-	from := to.Add(-healthBaselineWindow)
-	b := healthRateBaseline{Lanes: map[string][]float64{}}
+func BuildRateBaseline(now time.Time, p RateProject) RateBaseline {
+	to := now.Add(-LongWindow)
+	from := to.Add(-BaselineWindow)
+	b := RateBaseline{Lanes: map[string][]float64{}}
 	b.RetryCounts, b.RetryShort, _ = healthAttemptBuckets(p.Attempts, from, to, healthShortWindow)
-	_, b.RetryLong, _ = healthAttemptBuckets(p.Attempts, from, to, healthLongWindow)
+	_, b.RetryLong, _ = healthAttemptBuckets(p.Attempts, from, to, LongWindow)
 	_, _, b.Recoveries = healthAttemptBuckets(p.Attempts, from, to, healthRecoveryWindow)
 	b.ConflictShort = healthConflictBuckets(p.Attempts, from, to, healthShortWindow)
-	b.ConflictLong = healthConflictBuckets(p.Attempts, from, to, healthLongWindow)
+	b.ConflictLong = healthConflictBuckets(p.Attempts, from, to, LongWindow)
 	for _, a := range p.Attempts {
-		if a.Landed && healthInWindow(a.LandingAt, now.Add(-healthBaselineWindow-healthLongWindow), now.Add(-healthBaselineWindow)) {
+		if a.Landed && healthInWindow(a.LandingAt, now.Add(-BaselineWindow-LongWindow), now.Add(-BaselineWindow)) {
 			b.ThroughputSamples++
 		}
 	}
@@ -187,17 +179,17 @@ func buildHealthRateBaseline(now time.Time, p healthRateProject) healthRateBasel
 		return b
 	}
 	for _, t := range p.Timelines {
-		if t.issue.partial {
+		if t.Issue.Partial {
 			continue
 		}
-		for _, span := range t.spans {
-			if span.to.Before(to) && !span.to.Before(from) && span.to.After(span.from) {
-				b.Lanes[span.lane] = append(b.Lanes[span.lane], span.to.Sub(span.from).Seconds())
+		for _, span := range t.Spans {
+			if span.To.Before(to) && !span.To.Before(from) && span.To.After(span.From) {
+				b.Lanes[span.Lane] = append(b.Lanes[span.Lane], span.To.Sub(span.From).Seconds())
 			}
 		}
-		for _, done := range t.done {
+		for _, done := range t.Done {
 			if healthInWindow(done, from, to) {
-				if cost := p.BaselineCosts[t.issue.id]; cost.Known {
+				if cost := p.BaselineCosts[t.Issue.ID]; cost.Known {
 					b.Costs = append(b.Costs, cost.Cost)
 				}
 				break
@@ -207,30 +199,30 @@ func buildHealthRateBaseline(now time.Time, p healthRateProject) healthRateBasel
 	return b
 }
 
-func healthBaselineGaps(p healthRateProject, b healthRateBaseline) []healthBaselineUnavailable {
-	out := []healthBaselineUnavailable{}
+func BaselineGaps(p RateProject, b RateBaseline) []BaselineUnavailable {
+	out := []BaselineUnavailable{}
 	add := func(signal, lane string, available bool) {
 		if !available {
-			out = append(out, healthBaselineUnavailable{p.ID, signal, lane})
+			out = append(out, BaselineUnavailable{p.ID, signal, lane})
 		}
 	}
-	add("retry_storm", "", len(b.RetryCounts) >= healthBaselineSamples && len(b.RetryLong) >= healthBaselineSamples)
-	add("recovery_loop", "", len(b.Recoveries) >= healthBaselineSamples)
+	add("retry_storm", "", len(b.RetryCounts) >= BaselineSamples && len(b.RetryLong) >= BaselineSamples)
+	add("recovery_loop", "", len(b.Recoveries) >= BaselineSamples)
 	for _, lane := range []string{"In Progress", "Rework", "Merging"} {
-		add("stalled_active_item", lane, len(b.Lanes[lane]) >= healthBaselineSamples)
+		add("stalled_active_item", lane, len(b.Lanes[lane]) >= BaselineSamples)
 	}
-	add("conflict_burn", "", len(b.ConflictShort) >= healthBaselineSamples && len(b.ConflictLong) >= healthBaselineSamples)
-	add("capacity_starvation", "Todo", len(b.Lanes["Todo"]) >= healthBaselineSamples)
-	add("cost_anomaly", "", len(b.Costs) >= healthBaselineSamples)
-	add("throughput_collapse", "", b.ThroughputSamples >= healthBaselineSamples)
+	add("conflict_burn", "", len(b.ConflictShort) >= BaselineSamples && len(b.ConflictLong) >= BaselineSamples)
+	add("capacity_starvation", "Todo", len(b.Lanes["Todo"]) >= BaselineSamples)
+	add("cost_anomaly", "", len(b.Costs) >= BaselineSamples)
+	add("throughput_collapse", "", b.ThroughputSamples >= BaselineSamples)
 	return out
 }
 
-func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFinding {
-	out := []healthFinding{}
+func EvaluateRates(now time.Time, projects []RateProject) []Finding {
+	out := []Finding{}
 	capacity := map[string]int{}
 	for _, p := range projects {
-		b := buildHealthRateBaseline(now, p)
+		b := BuildRateBaseline(now, p)
 		out = append(out, healthProductivityFindings(now, p)...)
 		out = append(out, healthRetryFindings(now, p, b)...)
 		out = append(out, healthRecoveryFindings(now, p, b)...)
@@ -244,7 +236,7 @@ func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFi
 				existing := &out[index]
 				existing.Projects = append(existing.Projects, p.ID)
 				if existing.Evidence.Queues == nil {
-					existing.Evidence.Queues = map[string]healthQueueEvidence{}
+					existing.Evidence.Queues = map[string]QueueEvidence{}
 				}
 				if existing.Evidence.Counts == nil {
 					existing.Evidence.Counts = map[string]int{}
@@ -260,22 +252,22 @@ func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFi
 			out = append(out, f)
 		}
 	}
-	return append(out, healthRunnerSetupFindings(now, projects)...)
+	return append(out, RunnerSetupFindings(now, projects)...)
 }
 
-func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaseline) []healthFinding {
-	baseline := len(b.RetryCounts) >= healthBaselineSamples && len(b.RetryLong) >= healthBaselineSamples
-	byItem := map[string][]healthRateAttempt{}
+func healthRetryFindings(now time.Time, p RateProject, b RateBaseline) []Finding {
+	baseline := len(b.RetryCounts) >= BaselineSamples && len(b.RetryLong) >= BaselineSamples
+	byItem := map[string][]RateAttempt{}
 	for _, a := range p.Attempts {
-		if healthInWindow(a.At, now.Add(-healthLongWindow), now) {
+		if healthInWindow(a.At, now.Add(-LongWindow), now) {
 			byItem[a.Item] = append(byItem[a.Item], a)
 		}
 	}
-	out := []healthFinding{}
+	out := []Finding{}
 	for item, attempts := range byItem {
 		failures, successes := [2]int{}, [2]int{}
 		signatures := map[string]int{}
-		evidence := healthEvidence{Values: map[string]float64{}}
+		evidence := Evidence{Values: map[string]float64{}}
 		for _, a := range attempts {
 			if a.Recovery != "" {
 				continue
@@ -318,18 +310,18 @@ func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaselin
 		evidence.Signatures = slices.Compact(evidence.Signatures)
 		evidence.Values["retry_ratio_1h"], evidence.Values["retry_ratio_6h"] = short, long
 		evidence.Counts = map[string]int{"failures_1h": failures[0], "failures_6h": failures[1]}
-		out = append(out, newHealthFinding("retry_storm", "instance", "work_item", item, "Repeated failed attempts are wasting work on this item.", "The runner operator inspects the repeated failure signatures and attempts.", []string{p.ID}, evidence))
+		out = append(out, NewFinding("retry_storm", "instance", "work_item", item, "Repeated failed attempts are wasting work on this item.", "The runner operator inspects the repeated failure signatures and attempts.", []string{p.ID}, evidence))
 	}
 	return out
 }
 
-// healthRunnerSetupFindings reports a runner whose workspace setup keeps
+// RunnerSetupFindings reports a runner whose workspace setup keeps
 // failing before the provider starts, counting its failures across every
 // project it serves. These failures are attributed to the instance and held by
 // the instance cooldown, so they need no baseline: any runner repeating them is
 // unhealthy until its operator repairs the host.
-func healthRunnerSetupFindings(now time.Time, projects []healthRateProject) []healthFinding {
-	attempts, served := map[string][]healthRateAttempt{}, map[string][]string{}
+func RunnerSetupFindings(now time.Time, projects []RateProject) []Finding {
+	attempts, served := map[string][]RateAttempt{}, map[string][]string{}
 	runners := []string{}
 	for _, p := range projects {
 		for _, a := range p.Attempts {
@@ -345,13 +337,13 @@ func healthRunnerSetupFindings(now time.Time, projects []healthRateProject) []he
 			}
 		}
 	}
-	out := []healthFinding{}
+	out := []Finding{}
 	for _, runner := range runners {
 		failed := attempts[runner]
 		if len(failed) < healthSetupFailureCount {
 			continue
 		}
-		evidence := healthEvidence{Counts: map[string]int{"failures_1h": len(failed)}}
+		evidence := Evidence{Counts: map[string]int{"failures_1h": len(failed)}}
 		for _, a := range failed {
 			evidence.AttemptIDs = append(evidence.AttemptIDs, a.ID)
 			if a.Signature != "" {
@@ -360,22 +352,22 @@ func healthRunnerSetupFindings(now time.Time, projects []healthRateProject) []he
 		}
 		slices.Sort(evidence.Signatures)
 		evidence.Signatures = slices.Compact(evidence.Signatures)
-		out = append(out, newHealthFinding("runner_setup_failures", "instance", "runner", runner, "Workspace setup on this runner keeps failing before the provider starts.", "The runner operator checks the workspace hook output and the runner's repository credential.", served[runner], evidence))
+		out = append(out, NewFinding("runner_setup_failures", "instance", "runner", runner, "Workspace setup on this runner keeps failing before the provider starts.", "The runner operator checks the workspace hook output and the runner's repository credential.", served[runner], evidence))
 	}
 	return out
 }
 
-func healthRecoveryFindings(now time.Time, p healthRateProject, b healthRateBaseline) []healthFinding {
-	if len(b.Recoveries) < healthBaselineSamples {
+func healthRecoveryFindings(now time.Time, p RateProject, b RateBaseline) []Finding {
+	if len(b.Recoveries) < BaselineSamples {
 		return nil
 	}
-	groups := map[string][]healthRateAttempt{}
+	groups := map[string][]RateAttempt{}
 	for _, a := range p.Attempts {
 		if a.Recovery != "" && healthInWindow(a.At, now.Add(-healthRecoveryWindow), now) {
 			groups[a.Item+"\x00"+a.Recovery] = append(groups[a.Item+"\x00"+a.Recovery], a)
 		}
 	}
-	out := []healthFinding{}
+	out := []Finding{}
 	keys := make([]string, 0, len(groups))
 	for key := range groups {
 		keys = append(keys, key)
@@ -386,52 +378,52 @@ func healthRecoveryFindings(now time.Time, p healthRateProject, b healthRateBase
 		if len(attempts) < healthRecoveryCount || float64(len(attempts)) <= healthQuantile(b.Recoveries, healthBaselineQuantile) {
 			continue
 		}
-		evidence := healthEvidence{Reason: attempts[0].Recovery, Counts: map[string]int{"recoveries_30m": len(attempts)}}
+		evidence := Evidence{Reason: attempts[0].Recovery, Counts: map[string]int{"recoveries_30m": len(attempts)}}
 		for _, a := range attempts {
 			evidence.AttemptIDs = append(evidence.AttemptIDs, a.ID)
 		}
-		out = append(out, newHealthFinding("recovery_loop", "instance", "work_item", attempts[0].Item, "The same checkpoint recovery reason is recurring.", "The runner operator inspects the retained checkpoint and recovery reason.", []string{p.ID}, evidence))
+		out = append(out, NewFinding("recovery_loop", "instance", "work_item", attempts[0].Item, "The same checkpoint recovery reason is recurring.", "The runner operator inspects the retained checkpoint and recovery reason.", []string{p.ID}, evidence))
 	}
 	return out
 }
 
-func healthStallFindings(now time.Time, p healthRateProject, b healthRateBaseline) []healthFinding {
+func healthStallFindings(now time.Time, p RateProject, b RateBaseline) []Finding {
 	if p.ResidencePartial {
 		return nil
 	}
-	out := []healthFinding{}
+	out := []Finding{}
 	for _, t := range p.Timelines {
-		if t.issue.partial || !slices.Contains([]string{"In Progress", "Rework", "Merging"}, t.state) {
+		if t.Issue.Partial || !slices.Contains([]string{"In Progress", "Rework", "Merging"}, t.State) {
 			continue
 		}
-		last := t.entered
+		last := t.Entered
 		attempt := ""
 		for _, a := range p.Attempts {
-			if a.Item == t.issue.id && !a.Heartbeat.After(now) && a.Heartbeat.After(last) {
+			if a.Item == t.Issue.ID && !a.Heartbeat.After(now) && a.Heartbeat.After(last) {
 				last, attempt = a.Heartbeat, a.ID
 			}
 		}
 		threshold, reason := healthStallMinimum.Seconds(), healthAbsoluteFloor
-		if len(b.Lanes[t.state]) >= healthBaselineSamples {
-			threshold, reason = min(healthStallMaximum.Seconds(), max(healthStallMinimum.Seconds(), healthStallMultiplier*healthQuantile(b.Lanes[t.state], healthBaselineQuantile))), ""
+		if len(b.Lanes[t.State]) >= BaselineSamples {
+			threshold, reason = min(healthStallMaximum.Seconds(), max(healthStallMinimum.Seconds(), healthStallMultiplier*healthQuantile(b.Lanes[t.State], healthBaselineQuantile))), ""
 		}
 		if last.IsZero() || now.Sub(last).Seconds() <= threshold {
 			continue
 		}
-		evidence := healthEvidence{Reason: reason, Values: map[string]float64{"heartbeat_gap_seconds": now.Sub(last).Seconds(), "threshold_seconds": threshold}}
+		evidence := Evidence{Reason: reason, Values: map[string]float64{"heartbeat_gap_seconds": now.Sub(last).Seconds(), "threshold_seconds": threshold}}
 		if attempt != "" {
 			evidence.AttemptIDs = []string{attempt}
 		}
-		out = append(out, newHealthFinding("stalled_active_item", "flow", "work_item", t.issue.id, fmt.Sprintf("The active item has no recent attempt heartbeat in %s.", t.state), "The project operator inspects the active attempt and lane residence.", []string{p.ID}, evidence))
+		out = append(out, NewFinding("stalled_active_item", "flow", "work_item", t.Issue.ID, fmt.Sprintf("The active item has no recent attempt heartbeat in %s.", t.State), "The project operator inspects the active attempt and lane residence.", []string{p.ID}, evidence))
 	}
 	return out
 }
 
-func healthConflictFinding(now time.Time, p healthRateProject, b healthRateBaseline) (healthFinding, bool) {
+func healthConflictFinding(now time.Time, p RateProject, b RateBaseline) (Finding, bool) {
 	total, conflicts := [2]int{}, [2]int{}
-	evidence := healthEvidence{Values: map[string]float64{}}
+	evidence := Evidence{Values: map[string]float64{}}
 	for _, a := range p.Attempts {
-		if !a.Landing || !healthInWindow(a.LandingAt, now.Add(-healthLongWindow), now) {
+		if !a.Landing || !healthInWindow(a.LandingAt, now.Add(-LongWindow), now) {
 			continue
 		}
 		total[1]++
@@ -449,31 +441,31 @@ func healthConflictFinding(now time.Time, p healthRateProject, b healthRateBasel
 	short, long := float64(conflicts[0])/float64(max(1, total[0])), float64(conflicts[1])/float64(max(1, total[1]))
 	evidence.Values["conflict_ratio_1h"], evidence.Values["conflict_ratio_6h"] = short, long
 	evidence.Counts = map[string]int{"landings_1h": total[0], "landings_6h": total[1], "conflicts_1h": conflicts[0], "conflicts_6h": conflicts[1]}
-	f := newHealthFinding("conflict_burn", "flow", "project", p.ID, "Landing conflicts exceed the project's usual rate in both windows.", "The project operator inspects conflicting changes and landing bases.", []string{p.ID}, evidence)
+	f := NewFinding("conflict_burn", "flow", "project", p.ID, "Landing conflicts exceed the project's usual rate in both windows.", "The project operator inspects conflicting changes and landing bases.", []string{p.ID}, evidence)
 	f.Severity = "watch"
-	return f, len(b.ConflictShort) >= healthBaselineSamples && len(b.ConflictLong) >= healthBaselineSamples && total[0] >= healthLandingMinimum && total[1] >= healthLandingMinimum && short > max(healthConflictShort, healthQuantile(b.ConflictShort, healthBaselineQuantile)) && long > max(healthConflictLong, healthQuantile(b.ConflictLong, healthBaselineQuantile))
+	return f, len(b.ConflictShort) >= BaselineSamples && len(b.ConflictLong) >= BaselineSamples && total[0] >= healthLandingMinimum && total[1] >= healthLandingMinimum && short > max(healthConflictShort, healthQuantile(b.ConflictShort, healthBaselineQuantile)) && long > max(healthConflictLong, healthQuantile(b.ConflictLong, healthBaselineQuantile))
 }
 
-func healthCapacityFindings(now time.Time, p healthRateProject, b healthRateBaseline) []healthFinding {
-	if len(b.Lanes["Todo"]) < healthBaselineSamples || p.ResidencePartial || p.Candidates == 0 {
+func healthCapacityFindings(now time.Time, p RateProject, b RateBaseline) []Finding {
+	if len(b.Lanes["Todo"]) < BaselineSamples || p.ResidencePartial || p.Candidates == 0 {
 		return nil
 	}
 	waits := [2][]float64{}
 	depth := 0
 	for _, t := range p.Timelines {
-		if t.issue.partial {
+		if t.Issue.Partial {
 			continue
 		}
-		if t.state == "Todo" {
+		if t.State == "Todo" {
 			depth++
 		}
-		for _, span := range t.spans {
-			if span.lane != "Todo" {
+		for _, span := range t.Spans {
+			if span.Lane != "Todo" {
 				continue
 			}
-			for i, width := range []time.Duration{healthShortWindow, healthLongWindow} {
-				if span.to.After(now.Add(-width)) && !span.from.After(now) {
-					waits[i] = append(waits[i], minTime(span.to, now).Sub(span.from).Seconds())
+			for i, width := range []time.Duration{healthShortWindow, LongWindow} {
+				if span.To.After(now.Add(-width)) && !span.From.After(now) {
+					waits[i] = append(waits[i], hubapi.MinTime(span.To, now).Sub(span.From).Seconds())
 				}
 			}
 		}
@@ -482,66 +474,66 @@ func healthCapacityFindings(now time.Time, p healthRateProject, b healthRateBase
 	if short <= p90 || long <= p90 {
 		return nil
 	}
-	out := []healthFinding{}
+	out := []Finding{}
 	for _, r := range p.Runners {
-		if r.FreeSlots != 0 || r.Leases == 0 || now.Sub(r.Heartbeat) >= healthInstanceWindow {
+		if r.FreeSlots != 0 || r.Leases == 0 || now.Sub(r.Heartbeat) >= InstanceWindow {
 			continue
 		}
-		f := newHealthFinding("capacity_starvation", "capacity", "runner", r.ID, "Todo wait exceeds the project's usual duration while the runner is full.", "The runner operator reviews slot occupancy and queued work.", []string{p.ID}, healthEvidence{Counts: map[string]int{"queue_depth": depth, "leases": r.Leases}, Queues: map[string]healthQueueEvidence{p.ID: {QueueDepth: depth, ShortP50: short, LongP50: long, BaselineP90: p90}}})
+		f := NewFinding("capacity_starvation", "capacity", "runner", r.ID, "Todo wait exceeds the project's usual duration while the runner is full.", "The runner operator reviews slot occupancy and queued work.", []string{p.ID}, Evidence{Counts: map[string]int{"queue_depth": depth, "leases": r.Leases}, Queues: map[string]QueueEvidence{p.ID: {QueueDepth: depth, ShortP50: short, LongP50: long, BaselineP90: p90}}})
 		f.Severity = "watch"
 		out = append(out, f)
 	}
 	return out
 }
 
-func healthCostFindings(p healthRateProject, b healthRateBaseline) []healthFinding {
-	out := []healthFinding{}
-	if len(b.Costs) < healthBaselineSamples {
+func healthCostFindings(p RateProject, b RateBaseline) []Finding {
+	out := []Finding{}
+	if len(b.Costs) < BaselineSamples {
 		return out
 	}
 	median := healthQuantile(b.Costs, healthMedianQuantile)
 	for _, t := range p.Timelines {
-		cost := p.Costs[t.issue.id]
+		cost := p.Costs[t.Issue.ID]
 		if !cost.Known || cost.Cost <= healthCostMinimum || cost.Cost <= healthCostMultiplier*median {
 			continue
 		}
-		f := newHealthFinding("cost_anomaly", "cost", "work_item", t.issue.id, "This item's spend exceeds five times the usual Done-item cost.", "The project operator reviews this item's usage and repeated attempts.", []string{p.ID}, healthEvidence{Values: map[string]float64{"cost_usd": cost.Cost, "baseline_median_cost_usd": median}})
+		f := NewFinding("cost_anomaly", "cost", "work_item", t.Issue.ID, "This item's spend exceeds five times the usual Done-item cost.", "The project operator reviews this item's usage and repeated attempts.", []string{p.ID}, Evidence{Values: map[string]float64{"cost_usd": cost.Cost, "baseline_median_cost_usd": median}})
 		f.Severity = "watch"
 		out = append(out, f)
 	}
 	return out
 }
 
-func healthThroughputFinding(now time.Time, p healthRateProject, b healthRateBaseline) (healthFinding, bool) {
+func healthThroughputFinding(now time.Time, p RateProject, b RateBaseline) (Finding, bool) {
 	short, long, priorShort, priorLong := 0, 0, 0, 0
 	for _, a := range p.Attempts {
 		if !a.Landed {
 			continue
 		}
-		if healthInWindow(a.LandingAt, now.Add(-healthLongWindow), now) {
+		if healthInWindow(a.LandingAt, now.Add(-LongWindow), now) {
 			long++
 		}
 		if healthInWindow(a.LandingAt, now.Add(-healthShortWindow), now) {
 			short++
 		}
-		if healthInWindow(a.LandingAt, now.Add(-healthBaselineWindow-healthLongWindow), now.Add(-healthBaselineWindow)) {
+		if healthInWindow(a.LandingAt, now.Add(-BaselineWindow-LongWindow), now.Add(-BaselineWindow)) {
 			priorLong++
 		}
-		if healthInWindow(a.LandingAt, now.Add(-healthBaselineWindow-healthShortWindow), now.Add(-healthBaselineWindow)) {
+		if healthInWindow(a.LandingAt, now.Add(-BaselineWindow-healthShortWindow), now.Add(-BaselineWindow)) {
 			priorShort++
 		}
 	}
-	if b.ThroughputSamples < healthBaselineSamples {
+	if b.ThroughputSamples < BaselineSamples {
 		waiting := 0
 		for _, t := range p.Timelines {
-			if !t.issue.partial && slices.Contains([]string{"Todo", "In Progress", "Rework", "Merging"}, t.state) && !t.entered.IsZero() && !t.entered.After(now.Add(-healthLongWindow)) {
+			if !t.Issue.Partial && slices.Contains([]string{"Todo", "In Progress", "Rework", "Merging"}, t.State) && !t.Entered.IsZero() && !t.Entered.After(now.Add(-LongWindow)) {
 				waiting++
 			}
 		}
-		f := newHealthFinding("throughput_collapse", "flow", "project", p.ID, fmt.Sprintf("Delivery stalled. Nothing has landed in six hours while %d items have waited in Todo or active lanes for at least that long.", waiting), "The project operator inspects why ready and active work is not landing.", []string{p.ID}, healthEvidence{Reason: healthAbsoluteFloor, Counts: map[string]int{"landings_6h": long, "waiting_6h": waiting, "ready_work": p.Candidates}})
+		f := NewFinding("throughput_collapse", "flow", "project", p.ID, fmt.Sprintf("Delivery stalled. Nothing has landed in six hours while %d items have waited in Todo or active lanes for at least that long.", waiting), "The project operator inspects why ready and active work is not landing.", []string{p.ID}, Evidence{Reason: healthAbsoluteFloor, Counts: map[string]int{"landings_6h": long, "waiting_6h": waiting, "ready_work": p.Candidates}})
 		return f, long == 0 && waiting > 0
 	}
-	f := newHealthFinding("throughput_collapse", "flow", "project", p.ID, "Landings fell below a quarter of the same weekday-hour windows last week.", "The project operator inspects ready work and landing progress.", []string{p.ID}, healthEvidence{Counts: map[string]int{"landings_1h": short, "landings_6h": long, "last_week_1h": priorShort, "last_week_6h": priorLong, "ready_work": p.Candidates}})
+	f := NewFinding("throughput_collapse", "flow", "project", p.ID, "Landings fell below a quarter of the same weekday-hour windows last week.", "The project operator inspects ready work and landing progress.", []string{p.ID}, Evidence{Counts: map[string]int{"landings_1h": short, "landings_6h": long, "last_week_1h": priorShort, "last_week_6h": priorLong, "ready_work": p.Candidates}})
 	f.Severity = "watch"
 	return f, p.Candidates > 0 && priorShort > 0 && float64(short) < healthThroughputFraction*float64(priorShort) && float64(long) < healthThroughputFraction*float64(priorLong)
 }

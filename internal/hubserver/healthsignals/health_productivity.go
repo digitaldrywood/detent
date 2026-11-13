@@ -1,4 +1,4 @@
-package hubserver
+package healthsignals
 
 import (
 	"crypto/sha256"
@@ -9,7 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 )
 
-type healthProductivityEvidence = healthstore.ProductivityEvidence
+type ProductivityEvidence = healthstore.ProductivityEvidence
 
 func healthFailureStage(stage string) string {
 	switch stage {
@@ -20,9 +20,9 @@ func healthFailureStage(stage string) string {
 	}
 }
 
-func healthProductivityFindings(now time.Time, p healthRateProject) []healthFinding {
-	out := []healthFinding{}
-	from := now.Add(-healthFlowWindow)
+func healthProductivityFindings(now time.Time, p RateProject) []Finding {
+	out := []Finding{}
+	from := now.Add(-FlowWindow)
 	attempts, landings, done := 0, 0, 0
 	sessions := map[string]bool{}
 	ids := []string{}
@@ -44,7 +44,7 @@ func healthProductivityFindings(now time.Time, p healthRateProject) []healthFind
 		}
 		if !a.At.Before(from) || a.Status == "running" {
 			attempts++
-			if len(ids) < healthEvidenceLimit {
+			if len(ids) < EvidenceLimit {
 				ids = append(ids, a.ID)
 			}
 			if a.Session != "" {
@@ -80,34 +80,34 @@ func healthProductivityFindings(now time.Time, p healthRateProject) []healthFind
 		s.ids = append(s.ids, a.ID)
 	}
 	for _, timeline := range p.Timelines {
-		for _, at := range timeline.done {
+		for _, at := range timeline.Done {
 			if !at.Before(from) && !at.After(now) {
 				done++
 			}
 		}
 	}
 	if attempts > 0 && (spansWindow || attempts >= healthRetryCount) && landings == 0 && done == 0 && !p.ResidencePartial {
-		evidence := healthEvidence{
-			Productivity: &healthProductivityEvidence{WindowFrom: from, WindowTo: now, LatestFailureStage: stage},
+		evidence := Evidence{
+			Productivity: &ProductivityEvidence{WindowFrom: from, WindowTo: now, LatestFailureStage: stage},
 			Counts:       map[string]int{"attempts": attempts, "sessions": len(sessions), "landings": landings, "done_transitions": done},
 			AttemptIDs:   ids,
 		}
 		summary := fmt.Sprintf("%d attempts ran during thirty minutes with no landings or Done transitions.", attempts)
-		out = append(out, newHealthFinding("activity_without_delivery", "human", "project", p.ID, summary, "The project operator checks the latest attempt failure stage and delivery evidence.", []string{p.ID}, evidence))
+		out = append(out, NewFinding("activity_without_delivery", "human", "project", p.ID, summary, "The project operator checks the latest attempt failure stage and delivery evidence.", []string{p.ID}, evidence))
 	}
 	for item, s := range streaks {
 		if len(s.ids) < healthRetryCount {
 			continue
 		}
 		signature := sha256.Sum256([]byte(s.signature))
-		evidence := healthEvidence{
-			Productivity: &healthProductivityEvidence{WindowFrom: s.from, WindowTo: s.to, LatestFailureStage: s.stage},
+		evidence := Evidence{
+			Productivity: &ProductivityEvidence{WindowFrom: s.from, WindowTo: s.to, LatestFailureStage: s.stage},
 			Counts:       map[string]int{"consecutive_unproductive_attempts": len(s.ids)},
 			AttemptIDs:   s.ids,
 			Signatures:   []string{hex.EncodeToString(signature[:])},
 		}
 		summary := fmt.Sprintf("%d consecutive attempts ended with the same failure stage and signature without verified new source.", len(s.ids))
-		out = append(out, newHealthFinding("unproductive_attempts", "human", "work_item", item, summary, "The project operator checks the repeated failure stage and recorded source finalization.", []string{p.ID}, evidence))
+		out = append(out, NewFinding("unproductive_attempts", "human", "work_item", item, summary, "The project operator checks the repeated failure stage and recorded source finalization.", []string{p.ID}, evidence))
 	}
 	return out
 }

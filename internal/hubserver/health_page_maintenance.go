@@ -640,7 +640,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 	}
 	for _, issue := range issues {
 		issue.partial = rate.ResidencePartial
-		rate.Timelines = append(rate.Timelines, buildAnalyticsResidenceTimeline(issue, states, now))
+		rate.Timelines = append(rate.Timelines, healthResidenceTimeline(buildAnalyticsResidenceTimeline(issue, states, now)))
 	}
 	for _, cost := range costs {
 		if cost.Complete {
