@@ -324,7 +324,7 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 				return corestore.ErrNotFound
 			}
 			attemptEvent := leasestore.AttemptEvent{ID: attempt.ID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: attempt.RunID,
-				Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: attempt.DispatchGeneration, PayloadObjectKey: prepared.payloadReference.Key, PayloadReference: prepared.payloadReference, WorkerCleanupRequired: new(nativeRunCleanupRequired(prepared.event.Data))}
+				Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: attempt.DispatchGeneration, PayloadObjectKey: prepared.payloadReference.Key, PayloadReference: prepared.payloadReference, WorkerCleanupRequired: new(nativeRunCleanupRequired(prepared.event.Data)), Failure: attemptFailureSummary(prepared.event.Data, "cancelled")}
 			runAuthority := NativeRunEventAuthority{Scope: scope, OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItem: workItem, Lease: lease, Event: prepared.event}
 			if err := s.config.NativeRunEvents.ValidateNativeRunEvent(ctx, w, &runAuthority); err != nil {
 				return err
@@ -511,7 +511,7 @@ func (p *preparedNativeLeaseCancellation) attemptCancellation() *leasestore.Atte
 	return &leasestore.AttemptCancellation{
 		Attempt: leasestore.AttemptEvent{ID: attempt.ID, RunID: attempt.RunID, Fence: leasestore.Fence{LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken},
 			Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: attempt.DispatchGeneration,
-			PayloadObjectKey: p.payloadReference.Key, PayloadReference: p.payloadReference, WorkerCleanupRequired: new(nativeRunCleanupRequired(p.event.Data))},
+			PayloadObjectKey: p.payloadReference.Key, PayloadReference: p.payloadReference, WorkerCleanupRequired: new(nativeRunCleanupRequired(p.event.Data)), Failure: attemptFailureSummary(p.event.Data, "cancelled")},
 		History: p.history,
 	}
 }

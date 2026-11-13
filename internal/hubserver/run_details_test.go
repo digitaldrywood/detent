@@ -1116,7 +1116,7 @@ func seedRuntimeHistoryAttempt(t *testing.T, repository tenantstore.Repository, 
 		attempt, err = w.RecordAttempt(ctx, leasestore.AttemptEvent{
 			ID: data.AttemptID, RunID: data.RunID, Fence: fence, Sequence: data.Sequence, Status: "failed",
 			StartedAt: lease.AcquiredAt, LocalAttemptID: data.Runtime.LocalAttemptID, PayloadObjectKey: payload.Key, PayloadReference: payload,
-			CheckpointObjectKey: &checkpointRef.Key, CheckpointReference: checkpointRef, CheckpointPreservesSource: new(checkpoint.PreservesSource()),
+			CheckpointObjectKey: &checkpointRef.Key, CheckpointReference: checkpointRef, CheckpointPreservesSource: new(checkpoint.PreservesSource()), Failure: attemptFailureSummary(data, "failed"),
 		})
 		if err != nil {
 			return err
@@ -1139,7 +1139,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 		for _, preserves := range []bool{false, true} {
 			t.Run(strconv.Itoa(history)+"/preserves="+strconv.FormatBool(preserves), func(t *testing.T) {
 				store := &runtimeHistoryDetailStore{objects: map[string][]byte{}, reads: map[string]int{}}
-				repository, _ := projectRecordPostgresWithAdmin(t, 3, installReadQueryCounter)
+				repository, admin := projectRecordPostgresWithAdmin(t, 3, installReadQueryCounter)
 				service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: store, SecretKeys: secretTestKeys(t, "1", "1")})
 				organization := nativeOrganization{ID: "org_first", Name: "Example organization", Slug: "example-first"}
 				seedPostgresHubAdmin(t, repository, service, organization)
@@ -1178,10 +1178,6 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 						return err
 					}
 				})
-				wantReads := 1
-				if preserves && history > 1 {
-					wantReads = 2
-				}
 				base := f.base + "/work-items/" + string(issue.WorkItemID)
 				if history == 1 {
 					runtimePath := base + "/runtime?native_attempt_id=" + latest.attempt.ID
@@ -1301,9 +1297,11 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 						payloadReads := store.reads[latest.payload.Key]
 						store.mu.Unlock()
 						t.Logf("%s history=%d preserves=%v reads=%d modeled_serial_latency=%s", endpoint, history, preserves, reads, time.Duration(reads)*250*time.Millisecond)
-						expectedReads, expectedPayloadReads := wantReads, 1
+						expectedReads := 4
 						if endpoint == "explanation" {
-							expectedReads, expectedPayloadReads = 0, 0
+							if preserves && history > 1 {
+								expectedReads += 2
+							}
 							var result explain.IssueExplanation
 							decodeHubResponse(t, response, &result)
 							if result.Attempt == nil || result.Attempt.NativeID != latest.attempt.ID || !result.Found || result.Identity.IssueID != string(issue.WorkItemID) {
@@ -1337,8 +1335,45 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 								t.Error("clean checkpoint became preserved source")
 							}
 						}
-						if reads != expectedReads || payloadReads != expectedPayloadReads {
-							t.Errorf("object reads grew with checkpoint history: reads=%d want=%d registered payload=%d want=%d", reads, expectedReads, payloadReads, expectedPayloadReads)
+						if reads != expectedReads || payloadReads != 1 {
+							t.Errorf("object reads grew with checkpoint history: reads=%d want=%d registered payload=%d want=1", reads, expectedReads, payloadReads)
+						}
+					})
+				}
+				if history == 8 && !preserves {
+					t.Run("unrecorded failure summaries", func(t *testing.T) {
+						if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET failure_sequence=NULL,failure_example=NULL,failure_class=NULL,failure_landing_observed_at=NULL WHERE organization_id=$1`, organization.ID); err != nil {
+							t.Fatal(err)
+						}
+						signature := func(t *testing.T) {
+							t.Helper()
+							_, failures, partial, err := service.readOperatorExplanation(context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, true), scope, issue)
+							if got := latestNativeFailureSignature(failures, partial); err != nil || got == nil || got.Signature != "example failure" || got.Count != history || got.Partial {
+								t.Fatalf("failure signature = %+v error=%v", got, err)
+							}
+						}
+						signature(t)
+						after := ""
+						for range 2 * history {
+							next, _ := service.populateCheckpointSource(t.Context(), organization.ID, after)
+							if next == "" {
+								break
+							}
+							after = next
+						}
+						var unrecorded int
+						if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND failure_sequence IS DISTINCT FROM sequence`, organization.ID).Scan(&unrecorded); err != nil || unrecorded != 0 {
+							t.Fatalf("backfill left %d unrecorded failure summaries: %v", unrecorded, err)
+						}
+						store.mu.Lock()
+						clear(store.reads)
+						store.mu.Unlock()
+						signature(t)
+						store.mu.Lock()
+						reads := store.reads[latest.payload.Key]
+						store.mu.Unlock()
+						if reads != 1 {
+							t.Errorf("recorded failure summaries still read payload objects: latest payload reads=%d", reads)
 						}
 					})
 				}

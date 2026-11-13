@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -163,6 +164,10 @@ func (s *session) recordAttemptEvent(ctx context.Context, event leasestore.Attem
 	if receiptFound {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
+	failure, err := attemptFailureParams(event.Failure)
+	if err != nil {
+		return leasestore.Attempt{}, false, err
+	}
 	var row pgquery.NativeAttempt
 	if event.Sequence == 1 {
 		if event.UsageCorrection {
@@ -183,6 +188,7 @@ func (s *session) recordAttemptEvent(ctx context.Context, event leasestore.Attem
 			DispatchGeneration: event.DispatchGeneration, PayloadObjectKey: event.PayloadObjectKey,
 			CheckpointObjectKey: event.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(event.CheckpointPreservesSource), ArtifactsObjectKey: event.ArtifactsObjectKey, RuntimeHeartbeatAt: event.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(event.WorkerCleanupRequired), LocalAttemptID: event.LocalAttemptID,
 			StartedAt: startedAt, StartedAtSubmicroNs: int16(startedAtSubmicro), Now: now,
+			FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt,
 		})
 	} else {
 		row, err = s.queries.AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{
@@ -190,6 +196,7 @@ func (s *session) recordAttemptEvent(ctx context.Context, event leasestore.Attem
 			RunID: event.RunID, NextSequence: event.Sequence, Status: event.Status, DispatchGeneration: event.DispatchGeneration,
 			PayloadObjectKey: event.PayloadObjectKey, CheckpointObjectKey: event.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(event.CheckpointPreservesSource), ArtifactsObjectKey: event.ArtifactsObjectKey, RuntimeHeartbeatAt: event.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(event.WorkerCleanupRequired), LocalAttemptID: event.LocalAttemptID,
 			UsageCorrection: event.UsageCorrection, Termination: event.Termination, RuntimeOrdered: event.RuntimeOrdered, Now: &now,
+			FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt,
 		})
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -267,9 +274,9 @@ func (s *session) UnclassifiedCheckpointSource(ctx context.Context, after string
 		return page, err
 	}
 	rows, err := s.db.Query(ctx, `WITH page AS MATERIALIZED (
- SELECT id,issue_id,checkpoint_object_key,checkpoint_preserves_source,worker_cleanup_required,runtime_summary_sequence,sequence
+ SELECT id,issue_id,checkpoint_object_key,checkpoint_preserves_source,worker_cleanup_required,runtime_summary_sequence,failure_sequence,sequence
  FROM native_attempts WHERE organization_id=$1 AND id>$2 ORDER BY id LIMIT $3
- ) SELECT a.id,a.checkpoint_object_key,a.checkpoint_preserves_source,a.worker_cleanup_required,a.runtime_summary_sequence,a.sequence,i.project_id,i.native_id
+ ) SELECT a.id,a.checkpoint_object_key,a.checkpoint_preserves_source,a.worker_cleanup_required,a.runtime_summary_sequence,a.failure_sequence,a.sequence,i.project_id,i.native_id
  FROM page a JOIN issues i ON i.organization_id=$1 AND i.id=a.issue_id ORDER BY a.id`, s.organization, after, limit)
 	if err != nil {
 		return page, mapError(ctx, err)
@@ -281,13 +288,14 @@ func (s *session) UnclassifiedCheckpointSource(ctx context.Context, after string
 		var fact pgtype.Bool
 		var cleanup pgtype.Bool
 		var summary pgtype.Int8
+		var failure pgtype.Int8
 		var sequence int64
 		var candidate leasestore.CheckpointSourceCandidate
-		if err := rows.Scan(&id, &key, &fact, &cleanup, &summary, &sequence, &candidate.ProjectID, &candidate.WorkItemID); err != nil {
+		if err := rows.Scan(&id, &key, &fact, &cleanup, &summary, &failure, &sequence, &candidate.ProjectID, &candidate.WorkItemID); err != nil {
 			return page, mapError(ctx, err)
 		}
 		page.Next = id
-		if key != nil && !fact.Valid || !cleanup.Valid || !summary.Valid || summary.Int64 != sequence {
+		if key != nil && !fact.Valid || !cleanup.Valid || !summary.Valid || summary.Int64 != sequence || !failure.Valid || failure.Int64 != sequence {
 			candidate.AttemptID = id
 			page.Candidate = &candidate
 			break
@@ -310,6 +318,79 @@ func (s *session) SetCheckpointSource(ctx context.Context, fact leasestore.Check
 		return mapError(ctx, err)
 	}
 	if result.RowsAffected() != 1 {
+		return corestore.ErrRevisionConflict
+	}
+	return nil
+}
+
+type attemptFailureColumns struct {
+	recorded          bool
+	example           *string
+	class             *string
+	landingObservedAt *time.Time
+}
+
+func attemptFailureParams(failure *leasestore.AttemptFailure) (attemptFailureColumns, error) {
+	if failure == nil {
+		return attemptFailureColumns{}, nil
+	}
+	columns := attemptFailureColumns{recorded: true}
+	if failure.Example == "" {
+		if failure.Class != "" || failure.LandingObservedAt != nil {
+			return columns, corestore.ErrInvalidPage
+		}
+		return columns, nil
+	}
+	if len(failure.Example) > leasestore.MaxAttemptFailureExampleBytes || !utf8.ValidString(failure.Example) || strings.ContainsRune(failure.Example, 0) || failure.Class != "attempt" && failure.Class != "merge" && failure.Class != "infrastructure" {
+		return columns, corestore.ErrInvalidPage
+	}
+	columns.example, columns.class = new(failure.Example), new(failure.Class)
+	if failure.LandingObservedAt != nil {
+		columns.landingObservedAt = new(failure.LandingObservedAt.UTC())
+	}
+	return columns, nil
+}
+
+func (s *session) AttemptFailures(ctx context.Context, issueID int64, limit int) ([]leasestore.AttemptFailureRow, error) {
+	if issueID <= 0 {
+		return nil, tracker.ErrInvalidWorkItemID
+	}
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.PageIssueAttemptFailures(ctx, pgquery.PageIssueAttemptFailuresParams{OrganizationID: s.organization, IssueID: issueID, PageLimit: int32(limit)})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	result := make([]leasestore.AttemptFailureRow, 0, len(rows))
+	for _, row := range rows {
+		item := leasestore.AttemptFailureRow{AttemptID: row.ID, Status: row.Status, Recorded: row.FailureSequence.Valid && row.FailureSequence.Int64 == row.Sequence,
+			StartedAt: row.StartedAt.Add(time.Duration(row.StartedAtSubmicroNs)), UpdatedAt: row.UpdatedAt}
+		if item.Recorded && row.FailureExample != nil && row.FailureClass != nil {
+			item.Failure = leasestore.AttemptFailure{Example: *row.FailureExample, Class: *row.FailureClass, LandingObservedAt: row.FailureLandingObservedAt}
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+func (s *session) SetAttemptFailure(ctx context.Context, fact leasestore.AttemptFailureFact) error {
+	if s.readOnly || fact.AttemptID == "" || fact.IssueID < 1 || fact.Sequence < 1 {
+		return corestore.ErrInvalidPage
+	}
+	columns, err := attemptFailureParams(&fact.Failure)
+	if err != nil {
+		return err
+	}
+	if err := s.lockAttemptScope(ctx, fact.IssueID); err != nil {
+		return err
+	}
+	count, err := s.queries.SetAttemptFailure(ctx, pgquery.SetAttemptFailureParams{OrganizationID: s.organization, ID: fact.AttemptID, IssueID: fact.IssueID, Sequence: fact.Sequence,
+		FailureExample: columns.example, FailureClass: columns.class, FailureLandingObservedAt: columns.landingObservedAt})
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	if count != 1 {
 		return corestore.ErrRevisionConflict
 	}
 	return nil

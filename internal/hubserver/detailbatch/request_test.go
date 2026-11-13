@@ -59,6 +59,19 @@ func TestRequestDetailBatchReusesOnlyScopedVerifiedResults(t *testing.T) {
 		if owner.batches.Load() != 3 {
 			t.Fatal("request reused previous allocation validation")
 		}
+		owner.scalar.Store(0)
+		for range 2 {
+			data, err := service.StoreFor(fresh).ReadDetail(fresh, organization, refs[1])
+			if err != nil || string(data) != "example 001" {
+				t.Fatalf("repeated scalar read: %v", err)
+			}
+		}
+		if _, err := service.Contextual().ReadDetail(fresh, organization, refs[1]); err != nil || owner.scalar.Load() != 1 {
+			t.Fatalf("request repeated an object read: scalar=%d error=%v", owner.scalar.Load(), err)
+		}
+		if _, err := service.Contextual().ReadDetail(t.Context(), organization, refs[1]); err != nil || owner.scalar.Load() != 2 {
+			t.Fatalf("read outside the request used its cache: scalar=%d error=%v", owner.scalar.Load(), err)
+		}
 	}
 }
 

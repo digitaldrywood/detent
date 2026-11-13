@@ -364,6 +364,10 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, itemPath+"/"+string(issue.WorkItemID)+"/runtime?native_attempt_id="+id, token, nil), http.StatusOK)
 		}
 	})
+	snapshots, _, _, err = service.readOperatorAttemptSnapshots(t.Context(), scope, string(issue.WorkItemID))
+	if err != nil || len(snapshots) == 0 {
+		t.Fatalf("load latest attempt hook: %v snapshots=%d", err, len(snapshots))
+	}
 	changed := false
 	service.config.RunDetails = &changeReadInterceptionStore{DetailStore: service.config.RunDetails, key: snapshots[0].Attempt.PayloadObjectKey, afterRead: func(ctx context.Context) error {
 		changed = true

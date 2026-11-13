@@ -2177,6 +2177,10 @@ type NativeAttempt struct {
 	UsagePendingSequence      int64
 	UsageProjectedSequence    int64
 	WorkerCleanupRequired     pgtype.Bool
+	FailureSequence           pgtype.Int8
+	FailureExample            *string
+	FailureClass              *string
+	FailureLandingObservedAt  *time.Time
 }
 
 type NativeAttemptEvent struct {

@@ -237,7 +237,7 @@ func (s *Service) getNativeRuntime(c echo.Context) error {
 }
 
 func (s *Service) readNativeRuntime(ctx context.Context, scope hubscope.NativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
-	ctx = s.runDetailContext(ctx)
+	ctx = s.withRequestDetails(s.runDetailContext(ctx))
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	return s.readNativeRuntimeTenant(ctx, scope, item, attemptID, admission...)

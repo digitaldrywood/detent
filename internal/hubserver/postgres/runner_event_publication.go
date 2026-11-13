@@ -97,16 +97,20 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 	if old.LocalAttemptID.Valid && e.LocalAttemptID != 0 && old.LocalAttemptID.Int64 != e.LocalAttemptID {
 		return leasestore.Attempt{}, false, leasestore.ErrAttemptConflict
 	}
+	failure, err := attemptFailureParams(e.Failure)
+	if err != nil {
+		return leasestore.Attempt{}, false, err
+	}
 	q := pgquery.New(runEventQueue{f.pending})
 	if e.Sequence == 1 {
 		if err := q.BindAttemptRun(ctx, pgquery.BindAttemptRunParams{OrganizationID: f.session.organization, RunID: e.RunID, IssueID: l.IssueID}); err != nil {
 			return leasestore.Attempt{}, false, err
 		}
-		if _, err := q.InsertLeaseAttempt(ctx, pgquery.InsertLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, IssueID: l.IssueID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, Status: e.Status, WorkItemRevision: l.WorkItemRevision, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(e.CheckpointPreservesSource), ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(e.WorkerCleanupRequired), LocalAttemptID: e.LocalAttemptID, StartedAt: old.StartedAt, StartedAtSubmicroNs: old.StartedAtSubmicroNs, Now: f.now}); err != nil {
+		if _, err := q.InsertLeaseAttempt(ctx, pgquery.InsertLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, IssueID: l.IssueID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, Status: e.Status, WorkItemRevision: l.WorkItemRevision, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(e.CheckpointPreservesSource), ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(e.WorkerCleanupRequired), LocalAttemptID: e.LocalAttemptID, StartedAt: old.StartedAt, StartedAtSubmicroNs: old.StartedAtSubmicroNs, Now: f.now, FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt}); err != nil {
 			return leasestore.Attempt{}, false, err
 		}
 	} else {
-		if _, err := pgquery.New(runEventAdvanceQueue{runEventQueue{f.pending}}).AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, NextSequence: e.Sequence, Status: e.Status, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(e.CheckpointPreservesSource), ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(e.WorkerCleanupRequired), LocalAttemptID: e.LocalAttemptID, UsageCorrection: e.UsageCorrection, Termination: e.Termination, RuntimeOrdered: e.RuntimeOrdered, Now: &f.now}); err != nil {
+		if _, err := pgquery.New(runEventAdvanceQueue{runEventQueue{f.pending}}).AdvanceLeaseAttempt(ctx, pgquery.AdvanceLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, NextSequence: e.Sequence, Status: e.Status, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(e.CheckpointPreservesSource), ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(e.WorkerCleanupRequired), LocalAttemptID: e.LocalAttemptID, UsageCorrection: e.UsageCorrection, Termination: e.Termination, RuntimeOrdered: e.RuntimeOrdered, Now: &f.now, FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt}); err != nil {
 			return leasestore.Attempt{}, false, err
 		}
 	}
@@ -117,6 +121,16 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 	old.RuntimeHeartbeatAt = e.RuntimeHeartbeatAt
 	old.RuntimeSummarySequence = pgtype.Int8{Int64: e.Sequence, Valid: true}
 	old.WorkerCleanupRequired = attemptCheckpointBool(e.WorkerCleanupRequired)
+	switch {
+	case e.UsageCorrection && old.FailureSequence.Valid && old.FailureSequence.Int64 == old.Sequence:
+		old.FailureSequence = pgtype.Int8{Int64: e.Sequence, Valid: true}
+	case e.UsageCorrection:
+		old.FailureSequence, old.FailureExample, old.FailureClass, old.FailureLandingObservedAt = pgtype.Int8{}, nil, nil, nil
+	case failure.recorded:
+		old.FailureSequence, old.FailureExample, old.FailureClass, old.FailureLandingObservedAt = pgtype.Int8{Int64: e.Sequence, Valid: true}, failure.example, failure.class, failure.landingObservedAt
+	default:
+		old.FailureSequence, old.FailureExample, old.FailureClass, old.FailureLandingObservedAt = pgtype.Int8{}, nil, nil, nil
+	}
 	old.Sequence = e.Sequence
 	old.PayloadObjectKey = e.PayloadObjectKey
 	if !e.UsageCorrection {

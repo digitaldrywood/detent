@@ -114,6 +114,17 @@ WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id)
 AND (sqlc.arg(before_fence)::bigint=0 OR fencing_token<sqlc.arg(before_fence)::bigint)
 ORDER BY fencing_token DESC LIMIT sqlc.arg(page_limit);
 
+-- name: PageIssueAttemptFailures :many
+SELECT id,status,sequence,failure_sequence,failure_example,failure_class,failure_landing_observed_at,started_at,started_at_submicro_ns,updated_at
+FROM native_attempts
+WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id)
+ORDER BY fencing_token DESC LIMIT sqlc.arg(page_limit);
+
+-- name: SetAttemptFailure :execrows
+UPDATE native_attempts SET failure_sequence=sequence,failure_example=sqlc.narg(failure_example)::text,failure_class=sqlc.narg(failure_class)::text,failure_landing_observed_at=sqlc.narg(failure_landing_observed_at)::timestamptz
+WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND issue_id=sqlc.arg(issue_id) AND sequence=sqlc.arg(sequence)
+AND failure_sequence IS DISTINCT FROM sequence;
+
 -- name: PageIssueCheckpointAttempts :many
 SELECT * FROM native_attempts
 WHERE organization_id=sqlc.arg(organization_id) AND issue_id=sqlc.arg(issue_id)
@@ -132,8 +143,9 @@ ORDER BY fencing_token LIMIT sqlc.arg(page_limit);
 SELECT request_hash FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2 AND sequence=$3;
 
 -- name: InsertLeaseAttempt :one
-INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,runtime_heartbeat_at,runtime_summary_sequence,worker_cleanup_required,local_attempt_id,local_attempt_id_recorded,checkpoint_preserves_source,project_id)
-VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,sqlc.arg(started_at),sqlc.arg(started_at_submicro_ns),sqlc.arg(now),sqlc.narg(runtime_heartbeat_at),1,sqlc.narg(worker_cleanup_required)::boolean,NULLIF(sqlc.arg(local_attempt_id)::bigint,0),true,sqlc.narg(checkpoint_preserves_source)::boolean,(SELECT i.project_id FROM work_item_identities i WHERE i.organization_id=$1 AND i.id=$3)) RETURNING *;
+INSERT INTO native_attempts (organization_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,artifacts_object_key,started_at,started_at_submicro_ns,updated_at,runtime_heartbeat_at,runtime_summary_sequence,worker_cleanup_required,local_attempt_id,local_attempt_id_recorded,checkpoint_preserves_source,project_id,failure_sequence,failure_example,failure_class,failure_landing_observed_at)
+VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$10,$11,$12,sqlc.arg(started_at),sqlc.arg(started_at_submicro_ns),sqlc.arg(now),sqlc.narg(runtime_heartbeat_at),1,sqlc.narg(worker_cleanup_required)::boolean,NULLIF(sqlc.arg(local_attempt_id)::bigint,0),true,sqlc.narg(checkpoint_preserves_source)::boolean,(SELECT i.project_id FROM work_item_identities i WHERE i.organization_id=$1 AND i.id=$3),
+CASE WHEN sqlc.arg(failure_recorded)::boolean THEN 1 END,sqlc.narg(failure_example)::text,sqlc.narg(failure_class)::text,sqlc.narg(failure_landing_observed_at)::timestamptz) RETURNING *;
 
 -- name: AdvanceLeaseAttempt :one
 UPDATE native_attempts SET sequence=sqlc.arg(next_sequence),
@@ -145,6 +157,10 @@ payload_object_key=sqlc.arg(payload_object_key),
 checkpoint_object_key=COALESCE(sqlc.narg(checkpoint_object_key),checkpoint_object_key),
 checkpoint_preserves_source=CASE WHEN sqlc.narg(checkpoint_object_key)::text IS NOT NULL THEN sqlc.narg(checkpoint_preserves_source)::boolean ELSE checkpoint_preserves_source END,
 artifacts_object_key=COALESCE(sqlc.narg(artifacts_object_key),artifacts_object_key),
+failure_sequence=CASE WHEN sqlc.arg(usage_correction)::boolean THEN CASE WHEN failure_sequence=sequence THEN sqlc.arg(next_sequence) END WHEN sqlc.arg(failure_recorded)::boolean THEN sqlc.arg(next_sequence) END,
+failure_example=CASE WHEN sqlc.arg(usage_correction)::boolean THEN CASE WHEN failure_sequence=sequence THEN failure_example END ELSE sqlc.narg(failure_example)::text END,
+failure_class=CASE WHEN sqlc.arg(usage_correction)::boolean THEN CASE WHEN failure_sequence=sequence THEN failure_class END ELSE sqlc.narg(failure_class)::text END,
+failure_landing_observed_at=CASE WHEN sqlc.arg(usage_correction)::boolean THEN CASE WHEN failure_sequence=sequence THEN failure_landing_observed_at END ELSE sqlc.narg(failure_landing_observed_at)::timestamptz END,
 updated_at=CASE WHEN sqlc.arg(usage_correction)::boolean THEN updated_at ELSE sqlc.arg(now) END
 WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND lease_id=sqlc.arg(lease_id)
 AND fencing_token=sqlc.arg(fencing_token)::bigint AND run_id=sqlc.arg(run_id)

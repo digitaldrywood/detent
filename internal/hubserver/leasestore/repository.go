@@ -179,6 +179,7 @@ type Attempt struct {
 	CheckpointObjectKey       *string
 	CheckpointPreservesSource *bool `json:"-"`
 	ArtifactsObjectKey        *string
+	FailureSequence           *int64 `json:"-"`
 	StartedAt                 time.Time
 	UpdatedAt                 time.Time
 }
@@ -227,6 +228,7 @@ type AttemptEvent struct {
 	Termination               bool                        `json:"termination,omitempty"`
 	PayloadReference          attachment.ArchiveReference `json:"-"`
 	Usage                     []tracker.NativeUsage       `json:"-"`
+	Failure                   *AttemptFailure             `json:"-"`
 	ID                        string
 	Fence                     Fence
 	RunID                     string
@@ -265,4 +267,36 @@ type CheckpointSourceFact struct {
 
 type CheckpointSourceWriter interface {
 	SetCheckpointSource(context.Context, CheckpointSourceFact) error
+}
+
+const MaxAttemptFailureExampleBytes = 4096
+
+type AttemptFailure struct {
+	Example           string
+	Class             string
+	LandingObservedAt *time.Time
+}
+
+type AttemptFailureRow struct {
+	AttemptID string
+	Status    string
+	Recorded  bool
+	Failure   AttemptFailure
+	StartedAt time.Time
+	UpdatedAt time.Time
+}
+
+type AttemptFailureReader interface {
+	AttemptFailures(context.Context, int64, int) ([]AttemptFailureRow, error)
+}
+
+type AttemptFailureFact struct {
+	AttemptID string
+	IssueID   int64
+	Sequence  int64
+	Failure   AttemptFailure
+}
+
+type AttemptFailureWriter interface {
+	SetAttemptFailure(context.Context, AttemptFailureFact) error
 }

@@ -8,8 +8,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -286,7 +288,7 @@ func (operatorWorkReads) WorkReadNames(context.Context) []string {
 }
 
 func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (explain.IssueExplanation, error) {
-	ctx = context.WithValue(ctx, hubcontent.ExplanationReadKey{}, true)
+	ctx = r.service.withRequestDetails(context.WithValue(ctx, hubcontent.ExplanationReadKey{}, true))
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: query.ProjectID})
@@ -314,23 +316,29 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 }
 
 func (s *Service) readOperatorExplanation(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue) (tracker.NativeRuntimeEvidence, []nativeFailure, bool, error) {
+	return s.readOperatorEvidence(ctx, scope, issue, true)
+}
+
+func (s *Service) readOperatorEvidence(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, withFailures bool) (tracker.NativeRuntimeEvidence, []nativeFailure, bool, error) {
+	ctx = s.withRequestDetails(s.runDetailContext(ctx))
 	item := string(issue.WorkItemID)
 	now := s.config.Clock().UTC()
 	evidence := tracker.NativeRuntimeEvidence{Issue: issue.RuntimeReference(), Selection: "latest", ObservedAt: now,
 		Unavailable: []string{"efficiency_receipt", "scheduler_history_projection", "runner_capacity_projection", "native_admission_projection"}, Capacity: []tracker.NativeRuntimeCapacity{},
 		Scheduling: tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "unknown", At: now, WorkItemRevision: issue.Revision, Reason: "Runner capacity and admission projection are not available from this typed read"}}
-	snapshots, sequence, partial, err := s.readOperatorAttemptSnapshots(ctx, scope, item)
+	selector := runtimeAttemptSelector{latest: true}
+	if withFailures {
+		selector.failures = &runtimeFailureRows{}
+	}
+	latest, sequence, found, err := s.readSelectedNativeRuntimeTenant(ctx, scope, item, selector)
 	if err != nil {
 		return evidence, nil, false, err
 	}
-	evidence.ChangeSequence, evidence.Issue.ChangeSequence = sequence, sequence
-	if len(snapshots) > 0 {
-		evidence, err = s.readNativeRuntime(ctx, scope, item, snapshots[0].Attempt.ID)
-		if err != nil {
-			return evidence, nil, false, err
-		}
+	if found {
+		evidence = latest
 		evidence.Selection = "latest"
 	} else {
+		evidence.ChangeSequence, evidence.Issue.ChangeSequence = sequence, sequence
 		evidence.Unavailable = append(evidence.Unavailable, "native_attempt")
 		detail, err := s.readExplanationCurrentChange(ctx, scope, issue.WorkItemID, now)
 		if err != nil {
@@ -340,21 +348,13 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope hubscope.Na
 			attachRuntimeChangeDetail(&evidence, *detail)
 		}
 	}
-	failures := make([]nativeFailure, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, now)
+	var failures []nativeFailure
+	var partial bool
+	if withFailures && found {
+		failures, partial, err = s.operatorFailures(ctx, item, *selector.failures, now)
 		if err != nil {
 			return evidence, nil, false, err
 		}
-		example, class := failureFromAttempt(attempt.NativeRunData, snapshot.Attempt.Status)
-		if example == "" {
-			continue
-		}
-		at := attempt.UpdatedAt
-		if attempt.Runtime != nil && attempt.Runtime.Landing != nil && !attempt.Runtime.Landing.ObservedAt.IsZero() {
-			at = attempt.Runtime.Landing.ObservedAt
-		}
-		failures = append(failures, nativeFailure{AttemptID: attempt.AttemptID, WorkItem: item, At: at, Started: attempt.StartedAt, Finished: attempt.UpdatedAt, Example: example, Class: class})
 	}
 	var decisions eventstore.SchedulerDecisionRows
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -373,6 +373,37 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope hubscope.Na
 		evidence, err = s.hydrateSchedulerDecisionRows(ctx, scope, issue.WorkItemID, evidence, decisions)
 	}
 	return evidence, failures, partial, err
+}
+
+func (s *Service) operatorFailures(ctx context.Context, item string, history runtimeFailureRows, now time.Time) ([]nativeFailure, bool, error) {
+	partial := len(history.rows) > runtimeFailureHistory
+	rows := history.rows[:min(len(history.rows), runtimeFailureHistory)]
+	failures := make([]nativeFailure, 0, len(rows))
+	for _, row := range rows {
+		failure := nativeFailure{AttemptID: row.AttemptID, WorkItem: item, At: row.UpdatedAt, Started: row.StartedAt, Finished: row.UpdatedAt, Example: row.Failure.Example, Class: row.Failure.Class}
+		if row.Failure.LandingObservedAt != nil {
+			failure.At = *row.Failure.LandingObservedAt
+		}
+		if !row.Recorded {
+			snapshot, ok := history.legacy[row.AttemptID]
+			if !ok {
+				return nil, false, artifact.ErrIntegrity
+			}
+			attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, now)
+			if err != nil {
+				return nil, false, err
+			}
+			failure.Example, failure.Class = failureFromAttempt(attempt.NativeRunData, snapshot.Attempt.Status)
+			failure.AttemptID, failure.At, failure.Started, failure.Finished = attempt.AttemptID, attempt.UpdatedAt, attempt.StartedAt, attempt.UpdatedAt
+			if attempt.Runtime != nil && attempt.Runtime.Landing != nil && !attempt.Runtime.Landing.ObservedAt.IsZero() {
+				failure.At = attempt.Runtime.Landing.ObservedAt
+			}
+		}
+		if failure.Example != "" {
+			failures = append(failures, failure)
+		}
+	}
+	return failures, partial, nil
 }
 
 func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope hubscope.NativeScope, item string) ([]hubrecords.TenantAttemptSnapshot, int64, bool, error) {

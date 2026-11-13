@@ -42,6 +42,21 @@ func (s *Service) StoreFor(ctx context.Context) attachment.DetailStore {
 	}
 	return s.deps.Store()
 }
+func (s *Service) Contextual() attachment.DetailStore {
+	if s.deps.Store() == nil {
+		return nil
+	}
+	return contextualStore{service: s}
+}
+
+type contextualStore struct{ service *Service }
+
+func (c contextualStore) StoreDetail(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	return c.service.StoreFor(ctx).StoreDetail(ctx, organization, data)
+}
+func (c contextualStore) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	return c.service.StoreFor(ctx).ReadDetail(ctx, organization, ref)
+}
 func (s *Service) Prefetch(ctx context.Context, organization string, refs []attachment.ArchiveReference) {
 	if store, ok := ctx.Value(detailBatchContextKey{}).(*requestDetailStore); ok {
 		store.prefetch(ctx, organization, refs)
@@ -56,10 +71,20 @@ func (s *requestDetailStore) ReadDetail(ctx context.Context, organization string
 	}
 	s.mu.Lock()
 	entry := s.entries[ref]
-	s.mu.Unlock()
 	if entry == nil {
-		return s.owner.ReadDetail(ctx, organization, ref)
+		if ref.UncompressedSize > attachment.MaxArchiveBytes-s.reserved {
+			s.mu.Unlock()
+			return s.owner.ReadDetail(ctx, organization, ref)
+		}
+		s.reserved += ref.UncompressedSize
+		entry = &detailBatchEntry{ready: make(chan struct{})}
+		s.entries[ref] = entry
+		s.mu.Unlock()
+		entry.data, entry.err = s.owner.ReadDetail(ctx, organization, ref)
+		close(entry.ready)
+		return bytes.Clone(entry.data), entry.err
 	}
+	s.mu.Unlock()
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()

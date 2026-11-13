@@ -1,6 +1,25 @@
 package hubserver
 
-import "github.com/digitaldrywood/detent/internal/tracker"
+import (
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func attemptFailureSummary(data tracker.NativeRunData, status string) *leasestore.AttemptFailure {
+	example, class := failureFromAttempt(data, status)
+	summary := &leasestore.AttemptFailure{}
+	if example = hubapi.BoundedFailureText(strings.ReplaceAll(example, "\x00", "\uFFFD"), leasestore.MaxAttemptFailureExampleBytes); example == "" {
+		return summary
+	}
+	summary.Example, summary.Class = example, class
+	if data.Runtime != nil && data.Runtime.Landing != nil && !data.Runtime.Landing.ObservedAt.IsZero() {
+		summary.LandingObservedAt = new(data.Runtime.Landing.ObservedAt.UTC())
+	}
+	return summary
+}
 
 func applyHealthAttemptData(a *healthRateAttempt, data tracker.NativeRunData) {
 	a.Session = data.SessionID
