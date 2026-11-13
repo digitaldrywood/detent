@@ -927,3 +927,58 @@ func TestPlacementSettingsCompatibility(t *testing.T) {
 		t.Fatal("stale settings revision accepted")
 	}
 }
+
+func TestClaimSourceAvailabilityFollowsCurrentSource(t *testing.T) {
+	t.Parallel()
+	f := placementNativeFixture(t, Config{})
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	holder := placementFixtureRunner(t, f, "source-runner", "source", false, 2, "gpt-6.1-sol", "test-model")
+	other := placementFixtureRunner(t, f, "other-runner", "other", false, 2, "gpt-6.1-sol", "test-model")
+	issue := f.create(t, "source pinned to its runner")
+	item := f.base + "/work-items/" + string(issue.WorkItemID)
+	claim := func(r runnerFixture, session string, want int) tracker.NativeLease {
+		t.Helper()
+		var current tracker.NativeIssue
+		decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, item, f.token, nil), &current)
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, current, session))
+		var lease tracker.NativeLease
+		if requireNativeStatus(t, response, want); want == http.StatusOK {
+			decodeHubResponse(t, response, &lease)
+		} else {
+			requireNativeCode(t, response, want, "no_claimable_work")
+		}
+		return lease
+	}
+	publish := func(key string, input tracker.ChangeVersionInput, bundle []byte, expected, change string) tracker.ChangeVersion {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodPost, item+"/changes/"+change+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: key}, ExpectedVersionID: expected, ChangeVersionInput: input, SourceBundle: bundle})
+		requireNativeStatus(t, response, http.StatusOK)
+		var version tracker.ChangeVersion
+		decodeHubResponse(t, response, &version)
+		return version
+	}
+	release := func(r runnerFixture, lease tracker.NativeLease) {
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
+	}
+	lease := claim(holder, "holder-first", http.StatusOK)
+	event := nativeStartedEvent(lease)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/events", holder.redemption.Credential, event), http.StatusOK)
+	event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Handoff = "run.checkpointed", "holder-local-checkpoint", 2, nativeTestCheckpoint()
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/events", holder.redemption.Credential, event), http.StatusOK)
+	var change tracker.ChangeRequest
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/changes", f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "source-change"}, Title: "Source pinned change"}), &change)
+	unsourced := publish("unsourced-version", changeTestInput(), nil, "", change.ID)
+	release(holder, lease)
+	claim(other, "other-refused", http.StatusConflict)
+	claim(other, "other-refused", http.StatusConflict)
+	var evidence tracker.NativeRuntimeEvidence
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, item+"/runtime", f.token, nil), &evidence)
+	want := fmt.Sprintf("Change %s version %s has no verified Hub source; recapture the exact head on source runner %s", change.ID, unsourced.ID, holder.binding.MachineID)
+	if evidence.LatestDecision == nil || evidence.LatestDecision.Data.Decision == nil || *evidence.LatestDecision.Data.Decision != (tracker.NativeSchedulerDecision{RunnerID: other.binding.RunnerID, Source: "native_runner_routing", Outcome: "skipped", Reason: want, At: evidence.LatestDecision.Data.Decision.At, WorkItemRevision: evidence.LatestDecision.Data.Decision.WorkItemRevision}) {
+		t.Fatalf("source refusal decision=%#v", evidence.LatestDecision)
+	}
+	release(holder, claim(holder, "holder-second", http.StatusOK))
+	input := changeTestInput()
+	publish("sourced-version", input, changeTestSource(t, &input), unsourced.ID, change.ID)
+	claim(other, "other-after-source", http.StatusOK)
+}

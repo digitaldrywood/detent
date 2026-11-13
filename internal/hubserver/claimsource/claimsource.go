@@ -1,4 +1,4 @@
-package hubserver
+package claimsource
 
 import (
 	"context"
@@ -6,20 +6,50 @@ import (
 	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readClaimSourceFacts(ctx context.Context, scope hubscope.NativeScope, item corestore.WorkItem) (hubrecords.ClaimSourceFacts, error) {
+type Deps struct {
+	Repository tenantstore.Repository
+	Details    attachment.DetailStore
+	Checkpoint func(context.Context, hubrecords.TenantAttemptSnapshot) (*tracker.NativeCheckpoint, error)
+}
+
+func VersionStored(ctx context.Context, details attachment.DetailStore, organization tracker.OrganizationID, row eventstore.Version) (bool, error) {
+	if row.OrganizationID != organization {
+		return false, artifact.ErrIntegrity
+	}
+	content := eventstore.NewContent(details)
+	version, err := content.Version(ctx, row)
+	if err != nil {
+		return false, err
+	}
+	if version.Source == nil {
+		return false, nil
+	}
+	_, err = content.SourceBundle(ctx, organization, row, *version.Source)
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if !hubcontent.ExplanationRead(ctx) && (errors.Is(err, artifact.ErrIntegrity) || errors.Is(err, artifact.ErrMissing)) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, project tracker.ProjectID, item corestore.WorkItem) (hubrecords.ClaimSourceFacts, error) {
 	facts := hubrecords.ClaimSourceFacts{Loaded: true}
 	var snapshot hubrecords.TenantAttemptSnapshot
 	var version *eventstore.Version
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := deps.Repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner := func(leaseID string) (string, string, error) {
 			lease, err := r.Lease(ctx, leaseID)
 			if err != nil {
@@ -31,7 +61,7 @@ func (s *Service) readClaimSourceFacts(ctx context.Context, scope hubscope.Nativ
 			}
 			return lease.MachineID, identity.RunnerID, err
 		}
-		change, err := r.LatestChange(ctx, scope.Project, item.NativeID)
+		change, err := r.LatestChange(ctx, project, item.NativeID)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
@@ -63,7 +93,7 @@ func (s *Service) readClaimSourceFacts(ctx context.Context, scope hubscope.Nativ
 		if err != nil {
 			return err
 		}
-		if attempt.CheckpointObjectKey == nil || attempt.OrganizationID != scope.Organization || attempt.IssueID != item.ID {
+		if attempt.CheckpointObjectKey == nil || attempt.OrganizationID != organization || attempt.IssueID != item.ID {
 			return artifact.ErrIntegrity
 		}
 		facts.AttemptID, facts.CheckpointObjectKey = attempt.ID, *attempt.CheckpointObjectKey
@@ -71,7 +101,7 @@ func (s *Service) readClaimSourceFacts(ctx context.Context, scope hubscope.Nativ
 		if snapshot.Lease, err = r.Lease(ctx, attempt.LeaseID); err != nil {
 			return err
 		}
-		if snapshot.Event, err = r.LatestRunEvent(ctx, scope.Project, attempt.ID); err != nil {
+		if snapshot.Event, err = r.LatestRunEvent(ctx, project, attempt.ID); err != nil {
 			return err
 		}
 		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
@@ -84,7 +114,7 @@ func (s *Service) readClaimSourceFacts(ctx context.Context, scope hubscope.Nativ
 		return facts, err
 	}
 	if facts.AttemptID != "" {
-		checkpoint, err := s.readNativeAttemptCheckpointTenant(ctx, snapshot)
+		checkpoint, err := deps.Checkpoint(ctx, snapshot)
 		if err != nil {
 			return facts, err
 		}
@@ -93,45 +123,48 @@ func (s *Service) readClaimSourceFacts(ctx context.Context, scope hubscope.Nativ
 		}
 	}
 	if version != nil {
-		facts.VersionStored, err = s.verifiedNativeSourceTenant(ctx, scope, *version)
+		facts.VersionStored, err = VersionStored(ctx, deps.Details, organization, *version)
 	}
 	return facts, err
 }
 
-func claimSourceCurrent(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item corestore.WorkItem, facts hubrecords.ClaimSourceFacts) error {
+func Refusal(ctx context.Context, r tenantstore.Reader, project tracker.ProjectID, item corestore.WorkItem, facts hubrecords.ClaimSourceFacts, machine, runner string) (string, error) {
 	if !facts.Loaded {
-		return corestore.ErrRevisionConflict
+		return "", corestore.ErrRevisionConflict
 	}
 	reader, ok := r.(leasestore.CheckpointAttemptReader)
 	if !ok {
-		return hubapi.NativeRunEventStorageUnavailable()
+		return "", hubapi.NativeRunEventStorageUnavailable()
 	}
 	attempt, err := reader.SourceCheckpointAttempt(ctx, item.ID)
 	switch {
 	case errors.Is(err, corestore.ErrNotFound):
 		if facts.AttemptID != "" {
-			return corestore.ErrRevisionConflict
+			return "", corestore.ErrRevisionConflict
 		}
 	case err != nil:
-		return err
+		return "", err
 	case attempt.ID != facts.AttemptID || attempt.CheckpointObjectKey == nil || *attempt.CheckpointObjectKey != facts.CheckpointObjectKey:
-		return corestore.ErrRevisionConflict
+		return "", corestore.ErrRevisionConflict
 	}
-	change, err := r.LatestChange(ctx, scope.Project, item.NativeID)
+	change, err := r.LatestChange(ctx, project, item.NativeID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
-		return err
+		return "", err
 	}
 	current := ""
 	if err == nil && change.CurrentVersionID != nil {
 		current = *change.CurrentVersionID
 	}
 	if current != facts.VersionID {
-		return corestore.ErrRevisionConflict
+		return "", corestore.ErrRevisionConflict
 	}
-	return nil
+	if allowed, reason := Allowed(facts, machine, runner); !allowed {
+		return reason, nil
+	}
+	return "", nil
 }
 
-func claimSourceAllowed(facts hubrecords.ClaimSourceFacts, machine, runner string) (bool, string) {
+func Allowed(facts hubrecords.ClaimSourceFacts, machine, runner string) (bool, string) {
 	checkpoint := facts.Checkpoint
 	if checkpoint.GitRef() {
 		return true, "Checkpoint " + checkpoint.Ref + " is in the project repository; any eligible runner restores it"

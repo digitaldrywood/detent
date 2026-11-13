@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimsource"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -267,21 +269,12 @@ func (r claimRoutingRefusal) holds(ctx context.Context, reader tenantstore.Reade
 		}
 		return machine.Capacity <= 0, nil
 	case "source_unavailable":
-		if identityRefusal != nil {
-			return false, nil
-		}
 		item, err := reader.WorkItem(ctx, scope.Project, request.WorkItemID)
-		if err != nil {
+		if err != nil || identityRefusal != nil {
 			return false, err
 		}
-		if err := claimSourceCurrent(ctx, reader, scope, item, r.sourceFacts); err != nil {
-			if errors.Is(err, corestore.ErrRevisionConflict) {
-				return false, nil
-			}
-			return false, err
-		}
-		allowed, reason := claimSourceAllowed(r.sourceFacts, string(identity.MachineID), identity.RunnerID)
-		return !allowed && reason == r.reason, nil
+		reason, err := claimsource.Refusal(ctx, reader, scope.Project, item, r.sourceFacts, string(identity.MachineID), identity.RunnerID)
+		return reason == r.reason, err
 	}
 	return false, nil
 }
@@ -290,11 +283,7 @@ func (s *Service) recordClaimRoutingRefusal(ctx context.Context, scope hubscope.
 	if refusal == nil || request.WorkItemID == "" {
 		return nil
 	}
-	reason := refusal.code
-	if refusal.reason != "" {
-		reason = refusal.reason
-	}
-	err := s.recordRequestedClaimRefusal(ctx, scope, request, now, false, reason, refusal)
+	err := s.recordRequestedClaimRefusal(ctx, scope, request, now, false, cmp.Or(refusal.reason, refusal.code), refusal)
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		return nil
 	}
@@ -661,7 +650,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		return leasestore.Lease{}, err
 	}
 	if plan.Replay == nil && !plan.Source.Loaded {
-		plan.Source, err = s.readClaimSourceFacts(ctx, scope, plan.Item)
+		plan.Source, err = claimsource.Read(ctx, claimsource.Deps{Repository: s.config.TenantRepository, Details: s.runDetailStore(), Checkpoint: s.readNativeAttemptCheckpointTenant}, scope.Organization, scope.Project, plan.Item)
 		if err != nil {
 			return leasestore.Lease{}, err
 		}
@@ -939,15 +928,11 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			if batch != "" {
 				joining = landingCapacityKey(identity.MachineID, string(scope.Project), request.SessionID)
 			}
-			if !workspaceItem {
-				if err := claimSourceCurrent(ctx, w, scope, item, plan.Source); err != nil {
-					return err
-				}
-				if allowed, reason := claimSourceAllowed(plan.Source, string(identity.MachineID), identity.RunnerID); !allowed {
-					placementRefusal, sourceRefusal = reason, reason
-					return ErrNoClaimableWork
-				}
+			if sourceRefusal, err = claimsource.Refusal(ctx, w, scope.Project, item, plan.Source, string(identity.MachineID), identity.RunnerID); !workspaceItem && (err != nil || sourceRefusal != "") {
+				placementRefusal = sourceRefusal
+				return cmp.Or(err, ErrNoClaimableWork)
 			}
+			sourceRefusal = ""
 			allowed, reason, err := claimPlacementAllowed(ctx, w, scope, identity, machine, plan, request.ProviderCandidates, workspaceItem, joining, authoritativeNow, placement.Snapshot)
 			if err != nil {
 				return err

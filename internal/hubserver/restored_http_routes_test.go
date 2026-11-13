@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,10 +10,12 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -208,5 +211,37 @@ func TestRestoredOrganizationHTTPRoutes(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestLocalHubStoresRunDetailsInPostgres(t *testing.T) {
+	t.Parallel()
+	service := newLocalHTTPService(t, func(cfg *Config) { cfg.Content, cfg.RunDetails = nil, nil })
+	if _, ok := service.runDetailStore().(*hubmaintenance.Details); !ok || service.config.Hosted != nil {
+		t.Fatalf("local Hub run detail store = %T", service.runDetailStore())
+	}
+	admin, _ := projectRecordDatabases.Load(service.database.postgres)
+	f := newNativeFixture(t, service, "", "Example project")
+	approveHubTestPolicy(t, service, f.base+"/policy", hubTestPolicy())
+	issue := f.create(t, "local run detail")
+	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	runner.enroll(t)
+	path := f.base + "/work-items/" + string(issue.WorkItemID)
+	start := nativeStartedEvent(nativeAttemptFixtureLease(t, runner, issue, "local-run-detail"))
+	checkpoint := start
+	checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence, checkpoint.Data.Handoff = "run.checkpointed", "local-checkpoint", 2, nativeTestCheckpoint()
+	for _, event := range []tracker.NativeRunEvent{start, checkpoint} {
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", runner.redemption.Credential, event), http.StatusOK)
+	}
+	response := performHubAPIRequest(t, service, http.MethodGet, path+"/attempts/"+start.Data.AttemptID, f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var attempt tracker.NativeAttempt
+	decodeHubResponse(t, response, &attempt)
+	if attempt.RunID != start.Data.RunID || attempt.Sequence != 2 || attempt.Identity == nil || attempt.Identity.Model != "test-model" || attempt.Checkpoint == nil || attempt.Checkpoint.Resume != "resume_session" {
+		t.Fatalf("run detail not read back: %+v", attempt)
+	}
+	var stored int
+	if err := admin.(*sql.DB).QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts a JOIN hub_detail_objects d ON d.organization_id=a.organization_id AND d.object_key IN (a.payload_object_key,a.checkpoint_object_key) WHERE a.organization_id=$1 AND a.id=$2`, f.project.OrganizationID, start.Data.AttemptID).Scan(&stored); err != nil || stored != 2 {
+		t.Fatalf("run detail objects in PostgreSQL=%d err=%v", stored, err)
 	}
 }

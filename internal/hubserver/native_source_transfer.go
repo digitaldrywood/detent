@@ -11,10 +11,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimsource"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -225,7 +225,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 		if view.AttemptID == "" {
 			view.AttemptID = row.AttemptID
 		}
-		view.Available, err = s.verifiedNativeSourceTenant(ctx, scope, row)
+		view.Available, err = claimsource.VersionStored(ctx, s.runDetailStore(), scope.Organization, row)
 		if err != nil {
 			return view, err
 		}
@@ -339,28 +339,6 @@ func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, sc
 		return nil, "", hubapi.ProjectRecordError(err)
 	}
 	return destinations, next, nil
-}
-
-func (s *Service) verifiedNativeSourceTenant(ctx context.Context, scope hubscope.NativeScope, row eventstore.Version) (bool, error) {
-	if row.OrganizationID != scope.Organization {
-		return false, artifact.ErrIntegrity
-	}
-	content := eventstore.NewContent(s.runDetailStore())
-	version, err := content.Version(ctx, row)
-	if err != nil {
-		return false, err
-	}
-	if version.Source == nil {
-		return false, nil
-	}
-	_, err = content.SourceBundle(ctx, scope.Organization, row, *version.Source)
-	if ctx.Err() != nil {
-		return false, ctx.Err()
-	}
-	if !hubcontent.ExplanationRead(ctx) && (errors.Is(err, artifact.ErrIntegrity) || errors.Is(err, artifact.ErrMissing)) {
-		return false, nil
-	}
-	return err == nil, err
 }
 
 func (s *Service) transferNativeSource(c echo.Context) error {
