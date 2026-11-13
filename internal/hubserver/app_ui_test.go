@@ -68,6 +68,7 @@ func (f *browserHostedFixture) appRequest(t *testing.T, account, method, path st
 }
 
 func TestAppShellServing(t *testing.T) {
+	t.Parallel()
 	f := newPostgresBrowserHostedOrganizationFixture(t, true, "org_browser_preview", withAppClientFS(appClientBundle()))
 	var projectSlug string
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), tracker.OrganizationID(f.service.config.Hosted.OrganizationID), corestore.Serving, func(r tenantstore.Reader) error {
@@ -199,6 +200,7 @@ func TestConversationClientShellFor(t *testing.T) {
 }
 
 func TestAppSharedEntry(t *testing.T) {
+	t.Parallel()
 	f := newOperatorSharedFixture(t, withAppClientFS(appClientBundle())).shared
 	owner := f.member(t, "owner", "owner", "write")
 	member := f.member(t, "member", "member", "write")
@@ -570,6 +572,7 @@ func TestRunnerBehind(t *testing.T) {
 }
 
 func TestAppUpdates(t *testing.T) {
+	t.Parallel()
 	f := newPostgresBrowserHostedOrganizationFixture(t, true, "org_browser_preview", withAppClientFS(appClientBundle()))
 	read := func(t *testing.T, account string) appUpdates {
 		t.Helper()

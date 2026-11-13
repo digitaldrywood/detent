@@ -48,6 +48,7 @@ func TestNativeCommandReceiptsExcludeEvidence(t *testing.T) {
 }
 
 func TestReportObjectDownloadsReleaseReaders(t *testing.T) {
+	t.Parallel()
 	t.Run("diagnostics", func(t *testing.T) {
 		for _, fixture := range diagnosticsPostgresFixtures(t) {
 			t.Run(string(fixture.organization), func(t *testing.T) {

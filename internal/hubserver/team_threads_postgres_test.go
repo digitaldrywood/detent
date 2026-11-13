@@ -26,6 +26,7 @@ import (
 )
 
 func TestPostgresThreadsPreservePostsPermissionsAndUnread(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID

@@ -13,6 +13,7 @@ import (
 )
 
 func TestRunnerProjectSchedulingRanksUsesPostgres(t *testing.T) {
+	t.Parallel()
 	service := newClockedPostgresNativeService(t, Config{})
 	var runners []runnerFixture
 	var expected []map[tracker.ProjectID]int

@@ -25,6 +25,7 @@ import (
 )
 
 func TestHeartbeatTransactionTiming(t *testing.T) {
+	t.Parallel()
 	for _, durable := range []bool{true, false} {
 		t.Run(fmt.Sprintf("durable=%t", durable), func(t *testing.T) {
 			repository, _ := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
@@ -169,6 +170,7 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 }
 
 func TestHeartbeatPreparationBeforeWriter(t *testing.T) {
+	t.Parallel()
 	objects := &changeObjectFixture{}
 	repository, _ := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
 		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, claimPreflightTrace{})

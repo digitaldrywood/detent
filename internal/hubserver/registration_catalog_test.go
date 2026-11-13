@@ -14,6 +14,7 @@ import (
 )
 
 func TestRegistrationCatalogGolden(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"local", "hosted", "shared", "local_conversations", "hosted_conversations", "shared_conversations", "maintenance"} {
 		t.Run(mode, func(t *testing.T) {
 			var service *Service

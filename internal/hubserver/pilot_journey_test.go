@@ -107,6 +107,7 @@ func TestPilotHostedHistoryAfterRunnerLossAndRestart(t *testing.T) {
 }
 
 func TestPilotBrowserPreview(t *testing.T) {
+	t.Parallel()
 	manifest := os.Getenv("DETENT_PILOT_BROWSER_MANIFEST")
 	if manifest == "" {
 		t.Skip("isolated pilot browser preview")
@@ -129,6 +130,7 @@ func TestPilotBrowserPreview(t *testing.T) {
 }
 
 func TestPilotOrganizationBrowserPreview(t *testing.T) {
+	t.Parallel()
 	manifest := os.Getenv("DETENT_PILOT_ORGANIZATION_MANIFEST")
 	if manifest == "" {
 		t.Skip("isolated organization browser preview")

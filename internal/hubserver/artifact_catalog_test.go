@@ -74,6 +74,7 @@ func (t catalogJourneyTransport) RoundTrip(r *http.Request) (*http.Response, err
 }
 
 func TestPostgresArtifactCatalogJourney(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	storage := &pilotArtifactStorage{}
 	var foreignPublisher string

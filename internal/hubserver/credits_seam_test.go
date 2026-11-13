@@ -16,6 +16,7 @@ import (
 )
 
 func TestCreditUsageReport(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	at := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)

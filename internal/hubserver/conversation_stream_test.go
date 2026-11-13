@@ -170,6 +170,7 @@ func requireClosed(t *testing.T, frame sseFrame, reason string) {
 }
 
 func TestConversationStreamReplaysAndFollows(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("loopback network listener integration")
 	}
@@ -250,6 +251,7 @@ func TestConversationStreamReplaysAndFollows(t *testing.T) {
 }
 
 func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.T) {
+	t.Parallel()
 	f := newStreamFixture(t)
 	id := f.create(t, f.token, map[string]any{"title": "Hidden"}).Conversation.ID
 	tests := []struct {
@@ -356,6 +358,7 @@ func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.
 }
 
 func TestConversationStreamClosesOnRevocationAndShutdown(t *testing.T) {
+	t.Parallel()
 	t.Run("access revoked", func(t *testing.T) {
 		f := newStreamFixture(t)
 		id := f.create(t, f.token, map[string]any{"title": "Revoked"}).Conversation.ID
@@ -385,6 +388,7 @@ func TestConversationStreamClosesOnRevocationAndShutdown(t *testing.T) {
 }
 
 func TestShutdownClosesConversationStreamBeforeOuterServerDrain(t *testing.T) {
+	t.Parallel()
 	f := newStreamFixture(t)
 	created := f.create(t, f.token, map[string]any{"first_message": map[string]any{"key": "first", "text": "Hold the stream open"}})
 	stream := f.open(t, f.token, created.Conversation.ID, 2)
@@ -469,6 +473,7 @@ func (p *streamMembershipFailureProvider) fail(err error) {
 }
 
 func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name             string
 		account          string

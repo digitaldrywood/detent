@@ -31,6 +31,7 @@ import (
 )
 
 func TestHeartbeatContentAccounting(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ limited, selectedPolicy bool }{{}, {limited: true}, {limited: true, selectedPolicy: true}} {
 		name := fmt.Sprintf("limited=%t", test.limited)
 		if test.selectedPolicy {
@@ -155,6 +156,7 @@ func TestHeartbeatContentAccounting(t *testing.T) {
 }
 
 func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		admission  bool

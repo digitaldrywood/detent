@@ -220,6 +220,7 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 }
 
 func TestClaimRetryAfterCommittedDecisionUsesFreshEventIDs(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "claim-retry-event-ids")
 	runner := prepareRunner(t, f, runnerauth.Claim)
 	runner.enroll(t)

@@ -26,6 +26,7 @@ import (
 )
 
 func TestPostgresMissingOperatorCatalog(t *testing.T) {
+	t.Parallel()
 	permission := apikey.ScopeWrite
 	access := apikey.ProjectContext{Access: "selected", Projects: []string{"project", "compat"}}
 	authority := func(id, binding string) *apikey.KeyAuthority {

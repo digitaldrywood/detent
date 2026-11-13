@@ -33,6 +33,7 @@ import (
 )
 
 func TestPostgresBillingBudgetReadRoutes(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	for index, organization := range []tracker.OrganizationID{"org_example_first", "org_example_second"} {
 		t.Run(string(organization), func(t *testing.T) {

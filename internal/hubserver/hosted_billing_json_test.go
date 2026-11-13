@@ -51,6 +51,7 @@ func (f *browserHostedFixture) billingAPI(t *testing.T, account, method, path, b
 }
 
 func TestHostedBillingJSONForTheClient(t *testing.T) {
+	t.Parallel()
 	f, provider := newHostedCustomerFixtureWithService(t, withAppClientFS(appClientBundle()))
 	report := f.billingAPI(t, "owner", http.MethodGet, "/billing", "")
 	if report.Code != http.StatusOK {

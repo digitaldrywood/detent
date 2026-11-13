@@ -30,6 +30,7 @@ type hotQueryStatement struct {
 }
 
 func TestHotQueryPlans(t *testing.T) {
+	t.Parallel()
 	f := newChangeFixture(t, newPostgresNativeService(t, Config{}))
 	f.publish(t, "current", "")
 	other := f.create(t, "related")

@@ -21,6 +21,7 @@ import (
 )
 
 func TestRunReportsSchemaValidation(t *testing.T) {
+	t.Parallel()
 	key := hostedSharedKey(17)
 	admin, cfg, expected := postgresStartupHealthFixture(t, func(cfg *Config) {
 		cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
@@ -107,6 +108,7 @@ func TestRunReportsSchemaValidation(t *testing.T) {
 }
 
 func TestStandaloneStartupHealthRequiresReadCredential(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	cfg.Hosted = nil
@@ -125,6 +127,7 @@ func TestStandaloneStartupHealthRequiresReadCredential(t *testing.T) {
 }
 
 func TestStandaloneStartupHealthReportsAuthenticatedProgress(t *testing.T) {
+	t.Parallel()
 	_, cfg, expected := postgresStartupHealthFixture(t)
 	progress := openPostgresStartupHealth(t, cfg)
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -148,6 +151,7 @@ func TestStandaloneStartupHealthReportsAuthenticatedProgress(t *testing.T) {
 }
 
 func TestRunCancelsSchemaValidationWhenListenerFails(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	cfg.ListenAddress = "127.0.0.1:0"

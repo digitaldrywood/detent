@@ -18,6 +18,7 @@ import (
 )
 
 func TestReadableIssueRoutesAndSlugEdits(t *testing.T) {
+	t.Parallel()
 	f := newHostedSecurityFixture(t, withAppClientFS(appClientBundle()))
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	hidden := f.user(t, "hidden", "member", "hidden@example.test", "", "")

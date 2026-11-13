@@ -8,6 +8,7 @@ import (
 )
 
 func TestPreProviderFailureDecisionRetainsUsage(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	for _, test := range []struct {
 		name, outcome string

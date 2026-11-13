@@ -78,6 +78,7 @@ func (r *claimCandidateRepository) WriteRunnerCommand(ctx context.Context, organ
 }
 
 func TestClaimNextCandidateConcurrent(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                          string
 		runners, items, organizations int

@@ -19,6 +19,7 @@ import (
 )
 
 func TestTypedRunnerAdmissionFacts(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
 	expires := now.Add(time.Hour)
@@ -88,6 +89,7 @@ func TestTypedRunnerAdmissionFacts(t *testing.T) {
 }
 
 func TestTypedAnsweredClaimFacts(t *testing.T) {
+	t.Parallel()
 	const humanReport = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the plan\n```"
 	const permissionReport = "```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: null\n```"
 	for _, test := range []struct {

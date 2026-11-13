@@ -112,6 +112,7 @@ func TestPostgresOrganizationPageUsesGrantedProjects(t *testing.T) {
 }
 
 func TestPostgresAppAssetsUseDeclaredFiles(t *testing.T) {
+	t.Parallel()
 	type fixture struct {
 		organization string
 		browser      *browserHostedFixture

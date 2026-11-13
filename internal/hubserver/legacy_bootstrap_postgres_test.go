@@ -19,6 +19,7 @@ import (
 )
 
 func TestPostgresLegacyBootstrapTenants(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	key := hostedSharedKey(41)

@@ -28,6 +28,7 @@ import (
 )
 
 func TestSecretRewrapStepIsBoundedAndTenantScoped(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	prior := secretTestKeys(t, "1", "1")
@@ -244,6 +245,7 @@ func rewrapOriginalSecret(t *testing.T, s *Service, original accessstore.Secret)
 }
 
 func TestSecretRewrapRestart(t *testing.T) {
+	t.Parallel()
 	for _, partial := range []bool{false, true} {
 		t.Run(fmt.Sprintf("partial=%t", partial), func(t *testing.T) {
 			f, original, tenants := secretRewrapFixture(t)
@@ -344,6 +346,7 @@ func TestSecretRewrapRestart(t *testing.T) {
 }
 
 func TestSecretRewrapCAS(t *testing.T) {
+	t.Parallel()
 	for _, mutation := range []string{"replace", "replace same version", "delete"} {
 		t.Run(mutation, func(t *testing.T) {
 			f := newSecretPostgresFixture(t)
@@ -414,6 +417,7 @@ func TestSecretRewrapCAS(t *testing.T) {
 }
 
 func TestSecretRewrapServingAndShutdown(t *testing.T) {
+	t.Parallel()
 	f, _, tenants := secretRewrapFixture(t)
 	admin := nativeAttemptTestDatabase(t, f)
 	var opened []*Service
@@ -483,6 +487,7 @@ func TestSecretRewrapServingAndShutdown(t *testing.T) {
 }
 
 func TestSecretRewrapContinuesAfterError(t *testing.T) {
+	t.Parallel()
 	f, original, tenants := secretRewrapFixture(t)
 	var logs bytes.Buffer
 	for _, tenant := range tenants {
@@ -551,6 +556,7 @@ func TestSecretRewrapContinuesAfterError(t *testing.T) {
 }
 
 func TestProjectSecretRewrapDeletion(t *testing.T) {
+	t.Parallel()
 	f := newOperatorSecurityFixture(t)
 	var original []accessstore.Secret
 	for _, name := range []string{"First secret project", "Second secret project"} {
@@ -604,6 +610,7 @@ func TestProjectSecretRewrapDeletion(t *testing.T) {
 }
 
 func TestSecretRewrapTargetsSnapshot(t *testing.T) {
+	t.Parallel()
 	f := newSecretPostgresFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		envelope, err := f.service.config.SecretKeys.Seal(bytes.Repeat([]byte{0x5a}, 32), accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
@@ -656,6 +663,7 @@ func TestSecretRewrapTargetsSnapshot(t *testing.T) {
 }
 
 func TestSecretRewrapPopulation(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{flySpritesToken, accessstore.NativeCursorKeyKind} {
 		t.Run(kind, func(t *testing.T) {
 			f, original, _ := secretRewrapFixture(t)

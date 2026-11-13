@@ -21,6 +21,7 @@ import (
 )
 
 func TestRunnerHeartbeatChanges(t *testing.T) {
+	t.Parallel()
 	approved := hubTestPolicy()
 	states := nativeFixtureStates()
 	states[0].Transitions = append(states[0].Transitions, "Blocked")

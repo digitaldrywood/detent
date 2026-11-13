@@ -10,6 +10,7 @@ import (
 )
 
 func TestGitHubWorkersRequirePostgresOwner(t *testing.T) {
+	t.Parallel()
 	configured := &Service{config: Config{ImportBackend: gitHubLifecycleImporter{}, ReconcileBackend: &gitHubRepairFixture{}}}
 	for _, test := range []struct {
 		name         string

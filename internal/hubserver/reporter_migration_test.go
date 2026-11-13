@@ -46,6 +46,7 @@ func reporterUpgradedHostedStates() []tracker.NativeState {
 }
 
 func TestReporterAndTriageMigration(t *testing.T) {
+	t.Parallel()
 	service := newPostgresNativeService(t, Config{})
 	organization := tracker.OrganizationID("org_reporter")
 	source := historicalWorkflowSource(t, organization)

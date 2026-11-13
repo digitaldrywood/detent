@@ -30,6 +30,7 @@ import (
 )
 
 func TestCollaborationPayloadInlineBytes(t *testing.T) {
+	t.Parallel()
 	store := &memoryRunDetails{}
 	f := newDefaultNativeFixture(t, Config{Content: (&changeObjectFixture{}).call, RunDetails: store, Conversation: &ConversationConfig{Enabled: true}, now: func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }})
 	repository := f.service.database.postgres
@@ -274,6 +275,7 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 }
 
 func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
+	t.Parallel()
 	details := &memoryRunDetails{}
 	f := newDefaultNativeFixture(t, Config{RunDetails: details})
 	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
@@ -532,6 +534,7 @@ func (s schedulerArchiveFailureStore) ReadDetail(ctx context.Context, organizati
 }
 
 func TestSchedulerPayloadRequiresArchive(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "scheduler archive required")
 	runner := prepareRunner(t, f, runnerauth.Claim, runnerauth.Heartbeat)

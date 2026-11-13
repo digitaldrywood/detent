@@ -13,6 +13,7 @@ import (
 )
 
 func TestPostgresCreditWriteRoutes(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t, sharedRouteBillingConfig)
 	for _, service := range f.services {
 		service.stopHostedBilling()
@@ -131,6 +132,7 @@ func TestPostgresCreditWriteRoutes(t *testing.T) {
 }
 
 func TestPostgresCreditWebhookRoute(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t, sharedRouteBillingConfig, func(cfg *Config) { cfg.Hosted.SharedEntry = nil })
 	for _, org := range []string{"org_startup", "org_other"} {
 		t.Run(org, func(t *testing.T) {

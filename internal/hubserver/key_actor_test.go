@@ -38,6 +38,7 @@ import (
 )
 
 func TestHostedKeyActorImport(t *testing.T) {
+	t.Parallel()
 	repository, _ := projectRecordPostgresWithAdmin(t, 3)
 	catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
@@ -91,6 +92,7 @@ func TestHostedKeyActorImport(t *testing.T) {
 }
 
 func TestNativeKeyActor(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		credential hubapi.APICredential
@@ -140,6 +142,7 @@ func keyActorAuditForTest(t *testing.T, service *Service, route, session string)
 }
 
 func TestMCPKeyIssueContract(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"dedicated", "shared legacy", "shared entry"} {
 		t.Run(deployment, func(t *testing.T) {
 			var f hostedSecurityFixture
@@ -366,6 +369,7 @@ func TestMCPKeyIssueContract(t *testing.T) {
 }
 
 func TestMCPKeyRevisionedWrites(t *testing.T) {
+	t.Parallel()
 	shared := newHostedSharedFixture(t)
 	f := shared.hostedSecurityFixture
 	user := f.user(t, "revision_owner", "owner", "revision-owner@example.test", "write", "")

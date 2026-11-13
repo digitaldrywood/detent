@@ -113,6 +113,7 @@ func reporterEntryRequest(t *testing.T, f hostedKeyMCPFixture, deployment, token
 }
 
 func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"dedicated", "shared"} {
 		t.Run(deployment, func(t *testing.T) {
 			f, ctx := newHostedKeyMCPFixture(t, deployment, "reporter")

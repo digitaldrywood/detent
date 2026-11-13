@@ -15,6 +15,7 @@ import (
 )
 
 func TestAdminBackupBoundary(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, organization := range []tracker.OrganizationID{"org_security", "org_other"} {

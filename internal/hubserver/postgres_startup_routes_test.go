@@ -42,6 +42,7 @@ import (
 )
 
 func TestPostgresOpenCreatesListsAndClaimsNativeIssue(t *testing.T) {
+	t.Parallel()
 	t.Run("local startup", func(t *testing.T) {
 		for _, mode := range []string{"fresh", "imported", "foreign"} {
 			t.Run(mode, func(t *testing.T) {

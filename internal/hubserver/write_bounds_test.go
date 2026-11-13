@@ -22,6 +22,7 @@ import (
 )
 
 func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 10, 16, 23, 0, 0, 0, time.UTC)
 	organization := tracker.OrganizationID("org_example")
@@ -70,6 +71,7 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 const inv18MigrationAdoption = "20261015000000"
 
 func TestINV18HubMigrationsUseTypedColumns(t *testing.T) {
+	t.Parallel()
 	jsonColumn := regexp.MustCompile(`(?i)\b\w*json\w*\s+(TEXT|BLOB)\b|json_valid\s*\(`)
 	paths, err := filepath.Glob(filepath.Join("migrations", "*.sql"))
 	if err != nil {
@@ -99,6 +101,7 @@ func TestINV18HubMigrationsUseTypedColumns(t *testing.T) {
 var inv20JSONFunction = regexp.MustCompile(`(?i)\bjson(?:b)?(?:_(?:array(?:_length)?|each|error_position|extract|group_(?:array|object)|insert|object|patch|pretty|quote|remove|replace|set|tree|type|valid))?\s*\(`)
 
 func TestINV20NoSQLOverJSON(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile("testdata/inv20_json_sql_baseline.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -191,6 +194,7 @@ func inv20JSONFunctionCount(path string, raw []byte) (int, error) {
 }
 
 func TestINV20JSONFunctionPatterns(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		input    string
 		want     int

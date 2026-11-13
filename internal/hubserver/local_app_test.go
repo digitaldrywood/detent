@@ -19,6 +19,7 @@ import (
 )
 
 func TestLocalAppAuthentication(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, newLocalHTTPService(t, withAppClientFS(appClientBundle())), "", "Example project")
 	second := newNativeFixture(t, f.service, f.project.OrganizationID, "Second project")
 	workerToken := hubapi.TokenResponse{Token: f.worker(t, "example-worker")}

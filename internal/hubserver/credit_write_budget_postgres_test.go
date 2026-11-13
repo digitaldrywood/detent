@@ -21,6 +21,7 @@ import (
 )
 
 func TestPostgresCreditWritesStayBoundedWithHistory(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t, sharedRouteBillingConfig)
 	f.requestContext = func(ctx context.Context) context.Context {
 		return context.WithValue(ctx, entryAuthBudgetContextKey{}, true)

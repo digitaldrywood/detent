@@ -20,6 +20,7 @@ import (
 )
 
 func TestPostgresLeaseReleaseOrdersLocksWithProgress(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -106,6 +107,7 @@ func (r leaseReleaseErrorRepository) WriteRunnerEventCommand(ctx context.Context
 }
 
 func TestPostgresLeaseReleaseRetriesAbortedTransaction(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

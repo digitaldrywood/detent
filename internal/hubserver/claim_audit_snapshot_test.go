@@ -46,6 +46,7 @@ func (r *claimAuditWorkloadRepository) ReadTenant(ctx context.Context, org track
 }
 
 func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	config := postgresStartupTemplate.NativeConfig(t, admin, connection.User, connection.Password)

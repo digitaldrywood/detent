@@ -40,6 +40,7 @@ func (*postgresAuthorityFaultTrace) TraceQueryEnd(context.Context, *pgx.Conn, pg
 }
 
 func TestPostgresAuthorityLookupOutages(t *testing.T) {
+	t.Parallel()
 	fixture := newSharedRouteFixture(t)
 	for org, service := range fixture.services {
 		config, err := service.config.Postgres.Connection.PoolConfig()

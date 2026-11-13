@@ -17,6 +17,7 @@ import (
 )
 
 func TestSpriteIdleSharingCommands(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	seedPostgresHubAdmin(t, f.service.config.TenantRepository, f.service, nativeOrganization{ID: "org_other_sharing", Name: "Other organization", Slug: "other-organization"})
 	other := newNativeFixture(t, f.service, "org_other_sharing", "other-organization")
@@ -115,6 +116,7 @@ func TestSpriteIdleSharingCommands(t *testing.T) {
 }
 
 func TestHostedSpriteIdleSharingCommand(t *testing.T) {
+	t.Parallel()
 	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
 	for _, test := range []struct {
 		role   string
@@ -140,6 +142,7 @@ func TestHostedSpriteIdleSharingCommand(t *testing.T) {
 }
 
 func TestProjectSpriteIdleSharingClaims(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                                       string
 		sharing, ownReady, granted, ready, managed bool

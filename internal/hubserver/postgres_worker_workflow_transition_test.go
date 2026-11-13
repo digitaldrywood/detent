@@ -23,6 +23,7 @@ import (
 )
 
 func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testing.T) {
+	t.Parallel()
 	repository, _ := hubPostgresRepository(t, 3)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{

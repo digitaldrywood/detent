@@ -25,6 +25,7 @@ import (
 )
 
 func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t)
 	reader, ok := any(f.service).(interface {
 		readRegistrationClaimStateTenant(context.Context, hubscope.NativeScope, *runnerauth.RoutingSnapshot) error
@@ -243,6 +244,7 @@ func (invalidRegistrationArchive) ReadDetail(context.Context, string, attachment
 }
 
 func TestRegistrationCleanupDoesNotInferAcknowledgment(t *testing.T) {
+	t.Parallel()
 	released := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name         string
@@ -287,6 +289,7 @@ func TestRegistrationCleanupDoesNotInferAcknowledgment(t *testing.T) {
 }
 
 func TestRegistrationCleanupRejectsStalePayload(t *testing.T) {
+	t.Parallel()
 	released := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name    string

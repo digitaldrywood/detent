@@ -439,6 +439,7 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 }
 
 func TestHostedUsageUsesSelectedPostgresWindowsAndRefusesSQLiteWrites(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	plans := hostedplans.HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}

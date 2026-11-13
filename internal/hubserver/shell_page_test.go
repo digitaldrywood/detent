@@ -18,6 +18,7 @@ import (
 )
 
 func TestOnboardingPageDoesNotReadObjects(t *testing.T) {
+	t.Parallel()
 	details := &memoryRunDetails{}
 	service := newPostgresNativeService(t, Config{RunDetails: details})
 	original := service.database.postgres

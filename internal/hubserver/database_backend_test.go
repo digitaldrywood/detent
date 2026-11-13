@@ -224,6 +224,7 @@ func assertStartupDisconnected(t *testing.T, admin *sql.DB, connection pgtranspo
 }
 
 func TestDatabaseBackendRejectsAmbiguousConfiguration(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		config Config
@@ -244,6 +245,7 @@ func TestDatabaseBackendRejectsAmbiguousConfiguration(t *testing.T) {
 }
 
 func TestPostgresStartupRejectsImplicitConnectionSettings(t *testing.T) {
+	t.Parallel()
 	base := pgtransport.Connection{Host: "127.0.0.1", Port: 1, Database: "example", User: "example", SSLMode: "disable"}
 	for _, test := range []struct {
 		name   string
@@ -267,6 +269,7 @@ func TestPostgresStartupRejectsImplicitConnectionSettings(t *testing.T) {
 }
 
 func TestPostgresStartupRejectsUnsafeRoles(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		group      string
@@ -293,6 +296,7 @@ func TestPostgresStartupRejectsUnsafeRoles(t *testing.T) {
 }
 
 func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
@@ -403,6 +407,7 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 }
 
 func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	provider := newHostedSecurityProvider()
@@ -818,6 +823,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 }
 
 func TestPostgresStartupRejectsSchemaDrift(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		statement string
@@ -845,6 +851,7 @@ func TestPostgresStartupRejectsSchemaDrift(t *testing.T) {
 }
 
 func TestPostgresStartupRejectsSessionDefaults(t *testing.T) {
+	t.Parallel()
 	for _, setting := range []string{
 		`row_security = off`,
 		`"detent.organization_id" = 'org_first'`,
@@ -865,6 +872,7 @@ func TestPostgresStartupRejectsSessionDefaults(t *testing.T) {
 }
 
 func TestDatabaseStartupCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	for _, cfg := range []Config{
@@ -878,6 +886,7 @@ func TestDatabaseStartupCancellation(t *testing.T) {
 }
 
 func TestPostgresMigrationAuthorityIsSeparate(t *testing.T) {
+	t.Parallel()
 	unmigrated := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		roles, err := os.ReadFile("postgres/roles.sql")
 		if err != nil {
@@ -935,6 +944,7 @@ func TestPostgresMigrationAuthorityIsSeparate(t *testing.T) {
 }
 
 func TestPostgresStartupCancelsSchemaWait(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	observer := postgresStartupTemplate.OpenRole(t, admin, connection.User, connection.Password)

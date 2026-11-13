@@ -73,6 +73,7 @@ func createTestThread(t *testing.T, f nativeFixture, scope string, issue tracker
 }
 
 func TestTeamThreadScopeReferenceAccess(t *testing.T) {
+	t.Parallel()
 	t.Run("reference resource authorization", func(t *testing.T) {
 		v := newVerificationFixture(t)
 		v.users["owner"] = v.user(t, "thread-owner", "owner", "thread-owner@example.test", "write", "")
@@ -157,6 +158,7 @@ func TestTeamThreadScopeReferenceAccess(t *testing.T) {
 }
 
 func TestTeamThreadWorkerReadIsolation(t *testing.T) {
+	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
 	f.service.registerTeamThreadRoutes(f.service.echo)
 	issue := f.nativeFixture.create(t, "thread subject")
@@ -220,6 +222,7 @@ func TestTeamThreadWorkerReadIsolation(t *testing.T) {
 }
 
 func TestTeamThreadMCP(t *testing.T) {
+	t.Parallel()
 	f := newTeamThreadNativeFixture(t, nil, "", "mcp-threads")
 	call := func(name string, args any) json.RawMessage {
 		t.Helper()
@@ -286,6 +289,7 @@ func TestTeamThreadMCP(t *testing.T) {
 }
 
 func TestTeamThreadHostedAgentAttribution(t *testing.T) {
+	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "thread-member", "member", "alex@example.test", "write", "")
 	credential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
@@ -373,6 +377,7 @@ func TestTeamThreadHostedAgentAttribution(t *testing.T) {
 }
 
 func TestTeamThreadAuthorizationMCPRoutes(t *testing.T) {
+	t.Parallel()
 	for _, role := range []string{"owner", "admin", "member", "reporter", "viewer", "removed", "ungranted", "read_only"} {
 		t.Run(role, func(t *testing.T) {
 			v := newVerificationFixture(t)

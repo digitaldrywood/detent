@@ -20,6 +20,7 @@ import (
 )
 
 func TestPostgresMCPChangeTools(t *testing.T) {
+	t.Parallel()
 	service := newPostgresNativeService(t, Config{})
 	for range 2 {
 		organization := tracker.OrganizationID(artifact.NewID("org"))
@@ -137,6 +138,7 @@ func TestPostgresMCPChangeTools(t *testing.T) {
 }
 
 func TestPostgresMCPReviewPolicyAuthorization(t *testing.T) {
+	t.Parallel()
 	repository, _ := projectRecordPostgresWithAdmin(t, 4)
 	details := &memoryRunDetails{}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
@@ -235,6 +237,7 @@ func TestPostgresMCPReviewPolicyAuthorization(t *testing.T) {
 }
 
 func TestPostgresMCPChangeToolRoles(t *testing.T) {
+	t.Parallel()
 	repository, _ := projectRecordPostgresWithAdmin(t, 4)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(organization), func(t *testing.T) {

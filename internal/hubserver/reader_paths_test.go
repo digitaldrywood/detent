@@ -260,6 +260,7 @@ func newWriterGuardHostedFixture(t *testing.T, listen bool, configure ...func(*C
 }
 
 func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
+	t.Parallel()
 	t.Run("native", func(t *testing.T) {
 		f, guard := newWriterGuardNativeFixture(t)
 		issue := f.create(t, "readable issue")
@@ -364,6 +365,7 @@ func hubWriterReadOperation(call *ast.CallExpr, writerAliases map[string]bool) s
 }
 
 func TestHubWriterReadOperations(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		expression string
 		operation  string
@@ -397,6 +399,7 @@ func TestHubWriterReadOperations(t *testing.T) {
 }
 
 func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
+	t.Parallel()
 	reasons := map[string]string{
 		"createHostedProjectJSON":      "Project readback follows creation in this request.",
 		"advanceGitHubImport":          "Import readback follows the advance performed by this request.",
@@ -619,6 +622,7 @@ func (p *readPoolDeadlineTrace) TraceAcquireStart(ctx context.Context, pool *pgx
 }
 
 func TestReadPoolExhaustionReturnsLoggedDeadline(t *testing.T) {
+	t.Parallel()
 	probe := &readPoolDeadlineTrace{}
 	repository, _ := projectRecordPostgresWithAdmin(t, 3, func(config *pgxpool.Config) {
 		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, probe)
@@ -733,6 +737,7 @@ func (trace auditDeadlineTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn
 func (auditDeadlineTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestSecretUseAuditIsNotBoundedByReadDeadline(t *testing.T) {
+	t.Parallel()
 	var inserts, bounded atomic.Int64
 	repository, _ := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
 		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, auditDeadlineTrace{inserts: &inserts, bounded: &bounded})

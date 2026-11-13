@@ -61,6 +61,7 @@ func newLocalHTTPService(t *testing.T, configure ...func(*Config)) *Service {
 }
 
 func TestRestoredOrganizationHTTPRoutes(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"local", "hosted", "shared"} {
 		t.Run(mode, func(t *testing.T) {
 			var service *Service

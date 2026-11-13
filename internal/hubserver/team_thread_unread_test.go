@@ -182,6 +182,7 @@ func seedThreadUnreadHistory(t *testing.T, viewer nativeFixture, prefix string, 
 }
 
 func TestTeamThreadUnreadSummaryBoundsHistoryWork(t *testing.T) {
+	t.Parallel()
 	fixture := newThreadUnreadFixture(t)
 	f := fixture.viewer(t, "org_startup", "unread-first")
 	second := fixture.viewer(t, "org_startup", "unread-second")

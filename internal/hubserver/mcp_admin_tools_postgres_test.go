@@ -18,6 +18,7 @@ import (
 )
 
 func TestPostgresMCPAdminChangeTools(t *testing.T) {
+	t.Parallel()
 	first := newReleaseTenantFixture(t)
 	peer, peerOwner := newChangePolicyPostgresTenantFixture(t, first.repository, "org_second", &memoryRunDetails{})
 	second := newReleaseTenantFixtureFor(t, first.repository, peer, peerOwner)
@@ -138,6 +139,7 @@ func TestPostgresMCPAdminChangeTools(t *testing.T) {
 }
 
 func TestPostgresMCPAdminDeletionTools(t *testing.T) {
+	t.Parallel()
 	fixture := newOperatorSecurityFixture(t)
 	first := fixture.hostedSecurityFixture
 	second := parityHostedPeer(t, first, "org_second", "prj_second")

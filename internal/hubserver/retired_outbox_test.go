@@ -7,6 +7,7 @@ import (
 )
 
 func TestRetiredOutboxCannotAccessLegacyDatabase(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		call func(*Service) error

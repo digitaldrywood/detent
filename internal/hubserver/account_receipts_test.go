@@ -18,6 +18,7 @@ import (
 )
 
 func TestPostgresAccountReceiptsPreserveReplayAndUncertainty(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), PublicURL: "http://example.test"}}}

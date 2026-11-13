@@ -122,6 +122,7 @@ func (f sharedRouteFixture) request(t *testing.T, org, path, body string, mutate
 }
 
 func TestPostgresSharedKeyManagementRoutes(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org := range f.services {
 		for _, route := range []struct {
@@ -159,6 +160,7 @@ func TestPostgresSharedKeyManagementRoutes(t *testing.T) {
 }
 
 func TestPostgresSharedPlatformReadRoutes(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t, sharedRouteBillingConfig)
 	for org := range f.services {
 		for _, resource := range []string{"members", "runners", "projects", "usage", "users"} {
@@ -209,6 +211,7 @@ func sharedRouteBillingConfig(cfg *Config) {
 }
 
 func TestPostgresSharedCreditRoutes(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t, sharedRouteBillingConfig)
 	for org := range f.services {
 		t.Run(org, func(t *testing.T) {
@@ -256,6 +259,7 @@ func sharedRouteBrowserClaims(c *cloudassert.Claims) {
 }
 
 func TestPostgresSharedBillingRoutes(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t, sharedRouteBillingConfig)
 	for org := range f.services {
 		t.Run(org, func(t *testing.T) {
@@ -306,6 +310,7 @@ func TestPostgresSharedBillingRoutes(t *testing.T) {
 }
 
 func TestPostgresSharedMCPRoutes(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"example-client","version":"1"}}}`
 	for org := range f.services {
@@ -328,6 +333,7 @@ func TestPostgresSharedMCPRoutes(t *testing.T) {
 }
 
 func TestPostgresSharedSessionLifecycleRoutes(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		id, subject := "invitation_"+org, "invitee_"+org

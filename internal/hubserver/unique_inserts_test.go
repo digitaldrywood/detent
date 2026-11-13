@@ -7,6 +7,7 @@ import (
 )
 
 func TestInsertsNeverWriteConstantUniqueKeys(t *testing.T) {
+	t.Parallel()
 	db := postgresStartupTemplate.Database(t)
 	for _, dir := range []string{".", "postgres"} {
 		t.Run(dir, func(t *testing.T) {

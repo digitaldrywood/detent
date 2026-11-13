@@ -22,6 +22,7 @@ import (
 )
 
 func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 	var clock atomic.Int64
 	clock.Store(start.UnixNano())

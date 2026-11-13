@@ -505,6 +505,7 @@ func conversationBurstDeltas(t *testing.T, f streamFixture, id string, count int
 // reconnects with a stale cursor receives exactly the gap, never a
 // duplicate and never a hole.
 func TestConversationTwoTabsShareOneOrderedLog(t *testing.T) {
+	t.Parallel()
 	f := newStreamFixture(t)
 	id := f.create(t, f.token, map[string]any{"title": "Two tabs"}).Conversation.ID
 	first := f.open(t, f.token, id, 0)

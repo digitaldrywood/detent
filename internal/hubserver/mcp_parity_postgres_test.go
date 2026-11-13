@@ -77,6 +77,7 @@ func parityToolCall(t *testing.T, name string, arguments any) operatortool.Call 
 }
 
 func TestPostgresMCPChangeParity(t *testing.T) {
+	t.Parallel()
 	first := newChangeFixture(t, nil)
 	organization := nativeOrganization{ID: first.project.OrganizationID + "_second"}
 	second := newChangeFixture(t, first.service, organization.ID)
@@ -117,6 +118,7 @@ func TestPostgresMCPChangeParity(t *testing.T) {
 }
 
 func TestPostgresMCPProjectParity(t *testing.T) {
+	t.Parallel()
 	first := newIntegrationFixture(t, &importFixtureBackend{})
 	organization := nativeOrganization{ID: first.project.OrganizationID + "_second"}
 	second := newNativeFixture(t, first.service, organization.ID, "Second project")
@@ -244,6 +246,7 @@ func parityHostedContext(t *testing.T, f hostedSecurityFixture, user hostedSecur
 }
 
 func TestPostgresMCPHostedParity(t *testing.T) {
+	t.Parallel()
 	first := newOperatorSecurityFixture(t).hostedSecurityFixture
 	second := parityHostedPeer(t, first, "org_budget_second", "prj_budget_second")
 	for _, f := range []hostedSecurityFixture{first, second} {
@@ -381,6 +384,7 @@ func parityHostedPeer(t *testing.T, first hostedSecurityFixture, organization tr
 }
 
 func TestPostgresMCPArtifactParity(t *testing.T) {
+	t.Parallel()
 	first := newPostgresArtifactFixture(t)
 	peer := parityHostedPeer(t, first.hostedSecurityFixture, tracker.OrganizationID("org_"+strings.Repeat("c", 32)), tracker.ProjectID("prj_"+strings.Repeat("d", 32)))
 	second := postgresArtifactFixture{hostedSecurityFixture: peer, admin: hostedPostgresAdmin(t, peer.service)}
@@ -410,6 +414,7 @@ func TestPostgresMCPArtifactParity(t *testing.T) {
 }
 
 func TestPostgresMCPInstanceParity(t *testing.T) {
+	t.Parallel()
 	first := newDefaultNativeFixture(t, Config{GitHubRequestCounts: func() []GitHubRequestCount { return []GitHubRequestCount{} }})
 	second := newNativeFixture(t, first.service, first.project.OrganizationID+"_second", "Instance parity")
 	for _, f := range []nativeFixture{first, second} {
@@ -429,6 +434,7 @@ func TestPostgresMCPInstanceParity(t *testing.T) {
 }
 
 func TestPostgresMCPAccountParity(t *testing.T) {
+	t.Parallel()
 	for _, staff := range []bool{false, true} {
 		t.Run(fmt.Sprintf("staff=%t", staff), func(t *testing.T) {
 			first := newOperatorSecurityFixture(t).hostedSecurityFixture
@@ -487,6 +493,7 @@ func paritySuccess(t *testing.T, result operatortool.Result, err error) {
 }
 
 func TestPostgresMCPCatalogAuthorities(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ name, authorities string }{
 		{"billing_usage.hosted_billing", "owner shared"},
 		{"billing_usage.hosted_plan_page", "owner shared admin"},
@@ -605,6 +612,7 @@ func TestPostgresMCPCatalogAuthorities(t *testing.T) {
 }
 
 func TestPostgresMCPRuntimeParity(t *testing.T) {
+	t.Parallel()
 	first := newNativeFixture(t, nil, "", "Runtime parity")
 	second := newNativeFixture(t, first.service, first.project.OrganizationID+"_second", "Runtime parity")
 	for _, f := range []nativeFixture{first, second} {
@@ -625,6 +633,7 @@ func TestPostgresMCPRuntimeParity(t *testing.T) {
 }
 
 func TestPostgresMCPImportParity(t *testing.T) {
+	t.Parallel()
 	first := newCutoverIntegrationFixture(t, &importFixtureBackend{omitDependency: true})
 	second := newNativeFixture(t, first.service, first.project.OrganizationID+"_second", "Import parity")
 	if _, err := hostedPostgresAdmin(t, first.service).ExecContext(t.Context(), "UPDATE projects SET profile='github_compatible' WHERE organization_id=$1 AND id=$2", second.project.OrganizationID, second.project.ID); err != nil {

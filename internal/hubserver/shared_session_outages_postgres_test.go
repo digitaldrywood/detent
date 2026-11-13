@@ -61,6 +61,7 @@ func (r runnerGrantOutageRepository) ReadTenant(context.Context, tracker.Organiz
 }
 
 func TestPostgresSharedSessionOutages(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		repository := service.config.AccessRepository
@@ -96,6 +97,7 @@ func TestPostgresSharedSessionOutages(t *testing.T) {
 }
 
 func TestPostgresEntryCredentialOutages(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"example-client","version":"1"}}}`
 	for org, service := range f.services {

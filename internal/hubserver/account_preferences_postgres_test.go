@@ -24,6 +24,7 @@ import (
 )
 
 func TestPostgresAccountPreferencesUseCurrentMember(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	f := accountPreferencesPostgresFixture(t, repository)
 	now := time.Now().UTC()
@@ -83,6 +84,7 @@ func (accountWidgetProvider) WidgetToken(context.Context, string) (string, error
 }
 
 func TestPostgresHostedCurrentSessionReadSurfacesStoreFailure(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	f := accountPreferencesPostgresFixture(t, repository)
 	now := time.Now().UTC()

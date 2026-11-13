@@ -557,6 +557,7 @@ func scaleSoakMaintenance(ctx context.Context, seed scaleSoakSeed, metrics *scal
 }
 
 func TestScaleSoakSeed(t *testing.T) {
+	t.Parallel()
 	config := scaleSoakConfig{Projects: 2, Items: 4, Attempts: 6, Runners: 2, DetailBytes: 1024}
 	seed := seedScaleSoak(t, t.TempDir(), config)
 	organization := seed.fixtures[0].project.OrganizationID
@@ -620,6 +621,7 @@ func TestScaleSoakSeed(t *testing.T) {
 }
 
 func TestScaleSoakFleet(t *testing.T) {
+	t.Parallel()
 	seed := seedScaleSoak(t, t.TempDir(), scaleSoakConfig{Projects: 2, Items: 4, Attempts: 2, Runners: 2, DetailBytes: 512})
 	metrics := newScaleSoakMetrics()
 	for _, err := range runScaleSoakFleet(t.Context(), seed, 2, 0, metrics) {
@@ -742,6 +744,7 @@ func runScaleSoak(t *testing.T) {
 }
 
 func TestScaleSoakDistribution(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		duration time.Duration
@@ -763,6 +766,7 @@ func TestScaleSoakDistribution(t *testing.T) {
 }
 
 func TestScaleSoakErrorClassification(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		canceled bool

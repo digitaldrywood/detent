@@ -62,6 +62,7 @@ func (w recoveryClaimInterleaveWriter) LockRelationshipGraph(ctx context.Context
 }
 
 func TestRecordedRecoveryDoesNotHoldGraphWhileWaitingForClaimRunner(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t)
 	cfg, err := f.service.config.Postgres.Connection.PoolConfig()
 	if err != nil {

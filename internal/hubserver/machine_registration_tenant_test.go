@@ -24,6 +24,7 @@ import (
 )
 
 func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	runnerID, machineID := "runner_"+strings.Repeat("a", 32), "machine_"+strings.Repeat("b", 32)
 	now := time.Now().UTC().Truncate(time.Microsecond)

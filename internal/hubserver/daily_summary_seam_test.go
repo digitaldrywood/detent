@@ -8,6 +8,7 @@ import (
 )
 
 func TestDailySummaryReportsValidateUsage(t *testing.T) {
+	t.Parallel()
 	period := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name, currency string

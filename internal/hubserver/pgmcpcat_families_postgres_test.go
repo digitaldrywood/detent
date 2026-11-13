@@ -20,6 +20,7 @@ import (
 )
 
 func TestPostgresOperatorCatalogFamilies(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t, func(cfg *Config) { plans := hostedplans.PilotPlans(); cfg.Hosted.Plans = &plans })
 	names := []string{operatortool.Reports, operatortool.ConnectionInfo, operatortool.ActionResult, operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerHost, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity}
 	for _, org := range []string{"org_startup", "org_other"} {

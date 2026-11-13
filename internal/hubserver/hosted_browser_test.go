@@ -647,6 +647,7 @@ func browserHostedStatus(t *testing.T, response *httptest.ResponseRecorder, stat
 }
 
 func TestHostedBrowserHTTPPages(t *testing.T) {
+	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", withAppClientFS(appClientBundle()))
 	tests := []struct {
 		name, account, path, contains, excludes string
@@ -1054,6 +1055,7 @@ func (f *browserHostedFixture) sessionRefreshHandler(t *testing.T, next http.Han
 }
 
 func TestHostedBrowserPreviewSeed(t *testing.T) {
+	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
 	f.chatOrigin = true
 
@@ -1376,6 +1378,7 @@ func (w browserShutdownFrameWriter) Flush() {
 }
 
 func TestHostedBrowserPreviewRestartDrainsStreams(t *testing.T) {
+	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig, func(cfg *Config) { cfg.conversationStreamHeartbeat = time.Millisecond })
 	f.seedConversation(t)
 	draining := make(chan struct{})

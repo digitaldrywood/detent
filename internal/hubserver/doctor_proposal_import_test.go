@@ -22,6 +22,7 @@ import (
 )
 
 func TestDoctorProposalNeutralImportRepairsOnlyUnchangedHead(t *testing.T) {
+	t.Parallel()
 	var native *pgxpool.Config
 	repository, admin := coreImportPostgresWithAdmin(t, 3, func(config *pgxpool.Config) { native = config.Copy() })
 	objects := &memoryRunDetails{}

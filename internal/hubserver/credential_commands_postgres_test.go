@@ -19,6 +19,7 @@ import (
 )
 
 func TestPostgresOrganizationCreationWithoutLegacyDatabase(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, SecretKeys: secretTestKeys(t, "1", "1"), now: time.Now}}
 	var previous []byte
@@ -59,6 +60,7 @@ func TestPostgresOrganizationCreationWithoutLegacyDatabase(t *testing.T) {
 }
 
 func TestPostgresLocalOrganizationCursorKey(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	cfg := Config{SecretKeys: secretTestKeys(t, "1", "1"), now: time.Now}
 	org, err := bootstrapLocalOrganization(t.Context(), repository, cfg, "example-bootstrap-token")
@@ -81,6 +83,7 @@ func TestPostgresLocalOrganizationCursorKey(t *testing.T) {
 }
 
 func TestPostgresCredentialMembershipAndKeyAudit(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

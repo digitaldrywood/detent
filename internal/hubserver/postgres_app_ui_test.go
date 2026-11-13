@@ -33,6 +33,7 @@ import (
 )
 
 func TestPostgresAppBootstrapUsesTypedTenantAccess(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
@@ -257,6 +258,7 @@ func (r healthAdmissionRepository) ReadTenant(ctx context.Context, organization 
 }
 
 func TestPostgresSharedHealthBypassesSaturatedServingAdmission(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		pool    postgres.PoolConfig

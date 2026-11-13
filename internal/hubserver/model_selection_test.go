@@ -15,6 +15,7 @@ import (
 )
 
 func TestCloudModelSelection(t *testing.T) {
+	t.Parallel()
 	_, f, _ := newChangePolicyPostgresFixture(t)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
 	viewer := f.user(t, "viewer", "viewer", "viewer@example.test", "", "")

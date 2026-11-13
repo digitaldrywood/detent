@@ -16,6 +16,7 @@ import (
 )
 
 func TestPostgresCreditCheckoutClassifiesProviderOutcome(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t, sharedRouteBillingConfig)
 	for _, org := range []string{"org_startup", "org_other"} {
 		t.Run(org, func(t *testing.T) {
@@ -117,6 +118,7 @@ func creditCheckoutStripeFailure(t *testing.T, body io.Reader) error {
 }
 
 func TestPostgresAutoFundClassifiesProviderOutcome(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, state string
 		err         error
