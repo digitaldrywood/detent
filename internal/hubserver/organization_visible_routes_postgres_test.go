@@ -169,6 +169,12 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 		provider.mu.Lock()
 		provider.members[membership.ID] = membership
 		provider.sessions["session_user_owner"] = auth.HostedIdentity{Subject: "user_owner", OrganizationID: "provider_" + org, SessionID: "session_user_owner", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+		if org == "org_startup" {
+			member := auth.Membership{ID: "membership_member", UserID: "user_member", OrganizationID: "provider_" + org, Status: "active"}
+			member.Role.Slug = "member"
+			provider.members[member.ID] = member
+			provider.sessions["session_user_member"] = auth.HostedIdentity{Subject: "user_member", OrganizationID: "provider_" + org, SessionID: "session_user_member", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+		}
 		provider.mu.Unlock()
 		base := "/organizations/" + org + "/api/v2/organizations/" + org + "/projects/project_first/artifact-services"
 		requireNativeStatus(t, request(http.MethodGet, base, nil), http.StatusOK)
