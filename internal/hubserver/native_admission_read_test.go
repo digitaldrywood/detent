@@ -98,7 +98,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			now := time.Now().UTC()
+			now := time.Now().UTC().Truncate(time.Microsecond)
 			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 				project, err := w.ProjectRecord(t.Context(), f.project.ID)
