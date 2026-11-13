@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -33,12 +34,8 @@ func (s *session) SaveProjectOnboardingProgress(ctx context.Context, project tra
 	if _, err := time.Parse(time.RFC3339Nano, progress.UpdatedAt); err != nil {
 		return projectstore.ErrInvalidOnboardingProgress
 	}
-	current, err := s.Project(ctx, project)
-	if err != nil {
-		return err
-	}
-	if current.DeletedAt != nil {
-		return corestore.ErrNotFound
+	if _, err := s.queries.LockActiveProject(ctx, pgquery.LockActiveProjectParams{OrganizationID: s.organization, ID: project}); err != nil {
+		return mapError(ctx, err)
 	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO project_onboarding(organization_id,project_id,revision,repository,doctor,provider,artifacts,updated_at) VALUES($1,$2,0,'',false,false,'','') ON CONFLICT(organization_id,project_id) DO NOTHING`, s.organization, project); err != nil {
 		return mapError(ctx, err)

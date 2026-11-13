@@ -32,6 +32,9 @@ func (s *session) BindArtifactService(ctx context.Context, project tracker.Proje
 	if !artifact.ValidID(binding.ServiceID, "service") || !artifact.ValidOrigin(binding.Origin) || !slices.Contains([]string{"customer", "hosted"}, binding.Mode) || binding.Mode == "hosted" && !binding.HostedOptIn || binding.PublisherTokenID == "" {
 		return corestore.ErrInvalidCursor
 	}
+	if _, err := s.queries.LockActiveProject(ctx, pgquery.LockActiveProjectParams{OrganizationID: s.organization, ID: project}); err != nil {
+		return mapError(ctx, err)
+	}
 	count, err := s.queries.ArtifactServiceBind(ctx, pgquery.ArtifactServiceBindParams{OrganizationID: s.organization, ProjectID: project, ID: binding.ServiceID, Origin: binding.Origin, BindingMode: binding.Mode, HostedOptIn: binding.HostedOptIn, PublisherTokenID: binding.PublisherTokenID})
 	if err != nil {
 		return mapError(ctx, err)

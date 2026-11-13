@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pressly/goose/v3"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -610,33 +611,36 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 			return err
 		}
 	}
-	converse := func(ctx context.Context, w tenantstore.Writer) error {
-		item, err := w.WorkItem(ctx, "prj_first", "wi_first_1")
-		if err != nil {
+	converseOn := func(subject tracker.NativeWorkItemID) step {
+		return func(ctx context.Context, w tenantstore.Writer) error {
+			item, err := w.WorkItem(ctx, "prj_first", subject)
+			if err != nil {
+				return err
+			}
+			created := time.Date(2026, 11, 1, 18, 0, 0, 0, time.UTC)
+			_, err = w.CreateConversation(ctx, conversationstore.Conversation{
+				OrganizationID:        item.OrganizationID,
+				ProjectID:             "prj_first",
+				ID:                    "conv_0123456789abcdef0123456789abcdef",
+				CreationKey:           "create_example",
+				CreationHash:          "hash_example",
+				OwnerPrincipalID:      "owner",
+				Origin:                "user",
+				Title:                 "Example",
+				Visibility:            conversation.VisibilityPrivate,
+				Status:                conversation.StatusActive,
+				Revision:              1,
+				SubjectWorkItemID:     string(subject),
+				ExecutionContinuation: true,
+				Execution:             conversation.Execution{Status: conversation.ExecutionIdle},
+				Preferences:           conversation.DefaultPreferences(),
+				CreatedAt:             created,
+				UpdatedAt:             created,
+			})
 			return err
 		}
-		created := time.Date(2026, 11, 1, 18, 0, 0, 0, time.UTC)
-		_, err = w.CreateConversation(ctx, conversationstore.Conversation{
-			OrganizationID:        item.OrganizationID,
-			ProjectID:             "prj_first",
-			ID:                    "conv_0123456789abcdef0123456789abcdef",
-			CreationKey:           "create_example",
-			CreationHash:          "hash_example",
-			OwnerPrincipalID:      "owner",
-			Origin:                "user",
-			Title:                 "Example",
-			Visibility:            conversation.VisibilityPrivate,
-			Status:                conversation.StatusActive,
-			Revision:              1,
-			SubjectWorkItemID:     "wi_first_1",
-			ExecutionContinuation: true,
-			Execution:             conversation.Execution{Status: conversation.ExecutionIdle},
-			Preferences:           conversation.DefaultPreferences(),
-			CreatedAt:             created,
-			UpdatedAt:             created,
-		})
-		return err
 	}
+	converse := converseOn("wi_first_1")
 	idle := func(ctx context.Context, w tenantstore.Writer) error {
 		return w.RequireProjectIdle(ctx, "prj_first", time.Now())
 	}
@@ -669,21 +673,27 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		_, err := w.LockWorkItems(ctx, []corestore.WorkItemReference{{ProjectID: "prj_first", WorkItemID: "wi_first_1"}})
 		return err
 	}
+	bind := func(ctx context.Context, w tenantstore.Writer) error {
+		return w.BindArtifactService(ctx, "prj_first", artifact.Binding{ServiceID: "service_0123456789abcdef0123456789abcdef", Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: "owner"})
+	}
 	for _, test := range []struct {
 		name                                         string
+		prepare                                      step
 		holdFirst, finishFirst, holdNext, finishNext step
 		exclusive                                    bool
 		active                                       int64
 	}{
-		{"population trigger while archive holder checks keys", lock("prj_first", "wi_first_1"), archiveItem("prj_first", "wi_first_1"), archive, converse, false, 3},
-		{"receipt while archive holder checks keys", lock("prj_first", "wi_first_1"), receipt, archive, converse, false, 4},
-		{"receipt after population write", archiveItem("prj_first", "wi_first_1"), receipt, archive, archiveItem("prj_second", "wi_second_1"), false, 2},
-		{"optimized runner snapshot while archive holder checks keys", snapshot, receipt, archive, converse, false, 4},
-		{"batch issue lock while archive holder checks keys", batch, receipt, archive, converse, false, 4},
-		{"issue key change while archive holder checks keys", renumber, receipt, archive, converse, false, 4},
-		{"project key change while archive holder checks keys", archive, converse, noop, rename, true, 4},
-		{"idle project check excludes conversation insert", idle, receipt, archive, converse, true, 4},
-		{"idle project check waits for work item writer", lock("prj_first", "wi_first_1"), receipt, noop, idle, true, 4},
+		{"population trigger while archive holder checks keys", noop, lock("prj_first", "wi_first_1"), archiveItem("prj_first", "wi_first_1"), archive, converse, false, 3},
+		{"receipt while archive holder checks keys", noop, lock("prj_first", "wi_first_1"), receipt, archive, converse, false, 4},
+		{"receipt after population write", noop, archiveItem("prj_first", "wi_first_1"), receipt, archive, archiveItem("prj_second", "wi_second_1"), false, 2},
+		{"optimized runner snapshot while archive holder checks keys", noop, snapshot, receipt, archive, converse, false, 4},
+		{"batch issue lock while archive holder checks keys", noop, batch, receipt, archive, converse, false, 4},
+		{"issue key change while archive holder checks keys", noop, renumber, receipt, archive, converse, false, 4},
+		{"project key change while archive holder checks keys", noop, archive, converse, noop, rename, true, 4},
+		{"idle project check excludes conversation insert", noop, idle, receipt, archive, converse, true, 4},
+		{"idle project check waits for work item writer", noop, lock("prj_first", "wi_first_1"), receipt, noop, idle, true, 4},
+		{"idle project check waits for foreign key insert before receipt", noop, bind, receipt, noop, idle, true, 4},
+		{"project key change waits for foreign key insert before receipt", noop, bind, receipt, noop, rename, true, 4},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			admin := template.Database(t)
@@ -697,10 +707,15 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 				for _, statement := range []string{
 					`INSERT INTO project_settings(organization_id,project_id) SELECT organization_id,id FROM projects WHERE organization_id=$1 ON CONFLICT DO NOTHING`,
 					`INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,board_rank) SELECT organization_id,id,'Todo',false,true,1 FROM projects WHERE organization_id=$1`,
+					`INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,board_rank) SELECT organization_id,id,'Done',true,false,2 FROM projects WHERE organization_id=$1`,
+					`INSERT INTO token_grants(organization_id,token_id,project_id) SELECT organization_id,'owner',id FROM projects WHERE organization_id=$1`,
 				} {
 					if _, err := admin.ExecContext(t.Context(), statement, organization); err != nil {
 						t.Fatal(err)
 					}
+				}
+				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error { return test.prepare(t.Context(), w) }); err != nil {
+					t.Fatal(err)
 				}
 			}
 			for _, organization := range organizations {
@@ -778,7 +793,7 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 				var counted, actual int64
 				if err := admin.QueryRowContext(t.Context(), `SELECT
 (SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='unarchived_issues'),
-(SELECT count(*) FROM issues WHERE organization_id=$1 AND NOT archived)`, organization).Scan(&counted, &actual); err != nil {
+(SELECT count(*) FROM issues i LEFT JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w.project_id=i.project_id AND w.name=i.workflow_state_name WHERE i.organization_id=$1 AND NOT i.archived AND NOT coalesce(w.terminal,false))`, organization).Scan(&counted, &actual); err != nil {
 					t.Fatal(err)
 				}
 				if counted != test.active || actual != test.active {

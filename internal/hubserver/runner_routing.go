@@ -402,6 +402,13 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 					return err
 				}
 			}
+			granted := slices.Clone(change.ProjectIDs)
+			slices.Sort(granted)
+			for _, project := range slices.Compact(granted) {
+				if err := writer.LockWorkItemProject(ctx, project); err != nil {
+					return err
+				}
+			}
 			for _, project := range change.ProjectIDs {
 				if err := writer.CreateAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: scope.organization, TokenID: identity.TokenID, ProjectID: project}); err != nil {
 					return err
