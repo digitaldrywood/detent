@@ -12,8 +12,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/labstack/echo/v4"
-
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
@@ -30,128 +28,6 @@ const (
 	conversationDerivedTitleRunes = 80
 	conversationDefaultTitle      = "New chat"
 )
-
-// registerConversationAPIRoutes mounts the operator-facing conversation API
-// (the conversation contract). Hosted sessions authenticate as operator credentials.
-//
-// The project routes use requireConversationScope rather than
-// requireNativeScope: the native middleware turns a hosted read-only grant
-// into an opaque 404 on every mutation, while the conversation contract
-// distinguishes "cannot see" (404) from "can read but cannot control" (403).
-// Write capability is therefore checked per handler by authorizeWrite.
-func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
-	scope := s.requireConversationScope()
-	e.POST(nativeBase+"/conversations", s.createConversation, scope, s.operatorAuthority)
-	e.GET(nativeBase+"/conversations", s.listProjectConversations, scope)
-	e.GET("/api/v2/organizations/:organization/conversations", s.listOrganizationConversations, s.requireConversationOrganization())
-	e.GET(nativeBase+"/conversations/:conversation", s.getConversation, scope)
-	e.GET(nativeBase+"/work-items/:item/conversation", s.getWorkItemConversation, scope)
-	e.GET(nativeBase+"/conversations/:conversation/messages", s.listConversationMessages, scope)
-	e.GET(nativeBase+"/conversations/:conversation/events", s.streamConversationEvents, scope)
-	e.POST(nativeBase+"/conversations/:conversation/actions", s.postConversationAction, scope, s.operatorAuthority)
-	e.POST(nativeBase+"/conversations/:conversation/commands", s.postConversationCommand, scope, s.operatorAuthority)
-	e.POST(nativeBase+"/conversations/:conversation/link", s.linkConversation, scope)
-	e.PATCH(nativeBase+"/conversations/:conversation", s.patchConversation, scope)
-	e.POST(nativeBase+"/conversations/:conversation/archive", s.archiveConversation, scope)
-	e.DELETE(nativeBase+"/conversations/:conversation", s.deleteConversation, scope)
-	e.GET(nativeBase+"/work-items/:item/references", s.listWorkItemReferences, scope)
-	e.POST(nativeBase+"/conversations/:conversation/attachments", s.uploadConversationAttachment, scope)
-	// The download also answers a worker: the runner fetches the files the
-	// control named with its own token, so the conversation's read rule
-	// governs the bytes the provider sees.
-	e.GET(nativeBase+"/conversations/:conversation/attachments/:attachment", s.getConversationAttachment, s.requireConversationScope(apiScopeWorker))
-	e.DELETE(nativeBase+"/conversations/:conversation/attachments/:attachment", s.deleteConversationAttachment, scope)
-}
-
-// requireConversationScope authenticates an operator or admin credential
-// for a project route and requires read access to the project. It mirrors
-// requireNativeScope except that hosted write capability is left to the
-// handlers so that a read-only member receives 403 instead of 404. Extra
-// scopes widen the credential set; the per-handler authorization is
-// unchanged, so a wider route is still bounded by the conversation's own
-// read rule.
-func (s *Service) requireConversationScope(extra ...apiScope) echo.MiddlewareFunc {
-	allowed := append([]apiScope{apiScopeOperator, apiScopeAdmin}, extra...)
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return s.requireAPIScope(allowed...)(func(c echo.Context) error {
-			credential, ok := c.Get("hub_api_credential").(apiCredential)
-			if !ok {
-				return s.nativeAPIError(c, nativeNotFound())
-			}
-			ctx := c.Request().Context()
-			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
-
-			if err := s.authorizeProjectRecord(ctx, scope, false); err != nil {
-				if c.Param("conversation") != "" {
-					var denied *nativeError
-					if errors.Is(err, accessstore.ErrDenied) || errors.As(err, &denied) && denied.status == http.StatusForbidden {
-						return s.nativeAPIError(c, nativeNotFound())
-					}
-				}
-				return s.nativeAPIError(c, err)
-			}
-			if _, err := s.readProjectRecord(ctx, scope); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			if item := c.Param("item"); item != "" {
-				if _, _, err := s.readWorkItemRecord(ctx, scope, item); err != nil {
-					return s.nativeAPIError(c, err)
-				}
-			}
-
-			c.Set("native_scope", scope)
-			if c.Request().Method == http.MethodGet {
-				c.SetRequest(c.Request().WithContext(s.archiveRequestContext(c, scope)))
-			}
-			c.Response().Header().Set("Cache-Control", "no-store")
-			if credential.Hosted != nil {
-				if err := s.hostedAudit(ctx, credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
-					return s.nativeAPIError(c, err)
-				}
-			}
-			return next(c)
-		})
-	}
-}
-
-// requireConversationOrganization authenticates an operator or admin
-// credential for the organization-level listing, which has no :project.
-// requireAPIScope cannot be reused: in hosted mode it rejects session
-// credentials outside the native project base.
-func (s *Service) requireConversationOrganization() echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			credential, status, err := s.authenticateAPIRequest(c)
-			if err != nil {
-				return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
-			}
-			if s.config.Hosted != nil && credential.Hosted == nil {
-				return s.nativeAPIError(c, nativeNotFound())
-			}
-			if credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin {
-				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
-			}
-			ctx := c.Request().Context()
-			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
-			if err := s.authorizeConversationOrganization(ctx, scope); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-			c.Set("hub_api_credential", credential)
-			c.Set("native_scope", scope)
-			c.Response().Header().Set("Cache-Control", "no-store")
-			if credential.Hosted != nil {
-				if err := s.hostedAudit(ctx, credential.Hosted, "action", c.Request().Method+" "+c.Path(), "", 0); err != nil {
-					return s.nativeAPIError(c, err)
-				}
-			}
-			return next(c)
-		}
-	}
-}
-
-func (s *Service) authorizeConversationOrganization(ctx context.Context, scope nativeScope) error {
-	return fromFeatureError(s.requestAuth().AuthorizeOrganization(ctx, s.authInput(scope)))
-}
 
 // Request and response shapes.
 
@@ -450,102 +326,6 @@ func deriveConversationTitle(text string) string {
 	return conversationDefaultTitle
 }
 
-func conversationQueryInt(c echo.Context, name string) (int64, error) {
-	raw := strings.TrimSpace(c.QueryParam(name))
-	if raw == "" {
-		return 0, nil
-	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || value < 0 {
-		return 0, nativePublicInvalid("Query parameter " + name + " must be a non-negative integer")
-	}
-	return value, nil
-}
-
-// conversationQueryTristate reads an optional boolean filter: absent lists
-// both groups, true or false restricts to one.
-// present is false when the parameter was not given.
-func conversationQueryTristate(c echo.Context, name string) (value, present bool, err error) {
-	switch strings.ToLower(strings.TrimSpace(c.QueryParam(name))) {
-	case "":
-		return false, false, nil
-	case "1", "true", "yes":
-		return true, true, nil
-	case "0", "false", "no":
-		return false, true, nil
-	default:
-		return false, false, nativePublicInvalid("Query parameter " + name + " must be true or false")
-	}
-}
-
-// createConversation implements POST /conversations. The mutation is
-// idempotent by the request's top-level key through nativeMutation, which
-// also applies the hosted feature and growth checks that every native
-// mutation runs.
-func (s *Service) createConversation(c echo.Context) error {
-	var request conversationCreateRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	value, err := s.commandCreateConversation(c.Request().Context(), nativeRequestScope(c), request)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusCreated, value)
-}
-
-func (s *Service) listConversationsPage(c echo.Context, filter conversationListQuery) error {
-	limit, err := conversationQueryInt(c, "limit")
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	scope := nativeRequestScope(c)
-	filter.Organization = scope.organization
-	filter.Principal = scope.credential.ID
-	filter.Limit = int(limit)
-	filter.Cursor = strings.TrimSpace(c.QueryParam("cursor"))
-	settled, present, err := conversationQueryTristate(c, "settled")
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if present {
-		filter.Settled = &settled
-	}
-	filter.Title = strings.TrimSpace(c.QueryParam("q"))
-	filter.SubjectWorkItemID = strings.TrimSpace(c.QueryParam("subject_work_item_id"))
-	value, err := s.readConversationsPage(c.Request().Context(), scope, filter)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
-}
-
-// listProjectConversations implements GET /conversations for a project.
-func (s *Service) listProjectConversations(c echo.Context) error {
-	return s.listConversationsPage(c, conversationListQuery{Project: nativeRequestScope(c).project})
-}
-
-// listOrganizationConversations implements the organization-level listing:
-// the union of the projects the actor can read, most recent activity first.
-func (s *Service) listOrganizationConversations(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	if scope.credential.Hosted == nil && scope.credential.EntryKey == nil {
-		return s.listConversationsPage(c, conversationListQuery{})
-	}
-
-	projects, every, err := s.readableConversationProjects(c.Request().Context(), scope)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	filter := conversationListQuery{}
-	if !every {
-		// A non-nil slice, empty when nothing is readable, so the query
-		// restricts rather than listing the whole organization.
-		filter.Projects = projects
-	}
-	return s.listConversationsPage(c, filter)
-}
-
 // readableConversationProjects returns the projects the actor can read in
 // the organization; every is true when all projects are readable (instance
 // administrators).
@@ -594,81 +374,8 @@ func (s *Service) readableConversationProjects(ctx context.Context, scope native
 	}
 }
 
-func (s *Service) getWorkItemConversation(c echo.Context) error {
-	if c.QueryParam("metadata") == "true" {
-
-		scope := nativeRequestScope(c)
-		var record conversationRecord
-		err := s.config.TenantRepository.ReadTenant(c.Request().Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			stored, err := reader.ConversationByWorkItem(c.Request().Context(), scope.project, c.Param("item"))
-			if err != nil {
-				return err
-			}
-			record = conversationRecordFromStore(stored)
-			return nil
-		})
-		if err != nil {
-			return s.nativeAPIError(c, translateConversationError(err))
-		}
-		record, err = s.readPGConversation(c.Request().Context(), scope, record.ID)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		return c.JSON(http.StatusOK, conversationSnapshot{Skills: []skills.ProviderSkill{}, Conversation: projectConversation(record), Messages: []conversationMessageResource{}, Questions: []conversation.Question{}, Cursor: record.EventSeq})
-	}
-	value, err := s.readWorkItemConversationSnapshot(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
-}
-
 func (s *Service) readWorkItemConversationSnapshot(ctx context.Context, scope nativeScope, item string) (json.RawMessage, error) {
 	return s.readConversationSnapshotFor(ctx, scope, "", item, false)
-}
-
-// getConversation implements GET /conversations/:conversation. The record,
-// the latest message page and the pending questions are read in one
-// transaction so that the returned cursor matches the messages exactly.
-func (s *Service) getConversation(c echo.Context) error {
-	value, err := s.readConversationSnapshot(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return nativeArchiveJSON(c, http.StatusOK, value)
-}
-
-// listConversationMessages implements GET /conversations/:conversation/messages.
-func (s *Service) listConversationMessages(c echo.Context) error {
-	before, err := conversationQueryInt(c, "before")
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	limit, err := conversationQueryInt(c, "limit")
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if limit == 0 {
-		limit = conversationMessagePage
-	}
-	value, err := s.readConversationMessages(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), before, int(limit))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return nativeArchiveJSON(c, http.StatusOK, value)
-}
-
-// postConversationCommand implements POST /conversations/:conversation/commands.
-func (s *Service) postConversationCommand(c echo.Context) error {
-	var command conversation.Command
-	if err := decodeAPIJSON(c, &command); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	value, err := s.commandPostConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), command)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
 }
 
 // conversationExecutionLive reports whether an attempt is bound and can be
@@ -693,35 +400,8 @@ func renderAnswer(question conversation.Question, answers map[string][]string) s
 	return "Answered"
 }
 
-func (s *Service) linkConversation(c echo.Context) error {
-	var request conversationLinkRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	value, err := s.commandLinkConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
-}
-
 // saveConversationChange loads, authorizes (owner or write access), applies
 // change and saves the conversation, then reports the result.
-
-// patchConversation implements PATCH /conversations/:conversation. It
-// renames a conversation, changes its turn preferences, or both; a request
-// that asks for neither is refused rather than silently accepted.
-func (s *Service) patchConversation(c echo.Context) error {
-	var request conversationPatchRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
-		return s.invalidAPIRequest(c, err)
-	}
-	value, err := s.commandPatchConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
-}
 
 func (s *Service) commandCreateConversation(ctx context.Context, scope nativeScope, request conversationCreateRequest) (json.RawMessage, error) {
 	if strings.TrimSpace(request.Key) == "" || len(request.Key) > 128 {
@@ -1149,4 +829,16 @@ func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, 
 		result.Conversations = append(result.Conversations, resource)
 	}
 	return json.Marshal(result)
+}
+
+func coordinatorConnectionData(ctx context.Context) json.RawMessage {
+	connection := operatortool.CurrentConnection(ctx)
+	if connection.Client != "Luna" {
+		return nil
+	}
+	raw, err := json.Marshal(map[string]string{"operator_connection": connection.ID, "operator_principal": connection.Identity.PrincipalID})
+	if err != nil {
+		return nil
+	}
+	return raw
 }

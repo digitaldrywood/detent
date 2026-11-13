@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/labstack/echo/v4"
-
 	"github.com/digitaldrywood/detent/internal/agentoverride"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
@@ -376,18 +374,6 @@ type conversationWorkItemReference struct {
 
 type conversationWorkItemReferencePage struct {
 	References []conversationWorkItemReference `json:"references"`
-}
-
-// listWorkItemReferences implements GET /work-items/:item/references. The
-// scope middleware has already proved the reader can read the project; the
-// issue read proves the issue exists in it, and the conversation read rule
-// drops entries from private chats the reader does not own.
-func (s *Service) listWorkItemReferences(c echo.Context) error {
-	value, err := s.readWorkItemReferences(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSONBlob(http.StatusOK, value)
 }
 
 // Settle sweep.

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -388,4 +389,32 @@ func coordinatorProjectMembers(raw json.RawMessage, project tracker.ProjectID) (
 		page.Invitations.Items[index].Grants = slices.DeleteFunc(page.Invitations.Items[index].Grants, func(grant hostedMemberGrant) bool { return grant.ProjectID != string(project) })
 	}
 	return page, nil
+}
+
+func (t *coordinatorToolset) restrictReadAudience(ctx context.Context, record conversationRecord, credential apiCredential) error {
+	var audience string
+	err := t.coordinator.service.server.config.TenantRepository.ReadTenant(ctx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		audience, err = conversationReadAudienceRecord(ctx, r, record.OrganizationID, credential)
+		return err
+	})
+	if err != nil {
+		return operatortool.ErrAccessDenied
+	}
+	return t.coordinator.write(ctx, record.ID, func(ctx context.Context, w tenantstore.Writer, fresh *conversationRecord, now time.Time) error {
+		if fresh.ReadAudience != "" && fresh.ReadAudience != audience {
+			return fmt.Errorf("equal screen access is required: %w", operatortool.ErrAccessDenied)
+		}
+		if fresh.ReadAudience == audience {
+			return nil
+		}
+		fresh.ReadAudience = audience
+		return t.coordinator.saveConversation(ctx, w, fresh, now)
+	}, func(ctx context.Context, p *conversationPublicationPlan) error {
+		if p.record.ReadAudience == audience {
+			return nil
+		}
+		p.record.ReadAudience = audience
+		return p.saveConversation(ctx)
+	})
 }

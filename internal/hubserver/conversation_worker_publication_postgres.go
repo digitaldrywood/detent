@@ -7,15 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type pgWorkerPublicationKey struct{}
 
 func preparePGWorkerEvent(ctx context.Context, plan *conversationPublicationPlan, body any) error {
 	if message, ok := body.(conversationMessageResource); ok {
@@ -32,36 +28,6 @@ func preparePGWorkerEvent(ctx context.Context, plan *conversationPublicationPlan
 	}
 	_, err = plan.prepare(ctx, content)
 	return err
-}
-
-func appendPreparedPGWorkerEvent(ctx context.Context, writer tenantstore.Writer, organization tracker.OrganizationID, id string, kind conversation.EventType, body any, at time.Time) (bool, error) {
-	plan, ok := ctx.Value(pgWorkerPublicationKey{}).(*conversationPublicationPlan)
-	if !ok {
-		return false, nil
-	}
-	if message, ok := body.(conversationMessageResource); ok {
-		message.Seq = 0
-		if kind == conversation.EventMessageUpdated {
-			if cached, found := plan.messages[message.ID]; found && cached.ContentID == message.contentID {
-				message.Text, message.Data = cached.Text, projectMessage(cached).Data
-			}
-		}
-		body = message
-	}
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return true, err
-	}
-	content, err := messageContent(conversationMessageRecord{Data: raw})
-	if err != nil {
-		return true, err
-	}
-	ref, ok := plan.prepared[string(organization)+"/"+artifact.Digest(content)]
-	if !ok {
-		return false, nil
-	}
-	_, err = writer.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: organization, ConversationID: id, ContentReference: contentArchiveID(string(organization), ref), Event: conversation.Event{Type: kind, Data: raw, CreatedAt: at}})
-	return true, err
 }
 
 func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, scope nativeScope, plan *conversationPublicationPlan, events []conversationTurnEvent) ([]conversationMessageRecord, error) {

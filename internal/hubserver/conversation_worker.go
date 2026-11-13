@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,19 +18,6 @@ import (
 // conversationReconcileInterval is how often the control router looks for
 // executions whose lease was released or expired without an unbind.
 var conversationReconcileInterval = 30 * time.Second
-
-const (
-	conversationControlMaxWait     = 30 * time.Second
-	conversationMaxDeltaBytes      = 64 * 1024
-	conversationMaxSummaryBytes    = 4000
-	conversationMaxItemDataBytes   = 16 * 1024
-	conversationMaxTurnEvents      = 500
-	conversationHeaderLease        = "X-Detent-Lease"
-	conversationHeaderFencingToken = "X-Detent-Fencing-Token"
-	conversationHeaderAttempt      = "X-Detent-Attempt"
-	conversationQuestionPrompt     = "Waiting for your answer"
-	conversationLeaseLostError     = "runner lease lost"
-)
 
 // conversationWorkerRouter delivers committed controls to bound workers over
 // the long-poll endpoint and reconciles executions whose lease was lost.
@@ -92,14 +78,6 @@ func (s *Service) registerConversationWorkerRoutes(e *echo.Echo) {
 
 // Wire shapes.
 
-// conversationWorkerIdentity is the lease identity every worker request
-// carries: in the JSON body, or in headers for GET.
-type conversationWorkerIdentity struct {
-	LeaseID      tracker.LeaseID      `json:"lease_id"`
-	FencingToken tracker.FencingToken `json:"fencing_token"`
-	AttemptID    string               `json:"attempt_id"`
-}
-
 type conversationBindRequest struct {
 	conversationWorkerIdentity
 	RunID        string                    `json:"run_id"`
@@ -117,28 +95,6 @@ type conversationBindResponse struct {
 	Resume      conversationResumeResource `json:"resume"`
 	Pending     []conversationControl      `json:"pending"`
 	Cursor      int64                      `json:"cursor"`
-}
-
-type conversationResumeResource struct {
-	ThreadID string `json:"thread_id"`
-	// ThreadOrigin names the kind of turn the thread the runner is about to
-	// use belongs to: conversation.ThreadOriginCoordinator or
-	// conversation.ThreadOriginWorker. It is the origin this bind's turn
-	// records, so a runner holding a thread of the other kind in its own
-	// registry can see that the hub did not hand it back.
-	// Empty when the bind resumed nothing and started no turn.
-	ThreadOrigin string `json:"thread_origin,omitempty"`
-	// Transcript carries the recent history when the provider thread cannot
-	// be resumed, so the runner can prepend it as clearly delimited data.
-	Transcript []conversationTranscriptEntry `json:"transcript,omitempty"`
-}
-
-// conversationTranscriptEntry is one bounded history line for a runner that
-// starts a fresh provider thread.
-type conversationTranscriptEntry struct {
-	Role conversation.Role        `json:"role"`
-	Kind conversation.MessageKind `json:"kind"`
-	Text string                   `json:"text"`
 }
 
 type conversationUnbindRequest struct {
@@ -257,41 +213,11 @@ func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity
 	return identity, identity.validate()
 }
 
-func conversationWorkerAuthorityUnavailable() error {
-	return &nativeError{Code: "unavailable", Message: "Worker identity authority is unavailable", status: http.StatusServiceUnavailable}
-}
-
-// requireRecordOwner checks that the conversation's execution is owned by
-// the caller's generation. Terminal executions are stale unless allowed.
-func requireConversationRecordOwner(record conversationRecord, identity conversationWorkerIdentity, allowTerminal bool) error {
-	owner := record.Execution.Owner
-	if owner.AttemptID != identity.AttemptID || owner.LeaseID != string(identity.LeaseID) || owner.FencingToken != int64(identity.FencingToken) {
-		return conversationStaleOwner("The conversation is not bound to this attempt", identity.AttemptID, owner.AttemptID)
-	}
-	if !allowTerminal && record.Execution.Status.Terminal() {
-		return conversationStale("The execution has ended")
-	}
-	return nil
-}
-
 // Transactions.
 
 // transact runs fn in one transaction and commits when it returns nil. Only
 // one transaction may be open at a time on the hub pool, so fn must never
 // start another.
-
-func conversationDeliveryForExecution(status conversation.ExecutionStatus) conversation.Delivery {
-	switch status {
-	case conversation.ExecutionCompleted:
-		return conversation.DeliveryCompleted
-	case conversation.ExecutionFailed:
-		return conversation.DeliveryFailed
-	case conversation.ExecutionInterrupted:
-		return conversation.DeliveryInterrupted
-	default:
-		return conversation.DeliveryUnknown
-	}
-}
 
 // Handlers.
 

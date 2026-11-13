@@ -11,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/labstack/echo/v4"
-
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -767,16 +765,6 @@ func (c *conversationService) loadConversationRow(ctx context.Context, query nat
 		return conversationRecord{}, err
 	}
 	return record, nil
-}
-
-// registerConversationRoutes mounts the API, the event stream and the
-// client shell. The individual groups are implemented in sibling files.
-func (s *Service) registerConversationRoutes(e *echo.Echo) {
-	if s.conversations == nil {
-		return
-	}
-	s.registerConversationAPIRoutes(e)
-	s.registerConversationWorkerRoutes(e)
 }
 
 // Transactional helpers shared by the API, coordinator and worker paths.

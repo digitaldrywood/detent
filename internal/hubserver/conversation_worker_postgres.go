@@ -514,49 +514,6 @@ func settlePGWorkerMessages(ctx context.Context, writer tenantstore.Writer, reco
 	return nil
 }
 
-func settlePGWorkerMessagesBatch(ctx context.Context, writer tenantstore.Writer, record *conversationRecord, status conversation.ExecutionStatus, now time.Time, limit int) (int, bool, error) {
-	type batch struct {
-		filter   conversationstore.MessageFilter
-		delivery conversation.Delivery
-		failure  bool
-	}
-	owner := record.Execution.Owner
-	batches := []batch{
-		{filter: conversationstore.MessageFilter{ConversationID: record.ID, AttemptID: owner.AttemptID, Role: conversation.RoleAssistant, Deliveries: []conversation.Delivery{conversation.DeliveryResponding}}, delivery: conversationDeliveryForExecution(status)},
-		{filter: conversationstore.MessageFilter{ConversationID: record.ID, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliverySending}}, delivery: conversation.DeliveryUnknown, failure: true},
-		{filter: conversationstore.MessageFilter{ConversationID: record.ID, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliverySent}}, delivery: conversationDeliveryForExecution(status)},
-		{filter: conversationstore.MessageFilter{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageAnswer, Deliveries: []conversation.Delivery{conversation.DeliveryQueued}}, delivery: conversation.DeliveryUnknown, failure: true},
-		{filter: conversationstore.MessageFilter{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageInterrupt, Deliveries: []conversation.Delivery{conversation.DeliveryQueued}}, delivery: conversation.DeliveryUnknown, failure: true},
-	}
-	processed := 0
-	for _, current := range batches {
-		remaining := limit - processed
-		if remaining <= 0 {
-			return processed, true, nil
-		}
-		current.filter.Limit = remaining
-		page, err := writer.FilteredMessages(ctx, current.filter)
-		if err != nil {
-			return processed, false, err
-		}
-		for _, message := range page.Items {
-			message.Delivery, message.UpdatedAt = current.delivery, now
-			var failure *conversation.ReceiptError
-			if current.failure {
-				failure = &conversation.ReceiptError{Code: "unknown", Message: "The execution ended before the control could be established"}
-			}
-			if err := updatePGWorkerMessage(ctx, writer, message, now, failure); err != nil {
-				return processed, false, fmt.Errorf("settle conversation worker message: %w", err)
-			}
-			processed++
-		}
-		if page.Next != 0 || processed == limit {
-			return processed, true, nil
-		}
-	}
-	return processed, false, nil
-}
-
 func (c *conversationService) leaseReleasedTenant(ctx context.Context, writer tenantstore.Writer, leaseID string, fencingToken int64, _ string) error {
 	stored, err := writer.ConversationByExecutionLease(ctx, leaseID)
 	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
@@ -620,31 +577,6 @@ func (c *conversationService) leaseReleasedTenant(ctx context.Context, writer te
 		return err
 	}
 	return appendPGConversationEvent(ctx, writer, record.OrganizationID, record.ID, conversation.EventExecutionUpdated, projectExecution(updated.Execution), now)
-}
-
-func updatePGWorkerMessage(ctx context.Context, writer tenantstore.Writer, message conversationstore.Message, now time.Time, failure *conversation.ReceiptError) error {
-	updated, err := writer.UpdateMessage(ctx, message, message.Revision)
-	if err != nil {
-		return err
-	}
-	if err := appendPGConversationEvent(ctx, writer, message.OrganizationID, message.ConversationID, conversation.EventMessageUpdated, projectMessage(conversationMessageFromStore(updated)), now); err != nil {
-		return err
-	}
-	if message.CommandKey == "" {
-		return nil
-	}
-	command, found, err := writer.Command(ctx, message.ConversationID, message.CommandKey)
-	if err != nil || !found {
-		return err
-	}
-	command.Receipt.Status, command.Receipt.Error, command.Receipt.UpdatedAt = message.Delivery, failure, now
-	if command.Receipt.MessageID == "" {
-		command.Receipt.MessageID = message.ID
-	}
-	if err := writer.UpdateCommand(ctx, command); err != nil {
-		return err
-	}
-	return appendPGConversationEvent(ctx, writer, message.OrganizationID, message.ConversationID, conversation.EventCommandReceipt, command.Receipt, now)
 }
 
 var errConversationTurnSnapshotMoved = errors.New("conversation changed after the turn event snapshot")

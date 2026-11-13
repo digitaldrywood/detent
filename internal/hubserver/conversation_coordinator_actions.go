@@ -51,18 +51,6 @@ func (s *Service) bindCoordinatorConnection(ctx context.Context, key string) (co
 	return ctx, s.operatorChat.AttachConnection(ctx)
 }
 
-func coordinatorConnectionData(ctx context.Context) json.RawMessage {
-	connection := operatortool.CurrentConnection(ctx)
-	if connection.Client != "Luna" {
-		return nil
-	}
-	raw, err := json.Marshal(map[string]string{"operator_connection": connection.ID, "operator_principal": connection.Identity.PrincipalID})
-	if err != nil {
-		return nil
-	}
-	return raw
-}
-
 func coordinatorActionTools() []runner.AgentTool {
 	return []runner.AgentTool{
 		coordinatorTool("get_project_integration", "Read this project's integration settings and GitHub transport availability. Runner PR landing is selected by the approved repository policy.", `{"type":"object","properties":{},"additionalProperties":false}`),
