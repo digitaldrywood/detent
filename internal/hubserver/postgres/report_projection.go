@@ -46,7 +46,7 @@ func (r *Repository) ImportReportEventProjections(ctx context.Context, records [
 		}
 	}
 	legacyAnchors := 0
-	err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+	err := r.internalWrite(ctx, organization, func(s *session) error {
 		var err error
 		legacyAnchors, err = s.importReportEvents(ctx, records)
 		return err
@@ -102,7 +102,7 @@ func (r *Repository) ImportReportEscapeProjections(ctx context.Context, records 
 			return eventstore.ErrInvalidRecord
 		}
 	}
-	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+	return r.internalWrite(ctx, organization, func(s *session) error {
 		return s.importReportEscapes(ctx, records)
 	})
 }
@@ -170,7 +170,7 @@ func (r *Repository) ImportReportChangeLandings(ctx context.Context, records []R
 		}
 
 	}
-	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+	return r.internalWrite(ctx, organization, func(s *session) error {
 		return s.importReportLandings(ctx, records)
 	})
 }

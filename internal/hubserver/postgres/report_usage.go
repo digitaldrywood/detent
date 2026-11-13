@@ -78,7 +78,7 @@ func (r *Repository) ImportReportUsageFacts(ctx context.Context, records []repor
 			return errors.New("invalid typed report usage fact")
 		}
 	}
-	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+	return r.internalWrite(ctx, organization, func(s *session) error {
 		return s.importReportUsage(ctx, records)
 	})
 }
@@ -245,7 +245,7 @@ func (r *Repository) VerifyReportUsageImports(ctx context.Context, organization 
 			return errors.New("invalid report usage import coverage")
 		}
 	}
-	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
+	return r.internalWrite(ctx, organization, func(s *session) error {
 		return s.verifyReportUsageBatch(ctx, sha, records)
 	})
 }
@@ -321,7 +321,7 @@ LEFT JOIN cost_observation_revisions r ON r.organization_id=$1 AND r.source_key=
 		prepared = append(prepared, value.record)
 	}
 	if len(prepared) > 0 {
-		if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error { return s.RefreshReportUsage(ctx, prepared) }); err != nil {
+		if err := r.internalWrite(ctx, organization, func(s *session) error { return s.RefreshReportUsage(ctx, prepared) }); err != nil {
 			return after, 0, err
 		}
 	}

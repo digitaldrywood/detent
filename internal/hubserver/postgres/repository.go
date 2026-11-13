@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -101,6 +102,26 @@ func (r *Repository) Write(ctx context.Context, organization tracker.Organizatio
 
 func (r *Repository) transaction(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, run func(*session) error) error {
 	return r.transactionIsolation(ctx, organization, workload, readOnly, pgx.ReadCommitted, run)
+}
+
+const internalWriteAttempts = 4
+
+func (r *Repository) internalWrite(ctx context.Context, organization tracker.OrganizationID, run func(*session) error) error {
+	for attempt := 1; ; attempt++ {
+		err := r.transaction(ctx, organization, corestore.Background, false, run)
+		if attempt == internalWriteAttempts || !pgcore.RetryableConflict(err) {
+			return err
+		}
+		delay := time.Duration(10<<(attempt-1)) * time.Millisecond
+		delay = delay/2 + rand.N(delay/2+1)
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return errors.Join(err, ctx.Err())
+		}
+	}
 }
 
 func WithTransactionTiming(ctx context.Context, observe func(string, time.Time), statements ...func(time.Time, string)) context.Context {

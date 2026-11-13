@@ -69,6 +69,11 @@ func (e *storageError) Error() string {
 	return "PostgreSQL operation failed with SQLSTATE " + e.state
 }
 
+func RetryableConflict(err error) bool {
+	var stored *storageError
+	return errors.As(err, &stored) && (stored.state == "40001" || stored.state == "40P01")
+}
+
 func (e *storageError) Unwrap() error {
 	return e.cause
 }
