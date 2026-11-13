@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/runneradvice"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -25,28 +26,28 @@ func testHostSummary(now time.Time) hostmetrics.Summary {
 
 func TestRunnerHostSummaries(t *testing.T) {
 	now := time.Now().UTC()
-	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
-	r.enroll(t)
-	r.reportCapacity(t)
-	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	issue := f.create(t, "active runner host summary")
-	claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "metrics", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-	claimResponse := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
-	requireNativeStatus(t, claimResponse, http.StatusOK)
+	f := hubfixture.NewDefaultNative(t, hubfixture.Config{Clock: func() time.Time { return now }})
+	r := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
+	r.Enroll(t)
+	r.ReportCapacity(t)
+	hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", hubfixture.Policy())
+	issue := f.Create(t, "active runner host summary")
+	claim := tracker.NativeClaim{PolicyID: hubfixture.Policy().ID, WorkItemID: issue.WorkItemID, MachineID: r.Binding.MachineID, SessionID: "metrics", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	claimResponse := f.Hub.Request(t, http.MethodPost, f.Base+"/claims", r.Redemption.Credential, claim)
+	hubfixture.RequireStatus(t, claimResponse, http.StatusOK)
 	var lease tracker.NativeLease
-	decodeHubResponse(t, claimResponse, &lease)
+	hubfixture.Decode(t, claimResponse, &lease)
 	var expiresBefore time.Time
-	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT expires_at FROM leases WHERE organization_id=$1 AND lease_id=$2 AND released_at IS NULL", f.project.OrganizationID, lease.ID).Scan(&expiresBefore); err != nil {
+	if err := f.Hub.Admin.QueryRowContext(t.Context(), "SELECT expires_at FROM leases WHERE organization_id=$1 AND lease_id=$2 AND released_at IS NULL", f.Project.OrganizationID, lease.ID).Scan(&expiresBefore); err != nil {
 		t.Fatal(err)
 	}
-	path := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
+	path := f.Base + "/machines/" + string(r.Binding.MachineID) + "/heartbeat"
 	send := func(raw any) runnerauth.RoutingSnapshot {
 		t.Helper()
-		response := performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "host_metrics": raw})
-		requireNativeStatus(t, response, http.StatusOK)
+		response := f.Hub.Request(t, http.MethodPost, path, r.Redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": r.Redemption.BackendIsolation, "host_metrics": raw})
+		hubfixture.RequireStatus(t, response, http.StatusOK)
 		var snapshot runnerauth.RoutingSnapshot
-		decodeHubResponse(t, response, &snapshot)
+		hubfixture.Decode(t, response, &snapshot)
 		return snapshot
 	}
 	a := testHostSummary(now)
@@ -61,17 +62,17 @@ func TestRunnerHostSummaries(t *testing.T) {
 		}
 	}
 	var expiresAfter time.Time
-	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT expires_at FROM leases WHERE organization_id=$1 AND lease_id=$2 AND released_at IS NULL", f.project.OrganizationID, lease.ID).Scan(&expiresAfter); err != nil {
+	if err := f.Hub.Admin.QueryRowContext(t.Context(), "SELECT expires_at FROM leases WHERE organization_id=$1 AND lease_id=$2 AND released_at IS NULL", f.Project.OrganizationID, lease.ID).Scan(&expiresAfter); err != nil {
 		t.Fatal(err)
 	}
-	runner, err := readRunnerRouting(t, f.service, f.project.OrganizationID, r.binding.RunnerID)
+	runner, err := readRunnerRouting(t, f.Hub, f.Project.OrganizationID, r.Binding.RunnerID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if expiresAfter != expiresBefore || runner.ReportedCapacity != 2 || !runner.LastHeartbeatAt.Equal(now) {
 		t.Fatalf("shutdown partial changed runner availability or lease: %+v expiry=%s", runner, expiresAfter)
 	}
-	history, err := hostHistory(t, f, f.project.OrganizationID, r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
+	history, err := hostHistory(t, f, f.Project.OrganizationID, r.Binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +106,7 @@ func TestRunnerHostSummaries(t *testing.T) {
 			}
 		})
 	}
-	unchangedHistory, err := hostHistory(t, f, f.project.OrganizationID, r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
+	unchangedHistory, err := hostHistory(t, f, f.Project.OrganizationID, r.Binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
 	if err != nil || len(unchangedHistory) != 1 {
 		t.Fatalf("host history after invalid summaries=%+v error=%v", unchangedHistory, err)
 	}
@@ -113,12 +114,12 @@ func TestRunnerHostSummaries(t *testing.T) {
 	if unchanged.SampleCount != 4 {
 		t.Fatalf("bad summaries changed count: %d", unchanged.SampleCount)
 	}
-	other, err := hostHistory(t, f, tracker.OrganizationID("org_other"), r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
+	other, err := hostHistory(t, f, tracker.OrganizationID("org_other"), r.Binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
 	if err != nil || len(other) != 0 {
 		t.Fatalf("cross-organization history: %v %v", other, err)
 	}
 	for _, bounds := range [][2]time.Time{{a.Hour, a.Hour}, {a.Hour, a.Hour.Add(721 * time.Hour)}} {
-		if _, err := hostHistory(t, f, f.project.OrganizationID, r.binding.RunnerID, bounds[0], bounds[1]); err == nil {
+		if _, err := hostHistory(t, f, f.Project.OrganizationID, r.Binding.RunnerID, bounds[0], bounds[1]); err == nil {
 			t.Fatal("unbounded range accepted")
 		}
 	}
@@ -128,13 +129,13 @@ func TestRunnerHostSummaries(t *testing.T) {
 		send([]hostmetrics.Summary{segment})
 	}
 	var segments int
-	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour=$3`, f.project.OrganizationID, r.binding.RunnerID, a.Hour).Scan(&segments); err != nil {
+	if err := f.Hub.Admin.QueryRowContext(t.Context(), `SELECT count(*) FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour=$3`, f.Project.OrganizationID, r.Binding.RunnerID, a.Hour).Scan(&segments); err != nil {
 		t.Fatal(err)
 	}
 	if segments != runneradvice.MaxHostSegments {
 		t.Fatalf("segment IDs grew to %d", segments)
 	}
-	history, err = hostHistory(t, f, f.project.OrganizationID, r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
+	history, err = hostHistory(t, f, f.Project.OrganizationID, r.Binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

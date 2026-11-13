@@ -11,24 +11,28 @@ import (
 )
 
 type Change struct {
-	Project
+	Native
 	Issue  tracker.NativeIssue
 	Change tracker.ChangeRequest
 	Path   string
 	Rules  tracker.ChangeReviewPolicy
 }
 
-func NewChange(t *testing.T, h *Hub, organization tracker.OrganizationID) Change {
+func NewChange(t *testing.T, h *Hub, organizations ...tracker.OrganizationID) Change {
 	t.Helper()
-	return NewNamedChange(t, h, "changes", organization)
+	return NewNamedChange(t, h, "changes", organizations...)
 }
 
-func NewNamedChange(t *testing.T, h *Hub, name string, organization tracker.OrganizationID) Change {
+func NewNamedChange(t *testing.T, h *Hub, name string, organizations ...tracker.OrganizationID) Change {
 	t.Helper()
-	return NewChangeIn(t, NewProject(t, h, organization, name))
+	organization := tracker.OrganizationID("")
+	if len(organizations) > 0 {
+		organization = organizations[0]
+	}
+	return NewChangeIn(t, NewNative(t, h, organization, name))
 }
 
-func NewChangeIn(t *testing.T, p Project) Change {
+func NewChangeIn(t *testing.T, p Native) Change {
 	t.Helper()
 	ApprovePolicy(t, p.Hub, p.Base+"/policy", Policy())
 	credential, err := p.Credential(t, p.Token)
@@ -45,7 +49,7 @@ func NewChangeIn(t *testing.T, p Project) Change {
 	RequireStatus(t, response, http.StatusOK)
 	var change tracker.ChangeRequest
 	Decode(t, response, &change)
-	return Change{Project: p, Issue: issue, Change: change, Path: path + "/" + change.ID, Rules: rules}
+	return Change{Native: p, Issue: issue, Change: change, Path: path + "/" + change.ID, Rules: rules}
 }
 
 func ChangeInput() tracker.ChangeVersionInput {

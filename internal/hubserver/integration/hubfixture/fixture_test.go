@@ -15,10 +15,10 @@ func TestMain(m *testing.M) { hubtest.Main(m) }
 func TestProjectsInTwoOrganizationsAreUsableAndIsolated(t *testing.T) {
 	t.Parallel()
 	h := hubfixture.Open(t, hubfixture.Config{})
-	first := hubfixture.NewProject(t, h, hubfixture.Primary, "first")
-	second := hubfixture.NewProject(t, h, hubfixture.Secondary, "second")
-	created := hubfixture.NewProject(t, h, h.CreateOrganization(t, "Example organization"), "created")
-	for _, p := range []hubfixture.Project{first, second, created} {
+	first := hubfixture.NewNative(t, h, hubfixture.Primary, "first")
+	second := hubfixture.NewNative(t, h, hubfixture.Secondary, "second")
+	created := hubfixture.NewNative(t, h, h.CreateOrganization(t, "Example organization"), "created")
+	for _, p := range []hubfixture.Native{first, second, created} {
 		if issue := p.Create(t, "isolated"); issue.Number != 1 || issue.ProjectID != p.Project.ID {
 			t.Fatalf("issue = %d in %s, want number 1 in %s", issue.Number, issue.ProjectID, p.Project.ID)
 		}
@@ -38,13 +38,13 @@ func TestRunnersInTwoOrganizationsAreUsableAndIsolated(t *testing.T) {
 	h := hubfixture.Open(t, hubfixture.Config{})
 	var runners []hubfixture.Runner
 	for _, organization := range []tracker.OrganizationID{hubfixture.Primary, hubfixture.Secondary} {
-		r := hubfixture.PrepareRunner(t, hubfixture.NewProject(t, h, organization, "runner"), runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+		r := hubfixture.PrepareRunner(t, hubfixture.NewNative(t, h, organization, "runner"), runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 		r.Enroll(t)
 		r.ReportCapacity(t)
 		hubfixture.RequireStatus(t, h.Request(t, http.MethodGet, r.IdentityPath()+"/routing", hubfixture.AdminToken, nil), http.StatusOK)
 		runners = append(runners, r)
 	}
-	foreign := h.Request(t, http.MethodPost, runners[1].Project.Base+"/machines/"+string(runners[0].Binding.MachineID)+"/heartbeat", runners[0].Redemption.Credential, map[string]any{"display_name": "foreign", "capacity": 1, "version": "test"})
+	foreign := h.Request(t, http.MethodPost, runners[1].Native.Base+"/machines/"+string(runners[0].Binding.MachineID)+"/heartbeat", runners[0].Redemption.Credential, map[string]any{"display_name": "foreign", "capacity": 1, "version": "test"})
 	if foreign.Code == http.StatusOK {
 		t.Fatalf("foreign heartbeat status = %d: %s", foreign.Code, foreign.Body.String())
 	}
@@ -79,7 +79,7 @@ func TestHostedOrganizationsAreUsableAndIsolated(t *testing.T) {
 		t.Fatalf("revoked viewer status = %d", response.Code)
 	}
 	h.EnsureOrganization(t, hubfixture.Secondary)
-	other := hubfixture.NewProject(t, h.Hub, hubfixture.Secondary, "other")
+	other := hubfixture.NewNative(t, h.Hub, hubfixture.Secondary, "other")
 	if response := h.Request(t, owner, http.MethodGet, other.Base+"/work-items", nil); response.Code == http.StatusOK {
 		t.Fatalf("hosted session read another organization: %s", response.Body.String())
 	}
@@ -92,9 +92,9 @@ func TestHostedOrganizationsAreUsableAndIsolated(t *testing.T) {
 func TestMCPInTwoOrganizationsIsUsableAndIsolated(t *testing.T) {
 	t.Parallel()
 	h := hubfixture.Open(t, hubfixture.Config{})
-	first := hubfixture.NewProject(t, h, hubfixture.Primary, "first")
-	second := hubfixture.NewProject(t, h, hubfixture.Secondary, "second")
-	for _, p := range []hubfixture.Project{first, second} {
+	first := hubfixture.NewNative(t, h, hubfixture.Primary, "first")
+	second := hubfixture.NewNative(t, h, hubfixture.Secondary, "second")
+	for _, p := range []hubfixture.Native{first, second} {
 		call := hubfixture.MCP(t, h.Handler(), hubfixture.MCPPath(p.Organization()), p.Token)
 		if reply := call("tools/list", "", nil); len(reply.Result) == 0 {
 			t.Fatalf("tools/list = %s", reply.Error)

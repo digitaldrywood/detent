@@ -15,7 +15,7 @@ import (
 )
 
 type Runner struct {
-	Project
+	Native
 	Binding    runnerauth.Binding
 	Enrollment runnerauth.Enrollment
 	Redemption runnerauth.Redemption
@@ -23,12 +23,12 @@ type Runner struct {
 	OrgBase    string
 }
 
-func PrepareRunner(t *testing.T, p Project, operations ...string) Runner {
+func PrepareRunner(t *testing.T, p Native, operations ...string) Runner {
 	t.Helper()
 	return PrepareRunnerForScope(t, p, "projects", operations...)
 }
 
-func PrepareRunnerForScope(t *testing.T, p Project, scope string, operations ...string) Runner {
+func PrepareRunnerForScope(t *testing.T, p Native, scope string, operations ...string) Runner {
 	t.Helper()
 	binding := runnerauth.NewBinding()
 	credential, err := apikey.GenerateToken()
@@ -44,7 +44,7 @@ func PrepareRunnerForScope(t *testing.T, p Project, scope string, operations ...
 	RequireStatus(t, response, http.StatusCreated)
 	var enrollment runnerauth.Enrollment
 	Decode(t, response, &enrollment)
-	return Runner{Project: p, Binding: binding, Enrollment: enrollment, OrgBase: base,
+	return Runner{Native: p, Binding: binding, Enrollment: enrollment, OrgBase: base,
 		Redemption: runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: "Runner", Capacity: 2, Version: "test"}}
 }
 
@@ -59,7 +59,7 @@ func (r Runner) IdentityPath() string { return r.OrgBase + "/runners/" + r.Bindi
 
 func (r Runner) ReportCapacity(t *testing.T) {
 	t.Helper()
-	ReportRunnerCapacity(t, r.Hub, r.Project.Base, r.Redemption.Credential, r.Binding.MachineID, r.Redemption.DisplayName, r.Redemption.BackendIsolation, r.Redemption.Capacity)
+	ReportRunnerCapacity(t, r.Hub, r.Native.Base, r.Redemption.Credential, r.Binding.MachineID, r.Redemption.DisplayName, r.Redemption.BackendIsolation, r.Redemption.Capacity)
 }
 
 func ReportRunnerCapacity(t *testing.T, h *Hub, projectBase, credential string, machine tracker.MachineID, displayName string, backends isolation.Report, capacity int) {
@@ -74,7 +74,7 @@ func CapacityReport(now time.Time) providercapacity.Report {
 	return providercapacity.Report{Provider: "openai", Backend: "codex", AccountAlias: "local", SharedAccountAlias: "team", Models: []string{"test-model"}, MaxConcurrent: 1, Availability: "available", ObservedAt: now}
 }
 
-func PublishCapacity(t *testing.T, p Project, r Runner, reports ...providercapacity.Report) {
+func PublishCapacity(t *testing.T, p Native, r Runner, reports ...providercapacity.Report) {
 	t.Helper()
 	response := p.Hub.Request(t, http.MethodPost, p.Base+"/machines/"+string(r.Binding.MachineID)+"/heartbeat", r.Redemption.Credential,
 		map[string]any{"backend_isolation": r.Redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test", "provider_reports": reports,
@@ -106,10 +106,10 @@ func SharedRunner(t *testing.T, first Runner) Runner {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := Runner{Project: first.Project, Binding: binding, OrgBase: first.OrgBase,
+	r := Runner{Native: first.Native, Binding: binding, OrgBase: first.OrgBase,
 		Redemption: runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "shared", DisplayName: "Second", Capacity: 8, Version: "test", OS: "linux", Architecture: "arm64"}}
 	response := r.Hub.Request(t, http.MethodPost, r.OrgBase+"/runner-enrollments", string(r.Hub.Config.InitialAdminToken),
-		runnerauth.EnrollmentRequest{Binding: binding, SharedMachine: true, ProjectIDs: []tracker.ProjectID{r.Project.Project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 60})
+		runnerauth.EnrollmentRequest{Binding: binding, SharedMachine: true, ProjectIDs: []tracker.ProjectID{r.Project.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 60})
 	RequireStatus(t, response, http.StatusCreated)
 	Decode(t, response, &r.Enrollment)
 	r.Enroll(t)

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -27,45 +28,45 @@ func TestRunnerRetainedLeaseClaimEligibility(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 10, 8, 15, 7, 57, 0, time.UTC)
-			f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
-			owner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
-			owner.enroll(t)
-			owner.reportCapacity(t)
-			other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
-			other.enroll(t)
-			other.reportCapacity(t)
-			descriptor := hubTestPolicy()
-			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-			item := f.create(t, "Restart ownership")
-			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: item.WorkItemID, MachineID: owner.binding.MachineID, SessionID: "original", TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", owner.redemption.Credential, claim)
-			requireNativeStatus(t, response, http.StatusOK)
+			f := hubfixture.NewDefaultNative(t, hubfixture.Config{Clock: func() time.Time { return now }})
+			owner := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+			owner.Enroll(t)
+			owner.ReportCapacity(t)
+			other := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+			other.Enroll(t)
+			other.ReportCapacity(t)
+			descriptor := hubfixture.Policy()
+			hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", descriptor)
+			item := f.Create(t, "Restart ownership")
+			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: item.WorkItemID, MachineID: owner.Binding.MachineID, SessionID: "original", TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			response := f.Hub.Request(t, http.MethodPost, f.Base+"/claims", owner.Redemption.Credential, claim)
+			hubfixture.RequireStatus(t, response, http.StatusOK)
 			var lease tracker.NativeLease
-			decodeHubResponse(t, response, &lease)
+			hubfixture.Decode(t, response, &lease)
 			if test.drain {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, owner.identityPath()+"/routing", testHubAdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "draining", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}}}), http.StatusOK)
+				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPut, owner.IdentityPath()+"/routing", hubfixture.AdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "draining", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.Project.ID}}}), http.StatusOK)
 			}
 			if test.revoke {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, owner.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
+				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodDelete, owner.IdentityPath(), hubfixture.AdminToken, nil), http.StatusNoContent)
 			}
 			if test.expire {
 				now = now.Add(600 * time.Second)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(other.binding.MachineID)+"/heartbeat", other.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": other.redemption.BackendIsolation}), http.StatusOK)
+				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/machines/"+string(other.Binding.MachineID)+"/heartbeat", other.Redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": other.Redemption.BackendIsolation}), http.StatusOK)
 			}
 			if test.reclaim {
 				token := lease.FencingToken
 				if test.wrongFence {
 					token++
 				}
-				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: token, TTLSeconds: 600})
+				response = f.Hub.Request(t, http.MethodPost, f.Base+"/leases/"+string(lease.ID)+"/renew", owner.Redemption.Credential, tracker.NativeLeaseMutation{FencingToken: token, TTLSeconds: 600})
 			} else {
-				claim.MachineID, claim.SessionID = other.binding.MachineID, "replacement"
-				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", other.redemption.Credential, claim)
+				claim.MachineID, claim.SessionID = other.Binding.MachineID, "replacement"
+				response = f.Hub.Request(t, http.MethodPost, f.Base+"/claims", other.Redemption.Credential, claim)
 			}
-			requireNativeStatus(t, response, test.want)
+			hubfixture.RequireStatus(t, response, test.want)
 			if test.want == http.StatusOK {
 				var result tracker.NativeLease
-				decodeHubResponse(t, response, &result)
+				hubfixture.Decode(t, response, &result)
 				if test.reclaim {
 					if result.ID != lease.ID || result.FencingToken != lease.FencingToken || result.SessionID != lease.SessionID {
 						t.Fatalf("reclaim replaced authority: %+v", result)
@@ -78,7 +79,7 @@ func TestRunnerRetainedLeaseClaimEligibility(t *testing.T) {
 					if test.revoke {
 						staleStatus = http.StatusUnauthorized
 					}
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 600}), staleStatus)
+					hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/leases/"+string(lease.ID)+"/renew", owner.Redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 600}), staleStatus)
 				}
 			}
 		})
