@@ -540,7 +540,7 @@ func TestPostgresLinkedChanges(t *testing.T) {
 					return w.DeleteAccessProjectGrant(t.Context(), member.UserID, f.project)
 				})
 				response := f.request(t, viewer, http.MethodGet, path(a)+"?refresh=1", nil)
-				requireNativeStatus(t, response, http.StatusForbidden)
+				requireNativeStatus(t, response, http.StatusNotFound)
 				if calls != beforeRevoke || !reflect.DeepEqual(read(a), beforeDenied) {
 					t.Fatal("unauthorized refresh changed demand or called provider")
 				}
