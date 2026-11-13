@@ -6,13 +6,17 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/labstack/echo/v4"
 )
 
 func TestPilotSelfHostedStaysFree(t *testing.T) {
 	t.Parallel()
 	t.Run("local token authentication", func(t *testing.T) {
 		t.Parallel()
-		service := openTestService(t, Config{})
+		service := newClockedPostgresNativeService(t, Config{})
+		service.echo = echo.New()
+		service.registerRoutes(service.echo)
 		if service.billing != nil || service.database.plans() != nil || service.database.hostedBilling {
 			t.Fatal("self-hosted Hub enabled plans or billing")
 		}
