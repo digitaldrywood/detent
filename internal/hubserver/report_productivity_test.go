@@ -319,9 +319,7 @@ func TestOrganizationProductivity(t *testing.T) {
 	}
 	t.Run("historical actor envelopes", func(t *testing.T) {
 		before := read(url.Values{"range": {"24h"}, "labels": {"productivity"}})
-		if _, err := f.admin.ExecContext(t.Context(), `UPDATE collaboration_events SET actor_envelope_known=false,actor_agent='',actor_display_name='' WHERE organization_id=$1 AND (type='issue.created' OR type='workflow.transitioned')`, org); err != nil {
-			t.Fatal(err)
-		}
+		tamperPostgresRows(t, f.admin, `UPDATE collaboration_events SET actor_envelope_known=false,actor_agent='',actor_display_name='' WHERE organization_id=$1 AND (type='issue.created' OR type='workflow.transitioned')`, org)
 		after := read(url.Values{"range": {"24h"}, "labels": {"productivity"}})
 		a, err := json.Marshal(before)
 		if err != nil {

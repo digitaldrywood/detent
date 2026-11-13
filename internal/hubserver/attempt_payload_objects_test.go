@@ -676,9 +676,7 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 				t.Fatal("run completion was not archived")
 			}
 			if !test.projected {
-				if _, err := admin.ExecContext(t.Context(), `UPDATE collaboration_events SET event_revision=0 WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4`, scope.Organization, scope.Project, issue.WorkItemID, report.ID); err != nil {
-					t.Fatal(err)
-				}
+				tamperPostgresRows(t, admin, `UPDATE collaboration_events SET event_revision=0 WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4`, scope.Organization, scope.Project, issue.WorkItemID, report.ID)
 			}
 			if test.postRunEdits > 0 {
 				issue = payloadSeedRecoveryEdits(t, f.nativeFixture, issue, test.postRunEdits)
@@ -989,9 +987,7 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `UPDATE change_landing_receipts SET payload_object_key=$1,payload_sha256=$2,payload_bytes=$3,payload_content_bytes=$4 WHERE organization_id=$5 AND attempt_id=$6`, invalid.Key, invalid.SHA256, invalid.CompressedSize, invalid.UncompressedSize, scope.Organization, attempt.ID); err != nil {
-					t.Fatal(err)
-				}
+				tamperPostgresRows(t, hostedPostgresAdmin(t, f.service), `UPDATE change_landing_receipts SET payload_object_key=$1,payload_sha256=$2,payload_bytes=$3,payload_content_bytes=$4 WHERE organization_id=$5 AND attempt_id=$6`, invalid.Key, invalid.SHA256, invalid.CompressedSize, invalid.UncompressedSize, scope.Organization, attempt.ID)
 				row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes = invalid.Key, invalid.SHA256, invalid.CompressedSize, invalid.UncompressedSize
 			}
 			after, err := content.LandingReceipt(t.Context(), row)

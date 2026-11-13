@@ -12,6 +12,11 @@ import (
 
 func tamperHostedBinding(t *testing.T, admin *sql.DB, statement string, args ...any) {
 	t.Helper()
+	tamperPostgresRows(t, admin, statement, args...)
+}
+
+func tamperPostgresRows(t *testing.T, admin *sql.DB, statement string, args ...any) {
+	t.Helper()
 	tx, err := admin.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
