@@ -147,6 +147,9 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 		if err := s.recordBoardDelta(u.ProjectID, delta); err != nil {
 			return err
 		}
+		if err := s.queueBoardNeighbors(ctx, previous, next); err != nil {
+			return err
+		}
 	}
 	_, err = s.db.Exec(ctx, "DELETE FROM native_board_dirty WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", s.organization, u.ProjectID, u.WorkItemID)
 	return mapError(ctx, err)
