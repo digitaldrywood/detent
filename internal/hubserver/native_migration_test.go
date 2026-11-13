@@ -398,7 +398,7 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 	objects := &memoryRunDetails{}
 	const rawProgress = `{"policy_approved":true}`
 	const updated = "2026-10-01T00:00:00Z"
-	for _, organization := range []tracker.OrganizationID{"org_aggregate_first", "org_aggregate_second"} {
+	for _, organization := range []tracker.OrganizationID{"org_aggregate_a", "org_aggregate_b"} {
 		fixture := coreFixtureFromBundle(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
 		coreFixtureAddTables(t, fixture, "project_onboarding")
 		suffix := strings.TrimPrefix(string(organization), "org_aggregate_")
@@ -427,7 +427,7 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 					t.Error(err)
 				}
 			}()
-			for _, organization := range []tracker.OrganizationID{"org_aggregate_first", "org_aggregate_second"} {
+			for _, organization := range []tracker.OrganizationID{"org_aggregate_a", "org_aggregate_b"} {
 				suffix := strings.TrimPrefix(string(organization), "org_aggregate_")
 				project := tracker.ProjectID("prj_aggregate_" + suffix)
 				if err := store.postgres.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
