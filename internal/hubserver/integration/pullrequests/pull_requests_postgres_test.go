@@ -143,18 +143,26 @@ func TestPostgresLinkedChanges(t *testing.T) {
 				clock.Store(time.Now().UTC().Truncate(time.Microsecond).UnixNano())
 				now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
 				advance := func() { clock.Add(int64(pullRequestRefreshInterval)) }
-				calls, linkedCalls := 0, 0
+				calls, linkedCalls, repositoryCalls := 0, 0, 0
 				var targetedFailure, linkedFailure error
 				providerHeadOverride := ""
 				allowLinked := false
 				var duringFetch func()
 				backend := pullRequestRefreshBackend(func(ctx context.Context, request ReconcileRequest) (ReconcileSnapshot, error) {
 					if !request.TargetedPullRequests {
-						if !allowLinked || !request.SkipIssues || !request.SkipRepository || len(request.Hydrations) != 0 {
+						if !request.SkipIssues || len(request.Hydrations) != 0 || !allowLinked && request.SkipRepository {
 							t.Fatalf("unexpected repository reconciliation=%+v", request)
 						}
-						linkedCalls++
-						return ReconcileSnapshot{}, linkedFailure
+						if allowLinked {
+							linkedCalls++
+							return ReconcileSnapshot{}, linkedFailure
+						}
+						repositoryCalls++
+						node := "R_" + request.Repository.Name
+						if request.Repository.Name == "example-project" {
+							node = "R_example"
+						}
+						return ReconcileSnapshot{Repository: RepositorySource{NodeID: node, Owner: request.Repository.Owner, Name: request.Repository.Name, UpdatedAt: now()}}, nil
 					}
 					calls++
 					if targetedFailure != nil {
@@ -573,6 +581,7 @@ func TestPostgresLinkedChanges(t *testing.T) {
 				targetedFailure, linkedFailure = errors.New("targeted provider failure"), errors.New("linked provider failure")
 				allowLinked = true
 				f.service.config.ImportBackend = linkedTestImporter{}
+				clock.Add(int64(2 * time.Minute))
 				beforeBudget := calls
 				err = f.service.maintainGitHubReconciliationRecords(t.Context())
 				if !errors.Is(err, targetedFailure) || !errors.Is(err, linkedFailure) || calls != beforeBudget+1 || linkedCalls != 1 {
@@ -583,6 +592,7 @@ func TestPostgresLinkedChanges(t *testing.T) {
 					t.Fatalf("failed refresh lost observation or retry=%+v", failed)
 				}
 				f.service.config.ImportBackend = nil
+				allowLinked = false
 				beforeRetry := calls
 				if err := f.service.maintainGitHubReconciliationRecords(t.Context()); err != nil {
 					t.Fatal(err)
@@ -591,11 +601,22 @@ func TestPostgresLinkedChanges(t *testing.T) {
 					t.Fatal("uncertain failure ignored stored backoff")
 				}
 				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-					row, err := r.(projectstore.GitHubReconciliationReader).GitHubReconciliation(t.Context(), f.project)
-					if err == nil && (row.Attempts != 1 || row.LastFailureAt == nil || !row.NextAttemptAt.After(now())) {
-						t.Fatalf("linked failure did not retain independent backoff=%+v", row)
+					backoff := 0
+					for _, project := range []tracker.ProjectID{f.project, secondProject} {
+						row, err := r.(projectstore.GitHubReconciliationReader).GitHubReconciliation(t.Context(), project)
+						if err != nil {
+							return err
+						}
+						if row.Attempts == 1 && row.LastFailureAt != nil && row.NextAttemptAt.After(now()) {
+							backoff++
+						} else if row.Attempts != 0 {
+							t.Fatalf("reconciliation outside the one-row budget failed=%+v", row)
+						}
 					}
-					return err
+					if backoff != 1 {
+						t.Fatalf("linked failure did not retain independent backoff on exactly one binding: %d", backoff)
+					}
+					return nil
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -604,6 +625,9 @@ func TestPostgresLinkedChanges(t *testing.T) {
 				err = f.service.maintainGitHubReconciliationRecords(t.Context())
 				if !errors.Is(err, targetedFailure) || calls != beforeRetry+1 || !read(c).Pending || read(c).Attempts != failed.Attempts+1 || !reflect.DeepEqual(read(c).Observation, failed.Observation) {
 					t.Fatalf("uncertain failure was not retryable at stored due time: %v", err)
+				}
+				if repositoryCalls == 0 {
+					t.Fatal("repository-enabled projects were never reconciled")
 				}
 
 			})

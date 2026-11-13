@@ -24,7 +24,8 @@ func TestPilotIdleRunnerReconciliation(t *testing.T) {
 	for _, count := range []int{0, 1, 16} {
 		t.Run(fmt.Sprintf("runners_%d", count), func(t *testing.T) {
 			t.Parallel()
-			f := newDefaultNativeFixture(t, Config{})
+			clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+			f := newDefaultNativeFixture(t, Config{Clock: clock.Now, ReconcileInterval: time.Millisecond})
 			backend := &scriptedReconcileBackend{}
 			f.service.config.ReconcileBackend = backend
 			setRepositoryEnabled := func(enabled bool) {
@@ -54,7 +55,8 @@ func TestPilotIdleRunnerReconciliation(t *testing.T) {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, "display_name": runner.redemption.DisplayName, "capacity": 2, "version": "test"}), http.StatusOK)
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?state=Todo", runner.redemption.Credential, nil), http.StatusOK)
 				}
-				backend.steps = append(backend.steps, reconcileStep{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "example-org", Name: "example-project", UpdatedAt: time.Now().UTC()}}})
+				backend.steps = append(backend.steps, reconcileStep{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "example-org", Name: "example-project", UpdatedAt: clock.Now()}}})
+				clock.Advance(time.Second)
 				if err := f.service.maintainGitHubReconciliationRecords(t.Context()); err != nil {
 					t.Fatal(err)
 				}
@@ -73,6 +75,7 @@ func TestPilotIdleRunnerReconciliation(t *testing.T) {
 				}
 			}
 			setRepositoryEnabled(false)
+			clock.Advance(time.Second)
 			if err := f.service.maintainGitHubReconciliationRecords(t.Context()); err != nil {
 				t.Fatal(err)
 			}

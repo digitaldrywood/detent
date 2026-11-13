@@ -39,6 +39,8 @@ type Service struct{ deps Deps }
 
 func New(deps Deps) *Service { return &Service{deps: deps} }
 
+const RepositoryBudget = 1
+
 func (s *Service) Maintain(ctx context.Context) error {
 	if s.deps.Backend == nil {
 		return nil
@@ -47,42 +49,54 @@ func (s *Service) Maintain(ctx context.Context) error {
 		return s.deps.Unavailable
 	}
 	pullErr := s.MaintainPullRequests(ctx)
-	issueErr := s.maintainLinkedIssues(ctx)
-	return errors.Join(pullErr, issueErr)
+	repositoryErr := s.maintainRepositories(ctx)
+	return errors.Join(pullErr, repositoryErr)
 }
 
-func (s *Service) maintainLinkedIssues(ctx context.Context) error {
-	if s.deps.Backend == nil || s.deps.Importer == nil {
-		return nil
-	}
+func (s *Service) Targets(ctx context.Context) ([]projectstore.GitHubReconciliation, error) {
 	if s.deps.Repository == nil || !s.deps.Ready {
-		return s.deps.Unavailable
+		return nil, s.deps.Unavailable
 	}
-	organization := s.deps.Organization
-	var row projectstore.GitHubReconciliation
-	err := s.deps.Repository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
-		var err error
-		gitHubReconciliationReader, ok := r.(projectstore.GitHubReconciliationReader)
+	var rows []projectstore.GitHubReconciliation
+	err := s.deps.Repository.ReadTenant(ctx, s.deps.Organization, corestore.Background, func(r tenantstore.Reader) error {
+		reader, ok := r.(projectstore.GitHubReconciliationReader)
 		if !ok {
 			return s.deps.Unavailable
 		}
-		row, err = gitHubReconciliationReader.NextGitHubReconciliation(ctx, s.deps.Now())
+		var err error
+		rows, err = reader.DueGitHubReconciliations(ctx, s.deps.Now(), RepositoryBudget, s.deps.Importer != nil)
 		return err
 	})
-	if errors.Is(err, corestore.ErrNotFound) {
-		return nil
-	}
+	return rows, err
+}
+
+func (s *Service) maintainRepositories(ctx context.Context) error {
+	rows, err := s.Targets(ctx)
 	if err != nil {
 		return err
 	}
+	var errs []error
+	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
+		errs = append(errs, s.reconcileRepository(ctx, row))
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Service) reconcileRepository(ctx context.Context, row projectstore.GitHubReconciliation) error {
+	organization := s.deps.Organization
 	scope, err := s.deps.Integration(ctx, organization, row.ProjectID)
 	if err == nil && !strings.EqualFold(scope.Repository, row.Repository) {
 		err = errors.New("GitHub reconciliation repository changed")
 	}
 	owner, name, _ := githubwebhook.SplitRepositoryFullName(row.Repository)
+	repositoryPass := row.RepositoryEnabled && row.AfterWorkItem == ""
+	request := githubcontract.ReconcileRequest{Profile: "native", Repository: githubcontract.RepositoryTarget{Owner: owner, Name: name, NodeID: row.NodeID}, SkipIssues: true, SkipRepository: !repositoryPass, Mode: githubcontract.ReconcileIncremental, Since: row.LastSuccessfulSweepAt, Through: s.deps.Now().UTC()}
 	var snapshot githubcontract.ReconcileSnapshot
 	if err == nil {
-		snapshot, err = s.deps.Backend.Reconcile(ctx, githubcontract.ReconcileRequest{Profile: "native", Repository: githubcontract.RepositoryTarget{Owner: owner, Name: name, NodeID: row.NodeID}, SkipIssues: true, SkipRepository: true, Through: s.deps.Now()})
+		snapshot, err = s.deps.Backend.Reconcile(ctx, request)
 	}
 	if err == nil && (snapshot.Repository.NodeID == "" || row.NodeID != "" && snapshot.Repository.NodeID != row.NodeID || !strings.EqualFold(snapshot.Repository.Owner+"/"+snapshot.Repository.Name, row.Repository)) {
 		err = errors.New("GitHub reconciliation source identity changed")
@@ -90,47 +104,15 @@ func (s *Service) maintainLinkedIssues(ctx context.Context) error {
 	if err == nil {
 		row.NodeID = snapshot.Repository.NodeID
 	}
-	var linked eventstore.LinkedSource
+	if err == nil && repositoryPass {
+		err = s.requestDriftedPullRequests(ctx, row, snapshot.PullRequests)
+	}
 	sweepComplete := false
-	if err == nil {
-		err = s.deps.Repository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
-			var err error
-			gitHubReconciliationReader, ok := r.(projectstore.GitHubReconciliationReader)
-			if !ok {
-				return s.deps.Unavailable
-			}
-			linked, err = gitHubReconciliationReader.NextGitHubLinkedSource(ctx, row.ProjectID, row.AfterWorkItem)
-			return err
-		})
-		if errors.Is(err, corestore.ErrNotFound) {
-			row.AfterWorkItem = ""
-			sweepComplete = true
-			err = nil
-		} else if err == nil {
-			_, repository, number, parseErr := tracker.ParseGitHubIssueURL(linked.URL)
-			err = parseErr
-			if err == nil && !strings.EqualFold(repository, row.Repository) {
-				err = errors.New("GitHub linked source repository changed")
-			}
-			if err == nil {
-				page, fetchErr := s.deps.Importer.FetchImportPage(ctx, githubcontract.GitHubImportRequest{Profile: "native", Repository: repository, IssueNumber: number, Stage: "issue"})
-				err = fetchErr
-				if err == nil && (page.Issue == nil || page.Issue.Number != number) {
-					err = errors.New("GitHub reconciliation source is incomplete")
-				}
-				if err == nil {
-					source := githubwebhook.SnapshotFromSource(*page.Issue, s.deps.Now())
-					key, hashErr := hubapi.CommandHash(source)
-					err = hashErr
-					if err == nil {
-						err = scope.Apply(ctx, linked.WorkItemID, "github.reconcile", tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: key}, Snapshot: source})
-					}
-				}
-			}
-			if err == nil {
-				row.AfterWorkItem = linked.WorkItemID
-			}
-		}
+	if err == nil && s.deps.Importer == nil {
+		row.AfterWorkItem = ""
+		sweepComplete = true
+	} else if err == nil {
+		sweepComplete, err = s.reconcileLinkedSource(ctx, &row, scope)
 	}
 	observedAt := s.deps.Now().UTC()
 	row.NextAttemptAt = observedAt.Add(time.Second)
@@ -141,7 +123,7 @@ func (s *Service) maintainLinkedIssues(ctx context.Context) error {
 	} else {
 		row.Attempts = 0
 		if sweepComplete {
-			row.LastSuccessfulSweepAt = &observedAt
+			row.LastSuccessfulSweepAt = &request.Through
 			row.NextAttemptAt = observedAt.Add(time.Duration(float64(s.deps.Interval) * (0.5 + s.deps.Jitter())))
 		}
 	}
@@ -153,6 +135,81 @@ func (s *Service) maintainLinkedIssues(ctx context.Context) error {
 		return gitHubReconciliationWriter.SaveGitHubReconciliation(ctx, row)
 	})
 	return errors.Join(err, writeErr)
+}
+
+func (s *Service) requestDriftedPullRequests(ctx context.Context, row projectstore.GitHubReconciliation, sources []githubcontract.PullRequestSource) error {
+	var since *time.Time
+	if s.deps.Importer == nil {
+		since = row.LastSuccessfulSweepAt
+	}
+	drift := make([]projectstore.GitHubPullRequestDrift, 0, len(sources))
+	for _, source := range sources {
+		if source.Number <= 0 || source.UpdatedAt.IsZero() || since != nil && !source.UpdatedAt.After(*since) {
+			continue
+		}
+		drift = append(drift, projectstore.GitHubPullRequestDrift{Number: source.Number, SourceUpdatedAt: source.UpdatedAt})
+	}
+	repository := strings.ToLower(row.Repository)
+	now := s.deps.Now().UTC()
+	for len(drift) > 0 {
+		page := drift[:min(len(drift), corestore.MaxPageSize)]
+		drift = drift[len(page):]
+		if err := s.deps.Repository.WriteTenant(ctx, s.deps.Organization, corestore.Background, func(w tenantstore.Writer) error {
+			writer, ok := w.(projectstore.GitHubReconciliationWriter)
+			if !ok {
+				return s.deps.Unavailable
+			}
+			_, err := writer.RequestDriftedGitHubPullRequests(ctx, row.ProjectID, repository, page, now)
+			return err
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) reconcileLinkedSource(ctx context.Context, row *projectstore.GitHubReconciliation, scope Integration) (bool, error) {
+	var linked eventstore.LinkedSource
+	err := s.deps.Repository.ReadTenant(ctx, s.deps.Organization, corestore.Background, func(r tenantstore.Reader) error {
+		reader, ok := r.(projectstore.GitHubReconciliationReader)
+		if !ok {
+			return s.deps.Unavailable
+		}
+		var err error
+		linked, err = reader.NextGitHubLinkedSource(ctx, row.ProjectID, row.AfterWorkItem)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		row.AfterWorkItem = ""
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_, repository, number, err := tracker.ParseGitHubIssueURL(linked.URL)
+	if err == nil && !strings.EqualFold(repository, row.Repository) {
+		err = errors.New("GitHub linked source repository changed")
+	}
+	var page githubcontract.GitHubImportPage
+	if err == nil {
+		page, err = s.deps.Importer.FetchImportPage(ctx, githubcontract.GitHubImportRequest{Profile: "native", Repository: repository, IssueNumber: number, Stage: "issue"})
+	}
+	if err == nil && (page.Issue == nil || page.Issue.Number != number) {
+		err = errors.New("GitHub reconciliation source is incomplete")
+	}
+	if err != nil {
+		return false, err
+	}
+	source := githubwebhook.SnapshotFromSource(*page.Issue, s.deps.Now())
+	key, err := hubapi.CommandHash(source)
+	if err == nil {
+		err = scope.Apply(ctx, linked.WorkItemID, "github.reconcile", tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: key}, Snapshot: source})
+	}
+	if err != nil {
+		return false, err
+	}
+	row.AfterWorkItem = linked.WorkItemID
+	return false, nil
 }
 
 func (s *Service) retryAt(now time.Time, attempts int64) time.Time {

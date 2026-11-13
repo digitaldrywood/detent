@@ -67,6 +67,98 @@ func (q *Queries) AdvanceGitHubReconciliation(ctx context.Context, arg AdvanceGi
 	return result.RowsAffected(), nil
 }
 
+const dueGitHubReconciliations = `-- name: DueGitHubReconciliations :many
+WITH ready AS (
+ SELECT r.project_id, r.repository AS stored_repository,
+        lower(COALESCE(NULLIF(ps.checkout_repository,''),ps.repository))::text AS repository,
+        ps.repository_enabled,
+        r.node_id, r.after_work_item, r.revision, r.attempts, r.next_attempt_at,
+        r.last_successful_sweep_at, r.last_failure_at
+ FROM github_reconciliation r
+ JOIN projects p ON p.organization_id=r.organization_id AND p.id=r.project_id
+ JOIN project_settings ps ON ps.organization_id=r.organization_id AND ps.project_id=r.project_id
+ WHERE r.organization_id=$3 AND r.next_attempt_at<=$1::timestamptz
+   AND p.deleted_at IS NULL AND p.profile='native'
+   AND (ps.checkout_repository<>'' OR ps.repository<>'')
+   AND (ps.repository_enabled OR $4::boolean)
+ ORDER BY r.next_attempt_at,r.project_id LIMIT $2
+), initializing AS (
+ SELECT ps.project_id, lower(COALESCE(NULLIF(ps.checkout_repository,''),ps.repository))::text AS repository, ps.repository_enabled
+ FROM project_settings ps
+ JOIN projects p ON p.organization_id=ps.organization_id AND p.id=ps.project_id
+ WHERE ps.organization_id=$3 AND NOT ps.github_reconciliation_initialized
+   AND p.deleted_at IS NULL AND p.profile='native'
+   AND (ps.checkout_repository<>'' OR ps.repository<>'')
+   AND (ps.repository_enabled OR $4::boolean)
+ ORDER BY ps.project_id LIMIT $2
+)
+SELECT project_id,stored_repository,repository,repository_enabled,node_id,after_work_item,revision,attempts,next_attempt_at,last_successful_sweep_at,last_failure_at
+FROM (
+ SELECT project_id, stored_repository, repository, repository_enabled, node_id, after_work_item, revision, attempts, next_attempt_at, last_successful_sweep_at, last_failure_at FROM ready
+ UNION ALL
+ SELECT project_id,repository,repository,repository_enabled,''::text,''::text,0::bigint,0::bigint,$1::timestamptz,NULL::timestamptz,NULL::timestamptz
+ FROM initializing
+) candidates ORDER BY next_attempt_at,project_id LIMIT $2
+`
+
+type DueGitHubReconciliationsParams struct {
+	DueAt          time.Time
+	RowLimit       int32
+	OrganizationID tracker.OrganizationID
+	LinkedIntake   bool
+}
+
+type DueGitHubReconciliationsRow struct {
+	ProjectID             tracker.ProjectID
+	StoredRepository      string
+	Repository            string
+	RepositoryEnabled     bool
+	NodeID                string
+	AfterWorkItem         string
+	Revision              int64
+	Attempts              int64
+	NextAttemptAt         time.Time
+	LastSuccessfulSweepAt *time.Time
+	LastFailureAt         *time.Time
+}
+
+func (q *Queries) DueGitHubReconciliations(ctx context.Context, arg DueGitHubReconciliationsParams) ([]DueGitHubReconciliationsRow, error) {
+	rows, err := q.db.Query(ctx, dueGitHubReconciliations,
+		arg.DueAt,
+		arg.RowLimit,
+		arg.OrganizationID,
+		arg.LinkedIntake,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DueGitHubReconciliationsRow{}
+	for rows.Next() {
+		var i DueGitHubReconciliationsRow
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.StoredRepository,
+			&i.Repository,
+			&i.RepositoryEnabled,
+			&i.NodeID,
+			&i.AfterWorkItem,
+			&i.Revision,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.LastSuccessfulSweepAt,
+			&i.LastFailureAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const initializeGitHubReconciliation = `-- name: InitializeGitHubReconciliation :execrows
 INSERT INTO github_reconciliation
  (organization_id,project_id,repository,node_id,after_work_item,revision,attempts,next_attempt_at,last_successful_sweep_at,last_failure_at)
@@ -122,73 +214,6 @@ type MarkGitHubReconciliationInitializedParams struct {
 func (q *Queries) MarkGitHubReconciliationInitialized(ctx context.Context, arg MarkGitHubReconciliationInitializedParams) error {
 	_, err := q.db.Exec(ctx, markGitHubReconciliationInitialized, arg.OrganizationID, arg.ProjectID)
 	return err
-}
-
-const nextGitHubReconciliation = `-- name: NextGitHubReconciliation :one
-WITH ready AS (
- SELECT r.project_id, r.repository AS stored_repository,
-        lower(COALESCE(NULLIF(ps.checkout_repository,''),ps.repository))::text AS repository,
-        r.node_id, r.after_work_item, r.revision, r.attempts, r.next_attempt_at,
-        r.last_successful_sweep_at, r.last_failure_at
- FROM github_reconciliation r
- JOIN projects p ON p.organization_id=r.organization_id AND p.id=r.project_id
- JOIN project_settings ps ON ps.organization_id=r.organization_id AND ps.project_id=r.project_id
- WHERE r.organization_id=$2 AND r.next_attempt_at<=$1::timestamptz
-   AND p.deleted_at IS NULL AND p.profile='native'
-   AND (ps.checkout_repository<>'' OR ps.repository<>'')
- ORDER BY r.next_attempt_at,r.project_id LIMIT 1
-), initializing AS (
- SELECT ps.project_id, lower(COALESCE(NULLIF(ps.checkout_repository,''),ps.repository))::text AS repository
- FROM project_settings ps
- JOIN projects p ON p.organization_id=ps.organization_id AND p.id=ps.project_id
- WHERE ps.organization_id=$2 AND NOT ps.github_reconciliation_initialized
-   AND p.deleted_at IS NULL AND p.profile='native'
-   AND (ps.checkout_repository<>'' OR ps.repository<>'')
- ORDER BY ps.project_id LIMIT 1
-)
-SELECT project_id,stored_repository,repository,node_id,after_work_item,revision,attempts,next_attempt_at,last_successful_sweep_at,last_failure_at
-FROM (
- SELECT project_id, stored_repository, repository, node_id, after_work_item, revision, attempts, next_attempt_at, last_successful_sweep_at, last_failure_at FROM ready
- UNION ALL
- SELECT project_id,repository,repository,''::text,''::text,0::bigint,0::bigint,$1::timestamptz,NULL::timestamptz,NULL::timestamptz
- FROM initializing
-) candidates ORDER BY next_attempt_at,project_id LIMIT 1
-`
-
-type NextGitHubReconciliationParams struct {
-	DueAt          time.Time
-	OrganizationID tracker.OrganizationID
-}
-
-type NextGitHubReconciliationRow struct {
-	ProjectID             tracker.ProjectID
-	StoredRepository      string
-	Repository            string
-	NodeID                string
-	AfterWorkItem         string
-	Revision              int64
-	Attempts              int64
-	NextAttemptAt         time.Time
-	LastSuccessfulSweepAt *time.Time
-	LastFailureAt         *time.Time
-}
-
-func (q *Queries) NextGitHubReconciliation(ctx context.Context, arg NextGitHubReconciliationParams) (NextGitHubReconciliationRow, error) {
-	row := q.db.QueryRow(ctx, nextGitHubReconciliation, arg.DueAt, arg.OrganizationID)
-	var i NextGitHubReconciliationRow
-	err := row.Scan(
-		&i.ProjectID,
-		&i.StoredRepository,
-		&i.Repository,
-		&i.NodeID,
-		&i.AfterWorkItem,
-		&i.Revision,
-		&i.Attempts,
-		&i.NextAttemptAt,
-		&i.LastSuccessfulSweepAt,
-		&i.LastFailureAt,
-	)
-	return i, err
 }
 
 const readGitHubReconciliation = `-- name: ReadGitHubReconciliation :one

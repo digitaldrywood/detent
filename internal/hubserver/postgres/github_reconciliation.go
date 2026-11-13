@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -22,19 +23,63 @@ func (s *session) GitHubReconciliation(ctx context.Context, project tracker.Proj
 	}, mapError(ctx, err)
 }
 
-func (s *session) NextGitHubReconciliation(ctx context.Context, now time.Time) (projectstore.GitHubReconciliation, error) {
-	row, err := s.queries.NextGitHubReconciliation(ctx, pgquery.NextGitHubReconciliationParams{OrganizationID: s.organization, DueAt: now})
-	if err != nil {
-		return projectstore.GitHubReconciliation{}, mapError(ctx, err)
+func (s *session) DueGitHubReconciliations(ctx context.Context, now time.Time, limit int, linkedIntake bool) ([]projectstore.GitHubReconciliation, error) {
+	if limit < 1 || limit > corestore.MaxPageSize {
+		return nil, corestore.ErrInvalidPage
 	}
-	result := projectstore.GitHubReconciliation{ProjectID: row.ProjectID, Repository: row.Repository, Revision: row.Revision, NextAttemptAt: row.NextAttemptAt}
-	if strings.EqualFold(row.StoredRepository, row.Repository) {
-		result.NodeID = row.NodeID
-		result.AfterWorkItem = tracker.NativeWorkItemID(row.AfterWorkItem)
-		result.Attempts = row.Attempts
-		result.LastSuccessfulSweepAt, result.LastFailureAt = row.LastSuccessfulSweepAt, row.LastFailureAt
+	rows, err := s.queries.DueGitHubReconciliations(ctx, pgquery.DueGitHubReconciliationsParams{OrganizationID: s.organization, DueAt: now, RowLimit: int32(limit), LinkedIntake: linkedIntake})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	result := make([]projectstore.GitHubReconciliation, 0, len(rows))
+	for _, row := range rows {
+		item := projectstore.GitHubReconciliation{ProjectID: row.ProjectID, Repository: row.Repository, RepositoryEnabled: row.RepositoryEnabled, Revision: row.Revision, NextAttemptAt: row.NextAttemptAt}
+		if strings.EqualFold(row.StoredRepository, row.Repository) {
+			item.NodeID = row.NodeID
+			item.AfterWorkItem = tracker.NativeWorkItemID(row.AfterWorkItem)
+			item.Attempts = row.Attempts
+			item.LastSuccessfulSweepAt, item.LastFailureAt = row.LastSuccessfulSweepAt, row.LastFailureAt
+		}
+		result = append(result, item)
 	}
 	return result, nil
+}
+
+func (s *session) RequestDriftedGitHubPullRequests(ctx context.Context, project tracker.ProjectID, repository string, drift []projectstore.GitHubPullRequestDrift, now time.Time) (int64, error) {
+	if project == "" || repository == "" || repository != strings.ToLower(repository) || now.IsZero() {
+		return 0, artifact.ErrIntegrity
+	}
+	if len(drift) == 0 {
+		return 0, nil
+	}
+	if err := checkPage(len(drift)); err != nil {
+		return 0, err
+	}
+	numbers, updated := make([]int64, 0, len(drift)), make([]time.Time, 0, len(drift))
+	for _, row := range drift {
+		if row.Number <= 0 || row.SourceUpdatedAt.IsZero() {
+			return 0, artifact.ErrIntegrity
+		}
+		numbers, updated = append(numbers, int64(row.Number)), append(updated, row.SourceUpdatedAt)
+	}
+	tag, err := s.db.Exec(ctx, `UPDATE github_pull_request_refresh r SET
+ request_count=r.request_count+1,
+ requested_at=GREATEST(r.requested_at,$5::timestamptz),
+ next_attempt_at=$5::timestamptz,
+ pending=true,
+ attempts=0
+FROM UNNEST($3::bigint[],$4::timestamptz[]) AS drift(pull_number,source_updated_at)
+WHERE r.organization_id=$1 AND r.project_id=$2 AND r.repository=$6
+  AND r.source_kind='change' AND NOT r.pending AND r.pull_number=drift.pull_number
+  AND r.observed_at IS NOT NULL AND r.source_updated_at<drift.source_updated_at
+  AND EXISTS(
+   SELECT 1 FROM projects p JOIN project_settings ps ON ps.organization_id=p.organization_id AND ps.project_id=p.id
+   WHERE p.organization_id=r.organization_id AND p.id=r.project_id AND p.deleted_at IS NULL AND p.profile='native'
+     AND ps.repository_enabled AND lower(ps.checkout_repository)=r.repository)`, s.organization, project, numbers, updated, now, repository)
+	if err != nil {
+		return 0, mapError(ctx, err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (s *session) NextGitHubLinkedSource(ctx context.Context, project tracker.ProjectID, after tracker.NativeWorkItemID) (eventstore.LinkedSource, error) {

@@ -125,6 +125,7 @@ type GitHubOutboxWriter interface {
 type GitHubReconciliation struct {
 	ProjectID             tracker.ProjectID
 	Repository, NodeID    string
+	RepositoryEnabled     bool
 	AfterWorkItem         tracker.NativeWorkItemID
 	Revision, Attempts    int64
 	NextAttemptAt         time.Time
@@ -134,13 +135,19 @@ type GitHubReconciliation struct {
 
 type GitHubReconciliationReader interface {
 	GitHubReconciliation(context.Context, tracker.ProjectID) (GitHubReconciliation, error)
-	NextGitHubReconciliation(context.Context, time.Time) (GitHubReconciliation, error)
+	DueGitHubReconciliations(context.Context, time.Time, int, bool) ([]GitHubReconciliation, error)
 	NextGitHubLinkedSource(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (eventstore.LinkedSource, error)
+}
+
+type GitHubPullRequestDrift struct {
+	Number          int
+	SourceUpdatedAt time.Time
 }
 
 type GitHubReconciliationWriter interface {
 	GitHubReconciliationReader
 	SaveGitHubReconciliation(context.Context, GitHubReconciliation) error
+	RequestDriftedGitHubPullRequests(context.Context, tracker.ProjectID, string, []GitHubPullRequestDrift, time.Time) (int64, error)
 }
 
 type GitHubWorkpadReader interface {

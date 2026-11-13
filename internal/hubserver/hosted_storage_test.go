@@ -368,9 +368,12 @@ func TestHostedDatabaseConstrainsBackgroundWrites(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	targets, err := service.database.reconcileTargets(t.Context())
+	targets, err := service.githubReconcileService().Targets(t.Context())
 	if err != nil || len(targets) != 1 {
 		t.Fatalf("background reconciliation targets = %d, error = %v", len(targets), err)
+	}
+	if targets[0].ProjectID != "prj_shared" || targets[0].Repository != "owner/repository" || !targets[0].RepositoryEnabled {
+		t.Fatalf("background reconciliation target = %+v", targets[0])
 	}
 }
 

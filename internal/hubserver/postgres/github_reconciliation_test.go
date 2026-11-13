@@ -18,6 +18,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func nextGitHubReconciliation(t *testing.T, r projectstore.GitHubReconciliationReader, now time.Time) (projectstore.GitHubReconciliation, error) {
+	t.Helper()
+	rows, err := r.DueGitHubReconciliations(t.Context(), now, 1, true)
+	if err != nil {
+		return projectstore.GitHubReconciliation{}, err
+	}
+	if len(rows) == 0 {
+		return projectstore.GitHubReconciliation{}, corestore.ErrNotFound
+	}
+	return rows[0], nil
+}
+
 func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
@@ -47,7 +59,7 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 		for _, project := range []tracker.ProjectID{"one", "two"} {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				owner := w.(projectstore.GitHubReconciliationWriter)
-				row, err := owner.NextGitHubReconciliation(t.Context(), now.Add(-time.Second))
+				row, err := nextGitHubReconciliation(t, owner, now.Add(-time.Second))
 				if err != nil {
 					return err
 				}
@@ -66,7 +78,7 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 		for _, project := range []tracker.ProjectID{"one", "two"} {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				owner := w.(projectstore.GitHubReconciliationWriter)
-				row, err := owner.NextGitHubReconciliation(t.Context(), now)
+				row, err := nextGitHubReconciliation(t, owner, now)
 				if err != nil {
 					return err
 				}
@@ -91,10 +103,13 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			owner := r.(projectstore.GitHubReconciliationReader)
-			if _, err := owner.NextGitHubReconciliation(t.Context(), now); !errors.Is(err, corestore.ErrNotFound) {
+			if _, err := nextGitHubReconciliation(t, owner, now); !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("future retry selected=%v", err)
 			}
-			row, err := owner.NextGitHubReconciliation(t.Context(), now.Add(time.Minute))
+			if rows, err := owner.DueGitHubReconciliations(t.Context(), now.Add(time.Minute), 2, false); err != nil || len(rows) != 0 {
+				t.Fatalf("repository-disabled bindings selected without linked intake=%+v err=%v", rows, err)
+			}
+			row, err := nextGitHubReconciliation(t, owner, now.Add(time.Minute))
 			if err != nil {
 				return err
 			}
@@ -180,7 +195,7 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 				if err := owner.SaveGitHubReconciliation(t.Context(), old); !errors.Is(err, corestore.ErrRevisionConflict) {
 					t.Fatalf("old binding wrote outcome: %v", err)
 				}
-				row, err := owner.NextGitHubReconciliation(t.Context(), completeAt)
+				row, err := nextGitHubReconciliation(t, owner, completeAt)
 				if err != nil {
 					return err
 				}
@@ -492,6 +507,40 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 				}
 				if !reflect.DeepEqual(read(b.GitHubPullRequestRefreshKey), b) || !reflect.DeepEqual(read(c.GitHubPullRequestRefreshKey), c) {
 					t.Fatal("publishing A changed another view of the same PR")
+				}
+				published := read(a.GitHubPullRequestRefreshKey)
+				driftAt := now.Add(time.Hour)
+				discardDrift := errors.New("discard drift")
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					owner := w.(projectstore.GitHubReconciliationWriter)
+					unchanged, err := owner.RequestDriftedGitHubPullRequests(t.Context(), "prj_shared", "example-org/example-project", []projectstore.GitHubPullRequestDrift{{Number: 18, SourceUpdatedAt: observation.SourceUpdatedAt}}, driftAt)
+					if err != nil || unchanged != 0 {
+						t.Fatalf("unchanged source re-requested %d views: %v", unchanged, err)
+					}
+					marked, err := owner.RequestDriftedGitHubPullRequests(t.Context(), "prj_shared", "example-org/example-project", []projectstore.GitHubPullRequestDrift{{Number: 18, SourceUpdatedAt: observation.SourceUpdatedAt.Add(time.Minute)}, {Number: 19, SourceUpdatedAt: driftAt}}, driftAt)
+					if err != nil || marked != 1 {
+						t.Fatalf("drifted source re-requested %d views: %v", marked, err)
+					}
+					reader := w.(projectstore.GitHubPullRequestRefreshReader)
+					drifted, err := reader.GitHubPullRequestRefresh(t.Context(), a.GitHubPullRequestRefreshKey)
+					if err != nil {
+						return err
+					}
+					if !drifted.Pending || drifted.RequestCount != published.RequestCount+1 || drifted.Attempts != 0 || !drifted.NextAttemptAt.Equal(driftAt) || !reflect.DeepEqual(drifted.Observation, published.Observation) {
+						t.Fatalf("drift did not rearm the observed view: %+v", drifted)
+					}
+					for _, sibling := range []projectstore.GitHubPullRequestRefresh{b, c} {
+						current, err := reader.GitHubPullRequestRefresh(t.Context(), sibling.GitHubPullRequestRefreshKey)
+						if err != nil {
+							return err
+						}
+						if !reflect.DeepEqual(current, sibling) {
+							t.Fatalf("drift changed a pending or foreign-project view: %+v", current)
+						}
+					}
+					return discardDrift
+				}); !errors.Is(err, discardDrift) {
+					t.Fatalf("drift request: %v", err)
 				}
 				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 					due, err := r.(projectstore.GitHubPullRequestRefreshReader).NextGitHubPullRequestRefresh(t.Context(), now)
