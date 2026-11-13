@@ -341,9 +341,9 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 		return err
 	}}
 	board := read{"board", func(ctx context.Context, f nativeFixture, scope nativeScope, _ string) error {
-		page, err := f.service.readIssues(ctx, scope, url.Values{"limit": {"1"}})
-		if err == nil && page.Total != 2 {
-			err = fmt.Errorf("board total = %d, want 2", page.Total)
+		page, err := f.service.readIssues(ctx, scope, url.Values{"limit": {"2"}})
+		if err == nil && (page.Total != -1 || len(page.Items) != 2) {
+			err = fmt.Errorf("board total = %d, items = %d, want -1 and 2", page.Total, len(page.Items))
 		}
 		return err
 	}}
@@ -358,6 +358,7 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 			f := newPostgresDefaultNativeFixture(t, Config{})
 			issue := f.create(t, "first")
 			f.create(t, "second")
+			drainTestNativeBoard(t, f.service)
 			scope := analyticsTestScope(t, f)
 			item := string(issue.WorkItemID)
 			installReportsBudgetTrace(t, f.service)
