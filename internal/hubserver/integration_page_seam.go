@@ -2,12 +2,13 @@ package hubserver
 
 import (
 	"context"
+
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/integrationpage"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/labstack/echo/v4"
-
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -31,10 +32,10 @@ func (s *Service) integrationPageService() *integrationpage.Service {
 		},
 	})
 }
-func (s *Service) readIntegrationPage(ctx context.Context, scope nativeScope) (ProjectIntegration, error) {
-	value, err := s.integrationPageService().Read(ctx, s.featureScope(scope))
-	return value, fromFeatureError(err)
+func projectIntegrationRecord(record projectstore.Record) ProjectIntegration {
+	return integrationpage.Record(record)
 }
+
 func (s *Service) IntegrationPageMaintenanceFeature() hubmaintenance.Feature {
 	return s.integrationPageService().MaintenanceFeature()
 }

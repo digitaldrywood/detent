@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/integrationpage"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -188,10 +187,6 @@ func (s *Service) readProjectRecord(ctx context.Context, scope nativeScope) (pro
 		return err
 	})
 	return result, projectRecordError(err)
-}
-
-func projectIntegrationRecord(record projectstore.Record) ProjectIntegration {
-	return integrationpage.Record(record)
 }
 
 func (s *Service) projectRecordWorkflow(ctx context.Context, record projectstore.Record) (string, error) {

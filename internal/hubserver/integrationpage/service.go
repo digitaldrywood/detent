@@ -2,13 +2,15 @@ package integrationpage
 
 import (
 	"context"
+	"log/slog"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/labstack/echo/v4"
-	"log/slog"
-	"time"
 )
 
 type Deps struct {

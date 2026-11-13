@@ -3,14 +3,15 @@ package integrationpage_test
 import (
 	"context"
 	"database/sql"
+	"testing"
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integrationpage"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"testing"
-	"time"
 )
 
 func TestMain(m *testing.M) { hubtest.Main(m) }
