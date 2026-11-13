@@ -34,7 +34,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	objects := &conversationContentFixture{}
-	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: time.Now}}
+	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), Clock: time.Now}}
 	service.conversations = &conversationService{Server: service.conversationServer(), Store: &conversationStore{Contents: objects}, Logger: service.config.Logger}
 	service.conversations.Config.ControlQueueSize = 100
 	service.conversations.Broker = newNotificationBroker().Broker
@@ -726,12 +726,12 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	objects := &conversationContentFixture{}
-	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: time.Now}}
+	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), Clock: time.Now}}
 	service.conversations = &conversationService{Server: service.conversationServer(), Store: &conversationStore{Contents: objects}, Logger: service.config.Logger}
 	service.conversations.Config.ControlQueueSize = 100
 	service.conversations.Broker = newNotificationBroker().Broker
 	service.conversations.Coordinator = newConversationCoordinator(service, service.conversations)
-	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(func() time.Time { return service.config.now() }))
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(func() time.Time { return service.config.Clock() }))
 	service.ready.Store(true)
 	service.registerConversationAPIRoutes(service.echo)
 	type fixture struct {
@@ -766,7 +766,7 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service.config.now = func() time.Time { return now }
+	service.config.Clock = func() time.Time { return now }
 	type candidate struct {
 		fixture fixture
 		upload  conversation.AttachmentUpload

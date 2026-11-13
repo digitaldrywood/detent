@@ -22,7 +22,7 @@ func (e hubProjectExecutor) monthlyUsageCosts(ctx context.Context, arguments jso
 	if request.Scope != "project" && request.Scope != "organization" || request.Scope == "project" && request.ProjectID == "" || request.Scope == "organization" && request.ProjectID != "" {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
-	window, err := costMonth(request.Month, e.service.config.now())
+	window, err := costMonth(request.Month, e.service.config.Clock())
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
@@ -53,7 +53,7 @@ func (e hubProjectExecutor) monthlyUsageCosts(ctx context.Context, arguments jso
 			return operatortool.Result{}, hubscope.OperatorAuthorizationError(err)
 		}
 	}
-	report, err := e.service.database.monthlyCosts(ctx, string(scope.Organization), request.Scope, projects, window, e.service.config.now())
+	report, err := e.service.database.monthlyCosts(ctx, string(scope.Organization), request.Scope, projects, window, e.service.config.Clock())
 	if err != nil {
 		return operatortool.Result{}, hubapi.ErrProjectServiceUnavailable
 	}

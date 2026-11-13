@@ -441,7 +441,7 @@ func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Con
 			receipt.Status = conversation.DeliveryRejected
 			receipt.Error = &conversation.ReceiptError{Code: "no_active_turn", Message: "The intended coordinator turn is no longer running"}
 		}
-		now := c.server.config.now()
+		now := c.server.config.Clock()
 		receipt.UpdatedAt = now
 		plan := conversationPublicationPlan{Service: c.service, Record: conversationRecordFromStore(record), Now: now, Coordinator: true}
 		if err := plan.RecordReceipt(ctx, receipt); err != nil {

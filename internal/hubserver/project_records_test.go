@@ -127,7 +127,7 @@ func openPostgresHubTestService(t *testing.T, repository *postgres.Repository, c
 	service.config.TenantRepository = repository
 	service.config.BillingRepository = repository
 	service.database.billingRepository = repository
-	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.Clock))
 	return service
 }
 
@@ -145,13 +145,13 @@ func openLocalPostgresHubTestService(t *testing.T, repository *postgres.Reposito
 	service.registerRunnerRoutes(service.echo)
 	service.registerCostUsageRoutes(service.echo)
 	service.registerOperatorTools(service.echo)
-	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.Clock))
 	return service
 }
 
 func seedPostgresHubAdmin(t *testing.T, repository tenantstore.Repository, service *Service, organization nativeOrganization) {
 	t.Helper()
-	now := service.config.now().UTC().Truncate(time.Microsecond)
+	now := service.config.Clock().UTC().Truncate(time.Microsecond)
 	err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		existing, err := w.AccessOrganization(t.Context())
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -229,7 +229,7 @@ func TestPostgresProjectRecords(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			now := service.config.now()
+			now := service.config.Clock()
 			if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org.ID, ProviderID: "provider_" + string(org.ID), AllocationGeneration: 1}); err != nil {
 					return err
@@ -317,7 +317,7 @@ func TestPostgresProjectRecords(t *testing.T) {
 			}
 			var token hubapi.TokenResponse
 			token.Token = "example-ungranted-" + string(org.ID)
-			now = service.config.now()
+			now = service.config.Clock()
 			if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org.ID, ID: "ungranted", Name: "Example ungranted", Hash: apikey.HashToken(token.Token), Scope: "operator", ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now})
 			}); err != nil {
@@ -427,7 +427,7 @@ func TestPostgresProjectParticipantsAuditLifecycleAndRevokeGrants(t *testing.T) 
 	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	org := nativeOrganization{ID: "org_project_lifecycle", Name: "Project lifecycle", Slug: "project-lifecycle"}
 	seedPostgresHubAdmin(t, repository, service, org)
-	now := service.config.now().UTC()
+	now := service.config.Clock().UTC()
 	actor := tenantstore.ProjectActor{CredentialID: "test_hub_admin", PrincipalID: "test_hub_admin", HostedSubject: "user_owner", Audit: accessstore.Audit{OrganizationID: org.ID, SessionID: "session_project_lifecycle", ActualActor: "user_owner", EffectiveUser: "user_owner", StartedAt: now, ExpiresAt: now.Add(time.Hour)}}
 	participants := tenantProjectParticipants{service: service}
 	var record projectstore.Record
@@ -457,10 +457,10 @@ func TestPostgresProjectParticipantsAuditLifecycleAndRevokeGrants(t *testing.T) 
 		if err != nil {
 			return err
 		}
-		if err := participants.RetireProject(t.Context(), w, actor, current, service.config.now()); err != nil {
+		if err := participants.RetireProject(t.Context(), w, actor, current, service.config.Clock()); err != nil {
 			return err
 		}
-		return w.RetireProject(t.Context(), record.Core.ID, current.Settings.Revision, service.config.now())
+		return w.RetireProject(t.Context(), record.Core.ID, current.Settings.Revision, service.config.Clock())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.
 		t.Fatal(err)
 	}
 	seedPostgresHubAdmin(t, repository, service, organization)
-	now := service.config.now().UTC()
+	now := service.config.Clock().UTC()
 	principal := "credential_example_member"
 	user := "user_example_member"
 	err = repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -550,7 +550,7 @@ func TestPostgresProjectCreationSerializesWithAdministratorPromotion(t *testing.
 			if err != nil {
 				return err
 			}
-			member.Role, member.UpdatedAt = "admin", service.config.now().UTC()
+			member.Role, member.UpdatedAt = "admin", service.config.Clock().UTC()
 			if err := w.UpdateAccessMember(t.Context(), member); err != nil {
 				return err
 			}
@@ -649,7 +649,7 @@ func TestPostgresProjectReadAvoidsRepeatedAdmissions(t *testing.T) {
 		}
 		return nil
 	}}
-	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: counted, AccessRepository: accessCounted, RunDetails: details, now: func() time.Time { return now }}}
+	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: counted, AccessRepository: accessCounted, RunDetails: details, Clock: func() time.Time { return now }}}
 	service.registerNativeRoutes(service.echo)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {

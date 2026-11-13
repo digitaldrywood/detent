@@ -116,7 +116,7 @@ func (s *Service) maintainBoardRecord(ctx context.Context, organization tracker.
 	if settled {
 		return candidate.WorkItemID, true, nil
 	}
-	err = s.refreshBoardRecord(ctx, organization, candidate, s.config.now())
+	err = s.refreshBoardRecord(ctx, organization, candidate, s.config.Clock())
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		err = nil
 	}

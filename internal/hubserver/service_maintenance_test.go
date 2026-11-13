@@ -419,7 +419,7 @@ func TestBodyBackfillDrainsWithinBoundedTicks(t *testing.T) {
 	}
 	service.config.TenantRepository = repository
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
-	service.config.now = func() time.Time { return now }
+	service.config.Clock = func() time.Time { return now }
 	for _, test := range []struct{ size, ticks int }{{2, 48}, {50, 48}, {100, 48}, {1200, 360}} {
 		t.Run(fmt.Sprint(test.size), func(t *testing.T) {
 			size := test.size

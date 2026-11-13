@@ -210,7 +210,7 @@ func newWriterGuardNativeFixture(t *testing.T) (nativeFixture, *writerReadGuard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := service.config.now().UTC().Truncate(time.Microsecond)
+	now := service.config.Clock().UTC().Truncate(time.Microsecond)
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
 	}); err != nil {

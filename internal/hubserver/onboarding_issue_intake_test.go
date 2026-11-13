@@ -1233,7 +1233,7 @@ func TestGitHubBatchImportsDiscussionBeyondDefaultAPILimit(t *testing.T) {
 	snapshot := batchSnapshot(12)
 	snapshot.Comments = nil
 	for index := range 40 {
-		snapshot.Comments = append(snapshot.Comments, tracker.GitHubIssueComment{Body: fmt.Sprint("Comment ", index), Provenance: tracker.Provenance{Provider: "github", ExternalID: fmt.Sprint("C_", index), AuthorID: "example-author", CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now(), ObservedAt: f.service.config.now()}})
+		snapshot.Comments = append(snapshot.Comments, tracker.GitHubIssueComment{Body: fmt.Sprint("Comment ", index), Provenance: tracker.Provenance{Provider: "github", ExternalID: fmt.Sprint("C_", index), AuthorID: "example-author", CreatedAt: f.service.config.Clock(), UpdatedAt: f.service.config.Clock(), ObservedAt: f.service.config.Clock()}})
 	}
 	f.backend.snapshots[12] = snapshot
 	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}}, http.StatusOK)
@@ -2124,7 +2124,7 @@ func seedBatchServiceKey(t *testing.T, f *batchFixture, ttl ...time.Duration) st
 	credential := f.scope(t).Credential
 	token := hubapi.NewID("service_token")
 	id := "service_" + string(f.project.ID)
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	lifetime := 24 * time.Hour
 	if len(ttl) != 0 {
 		lifetime = ttl[0]
@@ -2190,7 +2190,7 @@ func seedBatchExpiringKey(t *testing.T, f *batchFixture, ttl time.Duration) stri
 	credential := f.scope(t).Credential
 	token := hubapi.NewID("expiring_token")
 	id := "expiring_" + string(f.project.ID)
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	expires := now.Add(ttl)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
 		if err := writer.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: id, Name: "Example expiring intake key", Hash: apikey.HashToken(token), Scope: "operator", Kind: "service", KeyScope: "admin", UserID: credential.Hosted.Subject, MembershipID: credential.HostedMembership, NativeOnly: true, ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
@@ -2206,7 +2206,7 @@ func seedBatchExpiringKey(t *testing.T, f *batchFixture, ttl time.Duration) stri
 func createBatchSession(t *testing.T, f *batchFixture) string {
 	t.Helper()
 	credential := f.scope(t).Credential
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	identity := auth.Identity{Subject: credential.Hosted.Subject, Email: "operator@example.test", EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: credential.Hosted.Subject, OrganizationID: f.service.config.Hosted.WorkOSOrganizationID, SessionID: "session_" + string(f.project.ID), CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour)}}
 	f.provider.mu.Lock()
 	f.provider.sessions[identity.Hosted.SessionID] = *identity.Hosted

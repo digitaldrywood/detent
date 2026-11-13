@@ -28,7 +28,7 @@ func (s *Service) hostedArtifactAllowances(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &usage); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	for _, amount := range []int64{usage.RetainedBytes, usage.ReservedBytes, usage.RelayBytes, usage.StorageRequests} {
 		if amount < 0 || amount > 1<<50 {
 			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Artifact usage is invalid"))

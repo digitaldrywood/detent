@@ -68,7 +68,7 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 		return err
 	}))
 	if errors.Is(err, corestore.ErrNotFound) {
-		purchase = billingstore.CreditPurchase{OrganizationID: s.database.hostedOrganization, Key: key, Mode: cfg.CreditMode(), PriceID: pack.PriceID, USDCents: pack.USDCents, State: "pending", CreatedAt: s.config.now().UTC()}
+		purchase = billingstore.CreditPurchase{OrganizationID: s.database.hostedOrganization, Key: key, Mode: cfg.CreditMode(), PriceID: pack.PriceID, USDCents: pack.USDCents, State: "pending", CreatedAt: s.config.Clock().UTC()}
 		if err := hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.CreateBillingCreditPurchase(ctx, purchase) })); err != nil {
 			return billingDestination{}, err
 		}
@@ -80,7 +80,7 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 	}
 	session := purchase.Session
 	if session.URL == "" {
-		if purchase.State != "pending" || s.config.now().Sub(purchase.CreatedAt) >= 23*time.Hour {
+		if purchase.State != "pending" || s.config.Clock().Sub(purchase.CreatedAt) >= 23*time.Hour {
 			return billingDestination{}, billingFailure(http.StatusConflict, "This purchase needs billing review")
 		}
 		provider, ok := cfg.Provider.(billing.CreditProvider)

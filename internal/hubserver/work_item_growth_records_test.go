@@ -25,7 +25,7 @@ func TestWorkItemContentChargesCollaborationBytesPerTenant(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC()
-	service := &Service{echo: echo.New(), notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), database: &database{postgres: repository, now: func() time.Time { return now }}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }}}
+	service := &Service{echo: echo.New(), notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), database: &database{postgres: repository, now: func() time.Time { return now }}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return now }}}
 	service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
 	service.registerNativeRoutes(service.echo)
 	organizations := []tracker.OrganizationID{"org_charge_first", "org_charge_second"}

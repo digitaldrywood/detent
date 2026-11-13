@@ -32,7 +32,7 @@ func (s *Service) maintainNativeBackfills(ctx context.Context) error {
 	return s.runNativeRetentionStages(ctx, []nativeRetentionStage{
 		{"populate Change columns", s.populateChangeColumns},
 		{"populate claim facts", s.populateClaimRecoveryProjections},
-		{"expire request metrics", func(ctx context.Context) error { return s.expireRequestMetrics(ctx, s.config.now()) }},
+		{"expire request metrics", func(ctx context.Context) error { return s.expireRequestMetrics(ctx, s.config.Clock()) }},
 	})
 }
 

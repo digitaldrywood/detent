@@ -77,7 +77,7 @@ func (s *Service) prepareAccessAudit(ctx context.Context, identity *auth.HostedI
 	if identity.SupportActor != "" {
 		actor = identity.SupportActor
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	account := decodeAccountFields(event)
 	row := accessstore.Audit{OrganizationID: s.accessOrganization(), SessionID: identity.SessionID, ActualActor: actor, EffectiveUser: identity.Subject, Reason: identity.SupportReason, Event: event, Route: route, ProjectID: tracker.ProjectID(project), Status: status, StartedAt: identity.CreatedAt, ExpiresAt: identity.ExpiresAt, RecordedAt: now, RecordedAtNS: now.UnixNano(), AccountKind: account.Kind, AccountRetry: account.Retry}
 	if m, ok := mutation.FromContext(ctx); ok {
@@ -117,7 +117,7 @@ func (s *Service) prepareAccessAudit(ctx context.Context, identity *auth.HostedI
 }
 
 func (s *Service) logoutAccessSession(ctx context.Context, hash string, identity *auth.HostedIdentity) (operatortool.SignOutResult, error) {
-	if err := s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessSession(ctx, hash, s.config.now()) }); err != nil {
+	if err := s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessSession(ctx, hash, s.config.Clock()) }); err != nil {
 		return operatortool.SignOutResult{}, err
 	}
 	outcome := operatortool.SignOutResult{SignedOut: true, ProviderConfirmed: true, AuditRecorded: true}
@@ -145,7 +145,7 @@ func (s *Service) recordEntryAccessKeyAuditWith(ctx context.Context, w tenantsto
 		return nil
 	}
 	claims := audit.Claims
-	now := s.config.now()
+	now := s.config.Clock()
 	if audit.RowID != 0 {
 		return w.UpdateAccessKeyAudit(ctx, audit.RowID, claims.Key.ID, audit.Operation, tracker.ProjectID(audit.Project), audit.Resource, status)
 	}

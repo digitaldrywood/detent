@@ -34,7 +34,7 @@ func TestHostedBillingResultLimits(t *testing.T) {
 			t.Run(deployment+"/"+test.name, func(t *testing.T) {
 				t.Parallel()
 				f, ctx := newHostedKeyMCPFixture(t, deployment, "owner")
-				now := f.service.config.now().UTC()
+				now := f.service.config.Clock().UTC()
 				db := hostedPostgresAdmin(t, f.service)
 				organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
 				issue := seedAnalyticsTestWorkItem(t, f.service, organization, f.project, "billing-usage", 1, "Usage fixture", "Todo", now.Add(-time.Minute))

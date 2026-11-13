@@ -107,7 +107,7 @@ func (s *Service) MaintainHealthPage(ctx context.Context, organization tracker.O
 		return err
 	})
 	if published && s.config.Logger != nil {
-		s.config.Logger.LogAttrs(ctx, slog.LevelDebug, "project health page", slog.String("organization_id", string(organization)), slog.Int64("generation", candidate.Generation), slog.Duration("projection_lag", s.config.now().Sub(candidate.SourceAt)))
+		s.config.Logger.LogAttrs(ctx, slog.LevelDebug, "project health page", slog.String("organization_id", string(organization)), slog.Int64("generation", candidate.Generation), slog.Duration("projection_lag", s.config.Clock().Sub(candidate.SourceAt)))
 	}
 	return published, err
 }
@@ -169,7 +169,7 @@ func (s *Service) maintainHealthSources(ctx context.Context, organization tracke
 	if cursor.completed == ([5]bool{true, true, true, true, true}) && cursor.projectWait.finding.ID == "" {
 		if !cursor.cycleFailed {
 			combined = s.database.postgres.WriteHealth(ctx, organization, corestore.Background, func(writer postgres.HealthWriter) error {
-				return writer.PutHealthTick(ctx, postgres.PutHealthTickInput{OrganizationID: organization, LastTickAt: s.config.now().UTC()})
+				return writer.PutHealthTick(ctx, postgres.PutHealthTickInput{OrganizationID: organization, LastTickAt: s.config.Clock().UTC()})
 			})
 		}
 		*cursor = healthMaintenanceCursor{}
@@ -203,7 +203,7 @@ func healthScheduledHistory(history healthstore.ScheduledHistory) healthSchedule
 }
 
 func (s *Service) maintainHealthRunner(ctx context.Context, organization tracker.OrganizationID, after *runnerstore.UpdateProjectionCursor) error {
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	var runner healthRunner
 	found := false
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
@@ -656,7 +656,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 }
 
 func (s *Service) maintainHealthProject(ctx context.Context, organization tracker.OrganizationID, after *tracker.ProjectID) error {
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	var selected corestore.Project
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		rows, err := reader.Projects(ctx, *after, 1)
@@ -989,7 +989,7 @@ func (s *Service) maintainHealthWaitItems(ctx context.Context, organization trac
 }
 
 func (s *Service) maintainHealthWaitItem(ctx context.Context, organization tracker.OrganizationID, reference corestore.WorkItemReference) error {
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	var item corestore.WorkItem
 	var version eventstore.CollaborationVersion
 	var project projectstore.Record
@@ -1190,7 +1190,7 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 }
 
 func (s *Service) maintainHealthQuestions(ctx context.Context, organization tracker.OrganizationID, afterConversation, afterQuestion *string, limit int) error {
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	var rows []healthstore.QuestionSource
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(healthstore.SourceReader)
@@ -1335,7 +1335,7 @@ func (s *Service) maintainRetiredHealthSubjects(ctx context.Context, organizatio
 	if projectWait.finding.ID != "" {
 		return s.maintainHealthProjectWait(ctx, organization, projectWait, limit)
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	var rows []postgres.HealthRecord
 	err := s.database.postgres.ReadHealth(ctx, organization, corestore.Background, func(reader postgres.HealthReader) error {
 		var err error
@@ -1400,7 +1400,7 @@ func (s *Service) maintainRetiredHealthSubjects(ctx context.Context, organizatio
 }
 
 func (s *Service) maintainHealthProjectWait(ctx context.Context, organization tracker.OrganizationID, cursor *healthProjectWaitCursor, limit int) error {
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	var questions []healthstore.QuestionSource
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(healthstore.SourceReader)

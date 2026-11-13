@@ -21,7 +21,7 @@ func TestReleasePublicationPostgres(t *testing.T) {
 			f := newReleaseTenantFixture(t)
 			publisher := &releasePublisherFixture{releaseVerifierFixture: f.verifier}
 			f.f.service.config.ReconcileBackend = publisher
-			now := f.f.service.config.now()
+			now := f.f.service.config.Clock()
 			if name != "missing audit" {
 				seedReleaseTenantAudit(t, f)
 			}

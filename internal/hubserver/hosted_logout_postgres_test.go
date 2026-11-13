@@ -23,7 +23,7 @@ func TestPostgresLogoutRevokesExpiredSessions(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
 			provider := newHostedSecurityProvider()
-			service := &Service{database: &database{}, config: Config{AccessRepository: repository, TenantRepository: repository, now: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), PublicURL: "http://example.test", Provider: provider}}}
+			service := &Service{database: &database{}, config: Config{AccessRepository: repository, TenantRepository: repository, Clock: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), PublicURL: "http://example.test", Provider: provider}}}
 			hash := apikey.HashToken("expired-token")
 			err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: now}); err != nil {

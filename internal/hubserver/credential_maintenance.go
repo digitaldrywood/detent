@@ -65,7 +65,7 @@ func (s *Service) requireCredentialMaintenance(next echo.HandlerFunc) echo.Handl
 		if member {
 			return s.hostedJSONError(c, http.StatusForbidden, "Hosted member credentials cannot maintain instance credentials")
 		}
-		identity := &auth.HostedIdentity{Subject: credential.ID, CreatedAt: s.config.now()}
+		identity := &auth.HostedIdentity{Subject: credential.ID, CreatedAt: s.config.Clock()}
 		route := c.Request().Method + " " + c.Request().URL.Path
 		if err := s.hostedAudit(c.Request().Context(), identity, "credential_maintenance_attempt", route, "", 0); err != nil {
 			return s.nativeAPIError(c, err)
@@ -137,7 +137,7 @@ func (s *Service) authorizeCredentialMaintenanceWrite(ctx context.Context, w ten
 	if err := s.accessHostedBinding(tenant); err != nil {
 		return err
 	}
-	if _, err := w.AuthorizeAccess(ctx, authority, s.config.now()); err != nil {
+	if _, err := w.AuthorizeAccess(ctx, authority, s.config.Clock()); err != nil {
 		return err
 	}
 	credential, err := w.AccessCredential(ctx, authority.CredentialID)

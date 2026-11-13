@@ -64,7 +64,7 @@ func openWorkItemState(project projectstore.Record, archived bool, state string)
 }
 
 func (s *Service) applyWorkItemGrowth(ctx context.Context, w tenantstore.Writer, organization tracker.OrganizationID, receiptID string, growth workItemGrowth, completion bool) error {
-	now := s.config.now()
+	now := s.config.Clock()
 	plans := s.database.plansService().Plans()
 	var entitlement hostedplans.HostedEntitlement
 	if plans != nil {
@@ -158,7 +158,7 @@ func (s *Service) prepareRunEventGrowth(ctx context.Context, w tenantstore.Write
 	if plans == nil {
 		return runEventGrowth{}, nil
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 	if completion {
 		return runEventGrowth{enabled: true, completion: true, window: window}, nil

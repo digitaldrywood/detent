@@ -54,7 +54,7 @@ func requireRunnerUpdate(result sql.Result, err error) error {
 
 func (s *Service) runnerEnrollmentService() *runnerenroll.Service {
 	return runnerenroll.New(runnerenroll.Deps{
-		Repository: s.config.TenantRepository, Now: s.config.now, NewID: hubapi.NewID,
+		Repository: s.config.TenantRepository, Now: s.config.Clock, NewID: hubapi.NewID,
 		GenerateToken: s.config.deps.GenerateToken, TokenFingerprint: hubapi.TokenFingerprint, WorkerScope: string(hubapi.APIScopeWorker),
 		ApplyUsage: s.applyRunnerTenantUsage, CheckAdmission: s.checkRunnerAdmission,
 		ValidPlatform: validRunnerPlatform, ValidSpriteSlug: validSpritesSlug,

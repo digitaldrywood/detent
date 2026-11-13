@@ -165,7 +165,7 @@ func resolveLocalOrganization(ctx context.Context, repository *postgres.Reposito
 
 func bootstrapLocalOrganization(ctx context.Context, repository *postgres.Repository, cfg Config, token string) (tracker.OrganizationID, error) {
 	organization := tracker.OrganizationID(hubapi.NewID("org"))
-	now := cfg.now().UTC()
+	now := cfg.Clock().UTC()
 	hash := apikey.HashToken(token)
 	cursorKey := make([]byte, 32)
 	if _, err := rand.Read(cursorKey); err != nil {
@@ -217,7 +217,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 	if startup != nil {
 		startup.schema.Store(&MigrationHealth{SchemaVersion: database.schemaVersion, SchemaFingerprint: database.schemaFingerprint})
 	}
-	database.now = cfg.now
+	database.now = cfg.Clock
 	database.newLeaseID = cfg.deps.NewLeaseID
 	var localOrganization tracker.OrganizationID
 	if database.postgres != nil {
@@ -285,7 +285,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		secretRewrapReady:  make(chan struct{}),
 		secretRewrapDone:   make(chan struct{}),
 		boardRefresh:       make(chan struct{}, 1),
-		clientBuild:        conversationClientIdentity(cfg.staticFiles(), cfg.Version, cfg.now()),
+		clientBuild:        conversationClientIdentity(cfg.staticFiles(), cfg.Version, cfg.Clock()),
 		pullRequests:       newPullRequestCache(),
 	}
 	if database.postgres != nil && !cfg.CredentialMaintenance {
@@ -641,7 +641,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		s.tokenUseWork.Wait()
 		var metricsErr error
 		if s.requestMetrics != nil {
-			metricsErr = errors.Join(s.requestMetrics.Drain(ctx, s.config.now()), s.requestMetrics.Close())
+			metricsErr = errors.Join(s.requestMetrics.Drain(ctx, s.config.Clock()), s.requestMetrics.Close())
 		}
 		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, metricsErr, s.database.Close())
 	})
@@ -720,7 +720,7 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 	s.maintainPostgresChangeReviews(ctx)
 	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
 	defer ticker.Stop()
-	lastCleanup := s.config.now()
+	lastCleanup := s.config.Clock()
 	for {
 		select {
 		case <-ctx.Done():
@@ -732,15 +732,15 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 			refreshUnread()
 			s.maintainNativeSearch(ctx)
 			s.maintainPostgresChangeReviews(ctx)
-			now := s.config.now()
-			if err := s.expireGoTestReceipts(ctx, now, s.config.now); err != nil && !errors.Is(err, context.Canceled) {
+			now := s.config.Clock()
+			if err := s.expireGoTestReceipts(ctx, now, s.config.Clock); err != nil && !errors.Is(err, context.Canceled) {
 				s.config.Logger.Warn("expire PostgreSQL Go test receipts", "error", err)
 			}
 			if err := s.expireRequestMetrics(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
 				s.config.Logger.Warn("expire PostgreSQL request metrics", "error", err)
 			}
 			if s.requestMetrics != nil {
-				if err := s.requestMetrics.Flush(ctx, s.config.now()); err != nil && !errors.Is(err, context.Canceled) {
+				if err := s.requestMetrics.Flush(ctx, s.config.Clock()); err != nil && !errors.Is(err, context.Canceled) {
 					s.config.Logger.WarnContext(ctx, "flush tenant request metrics", "error", err)
 				}
 			}

@@ -15,7 +15,7 @@ import (
 )
 
 func (s *Service) activityHTTP() *activity.HTTPService {
-	return activity.NewHTTP(activity.HTTPDeps{Service: s.activityService, Unavailable: errHubOperatorUnavailable, Now: s.config.now, Available: func() bool { return s.database != nil && s.config.Hosted != nil }, ReadError: hubapi.SafeWorkReadError, Result: hubOperatorResult, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) }, Refuse: func(c echo.Context, status int, code, reason string, response any) error {
+	return activity.NewHTTP(activity.HTTPDeps{Service: s.activityService, Unavailable: errHubOperatorUnavailable, Now: s.config.Clock, Available: func() bool { return s.database != nil && s.config.Hosted != nil }, ReadError: hubapi.SafeWorkReadError, Result: hubOperatorResult, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) }, Refuse: func(c echo.Context, status int, code, reason string, response any) error {
 		return s.refusedAPIError(c, status, code, reason, response)
 	}, Caller: func(ctx context.Context) (activity.Caller, error) {
 		credential, err := currentHubOperator(ctx)
@@ -31,7 +31,7 @@ func (s *Service) executeActivityRead(ctx context.Context, call operatortool.Cal
 }
 func (s *Service) hostedActivity(c echo.Context) error { return s.activityHTTP().Serve(c) }
 func (s *Service) activityService() *activity.Service {
-	return activity.New(activity.Deps{Repository: s.config.TenantRepository, Details: s.runDetailStore, Now: s.config.now, Organization: s.appOrganizationID, MissingParticipants: hubapi.ErrProjectParticipants, Unavailable: errHubOperatorUnavailable})
+	return activity.New(activity.Deps{Repository: s.config.TenantRepository, Details: s.runDetailStore, Now: s.config.Clock, Organization: s.appOrganizationID, MissingParticipants: hubapi.ErrProjectParticipants, Unavailable: errHubOperatorUnavailable})
 }
 func (s *Service) readActivityReport(ctx context.Context, credential hubapi.APICredential, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow) (operatortool.ActivityReport, error) {
 	out, err := s.activityService().Read(ctx, s.activityCaller(credential), r, w)

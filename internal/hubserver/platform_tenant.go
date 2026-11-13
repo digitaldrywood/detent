@@ -55,7 +55,7 @@ func (s *Service) platformTenantUsage(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, usage)
 	}
-	entitlement, err := hubapi.FeatureResult(s.database.plansService().PlanUsage(c.Request().Context(), s.config.now()))
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().PlanUsage(c.Request().Context(), s.config.Clock()))
 	if err != nil {
 		return s.internalAPIError(c, "usage_unavailable", "Usage is unavailable", err)
 	}
@@ -107,7 +107,7 @@ func (s *Service) platformTenantRunners(c echo.Context) error {
 			return s.internalAPIError(c, "runners_unavailable", "Runners are unavailable", err)
 		}
 		for _, row := range rows {
-			runners = append(runners, runner{ID: row.RunnerID, Name: row.DisplayName, Health: row.Status(s.config.now())})
+			runners = append(runners, runner{ID: row.RunnerID, Name: row.DisplayName, Health: row.Status(s.config.Clock())})
 		}
 		if len(rows) < 200 {
 			break

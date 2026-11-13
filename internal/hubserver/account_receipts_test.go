@@ -21,7 +21,7 @@ func TestPostgresAccountReceiptsPreserveReplayAndUncertainty(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), PublicURL: "http://example.test"}}}
+		service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, RunDetails: &memoryRunDetails{}, Clock: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), PublicURL: "http://example.test"}}}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: time.Now()})
 		}); err != nil {

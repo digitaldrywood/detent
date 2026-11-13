@@ -39,7 +39,7 @@ func testDashboardChangeLog(t *testing.T) {
 	repository := f.service.config.TenantRepository
 	snapshot := repository.(tenantstore.SnapshotRepository)
 	ctx := t.Context()
-	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 	scopes := []hubscope.NativeScope{nativeBoardFixtureScope(t, f), nativeBoardFixtureScope(t, other)}
 	head := func(scope hubscope.NativeScope) viewstore.BoardSequence {
 		t.Helper()
@@ -355,7 +355,7 @@ func testDashboardChangeLog(t *testing.T) {
 		organization := first.project.OrganizationID
 		projects := []tracker.ProjectID{first.project.ID, second.project.ID}
 		repository := service.database.postgres
-		now := service.config.now().UTC().Truncate(time.Microsecond)
+		now := service.config.Clock().UTC().Truncate(time.Microsecond)
 		head := func(project tracker.ProjectID) int64 {
 			t.Helper()
 			var sequence int64

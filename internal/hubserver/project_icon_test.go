@@ -390,7 +390,7 @@ func TestHostedProjectIcon(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					member.Role, member.UpdatedAt = "member", f.service.config.now().UTC()
+					member.Role, member.UpdatedAt = "member", f.service.config.Clock().UTC()
 					return w.UpdateAccessMember(t.Context(), member)
 				}); err != nil {
 					t.Fatal(err)

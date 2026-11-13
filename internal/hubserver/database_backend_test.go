@@ -496,7 +496,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 		if service.database.postgres == nil || service.config.TenantRepository == nil {
 			t.Fatal("required PostgreSQL fixture owners are not configured")
 		}
-		now := service.config.now().UTC()
+		now := service.config.Clock().UTC()
 		envelope, err := cfg.SecretKeys.Seal([]byte(strings.Repeat("k", 32)), accessstore.SecretAAD("org_startup", "", accessstore.NativeCursorKeyKind))
 		if err != nil {
 			t.Fatal(err)
@@ -560,7 +560,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			now := service.config.now().UTC()
+			now := service.config.Clock().UTC()
 			claims := cloudassert.Claims{Issuer: "entry", Audience: "org_startup", Generation: 1, Kind: cloudassert.KindBrowser, Method: http.MethodGet, Path: path, BodyDigest: cloudassert.BodyDigest(nil), IssuedAt: now, ExpiresAt: now.Add(cloudassert.MaxLifetime), ID: id, Subject: "user_owner", Email: "owner@example.test", ProviderOrganization: "provider_org_startup", ProviderSession: "session_owner", SessionCreatedAt: now, SessionExpiresAt: now.Add(time.Hour), Role: "owner", AccessExpiresAt: now.Add(time.Hour), Binding: strings.Repeat("b", 64), CSRF: strings.Repeat("c", 64)}
 			assertion, err := cloudassert.Sign(key, claims)
 			if err != nil {
@@ -608,7 +608,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 			for _, role := range []string{"owner", "reporter"} {
 				request, claims := browserRequest("/organizations/org_startup/projects/project_first/events")
 				claims.Role = role
-				session, err := service.accessWebSession(t.Context(), claims.Binding, service.config.now())
+				session, err := service.accessWebSession(t.Context(), claims.Binding, service.config.Clock())
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -156,7 +156,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 									if err := w.(accessstore.ProjectAccessCleaner).DeleteAccessProjectGrants(t.Context(), f.project); err != nil {
 										return err
 									}
-									return w.RetireProject(t.Context(), f.project, row.Settings.Revision, f.service.config.now())
+									return w.RetireProject(t.Context(), f.project, row.Settings.Revision, f.service.config.Clock())
 								})
 							}
 							if scenario == "machine" || scenario == "worker" {
@@ -240,7 +240,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 							switch scenario {
 							case "key revoked":
 								writeAccess(func(w tenantstore.Writer) error {
-									return w.RevokeAccessCredential(t.Context(), key.ID, f.service.config.now())
+									return w.RevokeAccessCredential(t.Context(), key.ID, f.service.config.Clock())
 								})
 								readDenied = true
 							case "key expired":
@@ -249,7 +249,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 									if err != nil {
 										return err
 									}
-									return w.RenewAccessCredential(t.Context(), row.ID, row.Hash, row.Fingerprint, f.service.config.now().Add(-time.Minute), f.service.config.now())
+									return w.RenewAccessCredential(t.Context(), row.ID, row.Hash, row.Fingerprint, f.service.config.Clock().Add(-time.Minute), f.service.config.Clock())
 								})
 								readDenied = true
 							case "key grant removed":
@@ -267,7 +267,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								readDenied = true
 							case "local membership removed":
 								writeAccess(func(w tenantstore.Writer) error {
-									return w.RevokeAccessMember(t.Context(), user.identity.Subject, f.service.config.now())
+									return w.RevokeAccessMember(t.Context(), user.identity.Subject, f.service.config.Clock())
 								})
 								readDenied = true
 							case "membership replaced":
@@ -277,7 +277,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 										return err
 									}
 									member.MembershipID = "replacement"
-									member.UpdatedAt = f.service.config.now()
+									member.UpdatedAt = f.service.config.Clock()
 									return w.UpdateAccessMember(t.Context(), member)
 								})
 								readDenied = true
@@ -295,7 +295,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 										return err
 									}
 									member.Role = "viewer"
-									member.UpdatedAt = f.service.config.now()
+									member.UpdatedAt = f.service.config.Clock()
 									return w.UpdateAccessMember(t.Context(), member)
 								})
 								writeDenied = true
@@ -322,7 +322,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 									t.Fatal(err)
 								}
 								if err := f.service.config.TenantRepository.ReadTenant(t.Context(), foreign.ID, corestore.Serving, func(r tenantstore.Reader) error {
-									_, err := r.AuthorizeAccess(t.Context(), accessstore.Authority{CredentialID: key.ID, Hash: apikey.HashToken(key.Token), ProjectID: f.project}, f.service.config.now())
+									_, err := r.AuthorizeAccess(t.Context(), accessstore.Authority{CredentialID: key.ID, Hash: apikey.HashToken(key.Token), ProjectID: f.project}, f.service.config.Clock())
 									return err
 								}); !errors.Is(err, accessstore.ErrDenied) {
 									t.Fatalf("foreign tenant credential authority=%v", err)
@@ -367,7 +367,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								readDenied = true
 							case "issuer principal revoked":
 								writeAccess(func(w tenantstore.Writer) error {
-									return w.RevokeAccessCredential(t.Context(), credential.ID, f.service.config.now())
+									return w.RevokeAccessCredential(t.Context(), credential.ID, f.service.config.Clock())
 								})
 								readDenied = true
 							}

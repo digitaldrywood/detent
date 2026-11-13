@@ -36,7 +36,7 @@ func (s *Service) replayReleaseAssociation(ctx context.Context, scope hubscope.N
 	if err != nil {
 		return nil, err
 	}
-	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, raw)
+	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.Clock()}, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +47,7 @@ func (s *Service) replayReleaseAssociation(ctx context.Context, scope hubscope.N
 		if err := s.authorizeReleaseScope(ctx, w, scope); err != nil {
 			return err
 		}
-		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
 			return err
 		}
 		if _, err := w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item)); err != nil {
@@ -108,7 +108,7 @@ func (s *Service) releaseAssociationReceipt(ctx context.Context, scope hubscope.
 	if receipt.RequestHash != hash {
 		return nil, false, hubapi.NativeConflict(0)
 	}
-	if receipt.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= receipt.ResponseReplayUntilNs {
+	if receipt.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= receipt.ResponseReplayUntilNs {
 		return nil, false, receiptstore.ErrExpired
 	}
 	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
@@ -129,7 +129,7 @@ func (s *Service) recordReleaseAssociationAudit(ctx context.Context, w tenantsto
 	audit := projectRecordActor(scope).Audit
 	audit.Event, audit.Route, audit.Status = "action", operation, 200
 	audit.ProjectID = scope.Project
-	audit.RecordedAt = s.config.now().UTC()
+	audit.RecordedAt = s.config.Clock().UTC()
 	audit.RecordedAtNS = audit.RecordedAt.UnixNano()
 	_, err := w.RecordAccessAudit(ctx, audit)
 	return err

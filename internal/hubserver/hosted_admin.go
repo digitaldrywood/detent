@@ -325,7 +325,7 @@ func (s *Service) revokeHostedMember(c echo.Context) error {
 
 func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (resultErr error) {
 
-	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessMember(ctx, user, s.config.now()) })
+	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessMember(ctx, user, s.config.Clock()) })
 }
 
 func (s *Service) changeHostedRole(c echo.Context) error {

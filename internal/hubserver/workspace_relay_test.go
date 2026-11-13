@@ -140,7 +140,7 @@ func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture
 				Enabled: fixture.terminal && !fixture.terminalDisabled,
 				Record:  &recording,
 			}},
-		now: func() time.Time {
+		Clock: func() time.Time {
 			fixture.mu.Lock()
 			defer fixture.mu.Unlock()
 			return fixture.clock
@@ -2542,7 +2542,7 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 		hosted.OrganizationID = "org_first_second"
 		hosted.WorkOSOrganizationID = "provider_org_first_second"
 		hosted.BootstrapSubject = "user_org_first_second"
-		second := openPostgresHubTestService(t, repository, Config{Hosted: &hosted, SecretKeys: fixture.server.config.SecretKeys, RunDetails: fixture.server.config.RunDetails, now: fixture.server.config.now})
+		second := openPostgresHubTestService(t, repository, Config{Hosted: &hosted, SecretKeys: fixture.server.config.SecretKeys, RunDetails: fixture.server.config.RunDetails, Clock: fixture.server.config.Clock})
 		secondService := newWorkspaceService(second, WorkspaceConfig{Enabled: true})
 		t.Cleanup(func() { secondService.relay.stop(t.Context()) })
 		services := []*workspaceService{fixture.service, secondService}
@@ -2683,7 +2683,7 @@ func newPostgresRelayRuntimeFixture(t *testing.T, hosted bool) postgresRelayRunt
 	base := time.Now().UTC().Truncate(time.Microsecond)
 	clock := new(atomic.Int64)
 	clock.Store(base.UnixNano())
-	cfg := Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }}
+	cfg := Config{RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() }}
 	if hosted {
 		cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_first", WorkOSOrganizationID: "provider_org_first", BootstrapSubject: "user_org_first", PublicURL: "http://127.0.0.1:7777", Provider: newHostedSecurityProvider()}
 	}

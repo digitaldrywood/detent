@@ -114,7 +114,7 @@ func TestOperatorAuthorizationPostgresCancellation(t *testing.T) {
 			t.Run(string(org)+"/"+mode, func(t *testing.T) {
 				transport, mode, _ := strings.Cut(mode, "/")
 				var logs bytes.Buffer
-				s := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), now: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), SharedEntry: &hostedplans.HostedSharedEntry{Issuer: "entry", Generation: 1}, PublicURL: "https://example.test"}}}
+				s := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: slog.New(slog.NewJSONHandler(&logs, nil)), Clock: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), SharedEntry: &hostedplans.HostedSharedEntry{Issuer: "entry", Generation: 1}, PublicURL: "https://example.test"}}}
 				ctx := t.Context()
 				if mode == "cancelled" {
 					var cancel context.CancelFunc

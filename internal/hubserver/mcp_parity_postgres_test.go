@@ -131,7 +131,7 @@ func TestPostgresMCPProjectParity(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-				now := f.service.config.now()
+				now := f.service.config.Clock()
 				return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Kind: flySpritesToken, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Kind: flySpritesToken, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
 			}); err != nil {
 				t.Fatal(err)
@@ -303,7 +303,7 @@ func TestPostgresMCPHostedParity(t *testing.T) {
 							t.Fatal(err)
 						}
 						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
-							return w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: f.service.accessOrganization(), ID: invitation.ID, Email: invitation.Email, Role: "owner", CreatedAt: f.service.config.now(), ExpiresAt: invitation.ExpiresAt})
+							return w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: f.service.accessOrganization(), ID: invitation.ID, Email: invitation.Email, Role: "owner", CreatedAt: f.service.config.Clock(), ExpiresAt: invitation.ExpiresAt})
 						}); err != nil {
 							t.Fatal(err)
 						}
@@ -351,7 +351,7 @@ func parityHostedPeer(t *testing.T, first hostedSecurityFixture, organization tr
 	provider := newHostedSecurityProvider()
 	hosted.Provider = coordinatorBudgetProvider{hostedSecurityProvider: provider, organization: hosted.OrganizationID}
 	cfg.InitialAdminToken = []byte("example-second-budget-admin")
-	now := cfg.now()
+	now := cfg.Clock()
 	key := sha256.Sum256([]byte(hosted.OrganizationID))
 	envelope, err := cfg.SecretKeys.Seal(key[:], accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
 	if err != nil {
@@ -446,7 +446,7 @@ func TestPostgresMCPAccountParity(t *testing.T) {
 					if staff {
 						email = "support@example.test"
 					}
-					now := f.service.config.now()
+					now := f.service.config.Clock()
 					identity := auth.Identity{Subject: subject, Email: email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: subject, OrganizationID: f.service.config.Hosted.WorkOSOrganizationID, SessionID: "parity-account", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}}
 					f.provider.sessions[identity.Hosted.SessionID] = *identity.Hosted
 					token, _, err := f.service.hostedSessions.CreateIdentitySession(t.Context(), identity)

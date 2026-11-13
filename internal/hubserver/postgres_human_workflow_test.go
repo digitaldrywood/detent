@@ -169,7 +169,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 		if err != nil {
 			t.Fatal(err)
 		}
-		approved.ProjectID, approved.ApprovedBy, approved.ApprovedAt = project.ID, "credential_owner", service.config.now()
+		approved.ProjectID, approved.ApprovedBy, approved.ApprovedAt = project.ID, "credential_owner", service.config.Clock()
 		if err := repository.WriteTenant(t.Context(), project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.ApproveProjectPolicy(t.Context(), approved, previous.PolicyID)
 		}); err != nil {
@@ -219,7 +219,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 			return err
 		}
 		fence := leasestore.Fence{LeaseID: oldLease.LeaseID, FencingToken: oldLease.FencingToken}
-		oldAttempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "human-completed-attempt", RunID: "human-completed-run", Fence: fence, Sequence: 1, Status: "running", StartedAt: service.config.now(), PayloadObjectKey: "example/attempt"})
+		oldAttempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "human-completed-attempt", RunID: "human-completed-run", Fence: fence, Sequence: 1, Status: "running", StartedAt: service.config.Clock(), PayloadObjectKey: "example/attempt"})
 		if err != nil {
 			return err
 		}
@@ -344,7 +344,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 			}()
 			args := []any{project.OrganizationID, credential.ID}
 			if mutation.name != "removed target operation" {
-				args = append(args, service.config.now().Add(-time.Second))
+				args = append(args, service.config.Clock().Add(-time.Second))
 			}
 			if _, err := admin.ExecContext(t.Context(), mutation.query, args...); err != nil {
 				t.Fatal(err)
@@ -517,7 +517,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, workflow(changed), owner, supplied), http.StatusConflict)
 	}
 	const revokedToken = "example_revoked_human_token"
-	now := service.config.now()
+	now := service.config.Clock()
 	if err := repository.WriteTenant(t.Context(), project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: project.OrganizationID, ID: "credential_human_revoked", Name: "Example human", Hash: apikey.HashToken(revokedToken), Scope: "operator", NativeOnly: true, CreatedAt: now, UpdatedAt: now, UserID: "user_owner", MembershipID: "membership_user_owner", KeyScope: "admin", ProjectAccess: "all", Kind: "personal"})
 	}); err != nil {
@@ -527,7 +527,7 @@ func verifyPostgresHumanWorkflow(t *testing.T, service *Service, admin *sql.DB, 
 		t.Fatalf("authenticate before revocation: %d %v", status, err)
 	}
 	if err := repository.WriteTenant(t.Context(), project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.RevokeAccessCredential(t.Context(), "credential_human_revoked", service.config.now())
+		return w.RevokeAccessCredential(t.Context(), "credential_human_revoked", service.config.Clock())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +592,7 @@ func verifyPostgresHumanTenantIsolation(t *testing.T, first *Service, project tr
 	if _, err := cfg.Hosted.Provider.CreateMembership(t.Context(), "user_human_other", "provider_org_human_other", "owner"); err != nil {
 		t.Fatal(err)
 	}
-	now := cfg.now()
+	now := cfg.Clock()
 	descriptor := configuredHumanWorkflowPolicy(hubTestPolicy(), humanWorkflowFixtureStates())
 	approved, err := eventstore.NewContent(first.runDetailStore()).PrepareProjectPolicy(t.Context(), organization, descriptor)
 	if err != nil {
@@ -649,7 +649,7 @@ func verifyPostgresHumanTenantIsolation(t *testing.T, first *Service, project tr
 
 func verifyPostgresHumanReceiptExpiry(t *testing.T, service *Service, organization tracker.OrganizationID, base, token string, clock *atomic.Int64) {
 	t.Helper()
-	start := service.config.now().UTC().Truncate(time.Microsecond)
+	start := service.config.Clock().UTC().Truncate(time.Microsecond)
 	clock.Store(start.UnixNano())
 	defer clock.Store(0)
 	cfg := service.config

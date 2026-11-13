@@ -31,7 +31,7 @@ type (
 func (s *Service) runnerUpdateService() *runnerupdate.Service {
 	return runnerupdate.New(runnerupdate.Deps{
 		Repository:      s.config.TenantRepository,
-		Now:             s.config.now,
+		Now:             s.config.Clock,
 		Version:         s.config.Version,
 		ReleaseClient:   s.config.RunnerReleaseClient,
 		VerifySignature: s.config.deps.VerifyReleaseSignature,

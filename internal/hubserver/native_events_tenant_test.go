@@ -132,7 +132,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := service.config.now().UTC()
+	now := service.config.Clock().UTC()
 	seedPostgresHubAdmin(t, repository, service, organization)
 	projectPath := "/api/v2/organizations/" + string(organization.ID) + "/projects"
 	projectResponse := performHubAPIRequest(t, service, http.MethodPost, projectPath, testHubAdminToken, map[string]any{
@@ -350,7 +350,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	observation.IdempotencyKey = "second-observation"
 	observation.Type = "run.observed"
 	observation.Data.Sequence = 2
-	observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.now().UTC()}
+	observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.Clock().UTC()}
 	if _, err := service.appendNativeRunEventTenant(t.Context(), scope, string(secondIssue.WorkItemID), observation); err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	laterObservation := observation
 	laterObservation.IdempotencyKey = "later-observation"
 	laterObservation.Data.Sequence = 3
-	laterObservation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", HeartbeatAt: service.config.now().UTC().Add(time.Second)}
+	laterObservation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", HeartbeatAt: service.config.Clock().UTC().Add(time.Second)}
 	laterObservation.Type = "run.checkpointed"
 	pendingCheckpoint := *nativeTestCheckpoint()
 	pendingCheckpoint.ExternalEffect, pendingCheckpoint.EffectState, pendingCheckpoint.EffectID = "git_push", "pending", hubapi.NewID("effect")
@@ -643,7 +643,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	}
 	service.conversations = newConversationService(service, ConversationConfig{}.Normalized())
 	conversationID := conversation.NewConversationID()
-	conversationNow := service.config.now().UTC()
+	conversationNow := service.config.Clock().UTC()
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.CreateConversation(t.Context(), conversationstore.Conversation{
 			OrganizationID: organization.ID, ID: conversationID, ProjectID: project.ID,
@@ -718,14 +718,14 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		t.Fatal(err)
 	}
 	var cancelRelease *httptest.ResponseRecorder
-	originalNow := service.config.now
-	service.config.now = func() time.Time { return thirdLease.RenewedAt.Add(-time.Second) }
+	originalNow := service.config.Clock
+	service.config.Clock = func() time.Time { return thirdLease.RenewedAt.Add(-time.Second) }
 	err = withSuppressedSpriteWake(t, service, organization.ID, func() error {
 		var err error
 		cancelRelease, err = callCancelRelease()
 		return err
 	})
-	service.config.now = originalNow
+	service.config.Clock = originalNow
 	if err != nil || cancelRelease.Code != http.StatusNoContent {
 		t.Fatalf("cancellation release status=%d error=%v body=%s", cancelRelease.Code, err, cancelRelease.Body.String())
 	}
@@ -876,7 +876,7 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 			var project tracker.NativeProject
 			decodeHubResponse(t, response, &project)
 			base := projectPath + "/" + string(project.ID)
-			now := service.config.now().UTC().Truncate(time.Microsecond)
+			now := service.config.Clock().UTC().Truncate(time.Microsecond)
 			expires := now.Add(time.Hour)
 			policy, err := eventstore.NewContent(service.runDetailStore()).PrepareProjectPolicy(t.Context(), organization.ID, hubTestPolicy())
 			if err != nil {
@@ -1012,7 +1012,7 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", token, checkpoint), http.StatusOK)
 						observation := start
 						observation.IdempotencyKey, observation.Type, observation.Data.Sequence = "after-checkpoint", "run.observed", 3
-						observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.now().UTC()}
+						observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.Clock().UTC()}
 						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/events", token, observation), http.StatusOK)
 					}
 					response = performHubAPIRequest(t, service, http.MethodPost, base+"/leases/"+string(lease.ID)+"/release", token, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"})

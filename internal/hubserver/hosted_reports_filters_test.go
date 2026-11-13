@@ -35,7 +35,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 		t.Fatalf("owner credential status=%d error=%v", status, err)
 	}
 	scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project), Credential: credential}
-	to := f.service.config.now().UTC().Truncate(time.Hour)
+	to := f.service.config.Clock().UTC().Truncate(time.Hour)
 	priority := func(value int) *int { return &value }
 	seeds := []struct {
 		name, state, kind, filer string

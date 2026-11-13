@@ -46,7 +46,7 @@ func TestHostedAnalyticsReads(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.now = func() time.Time { return now }
+		cfg.Clock = func() time.Time { return now }
 		cfg.RunDetails = &memoryRunDetails{}
 	})
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "In Progress", Dispatchable: true}, {Name: "Done", Terminal: true}}
@@ -476,7 +476,7 @@ func TestHostedAnalyticsReads(t *testing.T) {
 		f.create(t, "first")
 		f.create(t, "second")
 		scope := analyticsTestScope(t, f)
-		now := f.service.config.now().UTC()
+		now := f.service.config.Clock().UTC()
 		window := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}
 		owner := f.service.config.TenantRepository.(tenantstore.SnapshotRepository)
 		if err := owner.ReadTenantSnapshot(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -514,7 +514,7 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 		return operatortool.Authority{Identity: identity, Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil
 	}})
 	ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (hubapi.APICredential, error) { return hubapi.APICredential{}, nil })
-	for _, cfg := range []Config{{now: time.Now}, {now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_test"}}} {
+	for _, cfg := range []Config{{Clock: time.Now}, {Clock: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_test"}}} {
 		service := &Service{config: cfg}
 		for _, name := range []string{operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports} {
 			_, err := service.executeAnalyticsRead(ctx, operatortool.Call{Name: name, Arguments: []byte(`{}`)})
@@ -577,7 +577,7 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 		lease := claimNativeAttempt(t, f, worker, "analytics-typed-machine", "analytics-typed-session", issue.WorkItemID)
 		event := nativeStartedEvent(lease)
 		event.Data.Identity.Role = "merge"
-		base := f.service.config.now().UTC().Truncate(time.Microsecond)
+		base := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 		event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: base, Phases: []tracker.NativePhase{{Name: "planning", StartedAt: base.Add(-time.Minute), FinishedAt: base}}, Identity: agentidentity.RuntimeUpdate("merge-model", "openai", "high", "", base), Pipeline: []gate.PipelineTiming{gate.Interval("rebase", base.Add(-time.Minute), base, "clean")}}
 		event.Data.Runtime.Identity.Role = "merge"
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusOK)
@@ -892,7 +892,7 @@ func TestNativeAnalyticsCostPerOutcome(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 10, 6, 14, 0, 0, 0, time.UTC)
-			f := newHostedSecurityFixture(t, func(cfg *Config) { cfg.now = func() time.Time { return now }; cfg.RunDetails = &memoryRunDetails{} })
+			f := newHostedSecurityFixture(t, func(cfg *Config) { cfg.Clock = func() time.Time { return now }; cfg.RunDetails = &memoryRunDetails{} })
 			user := f.user(t, "analytics", "member", "analytics@example.test", "read", "")
 			issue := f.seedIssue(t, 1)
 			w := operatortool.AnalyticsWindow{From: now.Add(-2 * time.Hour), To: now, Bucket: time.Hour}
@@ -990,7 +990,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 6, 3, 7, 0, 0, time.UTC)
 	clock := now.Add(-15 * time.Minute)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return clock }, RunDetails: &memoryRunDetails{}})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return clock }, RunDetails: &memoryRunDetails{}})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "recorded phase")
 	worker := f.worker(t, "analytics")

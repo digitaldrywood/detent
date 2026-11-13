@@ -72,7 +72,7 @@ func newPostgresStorageArchiveFixture(t *testing.T) *postgresStorageArchiveFixtu
 		}
 		return bytes.Clone(data), nil
 	}
-	service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return time.Unix(0, f.clock.Load()).UTC() }, Content: content})
+	service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return time.Unix(0, f.clock.Load()).UTC() }, Content: content})
 	f.nativeFixture = newNativeFixture(t, service, "org_first", "archive example")
 	credential, status, err := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
@@ -474,7 +474,7 @@ func TestNativeStorageArchiveCommentRevisions(t *testing.T) {
 	at := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	var clock atomic.Int64
 	clock.Store(at.Add(-73 * time.Hour).UnixNano())
-	service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
+	service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
 	f := newNativeFixture(t, service, "", "comment history")
 	issue := f.create(t, "comment history")
 	path := f.base + "/work-items/" + string(issue.WorkItemID) + "/comments"
@@ -1057,7 +1057,7 @@ func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 	}
 	a.service.tokenUseWork.Wait()
 	checking.Store(true)
-	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
+	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.Clock()); err != nil {
 		t.Fatal(err)
 	}
 	observer.reads.Store(0)

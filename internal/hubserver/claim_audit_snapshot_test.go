@@ -76,7 +76,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 	})
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{}
-	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, SecretKeys: secretTestKeys(t, "1", "1"), now: func() time.Time { return now }}}
+	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, SecretKeys: secretTestKeys(t, "1", "1"), Clock: func() time.Time { return now }}}
 	content := eventstore.NewContent(details)
 	var baselineExchanges, baselineStatements int64
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

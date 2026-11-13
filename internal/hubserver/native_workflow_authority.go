@@ -27,7 +27,7 @@ func (s *Service) authorizeNativeWorkflowScope(ctx context.Context, reader acces
 	if scope.Credential.Hosted == nil {
 		return nil
 	}
-	member, err := reader.AuthorizeAccess(ctx, s.accessAuthority(scope, true), s.config.now())
+	member, err := reader.AuthorizeAccess(ctx, s.accessAuthority(scope, true), s.config.Clock())
 	if err != nil {
 		return err
 	}
@@ -70,7 +70,7 @@ func canonicalWorkflowStates(states []tracker.NativeState) []tracker.NativeState
 
 func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, lease leasestore.Lease, request tracker.Transition, prepared *preparedNativeLeaseCancellation, stopState string) error {
 	fence := leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
-	if prepared.expiresLease(lease) || !lease.ExpiresAt.After(s.config.now().UTC()) {
+	if prepared.expiresLease(lease) || !lease.ExpiresAt.After(s.config.Clock().UTC()) {
 		_, err := w.ExpireWithCancellation(ctx, fence, prepared.attemptCancellation())
 		if errors.Is(err, tracker.ErrStaleFencingToken) {
 			return tracker.ErrLeaseConflict

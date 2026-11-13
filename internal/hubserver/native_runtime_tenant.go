@@ -243,7 +243,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.Na
 	}
 	issue.ChangeSequence = snapshot.boardSequence
 	issue = issue.RuntimeReference()
-	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot.attempt, s.config.now().UTC())
+	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot.attempt, s.config.Clock().UTC())
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, err
 	}
@@ -267,7 +267,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.Na
 			return tracker.NativeRuntimeEvidence{}, err
 		}
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	attempt.Current = snapshot.attempt.Lease.ReleasedAt == nil && !now.Before(snapshot.attempt.Lease.RenewedAt) && now.Before(snapshot.attempt.Lease.ExpiresAt)
 	if attempt.Runtime != nil {
 		attempt.RuntimeFreshness = "available"

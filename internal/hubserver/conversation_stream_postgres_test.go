@@ -44,7 +44,7 @@ func TestConversationPostgresStreamReauthorizesAgainstTenantProject(t *testing.T
 			organization := nativeOrganization{ID: orgID, Name: string(orgID), Slug: string(orgID)}
 			seedPostgresHubAdmin(t, repository, service, organization)
 			projectID := tracker.ProjectID("project_stream")
-			now := service.config.now().UTC().Truncate(time.Microsecond)
+			now := service.config.Clock().UTC().Truncate(time.Microsecond)
 			conversationID := conversation.NewConversationID()
 			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(writer tenantstore.Writer) error {
 				if _, err := writer.CreateProjectRecord(t.Context(), projectstore.Record{
@@ -99,7 +99,7 @@ func TestConversationPostgresStreamReauthorizesAgainstTenantProject(t *testing.T
 				_, err := writer.AppendConversationEvent(t.Context(), conversationstore.Event{
 					OrganizationID: organization.ID,
 					ConversationID: conversationID,
-					Event:          conversation.Event{Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{"status":"active"}`), CreatedAt: service.config.now().UTC().Truncate(time.Microsecond)},
+					Event:          conversation.Event{Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{"status":"active"}`), CreatedAt: service.config.Clock().UTC().Truncate(time.Microsecond)},
 				})
 				return err
 			}); err != nil {
@@ -114,7 +114,7 @@ func TestConversationPostgresStreamReauthorizesAgainstTenantProject(t *testing.T
 				t.Fatalf("first event frame = %#v, want conversation.updated seq 1", frame)
 			}
 			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(writer tenantstore.Writer) error {
-				return writer.RevokeAccessCredential(t.Context(), "test_hub_admin", service.config.now().UTC().Truncate(time.Microsecond))
+				return writer.RevokeAccessCredential(t.Context(), "test_hub_admin", service.config.Clock().UTC().Truncate(time.Microsecond))
 			}); err != nil {
 				t.Fatalf("revoke stream credential: %v", err)
 			}
@@ -190,7 +190,7 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 			for _, organization := range organizations {
 				f := newConversationTenantFixture(t, repository, now)
 				s := f.service
-				s.config.now = func() time.Time { return now.Add(time.Duration(elapsed.Load())) }
+				s.config.Clock = func() time.Time { return now.Add(time.Duration(elapsed.Load())) }
 				resolved := new(atomic.Int64)
 				resolutions = append(resolutions, resolved)
 				s.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(organization), SharedEntry: &hostedplans.HostedSharedEntry{Issuer: "entry", Generation: 1}}

@@ -43,7 +43,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	asOf := now
-	service := &Service{database: &database{}, notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: slog.Default(), now: func() time.Time { return now }, Version: "0.177.4"}}
+	service := &Service{database: &database{}, notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: slog.Default(), Clock: func() time.Time { return now }, Version: "0.177.4"}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
@@ -1141,7 +1141,7 @@ func TestPostgresRunnerHostChangeWithoutLegacyDatabase(t *testing.T) {
 	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC()
-	service := &Service{database: &database{}, notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), config: Config{TenantRepository: repository, AccessRepository: repository, now: func() time.Time { return now }}}
+	service := &Service{database: &database{}, notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), config: Config{TenantRepository: repository, AccessRepository: repository, Clock: func() time.Time { return now }}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {

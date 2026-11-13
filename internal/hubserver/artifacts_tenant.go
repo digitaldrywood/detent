@@ -81,14 +81,14 @@ func (s *Service) readArtifactGrantTenant(ctx context.Context, scope hubscope.Na
 		if err != nil {
 			return err
 		}
-		if grant.ServiceID != service || grant.ArtifactID != request.ArtifactID || grant.Revision != request.Revision || !s.config.now().Before(grant.ExpiresAt) {
+		if grant.ServiceID != service || grant.ArtifactID != request.ArtifactID || grant.Revision != request.Revision || !s.config.Clock().Before(grant.ExpiresAt) {
 			return corestore.ErrNotFound
 		}
 		credential, err := r.AccessCredential(ctx, grant.PrincipalID)
 		if err != nil {
 			return err
 		}
-		if !credential.Valid(credential.Hash, s.config.now()) {
+		if !credential.Valid(credential.Hash, s.config.Clock()) {
 			return corestore.ErrNotFound
 		}
 		if _, err := r.AccessTokenGrant(ctx, grant.PrincipalID, scope.Project); err != nil {
@@ -130,7 +130,7 @@ func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope hubsc
 		if item.Archived {
 			return hubapi.NativeNotFound()
 		}
-		if err := s.authorizeDependencyReasonLease(ctx, w, scope, item, command, pinned, requirements, s.config.now().UTC()); err != nil {
+		if err := s.authorizeDependencyReasonLease(ctx, w, scope, item, command, pinned, requirements, s.config.Clock().UTC()); err != nil {
 			return err
 		}
 		attempt, err := w.Attempt(ctx, reservation.AttemptID)
@@ -140,7 +140,7 @@ func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope hubsc
 		if attempt.IssueID != item.ID || attempt.LeaseID != reservation.LeaseID || attempt.FencingToken != reservation.FencingToken || attempt.RunID != reservation.RunID || attempt.Status != "running" {
 			return hubapi.NativeNotFound()
 		}
-		return w.AuthorizeArtifactUpload(ctx, reservation, s.config.now().UTC())
+		return w.AuthorizeArtifactUpload(ctx, reservation, s.config.Clock().UTC())
 	})
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		return hubapi.NativeConflict(0)
@@ -190,7 +190,7 @@ func (s *Service) publishArtifactReceiptTenant(ctx context.Context, scope hubsco
 			return readErr
 		}
 		if readErr != nil {
-			if err := w.ConsumeArtifactUpload(ctx, reference, s.config.now().UTC()); err != nil {
+			if err := w.ConsumeArtifactUpload(ctx, reference, s.config.Clock().UTC()); err != nil {
 				return err
 			}
 		}
@@ -200,7 +200,7 @@ func (s *Service) publishArtifactReceiptTenant(ctx context.Context, scope hubsco
 		if readErr == nil {
 			return nil
 		}
-		return s.applyRunnerTenantUsage(ctx, w, s.config.now(), "artifact-receipt/"+reference.ManifestID, false, false)
+		return s.applyRunnerTenantUsage(ctx, w, s.config.Clock(), "artifact-receipt/"+reference.ManifestID, false, false)
 	})
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		return hubapi.NativeConflict(0)

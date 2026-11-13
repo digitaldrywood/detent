@@ -15,7 +15,7 @@ type nativeCursor = workpage.Cursor
 type nativeIssuePageCursor = workpage.IssuePosition
 
 func (s *Service) workPageService() *workpage.Service {
-	return workpage.New(workpage.Deps{Repository: s.config.AccessRepository, Keys: s.config.SecretKeys, Now: s.config.now})
+	return workpage.New(workpage.Deps{Repository: s.config.AccessRepository, Keys: s.config.SecretKeys, Now: s.config.Clock})
 }
 func (s *Service) readNativePageLimit(ctx context.Context, scope hubscope.NativeScope, path string, params url.Values, maximum, defaultLimit int) (int, nativeCursor, []byte, error) {
 	caller := workpage.Caller{Organization: scope.Organization, CredentialID: scope.Credential.ID, HostedRole: scope.Credential.HostedRole, PrincipalID: scope.Actor().PrincipalID, Hosted: scope.Credential.Hosted != nil}
@@ -30,7 +30,7 @@ func (s *Service) readNativeCursorKey(ctx context.Context, organization tracker.
 	return key, hubapi.FromFeatureError(err)
 }
 func newNativeCursorSecret(cfg Config, organization tracker.OrganizationID) (accessstore.Secret, accessstore.SecretAudit, error) {
-	return workpage.NewSecret(cfg.SecretKeys, cfg.now, organization)
+	return workpage.NewSecret(cfg.SecretKeys, cfg.Clock, organization)
 }
 func encodeNativeCursor(cursor nativeCursor, key []byte) (string, error) {
 	return workpage.Encode(cursor, key)

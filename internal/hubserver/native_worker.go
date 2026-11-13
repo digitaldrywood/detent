@@ -165,7 +165,7 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		now := s.config.now().UTC()
+		now := s.config.Clock().UTC()
 		if !runnerIdentityMatchesHeldLease(identity, scope.Organization, credential.Runner.RunnerID, credential.ID, request.ID, now) || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, now) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
 			return hubscope.RunnerUnauthorized()
 		}

@@ -35,7 +35,7 @@ func (c *pullRequestCache) inner() *pullrequests.Cache {
 func (c *pullRequestCache) invalidate(key string) { c.inner().Invalidate(key) }
 func (s *Service) pullRequestService(scope hubscope.NativeScope) *pullrequests.Service {
 	return pullrequests.New(pullrequests.Deps{
-		Repository: s.config.TenantRepository, Now: s.config.now, Cache: s.pullRequests.inner(), TransportAvailable: s.config.ReconcileBackend != nil, Unavailable: hubapi.ErrPostgresFeatureUnavailable,
+		Repository: s.config.TenantRepository, Now: s.config.Clock, Cache: s.pullRequests.inner(), TransportAvailable: s.config.ReconcileBackend != nil, Unavailable: hubapi.ErrPostgresFeatureUnavailable,
 		ValidCheckout: validCheckoutRepository,
 		VerifiedCheckout: func(ctx context.Context, repository string, now time.Time) (bool, error) {
 			return s.verifiedProjectCheckout(ctx, nil, scope, repository, now)

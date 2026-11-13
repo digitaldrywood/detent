@@ -126,7 +126,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 					return false, err
 				}
 				if card.Change != nil {
-					detail, err := s.selectedChangeDetail(ctx, scope, string(row.WorkItemID), card.Change.ID, s.config.now())
+					detail, err := s.selectedChangeDetail(ctx, scope, string(row.WorkItemID), card.Change.ID, s.config.Clock())
 					if errors.Is(err, corestore.ErrNotFound) || hubapi.IsNativeNotFound(err) {
 						card.Change = nil
 					} else if err != nil {

@@ -193,7 +193,7 @@ func (s *Service) stopMonthlyBudgetTurns(ctx context.Context, organization track
 		if err != nil {
 			continue
 		}
-		decision, err := checkMonthlyBudget(ctx, nil, hubscope.NativeScope{Organization: organization, Project: project}, budget.CostExposure{LunaAPI: true}, true, s.config.now(), s.database.billingRepository)
+		decision, err := checkMonthlyBudget(ctx, nil, hubscope.NativeScope{Organization: organization, Project: project}, budget.CostExposure{LunaAPI: true}, true, s.config.Clock(), s.database.billingRepository)
 		if err != nil {
 			s.config.Logger.Warn("Check active conversation monthly budget", "error", err)
 			continue
@@ -223,7 +223,7 @@ func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organizatio
 	}
 	s.spriteWakeMu.Unlock()
 	for _, key := range keys {
-		decision, err := checkMonthlyBudget(ctx, nil, hubscope.NativeScope{Organization: key.organization}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.now(), s.database.billingRepository)
+		decision, err := checkMonthlyBudget(ctx, nil, hubscope.NativeScope{Organization: key.organization}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.Clock(), s.database.billingRepository)
 		if err != nil {
 			s.config.Logger.Warn("Check active Sprite lifecycle monthly budget", "error", err)
 			continue

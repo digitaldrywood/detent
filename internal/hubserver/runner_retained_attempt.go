@@ -45,7 +45,7 @@ func (s *Service) readRetainedAttemptTenant(ctx context.Context, scope hubscope.
 	digest := sha256.Sum256(raw)
 	sha := hex.EncodeToString(digest[:])
 	if pin == nil {
-		pin = &retainedAttemptReadPin{SourceSHA256: sha, At: s.config.now().UTC(), LeaseRenewedAt: snapshot.Lease.RenewedAt, LeaseExpiresAt: snapshot.Lease.ExpiresAt}
+		pin = &retainedAttemptReadPin{SourceSHA256: sha, At: s.config.Clock().UTC(), LeaseRenewedAt: snapshot.Lease.RenewedAt, LeaseExpiresAt: snapshot.Lease.ExpiresAt}
 	} else if pin.SourceSHA256 != sha || pin.At.IsZero() || pin.LeaseRenewedAt.IsZero() || !pin.LeaseExpiresAt.After(pin.LeaseRenewedAt) {
 		return tracker.NativeAttempt{}, nil, hubapi.NativeConflict(0)
 	}

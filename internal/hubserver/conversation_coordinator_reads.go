@@ -271,7 +271,7 @@ func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversa
 	if err != nil {
 		return nil, err
 	}
-	fleet, reservations, err := s.readHostedFleetSnapshotTenant(ctx, credential, projects, record.ProjectID, s.config.now().UTC())
+	fleet, reservations, err := s.readHostedFleetSnapshotTenant(ctx, credential, projects, record.ProjectID, s.config.Clock().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +311,7 @@ func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversa
 	for _, r := range attached {
 		runners = append(runners, projectRunner{r, connected[r.ID], connectionHealth[r.ID]})
 	}
-	return map[string]any{"project_id": record.ProjectID, "usage_scope": "project", "runners": runners, "observed_at": s.config.now(), "runner_options": []string{"self-hosted", "Sprites"}, "runner_details_access": editable}, nil
+	return map[string]any{"project_id": record.ProjectID, "usage_scope": "project", "runners": runners, "observed_at": s.config.Clock(), "runner_options": []string{"self-hosted", "Sprites"}, "runner_details_access": editable}, nil
 }
 
 func (s *Service) coordinatorScreenReport(ctx context.Context, record conversationRecord, credential hubapi.APICredential, call runner.AgentToolCall) (any, error) {
@@ -333,14 +333,14 @@ func (s *Service) coordinatorScreenReport(ctx context.Context, record conversati
 		if hours == 0 {
 			return nil, errCoordinatorToolArguments
 		}
-		to := s.config.now().UTC().Truncate(time.Hour)
+		to := s.config.Clock().UTC().Truncate(time.Hour)
 		bucket := time.Hour
 		if hours > 240 {
 			bucket = 4 * time.Hour
 		}
 		w = operatortool.AnalyticsWindow{From: to.Add(-time.Duration(hours) * time.Hour), To: to, Bucket: bucket}
 	} else {
-		window, err := usageRangeWindow(args.Range, s.config.now())
+		window, err := usageRangeWindow(args.Range, s.config.Clock())
 		if err != nil {
 			return nil, err
 		}

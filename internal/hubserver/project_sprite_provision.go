@@ -43,7 +43,7 @@ func (s *Service) poolSpriteToken(ctx context.Context, scope hubscope.NativeScop
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		actor, err := owner.SpritePoolAuthority(readCtx, s.config.now())
+		actor, err := owner.SpritePoolAuthority(readCtx, s.config.Clock())
 		if err != nil {
 			return err
 		}
@@ -90,7 +90,7 @@ func (s *Service) spritePoolClient() *http.Client {
 
 func (s *Service) poolSpriteRequest(ctx context.Context, scope hubscope.NativeScope, name, method, path string, body []byte) (*http.Response, error) {
 	if method != http.MethodDelete && method != http.MethodGet {
-		allowed, err := monthlySpriteAllowed(ctx, nil, scope, s.config.now(), s.database.billingRepository)
+		allowed, err := monthlySpriteAllowed(ctx, nil, scope, s.config.Clock(), s.database.billingRepository)
 		if err != nil {
 			return nil, err
 		}
@@ -161,7 +161,7 @@ func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope hubscope.
 
 func (s *Service) createPoolSpriteNamed(ctx context.Context, scope hubscope.NativeScope, settings spritePoolSettings, allowOrganization bool, name string) (bool, error) {
 	scope.Project = ""
-	now := s.config.now()
+	now := s.config.Clock()
 	placement, err := s.readOrganizationPlacementSnapshot(ctx, scope, now)
 	if err != nil {
 		return false, err
@@ -222,7 +222,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope hubscope.Nati
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		actor, err := owner.SpritePoolAuthority(ctx, s.config.now())
+		actor, err := owner.SpritePoolAuthority(ctx, s.config.Clock())
 		if err != nil {
 			return err
 		}
@@ -273,7 +273,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope hubscope.Nati
 			}
 			settings.MinRunners = allocation.DesiredCount
 		}
-		allowed, err := spriteMonthlyAllowedRecord(ctx, w, scope, s.config.now())
+		allowed, err := spriteMonthlyAllowedRecord(ctx, w, scope, s.config.Clock())
 		if err != nil {
 			return err
 		}
@@ -281,14 +281,14 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope hubscope.Nati
 			return nil
 		}
 		input := spriteScaleInput{Depth: placement.SpriteTarget, Free: placement.SpriteFree, Pending: placement.Pending, Floor: settings.MinRunners, Ceiling: ceiling, Count: ownerCount, CreateLimit: placement.ProviderFree}
-		decision, err := spriteMonthlyDecisionRecord(ctx, w, scope, false, s.config.now())
+		decision, err := spriteMonthlyDecisionRecord(ctx, w, scope, false, s.config.Clock())
 		if err != nil {
 			return err
 		}
 		if !decision.Allowed {
 			input.CreateLimit = new(placement.Provisionable)
 		}
-		providerFree, known, err := spritePoolProviderFree(ctx, w, scope, count, s.config.now())
+		providerFree, known, err := spritePoolProviderFree(ctx, w, scope, count, s.config.Clock())
 		if err != nil {
 			return err
 		}
@@ -416,7 +416,7 @@ func (s *Service) cancelPoolSpriteReservation(ctx context.Context, scope hubscop
 			return err
 		}
 		if enrollment.RedeemedAt == nil && enrollment.RevokedAt == nil {
-			if err := w.RevokeRunnerEnrollment(ctx, enrollment.ID, s.config.now()); err != nil {
+			if err := w.RevokeRunnerEnrollment(ctx, enrollment.ID, s.config.Clock()); err != nil {
 				return err
 			}
 		}
@@ -553,7 +553,7 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope hubscope.Native
 		if err != nil {
 			return err
 		}
-		now := s.config.now()
+		now := s.config.Clock()
 		if credential.RevokedAt != nil || credential.ExpiresAt != nil && !credential.ExpiresAt.After(now) {
 			return corestore.ErrNotFound
 		}
@@ -626,7 +626,7 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope hubscope.Native
 		updated := spriteMembershipRecord(row)
 		updated.State = "enrolled"
 		updated.BootstrapLog += "Checkpoint completed\n"
-		updated.IdleSince = s.config.now()
+		updated.IdleSince = s.config.Clock()
 		return w.UpdateRunnerSpriteMembership(ctx, updated)
 	})
 }
@@ -727,7 +727,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope hubscope.NativeSco
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		actor, err = owner.SpritePoolAuthority(ctx, s.config.now())
+		actor, err = owner.SpritePoolAuthority(ctx, s.config.Clock())
 		if err != nil {
 			return err
 		}
@@ -752,7 +752,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope hubscope.NativeSco
 				return err
 			}
 		}
-		now := s.config.now()
+		now := s.config.Clock()
 		if current.State == "enrolled" {
 			pool, err := owner.SpritePool(ctx)
 			if err != nil {
@@ -828,7 +828,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope hubscope.NativeSco
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		currentActor, err := owner.SpritePoolAuthority(cleanup, s.config.now())
+		currentActor, err := owner.SpritePoolAuthority(cleanup, s.config.Clock())
 		if err != nil {
 			return err
 		}
@@ -854,7 +854,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope hubscope.NativeSco
 			return err
 		}
 		if enrollment.RunnerID != "" {
-			if err := s.revokeRunnerIdentityTenant(cleanup, w, scope.Organization, enrollment.RunnerID, actor, s.config.now()); err != nil {
+			if err := s.revokeRunnerIdentityTenant(cleanup, w, scope.Organization, enrollment.RunnerID, actor, s.config.Clock()); err != nil {
 				return err
 			}
 		}

@@ -25,7 +25,7 @@ func (s *Service) prepareRecordedRecoveryTenant(ctx context.Context, scope hubsc
 	if err != nil {
 		return nil, err
 	}
-	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.now())
+	attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.Clock())
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +89,7 @@ func (s *Service) prepareRecordedRecoveryTenant(ctx context.Context, scope hubsc
 }
 
 func (s *Service) authorizeRecordedRecoveryTenant(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, recovery leasestore.RecordedRecovery) error {
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	credential, err := w.AccessCredential(ctx, scope.Credential.ID)
 	if err != nil {
 		return err

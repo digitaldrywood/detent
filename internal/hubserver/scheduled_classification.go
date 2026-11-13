@@ -125,7 +125,7 @@ func (s *Service) classifyScheduledFailure(c echo.Context) error {
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.StoreScheduledDecision(ctx, scope.Project, input, result, s.config.now().UTC())
+		return owner.StoreScheduledDecision(ctx, scope.Project, input, result, s.config.Clock().UTC())
 	})
 	if err != nil {
 		return s.nativeAPIError(c, fmt.Errorf("store CI classification: %w", err))

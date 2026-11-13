@@ -39,7 +39,7 @@ func publishCapacity(t *testing.T, f nativeFixture, r runnerFixture, reports ...
 	t.Helper()
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
 		map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test", "provider_reports": reports,
-			"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.now()}})
+			"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.Clock()}})
 	requireNativeStatus(t, response, http.StatusOK)
 }
 
@@ -98,7 +98,7 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 			clock := &leaseTestClock{value: now}
-			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: clock.Now}), "", "provider")
+			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now}), "", "provider")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
 			r.reportCapacity(t)
@@ -174,7 +174,7 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 func TestProviderProjectBackendReservations(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 16, 3, 0, 0, 0, time.UTC)
-	service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
+	service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }})
 	code := newNativeFixture(t, service, "", "code")
 	otherCode := newNativeFixture(t, service, code.project.OrganizationID, "other-code")
 	design := newNativeFixture(t, service, code.project.OrganizationID, "design")
@@ -231,7 +231,7 @@ func TestProviderSharedCapacityConcurrentRecovery(t *testing.T) {
 	for _, sharing := range []string{"declared", "subscription weekly exhausted", "subscription stale quota", "subscription unknown quota", "unknown", "same local alias", "mixed", "mixed reversed"} {
 		t.Run(sharing, func(t *testing.T) {
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-			cfg := Config{now: func() time.Time { return now }}
+			cfg := Config{Clock: func() time.Time { return now }}
 			f := newNativeFixture(t, newClockedPostgresNativeService(t, cfg), "", "shared-provider")
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			runners := make([]runnerFixture, 2)
@@ -344,7 +344,7 @@ func TestProviderStartRevalidation(t *testing.T) {
 			r.enroll(t)
 			r.reportCapacity(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-			report := capacityReport(f.service.config.now())
+			report := capacityReport(f.service.config.Clock())
 			publishCapacity(t, f, r, report)
 			issue := f.create(t, "work")
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "session"))
@@ -448,7 +448,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			}
 			rules := tracker.ChangeReviewPolicy{PolicyID: hubTestPolicy().ID, RequireReview: test.unavailable == "required review"}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
-			report := capacityReport(f.service.config.now())
+			report := capacityReport(f.service.config.Clock())
 			report.MaxConcurrent = 2
 			if test.targeted {
 				report.Models = append(report.Models, "gpt-6.1-sol")
@@ -521,14 +521,14 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			}
 			if test.unavailable == "dependency" {
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-					return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issues[0].WorkItemID, RelatedProjectID: f.project.ID, RelatedWorkItemID: issues[2].WorkItemID, Type: "dependency", Provenance: "native"}, "add", f.service.config.now())
+					return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issues[0].WorkItemID, RelatedProjectID: f.project.ID, RelatedWorkItemID: issues[2].WorkItemID, Type: "dependency", Provenance: "native"}, "add", f.service.config.Clock())
 				}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.unavailable == "unblocker" {
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-					return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issues[2].WorkItemID, RelatedProjectID: f.project.ID, RelatedWorkItemID: issues[1].WorkItemID, Type: "dependency", Provenance: "native"}, "add", f.service.config.now())
+					return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issues[2].WorkItemID, RelatedProjectID: f.project.ID, RelatedWorkItemID: issues[1].WorkItemID, Type: "dependency", Provenance: "native"}, "add", f.service.config.Clock())
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -669,7 +669,7 @@ func TestProviderOlderReportsCannotRestoreQuota(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
-	report := capacityReport(f.service.config.now().Add(-time.Second))
+	report := capacityReport(f.service.config.Clock().Add(-time.Second))
 	report.Availability = "exhausted"
 	publishCapacity(t, f, r, report)
 	for _, age := range []time.Duration{0, -time.Second, time.Hour} {
@@ -731,7 +731,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }}), "", "provider-authority")
+			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }}), "", "provider-authority")
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			current := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			current.enroll(t)
@@ -901,7 +901,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.enroll(t)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	report := capacityReport(now)
 	report.MaxConcurrent = 2
 	publishCapacity(t, f, r, report)
@@ -1106,11 +1106,11 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 		t.Fatalf("claim=%s want=%s", lease.WorkItemID, issues[0].WorkItemID)
 	}
 	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
-		capacity, err := reader.ClaimCapacityUsage(t.Context(), string(r.binding.MachineID), r.binding.RunnerID, f.project.ID, "", f.service.config.now())
+		capacity, err := reader.ClaimCapacityUsage(t.Context(), string(r.binding.MachineID), r.binding.RunnerID, f.project.ID, "", f.service.config.Clock())
 		if err != nil {
 			return err
 		}
-		used, err := reader.ProviderReservationUsage(t.Context(), report, r.binding.RunnerID, f.service.config.now())
+		used, err := reader.ProviderReservationUsage(t.Context(), report, r.binding.RunnerID, f.service.config.Clock())
 		if err != nil {
 			return err
 		}
@@ -1145,7 +1145,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 func TestProviderUsageHeartbeatRoundTrip(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 15, 15, 0, 0, 0, time.UTC)
-	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }}), "", "usage")
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }}), "", "usage")
 	var organizationBase string
 	for index, backend := range []string{"claude", "codex"} {
 		t.Run(backend, func(t *testing.T) {
@@ -1266,7 +1266,7 @@ func TestProviderCapacityReportDisappearance(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }}), "", "provider")
+			f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }}), "", "provider")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())

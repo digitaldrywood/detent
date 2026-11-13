@@ -39,8 +39,8 @@ func TestRunnerHeartbeatChanges(t *testing.T) {
 	credential := f.tokens[0]
 	item := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: "wi_1", Number: 1, Revision: 1}}
 	now := time.Now().UTC().Add(time.Second)
-	f.service.config.now = func() time.Time { return now }
-	f.service.database.now = f.service.config.now
+	f.service.config.Clock = func() time.Time { return now }
+	f.service.database.now = f.service.config.Clock
 	for _, query := range []string{
 		`UPDATE runner_identities SET display_name='Example',expires_at=$1 WHERE organization_id='org_startup'`,
 		`UPDATE api_tokens SET expires_at=$1 WHERE organization_id='org_startup'`,

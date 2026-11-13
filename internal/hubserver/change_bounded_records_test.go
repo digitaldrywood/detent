@@ -220,7 +220,7 @@ func TestPostgresBoundedChangeRuntimeRecovery(t *testing.T) {
 			}
 			content := eventstore.NewContent(f.service.runDetailStore())
 			actor := tracker.Actor{Kind: "human", PrincipalID: owner.identity.Subject}
-			now := f.service.config.now().UTC()
+			now := f.service.config.Clock().UTC()
 			var latest tracker.ChangeVersion
 			for number := int64(1); number <= 2; number++ {
 				input := changeTestInput()

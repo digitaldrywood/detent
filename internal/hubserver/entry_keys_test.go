@@ -168,7 +168,7 @@ func TestPostgresNativeSupportReadAudit(t *testing.T) {
 						claims.Key = &key
 						return
 					}
-					now := service.config.now()
+					now := service.config.Clock()
 					claims.Email, claims.ProviderSession = user.identity.Email, "session_support"
 					claims.SessionCreatedAt, claims.SessionExpiresAt, claims.AccessExpiresAt = now, now.Add(time.Hour), now.Add(time.Minute)
 					claims.Binding = cloudassert.AuthorizationBinding("support", organization, claims.ProviderSession)
@@ -419,13 +419,13 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 							f.rejectAudit(t, "UPDATE", "")
 						}
 					}
-					auditStartedAt := f.service.config.now().UnixNano()
+					auditStartedAt := f.service.config.Clock().UnixNano()
 					f.service.Handler().ServeHTTP(writer, request)
 					var items, audits int
 					if err := f.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id='org_security' AND title=$1", title).Scan(&items); err != nil {
 						t.Fatal(err)
 					}
-					if err := f.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id='org_security' AND session_id=$1 AND event='key_call' AND recorded_at_ns BETWEEN $2 AND $3", key.ID, auditStartedAt, f.service.config.now().UnixNano()).Scan(&audits); err != nil {
+					if err := f.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id='org_security' AND session_id=$1 AND event='key_call' AND recorded_at_ns BETWEEN $2 AND $3", key.ID, auditStartedAt, f.service.config.Clock().UnixNano()).Scan(&audits); err != nil {
 						t.Fatal(err)
 					}
 					wantItems, wantAudits := 0, 1

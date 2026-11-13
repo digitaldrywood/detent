@@ -55,7 +55,7 @@ func TestChangeTypedColumnsOwnEvidenceFilters(t *testing.T) {
 			content := eventstore.NewContent(f.service.runDetailStore())
 			old := f.publish(t, "old", "")
 			current := f.publish(t, "current", old.ID)
-			at := f.service.config.now().UTC().Truncate(time.Microsecond)
+			at := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 			actor := tracker.Actor{Kind: "human", PrincipalID: "reviewer"}
 			prepare := func(kind string, value any, unprojected bool) eventstore.Evidence {
 				t.Helper()
@@ -258,7 +258,7 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 	at := time.Date(2026, time.October, 25, 12, 0, 0, 0, time.UTC)
 	clock := atomic.Pointer[time.Time]{}
 	clock.Store(new(at.Add(-2 * time.Hour)))
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return *clock.Load() }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return *clock.Load() }})
 	items := []tracker.NativeIssue{f.create(t, "First historical item"), f.create(t, "Second historical item")}
 	scope := analyticsTestScope(t, f)
 	clock.Store(new(at.Add(5 * time.Hour)))
@@ -472,7 +472,7 @@ func TestChangeColumnsSelectIssueSideData(t *testing.T) {
 						head, branch = "typed-merge", "typed-base"
 					}
 					f = changeColumnSideDataFixture(t, f, old, current, test.name, pending)
-					snapshot, err := f.service.boardProjectionSnapshot(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Required: true}, f.service.config.now())
+					snapshot, err := f.service.boardProjectionSnapshot(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Required: true}, f.service.config.Clock())
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -488,7 +488,7 @@ func TestChangeColumnsSelectIssueSideData(t *testing.T) {
 					}
 					if test.name == "current version" {
 						candidate := viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Required: true}
-						if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, candidate, f.service.config.now()); err != nil {
+						if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, candidate, f.service.config.Clock()); err != nil {
 							t.Fatal(err)
 						}
 						public := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
@@ -522,7 +522,7 @@ func changeColumnSideDataFixture(t *testing.T, f changeFixture, old, current tra
 		fixture, target, versions := historyRepairSource(t, f, old, 2)
 		versions[1].HeadSHA = current.HeadSHA
 		external(&versions[1])
-		target.change.CreatedAt, target.change.UpdatedAt = f.service.config.now(), f.service.config.now()
+		target.change.CreatedAt, target.change.UpdatedAt = f.service.config.Clock(), f.service.config.Clock()
 		if scenario == "current version" {
 			target.change.CurrentVersion = versions[0].ID
 		}
@@ -531,7 +531,7 @@ func changeColumnSideDataFixture(t *testing.T, f changeFixture, old, current tra
 			if scenario == "old landing" {
 				landed = versions[0]
 			}
-			target.change.Landed = &tracker.ChangeLanding{VersionID: landed.ID, HeadSHA: landed.HeadSHA, MergeSHA: "typed-merge", BaseRef: "typed-base", LandedAt: f.service.config.now()}
+			target.change.Landed = &tracker.ChangeLanding{VersionID: landed.ID, HeadSHA: landed.HeadSHA, MergeSHA: "typed-merge", BaseRef: "typed-base", LandedAt: f.service.config.Clock()}
 		}
 		fixture.records["change_requests"] = nil
 		fixture.add("change_requests", map[string]any{"id": target.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "created_at": nil, "record_json": string(historyTestJSON(t, target.change))})
@@ -576,7 +576,7 @@ func changeColumnSideDataFixture(t *testing.T, f changeFixture, old, current tra
 		}
 		changed.LandedVersionID, changed.LandedHeadSHA = new(landed.ID), new(landed.HeadSHA)
 		changed.LandedMergeSHA, changed.LandedBaseRef = new("typed-merge"), new("typed-base")
-		changed.LandedAt = new(f.service.config.now())
+		changed.LandedAt = new(f.service.config.Clock())
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		if _, err := w.CreateVersion(t.Context(), row); err != nil {
@@ -643,7 +643,7 @@ func TestChangeColumnsSelectRecoveryComments(t *testing.T) {
 				for i, kinds := range [][2]string{{"runner", ""}, {"human", ""}, {"runner", "human"}, {"runner", ""}} {
 					ids[i] = fmt.Sprintf("%s_comment_%d", item.WorkItemID, i)
 					if state != "unconverted" {
-						changeColumnWriteComment(t, f, changeColumnComment(f, item.WorkItemID, ids[i], int64(i+1), kinds, f.service.config.now()), state == "typed author changed" && i == 1)
+						changeColumnWriteComment(t, f, changeColumnComment(f, item.WorkItemID, ids[i], int64(i+1), kinds, f.service.config.Clock()), state == "typed author changed" && i == 1)
 					}
 				}
 				want := []string{ids[1], ids[2], ids[3]}
@@ -708,7 +708,7 @@ func changeColumnWriteComment(t *testing.T, f nativeFixture, comment tracker.Nat
 func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, time.October, 25, 12, 0, 0, 0, time.UTC)
-	service := newPostgresNativeService(t, Config{now: func() time.Time { return at }})
+	service := newPostgresNativeService(t, Config{Clock: func() time.Time { return at }})
 	for _, pending := range []bool{false, true} {
 		native := newNativeFixture(t, service, "", fmt.Sprintf("escape pending=%v", pending))
 		states := append(nativeFixtureStates(), tracker.NativeState{Name: "Merging"}, tracker.NativeState{Name: "Rework"})
@@ -987,7 +987,7 @@ func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
 				f := base.anotherChange(t)
 				old := f.publish(t, "old", "")
 				current := f.publish(t, "current", old.ID)
-				receipts := []tracker.NativeLandingReceipt{{ChangeID: f.change.ID, VersionID: old.ID, HeadSHA: old.HeadSHA, MergeSHA: strings.Repeat("1", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.now()}, {ChangeID: f.change.ID, VersionID: current.ID, HeadSHA: current.HeadSHA, MergeSHA: strings.Repeat("2", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.now()}}
+				receipts := []tracker.NativeLandingReceipt{{ChangeID: f.change.ID, VersionID: old.ID, HeadSHA: old.HeadSHA, MergeSHA: strings.Repeat("1", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.Clock()}, {ChangeID: f.change.ID, VersionID: current.ID, HeadSHA: current.HeadSHA, MergeSHA: strings.Repeat("2", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.Clock()}}
 				attempts := []leasestore.Attempt{changeColumnAttempt(t, f, &receipts[0], 100, state == "present" || state == "absent", false), changeColumnAttempt(t, f, &receipts[1], 101, state == "present", false)}
 				changeColumnAttempt(t, f, nil, 102, false, false)
 				if state == "unknown" {
@@ -1027,7 +1027,7 @@ func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
 				f := base.anotherChange(t)
 				old := f.publish(t, "old", "")
 				current := f.publish(t, "current", old.ID)
-				receipts := []tracker.NativeLandingReceipt{{ChangeID: f.change.ID, VersionID: old.ID, HeadSHA: old.HeadSHA, MergeSHA: test.oldMerge, BaseRef: "develop", Landed: true, ObservedAt: f.service.config.now()}, {ChangeID: f.change.ID, VersionID: current.ID, HeadSHA: current.HeadSHA, MergeSHA: strings.Repeat("2", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.now()}}
+				receipts := []tracker.NativeLandingReceipt{{ChangeID: f.change.ID, VersionID: old.ID, HeadSHA: old.HeadSHA, MergeSHA: test.oldMerge, BaseRef: "develop", Landed: true, ObservedAt: f.service.config.Clock()}, {ChangeID: f.change.ID, VersionID: current.ID, HeadSHA: current.HeadSHA, MergeSHA: strings.Repeat("2", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.Clock()}}
 				attempts := []leasestore.Attempt{changeColumnAttempt(t, f, &receipts[0], 100, !test.historical, false), changeColumnAttempt(t, f, &receipts[1], 101, !test.historical, false)}
 				if test.historical {
 					changeColumnImportLandingReceipts(t, f, []tracker.ChangeVersion{old, current}, attempts, receipts)
@@ -1062,7 +1062,7 @@ func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
 		t.Run("typed receipt mismatch fails integrity/"+anchor.change.ID, func(t *testing.T) {
 			f := anchor.anotherChange(t)
 			version := f.publish(t, "version", "")
-			receipt := tracker.NativeLandingReceipt{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: strings.Repeat("1", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.now()}
+			receipt := tracker.NativeLandingReceipt{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: strings.Repeat("1", 40), BaseRef: "develop", Landed: true, ObservedAt: f.service.config.Clock()}
 			attempt := changeColumnAttempt(t, f, &receipt, 100, true, true)
 			var row eventstore.LandingReceipt
 			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -1086,13 +1086,13 @@ func changeColumnAttempt(t *testing.T, f changeFixture, receipt *tracker.NativeL
 	t.Helper()
 	leaseID := hubapi.NewID("lease")
 	lease := coordinatorActionLease(t, f.service, f.project.OrganizationID, f.issue.WorkItemID, leaseID)
-	data := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: local, Phase: "completed", HeartbeatAt: f.service.config.now(), Landing: receipt}}
+	data := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: tracker.LeaseID(leaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Sequence: 1, Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: local, Phase: "completed", HeartbeatAt: f.service.config.Clock(), Landing: receipt}}
 	content := eventstore.NewContent(f.service.runDetailStore())
 	ref, err := content.PreparePayload(t.Context(), f.project.OrganizationID, historyTestJSON(t, data))
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}))
+	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{Run: &data}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1113,7 +1113,7 @@ func changeColumnAttempt(t *testing.T, f changeFixture, receipt *tracker.NativeL
 	var attempt leasestore.Attempt
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		var err error
-		attempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", LocalAttemptID: local, StartedAt: f.service.config.now(), PayloadObjectKey: ref.Key, PayloadReference: ref})
+		attempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", LocalAttemptID: local, StartedAt: f.service.config.Clock(), PayloadObjectKey: ref.Key, PayloadReference: ref})
 		if err != nil {
 			return err
 		}

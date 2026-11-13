@@ -280,7 +280,7 @@ func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
 			decodeHubResponse(t, response, &first)
 			second := f.create(t, "Release audit")
 			for _, item := range []tracker.NativeIssue{first, second} {
-				if err := service.refreshBoardRecord(t.Context(), org, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: item.WorkItemID}, service.config.now()); err != nil {
+				if err := service.refreshBoardRecord(t.Context(), org, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: item.WorkItemID}, service.config.Clock()); err != nil {
 					t.Fatal(err)
 				}
 			}

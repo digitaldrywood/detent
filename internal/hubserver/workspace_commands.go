@@ -82,7 +82,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 			return nil, err
 		}
 		if previous.CommandKey != "" {
-			if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= previous.ResponseReplayUntilNs {
+			if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= previous.ResponseReplayUntilNs {
 				return nil, receiptstore.ErrExpired
 			}
 			if previous.RequestHash != hash {
@@ -90,7 +90,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 			}
 			return content.Receipt(ctx, previous)
 		}
-		now := s.config.now().UTC().Truncate(time.Microsecond)
+		now := s.config.Clock().UTC().Truncate(time.Microsecond)
 		record := workspaceRecord{ID: hubapi.NewID("ws"), OrganizationID: scope.Organization, ProjectID: scope.Project, SubjectWorkItemID: string(subject.NativeID), AttemptID: strings.TrimSpace(request.AttemptID), Ref: strings.TrimSpace(request.Ref), State: workspacesession.StateRequested, Requires: request.Requires, ReadOnly: readOnly, IdleTimeoutSeconds: service.config.IdleTimeoutSeconds(), ExpiresAt: now.Add(service.config.MaxLifetime), RequestedExpiresAt: now.Add(service.config.RequestTimeout), CreatedBy: scope.Credential.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
 		project, err := s.readProjectRecord(ctx, scope)
 		if err != nil {
@@ -177,7 +177,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 			}
 			previous, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
 			if err == nil {
-				if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= previous.ResponseReplayUntilNs {
+				if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= previous.ResponseReplayUntilNs {
 					return receiptstore.ErrExpired
 				}
 				if previous.RequestHash != hash {
@@ -196,7 +196,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 			if currentSubject.ID != subject.ID || currentSubject.Revision != subject.Revision || currentReadOnly != readOnly {
 				return corestore.ErrSerializationFailure
 			}
-			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
 				return err
 			}
 			currentPolicy, err := w.ProjectPolicy(ctx, scope.Project)

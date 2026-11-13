@@ -145,7 +145,7 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	t.Parallel()
 	store := &memoryRunDetails{}
 	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{RunDetails: store, now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{RunDetails: store, Clock: func() time.Time { return now }})
 	repository := f.service.config.TenantRepository.(*postgres.Repository)
 	admin := hostedPostgresAdmin(t, f.service)
 	if f.service.config.Postgres.Pool.ServingConnections != 1 {
@@ -212,7 +212,7 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	first.Data.Usage = nil
 	second := first
 	second.IdempotencyKey, second.Data.Sequence = "observed-2", 4
-	first.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: f.service.config.now(), Validation: &gate.CommandResult{Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: strings.Repeat("validation output\n", 3000)}}
+	first.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: f.service.config.Clock(), Validation: &gate.CommandResult{Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: strings.Repeat("validation output\n", 3000)}}
 	first.Data.Runtime.Phases = []tracker.NativePhase{{Name: "implementation", StartedAt: now.Add(-2 * time.Minute), FinishedAt: now.Add(-time.Minute)}}
 	second.Data.Runtime = first.Data.Runtime
 	event.IdempotencyKey, event.Data.Sequence, event.PriorEvents = "checkpoint-2", 5, []tracker.NativeRunEvent{first, second}
@@ -579,7 +579,7 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			store := &memoryRunDetails{}
 			now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-			f := newDefaultNativeFixture(t, Config{RunDetails: store, now: func() time.Time { return now }})
+			f := newDefaultNativeFixture(t, Config{RunDetails: store, Clock: func() time.Time { return now }})
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			issue := f.create(t, "work")
 			worker := f.worker(t, "worker")
@@ -718,7 +718,7 @@ func TestNativeRunFirstFinishValidatesUsageBeforeUpload(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			store := &memoryRunDetails{}
 			now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-			f := newDefaultNativeFixture(t, Config{RunDetails: store, now: func() time.Time { return now }})
+			f := newDefaultNativeFixture(t, Config{RunDetails: store, Clock: func() time.Time { return now }})
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			issue := f.create(t, "work")
 			worker := f.worker(t, "worker")
@@ -946,7 +946,7 @@ func TestNativeBoardRefreshReadsRunDetailReferences(t *testing.T) {
 	t.Parallel()
 	store := &memoryRunDetails{}
 	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{RunDetails: store, now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{RunDetails: store, Clock: func() time.Time { return now }})
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -1402,7 +1402,7 @@ func importRunDetailHistory(t *testing.T, f nativeFixture, issue tracker.NativeI
 func importRunDetailHistoryIntoEmptyTarget(t *testing.T, issue tracker.NativeIssue, row leasestore.Attempt, lease tracker.NativeLease, run tracker.NativeRunData, history map[int64]tracker.NativeRunData, now time.Time) {
 	t.Helper()
 	store := &memoryRunDetails{}
-	target := newDefaultNativeFixture(t, Config{RunDetails: store, now: func() time.Time { return now }})
+	target := newDefaultNativeFixture(t, Config{RunDetails: store, Clock: func() time.Time { return now }})
 	repository := target.service.config.TenantRepository.(*postgres.Repository)
 	scope := analyticsTestScope(t, target)
 	if err := repository.ReadTenant(t.Context(), target.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {

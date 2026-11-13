@@ -211,7 +211,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 	var project projectstore.Record
 	var version eventstore.CollaborationVersion
 	var source eventstore.LinkedSource
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		row, err = r.WorkItem(ctx, scope.Project, itemID)
@@ -396,7 +396,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 			return corestore.ErrSerializationFailure
 		}
 		if scope.Credential.Scope == hubapi.APIScopeWorker {
-			if err := requireLinkedIssueLease(ctx, w, scope, current, request.Mutation, s.config.now()); err != nil {
+			if err := requireLinkedIssueLease(ctx, w, scope, current, request.Mutation, s.config.Clock()); err != nil {
 				return err
 			}
 		}

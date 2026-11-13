@@ -105,7 +105,6 @@ type Config struct {
 
 	hostedBindingMigration     bool
 	validateDatabaseFilesystem func(string) error
-	now                        func() time.Time
 	deps                       hubdeps.Deps
 }
 
@@ -183,14 +182,11 @@ func (c Config) normalized() Config {
 	if c.validateDatabaseFilesystem == nil {
 		c.validateDatabaseFilesystem = validateLocalDatabaseFilesystem
 	}
-	if c.now == nil {
-		c.now = c.Clock
-		if c.now == nil {
-			c.now = time.Now
-		}
+	if c.Clock == nil {
+		c.Clock = time.Now
 	}
 	if c.TenantRepository != nil && c.ConversationWorkerAuthority == nil {
-		c.ConversationWorkerAuthority = tenantRunnerAuthority{now: c.now}
+		c.ConversationWorkerAuthority = tenantRunnerAuthority{now: c.Clock}
 	}
 	c.GitHubWebhookSecret = append([]byte(nil), c.GitHubWebhookSecret...)
 	c.InitialAdminToken = append([]byte(nil), c.InitialAdminToken...)

@@ -40,7 +40,7 @@ func TestRunnerCredentialExpiryBoundaries(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-			service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
+			service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }})
 			var renewed []runnerFixture
 			for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 				if err := service.requestMetrics.Drain(t.Context(), now); err != nil {

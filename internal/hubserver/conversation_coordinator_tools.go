@@ -454,7 +454,7 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}
-			running := err == nil && lease.ReleasedAt == nil && s.config.now().Before(lease.ExpiresAt)
+			running := err == nil && lease.ReleasedAt == nil && s.config.Clock().Before(lease.ExpiresAt)
 			var blockers []string
 			relationships, err := r.Relationships(ctx, row.ProjectID, row.NativeID, corestore.RelationshipCursor{}, corestore.MaxPageSize)
 			if err != nil {
@@ -634,7 +634,7 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 			return nil, err
 		}
 		status := attempt.Status
-		if status == "running" && (attempt.ClaimReleasedAt != nil || !s.config.now().Before(attempt.LeaseExpiresAt)) {
+		if status == "running" && (attempt.ClaimReleasedAt != nil || !s.config.Clock().Before(attempt.LeaseExpiresAt)) {
 			status = "interrupted"
 		}
 		result.LatestAttempt = &coordinatorAttempt{AttemptID: attemptID, Status: status, Outcome: attempt.Outcome, StartedAt: hubapi.FormatHubTime(attempt.StartedAt), UpdatedAt: hubapi.FormatHubTime(attempt.UpdatedAt)}

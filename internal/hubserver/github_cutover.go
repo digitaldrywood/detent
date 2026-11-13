@@ -343,7 +343,7 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope hubscop
 	if !ok {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	var snapshot cutoverSourceSnapshot
 	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
@@ -611,7 +611,7 @@ func (s *Service) prepareNativeSourceSummary(ctx context.Context, scope hubscope
 	if closeSource {
 		bucket = "cutover:" + string(item)
 	}
-	return projectstore.GitHubOutbound{ProjectID: scope.Project, WorkItemID: item, Key: "native:" + string(item) + ":" + key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkpad), CreatedAt: s.config.now().UTC(), Payload: payload, CoalesceKey: bucket}, nil
+	return projectstore.GitHubOutbound{ProjectID: scope.Project, WorkItemID: item, Key: "native:" + string(item) + ":" + key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkpad), CreatedAt: s.config.Clock().UTC(), Payload: payload, CoalesceKey: bucket}, nil
 }
 
 func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions, request projectNativeSummaryRequest) (json.RawMessage, error) {
@@ -669,7 +669,7 @@ func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope h
 		Status string `json:"status"`
 	}{"pending"}
 	return s.tenantReceiptMutation(ctx, scope, options.OperationID, request.Mutation, request, result, func(w tenantstore.Writer) error {
-		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, options.Feature, s.config.now())); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, options.Feature, s.config.Clock())); err != nil {
 			return err
 		}
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
@@ -703,7 +703,7 @@ func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope h
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		if err := owner.SupersedeGitHubSummaries(ctx, scope.Project, outbound.CoalesceKey, s.config.now()); err != nil {
+		if err := owner.SupersedeGitHubSummaries(ctx, scope.Project, outbound.CoalesceKey, s.config.Clock()); err != nil {
 			return err
 		}
 		return owner.EnqueueGitHubOutbound(ctx, outbound)

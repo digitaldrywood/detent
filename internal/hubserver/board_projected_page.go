@@ -69,7 +69,7 @@ func (s *Service) prepareProjectedBoardPage(ctx context.Context, scope hubscope.
 		prepared[row.WorkItemID] = boardPreparedRecord{record: row, card: cards[row.WorkItemID], err: err}
 	}
 	if len(fallback) > 0 {
-		old := s.prepareBoardPage(ctx, scope, fallback, s.config.now(), exact, prepared)
+		old := s.prepareBoardPage(ctx, scope, fallback, s.config.Clock(), exact, prepared)
 		for index, row := range fallback {
 			card, err := old.card(ctx, index)
 			prepared[row.WorkItemID] = boardPreparedRecord{record: row, card: card, err: err}

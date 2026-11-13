@@ -113,7 +113,7 @@ func (s *Service) accessPendingInvitations(ctx context.Context) ([]hostedInvitat
 				return err
 			}
 			for _, row := range page {
-				if row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.now()) {
+				if row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.Clock()) {
 					continue
 				}
 				view, err := s.accessInvitationView(ctx, r, row)
@@ -242,7 +242,7 @@ func (s *Service) changeAccessRole(ctx context.Context, credential hubapi.APICre
 		if err != nil || !local {
 			return err
 		}
-		target.Role, target.UpdatedAt = role, s.config.now()
+		target.Role, target.UpdatedAt = role, s.config.Clock()
 		return w.UpdateAccessMember(persist, target)
 	}); err != nil {
 		return hostedMemberView{}, errors.Join(mutation.ErrUncertain, err)

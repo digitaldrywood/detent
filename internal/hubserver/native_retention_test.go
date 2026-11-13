@@ -44,12 +44,12 @@ func TestNativeRetention(t *testing.T) {
 			if index == 0 {
 				decision = "changes_requested"
 			}
-			reviews = append(reviews, tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: first.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-one"}, Decision: decision, CreatedAt: f.service.config.now()})
+			reviews = append(reviews, tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: first.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-one"}, Decision: decision, CreatedAt: f.service.config.Clock()})
 		}
 		for _, version := range []string{first.ID, second.ID} {
 			reviews = append(reviews,
-				tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-one"}, Decision: "approved", CreatedAt: f.service.config.now()},
-				tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-two"}, Decision: "changes_requested", CreatedAt: f.service.config.now()})
+				tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-one"}, Decision: "approved", CreatedAt: f.service.config.Clock()},
+				tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version, Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer-two"}, Decision: "changes_requested", CreatedAt: f.service.config.Clock()})
 		}
 		appendRetentionReviewEvidence(t, f, reviews)
 		assertReviews := func(version string, expected map[string]string) {
@@ -98,7 +98,7 @@ func TestNativeRetention(t *testing.T) {
 			assertReviews(version, map[string]string{"reviewer-one": "approved", "reviewer-two": "changes_requested"})
 		}
 		for _, update := range []struct{ actor, decision string }{{"reviewer-two", "approved"}, {"reviewer-one", "changes_requested"}} {
-			appendRetentionReviewEvidence(t, f, []tracker.ChangeReview{{ID: hubapi.NewID("review"), VersionID: first.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: update.actor}, Decision: update.decision, CreatedAt: f.service.config.now()}})
+			appendRetentionReviewEvidence(t, f, []tracker.ChangeReview{{ID: hubapi.NewID("review"), VersionID: first.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: update.actor}, Decision: update.decision, CreatedAt: f.service.config.Clock()}})
 			selected := readRetentionReviewEvidence(t, f, first.ID)
 			if !slices.ContainsFunc(selected, func(review tracker.ChangeReview) bool {
 				return review.Actor.PrincipalID == update.actor && review.Decision == update.decision
@@ -128,7 +128,7 @@ func TestNativeRetention(t *testing.T) {
 		const budget = corestore.MaxPageSize
 		reviews := make([]tracker.ChangeReview, 0, budget*3+2)
 		for range budget*3 + 2 {
-			reviews = append(reviews, tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, Decision: "commented", CreatedAt: f.service.config.now()})
+			reviews = append(reviews, tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, Decision: "commented", CreatedAt: f.service.config.Clock()})
 		}
 		appendRetentionReviewEvidence(t, f, reviews)
 		content := eventstore.NewContent(f.service.runDetailStore())
@@ -152,12 +152,12 @@ func TestNativeRetention(t *testing.T) {
 		if count := unknown(); count != 0 {
 			t.Fatalf("unknown=%d, want 0", count)
 		}
-		first := appendRetentionReviewEvidence(t, f, []tracker.ChangeReview{{ID: hubapi.NewID("review"), VersionID: version.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, Decision: "approved", CreatedAt: f.service.config.now()}})[0]
+		first := appendRetentionReviewEvidence(t, f, []tracker.ChangeReview{{ID: hubapi.NewID("review"), VersionID: version.ID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, Decision: "approved", CreatedAt: f.service.config.Clock()}})[0]
 		ref, err := content.PreparePayload(t.Context(), f.project.OrganizationID, []byte(`{"version_id":42}`))
 		if err != nil {
 			t.Fatal(err)
 		}
-		malformed := eventstore.Evidence{OrganizationID: f.project.OrganizationID, ChangeID: f.change.ID, VersionID: new(version.ID), Kind: "review", ActorKind: "human", ActorPrincipalID: "example-reviewer", Decision: "commented", CreatedAt: f.service.config.now(), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize, PayloadFormatVersion: 2}
+		malformed := eventstore.Evidence{OrganizationID: f.project.OrganizationID, ChangeID: f.change.ID, VersionID: new(version.ID), Kind: "review", ActorKind: "human", ActorPrincipalID: "example-reviewer", Decision: "commented", CreatedAt: f.service.config.Clock(), PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize, PayloadFormatVersion: 2}
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), malformed); return err }); err != nil {
 			t.Fatal(err)
 		}

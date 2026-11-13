@@ -192,7 +192,7 @@ func testProjectPagePublication(t *testing.T, service *Service, f nativeFixture)
 			return err
 		}
 		candidate.Models, err = r.OrganizationModels(t.Context())
-		candidate.SourceAt = service.config.now()
+		candidate.SourceAt = service.config.Clock()
 		return err
 	}); err != nil {
 		t.Fatal(err)

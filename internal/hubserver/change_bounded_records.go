@@ -227,7 +227,7 @@ func (s *Service) recheckChangeReadAuthority(ctx context.Context, scope hubscope
 			return err
 		}
 		if scope.Credential.Hosted != nil {
-			member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, false), s.config.now())
+			member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, false), s.config.Clock())
 			if err != nil {
 				return err
 			}
@@ -424,7 +424,7 @@ func (s *Service) readBoundedChangeSummary(ctx context.Context, scope hubscope.N
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	detail := tracker.ChangeDetail{Change: change}
 	if current.ID == "" {
-		return changerequest.SummarizeCurrentVersion(detail, "", "", s.config.now(), false), nil
+		return changerequest.SummarizeCurrentVersion(detail, "", "", s.config.Clock(), false), nil
 	}
 	var version tracker.ChangeVersion
 	var evidence []eventstore.Evidence
@@ -476,7 +476,7 @@ func (s *Service) readBoundedChangeSummary(ctx context.Context, scope hubscope.N
 		}
 	}
 	policyID, reviewID := changerequest.CurrentPolicyIdentities(&version, approved.Policy, approved.ReviewPolicy)
-	return s.summarizeChangeWithAuditDispositions(ctx, scope, detail, policyID, reviewID, s.config.now(), prior)
+	return s.summarizeChangeWithAuditDispositions(ctx, scope, detail, policyID, reviewID, s.config.Clock(), prior)
 }
 
 func (s *Service) readBoundedChangePushes(ctx context.Context, scope hubscope.NativeScope, item string, versions []tracker.ChangeVersion) ([]tracker.ChangePublicationPush, error) {

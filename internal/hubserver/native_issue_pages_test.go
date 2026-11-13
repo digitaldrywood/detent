@@ -55,7 +55,7 @@ func TestNativeWorkListOrder(t *testing.T) {
 				if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE issues SET last_activity_at=$1 WHERE organization_id=$2 AND project_id=$3 AND native_id=$4", pair.item.LastActivityAt, f.project.OrganizationID, f.project.ID, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: issue.WorkItemID}, f.service.config.now()); err != nil {
+				if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: issue.WorkItemID}, f.service.config.Clock()); err != nil {
 					t.Fatal(err)
 				}
 				issues = append(issues, issue)
@@ -110,7 +110,7 @@ func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 		if count, err := result.RowsAffected(); err != nil || count != 1 {
 			t.Fatalf("activity fixture affected%d rows: %v", count, err)
 		}
-		if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: issue.WorkItemID}, f.service.config.now()); err != nil {
+		if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: issue.WorkItemID}, f.service.config.Clock()); err != nil {
 			t.Fatal(err)
 		}
 		issue.State, issue.Terminal, issue.Priority, issue.LastActivityAt = state.Name, state.Terminal, &priority, activity
@@ -171,7 +171,7 @@ func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/archive", f.token,
 					archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive-" + string(issue.WorkItemID)}, ExpectedRevision: current.Revision})
 				requireNativeStatus(t, response, http.StatusOK)
-				if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: issue.WorkItemID}, f.service.config.now()); err != nil {
+				if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: issue.WorkItemID}, f.service.config.Clock()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -195,8 +195,8 @@ func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 	if len(replay.Items) != 1 || replay.Items[0].WorkItemID != original[2].WorkItemID || !replay.Items[0].Archived || !replay.Items[0].LastActivityAt.After(original[2].LastActivityAt) {
 		t.Fatalf("replayed cursor lost frozen order or current detail: %#v", replay.Items)
 	}
-	expires := f.service.config.now().Add(2 * time.Hour)
-	f.service.config.now = func() time.Time { return expires }
+	expires := f.service.config.Clock().Add(2 * time.Hour)
+	f.service.config.Clock = func() time.Time { return expires }
 	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items", f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var fresh tracker.NativeIssuePage

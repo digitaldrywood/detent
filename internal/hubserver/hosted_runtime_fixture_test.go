@@ -27,7 +27,7 @@ func configuredPlanPostgresServices(t *testing.T, plans hostedplans.HostedPlansC
 			t.Fatal(err)
 		}
 		d := &database{postgres: repo, billingRepository: repo, hostedOrganization: org, billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
-		s := &Service{database: d, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), Plans: &plans, EntitlementAdministrator: "operator"}, now: time.Now, Logger: discardLogger()}}
+		s := &Service{database: d, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), Plans: &plans, EntitlementAdministrator: "operator"}, Clock: time.Now, Logger: discardLogger()}}
 		if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(s.config.Hosted))); err != nil {
 			t.Fatal(err)
 		}

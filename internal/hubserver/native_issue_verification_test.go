@@ -147,7 +147,7 @@ func (v verificationFixture) file(t *testing.T, filer, key string, actor *tracke
 		if err != nil {
 			t.Fatal(err)
 		}
-		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: v.service.config.now(), Data: tracker.CollaborationData{Revision: plan.Issue.Revision, Fields: plan.Fields}})
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: v.service.config.Clock(), Data: tracker.CollaborationData{Revision: plan.Issue.Revision, Fields: plan.Fields}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -215,7 +215,7 @@ func TestNativeIssueVerificationEntersPendingByFiler(t *testing.T) {
 			if test.workspace {
 				prepare = append(prepare, func(issue tracker.NativeIssue) {
 					if err := v.service.config.TenantRepository.WriteTenant(t.Context(), issue.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-						return w.PutWorkspaceItem(t.Context(), claimstore.WorkspaceItem{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, WorkspaceID: "workspace_" + string(issue.WorkItemID), CreatedAt: v.service.config.now()})
+						return w.PutWorkspaceItem(t.Context(), claimstore.WorkspaceItem{OrganizationID: issue.OrganizationID, ProjectID: issue.ProjectID, WorkItemID: issue.WorkItemID, WorkspaceID: "workspace_" + string(issue.WorkItemID), CreatedAt: v.service.config.Clock()})
 					}); err != nil {
 						t.Fatal(err)
 					}

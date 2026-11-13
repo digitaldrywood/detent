@@ -28,7 +28,7 @@ func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	runnerID, machineID := "runner_"+strings.Repeat("a", 32), "machine_"+strings.Repeat("b", 32)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: slog.Default(), now: func() time.Time { return now }}}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: slog.Default(), Clock: func() time.Time { return now }}}
 	e := echo.New()
 	e.Use(middleware.RecoverWithConfig(middleware.RecoverConfig{DisablePrintStack: true}))
 	service.registerPostgresRoutes(e)

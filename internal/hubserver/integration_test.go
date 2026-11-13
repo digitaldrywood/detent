@@ -313,7 +313,7 @@ func TestGitHubImportCheckpointCutoverAndNativeIsolation(t *testing.T) {
 				t.Fatalf("native writes queued GitHub mutations: %d, %v", count, err)
 			}
 			err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-				_, err := r.(projectstore.GitHubIntakeReader).NextGitHubIntake(t.Context(), f.service.config.now())
+				_, err := r.(projectstore.GitHubIntakeReader).NextGitHubIntake(t.Context(), f.service.config.Clock())
 				return err
 			})
 			if !errors.Is(err, corestore.ErrNotFound) {
@@ -504,7 +504,7 @@ func TestCutoverSourceClosureAndProjectionCoalescing(t *testing.T) {
 			if worked, err := f.service.ProcessOutbox(t.Context()); err != nil || worked {
 				t.Fatalf("newer summary passed uncertain prior publication: %t, %v", worked, err)
 			}
-			if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE github_outbound SET next_attempt_at=$3 WHERE organization_id=$1 AND project_id=$2 AND status='retrying'", f.project.OrganizationID, f.project.ID, f.service.config.now().Add(-time.Second)); err != nil {
+			if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE github_outbound SET next_attempt_at=$3 WHERE organization_id=$1 AND project_id=$2 AND status='retrying'", f.project.OrganizationID, f.project.ID, f.service.config.Clock().Add(-time.Second)); err != nil {
 				t.Fatal(err)
 			}
 			for range 2 {
@@ -559,7 +559,7 @@ func TestCutoverSourceClosureAndProjectionCoalescing(t *testing.T) {
 func cutoverCredentialFixture(t *testing.T, f nativeFixture) (string, string) {
 	t.Helper()
 	id, token := hubapi.NewID("credential"), hubapi.NewID("token")
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: id, Name: "Example scoped administrator", Hash: apikey.HashToken(token), Scope: "admin", KeyScope: "admin", NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
@@ -636,7 +636,7 @@ func TestCutoverRefusesChangedAuthoritySourcesAndRollsBack(t *testing.T) {
 				other := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "Other organization")
 				target, status = other.base+"/integration/cutover", http.StatusUnauthorized
 			case "revoked replay":
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$3 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, id, f.service.config.now()); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$3 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, id, f.service.config.Clock()); err != nil {
 					t.Fatal(err)
 				}
 				status = http.StatusUnauthorized
@@ -653,7 +653,7 @@ func TestCutoverRefusesChangedAuthoritySourcesAndRollsBack(t *testing.T) {
 				}
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					owner := w.(projectstore.GitHubOutboxWriter)
-					now := f.service.config.now()
+					now := f.service.config.Clock()
 					if err := owner.EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: tracker.NativeWorkItemID(first.WorkItemID), Key: "uncertain-source", Repository: "example-org/example-project", IssueNumber: 1, Kind: string(MutationWorkflowLabel), CreatedAt: now, Payload: payload}); err != nil {
 						return err
 					}
@@ -673,7 +673,7 @@ func TestCutoverRefusesChangedAuthoritySourcesAndRollsBack(t *testing.T) {
 			case "ambiguous queue positions":
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					for _, scope := range []string{"source-first", "source-second"} {
-						if err := w.PutQueueEntry(t.Context(), claimstore.QueueEntry{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: tracker.NativeWorkItemID(first.WorkItemID), Scope: scope, State: "Todo", Rank: scope, CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now()}); err != nil {
+						if err := w.PutQueueEntry(t.Context(), claimstore.QueueEntry{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: tracker.NativeWorkItemID(first.WorkItemID), Scope: scope, State: "Todo", Rank: scope, CreatedAt: f.service.config.Clock(), UpdatedAt: f.service.config.Clock()}); err != nil {
 							return err
 						}
 					}
@@ -782,7 +782,7 @@ func TestProjectIntegrationToolRechecksAuthorityBeforeLiveRead(t *testing.T) {
 	repository := &integrationRevokingRepository{Repository: postgresRepository}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	var live atomic.Int32
-	service := &Service{echo: echo.New(), database: &database{postgres: postgresRepository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: postgresRepository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now },
+	service := &Service{echo: echo.New(), database: &database{postgres: postgresRepository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: postgresRepository, RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return now },
 		ReconcileBackend: &gitHubRepairFixture{},
 		GitHubAppInstallation: func(context.Context, string) (GitHubAppInstallation, error) {
 			live.Add(1)
@@ -790,7 +790,7 @@ func TestProjectIntegrationToolRechecksAuthorityBeforeLiveRead(t *testing.T) {
 		}}}
 	service.registerNativeRoutes(service.echo)
 	service.registerOperatorTools(service.echo)
-	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.Clock))
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for _, org := range organizations {
 		seedStartupOrganization(t, repository, org)

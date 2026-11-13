@@ -126,7 +126,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope hubscope.NativeS
 			previous = r
 		}
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	next := previous
 	switch request := input.(type) {
 	case projectActionRequest:
@@ -225,7 +225,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope hubscope.NativeS
 			}
 		}
 		if method != "DELETE" {
-			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
 				return err
 			}
 		}

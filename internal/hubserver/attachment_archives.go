@@ -73,7 +73,7 @@ func (s *Service) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveR
 	if ref.BindingID != "" {
 		identity = ref.BindingID + "\n" + identity
 	}
-	record := attachmentstore.ArchiveRecord{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: "att_" + artifact.Digest([]byte(string(scope.Organization) + "\n" + identity))[:32], Uploader: scope.Credential.ID, CreatedAt: s.config.now(), Reference: ref}
+	record := attachmentstore.ArchiveRecord{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: "att_" + artifact.Digest([]byte(string(scope.Organization) + "\n" + identity))[:32], Uploader: scope.Credential.ID, CreatedAt: s.config.Clock(), Reference: ref}
 	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err

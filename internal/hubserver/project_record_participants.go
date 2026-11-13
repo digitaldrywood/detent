@@ -40,7 +40,7 @@ type tenantProjectParticipants struct {
 
 func (p tenantProjectParticipants) CreateProject(ctx context.Context, w tenantstore.Writer, actor tenantstore.ProjectActor, record projectstore.Record) error {
 	s := p.service
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	if s.database.plansService().Plans() != nil {
 		entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
 		if err != nil {
@@ -75,7 +75,7 @@ func (p tenantProjectParticipants) CreateProject(ctx context.Context, w tenantst
 
 func (p tenantProjectParticipants) UpdateProject(ctx context.Context, w tenantstore.Writer, actor tenantstore.ProjectActor, _ projectstore.Record, after projectstore.Record) error {
 	s := p.service
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	if s.database.plansService().Plans() != nil {
 		entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
 		if err != nil {

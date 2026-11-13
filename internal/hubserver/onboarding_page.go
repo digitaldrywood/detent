@@ -102,10 +102,10 @@ func (s *Service) maintainOnboardingPage(ctx context.Context, organization track
 		if !ok {
 			return errors.New("onboarding page storage unavailable")
 		}
-		return writer.PublishOnboardingPage(ctx, candidate, onboardingpage.Summary(value), s.config.now())
+		return writer.PublishOnboardingPage(ctx, candidate, onboardingpage.Summary(value), s.config.Clock())
 	})
 	if err == nil && s.config.Logger != nil {
-		s.config.Logger.LogAttrs(ctx, slog.LevelDebug, "project onboarding page", slog.String("organization_id", string(organization)), slog.Int64("generation", candidate.Generation), slog.Duration("projection_lag", s.config.now().Sub(candidate.SourceAt)))
+		s.config.Logger.LogAttrs(ctx, slog.LevelDebug, "project onboarding page", slog.String("organization_id", string(organization)), slog.Int64("generation", candidate.Generation), slog.Duration("projection_lag", s.config.Clock().Sub(candidate.SourceAt)))
 	}
 	return err
 }

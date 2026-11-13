@@ -23,7 +23,7 @@ func TestBoardProjectionBoundsReporterRelationshipsAcrossTenants(t *testing.T) {
 	t.Parallel()
 	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
 	repository := service.config.TenantRepository
-	now := service.config.now().UTC().Truncate(time.Microsecond)
+	now := service.config.Clock().UTC().Truncate(time.Microsecond)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 		fixture := newNativeFixture(t, service, org, "Example bounded projection")
 		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: fixture.project.ID, WorkItemID: "wi_bounds", Number: 1, Revision: 1, Profile: "native"}, Title: "Example", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "owner"}, CreatedAt: now, UpdatedAt: now, DependencyReady: true,
@@ -113,7 +113,7 @@ func TestBoardSummaryDiscardsEmptyHistoricalLanesAcrossTenants(t *testing.T) {
 	t.Parallel()
 	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
 	repository := service.config.TenantRepository
-	now := service.config.now().UTC().Truncate(time.Microsecond)
+	now := service.config.Clock().UTC().Truncate(time.Microsecond)
 	projects := map[tracker.OrganizationID]tracker.ProjectID{}
 	latest := map[tracker.OrganizationID]string{}
 	for tenant, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {

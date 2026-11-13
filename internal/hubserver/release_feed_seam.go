@@ -25,7 +25,7 @@ func releaseNotesViewer(credential hubapi.APICredential) releasefeed.Viewer {
 func (s *Service) releaseFeed() *releasefeed.Service {
 	accounts, _ := s.config.AccessRepository.(accountstore.Repository)
 	return releasefeed.New(releasefeed.Deps{
-		Builds: s.releaseNotes, Version: s.config.Version, Accounts: accounts, Organization: s.accessOrganization(), Now: s.config.now,
+		Builds: s.releaseNotes, Version: s.config.Version, Accounts: accounts, Organization: s.accessOrganization(), Now: s.config.Clock,
 		Viewer: func(c echo.Context) (releasefeed.Viewer, error) {
 			credential, _, err := s.appCredential(c)
 			return releaseNotesViewer(credential), err

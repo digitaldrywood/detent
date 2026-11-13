@@ -146,7 +146,7 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 	case operatortool.AppBootstrapPayload:
 		session := auth.Session{}
 		if credential.SessionHash != "" {
-			session, err = s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+			session, err = s.storedWebSession(ctx, credential.SessionHash, s.config.Clock())
 			if err != nil {
 				return result, hubscope.OperatorAuthorizationError(err)
 			}
@@ -169,7 +169,7 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 			ObservedAt string `json:"observed_at"`
 			Freshness  string `json:"freshness"`
 			appBootstrap
-		}{s.config.now().UTC().Format(time.RFC3339Nano), "current_observation", bootstrap}
+		}{s.config.Clock().UTC().Format(time.RFC3339Nano), "current_observation", bootstrap}
 	case operatortool.AppUpdates:
 		updates, err := s.readAppUpdates(ctx, credential)
 		if err != nil {
@@ -182,7 +182,7 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 			ObservedAt string `json:"observed_at"`
 			Freshness  string `json:"freshness"`
 			appUpdates
-		}{s.config.now().UTC().Format(time.RFC3339Nano), "current_observation", updates}
+		}{s.config.Clock().UTC().Format(time.RFC3339Nano), "current_observation", updates}
 
 	}
 	raw, err := json.Marshal(payload)

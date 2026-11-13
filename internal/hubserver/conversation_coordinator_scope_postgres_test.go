@@ -24,7 +24,7 @@ func TestConversationCoordinatorRejectsRecordOutsideScope(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := &Service{config: Config{TenantRepository: repository, now: func() time.Time { return now }}}
+	service := &Service{config: Config{TenantRepository: repository, Clock: func() time.Time { return now }}}
 	coordinator := &conversationTurnCoordinator{server: service, service: &conversationService{Server: service.conversationServer()}}
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for _, organization := range organizations {

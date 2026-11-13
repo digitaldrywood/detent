@@ -142,7 +142,7 @@ func (s *Service) readRelationshipPageModel(ctx context.Context, scope hubscope.
 			return page, err
 		}
 		cursor.After = string(cursorAfter)
-		cursor.Expires = s.config.now().Add(time.Hour).Unix()
+		cursor.Expires = s.config.Clock().Add(time.Hour).Unix()
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 		if err != nil {
 			return page, err
@@ -268,7 +268,7 @@ func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope 
 			return page, err
 		}
 		cursor.After = string(cursorAfter)
-		cursor.Expires = s.config.now().Add(time.Hour).Unix()
+		cursor.Expires = s.config.Clock().Add(time.Hour).Unix()
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 		if err != nil {
 			return page, err

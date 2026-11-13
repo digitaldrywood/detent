@@ -51,7 +51,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope hubscope.
 	if current.Stage == "finished" {
 		return json.Marshal(current)
 	}
-	if current.RetryAfter != nil && s.config.now().Before(*current.RetryAfter) {
+	if current.RetryAfter != nil && s.config.Clock().Before(*current.RetryAfter) {
 		return nil, &hubapi.NativeError{Code: "invalid_request", Message: "Import retry is not ready", Status: http.StatusTooManyRequests, PublicMessage: true}
 	}
 	project, err := s.readProjectRecord(ctx, scope)
@@ -63,18 +63,18 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope hubscope.
 		return nil, hubapi.NativePublicInvalid("Manual intake is disabled")
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "github_integration", s.config.now()))
+		return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "github_integration", s.config.Clock()))
 	}); err != nil {
 		return nil, err
 	}
 	page, fetchErr := s.fetchGitHubImportRecordPage(ctx, scope, integration, current)
 	next := current
 	next.Revision++
-	next.ObservedAt = hubapi.FormatHubTime(s.config.now())
+	next.ObservedAt = hubapi.FormatHubTime(s.config.Clock())
 	var records []projectstore.GitHubImportRecord
 	var historical *historicalGitHubImportPlan
 	if fetchErr != nil {
-		retry := s.config.now().Add(time.Minute)
+		retry := s.config.Clock().Add(time.Minute)
 		if page.RetryAt.After(retry) {
 			retry = page.RetryAt
 		}
@@ -117,7 +117,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope hubscope.
 				return nil, hubapi.NativePublicInvalid("GitHub import returned the wrong issue")
 			}
 			source := *page.Issue
-			snapshot := linkedSnapshotFromSource(source, s.config.now())
+			snapshot := linkedSnapshotFromSource(source, s.config.Clock())
 			issue, err := s.importGitHubSnapshotRecord(ctx, intakeScope, fmt.Sprintf("import:%s:%d", id, revision), tracker.GitHubIssuePreview{Number: source.Number, URL: source.URL, ID: source.NodeID}, snapshot, "Triage", nil)
 			if err != nil {
 				return nil, err
@@ -193,7 +193,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope hubscope.
 		}
 	}
 	return s.tenantReceiptMutation(ctx, scope, operation, tracker.Mutation{IdempotencyKey: key}, input, next, func(w tenantstore.Writer) error {
-		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.now())); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.Clock())); err != nil {
 			return err
 		}
 		latestProject, err := w.ProjectRecord(ctx, scope.Project)
@@ -219,7 +219,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope hubscope.
 				return err
 			}
 		}
-		latest.WorkItemID, latest.Stage, latest.Cursor, latest.Pages, latest.Status, latest.Gaps, latest.LastError, latest.RetryAfter, latest.ObservedAt, latest.EditSequence = next.WorkItemID, next.Stage, next.Cursor, int64(next.Pages), next.Status, next.Gaps, next.LastError, next.RetryAfter, s.config.now(), next.EditSequence
+		latest.WorkItemID, latest.Stage, latest.Cursor, latest.Pages, latest.Status, latest.Gaps, latest.LastError, latest.RetryAfter, latest.ObservedAt, latest.EditSequence = next.WorkItemID, next.Stage, next.Cursor, int64(next.Pages), next.Status, next.Gaps, next.LastError, next.RetryAfter, s.config.Clock(), next.EditSequence
 		if next.SourceUpdatedAt != "" {
 			value, err := hubapi.ParseTimeValue(next.SourceUpdatedAt)
 			if err != nil {
@@ -327,7 +327,7 @@ func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope hubsc
 			return plan, err
 		}
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	content := eventstore.NewContent(s.runDetailStore())
 	if job.Stage == "issue" && !plan.create && (page.Issue == nil || plan.issue.Provenance == nil || plan.issue.Provenance.Provider != "github" || plan.issue.Provenance.ExternalID != page.Issue.NodeID) {
 		return plan, eventstore.ErrInvalidRecord

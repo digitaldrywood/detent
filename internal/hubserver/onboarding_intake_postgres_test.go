@@ -22,7 +22,7 @@ func TestProjectGitHubBatchUsesPostgresRecords(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	details := &memoryRunDetails{}
 	now := time.Now().UTC()
-	service := &Service{database: &database{hostedOrganization: "org_example"}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }}}
+	service := &Service{database: &database{hostedOrganization: "org_example"}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, Clock: func() time.Time { return now }}}
 	if err := repository.WriteTenant(t.Context(), "org_example", corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_example", Name: "Example", CreatedAt: now}); err != nil {
 			return err

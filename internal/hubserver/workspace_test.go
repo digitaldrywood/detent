@@ -63,7 +63,7 @@ func newWorkspaceFixture(t *testing.T, cfg *WorkspaceConfig, clocks ...func() ti
 	}
 	config := Config{Workspace: cfg}
 	if len(clocks) != 0 {
-		config.now = clocks[0]
+		config.Clock = clocks[0]
 	}
 	return workspaceFixtureOn(t, newDefaultNativeFixture(t, config))
 }
@@ -77,7 +77,7 @@ func workspaceFixtureOn(t *testing.T, f nativeFixture) workspaceFixture {
 	}
 	ownerID := credential.ID
 	token := hubapi.TokenResponse{ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}
-	now := service.config.now().UTC().Truncate(time.Microsecond)
+	now := service.config.Clock().UTC().Truncate(time.Microsecond)
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: "operator-workspace-other", Hash: apikey.HashToken(token.Token), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
@@ -550,7 +550,7 @@ func workspaceRunnerFixtureOn(t *testing.T, f workspaceFixture) *workspaceRunner
 		"backend_isolation": r.redemption.BackendIsolation, "capacity": 8, "version": "test", "workspace_capabilities": workspaceTestCapabilities,
 		"workspace_isolation": workspacesession.IsolationContainer}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", r.redemption.Credential, report), http.StatusOK)
-	report["capacity_configuration"] = runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.now()}
+	report["capacity_configuration"] = runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.Clock()}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, report), http.StatusOK)
 	return &workspaceRunnerFixture{workspaceFixture: f, runner: r}
 }
@@ -880,7 +880,7 @@ func TestWorkspaceHeartbeatRenewsTheLease(t *testing.T) {
 		bind, lease := f.bound(t)
 		// A lease about to run out is the case the defect was about: before
 		// the fix the heartbeat wrote workspace_sessions and left this alone.
-		about := f.service.config.now().UTC().Add(2 * time.Second)
+		about := f.service.config.Clock().UTC().Add(2 * time.Second)
 		f.setLeaseExpiry(t, lease.ID, about)
 		requireNativeStatus(t, f.workerPost(t, bind.Session.ID, "heartbeat", workspaceHeartbeatRequest{
 			workspaceWorkerIdentity: workspaceIdentity(lease), State: workspacesession.StateReady,
@@ -894,7 +894,7 @@ func TestWorkspaceHeartbeatRenewsTheLease(t *testing.T) {
 		}
 		// The window is the workspace's own TTL, because that is what the
 		// workspace machine measures lease_lost from.
-		if ahead := renewed.Sub(f.service.config.now().UTC()); ahead > workspacesession.LeaseTTL || ahead < workspacesession.LeaseTTL-10*time.Second {
+		if ahead := renewed.Sub(f.service.config.Clock().UTC()); ahead > workspacesession.LeaseTTL || ahead < workspacesession.LeaseTTL-10*time.Second {
 			t.Fatalf("lease renewed %s ahead, want about %s", ahead, workspacesession.LeaseTTL)
 		}
 	})
@@ -912,11 +912,11 @@ func TestWorkspaceHeartbeatRenewsTheLease(t *testing.T) {
 		if !renewed.Before(first) {
 			t.Fatalf("lease expiry = %s, want it re-cut from now inside the claim's %s window", renewed, first)
 		}
-		f.setLeaseExpiry(t, lease.ID, f.service.config.now().UTC().Add(time.Second))
+		f.setLeaseExpiry(t, lease.ID, f.service.config.Clock().UTC().Add(time.Second))
 		requireNativeStatus(t, f.workerPost(t, bind.Session.ID, "heartbeat", workspaceHeartbeatRequest{
 			workspaceWorkerIdentity: workspaceIdentity(lease), Capabilities: workspaceTestCapabilities}), http.StatusOK)
 		again, _ := f.leaseWindow(t, lease.ID)
-		if !again.After(f.service.config.now().UTC().Add(workspacesession.LeaseTTL - 10*time.Second)) {
+		if !again.After(f.service.config.Clock().UTC().Add(workspacesession.LeaseTTL - 10*time.Second)) {
 			t.Fatalf("lease expiry = %s, want a second renewal a lease TTL ahead", again)
 		}
 	})
@@ -940,12 +940,12 @@ func TestWorkspaceHeartbeatRenewsTheLease(t *testing.T) {
 		// A renewal that resurrected a lease the hub had already given up on
 		// would put a runner back on a worktree the workspace machine has
 		// already failed with lease_lost.
-		f.setLeaseExpiry(t, lease.ID, f.service.config.now().UTC().Add(-time.Second))
+		f.setLeaseExpiry(t, lease.ID, f.service.config.Clock().UTC().Add(-time.Second))
 		requireNativeCode(t, f.workerPost(t, bind.Session.ID, "heartbeat", workspaceHeartbeatRequest{
 			workspaceWorkerIdentity: workspaceIdentity(lease), State: workspacesession.StateReady,
 			Capabilities: workspaceTestCapabilities}), http.StatusConflict, "stale_execution")
 		after, _ := f.leaseWindow(t, lease.ID)
-		if after.After(f.service.config.now().UTC()) {
+		if after.After(f.service.config.Clock().UTC()) {
 			t.Fatalf("lease expiry = %s, want the expired window left where it was", after)
 		}
 	})
@@ -1168,12 +1168,12 @@ func TestWorkspaceRequestAfterThePreviousOneClosedIsAccepted(t *testing.T) {
 func TestWorkspaceLifecycleUsesConfiguredTenant(t *testing.T) {
 	t.Parallel()
 	base := newDefaultNativeFixture(t, Config{})
-	clock := &leaseTestClock{value: base.service.config.now().UTC().Truncate(time.Microsecond)}
+	clock := &leaseTestClock{value: base.service.config.Clock().UTC().Truncate(time.Microsecond)}
 	fixtures := []nativeFixture{base, newNativeFixture(t, base.service, base.project.OrganizationID+"_second", "Second project")}
 	services := make([]*workspaceService, 0, 2)
 	for _, fixture := range fixtures {
 		subject := fixture.create(t, "lifecycle-subject")
-		server := &Service{config: Config{TenantRepository: base.service.config.TenantRepository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(fixture.project.OrganizationID)}, Logger: discardLogger(), now: clock.Now}}
+		server := &Service{config: Config{TenantRepository: base.service.config.TenantRepository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(fixture.project.OrganizationID)}, Logger: discardLogger(), Clock: clock.Now}}
 		service := newWorkspaceService(server, WorkspaceConfig{Enabled: true})
 		if server.accessOrganization() != fixture.project.OrganizationID {
 			t.Fatalf("configured tenant resolved to %q", server.accessOrganization())
@@ -1277,7 +1277,7 @@ func TestWorkspaceItemsAreNotOrdinaryWork(t *testing.T) {
 	// spent dispatch record, so neither lane picks it up again: before the
 	// fix this was the state the dogfood runner found it in.
 	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(),
-		"UPDATE workspace_items SET closed_at = $1 WHERE organization_id=$2 AND project_id=$3 AND work_item_id = $4", f.service.config.now(), f.project.OrganizationID, f.project.ID, item); err != nil {
+		"UPDATE workspace_items SET closed_at = $1 WHERE organization_id=$2 AND project_id=$3 AND work_item_id = $4", f.service.config.Clock(), f.project.OrganizationID, f.project.ID, item); err != nil {
 		t.Fatal(err)
 	}
 	if reclaimed := f.ordinaryClaim(t, item, "ordinary-closed"); reclaimed.Code == http.StatusOK {
@@ -1479,7 +1479,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{
 					"display_name": "Runner", "capacity": 8, "version": minimumSupportedRunnerVersion, "backend_isolation": f.runner.redemption.BackendIsolation,
 					"workspace_capabilities": capabilities, "workspace_isolation": isolation,
-					"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.now()},
+					"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.Clock()},
 				}), http.StatusOK)
 			}
 			heartbeat(workspacesession.Capabilities{Files: true, Diff: true, Exec: true}, workspacesession.IsolationContainer)
@@ -1522,8 +1522,8 @@ func TestWorkspaceClaimable(t *testing.T) {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", owner.redemption.Credential, finish), http.StatusOK)
 				}
 				if test.expired {
-					now := f.service.config.now().UTC()
-					f.service.config.now = func() time.Time { return now }
+					now := f.service.config.Clock().UTC()
+					f.service.config.Clock = func() time.Time { return now }
 					if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET updated_at=$3 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, attempt, now.Add(-f.service.workspaces.config.RetainAfterRun)); err != nil {
 						t.Fatal(err)
 					}
@@ -1605,7 +1605,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newWorkspaceRunnerFixture(t)
 			admin := hostedPostgresAdmin(t, f.service)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 8, "version": minimumSupportedRunnerVersion, "backend_isolation": f.runner.redemption.BackendIsolation, "workspace_capabilities": workspacesession.Capabilities{Files: true, Diff: true, Exec: true}, "workspace_isolation": workspacesession.IsolationContainer, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.now()}}), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 8, "version": minimumSupportedRunnerVersion, "backend_isolation": f.runner.redemption.BackendIsolation, "workspace_capabilities": workspacesession.Capabilities{Files: true, Diff: true, Exec: true}, "workspace_isolation": workspacesession.IsolationContainer, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.Clock()}}), http.StatusOK)
 			bad := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
 			other := f.create(t, "Healthy workspace subject")
 			good := f.opened(t, f.token, map[string]any{"work_item_id": string(other.WorkItemID)})
@@ -1657,7 +1657,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			if !test.wantHealthy {
 				err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-					_, err := f.service.nativeWorkspaceClaimAllowed(t.Context(), r, scope, tracker.NativeWorkItemID(badItem), f.service.config.now())
+					_, err := f.service.nativeWorkspaceClaimAllowed(t.Context(), r, scope, tracker.NativeWorkItemID(badItem), f.service.config.Clock())
 					return err
 				})
 				if !errors.Is(err, test.failure) {
@@ -1707,7 +1707,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 		f := newWorkspaceRunnerFixture(t)
 		heartbeat := func() {
 			t.Helper()
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 8, "version": minimumSupportedRunnerVersion, "backend_isolation": f.runner.redemption.BackendIsolation, "workspace_capabilities": workspacesession.Capabilities{Files: true, Diff: true, Exec: true}, "workspace_isolation": workspacesession.IsolationContainer, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.now()}}), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 8, "version": minimumSupportedRunnerVersion, "backend_isolation": f.runner.redemption.BackendIsolation, "workspace_capabilities": workspacesession.Capabilities{Files: true, Diff: true, Exec: true}, "workspace_isolation": workspacesession.IsolationContainer, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.Clock()}}), http.StatusOK)
 		}
 		ordinary := []tracker.NativeWorkItemID{f.issue.WorkItemID}
 		for index := range nativeClaimCandidatePageSize {
@@ -1733,7 +1733,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 		}
 		request := tracker.NativeClaim{PolicyID: f.policy, MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("uncrowded-workspace"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-			query := nativeTenantCandidateQuery(hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, request, "", f.service.config.now())
+			query := nativeTenantCandidateQuery(hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, request, "", f.service.config.Clock())
 			query.WorkspaceLane, query.Limit = false, nativeClaimCandidatePageSize
 			page, err := r.CandidatePage(t.Context(), query)
 			if err != nil {
@@ -1900,7 +1900,7 @@ func TestWorkspaceUnbindReleasesTheLease(t *testing.T) {
 func (f *workspaceRunnerFixture) reportProviderCapacity(t *testing.T, capacity int) {
 	t.Helper()
 	report := providercapacity.Report{Provider: "openai", Backend: "codex", AccountAlias: "local",
-		Models: []string{"gpt-6-astra"}, MaxConcurrent: 4, Availability: "available", ObservedAt: f.service.config.now().UTC()}
+		Models: []string{"gpt-6-astra"}, MaxConcurrent: 4, Availability: "available", ObservedAt: f.service.config.Clock().UTC()}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost,
 		f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential,
 		map[string]any{"display_name": "Runner", "capacity": capacity, "version": "test", "backend_isolation": f.runner.redemption.BackendIsolation,

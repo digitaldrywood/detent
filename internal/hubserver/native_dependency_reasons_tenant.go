@@ -130,7 +130,7 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 		if target.ID != row.ID || target.Revision != row.Revision || target.EventSequence != row.EventSequence {
 			return hubapi.NativeConflict(tracker.Revision(request.ExpectedRevision))
 		}
-		now := s.config.now().UTC()
+		now := s.config.Clock().UTC()
 		if scope.Credential.Scope == hubapi.APIScopeWorker {
 			if err := s.authorizeDependencyReasonLease(ctx, w, scope, anchorRow, request.Mutation, pinned, requirements, now); err != nil {
 				return err
@@ -201,7 +201,7 @@ func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantst
 		if err != nil {
 			return err
 		}
-		now = s.config.now().UTC()
+		now = s.config.Clock().UTC()
 	}
 	if scope.Credential.EntryKey != nil || identity.OrganizationID != scope.Organization || identity.RunnerID != scope.Credential.Runner.RunnerID || identity.RemovedAt != nil || !identity.ExpiresAt.After(now) || identity.State == "disabled" || credential.Scope != "worker" || credential.Kind != "service" || !credential.Valid(scope.Credential.Hash, now) {
 		return hubscope.RunnerUnauthorized()

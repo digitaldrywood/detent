@@ -108,7 +108,7 @@ func dashboardPostgresAppend(t *testing.T, f hostedSecurityFixture, name string)
 		}
 		_, err = w.CreateWorkItem(t.Context(), corestore.WorkItem{
 			OrganizationID: "org_security", ProjectID: f.project, NativeID: tracker.NativeWorkItemID("wi_" + name),
-			Number: number, Title: name, WorkflowStateName: new("Todo"), CreatedAt: f.service.config.now(),
+			Number: number, Title: name, WorkflowStateName: new("Todo"), CreatedAt: f.service.config.Clock(),
 		})
 		return err
 	}); err != nil {
@@ -141,7 +141,7 @@ func dashboardPostgresIssue(t *testing.T, f hostedSecurityFixture, number int64)
 	t.Helper()
 	id := tracker.NativeWorkItemID(fmt.Sprintf("wi_example_%d", number))
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: "org_security", ProjectID: f.project, NativeID: id, Number: number, Title: "Example", WorkflowStateName: new("Todo"), CreatedAt: f.service.config.now()})
+		_, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: "org_security", ProjectID: f.project, NativeID: id, Number: number, Title: "Example", WorkflowStateName: new("Todo"), CreatedAt: f.service.config.Clock()})
 		return err
 	}); err != nil {
 		t.Fatal(err)

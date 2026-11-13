@@ -262,7 +262,7 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 			if sessions != 0 {
 				t.Fatalf("new fixture contains %d sessions", sessions)
 			}
-			now := service.config.now().UTC().Truncate(time.Microsecond)
+			now := service.config.Clock().UTC().Truncate(time.Microsecond)
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(organization), corestore.Serving, func(w tenantstore.Writer) error {
 				return w.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: tracker.OrganizationID(organization), Hash: apikey.HashToken("same-token"), Email: "fixture@example.test", Subject: "fixture_" + organization, ProviderOrganizationID: "provider_" + organization, SessionID: "session_" + organization, CreatedAt: now, ExpiresAt: now.Add(time.Hour), IdentityCreatedAt: now, IdentityExpiresAt: now.Add(time.Hour)})
 			}); err != nil {
@@ -415,7 +415,7 @@ func (f hostedSecurityFixture) grantContext(ctx context.Context, t *testing.T, u
 func (f hostedSecurityFixture) seedIssue(t *testing.T, number int) tracker.NativeWorkItemID {
 	t.Helper()
 	organization := f.service.accessOrganization()
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: f.project, WorkItemID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: number, Revision: 1, Profile: "native"}, State: "Todo", Title: "private-issue-sentinel", Body: "private-body-sentinel", CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
 	fields, err := f.service.prepareWorkItemFields(t.Context(), organization, hubrecords.WorkItemRecordPlan{Issue: issue, Create: true})
 	if err != nil {
@@ -533,7 +533,7 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 	staff := f.user(t, "staff", "owner", "staff@example.test", "write", "")
 	customer := f.user(t, "customer", "owner", "customer@example.test", "write", "")
 	bootstrapToken := hubapi.NewID("token")
-	seeded := f.service.config.now().UTC()
+	seeded := f.service.config.Clock().UTC()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: bootstrapTokenID, Name: "Bootstrap administrator", Hash: apikey.HashToken(bootstrapToken), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", Kind: "service", CreatedAt: seeded, UpdatedAt: seeded})
 	}); err != nil {
@@ -645,7 +645,7 @@ func TestHostedSecurityRunnerPermissionsAreSeparate(t *testing.T) {
 			f.grant(t, user, false, test.runner)
 			if test.missing {
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
-					if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.service.accessOrganization(), ID: "prj_grantless", Name: "owner/repository", Profile: "github_compatible", CreatedAt: f.service.config.now()}, States: nativeFixtureStates()}); err != nil {
+					if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: f.service.accessOrganization(), ID: "prj_grantless", Name: "owner/repository", Profile: "github_compatible", CreatedAt: f.service.config.Clock()}, States: nativeFixtureStates()}); err != nil {
 						return err
 					}
 					return w.(accessstore.ProjectAccessCleaner).DeleteAccessProjectGrants(t.Context(), "prj_grantless")
@@ -727,7 +727,7 @@ func TestHostedSecuritySupportSessionConstraints(t *testing.T) {
 		}, want: http.StatusForbidden},
 		{name: "revoked local session", role: "member", grant: "write", change: func(t *testing.T, f hostedSecurityFixture, u hostedSecurityUser) {
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
-				return w.RevokeAccessSession(t.Context(), apikey.HashToken(u.token), f.service.config.now().UTC())
+				return w.RevokeAccessSession(t.Context(), apikey.HashToken(u.token), f.service.config.Clock().UTC())
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -1045,7 +1045,7 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 			t.Parallel()
 			clock := &leaseTestClock{value: time.Now().UTC()}
 			f, _, delivery := controlledHostedDelivery(t, hubdeps.DashboardDelivery{}, func(cfg *Config) {
-				cfg.now = clock.Now
+				cfg.Clock = clock.Now
 			})
 			owner := f.user(t, "member", "member", "member@example.test", "write", "")
 			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
@@ -1332,7 +1332,7 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				member.Active, member.UpdatedAt = false, f.service.config.now().UTC()
+				member.Active, member.UpdatedAt = false, f.service.config.Clock().UTC()
 				return w.UpdateAccessMember(t.Context(), member)
 			}); err != nil {
 				t.Fatal(err)

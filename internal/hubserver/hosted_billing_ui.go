@@ -51,7 +51,7 @@ func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRe
 	if err != nil {
 		return report, err
 	}
-	report.ChatUsage, err = s.database.chatUsageSummary(ctx, s.database.hostedOrganization, chatBillingWindow(s.config.now(), report.State.Snapshot), nil)
+	report.ChatUsage, err = s.database.chatUsageSummary(ctx, s.database.hostedOrganization, chatBillingWindow(s.config.Clock(), report.State.Snapshot), nil)
 	if err != nil {
 		return report, err
 	}
@@ -148,7 +148,7 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 	if err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Billing information is temporarily unavailable")
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	data := templates.HostedPageData{Mode: "billing", Title: "Organization billing", CanManage: true, CanManageOwnership: true}
 	data.PlanName = report.Entitlement.Name
 	data.PlanPrice = hostedplans.PlanPrice(report.Entitlement.MonthlyUSDCents)
@@ -362,7 +362,7 @@ func (s *Service) billingUsagePlan(ctx context.Context, entitlement hostedplans.
 	complimentary := entitlement.Source != "subscription" && slices.Contains([]string{"pilot_free", "comp_team"}, plan.ID)
 	var expiry *time.Time
 	matched := false
-	now := s.config.now()
+	now := s.config.Clock()
 	for _, grant := range entitlement.Grants {
 		if grant.RevokedAt != nil || grant.StartsAt.After(now) || grant.ExpiresAt != nil && !grant.ExpiresAt.After(now) {
 			continue
@@ -442,7 +442,7 @@ func (s *Service) readBillingView(ctx context.Context, pages ...creditPageReques
 			})); err != nil {
 				return hostedBillingView{}, err
 			}
-			view.CheckoutPending = account.Checkout.ExpiresAt.After(s.config.now())
+			view.CheckoutPending = account.Checkout.ExpiresAt.After(s.config.Clock())
 		}
 	}
 	if view.Audit == nil {

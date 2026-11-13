@@ -243,7 +243,7 @@ func TestHostedPlanResolutionBoundaries(t *testing.T) {
 			if got.Usage["projects"] != 1 {
 				t.Fatal("plan change deleted existing project")
 			}
-			f.service.config.now = func() time.Time { return now.Add(test.at) }
+			f.service.config.Clock = func() time.Time { return now.Add(test.at) }
 			fleet, err := f.service.hostedFleetUsage(t.Context())
 			if err != nil {
 				t.Fatal(err)
@@ -320,7 +320,7 @@ func TestHostedPlanCommandsAndPermissions(t *testing.T) {
 		})
 	}
 	bootstrapToken := hubapi.NewID("token")
-	now := f.service.config.now().UTC()
+	now := f.service.config.Clock().UTC()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: "org_security", ID: bootstrapTokenID, Name: "Bootstrap administrator", Hash: apikey.HashToken(bootstrapToken), Scope: "admin", KeyScope: "admin", ProjectAccess: "all", Kind: "service", CreatedAt: now, UpdatedAt: now})
 	}); err != nil {
@@ -341,7 +341,7 @@ func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	clock := &leaseTestClock{value: now}
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.now = clock.Now
+		cfg.Clock = clock.Now
 		*cfg = hostedPostgresConfig(t, *cfg)
 		cfg.Postgres.LeaseClock = clock.Now
 	})
@@ -636,7 +636,7 @@ func TestHostedPlanConfigurationAndTelemetry(t *testing.T) {
 	}
 	t.Run("heartbeat retention through periodic usage flush", func(t *testing.T) {
 		clock := &leaseTestClock{value: now.Truncate(time.Microsecond)}
-		f := newHostedSecurityFixture(t, func(cfg *Config) { cfg.now = clock.Now })
+		f := newHostedSecurityFixture(t, func(cfg *Config) { cfg.Clock = clock.Now })
 		hostedTestPlans(t, f.service, nil)
 		work := newNativeFixture(t, f.service, f.service.database.hostedOrganization, "heartbeat-retention")
 		token := work.worker(t, "retained-heartbeats")
@@ -890,7 +890,7 @@ func TestCapacityCostDriversUnknownInputs(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.now = func() time.Time { return now }
+		cfg.Clock = func() time.Time { return now }
 	})
 	f.seedIssue(t, 1)
 	archived := f.seedIssue(t, 2)
@@ -1112,7 +1112,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 		}
 		return time.Now()
 	}
-	f := newNativeFixture(t, newPostgresNativeService(t, Config{now: clock}), "", "accounting")
+	f := newNativeFixture(t, newPostgresNativeService(t, Config{Clock: clock}), "", "accounting")
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	f.worker(t, "worker")
 	d := f.service.database
@@ -2039,10 +2039,10 @@ func exerciseHostedPlanUnrestrictedWork(t *testing.T, service *Service) {
 		t.Fatalf("unlimited claim = %v", err)
 	}
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, "unrestricted-growth", 0, 1, service.config.now(), false); err != nil {
+		if err := service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, "unrestricted-growth", 0, 1, service.config.Clock(), false); err != nil {
 			return err
 		}
-		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), w, "hosted_artifacts", service.config.now()))
+		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), w, "hosted_artifacts", service.config.Clock()))
 	}); err != nil {
 		t.Fatalf("unlimited growth or feature = %v", err)
 	}
@@ -2050,7 +2050,7 @@ func exerciseHostedPlanUnrestrictedWork(t *testing.T, service *Service) {
 
 func heartbeatHostedPlanWorker(t *testing.T, f nativeFixture, token string, machine tracker.MachineID, capacity int) {
 	t.Helper()
-	now := f.service.config.now().UTC()
+	now := f.service.config.Clock().UTC()
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machine)+"/heartbeat", token, map[string]any{
 		"display_name": "Runner", "version": "test", "capacity": capacity,
 		"backend_isolation":      isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}, "test": {isolation.Sandbox, isolation.NativeTrusted}},

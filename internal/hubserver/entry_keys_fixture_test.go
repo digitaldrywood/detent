@@ -90,7 +90,7 @@ func (f entryKeyFixture) user(t *testing.T, role string) hostedSecurityUser {
 	t.Helper()
 	identity := auth.Identity{Subject: "user_key_owner", Email: "key-owner@example.test"}
 	for _, organization := range []tracker.OrganizationID{"org_security", "org_other"} {
-		now := f.service.config.now()
+		now := f.service.config.Clock()
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			id := "credential_" + identity.Subject
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: "Example owner", Hash: apikey.HashToken(string(organization) + id), Scope: "operator", NativeOnly: true, UserID: identity.Subject, MembershipID: identity.Subject, ProjectAccess: "all", KeyScope: "write", Kind: "personal", CreatedAt: now, UpdatedAt: now}); err != nil {

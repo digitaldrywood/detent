@@ -57,7 +57,7 @@ func TestHostedEventsWorkspace(t *testing.T) {
 					expected := record
 					record.Capabilities = []string{"files"}
 					record.ReadOnly = true
-					now := f.service.config.now()
+					now := f.service.config.Clock()
 					if state == workspacesession.StateReady && record.OpenedAt == nil {
 						record.OpenedAt = &now
 					}
@@ -99,7 +99,7 @@ func TestHostedEventsWorkspace(t *testing.T) {
 				decodeHubResponse(t, response, &action)
 				runID := hubapi.NewID("run")
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
-					_, err := w.(postgres.RelayActionWriter).CreateActionRun(t.Context(), postgres.CreateActionRunInput{ID: runID, OrganizationID: f.service.accessOrganization(), ProjectID: f.project, ActionID: action.ID, WorkspaceID: session.ID, CreatedBy: user.identity.Subject, CreatedAt: f.service.config.now()})
+					_, err := w.(postgres.RelayActionWriter).CreateActionRun(t.Context(), postgres.CreateActionRunInput{ID: runID, OrganizationID: f.service.accessOrganization(), ProjectID: f.project, ActionID: action.ID, WorkspaceID: session.ID, CreatedBy: user.identity.Subject, CreatedAt: f.service.config.Clock()})
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -187,7 +187,7 @@ func TestHostedEventsActivityIncludesChangesBelowIssueMaximum(t *testing.T) {
 	scope := hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: hubapi.APICredential{ID: "fixture", Scope: hubapi.APIScopeAdmin}}
 	appendEvent := func(item tracker.NativeWorkItemID, kind string, data tracker.CollaborationData) {
 		t.Helper()
-		appendAnalyticsTestEvent(t, f.service, scope, item, kind, data, f.service.config.now())
+		appendAnalyticsTestEvent(t, f.service, scope, item, kind, data, f.service.config.Clock())
 	}
 	for range 10 {
 		appendEvent(high, "issue.edited", tracker.CollaborationData{})
@@ -298,7 +298,7 @@ func TestHostedEventsIssue(t *testing.T) {
 		{"selected change", item, "change.version_published", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			appendAnalyticsTestEvent(t, f.service, scope, test.item, test.kind, tracker.CollaborationData{}, f.service.config.now())
+			appendAnalyticsTestEvent(t, f.service, scope, test.item, test.kind, tracker.CollaborationData{}, f.service.config.Clock())
 			next := previous
 			for {
 				kind, data := readHostedEvent(t, scanner)

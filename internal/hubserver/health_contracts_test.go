@@ -67,7 +67,7 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				plan, err := service.readNativeClaimPlan(service.freshRunDetailContext(t.Context()), scope, request, service.config.now())
+				plan, err := service.readNativeClaimPlan(service.freshRunDetailContext(t.Context()), scope, request, service.config.Clock())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -112,7 +112,7 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		prepared.ProjectID, prepared.ApprovedBy, prepared.ApprovedAt = f.f.project, "example-owner", service.config.now()
+		prepared.ProjectID, prepared.ApprovedBy, prepared.ApprovedAt = f.f.project, "example-owner", service.config.Clock()
 		if err := f.repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(writer tenantstore.Writer) error {
 			current, err := writer.ProjectPolicy(t.Context(), f.f.project)
 			if err != nil {
@@ -161,12 +161,12 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 					if err := writer.LockWorkItemProject(t.Context(), f.f.project); err != nil {
 						return err
 					}
-					return writer.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: "org_security", ProjectID: f.f.project, WorkItemID: f.delivery.WorkItemID, RelatedProjectID: f.f.project, RelatedWorkItemID: f.source.WorkItemID, Type: "dependency"}, operation, service.config.now())
+					return writer.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: "org_security", ProjectID: f.f.project, WorkItemID: f.delivery.WorkItemID, RelatedProjectID: f.f.project, RelatedWorkItemID: f.source.WorkItemID, Type: "dependency"}, operation, service.config.Clock())
 				}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			plan, err := service.readNativeClaimPlan(service.freshRunDetailContext(t.Context()), scope, request, service.config.now())
+			plan, err := service.readNativeClaimPlan(service.freshRunDetailContext(t.Context()), scope, request, service.config.Clock())
 			if err != nil {
 				t.Fatal(err)
 			}

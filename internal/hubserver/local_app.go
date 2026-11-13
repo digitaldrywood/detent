@@ -174,7 +174,7 @@ func (s *Service) localAppOnly(next echo.HandlerFunc) echo.HandlerFunc {
 				if _, err := w.AccessMember(ctx, appSubject(credential)); !errors.Is(err, corestore.ErrNotFound) {
 					return err
 				}
-				now := s.config.now()
+				now := s.config.Clock()
 				return w.CreateAccessMember(ctx, accessstore.Member{OrganizationID: scope.Organization, UserID: appSubject(credential), Email: credential.Name, MembershipID: "local_" + credential.ID, Role: "admin", Active: true, PrincipalID: credential.ID, NotifyIssues: true, CreatedAt: now, UpdatedAt: now})
 			})
 			if err != nil {

@@ -35,7 +35,7 @@ func (f nativeFixture) worker(t *testing.T, name string) string {
 	}
 	binding := runnerauth.NewBinding()
 	credentialID, enrollmentID := "credential_"+binding.RunnerID, "enrollment_"+binding.RunnerID
-	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 	expires := now.Add(runnerauth.CredentialTTL)
 	operations := []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}
 	projects := []tracker.ProjectID{f.project.ID}
@@ -70,7 +70,7 @@ func (f nativeFixture) worker(t *testing.T, name string) string {
 func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	config := Config{now: func() time.Time { return now }, Version: "v0.117.50"}
+	config := Config{Clock: func() time.Time { return now }, Version: "v0.117.50"}
 	f := newNativeFixture(t, newClockedPostgresNativeService(t, config), "", "claims")
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), f.project.ID)
@@ -372,7 +372,7 @@ func TestNativeRunnerMinimumVersion(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, machine), http.StatusOK)
 			heartbeat := func(version string) {
 				t.Helper()
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machineID)+"/heartbeat", worker, map[string]any{"display_name": "Runner", "version": version, "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.now()}})
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machineID)+"/heartbeat", worker, map[string]any{"display_name": "Runner", "version": version, "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.Clock()}})
 				requireNativeStatus(t, response, http.StatusOK)
 				var snapshot runnerauth.RoutingSnapshot
 				decodeHubResponse(t, response, &snapshot)
@@ -411,7 +411,7 @@ func TestNativeRunnerMinimumVersion(t *testing.T) {
 func TestNativeRequestedClaimRefusalsAreTenantScopedAndDeduplicated(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }, Version: "v0.117.60"})
+	service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }, Version: "v0.117.60"})
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 		t.Run(string(organization), func(t *testing.T) {
 			now = time.Now().UTC().Truncate(time.Microsecond)

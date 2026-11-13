@@ -123,7 +123,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: f.project.OrganizationID, RunnerID: binding.RunnerID, LeaseID: lease.LeaseID, AssignedAt: lease.RenewedAt}); err != nil {
 			return err
 		}
-		f.service.config.now = func() time.Time { return lease.RenewedAt }
+		f.service.config.Clock = func() time.Time { return lease.RenewedAt }
 		_, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: "attempt-pg-worker", Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: "run-pg-worker", Sequence: 1, Status: "running", DispatchGeneration: 1, PayloadObjectKey: "example/payload"})
 		if err != nil {
 			return err
@@ -170,10 +170,10 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	originalClock := f.service.config.now
+	originalClock := f.service.config.Clock
 	initialAuthority := f.service.config.ConversationWorkerAuthority
 	t.Cleanup(func() {
-		f.service.config.now = originalClock
+		f.service.config.Clock = originalClock
 		f.service.config.ConversationWorkerAuthority = initialAuthority
 		deadline, ok := t.Deadline()
 		if !ok {
@@ -187,7 +187,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		}
 	})
 	futureClock := time.Now().UTC()
-	f.service.config.now = func() time.Time { return futureClock }
+	f.service.config.Clock = func() time.Time { return futureClock }
 	if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, scope.Organization, identity.LeaseID, futureClock.Add(time.Second), futureClock.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, scope.Organization, identity.LeaseID, currentLease.RenewedAt, currentLease.ExpiresAt); err != nil {
 		t.Fatal(err)
 	}
-	f.service.config.now = originalClock
+	f.service.config.Clock = originalClock
 	if futureRenewal == nil {
 		t.Fatal("future-dated lease renewal was accepted")
 	}
@@ -210,7 +210,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	originalAuthority := f.service.config.ConversationWorkerAuthority
 	var beforeVerification time.Time
 	var verificationRenewal leasestore.Lease
-	f.service.config.now = func() time.Time {
+	f.service.config.Clock = func() time.Time {
 		now := time.Now().UTC()
 		if beforeVerification.IsZero() {
 			beforeVerification = now
@@ -237,7 +237,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		return err
 	})
 	f.service.config.ConversationWorkerAuthority = originalAuthority
-	f.service.config.now = func() time.Time { return verificationRenewal.RenewedAt }
+	f.service.config.Clock = func() time.Time { return verificationRenewal.RenewedAt }
 	if renewalAuthority != nil || verificationRenewal.LeaseID == "" {
 		t.Fatalf("valid renewal during verification lost worker authority: renewed=%t error=%v", verificationRenewal.LeaseID != "", renewalAuthority)
 	}
@@ -289,7 +289,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		t.Fatal(err)
 	}
 	var sampled, renewedAt time.Time
-	f.service.config.now = func() time.Time {
+	f.service.config.Clock = func() time.Time {
 		sampled = time.Now().UTC()
 		return sampled
 	}
@@ -308,7 +308,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}}
 	changed, reconcileErr := f.service.conversations.ReconcileExecutionPG(t.Context(), scope.Organization, reconcileCandidate)
 	f.service.config.TenantRepository = repository
-	f.service.config.now = func() time.Time { return renewedAt }
+	f.service.config.Clock = func() time.Time { return renewedAt }
 	if reconcileErr != nil || changed || renewedAt.IsZero() {
 		t.Fatalf("reconciliation interrupted a worker renewed during write admission: changed=%t renewed=%t error=%v", changed, !renewedAt.IsZero(), reconcileErr)
 	}
@@ -608,7 +608,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	f.service.config.now = func() time.Time { return nextLease.RenewedAt }
+	f.service.config.Clock = func() time.Time { return nextLease.RenewedAt }
 	nextIdentity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(nextLease.LeaseID), FencingToken: tracker.FencingToken(nextLease.FencingToken), AttemptID: hubapi.NewID("attempt")}
 	nextRunID := hubapi.NewID("run")
 	nextBindBody := map[string]any{"lease_id": nextIdentity.LeaseID, "fencing_token": nextIdentity.FencingToken, "attempt_id": nextIdentity.AttemptID, "run_id": nextRunID, "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
@@ -891,8 +891,8 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 
 func testPGConversationContinuation(t *testing.T, service *Service, repository tenantstore.Repository, scope, ownerScope hubscope.NativeScope, item corestore.WorkItem, conversationID string, identity conversationWorkerIdentity) {
 	t.Helper()
-	originalClock, originalDispatch := service.config.now, service.config.ConversationDispatch
-	defer func() { service.config.now, service.config.ConversationDispatch = originalClock, originalDispatch }()
+	originalClock, originalDispatch := service.config.Clock, service.config.ConversationDispatch
+	defer func() { service.config.Clock, service.config.ConversationDispatch = originalClock, originalDispatch }()
 	service.config.ConversationDispatch = tenantNativeRunEventParticipant{service: service}
 	router := service.conversations.Controls.(*conversationWorkerRouter)
 	claimNumber := 0
@@ -927,7 +927,7 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 		}); err != nil {
 			t.Fatal(err)
 		}
-		service.config.now = func() time.Time { return lease.RenewedAt }
+		service.config.Clock = func() time.Time { return lease.RenewedAt }
 		identity = conversationWorkerIdentity{LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), AttemptID: "attempt-pg-continuation-" + suffix}
 		body := map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "run_id": "run-pg-continuation-" + suffix, "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
 		response := callConversationWorkerRoute(t, router.Bind, scope, http.MethodPost, "/bind", string(item.NativeID), "", body, identity)

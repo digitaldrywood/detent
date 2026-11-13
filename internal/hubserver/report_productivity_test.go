@@ -36,8 +36,8 @@ func TestOrganizationProductivity(t *testing.T) {
 	t.Parallel()
 	f := diagnosticsPostgresFixtures(t)[0]
 	service := f.hosted.service
-	to := service.config.now().UTC().Truncate(time.Hour).Add(time.Hour)
-	service.config.now = func() time.Time { return to }
+	to := service.config.Clock().UTC().Truncate(time.Hour).Add(time.Hour)
+	service.config.Clock = func() time.Time { return to }
 	org := f.organization
 	projects := []tracker.ProjectID{f.hosted.project, "prj_productivity_second", "prj_productivity_secret"}
 	states := append(nativeFixtureStates(), tracker.NativeState{Name: "Cancelled", Terminal: true}, tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Done"}})
@@ -530,8 +530,8 @@ func TestOrganizationProductivity(t *testing.T) {
 func TestProductivityRunnerIntervals(t *testing.T) {
 	t.Parallel()
 	f := diagnosticsPostgresFixtures(t)[0]
-	now := f.hosted.service.config.now().UTC().Truncate(time.Hour).Add(time.Hour)
-	f.hosted.service.config.now = func() time.Time { return now }
+	now := f.hosted.service.config.Clock().UTC().Truncate(time.Hour).Add(time.Hour)
+	f.hosted.service.config.Clock = func() time.Time { return now }
 	org, project := f.organization, f.hosted.project
 	productivitySeedRunners(t.Context(), t, f.repository, org, now)
 	content := eventstore.NewContent(f.details)
@@ -662,7 +662,7 @@ func TestOrganizationProductivityTenant(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}})
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID+"_second", "foreign")
-	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 	for _, fixture := range []nativeFixture{f, foreign} {
 		productivitySeedItem(t.Context(), t, f.service.config.TenantRepository, eventstore.NewContent(f.service.runDetailStore()), fixture.project.OrganizationID, fixture.project.ID, tracker.NativeWorkItemID("wi_"+string(fixture.project.ID)), 1, fixture.project.Name, "Todo", "", nil, tracker.Actor{Kind: "human", PrincipalID: "person_one"}, now, nil)
 	}

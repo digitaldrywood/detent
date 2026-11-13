@@ -18,7 +18,7 @@ func operatorNativeTokenFixture(t *testing.T, service *Service, organization tra
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := service.config.now().UTC().Truncate(time.Microsecond)
+	now := service.config.Clock().UTC().Truncate(time.Microsecond)
 	response := hubapi.TokenResponse{ID: hubapi.NewID("credential"), Token: token, Name: name, Scope: scope}
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: response.ID, Name: name, Hash: apikey.HashToken(token), Scope: string(scope), Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now})

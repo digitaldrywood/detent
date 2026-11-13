@@ -89,7 +89,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat), http.StatusOK)
 			}
 			postHeartbeat()
-			before, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.now())
+			before, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.Clock())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +195,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 				heartbeat["problems"] = []runnerauth.Problem{}
 				postHeartbeat()
 			}
-			after, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.now())
+			after, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.Clock())
 			if err != nil {
 				t.Fatal(err)
 			}

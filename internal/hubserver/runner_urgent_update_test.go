@@ -23,7 +23,7 @@ func TestUrgentRunnerUpdateHeartbeatSurvivesReplayExpiry(t *testing.T) {
 			start := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 			var clock atomic.Int64
 			clock.Store(start.UnixNano())
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}})
+			f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}})
 			s := f.service
 
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
@@ -45,11 +45,11 @@ func TestUrgentRunnerUpdateHeartbeatSurvivesReplayExpiry(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, s, http.MethodPut, path, testHubAdminToken, urgentRunnerUpdateChange{ExpectedRevision: urgent.Revision, Version: "1.2.5", Confirm: true, IdempotencyKey: "second"}), http.StatusAccepted)
 			clock.Store(start.Add(commandReceiptRetention + time.Second).UnixNano())
 			ctx := s.contentContext(t.Context())
-			if err := s.retainCommandPayloads(ctx, s.config.now()); err != nil {
+			if err := s.retainCommandPayloads(ctx, s.config.Clock()); err != nil {
 				t.Fatal(err)
 			}
 
-			now := s.config.now()
+			now := s.config.Clock()
 			receipt := &runnerauth.UpdateReceipt{Request: *urgent.Request, Status: "refused", FailureReason: "Update was not applied", ObservedAt: now}
 			build := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 			report := &runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: build, ObservedAt: now, Receipt: receipt}
@@ -85,7 +85,7 @@ func TestUrgentRunnerUpdateHeartbeatSurvivesReplayExpiry(t *testing.T) {
 func TestUrgentRunnerUpdateFleet(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/runner-update/urgent"
 	heartbeat := func(t *testing.T, f nativeFixture, r runnerFixture, version string, receipt *runnerauth.UpdateReceipt) runnerauth.RoutingSnapshot {
 		t.Helper()
@@ -239,7 +239,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 	if snapshot := heartbeat(t, f, late, "1.2.3", nil); snapshot.Routing.State != "active" || snapshot.Routing.UpdateRequest == nil {
 		t.Fatalf("late runner escaped urgent release: %+v", snapshot)
 	}
-	now = f.service.config.now()
+	now = f.service.config.Clock()
 	if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=$1 WHERE organization_id=$2 AND runner_id=$3", now.Add(-3*time.Minute), f.project.OrganizationID, late.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 		{name: "newer urgent takes precedence", status: "refused", state: "active", newerUrgent: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 			path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/runner-update/urgent"
 			response := performHubAPIRequest(t, f.service, http.MethodPut, path, testHubAdminToken, urgentRunnerUpdateChange{Version: runningVersion, Confirm: true, IdempotencyKey: "urgent-325"})
 			requireNativeStatus(t, response, http.StatusAccepted)

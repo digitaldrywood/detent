@@ -232,7 +232,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now }}}
+			service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, Clock: func() time.Time { return now }}}
 			credential := hubapi.APICredential{Hosted: &auth.HostedIdentity{Subject: user}, HostedRole: "reporter", HostedPrincipal: principal, ID: principal, Scope: hubapi.APIScopeOperator}
 			identity := operatortool.Identity{PrincipalID: principal, OrganizationID: string(organization), CredentialID: principal}
 			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
@@ -361,7 +361,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 					}
 				}},
 				{"missing coordinator report owner", func(t *testing.T) {
-					unavailable := &Service{database: &database{}, config: Config{Hosted: service.config.Hosted, now: func() time.Time { return now }}}
+					unavailable := &Service{database: &database{}, config: Config{Hosted: service.config.Hosted, Clock: func() time.Time { return now }}}
 					if _, err := unavailable.coordinatorScreenReport(ctx, conversationRecord{ProjectID: project}, credential, runner.AgentToolCall{Name: "get_project_reports", Arguments: json.RawMessage(`{"range":"24h"}`)}); err == nil {
 						t.Fatal("missing coordinator report owner served a report")
 					}
@@ -380,7 +380,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 					}
 				}},
 				{"coordinator report", func(t *testing.T) {
-					coordinator := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now.Add(3 * time.Hour) }}}
+					coordinator := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, Clock: func() time.Time { return now.Add(3 * time.Hour) }}}
 					value, err := coordinator.coordinatorScreenReport(ctx, conversationRecord{ProjectID: project}, credential, runner.AgentToolCall{Name: "get_project_reports", Arguments: json.RawMessage(`{"range":"24h"}`)})
 					if err != nil {
 						t.Fatal(err)

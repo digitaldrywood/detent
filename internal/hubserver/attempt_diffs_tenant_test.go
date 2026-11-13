@@ -79,7 +79,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 	const tokenID = "credential_runner"
 	const runnerID = "runner_0123456789abcdef0123456789abcdef"
 	const machineID tracker.MachineID = "machine_0123456789abcdef0123456789abcdef"
-	now := service.config.now().UTC()
+	now := service.config.Clock().UTC()
 	expires := now.Add(time.Hour)
 	workerHash := apikey.HashToken(workerToken)
 	type attemptFixture struct {
@@ -414,8 +414,8 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 	}{
 		{"missing project grant", "DELETE FROM token_grants WHERE organization_id=$1 AND token_id=$2 AND project_id=$3", []any{organization, tokenID, project}, http.StatusNotFound},
 		{"missing claim", "UPDATE runner_identities SET operations=ARRAY['read','events']::text[] WHERE organization_id=$1 AND runner_id=$2", []any{organization, runnerID}, http.StatusForbidden},
-		{"released lease", "UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND lease_id=$3", []any{service.config.now().UTC(), organization, first.lease.LeaseID}, http.StatusConflict},
-		{"expired lease", "UPDATE leases SET acquired_at=$1,renewed_at=$1,expires_at=$2 WHERE organization_id=$3 AND lease_id=$4", []any{service.config.now().UTC().Add(-2 * time.Minute), service.config.now().UTC().Add(-time.Minute), organization, first.lease.LeaseID}, http.StatusConflict},
+		{"released lease", "UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND lease_id=$3", []any{service.config.Clock().UTC(), organization, first.lease.LeaseID}, http.StatusConflict},
+		{"expired lease", "UPDATE leases SET acquired_at=$1,renewed_at=$1,expires_at=$2 WHERE organization_id=$3 AND lease_id=$4", []any{service.config.Clock().UTC().Add(-2 * time.Minute), service.config.Clock().UTC().Add(-time.Minute), organization, first.lease.LeaseID}, http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Cleanup(func() {
@@ -490,7 +490,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 		t.Fatal("unindexed historic manifests authorized orphan deletion")
 	}
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.RevokeAccessCredential(t.Context(), tokenID, service.config.now().UTC())
+		return w.RevokeAccessCredential(t.Context(), tokenID, service.config.Clock().UTC())
 	}); err != nil {
 		t.Fatal(err)
 	}

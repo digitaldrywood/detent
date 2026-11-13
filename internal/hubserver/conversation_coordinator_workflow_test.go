@@ -137,7 +137,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project), Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", ConfigRevision: strings.Repeat("c", 64), SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.now()}
+			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project), Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", ConfigRevision: strings.Repeat("c", 64), SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.Clock()}
 			if test.name == "uncommitted policy denied" {
 				view.Source = "configured_local_workflow_read_only"
 			}
@@ -229,7 +229,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				})
 				tools, _ = coordinatorViewerTools(t, f, record, user)
 			}
-			before, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.now())
+			before, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.Clock())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -381,7 +381,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			if test.name == "missing runner owner" && !strings.Contains(result.Content, "unavailable") && !strings.Contains(result.Content, "stopped") {
 				t.Fatalf("missing owner=%s", result.Content)
 			}
-			after, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.now())
+			after, err := readPostgresTestRunner(t.Context(), f.service, "org_security", r.binding.RunnerID, f.service.config.Clock())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -585,7 +585,7 @@ func (f *browserHostedFixture) seedCoordinatorWorkflow(t *testing.T) {
 	if _, err := f.service.approveTestTenantPolicy(t.Context(), scope, "fixture", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: current}); err != nil {
 		t.Fatal(err)
 	}
-	view := runnerauth.ProjectConfiguration{ProjectID: f.project, Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", ConfigRevision: strings.Repeat("c", 64), SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.now()}
+	view := runnerauth.ProjectConfiguration{ProjectID: f.project, Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", ConfigRevision: strings.Repeat("c", 64), SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.Clock()}
 	heartbeat := func() {
 		t.Helper()
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, browserHostedOrganizationBase+"/projects/"+f.project+"/machines/"+string(r.MachineID)+"/heartbeat", r.Credential, map[string]any{"display_name": "Workflow runner", "capacity": 1, "version": "test", "project_configuration": view}), http.StatusOK)
@@ -710,7 +710,7 @@ func coordinatorFixturePolicyObservation(ctx context.Context, s *Service, scope,
 	}
 	row.ProjectID = tracker.ProjectID(project)
 	return s.config.TenantRepository.WriteTenant(ctx, row.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.RecordProjectPolicyObservation(ctx, policystore.Observation{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, RunnerID: reporter, PolicyID: row.PolicyID, ObservedAt: s.config.now(), Revision: row, Source: observation.Source})
+		_, err := w.RecordProjectPolicyObservation(ctx, policystore.Observation{OrganizationID: row.OrganizationID, ProjectID: row.ProjectID, RunnerID: reporter, PolicyID: row.PolicyID, ObservedAt: s.config.Clock(), Revision: row, Source: observation.Source})
 		return err
 	})
 }

@@ -529,7 +529,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	}
 	targetRead.State = "Done"
 	targetRead.Revision++
-	targetRead.UpdatedAt = service.config.now()
+	targetRead.UpdatedAt = service.config.Clock()
 	targetRead.LastActivityAt = targetRead.UpdatedAt
 	targetRaw, err = json.Marshal(targetRead)
 	if err != nil {
@@ -661,7 +661,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	siblingRelated := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "sibling-related"}, ExpectedRevision: siblingLinked.Revision, RelatedWorkItemID: siblingTarget.WorkItemID, RelationshipType: "related", Operation: "add"}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, siblingRelated), http.StatusOK)
 	if err := repository.WriteTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		now := service.config.now()
+		now := service.config.Clock()
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: firstOrganization.ID, ID: "source-only", Name: "Source-only reader", Hash: apikey.HashToken("source-only-token"), Scope: string(hubapi.APIScopeOperator), NativeOnly: true, KeyScope: "read", ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err
 		}
@@ -698,7 +698,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 		t.Fatalf("reporter relationship read exposed unowned target: %+v", reporterRead.Related)
 	}
 	bulkCount := corestore.MaxPageSize + 1
-	now := service.config.now()
+	now := service.config.Clock()
 	if err := repository.WriteTenant(t.Context(), firstOrganization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		for index := range bulkCount {
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_bulk_%03d", index))
@@ -1082,7 +1082,7 @@ func TestWorkItemCreationReplansAfterProjectWorkflowChanges(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
+	service := openLocalPostgresHubTestService(t, repository, Config{Clock: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
 	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(id), func(t *testing.T) {
 			service.config.Hosted = nil
@@ -1228,7 +1228,7 @@ func TestWorkItemProvenanceDedupRespectsReporterVisibility(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "owner-file"}, Type: "bug", Title: "Example report", Body: reporterBugSections + issueContractTestSections, Provenance: &tracker.Provenance{Provider: "github", ExternalID: "issue-42", AuthorID: "external-user", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
 	created := f.request(t, owner, http.MethodPost, f.base+"/work-items", request)
 	requireNativeStatus(t, created, http.StatusOK)
@@ -1367,7 +1367,7 @@ func TestWorkItemRecordCommentEditConflictAfterConcurrentWrite(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
+	service := openLocalPostgresHubTestService(t, repository, Config{Clock: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
 	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(id), func(t *testing.T) {
 			organization := nativeOrganization{ID: id, Name: string(id), Slug: string(id)}
@@ -1444,7 +1444,7 @@ func TestWorkItemRecordCommentEditConflictAfterConcurrentWrite(t *testing.T) {
 				competing := comment
 				competing.Body = "Competing comment"
 				competing.Revision++
-				competing.UpdatedAt = service.config.now()
+				competing.UpdatedAt = service.config.Clock()
 				raw, err := json.Marshal(competing)
 				if err != nil {
 					return err
@@ -1590,7 +1590,7 @@ func TestWorkItemRecordRollback(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
+	service := openLocalPostgresHubTestService(t, repository, Config{Clock: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
 	for _, id := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(id), func(t *testing.T) {
 			service.config.Hosted = nil

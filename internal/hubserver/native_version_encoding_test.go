@@ -80,7 +80,7 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 				t.Run(fmt.Sprintf("archived=%v", archived), func(t *testing.T) {
 					repository, admin := projectRecordPostgresWithAdmin(t, 3)
 					details := &memoryRunDetails{}
-					service := &Service{database: &database{}, secretRewrapReady: make(chan struct{}), config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}}
+					service := &Service{database: &database{}, secretRewrapReady: make(chan struct{}), config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, Clock: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}}
 					token := string(organization) + "_reader"
 					deniedToken := string(organization) + "_denied"
 					if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -272,7 +272,7 @@ func TestNativeTransitionHistoryBytes(t *testing.T) {
 	issue := f.create(t, "transition history")
 	scope := nativeBoardFixtureScope(t, f)
 	now := time.Now().UTC()
-	f.service.config.now = func() time.Time { return now }
+	f.service.config.Clock = func() time.Time { return now }
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	body := strings.Repeat("Large unchanged issue body. 雪\n", 1024) + issueContractTestSections
 	response := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "history-body"}, ExpectedRevision: issue.Revision, Body: &body})
@@ -507,9 +507,9 @@ func TestNativeNoOpRevisions(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		clock := f.service.config.now
-		f.service.config.now = func() time.Time { return now }
-		t.Cleanup(func() { f.service.config.now = clock })
+		clock := f.service.config.Clock
+		f.service.config.Clock = func() time.Time { return now }
+		t.Cleanup(func() { f.service.config.Clock = clock })
 		request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "enter-blocked"}, ExpectedRevision: transitioned.Revision, State: "Blocked", Reason: "user_requested"}
 		response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, request)
 		requireNativeStatus(t, response, http.StatusOK)

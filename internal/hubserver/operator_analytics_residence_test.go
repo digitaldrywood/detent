@@ -49,7 +49,7 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 		{Id: "d", Created: base, Initial: "Triage"},
 	}
 	details := &memoryRunDetails{}
-	f := newPostgresDefaultNativeFixture(t, Config{now: func() time.Time { return base }, RunDetails: details})
+	f := newPostgresDefaultNativeFixture(t, Config{Clock: func() time.Time { return base }, RunDetails: details})
 	scope := analyticsResidenceTestScope(t, f)
 	ids := map[string]string{}
 	for _, fixture := range fixtures {
@@ -161,7 +161,7 @@ func TestNativeAnalyticsResidencePopulation(t *testing.T) {
 	for _, kind := range []string{"issues", "events", "missing history", "archived live filter"} {
 		t.Run(kind, func(t *testing.T) {
 			details := &memoryRunDetails{}
-			f := newPostgresDefaultNativeFixture(t, Config{now: func() time.Time { return base }, RunDetails: details})
+			f := newPostgresDefaultNativeFixture(t, Config{Clock: func() time.Time { return base }, RunDetails: details})
 			scope := analyticsResidenceTestScope(t, f)
 			window := operatortool.AnalyticsWindow{From: base, To: base.Add(time.Hour), Bucket: time.Hour}
 			if kind == "missing history" {

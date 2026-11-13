@@ -30,7 +30,7 @@ func TestPostgresProjectIconReplay(t *testing.T) {
 	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }}}
+	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return now }}}
 	var logs bytes.Buffer
 	service.config.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	service.config.Icons = &memoryProjectIcons{objects: map[string][]byte{}}
@@ -47,7 +47,7 @@ func TestPostgresProjectIconReplay(t *testing.T) {
 	}, service.requireNativeScope(hubapi.APIScopeOperator, hubapi.APIScopeAdmin))
 	service.registerNativeRoutes(service.echo)
 	service.registerOperatorTools(service.echo)
-	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.Clock))
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedStartupOrganization(t, repository, org)
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES($1,'collaboration_bytes',0) ON CONFLICT(organization_id,name) DO UPDATE SET value=0`, org); err != nil {

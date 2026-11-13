@@ -133,7 +133,7 @@ func TestIssueFilterValues(t *testing.T) {
 		t.Helper()
 		var ids []tracker.WorkItemID
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-			page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: fixture.project.ID, Limit: 1, Assignees: assignees, IncludeLabels: labels, AvailableAt: f.service.config.now()})
+			page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: fixture.project.ID, Limit: 1, Assignees: assignees, IncludeLabels: labels, AvailableAt: f.service.config.Clock()})
 			for _, candidate := range page.Items {
 				ids = append(ids, tracker.WorkItemID(candidate.ID))
 			}

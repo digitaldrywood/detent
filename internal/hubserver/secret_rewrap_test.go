@@ -32,7 +32,7 @@ func TestSecretRewrapStepIsBoundedAndTenantScoped(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	prior := secretTestKeys(t, "1", "1")
-	service := &Service{config: Config{AccessRepository: repository, SecretKeys: secretTestKeys(t, "2", "1", "2"), now: func() time.Time { return now }}}
+	service := &Service{config: Config{AccessRepository: repository, SecretKeys: secretTestKeys(t, "2", "1", "2"), Clock: func() time.Time { return now }}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: now}); err != nil {
@@ -240,7 +240,7 @@ func rewrapOriginalSecret(t *testing.T, s *Service, original accessstore.Secret)
 		return err
 	}
 	return s.config.AccessRepository.WriteTenant(t.Context(), original.OrganizationID, corestore.Background, func(w tenantstore.Writer) error {
-		return w.RewrapAccessSecret(t.Context(), original, envelope, accessstore.SecretAudit{OrganizationID: original.OrganizationID, ProjectID: original.ProjectID, Kind: original.Kind, Actor: "system:rewrap", Event: "rotate", KeyVersion: envelope.Version, RecordedAt: s.config.now()})
+		return w.RewrapAccessSecret(t.Context(), original, envelope, accessstore.SecretAudit{OrganizationID: original.OrganizationID, ProjectID: original.ProjectID, Kind: original.Kind, Actor: "system:rewrap", Event: "rotate", KeyVersion: envelope.Version, RecordedAt: s.config.Clock()})
 	})
 }
 
@@ -354,7 +354,7 @@ func TestSecretRewrapCAS(t *testing.T) {
 			for _, original := range f.originals {
 				f.service.config.AccessRepository = &secretMutationAfterRead{Repository: f.repository, mutate: func() error {
 					return f.repository.WriteTenant(t.Context(), original.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-						audit := accessstore.SecretAudit{OrganizationID: original.OrganizationID, ProjectID: original.ProjectID, Kind: original.Kind, Actor: "replacement", Event: "set", KeyVersion: 2, RecordedAt: f.service.config.now()}
+						audit := accessstore.SecretAudit{OrganizationID: original.OrganizationID, ProjectID: original.ProjectID, Kind: original.Kind, Actor: "replacement", Event: "set", KeyVersion: 2, RecordedAt: f.service.config.Clock()}
 						if mutation == "delete" {
 							audit.Event = "remove"
 							return w.DeleteAccessSecret(t.Context(), original.ProjectID, original.Kind, audit)
@@ -561,7 +561,7 @@ func TestProjectSecretRewrapDeletion(t *testing.T) {
 	var original []accessstore.Secret
 	for _, name := range []string{"First secret project", "Second secret project"} {
 		project := tracker.ProjectID(hubapi.NewID("prj"))
-		now := f.service.config.now().UTC().Truncate(time.Microsecond)
+		now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 		envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD("org_security", project, flySpritesToken))
 		if err != nil {
 			t.Fatal(err)
@@ -618,7 +618,7 @@ func TestSecretRewrapTargetsSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := f.repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: f.service.config.now()}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "set", KeyVersion: 1, RecordedAt: f.service.config.now()})
+			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: f.service.config.Clock()}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "set", KeyVersion: 1, RecordedAt: f.service.config.Clock()})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -677,7 +677,7 @@ func TestSecretRewrapPopulation(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-				now := f.service.config.now()
+				now := f.service.config.Clock()
 				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Unexpected", Slug: "unexpected", CreatedAt: now}); err != nil {
 					return err
 				}

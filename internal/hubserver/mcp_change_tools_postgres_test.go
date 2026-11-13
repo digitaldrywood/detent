@@ -28,7 +28,7 @@ func TestPostgresMCPChangeTools(t *testing.T) {
 		f := newChangeFixture(t, service, organization)
 		t.Run(string(f.project.OrganizationID), func(t *testing.T) {
 			version := publishReviewVersion(t, f, "mcp-review", "")
-			bundle := seedReviewBundle(t, f, version, f.service.config.now().Add(time.Hour))
+			bundle := seedReviewBundle(t, f, version, f.service.config.Clock().Add(time.Hour))
 			file := tracker.ChangeViewedFile{ManifestSHA256: bundle.SHA256, FileSHA256: strings.Repeat("f", 64), Viewed: true}
 			viewsPath := f.path + "/versions/" + version.ID + "/viewed-files"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, viewsPath, f.token, tracker.ViewChangeFile{Mutation: tracker.Mutation{IdempotencyKey: "seed-view"}, Bundle: bundle, FileSHA256: file.FileSHA256, Viewed: true}), http.StatusOK)

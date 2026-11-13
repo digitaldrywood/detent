@@ -167,7 +167,7 @@ func TestNativeDependencyBatchReadCost(t *testing.T) {
 					{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: id, RelatedProjectID: f.project.ID, RelatedWorkItemID: blocker.WorkItemID, Type: "dependency"},
 					{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: id, RelatedProjectID: f.project.ID, RelatedWorkItemID: blocker.WorkItemID, Type: "related"},
 				} {
-					if err := w.SetRelationship(t.Context(), relation, "add", f.service.config.now()); err != nil {
+					if err := w.SetRelationship(t.Context(), relation, "add", f.service.config.Clock()); err != nil {
 						return err
 					}
 				}

@@ -539,7 +539,7 @@ func TestChangeReviewPolicyUsesSelectedTenantPolicyAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: serverapi.APICredential{ID: member.PrincipalID, Scope: serverapi.APIScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
-	reference, summary, found, err := f.service.selectedLatestChangeSummary(t.Context(), scope, string(item.WorkItemID), f.service.config.now())
+	reference, summary, found, err := f.service.selectedLatestChangeSummary(t.Context(), scope, string(item.WorkItemID), f.service.config.Clock())
 	if err != nil || !found || reference.ChangeID != change.ID || reference.VersionID != "" || summary.Status != "draft" {
 		t.Fatalf("latest selected Change = %+v, %+v, found=%v, err=%v", reference, summary, found, err)
 	}
@@ -631,7 +631,7 @@ func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
 	}
 	changedRules := originalRules
 	changedRules.RequireReview = !changedRules.RequireReview
-	updatedAt := service.config.now().UTC().Truncate(time.Microsecond)
+	updatedAt := service.config.Clock().UTC().Truncate(time.Microsecond)
 	changedRow, err := eventstore.NewContent(service.runDetailStore()).PrepareReviewPolicy(t.Context(), eventstore.ReviewPolicy{OrganizationID: organization, ProjectID: project, PolicyRevisionID: policyRows.Project.PolicyID, Revision: policyRows.Review.Revision + 1, UpdatedBy: principal.ID, UpdatedAt: updatedAt}, changedRules)
 	if err != nil {
 		t.Fatal(err)
@@ -772,7 +772,7 @@ func newChangePolicyPostgresTenantFixture(t *testing.T, repository tenantstore.R
 func TestChangeReviewPolicyRechecksDemotedAdminInTenantWriter(t *testing.T) {
 	t.Parallel()
 	repository, f, owner := newChangePolicyPostgresFixture(t)
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	var member accessstore.Member
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		var err error
@@ -871,7 +871,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 		t.Fatal(err)
 	}
 	if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error {
-		seeded := service.config.now().UTC()
+		seeded := service.config.Clock().UTC()
 		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: orgID, Kind: accessstore.NativeCursorKeyKind, Envelope: cursorEnvelope, UpdatedAt: seeded}, accessstore.SecretAudit{OrganizationID: orgID, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: cursorEnvelope.Version, RecordedAt: seeded})
 	}); err != nil {
 		t.Fatal(err)
@@ -916,7 +916,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 			oldRules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "example-check", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: strings.Repeat("e", 64), Source: "independent", MaxAgeSeconds: 3600}}
 			oldRules.ID = changerequest.PolicyID(oldRules)
 		}
-		updatedBy, updatedAt := "example-owner", service.config.now().UTC().Truncate(time.Microsecond)
+		updatedBy, updatedAt := "example-owner", service.config.Clock().UTC().Truncate(time.Microsecond)
 		if strings.HasPrefix(reviewMode, "imported") {
 			updatedBy, updatedAt = "production-import", time.Unix(0, 0).UTC()
 		}
@@ -936,7 +936,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 			if err != nil {
 				t.Fatal(err)
 			}
-			row.ProjectID, row.ApprovedBy, row.ApprovedAt = projectID, "repository-default-branch", service.config.now().UTC()
+			row.ProjectID, row.ApprovedBy, row.ApprovedAt = projectID, "repository-default-branch", service.config.Clock().UTC()
 			if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error { return w.ApproveProjectPolicy(t.Context(), row, descriptor.ID) }); err != nil {
 				t.Fatal(err)
 			}
@@ -1032,7 +1032,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	binding := runnerauth.NewBinding()
 	workerID, runnerID := serverapi.NewID("credential"), binding.RunnerID
 	workerHash := apikey.HashToken(workerToken)
-	now := service.config.now()
+	now := service.config.Clock()
 	expires := now.Add(time.Hour)
 	if err := repository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error {
 		workItem, err := w.WorkItem(t.Context(), projectID, item.WorkItemID)
@@ -1720,7 +1720,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	mergeSHA := strings.Repeat("d", 40)
 	landingRequest := tracker.LandChangeVersion{
 		Mutation: tracker.Mutation{IdempotencyKey: "land-next-version", LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken)}, MergeSHA: mergeSHA, BaseRef: "main", Method: "squash",
-		Receipt: &tracker.NativeLandingReceipt{Landed: true, ChangeID: change.ID, VersionID: nextVersion.ID, HeadSHA: nextVersion.HeadSHA, MergeSHA: mergeSHA, BaseRef: "main", BaseSHA: nextVersion.BaseSHA, Method: "squash", ObservedAt: service.config.now()},
+		Receipt: &tracker.NativeLandingReceipt{Landed: true, ChangeID: change.ID, VersionID: nextVersion.ID, HeadSHA: nextVersion.HeadSHA, MergeSHA: mergeSHA, BaseRef: "main", BaseSHA: nextVersion.BaseSHA, Method: "squash", ObservedAt: service.config.Clock()},
 	}
 	landingPath := changePath + "/versions/" + nextVersion.ID + "/landing"
 	var lateReview tracker.ReviewChange
@@ -1734,7 +1734,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	raceStore := &changeArchiveMutationStore{DetailStore: originalRunDetails}
 	raceStore.afterLandingPayload = func(ctx context.Context) error {
 		lateReviewID = hubcontent.PayloadNativeID(ctx, "review")
-		review := tracker.ChangeReview{ID: lateReviewID, VersionID: nextVersion.ID, Decision: lateReview.Decision, Body: lateReview.Body, Actor: scope.Actor(), CreatedAt: service.config.now()}
+		review := tracker.ChangeReview{ID: lateReviewID, VersionID: nextVersion.ID, Decision: lateReview.Decision, Body: lateReview.Body, Actor: scope.Actor(), CreatedAt: service.config.Clock()}
 		raw, err := json.Marshal(review)
 		if err != nil {
 			return err
@@ -1791,7 +1791,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	concurrentReview := tracker.ChangeReview{ID: hubcontent.PayloadNativeID(t.Context(), "review"), VersionID: nextVersion.ID, Decision: "approved", Body: "Concurrent approval evidence", Actor: scope.Actor(), CreatedAt: service.config.now()}
+	concurrentReview := tracker.ChangeReview{ID: hubcontent.PayloadNativeID(t.Context(), "review"), VersionID: nextVersion.ID, Decision: "approved", Body: "Concurrent approval evidence", Actor: scope.Actor(), CreatedAt: service.config.Clock()}
 	concurrentReviewRaw, err := json.Marshal(concurrentReview)
 	if err != nil {
 		t.Fatal(err)
@@ -1927,7 +1927,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	landingEvent := func(key string, sequence int64, landing tracker.NativeLandingReceipt) tracker.NativeRunEvent {
 		event := landingStart
 		event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", key, sequence
-		event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: service.config.now().UTC(), Landing: &landing}
+		event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: service.config.Clock().UTC(), Landing: &landing}
 		return event
 	}
 	requireStep := func(operation, key string, sequence int64, response *httptest.ResponseRecorder) {
@@ -2326,7 +2326,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	requireStep("run event", cancelStart.IdempotencyKey, 1, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, cancelStart))
 	cancelEcho := cancelStart
 	cancelEcho.Type, cancelEcho.IdempotencyKey, cancelEcho.Data.Sequence = "run.observed", "cancel-run-landed-echo", 2
-	cancelEcho.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: service.config.now().UTC(), Landing: &landedClaim}
+	cancelEcho.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: service.config.Clock().UTC(), Landing: &landedClaim}
 	requireStep("run event", cancelEcho.IdempotencyKey, 2, performHubAPIRequest(t, service, http.MethodPost, eventsPath, workerToken, cancelEcho))
 	requireStep("workflow transition", "landed-echo-operator-cancel", 0, f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "landed-echo-operator-cancel", LeaseID: tracker.LeaseID(cancelLease.LeaseID), FencingToken: tracker.FencingToken(cancelLease.FencingToken)}, ExpectedRevision: cancelRevision, State: "Cancelled", Reason: "user_requested"}))
 	requireLanding("operator cancel after landed echo", cancelStart.Data.AttemptID, 3)

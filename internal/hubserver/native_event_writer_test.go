@@ -130,7 +130,7 @@ func newNativeEventWriterFixture(t *testing.T, store *memoryRunDetails, now time
 	repository, _ := projectRecordPostgresWithClock(t, 4, func() time.Time { return now }, func(config *pgxpool.Config) {
 		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, nativeEventWriterTrace{})
 	})
-	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: nativeEventWriterDetails{store}, now: func() time.Time { return now }, SecretKeys: secretTestKeys(t, "1", "1")})
+	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: nativeEventWriterDetails{store}, Clock: func() time.Time { return now }, SecretKeys: secretTestKeys(t, "1", "1")})
 	primary := tracker.OrganizationID("org_first")
 	for _, org := range []tracker.OrganizationID{primary + "_second", primary} {
 		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-")})

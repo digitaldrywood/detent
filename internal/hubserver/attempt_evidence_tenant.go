@@ -35,7 +35,7 @@ func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope hubsc
 		if err != nil {
 			return hubapi.ProjectRecordError(err)
 		}
-		now := s.config.now().UTC()
+		now := s.config.Clock().UTC()
 		if lease.OrganizationID != scope.Organization || lease.IssueID != item.ID || lease.FencingToken != int64(input.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
 			return hubapi.NativeStaleExecution("Evidence producer lease is no longer current")
 		}

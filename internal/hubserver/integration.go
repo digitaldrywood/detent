@@ -59,7 +59,7 @@ func (s *Service) authorizeProjectIntegrationLive(ctx context.Context, scope hub
 
 func (s *Service) applyProjectIntegrationLive(ctx context.Context, scope hubscope.NativeScope, result *ProjectIntegration) error {
 	if result.CheckoutRepository != "" {
-		verified, err := s.verifiedProjectCheckout(ctx, nil, scope, result.CheckoutRepository, s.config.now())
+		verified, err := s.verifiedProjectCheckout(ctx, nil, scope, result.CheckoutRepository, s.config.Clock())
 		if err != nil {
 			return err
 		}

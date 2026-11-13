@@ -260,7 +260,7 @@ func (s *Service) readAppUpdates(ctx context.Context, credential hubapi.APICrede
 	current := detentVersion(s.config.Version)
 	minimum := minimumRunnerVersion(current)
 	payload := appUpdates{MinimumRunnerVersion: minimum, Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
-	now := s.config.now()
+	now := s.config.Clock()
 	if s.config.TenantRepository == nil {
 		return appUpdates{}, hubapi.NativeWorkItemStorageUnavailable()
 	}

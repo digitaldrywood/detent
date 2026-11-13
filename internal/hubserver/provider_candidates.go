@@ -32,7 +32,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 	if request.LandingCapacity < 0 {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Landing capacity must be non-negative"))
 	}
-	page, err := s.previewProviderCandidatesTenant(c.Request().Context(), hubscope.NativeRequestScope(c), request, s.config.now().UTC())
+	page, err := s.previewProviderCandidatesTenant(c.Request().Context(), hubscope.NativeRequestScope(c), request, s.config.Clock().UTC())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

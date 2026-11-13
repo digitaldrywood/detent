@@ -23,7 +23,7 @@ func TestReportTypedQueryCompatibility(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := &Service{config: Config{now: func() time.Time { return now }}}
+	service := &Service{config: Config{Clock: func() time.Time { return now }}}
 	objects := &memoryRunDetails{}
 	content := eventstore.NewContent(objects)
 	identities := []struct{ role, requested, resolved, execution, model, stage string }{

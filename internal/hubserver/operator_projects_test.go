@@ -200,7 +200,7 @@ func TestHostedProjectCutoverReceiptReads(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					_, err = w.CommitProjectCutover(t.Context(), postgres.CutoverCommit{ExpectedContentRevision: project.Core.ContentSettingsRevision, Receipt: pgquery.StoreCutoverReceiptParams{OrganizationID: organization, ProjectID: id, Checkpoint: checkpoint, SourceProfile: "github_compatible", ExpectedRevision: project.Settings.Revision, ReceiptObjectKey: ref.Key, ReceiptSha256: ref.SHA256, ReceiptBytes: ref.CompressedSize, ReceiptContentBytes: ref.UncompressedSize, ActorID: owner.identity.Subject, CreatedAt: f.service.config.now().UTC()}})
+					_, err = w.CommitProjectCutover(t.Context(), postgres.CutoverCommit{ExpectedContentRevision: project.Core.ContentSettingsRevision, Receipt: pgquery.StoreCutoverReceiptParams{OrganizationID: organization, ProjectID: id, Checkpoint: checkpoint, SourceProfile: "github_compatible", ExpectedRevision: project.Settings.Revision, ReceiptObjectKey: ref.Key, ReceiptSha256: ref.SHA256, ReceiptBytes: ref.CompressedSize, ReceiptContentBytes: ref.UncompressedSize, ActorID: owner.identity.Subject, CreatedAt: f.service.config.Clock().UTC()}})
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -395,7 +395,7 @@ func TestHostedProjectTools(t *testing.T) {
 						return err
 					}
 					plan := assignment.Base
-					if assignment.Subscription != nil && assignment.ExpiresAt != nil && assignment.ExpiresAt.After(f.service.config.now()) {
+					if assignment.Subscription != nil && assignment.ExpiresAt != nil && assignment.ExpiresAt.After(f.service.config.Clock()) {
 						plan = *assignment.Subscription
 					}
 					original, err = w.BillingPlan(t.Context(), plan)
@@ -467,7 +467,7 @@ func TestHostedProjectTools(t *testing.T) {
 			}
 			observedRevision.ProjectID = f.project
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-				_, err := w.RecordProjectPolicyObservation(t.Context(), policystore.Observation{OrganizationID: "org_security", ProjectID: f.project, RunnerID: operatortool.ConnectionIdentity(ctx).PrincipalID, PolicyID: candidate.ID, ObservedAt: f.service.config.now(), Revision: observedRevision})
+				_, err := w.RecordProjectPolicyObservation(t.Context(), policystore.Observation{OrganizationID: "org_security", ProjectID: f.project, RunnerID: operatortool.ConnectionIdentity(ctx).PrincipalID, PolicyID: candidate.ID, ObservedAt: f.service.config.Clock(), Revision: observedRevision})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -501,7 +501,7 @@ func TestHostedProjectTools(t *testing.T) {
 				if err := json.Unmarshal(created, &issue); err != nil || issue.WorkItemID == "" {
 					t.Fatalf("issue=%s err=%v", created, err)
 				}
-				usage, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), f.service.config.now()))
+				usage, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), f.service.config.Clock()))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -759,7 +759,7 @@ func TestHostedProjectTools(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				member.Role, member.UpdatedAt = "viewer", f.service.config.now()
+				member.Role, member.UpdatedAt = "viewer", f.service.config.Clock()
 				return w.UpdateAccessMember(t.Context(), member)
 			}); err != nil {
 				t.Fatal(err)

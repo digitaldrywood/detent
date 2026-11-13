@@ -104,7 +104,7 @@ func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
 					for _, target := range related {
 						updateOperatorSummaryFixtureIssue(t, f.service, scope, target.WorkItemID, func(issue *tracker.NativeIssue) { issue.Archived = true })
 						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-							return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issues[0].WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: target.WorkItemID, Type: "related"}, "add", f.service.config.now())
+							return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issues[0].WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: target.WorkItemID, Type: "related"}, "add", f.service.config.Clock())
 						}); err != nil {
 							t.Fatal(err)
 						}
@@ -112,13 +112,13 @@ func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
 				} else {
 					updateOperatorSummaryFixtureIssue(t, f.service, scope, issues[1].WorkItemID, func(issue *tracker.NativeIssue) { issue.Title = large })
 					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-						return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issues[0].WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: issues[1].WorkItemID, Type: "related"}, "add", f.service.config.now())
+						return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issues[0].WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: issues[1].WorkItemID, Type: "related"}, "add", f.service.config.Clock())
 					}); err != nil {
 						t.Fatal(err)
 					}
 				}
 			case "latest_transition_reason":
-				appendOperatorSummaryFixtureTransition(t, f.service, scope, issues[0].WorkItemID, tracker.CollaborationData{ReasonDetail: large}, f.service.config.now())
+				appendOperatorSummaryFixtureTransition(t, f.service, scope, issues[0].WorkItemID, tracker.CollaborationData{ReasonDetail: large}, f.service.config.Clock())
 			}
 			updateOperatorSummaryFixtureIssue(t, f.service, scope, issues[0].WorkItemID, func(issue *tracker.NativeIssue) {
 				switch test.field {

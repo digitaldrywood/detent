@@ -44,7 +44,7 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope hubscope
 				plan.Issue.State = "Rework"
 				plan.Issue.Terminal = hubrecords.TenantProjectStateTerminal(plan.Project, "Rework")
 				plan.Issue.Revision++
-				plan.Issue.UpdatedAt = s.config.now()
+				plan.Issue.UpdatedAt = s.config.Clock()
 				plan.Issue.LastActivityAt = plan.Issue.UpdatedAt
 				plan.EventType = "workflow.transitioned"
 				p, err := s.prepareScheduledAttributionRecord(ctx, scope, plan, tracker.CollaborationData{FromState: "Done", ToState: "Rework", Reason: string(gate.ReasonValidatorRework)})
@@ -71,7 +71,7 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope hubscope
 	if err != nil {
 		return nil, err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, err

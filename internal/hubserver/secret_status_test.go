@@ -24,7 +24,7 @@ func TestSecretStatusLiveDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		now := service.config.now()
+		now := service.config.Clock()
 		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: slackWebhookSecret, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, Kind: slackWebhookSecret, Actor: "fixture", Event: "set", KeyVersion: 2, RecordedAt: now})
 	}); err != nil {
 		t.Fatal(err)

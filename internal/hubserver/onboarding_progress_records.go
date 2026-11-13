@@ -69,13 +69,13 @@ func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope hubsc
 	}
 	progress := request.Progress
 	progress.Revision++
-	progress.UpdatedAt = hubapi.FormatHubTime(s.config.now().UTC())
+	progress.UpdatedAt = hubapi.FormatHubTime(s.config.Clock().UTC())
 	raw, err := json.Marshal(progress)
 	if err != nil {
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now().UTC()}, raw)
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.Clock().UTC()}, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope hubsc
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now().UTC())); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock().UTC())); err != nil {
 			return err
 		}
 		writer, ok := w.(projectstore.OnboardingPageWriter)

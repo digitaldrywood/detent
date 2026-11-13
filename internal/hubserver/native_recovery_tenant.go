@@ -403,7 +403,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 	result.Issue.OmittedFields = append(result.Issue.OmittedFields, "change_sequence")
 	if change.ID != "" {
 		var detail tracker.ChangeDetail
-		detail, err = s.hydrateCurrentChangeDetailSelection(ctx, scope, row.NativeID, change, changeVersion, policyRows, s.config.now(), nil, nil, corestore.Serving, true)
+		detail, err = s.hydrateCurrentChangeDetailSelection(ctx, scope, row.NativeID, change, changeVersion, policyRows, s.config.Clock(), nil, nil, corestore.Serving, true)
 		if err != nil {
 			return result, fmt.Errorf("hydrate recovery current change: %w", err)
 		}
@@ -527,7 +527,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 		if _, ok := selected[snapshot.Attempt.ID]; !ok {
 			continue
 		}
-		attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.now())
+		attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.Clock())
 		if err != nil {
 			return result, fmt.Errorf("hydrate selected recovery attempt: %w", err)
 		}

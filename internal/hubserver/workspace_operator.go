@@ -171,7 +171,7 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 			GeneratedAt time.Time       `json:"generated_at"`
 			Freshness   string          `json:"freshness"`
 			Data        json.RawMessage `json:"data"`
-		}{e.server.config.now(), "live", value})
+		}{e.server.config.Clock(), "live", value})
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(call.Arguments, &fields) != nil {
@@ -358,7 +358,7 @@ func (e workspaceOperatorExecutor) ExecuteAction(ctx context.Context, action cha
 	completed := action
 	completed.Status, completed.Result = chat.ActionSucceeded, execution.Message
 	completed.IssueID = execution.ResourceID
-	now := e.server.config.now()
+	now := e.server.config.Clock()
 	completed.ResolvedAt = &now
 	if _, err := e.server.completeHostedOperation(ctx, command, workspaceCompletedAction{Action: completed, Execution: execution}); err != nil {
 		return chat.ActionExecution{}, mutation.ErrUncertain

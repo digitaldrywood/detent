@@ -37,7 +37,7 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 				t.Fatalf("credential status=%d: %v", status, err)
 			}
 			scope := hubscope.NativeScope{Organization: org, Project: source.project.ID, Credential: credential}
-			now := service.config.now().UTC().Truncate(time.Microsecond)
+			now := service.config.Clock().UTC().Truncate(time.Microsecond)
 			sourceID, sameID, crossID := tracker.NativeWorkItemID("wi_source"), tracker.NativeWorkItemID("wi_same"), tracker.NativeWorkItemID("wi_cross")
 			links := []tracker.NativeDependency{
 				{ID: sameID, ProjectID: source.project.ID, Number: 2, Title: "Same project target", State: "Todo"},

@@ -125,7 +125,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 	}
 	for index, org := range organizations {
 		t.Run(string(org), func(t *testing.T) {
-			service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, Logger: discardLogger(), now: func() time.Time { return now }}, database: &database{postgres: repository}, requestMetrics: &tenantRequestMetrics{Repository: repository, Organization: org}}
+			service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, Logger: discardLogger(), Clock: func() time.Time { return now }}, database: &database{postgres: repository}, requestMetrics: &tenantRequestMetrics{Repository: repository, Organization: org}}
 			service.config.RunDetails = objects
 			for pass := range 2 {
 				if err := service.maintainNativeRetention(t.Context(), now); err != nil {
@@ -561,7 +561,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 				var wrongBudget atomic.Bool
 				schedulerDone := make(chan struct{})
 				service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, RunDetails: objects, Logger: discardLogger(), WebhookMaintenanceInterval: time.Millisecond,
-					now: func() time.Time { return time.Unix(0, clock.Load()).UTC() },
+					Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() },
 					deps: hubdeps.Deps{RetentionTimeout: func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
 						if budget != backgroundStorageBudget {
 							wrongBudget.Store(true)

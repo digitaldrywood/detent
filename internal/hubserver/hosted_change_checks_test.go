@@ -151,7 +151,7 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 			}
 			func() {
 				service := f.service
-				now := service.config.now
+				now := service.config.Clock
 				ownerCookie := f.cookies["owner"]
 				if ownerCookie == nil {
 					t.Fatal("owner freshness fixture cookie is missing")
@@ -166,10 +166,10 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 				freshCookie := *ownerCookie
 				freshCookie.Value, freshCookie.Expires = token, session.ExpiresAt
 				defer func() {
-					service.config.now = now
+					service.config.Clock = now
 					f.cookies["owner"] = ownerCookie
 				}()
-				service.config.now = func() time.Time { return staleAt }
+				service.config.Clock = func() time.Time { return staleAt }
 				requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodGet, path, nil), http.StatusForbidden)
 				f.cookies["owner"] = &freshCookie
 				if summary := detail().Summary; summary.Checks != "stale" || summary.Status != "needs_evidence" {

@@ -109,7 +109,7 @@ func (fixture threadUnreadFixture) viewer(t *testing.T, organization tracker.Org
 		t.Fatal(err)
 	}
 	project := tracker.NativeProject{OrganizationID: organization, ID: tracker.ProjectID("prj_" + name), Name: name, Profile: "native", States: nativeFixtureStates()}
-	now := service.config.now().UTC()
+	now := service.config.Clock().UTC()
 	err = service.config.TenantRepository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project.ID, Name: name, Profile: "native"}, States: project.States}); err != nil {
 			return err
@@ -146,7 +146,7 @@ func seedThreadUnreadHistory(t *testing.T, viewer nativeFixture, prefix string, 
 	organization := viewer.project.OrganizationID
 	credential := threadUnreadCredential(t, viewer)
 	principal := hubscope.OperatorIdentity(credential, string(organization)).PrincipalID
-	at := conversationTime(viewer.service.config.now())
+	at := conversationTime(viewer.service.config.Clock())
 	post, err := threadstore.NewContent(viewer.service.runDetailStore()).PreparePost(ctx, organization, threadstore.PostRecord{
 		Post: teamPost{Author: principal, Name: "Example member", Kind: "note", Body: "Finding", CreatedAt: at}, RequestKey: "history-post", InputHash: strings.Repeat("a", 64),
 	})

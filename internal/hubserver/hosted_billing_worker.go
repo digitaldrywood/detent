@@ -137,7 +137,7 @@ func (w *hostedBillingWorker) reconcileSubscription(ctx context.Context, through
 	if err != nil {
 		return err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	return hubapi.FromFeatureError(s.database.plansService().CommitBilling(ctx, hostedplans.ResolveBilling(cfg, previous, snapshot, now), through, unprocessedEventIDs, now))
 }
 
@@ -150,7 +150,7 @@ func (s *Service) hostedStripeWebhook(c echo.Context) error {
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusBadRequest, "Billing webhook body could not be read within the size limit")
 	}
-	event, err := billing.VerifyModeEvent(body, c.Request().Header.Get("Stripe-Signature"), cfg.WebhookSecret, s.config.now(), cfg.CreditMode() == billing.ModeLive)
+	event, err := billing.VerifyModeEvent(body, c.Request().Header.Get("Stripe-Signature"), cfg.WebhookSecret, s.config.Clock(), cfg.CreditMode() == billing.ModeLive)
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusBadRequest, "Billing webhook signature, timestamp or mode is invalid")
 	}
@@ -159,7 +159,7 @@ func (s *Service) hostedStripeWebhook(c echo.Context) error {
 	}
 
 	err = hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
-		_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: event.ID, Type: event.Type, ReceivedAt: s.config.now().UTC()})
+		_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: event.ID, Type: event.Type, ReceivedAt: s.config.Clock().UTC()})
 		return err
 	}))
 	if err != nil {

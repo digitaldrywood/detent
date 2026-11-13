@@ -105,7 +105,7 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 					t.Fatal(err)
 				}
 				scope := hubscope.NativeScope{Organization: org, Project: fixture.project.ID, Credential: credential}
-				now := service.config.now().UTC().Truncate(time.Microsecond)
+				now := service.config.Clock().UTC().Truncate(time.Microsecond)
 				for seeded := 1; seeded <= size; seeded++ {
 					id := tracker.NativeWorkItemID(fmt.Sprintf("wi_search_%04d", seeded))
 					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: scope.Project, WorkItemID: id, Number: seeded, Revision: 1}, Title: "Release audit credential", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now, UpdatedAt: now}
@@ -238,7 +238,7 @@ func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
 		fixture := newNativeFixture(t, service, org, "Example")
 		service.localOrganization = string(org)
 		scope := hubscope.NativeScope{Organization: org, Project: fixture.project.ID, Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
-		now := service.config.now().UTC().Truncate(time.Microsecond)
+		now := service.config.Clock().UTC().Truncate(time.Microsecond)
 		seeded := 0
 		for _, size := range []int{20, 500} {
 			service.config.TenantRepository = original
@@ -574,7 +574,7 @@ func TestNativeIssueChangePageHasFixedSQLBudget(t *testing.T) {
 				fixture := newNativeFixture(t, service, org, "Example Change")
 				scope := hubscope.NativeScope{Organization: org, Project: fixture.project.ID}
 				scopes = append(scopes, scope)
-				now := service.config.now().UTC().Truncate(time.Microsecond)
+				now := service.config.Clock().UTC().Truncate(time.Microsecond)
 				for number := 1; number <= size; number++ {
 					id := tracker.NativeWorkItemID(fmt.Sprintf("wi_change_%04d", number))
 					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: scope.Project, WorkItemID: id, Number: number, Revision: 1}, Title: "Example Change", State: "Todo", Change: &tracker.NativeIssueChange{Connector: tracker.NativeChangeConnectorNone, ChangeID: "change_" + string(org) + "_" + string(id), HeadSHA: strings.Repeat("a", 40)}}

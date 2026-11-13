@@ -111,7 +111,7 @@ func (s *Service) postAuditDisposition(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	disposition := securityaudit.Disposition{AuditRunID: run.ID, FindingID: request.FindingID, Status: securityaudit.DispositionFalsePositive, Evidence: strings.TrimSpace(request.Evidence), ServiceIdentity: securityaudit.ServiceIdentity(string(scope.Project)), RecordedAt: s.config.now().UTC()}
+	disposition := securityaudit.Disposition{AuditRunID: run.ID, FindingID: request.FindingID, Status: securityaudit.DispositionFalsePositive, Evidence: strings.TrimSpace(request.Evidence), ServiceIdentity: securityaudit.ServiceIdentity(string(scope.Project)), RecordedAt: s.config.Clock().UTC()}
 	raw, err := json.Marshal(disposition)
 	if err != nil {
 		return s.nativeAPIError(c, err)

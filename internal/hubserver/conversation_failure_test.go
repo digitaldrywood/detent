@@ -41,7 +41,7 @@ func conversationOperatorToken(t *testing.T, f nativeFixture, name string) (toke
 func conversationRevokeToken(t *testing.T, service *Service, principal string) {
 	t.Helper()
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), service.database.hostedOrganization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.RevokeAccessCredential(t.Context(), principal, service.config.now())
+		return w.RevokeAccessCredential(t.Context(), principal, service.config.Clock())
 	}); err != nil {
 		t.Fatalf("revoke token %q: %v", principal, err)
 	}
@@ -308,7 +308,7 @@ func newConversationQuestionFixture(t *testing.T, status conversation.QuestionSt
 	questionID := conversation.NewQuestionID()
 	execution := conversation.Execution{Status: conversation.ExecutionWaitingInput, Owner: conversation.Owner{AttemptID: "att_1", RunID: "run_1", TurnID: "turn_1"}, Capabilities: conversation.Capabilities{Answer: true}}
 	f.setExecution(t, record.ID, execution)
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	question := conversation.Question{ID: questionID, ConversationID: record.ID, Status: status, Owner: execution.Owner, Prompts: []conversation.Prompt{{ID: "color", Question: "Which color?", Options: []conversation.Option{{Label: "red"}, {Label: "blue"}}}}, CreatedAt: now, UpdatedAt: now}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
 		return writer.UpsertQuestion(t.Context(), conversationstore.Question{OrganizationID: f.project.OrganizationID, ConversationID: record.ID, Question: question})
@@ -463,7 +463,7 @@ func TestConversationDuplicateAnswers(t *testing.T) {
 // It returns the sequence of event ids the burst produced.
 func conversationBurstDeltas(t *testing.T, f streamFixture, id string, count int) []string {
 	t.Helper()
-	message := conversationstore.Message{OrganizationID: f.project.OrganizationID, ConversationID: id, ID: conversation.NewMessageID(), Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "runner"}, CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now()}
+	message := conversationstore.Message{OrganizationID: f.project.OrganizationID, ConversationID: id, ID: conversation.NewMessageID(), Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "runner"}, CreatedAt: f.service.config.Clock(), UpdatedAt: f.service.config.Clock()}
 	ids := make([]string, 0, count+1)
 	for index := range count + 1 {
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
@@ -473,7 +473,7 @@ func conversationBurstDeltas(t *testing.T, f streamFixture, id string, count int
 				if err != nil {
 					return err
 				}
-				err = appendPGConversationEvent(t.Context(), writer, f.project.OrganizationID, id, conversation.EventMessageAccepted, projectMessage(conversationMessageFromStore(message)), f.service.config.now())
+				err = appendPGConversationEvent(t.Context(), writer, f.project.OrganizationID, id, conversation.EventMessageAccepted, projectMessage(conversationMessageFromStore(message)), f.service.config.Clock())
 			} else {
 				text := "d" + strconv.Itoa(index-1)
 				message.Text += text
@@ -481,7 +481,7 @@ func conversationBurstDeltas(t *testing.T, f streamFixture, id string, count int
 				if err != nil {
 					return err
 				}
-				err = appendPGConversationEvent(t.Context(), writer, f.project.OrganizationID, id, conversation.EventMessageDelta, conversationDeltaBody(message.ID, int64(index-1), text), f.service.config.now())
+				err = appendPGConversationEvent(t.Context(), writer, f.project.OrganizationID, id, conversation.EventMessageDelta, conversationDeltaBody(message.ID, int64(index-1), text), f.service.config.Clock())
 			}
 			if err != nil {
 				return err
@@ -1000,7 +1000,7 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 
 	t.Run("a replayed command key returns the stored receipt", func(t *testing.T) {
 		f.writeTenant(t, func(w tenantstore.Writer) error {
-			now := f.service.config.now()
+			now := f.service.config.Clock()
 			stored, inserted, err := w.ReserveCommand(t.Context(), conversationstore.Command{OrganizationID: f.project.OrganizationID, ConversationID: f.record.ID, Key: "restart-handed", Kind: conversation.CommandMessage, RequestHash: "hash-restart-handed", Receipt: conversation.Receipt{Key: "restart-handed", Kind: conversation.CommandMessage, Status: conversation.DeliverySaved, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now})
 			if err != nil || inserted {
 				t.Fatalf("ReserveCommand() = %#v, inserted=%v, %v", stored, inserted, err)

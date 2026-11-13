@@ -85,14 +85,14 @@ func TestHostedFleetSprites(t *testing.T) {
 				}
 			}
 			if tt.oldFailure {
-				spriteFixtureExec(t, f, "UPDATE machines SET sprite_wake_failed_at=$1 WHERE organization_id=$2 AND id=$3", f.service.config.now().Add(-5*time.Minute), scope.Organization, runners[0].binding.MachineID)
+				spriteFixtureExec(t, f, "UPDATE machines SET sprite_wake_failed_at=$1 WHERE organization_id=$2 AND id=$3", f.service.config.Clock().Add(-5*time.Minute), scope.Organization, runners[0].binding.MachineID)
 			}
 			runner, err := readSpriteRunnerFixture(t, f, runners[0].binding.RunnerID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			visible := map[tracker.ProjectID]bool{scope.Project: !tt.hidden}
-			view := hostedFleetRunnerView(runner, "dev", visible, f.service.config.now())
+			view := hostedFleetRunnerView(runner, "dev", visible, f.service.config.Clock())
 			facts, err := f.service.readSpriteMachineFacts(t.Context(), runner.OrganizationID, runner.MachineID)
 			if err != nil {
 				t.Fatal(err)
@@ -110,7 +110,7 @@ func TestHostedFleetSprites(t *testing.T) {
 			if !tt.hidden {
 				projects = append(projects, appBootstrapProject{ID: string(scope.Project)})
 			}
-			fleet, _, err := f.service.readHostedFleetSnapshotTenant(t.Context(), scope.Credential, projects, "", f.service.config.now())
+			fleet, _, err := f.service.readHostedFleetSnapshotTenant(t.Context(), scope.Credential, projects, "", f.service.config.Clock())
 			if err != nil {
 				t.Fatal(err)
 			}

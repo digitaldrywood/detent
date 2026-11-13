@@ -59,7 +59,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-			preferred := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }}), "", "preferred-provider")
+			preferred := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }}), "", "preferred-provider")
 			var landing landingCapacityFixture
 			if scenario.landing != "" {
 				landing = newLandingCapacityFixture(t, preferred.service, "preferred-landings", true)
@@ -424,7 +424,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, runnerRoutingRequest{RoutingChange: routing, IdempotencyKey: "ordering"}), http.StatusOK)
 			descriptor := hubTestPolicy()
-			now := first.service.config.now()
+			now := first.service.config.Clock()
 			issues := make(map[tracker.ProjectID]tracker.NativeIssue)
 			for _, project := range []struct {
 				fixture        nativeFixture
@@ -667,7 +667,7 @@ func TestRunnerFutureProjectAdmission(t *testing.T) {
 				clearNativeFixturePolicy(t, later)
 			}
 			if scenario.deleted {
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE projects SET deleted_at=$1 WHERE id=$2", f.service.config.now(), later.project.ID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE projects SET deleted_at=$1 WHERE id=$2", f.service.config.Clock(), later.project.ID); err != nil {
 					t.Fatal(err)
 				}
 				var projects []tracker.ProjectID
@@ -797,7 +797,7 @@ func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
 
 func recordSelectionFixtureAttempt(t *testing.T, f nativeFixture, r runnerFixture, item tracker.NativeIssue, outcome string, checkpoint *tracker.NativeCheckpoint) string {
 	t.Helper()
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	attemptID, runID := hubapi.NewID("attempt"), hubapi.NewID("run")
 	var lease leasestore.Lease
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {

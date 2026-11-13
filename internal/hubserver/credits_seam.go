@@ -138,7 +138,7 @@ func (s *Service) creditsService() *credits.Service {
 	db := s.database
 	deps := credits.Deps{
 		Repository: s.database.billingRepository, Organization: s.database.hostedOrganization,
-		ReadIncluded: s.database.plansService().Plans() != nil, Mode: s.database.aiCreditMode, Now: s.config.now, ReadReason: func(ctx context.Context, reference billingstore.AuditReference) (string, error) {
+		ReadIncluded: s.database.plansService().Plans() != nil, Mode: s.database.aiCreditMode, Now: s.config.Clock, ReadReason: func(ctx context.Context, reference billingstore.AuditReference) (string, error) {
 			return hubapi.FeatureResult(db.plansService().ReadBillingReason(ctx, reference))
 		},
 		Plan: func(ctx context.Context, r billingstore.Reader, ref billingstore.PlanReference) (credits.Plan, error) {
@@ -196,7 +196,7 @@ func (s *Service) creditWorkerService() *credits.Service {
 			funding.CreditPacks = append(funding.CreditPacks, credits.Pack(pack))
 		}
 	}
-	return credits.New(s.database.creditDeps(credits.Deps{Now: s.config.now, Funding: funding, NewID: s.config.deps.NewLeaseID, Binding: func(ctx context.Context) (billing.Binding, error) {
+	return credits.New(s.database.creditDeps(credits.Deps{Now: s.config.Clock, Funding: funding, NewID: s.config.deps.NewLeaseID, Binding: func(ctx context.Context) (billing.Binding, error) {
 		return hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg))
 	}, Unbound: hostedplans.ErrBillingUnbound}))
 }

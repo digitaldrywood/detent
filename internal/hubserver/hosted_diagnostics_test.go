@@ -152,7 +152,7 @@ func TestDiagnosticsProjectionReadBound(t *testing.T) {
 	t.Parallel()
 	for _, f := range diagnosticsPostgresFixtures(t) {
 		t.Run(string(f.organization), func(t *testing.T) {
-			now := f.hosted.service.config.now().UTC().Truncate(time.Hour)
+			now := f.hosted.service.config.Clock().UTC().Truncate(time.Hour)
 			w := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now, Bucket: time.Hour}
 			for _, project := range []tracker.ProjectID{f.hosted.project, "prj_diagnostics_other"} {
 				data := tracker.NativeRunData{Outcome: "failed", Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "conflict"}}}
@@ -192,7 +192,7 @@ func TestDiagnosticsAttemptCandidatesBound(t *testing.T) {
 	t.Parallel()
 	for _, population := range []int{4000, 40000} {
 		for _, f := range diagnosticsPostgresFixtures(t) {
-			now := f.hosted.service.config.now().UTC().Truncate(time.Hour)
+			now := f.hosted.service.config.Clock().UTC().Truncate(time.Hour)
 			w := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now, Bucket: time.Hour}
 			diagnosticsFixtureAttempts(t.Context(), t, f, f.hosted.project, "candidate-source", "candidate", population, 0, now.Add(-2*time.Hour), now.Add(-time.Hour), tracker.NativeRunData{})
 			for _, test := range []struct {
@@ -235,7 +235,7 @@ func TestDiagnosticsRefusalPageByteParity(t *testing.T) {
 	t.Parallel()
 	for _, f := range diagnosticsPostgresFixtures(t) {
 		t.Run(string(f.organization), func(t *testing.T) {
-			now := f.hosted.service.config.now().UTC().Truncate(time.Hour)
+			now := f.hosted.service.config.Clock().UTC().Truncate(time.Hour)
 			w := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now, Bucket: time.Hour}
 			signatures := make([]nativeFailureSignature, 0, 51)
 			for i := range 50 {

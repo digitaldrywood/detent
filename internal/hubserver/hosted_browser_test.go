@@ -274,7 +274,7 @@ func browserHostedSession(t *testing.T, service *Service, identity auth.Identity
 	session := auth.Session{Email: identity.Email, Identity: hosted, ExpiresAt: hosted.ExpiresAt}
 	organization := service.accessOrganization()
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
-		return writer.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: organization, Hash: apikey.HashToken(token), Email: identity.Email, Subject: hosted.Subject, ProviderOrganizationID: hosted.OrganizationID, SessionID: hosted.SessionID, IdentityCreatedAt: hosted.CreatedAt, IdentityExpiresAt: hosted.ExpiresAt, SupportActor: hosted.SupportActor, SupportReason: hosted.SupportReason, CreatedAt: service.config.now(), ExpiresAt: session.ExpiresAt})
+		return writer.CreateAccessSession(t.Context(), accessstore.Session{OrganizationID: organization, Hash: apikey.HashToken(token), Email: identity.Email, Subject: hosted.Subject, ProviderOrganizationID: hosted.OrganizationID, SessionID: hosted.SessionID, IdentityCreatedAt: hosted.CreatedAt, IdentityExpiresAt: hosted.ExpiresAt, SupportActor: hosted.SupportActor, SupportReason: hosted.SupportReason, CreatedAt: service.config.Clock(), ExpiresAt: session.ExpiresAt})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func hostedPostgresConfig(t *testing.T, cfg Config) Config {
 		cfg.InitialAdminToken = []byte(testHubAdminToken)
 	}
 	normalized := cfg.normalized()
-	now := normalized.now()
+	now := normalized.Clock()
 	store, err := openDatabase(t.Context(), normalized)
 	if err != nil {
 		t.Fatal(err)
@@ -535,7 +535,7 @@ func newBrowserHostedFixtureBackendWithService(t *testing.T, allocated bool, org
 		provider.invitations[invitation.ID] = invitation
 		provider.mu.Unlock()
 		if err := service.config.TenantRepository.WriteTenant(r.Context(), service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessInvitation(r.Context(), accessstore.Invitation{OrganizationID: service.accessOrganization(), ID: invitation.ID, Email: invited.Email, Role: "member", CreatedAt: service.config.now(), ExpiresAt: invitation.ExpiresAt})
+			return w.CreateAccessInvitation(r.Context(), accessstore.Invitation{OrganizationID: service.accessOrganization(), ID: invitation.ID, Email: invited.Email, Role: "member", CreatedAt: service.config.Clock(), ExpiresAt: invitation.ExpiresAt})
 		}); err != nil {
 			t.Error(err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -937,7 +937,7 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 		f.workerChat, f.workerItem = existing.ID, existing.WorkItemID
 		return
 	}
-	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 	worker := conversationRecord{
 		ID: conversation.NewConversationID(), OrganizationID: owner.OrganizationID, ProjectID: owner.ProjectID,
 		OwnerPrincipalID: principal, Title: deriveConversationTitle(issue.Title), Origin: conversationOriginWorker,
@@ -1010,7 +1010,7 @@ func (f *browserHostedFixture) sessionRefreshHandler(t *testing.T, next http.Han
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			result, err := hostedPostgresAdmin(t, f.service).ExecContext(r.Context(), "UPDATE hosted_sessions SET expires_at=$1 WHERE organization_id=$2 AND token_hash=$3", f.service.config.now().Add(-time.Second), f.service.accessOrganization(), apikey.HashToken(cookie.Value))
+			result, err := hostedPostgresAdmin(t, f.service).ExecContext(r.Context(), "UPDATE hosted_sessions SET expires_at=$1 WHERE organization_id=$2 AND token_hash=$3", f.service.config.Clock().Add(-time.Second), f.service.accessOrganization(), apikey.HashToken(cookie.Value))
 			if err != nil {
 				t.Error(err)
 				http.Error(w, "session expiry failed", http.StatusInternalServerError)

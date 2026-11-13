@@ -455,7 +455,7 @@ func (s *Service) entryKeyAudit(c echo.Context) error {
 	if !ok || claims.Kind != cloudassert.KindService {
 		return s.hostedJSONError(c, http.StatusForbidden, "Shared service access is required to record key audit events")
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	ctx := c.Request().Context()
 	err := s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
 		_, err := w.RecordAccessAudit(ctx, accessstore.Audit{OrganizationID: s.accessOrganization(), SessionID: event.KeyID, ActualActor: event.Owner, EffectiveUser: event.Owner, Event: event.Event, Route: claims.Path, StartedAt: claims.IssuedAt, ExpiresAt: claims.ExpiresAt, RecordedAt: now, RecordedAtNS: now.UnixNano(), KeyID: event.KeyID, KeyOwner: event.Owner})

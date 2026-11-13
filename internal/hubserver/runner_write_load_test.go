@@ -55,7 +55,7 @@ func newWriteLoadFixture(t *testing.T, history, runners, sessions int) *writeLoa
 	repository, _ := projectRecordPostgresWithClock(t, 4, func() time.Time { return now }, func(config *pgxpool.Config) {
 		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, writeLoadTrace{})
 	})
-	config := Config{Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, now: func() time.Time { return now }, SecretKeys: secretTestKeys(t, "1", "1")}
+	config := Config{Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, Clock: func() time.Time { return now }, SecretKeys: secretTestKeys(t, "1", "1")}
 	service := openLocalPostgresHubTestService(t, repository, config)
 	service.registerConversationRoutes(service.echo)
 	primary := tracker.OrganizationID("org_first")
@@ -145,7 +145,7 @@ func seedWriteLoadHistory(t *testing.T, f nativeFixture, history int) {
 	}
 	issue := f.create(t, "write-load-history")
 	content := eventstore.NewContent(f.service.config.RunDetails)
-	now := f.service.config.now().UTC()
+	now := f.service.config.Clock().UTC()
 	for first := 0; first < history; first += 200 {
 		batch := make([]eventstore.Event, 0, min(200, history-first))
 		for range min(200, history-first) {

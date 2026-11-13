@@ -39,7 +39,7 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	var runner runnerauth.Runner
 	var policyRevision policystore.Revision
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {

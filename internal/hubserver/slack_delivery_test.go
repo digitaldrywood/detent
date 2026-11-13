@@ -29,7 +29,7 @@ func configureTestSlack(t *testing.T, f nativeFixture, now *time.Time, configure
 	if f.service.outbox != nil {
 		f.service.outbox.stop()
 	}
-	f.service.config.now = func() time.Time { return *now }
+	f.service.config.Clock = func() time.Time { return *now }
 	f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://cloud.detent.test"}
 	f.service.config.SecretKeys = secretTestKeys(t, "1", "1")
 	if !configured {
@@ -143,7 +143,7 @@ func TestSlackSettingsPrivacyAndAccess(t *testing.T) {
 		t.Fatal("disabled secret was retained")
 	}
 	org := f.service.accessOrganization()
-	historicalAt := f.service.config.now().UTC().Truncate(time.Microsecond).Add(-time.Hour)
+	historicalAt := f.service.config.Clock().UTC().Truncate(time.Microsecond).Add(-time.Hour)
 	details := &memoryRunDetails{}
 	evidence, err := details.StoreDetail(t.Context(), string(org), []byte("{}"))
 	if err != nil {
@@ -248,7 +248,7 @@ func TestSlackSettingsPrivacyAndAccess(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						_, err = w.UpdateSlackIntegration(ctx, postgres.UpdateSlackIntegrationInput{OrganizationID: org, ChannelName: "changed", Enabled: current.Enabled, UpdatedAt: f.service.config.now(), Revision: current.Revision})
+						_, err = w.UpdateSlackIntegration(ctx, postgres.UpdateSlackIntegrationInput{OrganizationID: org, ChannelName: "changed", Enabled: current.Enabled, UpdatedAt: f.service.config.Clock(), Revision: current.Revision})
 						return err
 					}); err != nil {
 						t.Fatalf("concurrent settings change: %v", err)
@@ -292,7 +292,7 @@ func TestSlackSettingsPrivacyAndAccess(t *testing.T) {
 	}
 	before := readSettings()
 	if err := f.service.database.postgres.WriteSlack(t.Context(), org, corestore.Serving, func(w postgres.SlackWriter) error {
-		_, err := w.UpdateSlackIntegration(t.Context(), postgres.UpdateSlackIntegrationInput{OrganizationID: org, ChannelName: before.ChannelName, Enabled: false, UpdatedAt: f.service.config.now(), Revision: before.Revision})
+		_, err := w.UpdateSlackIntegration(t.Context(), postgres.UpdateSlackIntegrationInput{OrganizationID: org, ChannelName: before.ChannelName, Enabled: false, UpdatedAt: f.service.config.Clock(), Revision: before.Revision})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -497,9 +497,9 @@ func TestHealthSlackMaintenanceDeliversOnlyTheTenantQueueOnce(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
-			now := service.config.now().UTC().Truncate(time.Microsecond)
+			now := service.config.Clock().UTC().Truncate(time.Microsecond)
 			clock := now
-			service.config.now = func() time.Time { return clock }
+			service.config.Clock = func() time.Time { return clock }
 			primary := tracker.OrganizationID("org_first")
 			organizations := []tracker.OrganizationID{primary, primary + "_second"}
 			for _, org := range organizations {

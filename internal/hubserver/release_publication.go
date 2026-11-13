@@ -41,7 +41,7 @@ func (s *Service) prepareReleasePublication(ctx context.Context, scope hubscope.
 		if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 			return err
 		}
-		plan, err := s.prepareReleaseDeliveryCheck(ctx, scope, item, association, s.config.now(), true)
+		plan, err := s.prepareReleaseDeliveryCheck(ctx, scope, item, association, s.config.Clock(), true)
 		if err != nil {
 			return err
 		}

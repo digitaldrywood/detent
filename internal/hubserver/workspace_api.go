@@ -271,7 +271,7 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope hubscope.Nati
 		if workspacesession.Terminal(current.State) {
 			return json.RawMessage(`{"deleted":true}`), nil
 		}
-		now := s.config.now().UTC().Truncate(time.Microsecond)
+		now := s.config.Clock().UTC().Truncate(time.Microsecond)
 		closure, err := s.prepareWorkspaceIssueClose(ctx, scope, dispatchItem, now)
 		if err != nil {
 			return nil, err

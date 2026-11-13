@@ -86,7 +86,7 @@ func (s *Service) spritePoolResponse(ctx context.Context, scope hubscope.NativeS
 	if err != nil {
 		return view, err
 	}
-	decision, err := s.readOrganizationPlacementSnapshot(ctx, scope, s.config.now())
+	decision, err := s.readOrganizationPlacementSnapshot(ctx, scope, s.config.Clock())
 	if err != nil {
 		return view, err
 	}
@@ -280,7 +280,7 @@ func (s *Service) executeSpritePoolSettingsCommand(ctx context.Context, scope hu
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if keyed {
-			now := s.config.now()
+			now := s.config.Clock()
 			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", now)); err != nil {
 				return err
 			}
@@ -303,7 +303,7 @@ func (s *Service) executeSpritePoolSettingsCommand(ctx context.Context, scope hu
 				if err != nil {
 					return err
 				}
-				if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "sprite-pool", ID: string(scope.Organization), CreatedAt: s.config.now()}); err != nil {
+				if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "sprite-pool", ID: string(scope.Organization), CreatedAt: s.config.Clock()}); err != nil {
 					return err
 				}
 			}
@@ -325,7 +325,7 @@ func (s *Service) executeSpritePoolSettingsCommand(ctx context.Context, scope hu
 			if scope.Credential.Hosted != nil {
 				audit := projectRecordActor(scope).Audit
 				audit.Event, audit.Route, audit.Status = "action", "set_sprite_pool", http.StatusOK
-				audit.RecordedAt = s.config.now()
+				audit.RecordedAt = s.config.Clock()
 				audit.RecordedAtNS = audit.RecordedAt.UnixNano()
 				if _, err := w.RecordAccessAudit(ctx, audit); err != nil {
 					return err
@@ -374,7 +374,7 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope hubscope.NativeS
 		scope.Project = ""
 	}
 	input := spriteScaleInput{Floor: view.MinRunners, Ceiling: view.MaxRunners}
-	now := s.config.now()
+	now := s.config.Clock()
 	placement, err := s.readOrganizationPlacementSnapshot(readCtx, scope, now)
 	if err != nil {
 		return input, nil, err
@@ -516,7 +516,7 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope hubscope.NativeScop
 			if err != nil {
 				return err
 			}
-			if !end.After(s.config.now()) {
+			if !end.After(s.config.Clock()) {
 				if err := s.retirePoolSpriteReservation(ctx, scope, member.Name, "Sprite provisioning did not finish before its enrollment expired\n", true); err != nil {
 					return err
 				}
@@ -596,7 +596,7 @@ func (s *Service) scheduleSpritePoolForQueue(ctx context.Context, scope hubscope
 func (s *Service) describeSpritePoolMembers(ctx context.Context, scope hubscope.NativeScope, members []spritePoolMember) error {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	now := s.config.now()
+	now := s.config.Clock()
 	for i := range members {
 		member := &members[i]
 		member.Status, member.WaitingFor = member.State, nil
@@ -716,7 +716,7 @@ func (s *Service) readSpritePoolController(ctx context.Context, scope hubscope.N
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		_, err := owner.SpritePoolAuthority(ctx, s.config.now())
+		_, err := owner.SpritePoolAuthority(ctx, s.config.Clock())
 		return err
 	})
 	return view, err
@@ -844,7 +844,7 @@ func (s *Service) spritePoolRecordAuthority(ctx context.Context, scope hubscope.
 			}
 		}
 		var err error
-		actor, err = owner.SpritePoolAuthority(ctx, s.config.now())
+		actor, err = owner.SpritePoolAuthority(ctx, s.config.Clock())
 		return err
 	})
 	return actor, err
@@ -864,7 +864,7 @@ func (s *Service) spritePoolRunner(ctx context.Context, scope hubscope.NativeSco
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		now := s.config.now()
+		now := s.config.Clock()
 		record, err := owner.RunnerRoutingRecord(ctx, id, now)
 		if err != nil {
 			return err
@@ -908,7 +908,7 @@ func (s *Service) spritePoolControllerAuthority(ctx context.Context, scope hubsc
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		actor, err = owner.SpritePoolAuthority(ctx, s.config.now())
+		actor, err = owner.SpritePoolAuthority(ctx, s.config.Clock())
 		return err
 	})
 	return actor, err
@@ -921,7 +921,7 @@ func (s *Service) readSpriteAllocationController(ctx context.Context, scope hubs
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		if _, err := owner.SpritePoolAuthority(ctx, s.config.now()); err != nil {
+		if _, err := owner.SpritePoolAuthority(ctx, s.config.Clock()); err != nil {
 			return err
 		}
 		var err error
@@ -938,14 +938,14 @@ func (s *Service) spritePoolControllerRunner(ctx context.Context, scope hubscope
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		if _, err := owner.SpritePoolAuthority(ctx, s.config.now()); err != nil {
+		if _, err := owner.SpritePoolAuthority(ctx, s.config.Clock()); err != nil {
 			return err
 		}
 		routing, ok := r.(runnerstore.RoutingReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		now := s.config.now()
+		now := s.config.Clock()
 		record, err := routing.RunnerRoutingRecord(ctx, id, now)
 		if err != nil {
 			return err

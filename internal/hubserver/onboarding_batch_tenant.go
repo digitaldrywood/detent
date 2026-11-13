@@ -34,7 +34,7 @@ func (s *Service) projectOnboardingBatchTenant(ctx context.Context, organization
 	var leases []runnerstore.FleetLease
 	var urgent runnerstore.UrgentUpdate
 	var checks map[tracker.ProjectID]map[string]runnerauth.LocalChecks
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(projectstore.OnboardingBatchReader)
 		if !ok {

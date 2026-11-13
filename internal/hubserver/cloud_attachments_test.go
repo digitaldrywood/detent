@@ -383,8 +383,8 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			}
 			csrf := cloudassert.CSRFToken("shared-"+owner.identity.Subject, "org_security")
 			now := time.Now().UTC()
-			f.service.config.now = func() time.Time { return now }
-			f.service.database.now = f.service.config.now
+			f.service.config.Clock = func() time.Time { return now }
+			f.service.database.now = f.service.config.Clock
 			window := now.Unix() / plans.WindowSeconds * plans.WindowSeconds
 			cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {
 				if test.used > 0 {

@@ -464,7 +464,7 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 					input := changeTestInput()
 					input.Repository = "https://github.com/example-org/example-project"
 					bundle := changeTestSource(t, &input)
-					now := f.service.config.now()
+					now := f.service.config.Clock()
 					service := f.service
 					service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
 					repository := service.config.TenantRepository

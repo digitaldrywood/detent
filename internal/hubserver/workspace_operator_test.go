@@ -681,7 +681,7 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 	staleInput := map[string]any{"kind": "message", "text": "Late steer", "expected": map[string]any{"attempt_id": "att_523", "turn_id": "turn_finished"}}
 	revoked := workspaceOperatorContext(t, f.service, f.other, string(f.project.OrganizationID), "revoked-stale")
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.RevokeAccessCredential(t.Context(), f.otherID, f.service.config.now().UTC())
+		return w.RevokeAccessCredential(t.Context(), f.otherID, f.service.config.Clock().UTC())
 	}); err != nil {
 		t.Fatal(err)
 	}

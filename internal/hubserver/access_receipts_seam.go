@@ -12,7 +12,7 @@ import (
 )
 
 func (s *Service) accessReceiptsService() *accessreceipts.Service {
-	return accessreceipts.New(accessreceipts.Deps{Repository: s.config.AccessRepository, TenantRepository: s.config.TenantRepository, Organization: tracker.OrganizationID(s.appOrganizationID()), Now: s.config.now, Details: s.runDetailStore(), ResolveJSON: func(ctx context.Context, raw []byte) ([]byte, error) {
+	return accessreceipts.New(accessreceipts.Deps{Repository: s.config.AccessRepository, TenantRepository: s.config.TenantRepository, Organization: tracker.OrganizationID(s.appOrganizationID()), Now: s.config.Clock, Details: s.runDetailStore(), ResolveJSON: func(ctx context.Context, raw []byte) ([]byte, error) {
 		return hubcontent.ResolveStorageJSON(s.contentContext(ctx), raw)
 	}})
 }

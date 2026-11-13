@@ -78,7 +78,7 @@ func newReleaseTenantFixtureFor(t *testing.T, repo tenantstore.Repository, f hos
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &fixture.change)
 	content := eventstore.NewContent(f.service.runDetailStore())
-	now := f.service.config.now().UTC()
+	now := f.service.config.Clock().UTC()
 	if err := repo.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		hash := apikey.HashToken("example-release-runner")
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "release-runner-token", Name: "Runner", Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: "worker", NativeOnly: true, CreatedAt: now, UpdatedAt: now, ProjectAccess: "all", Kind: "service"}); err != nil {
@@ -228,7 +228,7 @@ func TestReleaseAssociationPostgres(t *testing.T) {
 				}
 				row.ProjectID = f.f.project
 				row.ApprovedBy = "example-owner"
-				row.ApprovedAt = service.config.now()
+				row.ApprovedAt = service.config.Clock()
 				if err := f.repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 					current, err := w.ProjectPolicy(t.Context(), f.f.project)
 					if err != nil {
@@ -285,7 +285,7 @@ func TestReleaseAssociationPostgres(t *testing.T) {
 					}
 					switch test.invalid {
 					case "dependency":
-						return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: "org_security", ProjectID: f.f.project, WorkItemID: f.delivery.WorkItemID, RelatedProjectID: f.f.project, RelatedWorkItemID: f.source.WorkItemID, Type: "dependency"}, "remove", service.config.now())
+						return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: "org_security", ProjectID: f.f.project, WorkItemID: f.delivery.WorkItemID, RelatedProjectID: f.f.project, RelatedWorkItemID: f.source.WorkItemID, Type: "dependency"}, "remove", service.config.Clock())
 					case "project":
 						project, err := w.ProjectRecord(t.Context(), f.f.project)
 						if err != nil {
@@ -464,7 +464,7 @@ func TestReleaseAssociationRechecksProviderPostgres(t *testing.T) {
 
 func seedReleaseTenantAudit(t *testing.T, f *releaseTenantFixture) {
 	t.Helper()
-	now := f.f.service.config.now()
+	now := f.f.service.config.Clock()
 	audit := &tracker.SecurityAuditReview{SessionID: 42, DiffDigest: policy.Digest([]byte("diff")), Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "source-audit", ProjectID: string(f.f.project), IssueID: string(f.source.WorkItemID), Repository: f.version.Repository, BaseSHA: f.version.BaseSHA, HeadSHA: f.version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now.Add(-time.Second), CompletedAt: now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
 	review := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: f.version.ID, Decision: "approved", SecurityAudit: audit, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-reviewer"}, CreatedAt: now}
 	raw, err := json.Marshal(review)
@@ -492,7 +492,7 @@ func writeReleaseAdmissionIssue(t *testing.T, f *releaseTenantFixture, issue tra
 	}
 	change(&issue)
 	issue.Revision++
-	issue.UpdatedAt = f.f.service.config.now()
+	issue.UpdatedAt = f.f.service.config.Clock()
 	issue.LastActivityAt = issue.UpdatedAt
 	fields, err := f.f.service.prepareWorkItemFields(t.Context(), "org_security", hubrecords.WorkItemRecordPlan{Issue: issue})
 	if err != nil {
@@ -539,7 +539,7 @@ func writeReleaseAdmissionIssue(t *testing.T, f *releaseTenantFixture, issue tra
 func seedReleaseAdmissionRunner(t *testing.T, f *releaseTenantFixture, policyID string) (string, string, tracker.MachineID) {
 	t.Helper()
 	service := f.f.service
-	now := service.config.now().UTC()
+	now := service.config.Clock().UTC()
 	binding := runnerauth.NewBinding()
 	credential, err := apikey.GenerateToken()
 	if err != nil {

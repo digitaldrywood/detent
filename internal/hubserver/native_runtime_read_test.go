@@ -148,8 +148,8 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	path := f.path + "/versions/" + version.ID
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve-current"}, Decision: "approved"}), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/checks", f.token, changeTestResult(version)), http.StatusOK)
-	now := f.service.config.now().Add(time.Second).UTC().Truncate(time.Microsecond)
-	f.service.config.now = func() time.Time { return now }
+	now := f.service.config.Clock().Add(time.Second).UTC().Truncate(time.Microsecond)
+	f.service.config.Clock = func() time.Time { return now }
 	registered := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	registered.enroll(t)
 	content := eventstore.NewContent(f.service.runDetailStore())

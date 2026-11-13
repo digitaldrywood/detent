@@ -183,7 +183,7 @@ func TestProjectSecretPermissions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		revision.ProjectID, revision.ApprovedBy, revision.ApprovedAt = project, "fixture", f.service.config.now()
+		revision.ProjectID, revision.ApprovedBy, revision.ApprovedAt = project, "fixture", f.service.config.Clock()
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			expected := ""
 			current, err := w.ProjectPolicy(t.Context(), project)
@@ -380,7 +380,7 @@ func TestProjectSecretLifecycle(t *testing.T) {
 func TestProjectSecretStartupKeys(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, openTestService(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), Hosted: &hostedplans.HostedConfig{OrganizationID: "org_secret_startup", WorkOSOrganizationID: "provider_secret_startup", PublicURL: "https://hub.example.test", Provider: newHostedSecurityProvider()}}), "", "Secret startup")
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD(f.project.OrganizationID, f.project.ID, flySpritesToken))
 	if err != nil {
 		t.Fatal(err)
@@ -435,7 +435,7 @@ func updateSecretTestMemberRole(ctx context.Context, service *Service, user, rol
 		if err != nil {
 			return err
 		}
-		member.Role, member.UpdatedAt = role, service.config.now()
+		member.Role, member.UpdatedAt = role, service.config.Clock()
 		return w.UpdateAccessMember(ctx, member)
 	})
 }

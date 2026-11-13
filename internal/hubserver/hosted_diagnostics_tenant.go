@@ -76,7 +76,7 @@ func (s *Service) readDiagnosticsTenant(ctx context.Context, credential hubapi.A
 		if requested != "" && (len(ids) != 1 || ids[0] != requested) {
 			return operatortool.ErrAccessDenied
 		}
-		snapshot, err = reader.DiagnosticsSnapshot(ctx, ids, w.From, w.To, s.config.now().UTC(), principal)
+		snapshot, err = reader.DiagnosticsSnapshot(ctx, ids, w.From, w.To, s.config.Clock().UTC(), principal)
 		if err != nil {
 			return err
 		}

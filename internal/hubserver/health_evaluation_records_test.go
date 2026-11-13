@@ -22,7 +22,7 @@ func TestPostgresHealthEvaluationPublishesRecurrenceAndClear(t *testing.T) {
 	t.Parallel()
 	details := &memoryRunDetails{}
 	service := newPostgresNativeService(t, Config{RunDetails: details})
-	now := service.config.now().UTC().Truncate(time.Microsecond)
+	now := service.config.Clock().UTC().Truncate(time.Microsecond)
 	projects := map[tracker.OrganizationID]tracker.ProjectID{}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 		f := newNativeFixture(t, service, org, "Example")
@@ -292,7 +292,7 @@ func TestPostgresHealthEvaluationPublishesRecurrenceAndClear(t *testing.T) {
 	}
 	t.Run("current wait provenance survives tenant publication", func(t *testing.T) {
 		current := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
-		at := current.config.now().UTC().Truncate(time.Microsecond)
+		at := current.config.Clock().UTC().Truncate(time.Microsecond)
 		for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 			f := newNativeFixture(t, current, organization, "Example wait authority")
 			linked := f.create(t, "Example question")
@@ -353,7 +353,7 @@ func TestPostgresHealthEvaluationPublishesRecurrenceAndClear(t *testing.T) {
 		service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
 		stored, _ := projectRecordDatabases.Load(service.database.postgres)
 		admin := stored.(*sql.DB)
-		now := service.config.now().UTC().Truncate(time.Microsecond)
+		now := service.config.Clock().UTC().Truncate(time.Microsecond)
 		for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 			first := newNativeFixture(t, service, organization, "Example examined health")
 			second := newNativeFixture(t, service, organization, "Example unexamined health")

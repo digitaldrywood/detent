@@ -504,7 +504,7 @@ func (s *Service) queueActionRunRecord(ctx context.Context, scope hubscope.Nativ
 	if err != nil {
 		return nil, err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, err
@@ -528,7 +528,7 @@ func (s *Service) queueActionRunRecord(ctx context.Context, scope hubscope.Nativ
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, writer, "collaboration", s.config.now())); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, writer, "collaboration", s.config.Clock())); err != nil {
 			return err
 		}
 		owner, ok := writer.(postgres.RelayActionWriter)

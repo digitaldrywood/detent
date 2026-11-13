@@ -331,7 +331,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: request.ProjectID, ResourceKind: kind}); err != nil {
 			return result, err
 		}
-		now := s.config.now().UTC()
+		now := s.config.Clock().UTC()
 		switch call.Name {
 		case operatortool.HostedUsage:
 			data, err := s.readHostedUsage(ctx, credential, request.Range, request.ProjectID)

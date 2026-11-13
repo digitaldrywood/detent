@@ -79,7 +79,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				configure := func(cfg *Config) {
 					cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir()}
 					if sharedEntry {
-						cfg.now = func() time.Time { return time.Unix(0, clock.Load()) }
+						cfg.Clock = func() time.Time { return time.Unix(0, clock.Load()) }
 					}
 					if coordinatorSpriteMutation(tool) {
 						cfg.SecretKeys = secretTestKeys(t, "1", "1")
@@ -117,7 +117,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 							return cloudassert.Claims{}, cloudassert.ErrInvalid
 						}
 						fresh := currentEntryClaims
-						fresh.IssuedAt = f.service.config.now()
+						fresh.IssuedAt = f.service.config.Clock()
 						fresh.ExpiresAt = fresh.IssuedAt.Add(cloudassert.MaxLifetime)
 						return fresh, nil
 					}
@@ -273,7 +273,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						clock.Add(int64(time.Minute))
 					}
 					waitCoordinatorIdle(t, t.Context(), f.service)
-					f.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{f.service}, chat.WithClock(f.service.config.now), chat.WithSessionStore(operatorChatStore{f.service.database}, f.service.resolveOperatorChatAuthority))
+					f.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{f.service}, chat.WithClock(f.service.config.Clock), chat.WithSessionStore(operatorChatStore{f.service.database}, f.service.resolveOperatorChatAuthority))
 				}
 				state := &coordinatorTurnState{coordinator: c, conversationID: record.ID, users: []conversationMessageRecord{user}}
 				tools := newCoordinatorToolset(c, state)
@@ -289,7 +289,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						var persisted accessstore.OperatorSession
 						if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
 							var err error
-							persisted, err = r.OperatorSession(t.Context(), operatortool.CurrentConnection(ctx).ID, f.service.config.now().Add(-time.Hour))
+							persisted, err = r.OperatorSession(t.Context(), operatortool.CurrentConnection(ctx).ID, f.service.config.Clock().Add(-time.Hour))
 							return err
 						}); err != nil {
 							t.Fatal(err)
@@ -338,7 +338,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						state.users = []conversationMessageRecord{user}
 					case "shared entry revoked":
 						coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
-							return w.RevokeAccessMember(t.Context(), u.identity.Subject, f.service.config.now())
+							return w.RevokeAccessMember(t.Context(), u.identity.Subject, f.service.config.Clock())
 						})
 					case "shared entry changed issuer":
 						f.service.config.Hosted.SharedEntry.Issuer = "other-entry"
@@ -348,7 +348,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						f.grant(t, u, false, false)
 					}
 					if sharedEntry {
-						f.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{f.service}, chat.WithClock(f.service.config.now), chat.WithSessionStore(operatorChatStore{f.service.database}, f.service.resolveOperatorChatAuthority))
+						f.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{f.service}, chat.WithClock(f.service.config.Clock), chat.WithSessionStore(operatorChatStore{f.service.database}, f.service.resolveOperatorChatAuthority))
 					}
 					if outcome == "shared entry rotated" || outcome == "shared entry absent channel" || outcome == "shared entry expired" || outcome == "shared entry mismatched principal" || outcome == "shared entry revoked" || outcome == "shared entry changed issuer" || outcome == "shared entry changed generation" || outcome == "shared entry no write grant" {
 						for _, section := range []string{"work_item", "work_runs"} {
@@ -735,7 +735,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						coordinatorActionRelease(t, f.service, "org_security", "archive-lease", "released")
 						coordinatorActionLease(t, f.service, "org_security", id, "replacement-lease")
 					case "expired attempt":
-						if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$1::timestamptz - interval '2 seconds', renewed_at=$1::timestamptz - interval '1 second', expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.now().Add(-time.Second), "org_security", "archive-lease"); err != nil {
+						if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$1::timestamptz - interval '2 seconds', renewed_at=$1::timestamptz - interval '1 second', expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.Clock().Add(-time.Second), "org_security", "archive-lease"); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -1115,7 +1115,7 @@ func assertCoordinatorArchiveEffect(t *testing.T, f hostedSecurityFixture, chang
 	if changed {
 		var ids []claimstore.Candidate
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
-			page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: f.project, Scope: string(f.project), AvailableAt: f.service.config.now(), Limit: 1})
+			page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: f.project, Scope: string(f.project), AvailableAt: f.service.config.Clock(), Limit: 1})
 			ids = page.Items
 			return err
 		}); err != nil {
@@ -1148,7 +1148,7 @@ func runCoordinatorIssueSplitPostgresCases(t *testing.T) {
 					selectPostgresHubTestOrganization(service, organization)
 					native := newNativeFixture(t, service, organization, "Split scope")
 					f := hostedSecurityFixture{service: service, provider: provider, project: native.project.ID, base: native.base}
-					now := service.config.now()
+					now := service.config.Clock()
 					role := "owner"
 					if outcome == "wrong role" {
 						role = "member"
@@ -1609,7 +1609,7 @@ func assertCoordinatorSplitPostgresEffect(t *testing.T, f hostedSecurityFixture,
 					return err
 				}
 			}
-			page, err := w.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: f.project, Scope: string(f.project), WorkItemID: dependent.NativeID, AvailableAt: f.service.config.now(), Limit: 1})
+			page, err := w.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: f.project, Scope: string(f.project), WorkItemID: dependent.NativeID, AvailableAt: f.service.config.Clock(), Limit: 1})
 			if err != nil {
 				return err
 			}
@@ -1662,7 +1662,7 @@ func coordinatorActionWriteIssue(t *testing.T, s *Service, organization tracker.
 	}
 	change(&issue)
 	issue.Revision++
-	issue.UpdatedAt = s.config.now()
+	issue.UpdatedAt = s.config.Clock()
 	issue.LastActivityAt = issue.UpdatedAt
 	raw, err := json.Marshal(issue)
 	if err != nil {
@@ -1753,7 +1753,7 @@ func coordinatorActionParkAttempt(t *testing.T, s *Service, organization tracker
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization, ProjectID: project, AggregateType: "work_item", AggregateID: id, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "archive-runner"}, RecordedAt: s.config.now(), Data: tracker.CollaborationData{Run: &data}})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization, ProjectID: project, AggregateType: "work_item", AggregateID: id, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "archive-runner"}, RecordedAt: s.config.Clock(), Data: tracker.CollaborationData{Run: &data}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1762,7 +1762,7 @@ func coordinatorActionParkAttempt(t *testing.T, s *Service, organization tracker
 		t.Fatal(err)
 	}
 	coordinatorFixtureWrite(t, s, organization, func(w tenantstore.Writer) error {
-		_, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", StartedAt: s.config.now(), PayloadObjectKey: ref.Key, PayloadReference: ref})
+		_, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", StartedAt: s.config.Clock(), PayloadObjectKey: ref.Key, PayloadReference: ref})
 		if err != nil {
 			return err
 		}
@@ -1893,10 +1893,10 @@ func coordinatorActionSpriteSeed(t *testing.T, f hostedSecurityFixture, u hosted
 		if err != nil {
 			return err
 		}
-		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: flySpritesToken, OrganizationSlug: "detent-test", Envelope: envelope, UpdatedAt: s.config.now()}, accessstore.SecretAudit{OrganizationID: organization, Actor: member.PrincipalID, Kind: flySpritesToken, Event: "stored", KeyVersion: envelope.Version, RecordedAt: s.config.now()}); err != nil {
+		if err := w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, Kind: flySpritesToken, OrganizationSlug: "detent-test", Envelope: envelope, UpdatedAt: s.config.Clock()}, accessstore.SecretAudit{OrganizationID: organization, Actor: member.PrincipalID, Kind: flySpritesToken, Event: "stored", KeyVersion: envelope.Version, RecordedAt: s.config.Clock()}); err != nil {
 			return err
 		}
-		if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: contentArchiveID(string(organization), ref), Reference: ref, CreatedAt: s.config.now()}); err != nil {
+		if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: contentArchiveID(string(organization), ref), Reference: ref, CreatedAt: s.config.Clock()}); err != nil {
 			return err
 		}
 		owner, ok := w.(postgres.SpriteWriter)

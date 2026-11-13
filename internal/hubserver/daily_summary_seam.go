@@ -51,7 +51,7 @@ func (s *Service) dailySummaryService() *dailysummary.Service {
 	deps := dailysummary.Deps{
 		Repository:       s.config.TenantRepository,
 		AccessRepository: s.config.AccessRepository,
-		Now:              s.config.now,
+		Now:              s.config.Clock,
 		Organization:     s.accessOrganization,
 		HostedPath:       s.hostedPath,
 		IssuePath:        hubrecords.IssueBrowserPath,

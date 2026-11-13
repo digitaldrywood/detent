@@ -130,7 +130,7 @@ func TestHostedBillingJSONForTheClient(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("checkout without CSRF = %d", recorder.Code)
 	}
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	for _, test := range []struct {
 		name       string
 		expiresAt  time.Time
@@ -185,7 +185,7 @@ func TestHostedBillingJSONSubscriptionRestrictions(t *testing.T) {
 			f, _ := newHostedCustomerFixture(t)
 			state := hostedplans.BillingState{Status: test.status}
 			if test.status == "active" {
-				state.Snapshot = activeBillingSnapshot(f.service.config.now().UTC().Truncate(time.Microsecond))
+				state.Snapshot = activeBillingSnapshot(f.service.config.Clock().UTC().Truncate(time.Microsecond))
 				state.Snapshot.CancelAtPeriodEnd = test.cancel
 				if test.cancelAt {
 					state.Snapshot.CancelAt = state.Snapshot.PeriodEnd.Add(-time.Minute)
@@ -237,7 +237,7 @@ func TestHostedBillingUsageJSON(t *testing.T) {
 	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(cfg))); err != nil {
 		t.Fatal(err)
 	}
-	window := chatBillingWindow(f.service.config.now(), hostedplans.BillingState{}.Snapshot)
+	window := chatBillingWindow(f.service.config.Clock(), hostedplans.BillingState{}.Snapshot)
 	for index := range 60 {
 		postAICreditFixture(t, f.service.database, billingstore.CreditTransaction{Mode: billing.ModeTest, Source: fmt.Sprintf("period-%d", index), AmountMicros: -1500, Kind: "usage", RecordedAt: window.From.Add(time.Duration(index) * time.Minute)})
 	}
@@ -313,7 +313,7 @@ func TestHostedBillingUsageComplimentaryPlan(t *testing.T) {
 			if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(cfg))); err != nil {
 				t.Fatal(err)
 			}
-			now := f.service.config.now().UTC().Truncate(time.Microsecond)
+			now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 			end := now.Add(30 * 24 * time.Hour)
 			grant := hostedplans.HostedGrant{ID: "grant_example", Plan: hostedplans.PlanReference{ID: "team", Version: 2}, Scope: []string{"native_execution"}, StartsAt: now.Add(-time.Hour), ExpiresAt: &end}
 			if test.noEnd {

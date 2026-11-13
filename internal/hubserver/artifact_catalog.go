@@ -47,7 +47,7 @@ func (s *Service) catalogPublisherScope(ctx context.Context, r postgres.Artifact
 		return scope, artifact.Binding{}, artifact.ErrDenied
 	}
 	current, err := tenant.AccessCredential(ctx, credential.ID)
-	if err != nil || !current.Valid(credential.Hash, s.config.now()) || current.Scope != string(hubapi.APIScopeWorker) || !current.NativeOnly {
+	if err != nil || !current.Valid(credential.Hash, s.config.Clock()) || current.Scope != string(hubapi.APIScopeWorker) || !current.NativeOnly {
 		return scope, artifact.Binding{}, artifact.ErrDenied
 	}
 	if _, err := tenant.AccessTokenGrant(ctx, current.ID, project); err != nil {
@@ -88,7 +88,7 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 			if !ok || plans == nil || plans.WindowSeconds <= 0 {
 				return artifact.Config{}, artifact.ErrQuota
 			}
-			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, billing, s.config.now()))
+			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, billing, s.config.Clock()))
 			if err != nil {
 				return artifact.Config{}, err
 			}
@@ -165,13 +165,13 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 		default:
 			return nil
 		}
-		err = writer.CatalogExecutionAuthority(ctx, postgres.CatalogExecutionAuthorityInput{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(reservation.WorkItemID), AttemptID: reservation.AttemptID, RunID: reservation.RunID, LeaseID: reservation.LeaseID, FencingToken: reservation.FencingToken, ServiceID: command.ServiceID, IdempotencyKey: reservation.Key, Kind: reservation.Kind, Bytes: reservation.Bytes, Now: s.config.now()})
+		err = writer.CatalogExecutionAuthority(ctx, postgres.CatalogExecutionAuthorityInput{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(reservation.WorkItemID), AttemptID: reservation.AttemptID, RunID: reservation.RunID, LeaseID: reservation.LeaseID, FencingToken: reservation.FencingToken, ServiceID: command.ServiceID, IdempotencyKey: reservation.Key, Kind: reservation.Kind, Bytes: reservation.Bytes, Now: s.config.Clock()})
 		if err != nil {
 			return artifact.ErrDenied
 		}
 		return nil
 	}
-	owner, err := cataloghub.New(s.database.postgres, policy, cataloghub.Options{Authorize: authorize, Now: s.config.now})
+	owner, err := cataloghub.New(s.database.postgres, policy, cataloghub.Options{Authorize: authorize, Now: s.config.Clock})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

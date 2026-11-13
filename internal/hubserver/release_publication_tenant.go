@@ -25,7 +25,7 @@ func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope hub
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, raw)
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.Clock()}, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope hub
 		if err := s.authorizeReleaseScope(ctx, w, scope); err != nil {
 			return err
 		}
-		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
 			return err
 		}
 		prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
@@ -54,7 +54,7 @@ func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope hub
 		if scope.Credential.Hosted != nil {
 			audit := projectRecordActor(scope).Audit
 			audit.Event, audit.Route, audit.Status, audit.ProjectID = "action", operation, http.StatusOK, scope.Project
-			audit.RecordedAt = s.config.now()
+			audit.RecordedAt = s.config.Clock()
 			audit.RecordedAtNS = audit.RecordedAt.UnixNano()
 			if _, err := w.RecordAccessAudit(ctx, audit); err != nil {
 				return err

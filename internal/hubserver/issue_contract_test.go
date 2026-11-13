@@ -219,7 +219,7 @@ func TestNativeIssueContract(t *testing.T) {
 			machine := credential.Runner.MachineID
 			backendIsolation := isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": machine, "hostname": "runner", "capacity": 1, "version": minimumSupportedRunnerVersion, "backend_isolation": backendIsolation}), http.StatusOK)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machine)+"/heartbeat", worker, map[string]any{"display_name": "Example runner", "capacity": 1, "version": minimumSupportedRunnerVersion, "backend_isolation": backendIsolation, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.now()}}), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machine)+"/heartbeat", worker, map[string]any{"display_name": "Example runner", "capacity": 1, "version": minimumSupportedRunnerVersion, "backend_isolation": backendIsolation, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.Clock()}}), http.StatusOK)
 			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			check := func(want bool) {
 				t.Helper()
@@ -757,7 +757,7 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 			method, path := http.MethodPost, f.base+"/work-items"
 			create := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "incomplete"}, Title: "Repair build", Body: body, State: test.state}
 			if test.imported {
-				now := f.service.config.now()
+				now := f.service.config.Clock()
 				create.Provenance = &tracker.Provenance{Provider: "github", ExternalID: "import-example", AuthorID: "example-author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}
 			}
 			var request any = create

@@ -104,7 +104,7 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 
 func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC) }})
+	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC) }})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	installReportsBudgetTrace(t, f.service)
 	admin := hostedPostgresAdmin(t, f.service)
@@ -132,7 +132,7 @@ func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
 	previous := 0
 	for _, history := range []int{20000, 200000} {
 		t.Run(strconv.Itoa(history), func(t *testing.T) {
-			now := f.service.config.now().UTC()
+			now := f.service.config.Clock().UTC()
 			content := eventstore.NewContent(f.service.runDetailStore())
 			for index, item := range items {
 				var sequence int64

@@ -52,7 +52,7 @@ func (s *Service) resolveOperatorChatAuthority(ctx context.Context, identity ope
 	} else if s.config.Hosted != nil && strings.HasPrefix(identity.PrincipalID, "account:") {
 		credential, err = s.hostedAccountCredential(ctx, identity.SessionID)
 	} else if s.config.Hosted != nil {
-		session, sessionErr := s.WebSession(ctx, identity.SessionID, s.config.now())
+		session, sessionErr := s.WebSession(ctx, identity.SessionID, s.config.Clock())
 		if sessionErr != nil {
 			return operatortool.Authority{}, operatortool.ErrAccessDenied
 		}

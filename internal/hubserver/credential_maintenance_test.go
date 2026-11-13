@@ -274,7 +274,7 @@ func TestCredentialMaintenanceAuditOutcomes(t *testing.T) {
 
 func maintenanceCredential(t *testing.T, s *Service, id, secret string, administrator bool) accessstore.Credential {
 	t.Helper()
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config.Clock().UTC().Truncate(time.Microsecond)
 	row := accessstore.Credential{OrganizationID: s.accessOrganization(), ID: id, Name: id, Hash: apikey.HashToken(secret), Fingerprint: hubapi.TokenFingerprint(apikey.HashToken(secret)), Scope: "operator", Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}
 	if administrator {
 		row.Scope, row.KeyScope, row.ProjectAccess = "admin", "admin", "all"
@@ -339,11 +339,11 @@ func testMaintenanceCurrentIssuer(t *testing.T, f *browserHostedFixture) {
 					return repository.WriteTenant(t.Context(), s.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
 						switch fault {
 						case "revoked":
-							return w.RevokeAccessCredential(t.Context(), issuer.ID, s.config.now())
+							return w.RevokeAccessCredential(t.Context(), issuer.ID, s.config.Clock())
 						case "rotated":
-							return w.RotateAccessCredential(t.Context(), issuer.ID, apikey.HashToken("replacement_"+id), "replacement", s.config.now())
+							return w.RotateAccessCredential(t.Context(), issuer.ID, apikey.HashToken("replacement_"+id), "replacement", s.config.Clock())
 						case "member":
-							return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: s.accessOrganization(), UserID: "user_" + id, Email: id + "@example.test", MembershipID: "membership_" + id, Role: "owner", Active: true, PrincipalID: issuer.ID, CreatedAt: s.config.now(), UpdatedAt: s.config.now()})
+							return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: s.accessOrganization(), UserID: "user_" + id, Email: id + "@example.test", MembershipID: "membership_" + id, Role: "owner", Active: true, PrincipalID: issuer.ID, CreatedAt: s.config.Clock(), UpdatedAt: s.config.Clock()})
 						case "outage":
 							return nil
 						default:
@@ -417,7 +417,7 @@ func testMaintenanceTenantIsolation(t *testing.T, f *browserHostedFixture) {
 	hosted.OrganizationID, hosted.WorkOSOrganizationID, hosted.BootstrapSubject = string(organization), "provider_maintenance_second", "owner_maintenance_second"
 	cfg.Hosted = &hosted
 	if err := first.config.AccessRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		now := first.config.now()
+		now := first.config.Clock()
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Second maintenance organization", Slug: "second-maintenance", CreatedAt: now}); err != nil {
 			return err
 		}
@@ -477,7 +477,7 @@ func testMaintenanceSelfTarget(t *testing.T, f *browserHostedFixture) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	expiry := s.config.now().Add(time.Hour).Truncate(time.Microsecond)
+	expiry := s.config.Clock().Add(time.Hour).Truncate(time.Microsecond)
 	if _, err := hostedPostgresAdmin(t, s).ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=$3 WHERE organization_id=$1 AND id=$2", s.accessOrganization(), row.ID, expiry); err != nil {
 		t.Fatal(err)
 	}
@@ -699,7 +699,7 @@ func testMaintenanceLockOrder(t *testing.T) {
 				}
 				principal := member.PrincipalID
 				if err := normal.accessWrite(t.Context(), normal.accessOrganization(), func(w tenantstore.Writer) error {
-					return w.RotateAccessCredential(t.Context(), principal, apikey.HashToken("model_principal_secret"), "model", normal.config.now())
+					return w.RotateAccessCredential(t.Context(), principal, apikey.HashToken("model_principal_secret"), "model", normal.config.Clock())
 				}); err != nil {
 					t.Fatal(err)
 				}

@@ -42,7 +42,7 @@ func TestHeartbeatContentAccounting(t *testing.T) {
 			objects := &changeObjectFixture{}
 			details := &heartbeatBudgetDetails{DetailStore: objects}
 			now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
-			f, repository := heartbeatWriterBudgetFixture(t, Config{Content: objects.call, RunDetails: details, now: func() time.Time { return now }})
+			f, repository := heartbeatWriterBudgetFixture(t, Config{Content: objects.call, RunDetails: details, Clock: func() time.Time { return now }})
 			runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 			runner.enroll(t)
 			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now,
@@ -176,7 +176,7 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 			now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
 			clock := &leaseTestClock{value: now.Add(-2 * time.Second)}
 			details := &heartbeatBudgetDetails{DetailStore: &memoryRunDetails{}}
-			f, repository := heartbeatWriterBudgetFixture(t, Config{RunDetails: details, now: clock.Now})
+			f, repository := heartbeatWriterBudgetFixture(t, Config{RunDetails: details, Clock: clock.Now})
 			runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			runner.enroll(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())

@@ -452,7 +452,7 @@ func TestSpritePoolLifecycle(t *testing.T) {
 			}
 			if test.failure == "" {
 				setSpriteIssuesArchived(t, f, true)
-				setSpriteMembersIdleSince(t, f, f.service.config.now().Add(-time.Hour))
+				setSpriteMembersIdleSince(t, f, f.service.config.Clock().Add(-time.Hour))
 				if test.heartbeat {
 					runner := provider.runners[0]
 					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.MachineID)+"/heartbeat", runner.Credential, map[string]any{"display_name": runner.DisplayName, "capacity": runner.Capacity, "version": runner.Version, "sprite_name": runner.SpriteName})
@@ -617,7 +617,7 @@ func TestSpritePoolCapacity(t *testing.T) {
 				r.redemption.SpriteName = r.redemption.Hostname
 				r.enroll(t)
 				if test.reports {
-					report := capacityReport(f.service.config.now())
+					report := capacityReport(f.service.config.Clock())
 					report.Models = []string{"gpt-6.1-sol"}
 					if test.separate {
 						report.SharedAccountAlias = string(rune('a' + i))
@@ -627,7 +627,7 @@ func TestSpritePoolCapacity(t *testing.T) {
 					})
 				}
 				if test.paused {
-					placementFixtureHeartbeat(t, f, r.binding.RunnerID, f.service.config.now().Add(-time.Minute))
+					placementFixtureHeartbeat(t, f, r.binding.RunnerID, f.service.config.Clock().Add(-time.Minute))
 				}
 			}
 			f.service.config.Hosted = hosted
@@ -673,7 +673,7 @@ func TestSpritePoolFreshAuthority(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					return w.RevokeAccessCredential(t.Context(), pool.ConfiguredBy, f.service.config.now())
+					return w.RevokeAccessCredential(t.Context(), pool.ConfiguredBy, f.service.config.Clock())
 				})
 			case "disable":
 				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=0 WHERE organization_id=$1`, scope.Organization)
@@ -752,7 +752,7 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 				t.Fatal(err)
 			}
 			setSpriteIssuesArchived(t, f, true)
-			setSpriteMembersIdleSince(t, f, f.service.config.now().Add(-time.Hour))
+			setSpriteMembersIdleSince(t, f, f.service.config.Clock().Add(-time.Hour))
 			if test.managed && test.change != "busy ceiling" && test.change != "retiring" {
 				setSpriteAllocationFixture(t, f, 0, 1)
 			}
@@ -761,7 +761,7 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 				if test.change == "busy ceiling" {
 					spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=0 WHERE organization_id=$1`, scope.Organization)
 				}
-				now := f.service.config.now()
+				now := f.service.config.Clock()
 				insertSpriteLeaseFixture(t, f, "lease-busy", "session-busy", "", now, now.Add(time.Hour))
 			case "floor":
 				if test.managed {
@@ -770,10 +770,10 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 				}
 				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET min_runners=1 WHERE organization_id=$1`, scope.Organization)
 			case "recent":
-				setSpriteMembersIdleSince(t, f, f.service.config.now())
+				setSpriteMembersIdleSince(t, f, f.service.config.Clock())
 			case "expired":
 				spriteFixtureExec(t, f, `UPDATE runner_sprite_memberships SET state='bootstrapping' WHERE organization_id=$1`, scope.Organization)
-				spriteFixtureExec(t, f, `UPDATE runner_enrollments SET created_at=LEAST(created_at,$1::timestamptz-interval '1 hour'),expires_at=$1 WHERE organization_id=$2 AND id IN (SELECT enrollment_id FROM runner_sprite_memberships WHERE organization_id=$2)`, f.service.config.now().Add(-time.Minute), scope.Organization)
+				spriteFixtureExec(t, f, `UPDATE runner_enrollments SET created_at=LEAST(created_at,$1::timestamptz-interval '1 hour'),expires_at=$1 WHERE organization_id=$2 AND id IN (SELECT enrollment_id FROM runner_sprite_memberships WHERE organization_id=$2)`, f.service.config.Clock().Add(-time.Minute), scope.Organization)
 			case "organization":
 				spriteFixtureExec(t, f, `UPDATE organization_secrets SET organization_slug='another-org' WHERE organization_id=$1`, scope.Organization)
 			case "retiring":
@@ -813,7 +813,7 @@ func TestSpritePoolMutationDuringDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	setSpriteIssuesArchived(t, f, true)
-	setSpriteMembersIdleSince(t, f, f.service.config.now().Add(-time.Hour))
+	setSpriteMembersIdleSince(t, f, f.service.config.Clock().Add(-time.Hour))
 	provider.deleteStarted = make(chan struct{})
 	provider.releaseDelete = make(chan struct{})
 	f.service.startSpriteLifecycle(scope, "")
@@ -928,7 +928,7 @@ WHERE i.organization_id=$5 AND i.project_id=$6`
 
 func createSpriteMemberFixture(t *testing.T, f nativeFixture, member runnerstore.SpriteMembership) {
 	t.Helper()
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	member.OrganizationID, member.IdleSince, member.CreatedAt = f.project.OrganizationID, now, now
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
 		return w.CreateRunnerSpriteMembership(t.Context(), member)
@@ -960,7 +960,7 @@ func setSpriteAllocationFixture(t *testing.T, f nativeFixture, desired int, revi
 		}
 		row.OrganizationID, row.ProjectID, row.DesiredCount, row.ConfiguredBy = scope.Organization, scope.Project, int32(desired), credential.ID
 		if row.RequestedAt.IsZero() || desired >= current.AllocatedCount {
-			row.RequestedAt = f.service.config.now()
+			row.RequestedAt = f.service.config.Clock()
 		}
 		if _, err := owner.PutSpriteAllocation(t.Context(), row, int64(revision)); err != nil {
 			return err
@@ -1003,7 +1003,7 @@ func readSpriteRunnerFixture(t *testing.T, f nativeFixture, id string) (runnerau
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		now := f.service.config.now()
+		now := f.service.config.Clock()
 		record, err := owner.RunnerRoutingRecord(t.Context(), id, now)
 		if err != nil {
 			return err
@@ -1031,7 +1031,7 @@ func readSpriteRunnerIdentityFixture(t *testing.T, f nativeFixture, id string) (
 
 func setSpriteRunnerChecksFixture(t *testing.T, f nativeFixture, runner string, project tracker.ProjectID, checks runnerauth.LocalChecks) {
 	t.Helper()
-	checks.ObservedAt = f.service.config.now()
+	checks.ObservedAt = f.service.config.Clock()
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
 		return w.ReplaceRunnerLocalChecks(t.Context(), runner, project, checks)
 	})
@@ -1039,7 +1039,7 @@ func setSpriteRunnerChecksFixture(t *testing.T, f nativeFixture, runner string, 
 
 func setSpriteMemberChecks(t *testing.T, f nativeFixture, checks runnerauth.LocalChecks) {
 	t.Helper()
-	checks.ObservedAt = f.service.config.now()
+	checks.ObservedAt = f.service.config.Clock()
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
 		members, err := w.(postgres.SpriteReader).SpritePoolMembers(t.Context())
 		if err != nil {
@@ -1203,10 +1203,10 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 			setSpriteAllocationFixture(t, later, 3, 0)
 			first, second := f, later
 			if order == "oldest" {
-				spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2 AND project_id=$3`, f.service.config.now().Add(-time.Hour), scope.Organization, later.project.ID)
+				spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2 AND project_id=$3`, f.service.config.Clock().Add(-time.Hour), scope.Organization, later.project.ID)
 				first, second = later, f
 			} else {
-				spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2`, f.service.config.now(), scope.Organization)
+				spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2`, f.service.config.Clock(), scope.Organization)
 				if later.project.ID < f.project.ID {
 					first, second = later, f
 				}
@@ -1241,7 +1241,7 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 				}
 			}
 			setSpriteAllocationFixture(t, first, 1, 1)
-			setSpriteMembersIdleSince(t, f, f.service.config.now().Add(-time.Hour))
+			setSpriteMembersIdleSince(t, f, f.service.config.Clock().Add(-time.Hour))
 			if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
 				t.Fatal(err)
 			}
@@ -1252,7 +1252,7 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 				t.Fatalf("created=%d deleted=%d", len(provider.created), len(provider.deleted))
 			}
 			spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=1 WHERE organization_id=$1`, scope.Organization)
-			setSpriteMembersIdleSince(t, f, f.service.config.now().Add(-time.Hour))
+			setSpriteMembersIdleSince(t, f, f.service.config.Clock().Add(-time.Hour))
 			f.service.startSpriteLifecycle(scope, "")
 			f.service.spriteWakeWork.Wait()
 			if a, b := read(first), read(second); a.AllocatedCount != 1 || b.AllocatedCount != 0 || b.Shortfall != 3 || a.DesiredCount != 1 || b.DesiredCount != 3 {
@@ -1286,7 +1286,7 @@ func TestProjectSpriteBudgetSelection(t *testing.T) {
 				later.create(t, "later first")
 				later.create(t, "later second")
 			}
-			spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2 AND project_id=$3`, f.service.config.now().Add(-time.Hour), scope.Organization, f.project.ID)
+			spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2 AND project_id=$3`, f.service.config.Clock().Add(-time.Hour), scope.Organization, f.project.ID)
 			f.service.config.Hosted, f.service.config.SecretKeys = hosted, keys
 			if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
 				t.Fatal(err)
@@ -1615,7 +1615,7 @@ func TestProjectSpriteDrain(t *testing.T) {
 		retire  func(t *testing.T, f nativeFixture, runner string)
 	}{
 		{name: "active work publishes before deletion", retire: func(t *testing.T, f nativeFixture, _ string) {
-			spriteFixtureExec(t, f, `UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND lease_id='lease-drain'`, f.service.config.now(), f.project.OrganizationID)
+			spriteFixtureExec(t, f, `UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND lease_id='lease-drain'`, f.service.config.Clock(), f.project.OrganizationID)
 		}},
 		{name: "expired lease on an offline member waits for audited retirement", expired: true, retire: func(t *testing.T, f nativeFixture, runner string) {
 			hosted := f.service.config.Hosted
@@ -1633,7 +1633,7 @@ func TestProjectSpriteDrain(t *testing.T) {
 			}
 			setSpriteMemberChecks(t, f, spriteMemberReady)
 			member := projectSpriteMembers(t, f, scope)[0]
-			now := f.service.config.now()
+			now := f.service.config.Clock()
 			expires := now.Add(time.Hour)
 			if test.expired {
 				expires = now.Add(-time.Hour)
@@ -1723,7 +1723,7 @@ func TestProjectSpriteProvisioningRecovery(t *testing.T) {
 		}
 		interrupted := projectSpriteMembers(t, f, scope)[0]
 		spriteFixtureExec(t, f, `UPDATE runner_sprite_memberships SET state='bootstrapping' WHERE organization_id=$1 AND name=$2`, scope.Organization, interrupted.Name)
-		spriteFixtureExec(t, f, `UPDATE runner_enrollments SET created_at=LEAST(created_at,$1::timestamptz-interval '1 hour'),expires_at=$1 WHERE organization_id=$2 AND id=$3`, f.service.config.now().Add(-time.Minute), scope.Organization, interrupted.EnrollmentID)
+		spriteFixtureExec(t, f, `UPDATE runner_enrollments SET created_at=LEAST(created_at,$1::timestamptz-interval '1 hour'),expires_at=$1 WHERE organization_id=$2 AND id=$3`, f.service.config.Clock().Add(-time.Minute), scope.Organization, interrupted.EnrollmentID)
 		if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
 			t.Fatal(err)
 		}
@@ -1770,7 +1770,7 @@ func TestProjectSpriteLoginReadiness(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				f.service.spriteWakeWork.Wait()
 			}
-			heartbeat := f.service.config.now().Add(-test.heartbeatAgo)
+			heartbeat := f.service.config.Clock().Add(-test.heartbeatAgo)
 			spriteFixtureExec(t, f, `UPDATE runner_identities SET last_heartbeat_at=$1 WHERE organization_id=$2 AND machine_id=$3`, heartbeat, scope.Organization, runner.MachineID)
 			if test.wakeFailed {
 				spriteFixtureExec(t, f, `UPDATE machines SET sprite_wake_failed_at=$1 WHERE organization_id=$2 AND id=$3`, heartbeat.Add(time.Second), scope.Organization, runner.MachineID)

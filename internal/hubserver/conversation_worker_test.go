@@ -54,7 +54,7 @@ type conversationWorkerFixture struct {
 func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveContentStore) *conversationWorkerFixture {
 	t.Helper()
 	fixture := &conversationWorkerFixture{now: time.Now().UTC().Truncate(time.Second)}
-	config := Config{RunDetails: &verifiedAttemptDetails{}, Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, now: func() time.Time {
+	config := Config{RunDetails: &verifiedAttemptDetails{}, Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, Clock: func() time.Time {
 		fixture.mu.Lock()
 		defer fixture.mu.Unlock()
 		return fixture.now
@@ -209,7 +209,7 @@ func (f *conversationWorkerFixture) queue(t *testing.T, kind conversation.Messag
 	ctx := t.Context()
 	record := f.load(t)
 	commandKind := map[conversation.MessageKind]conversation.CommandKind{conversation.MessageText: conversation.CommandMessage, conversation.MessageAnswer: conversation.CommandAnswer, conversation.MessageInterrupt: conversation.CommandInterrupt, conversation.MessageContinue: conversation.CommandContinue}[kind]
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		t.Fatal(err)
@@ -1381,7 +1381,7 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		}
 		question := questions[0]
 		questionID = question.ID
-		expected := f.service.config.now().Add(time.Hour)
+		expected := f.service.config.Clock().Add(time.Hour)
 		if question.Status != conversation.QuestionPending || question.RequestID != "req-1" || question.Owner.AttemptID != f.attempt || question.Owner.TurnID != "turn-1" || question.ExpiresAt == nil || !question.ExpiresAt.Equal(expected) || len(question.Prompts) != 1 {
 			t.Fatalf("question = %#v", question)
 		}
@@ -2257,9 +2257,9 @@ func TestConversationAnswerRefusesExpiredQuestion(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	setExpiry(f.service.config.now().Add(-time.Second))
+	setExpiry(f.service.config.Clock().Add(-time.Second))
 	requireConversationErrorCode(t, answer("late"), http.StatusConflict, "stale_execution")
-	setExpiry(f.service.config.now().Add(time.Hour))
+	setExpiry(f.service.config.Clock().Add(time.Hour))
 	requireNativeStatus(t, answer("in-time"), http.StatusOK)
 }
 

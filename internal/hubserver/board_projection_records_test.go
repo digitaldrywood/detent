@@ -28,7 +28,7 @@ func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 22, 0, 0, 0, time.UTC)
 	details := &memoryRunDetails{}
-	service := &Service{config: Config{TenantRepository: repository, RunDetails: hubmaintenance.LimitDetails(details), now: func() time.Time { return now }}, localOrganization: "org_first"}
+	service := &Service{config: Config{TenantRepository: repository, RunDetails: hubmaintenance.LimitDetails(details), Clock: func() time.Time { return now }}, localOrganization: "org_first"}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), CreatedAt: now}); err != nil {
@@ -297,7 +297,7 @@ func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &boardHistoricalDetailStore{memoryRunDetails: &memoryRunDetails{}, historical: map[string]bool{}}
-	service := &Service{config: Config{TenantRepository: repository, RunDetails: details, now: func() time.Time { return now }}}
+	service := &Service{config: Config{TenantRepository: repository, RunDetails: details, Clock: func() time.Time { return now }}}
 	content := eventstore.NewContent(details)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {

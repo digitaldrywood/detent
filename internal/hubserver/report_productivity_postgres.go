@@ -79,7 +79,7 @@ func (s *Service) hostedReportsPostgres(c echo.Context) error {
 	if !found {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	w, err := reportsWindow(params, s.config.now())
+	w, err := reportsWindow(params, s.config.Clock())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -125,7 +125,7 @@ func (s *Service) hostedReportOptionsPostgres(c echo.Context) error {
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 	}
-	w, err := reportsWindow(c.QueryParams(), s.config.now())
+	w, err := reportsWindow(c.QueryParams(), s.config.Clock())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

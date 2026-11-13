@@ -21,7 +21,7 @@ import (
 func TestPostgresOrganizationCreationWithoutLegacyDatabase(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
-	service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, SecretKeys: secretTestKeys(t, "1", "1"), now: time.Now}}
+	service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, SecretKeys: secretTestKeys(t, "1", "1"), Clock: time.Now}}
 	var previous []byte
 	for _, name := range []string{"First example", "Second example"} {
 		organization, err := service.createNativeOrganizationFor(t.Context(), name)
@@ -62,7 +62,7 @@ func TestPostgresOrganizationCreationWithoutLegacyDatabase(t *testing.T) {
 func TestPostgresLocalOrganizationCursorKey(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
-	cfg := Config{SecretKeys: secretTestKeys(t, "1", "1"), now: time.Now}
+	cfg := Config{SecretKeys: secretTestKeys(t, "1", "1"), Clock: time.Now}
 	org, err := bootstrapLocalOrganization(t.Context(), repository, cfg, "example-bootstrap-token")
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestPostgresCredentialMembershipAndKeyAudit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, now: func() time.Time { return now }}}
+		service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, Clock: func() time.Time { return now }}}
 		request := httptest.NewRequest(http.MethodPost, "/internal/v1/keys/audit", strings.NewReader(`{"key_id":"key_example","owner":"owner_example","event":"key_revoked"}`))
 		request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 		recorder := httptest.NewRecorder()

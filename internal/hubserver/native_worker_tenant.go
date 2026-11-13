@@ -558,7 +558,7 @@ func (s *Service) prepareCancelledRunContent(ctx context.Context, organization t
 	data.Outcome = "cancelled"
 	data.Handoff, data.ArtifactIDs = nil, nil
 	data.MachineID, data.SessionID = tracker.MachineID(lease.MachineID), lease.SessionID
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	failure := nativeLeaseReleaseFailure(reason, now)
 	data.TerminalFailure = &failure
 	prepared := tracker.NativeRunEvent{Type: "run.finished", SchemaVersion: 1, OccurredAt: now, Data: data}
@@ -619,7 +619,7 @@ func (s *Service) writeNativeLeaseResponse(c echo.Context, lease leasestore.Leas
 		return s.nativeAPIError(c, corestore.ErrNotFound)
 	}
 	return c.JSON(http.StatusOK, tracker.NativeLease{RunDetailBatching: s.runDetailStore() != nil, IsolationPolicy: details.IsolationPolicy,
-		ProviderReservation: details.ProviderReservation, ServerTime: s.config.now().UTC(), PolicyID: details.PolicyID,
+		ProviderReservation: details.ProviderReservation, ServerTime: s.config.Clock().UTC(), PolicyID: details.PolicyID,
 		ID: tracker.LeaseID(lease.LeaseID), WorkItemID: details.WorkItemID, MachineID: tracker.MachineID(lease.MachineID), SessionID: lease.SessionID,
 		FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
 }

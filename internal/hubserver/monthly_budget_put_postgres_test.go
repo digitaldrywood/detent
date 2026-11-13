@@ -35,7 +35,7 @@ func TestPostgresMonthlyBudgetPut(t *testing.T) {
 			var clock atomic.Int64
 			clock.Store(now.UnixNano())
 			cfg := startupConfig(connection)
-			cfg.now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+			cfg.Clock = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
 			cfg.Hosted.OrganizationID = string(organization)
 			cfg.Hosted.WorkOSOrganizationID = "provider_" + string(organization)
 			cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
@@ -88,7 +88,7 @@ func TestPostgresMonthlyBudgetPut(t *testing.T) {
 			if service.database.postgres == nil || service.config.TenantRepository == nil {
 				t.Fatal("fixture requires the PostgreSQL repository")
 			}
-			service.config.Hosted.SharedEntry.Verifier().Now = cfg.now
+			service.config.Hosted.SharedEntry.Verifier().Now = cfg.Clock
 			sessionTime := now
 			call := func(method, suffix, role, support, body string) *httptest.ResponseRecorder {
 				t.Helper()
@@ -97,7 +97,7 @@ func TestPostgresMonthlyBudgetPut(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				issued := cfg.now()
+				issued := cfg.Clock()
 				claims := cloudassert.Claims{Issuer: "entry", Audience: string(organization), Generation: 1, Kind: cloudassert.KindBrowser, Method: method, Path: path, BodyDigest: cloudassert.BodyDigest([]byte(body)), IssuedAt: issued, ExpiresAt: issued.Add(20 * time.Second), ID: id, Subject: "user_" + role, Email: role + "@example.test", ProviderOrganization: "provider_" + string(organization), ProviderSession: "session_" + role, SessionCreatedAt: sessionTime, SessionExpiresAt: sessionTime.Add(48 * time.Hour), AccessExpiresAt: sessionTime.Add(48 * time.Hour), Role: role, Binding: cloudassert.AuthorizationBinding("shared-user_"+role, string(organization), "session_"+role), CSRF: cloudassert.CSRFToken("shared-user_"+role, string(organization)), SupportActor: support}
 				if support != "" {
 					claims.SupportReason = "Example support investigation"

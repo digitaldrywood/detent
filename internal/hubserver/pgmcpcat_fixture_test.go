@@ -21,7 +21,7 @@ import (
 
 func pgmcpcatSeed(t *testing.T, s *Service, org tracker.OrganizationID) {
 	t.Helper()
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	envelope, err := s.config.SecretKeys.Seal(bytes.Repeat([]byte{0x36}, 32), accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
 	if err != nil {
 		t.Fatal(err)

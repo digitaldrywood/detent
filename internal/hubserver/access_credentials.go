@@ -30,7 +30,7 @@ func (s *Service) createAccessToken(ctx context.Context, request hubapi.TokenReq
 	if request.Name == "" || len(request.Name) > 200 || !validAPIScope(request.Scope) {
 		return hubapi.TokenResponse{}, hubapi.NativePublicInvalid("Token name and scope are required")
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	token, err := s.config.deps.GenerateToken()
 	if err != nil {
 		return hubapi.TokenResponse{}, err
@@ -122,7 +122,7 @@ func (s *Service) rotateAccessToken(ctx context.Context, id string) (hubapi.Toke
 	if err != nil {
 		return hubapi.TokenResponse{}, err
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	hash := apikey.HashToken(token)
 	var response hubapi.TokenResponse
 	err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {

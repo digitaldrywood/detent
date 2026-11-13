@@ -21,7 +21,7 @@ import (
 )
 
 func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
-	r, w, err := operatortool.DecodeAnalytics(call.Name, call.Arguments, s.config.now().UTC())
+	r, w, err := operatortool.DecodeAnalytics(call.Name, call.Arguments, s.config.Clock().UTC())
 	if err != nil {
 		return operatortool.Result{}, err
 	}
@@ -46,7 +46,7 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 		}
 		projects = filterProductivityProjects(projects, r.Projects)
 		if r.Range != "" {
-			w, err = reportsWindow(url.Values{"range": {r.Range}}, s.config.now())
+			w, err = reportsWindow(url.Values{"range": {r.Range}}, s.config.Clock())
 			if err != nil {
 				return operatortool.Result{}, err
 			}
@@ -62,7 +62,7 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 	}
 	if call.Name == operatortool.Reports && r.Scope == "organization" {
 		if r.Range != "" {
-			w, err = reportsWindow(url.Values{"range": {r.Range}}, s.config.now())
+			w, err = reportsWindow(url.Values{"range": {r.Range}}, s.config.Clock())
 			if err != nil {
 				return operatortool.Result{}, operatortool.ErrInvalidArguments
 			}
@@ -144,7 +144,7 @@ func (s *Service) readAnalyticsReportFor(ctx context.Context, credential hubapi.
 	if err != nil {
 		return nativeAnalyticsReport{}, err
 	}
-	report := nativeAnalyticsReport{OrganizationID: s.config.Hosted.OrganizationID, Projects: []nativeAnalyticsProject{}, ObservedAt: s.config.now().UTC(), Window: w}
+	report := nativeAnalyticsReport{OrganizationID: s.config.Hosted.OrganizationID, Projects: []nativeAnalyticsProject{}, ObservedAt: s.config.Clock().UTC(), Window: w}
 	sort.Strings(projects)
 	end := min(len(projects), r.Offset+r.Limit)
 	if end < len(projects) {
@@ -408,7 +408,7 @@ func (s *Service) analyticsSnapshotPrincipal(ctx context.Context, r tenantstore.
 	if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 		return "", err
 	}
-	member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, false), s.config.now())
+	member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, false), s.config.Clock())
 	if err != nil {
 		return "", err
 	}

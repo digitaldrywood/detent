@@ -28,7 +28,7 @@ func (s *Service) projectOnboardingRecord(ctx context.Context, scope hubscope.Na
 	var checks map[string]runnerauth.LocalChecks
 	var repositories map[string]runnerauth.RepositoryList
 	var projectCount int
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err

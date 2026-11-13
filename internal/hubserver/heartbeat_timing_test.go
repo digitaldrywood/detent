@@ -60,7 +60,7 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 				}
 			})
 			hostedTestPlans(t, f.service, nil)
-			now := f.service.config.now()
+			now := f.service.config.Clock()
 			descriptor := hubTestPolicy()
 			descriptor.Configuration = &policy.Configuration{Behavior: json.RawMessage(`{"enabled":true}`), Prompt: strings.Repeat("Example workflow instructions. ", 2280)}
 			descriptor = descriptor.WithID()
@@ -197,7 +197,7 @@ func TestHeartbeatPreparationBeforeWriter(t *testing.T) {
 		t.Fatal("heartbeat probe did not observe PostgreSQL writes")
 	}
 	f.service.tokenUseWork.Wait()
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	valid := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now}
 	valid.Diagnostics = &runnerauth.ProjectDiagnostics{ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners"}
 	for i := range 20 {

@@ -48,7 +48,7 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope hubscope.
 	}
 	operation := "POST /api/v2/organizations/" + string(scope.Organization) + "/projects/" + string(scope.Project) + "/work-items"
 	var previous *eventstore.Receipt
-	planned := healthstore.ScheduledReport{OrganizationID: scope.Organization, ProjectID: scope.Project, ScheduledValidationReport: *report, RecordedAt: s.config.now().UTC().Truncate(time.Microsecond)}
+	planned := healthstore.ScheduledReport{OrganizationID: scope.Organization, ProjectID: scope.Project, ScheduledValidationReport: *report, RecordedAt: s.config.Clock().UTC().Truncate(time.Microsecond)}
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
 			return err
@@ -103,7 +103,7 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope hubscope.
 	if err != nil {
 		return nil, err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, err

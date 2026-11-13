@@ -153,7 +153,7 @@ func TestHostedBillingLegacyWebhookFollowsMode(t *testing.T) {
 	f.service.config.Hosted.Billing.Mode = billing.ModeLive
 	post := func(id, livemode string) int {
 		body := `{"id":"` + id + `","type":"invoice.paid","livemode":` + livemode + `,"data":{"object":{"customer":"cus_fixture"}}}`
-		stamp := strconv.FormatInt(f.service.config.now().Unix(), 10)
+		stamp := strconv.FormatInt(f.service.config.Clock().Unix(), 10)
 		mac := hmac.New(sha256.New, f.service.config.Hosted.Billing.WebhookSecret)
 		mac.Write([]byte(stamp + "." + body))
 		request := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(body))

@@ -132,7 +132,7 @@ func (r *nativeArchiveRead) load(ctx context.Context, item, kind, subject string
 	r.first = first
 	r.last = last
 	r.descriptor.Availability = "available"
-	if presign && response.Access != nil && response.Access.ArchiveReference == ref && response.Access.ExpiresAt.After(s.config.now()) && !response.Access.ExpiresAt.After(s.config.now().Add(attachment.ArchiveReadLifetime)) {
+	if presign && response.Access != nil && response.Access.ArchiveReference == ref && response.Access.ExpiresAt.After(s.config.Clock()) && !response.Access.ExpiresAt.After(s.config.Clock().Add(attachment.ArchiveReadLifetime)) {
 		r.descriptor.URL, r.descriptor.ExpiresAt = response.Access.URL, &response.Access.ExpiresAt
 	}
 	return *r.section, true, nil

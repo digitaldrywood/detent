@@ -18,7 +18,7 @@ func TestPreparedConfigurationPreservesOtherProjects(t *testing.T) {
 	r.enroll(t)
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-configuration")
 	currentPolicy := hubTestPolicy()
-	first := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), EffectivePolicy: &currentPolicy, ObservedAt: f.service.config.now()}
+	first := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), EffectivePolicy: &currentPolicy, ObservedAt: f.service.config.Clock()}
 	second := runnerauth.ProjectConfiguration{ProjectID: string(other.project.ID), EffectivePolicy: &currentPolicy, ObservedAt: first.ObservedAt}
 	seedHubConfiguration(t, f, r.binding.RunnerID, first)
 	seedHubConfiguration(t, other, r.binding.RunnerID, second)
@@ -45,7 +45,7 @@ func TestPreparedConfigurationPreservesOtherProjects(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		now := f.service.config.now()
+		now := f.service.config.Clock()
 		_, err = owner.ApplyConfiguration(t.Context(), postgres.ConfigurationChange{OrganizationID: f.project.OrganizationID, Authority: postgres.ConfigurationAuthority{RunnerID: r.binding.RunnerID, EnrollmentID: identity.EnrollmentID, Revision: identity.Revision, At: now}, ExpectedRevision: header.Revision, ExpectedSourceRevision: header.SourceRevision, SourceRevision: first.ConfigRevision, Projects: []postgres.ConfigurationProject{configurationProjectRow(f.project.OrganizationID, r.binding.RunnerID, first, prepared, now)}})
 		return err
 	}); err != nil {

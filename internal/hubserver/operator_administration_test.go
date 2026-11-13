@@ -362,7 +362,7 @@ func TestNativeCredentialAdministration(t *testing.T) {
 		t.Fatalf("native-only credential read administration metadata: %v", err)
 	}
 	t.Run("organization pages preserve instance and native scope", func(t *testing.T) {
-		created := f.service.config.now().UTC().Add(-time.Minute)
+		created := f.service.config.Clock().UTC().Add(-time.Minute)
 		const pageToken = "example_instance_organization_page_token"
 		if err := f.service.accessWrite(t.Context(), f.project.OrganizationID, func(w tenantstore.Writer) error {
 			return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: "organization_page_admin", Name: "Example instance admin", Hash: apikey.HashToken(pageToken), Scope: "admin", CreatedAt: created, UpdatedAt: created, ProjectAccess: "all", Kind: "service"})

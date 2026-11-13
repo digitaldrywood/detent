@@ -298,7 +298,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	}
 	page.Total = -1
 	if (includeBoard || includeWork) && (!legacy || selection.Summary) {
-		page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, ShippedWindows: []tracker.NativeShippedWindow{}, AsOf: s.config.now()}
+		page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, ShippedWindows: []tracker.NativeShippedWindow{}, AsOf: s.config.Clock()}
 	}
 	if selection.Summary {
 		page.Total = 0

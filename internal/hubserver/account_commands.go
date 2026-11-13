@@ -22,7 +22,7 @@ import (
 // A dedicated bootstrap/staff account may not yet have customer membership.
 // This identity can use account setup only; it carries no project/admin role.
 func (s *Service) hostedAccountCredential(ctx context.Context, hash string) (hubapi.APICredential, error) {
-	session, err := s.WebSession(ctx, hash, s.config.now())
+	session, err := s.WebSession(ctx, hash, s.config.Clock())
 	if err != nil || session.Identity == nil || session.Identity.SupportActor != "" {
 		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
@@ -35,7 +35,7 @@ func (s *Service) createHostedOrganizationFor(ctx context.Context, credential hu
 	if credential.Hosted == nil || credential.Hosted.SupportActor != "" || credential.Hosted.Subject != s.config.Hosted.BootstrapSubject {
 		return "", operatortool.ErrAccessDenied
 	}
-	session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+	session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.Clock())
 	if err != nil || hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) {
 		return "", operatortool.ErrAccessDenied
 	}
@@ -130,7 +130,7 @@ func (s *Service) executeHostedAccountFor(ctx context.Context, credential hubapi
 		output.ResourceID, err = s.createHostedOrganizationFor(ctx, credential, in.Name)
 		output.URL = s.config.Hosted.PublicURL + "/auth/oidc/start"
 	case operatortool.InvitationAccept:
-		session, sessionErr := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+		session, sessionErr := s.storedWebSession(ctx, credential.SessionHash, s.config.Clock())
 		if sessionErr != nil {
 			return operatoradmin.Output{}, sessionErr
 		}

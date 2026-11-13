@@ -36,7 +36,7 @@ import (
 func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "example-library")
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil || status != http.StatusOK {
@@ -293,7 +293,7 @@ func updateNativeWorkPageFixtureIssue(t *testing.T, f nativeFixture, id tracker.
 	}
 	update(&issue)
 	issue.Revision++
-	issue.UpdatedAt = f.service.config.now().UTC()
+	issue.UpdatedAt = f.service.config.Clock().UTC()
 	plan := hubrecords.WorkItemRecordPlan{Current: row, Project: project, Issue: issue, Fields: []string{"title", "labels", "assignees", "priority"}}
 	fields, err := f.service.prepareWorkItemFields(t.Context(), scope.Organization, plan)
 	if err != nil {
@@ -354,7 +354,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	t.Parallel()
 	fixtureNow := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{keyReads: make(map[string]int)}
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return fixtureNow }, WebhookMaintenanceInterval: time.Hour, RunDetails: details})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return fixtureNow }, WebhookMaintenanceInterval: time.Hour, RunDetails: details})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	history := seedArchiveIssues(t, f.service, scope, 130, "Done")
@@ -385,7 +385,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	}
 	updateNativeWorkPageFixtureIssue(t, f, todo[2].WorkItemID, func(issue *tracker.NativeIssue) { issue.Labels = []string{"human-owned"} })
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: todo[3].WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: todo[2].WorkItemID, Type: "dependency", Provenance: "native"}, "add", f.service.config.now())
+		return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: todo[3].WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: todo[2].WorkItemID, Type: "dependency", Provenance: "native"}, "add", f.service.config.Clock())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -619,7 +619,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		t.Fatal("default lane page omitted operational work")
 	}
 	now := time.Now().Truncate(time.Second).Add(500 * time.Millisecond)
-	f.service.config.now = func() time.Time { return now }
+	f.service.config.Clock = func() time.Time { return now }
 	for _, test := range []struct {
 		name             string
 		renewed, expires time.Time
@@ -762,7 +762,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 func TestNativeWorkPageCompletedWindow(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.October, 6, 12, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	descriptor := hubTestPolicy()
 	descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Cancelled", Terminal: true}, tracker.NativeState{Name: "Retired", Terminal: true})}
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor.WithID())
@@ -858,7 +858,7 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 func TestNativeWorkClosedOrdering(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("fixture authentication=%d %v", status, err)

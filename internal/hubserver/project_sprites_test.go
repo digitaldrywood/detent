@@ -91,13 +91,13 @@ func TestWakeSpriteRunners(t *testing.T) {
 			if state == "" {
 				t.Fatalf("fixture project has no state with dispatchable=%t", tt.dispatchable)
 			}
-			beforeWake := f.service.config.now()
+			beforeWake := f.service.config.Clock()
 			woken, err := f.service.wakeSpriteRunners(t.Context(), scope, state)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			afterWake := f.service.config.now()
+			afterWake := f.service.config.Clock()
 			wakeTimeInRange := func(value *string) bool {
 				at, err := hubapi.ParseTimeValue(spriteFactValue(value))
 				return err == nil && !at.Before(beforeWake) && !at.After(afterWake)
@@ -252,7 +252,7 @@ func enrollSpriteWakeRunners(t *testing.T, f nativeFixture, heartbeatAgo time.Du
 		runner.redemption.Hostname = name
 		runner.redemption.SpriteName = name
 		runner.enroll(t)
-		placementFixtureHeartbeat(t, f, runner.binding.RunnerID, f.service.config.now().Add(-heartbeatAgo))
+		placementFixtureHeartbeat(t, f, runner.binding.RunnerID, f.service.config.Clock().Add(-heartbeatAgo))
 		runners = append(runners, runner)
 	}
 	return runners
@@ -270,7 +270,7 @@ func storeSpritesSecretFixture(t *testing.T, f nativeFixture, project tracker.Pr
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
 		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: organization, ProjectID: project, Kind: flySpritesToken, OrganizationSlug: "detent-test", Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: organization, ProjectID: project, Kind: flySpritesToken, Actor: "fixture", Event: "set", KeyVersion: envelope.Version, RecordedAt: now})
 	})
@@ -430,11 +430,11 @@ func TestWakeSpriteRunnersFreshAuthority(t *testing.T) {
 			case "grant":
 				query, args = "DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2)", []any{organization, id}
 			case "token":
-				query, args = "UPDATE api_tokens SET revoked_at=$3 WHERE organization_id=$1 AND id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2)", []any{organization, id, f.service.config.now()}
+				query, args = "UPDATE api_tokens SET revoked_at=$3 WHERE organization_id=$1 AND id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2)", []any{organization, id, f.service.config.Clock()}
 			case "runner":
 				query, args = "UPDATE runner_identities SET state='disabled' WHERE organization_id=$1 AND runner_id=$2", []any{organization, id}
 			case "heartbeat":
-				query, args = "UPDATE runner_identities SET last_heartbeat_at=$3 WHERE organization_id=$1 AND runner_id=$2", []any{organization, id, f.service.config.now()}
+				query, args = "UPDATE runner_identities SET last_heartbeat_at=$3 WHERE organization_id=$1 AND runner_id=$2", []any{organization, id, f.service.config.Clock()}
 			case "secret":
 				query, args = "DELETE FROM project_secrets WHERE organization_id=$1 AND project_id=$2", []any{organization, f.project.ID}
 			case "rotation":
@@ -631,7 +631,7 @@ func TestWakeManagedSpriteMembers(t *testing.T) {
 				spriteFixtureExec(t, f, `UPDATE runner_sprite_memberships SET state='deleting' WHERE organization_id=$1 AND name=$2`, scope.Organization, sprite.redemption.Hostname)
 				spriteFixtureExec(t, f, `UPDATE runner_identities SET state='draining' WHERE organization_id=$1 AND runner_id=$2`, scope.Organization, sprite.binding.RunnerID)
 			}
-			placementFixtureHeartbeat(t, f, sprite.binding.RunnerID, f.service.config.now().Add(-time.Minute))
+			placementFixtureHeartbeat(t, f, sprite.binding.RunnerID, f.service.config.Clock().Add(-time.Minute))
 			f.service.config.SecretKeys = keys
 			woken, err := f.service.wakeOrganizationSpriteRunners(t.Context(), hubscope.NativeScope{Organization: scope.Organization})
 			if err != nil || woken != test.want || int(calls.Load()) != test.want {

@@ -47,7 +47,7 @@ func TestRunnerAdmissionReportsPublishOnePayloadPerIssue(t *testing.T) {
 		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 		r.enroll(t)
 		issue := f.create(t, "Repeated delivery")
-		now := f.service.config.now()
+		now := f.service.config.Clock()
 		var admissions []runnerauth.DiagnosticAdmission
 		for i, predicate := range test.predicates {
 			admissions = append(admissions, runnerauth.DiagnosticAdmission{IssueID: string(issue.WorkItemID), WorkItemRevision: int64(issue.Revision), ObservedAt: now.Add(time.Duration(i-len(test.predicates)) * time.Second), Result: "skipped", Predicate: predicate})
@@ -83,7 +83,7 @@ func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
 	first, second := f.create(t, "First delivery"), f.create(t, "Second delivery")
 	foreign := newNativeFixture(t, f.service, "", "foreign-admission")
 	foreignIssue := foreign.create(t, "Foreign delivery")
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now, Diagnostics: &runnerauth.ProjectDiagnostics{
 		ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Counts: map[string]int{}, Unavailable: map[string]string{},
 		Admissions: []runnerauth.DiagnosticAdmission{
@@ -154,7 +154,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewTextHandler(&logs, nil)), Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
 	r.enroll(t)
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	issue := f.create(t, "rejected observation")
 	event := nativeStartedEvent(tracker.NativeLease{ID: "lease_unknown", FencingToken: 1, PolicyID: hubTestPolicy().ID})
 	event.Type = "run.observed"
@@ -227,7 +227,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 		t.Fatalf("stored diagnostics retained historical records: %+v", stored)
 	}
 	t.Run("expires after preparation", func(t *testing.T) {
-		preparedAt := f.service.config.now()
+		preparedAt := f.service.config.Clock()
 		view.Diagnostics.Records[1].LeaseExpiresAt = preparedAt.Add(time.Second)
 		defer func() { view.Diagnostics.Records[1].LeaseExpiresAt = now.Add(-time.Hour) }()
 		view.Paused = true
@@ -283,7 +283,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 			view.Diagnostics.RuntimeObservedAt = view.Diagnostics.ObservedAt
 		}
 		clock.Add(int64(time.Second))
-		received := f.service.config.now()
+		received := f.service.config.Clock()
 		beforeState, _ := readDiagnosticFixtureState(t, f, r.binding.RunnerID)
 		var traceMu sync.Mutex
 		statements, payloadUpdates := 0, 0

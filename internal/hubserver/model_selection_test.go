@@ -104,7 +104,7 @@ func modelSelectionTestCredential(t *testing.T, service *Service, organization t
 	t.Helper()
 	token := hubapi.NewID("example_token")
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		now := service.config.now().UTC()
+		now := service.config.Clock().UTC()
 		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: hubapi.NewID("example_credential"), Name: hubapi.NewID("example_credential_name"), Hash: apikey.HashToken(token), Scope: scope, CreatedAt: now, UpdatedAt: now, KeyScope: "admin", ProjectAccess: "all", Kind: "service"})
 	}); err != nil {
 		t.Fatal(err)

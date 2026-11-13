@@ -114,7 +114,7 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, now: func() time.Time { return now }}}
+	service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, Clock: func() time.Time { return now }}}
 	for _, project := range projects {
 		t.Run(string(project), func(t *testing.T) {
 			key := "key_" + string(project)

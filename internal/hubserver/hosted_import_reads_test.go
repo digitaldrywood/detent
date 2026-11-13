@@ -118,7 +118,7 @@ func TestHostedImportTypedReads(t *testing.T) {
 	for _, organization := range organizations {
 		t.Run(string(organization), func(t *testing.T) {
 			clock := &leaseTestClock{value: now}
-			service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, RunDetails: objects, now: clock.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken}, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}}}
+			service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, RunDetails: objects, Clock: clock.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken}, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}}}
 			authorize := func(org tracker.OrganizationID, entry string, subject string) error {
 				return repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 					_, err := r.AuthorizeAccess(t.Context(), accessstore.Authority{CredentialID: "hosted_" + apikey.HashToken(subject)[:32], Hash: apikey.HashToken(string(org) + subject), UserID: subject, MembershipID: "membership_" + subject, SessionHash: entry}, clock.Now())
@@ -343,7 +343,7 @@ func TestHostedImportTypedReads(t *testing.T) {
 			}
 		}
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.RevokeAccessCredential(t.Context(), credential.ID, f.service.config.now())
+			return w.RevokeAccessCredential(t.Context(), credential.ID, f.service.config.Clock())
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -411,7 +411,7 @@ func TestHostedImportOutboxFields(t *testing.T) {
 		if _, err := w.UpdateProjectRecord(t.Context(), project); err != nil {
 			return err
 		}
-		return w.(projectstore.GitHubOutboxWriter).SupersedeGitHubCompatibilityWrites(t.Context(), f.project.ID, project.Settings.RepositoryEnabled, f.service.config.now())
+		return w.(projectstore.GitHubOutboxWriter).SupersedeGitHubCompatibilityWrites(t.Context(), f.project.ID, project.Settings.RepositoryEnabled, f.service.config.Clock())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +463,7 @@ func TestHostedImportOutboxFields(t *testing.T) {
 			var item projectstore.GitHubOutbound
 			err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 				var err error
-				item, err = w.(projectstore.GitHubOutboxWriter).ClaimGitHubOutbound(t.Context(), f.service.config.now(), f.service.config.now().Add(time.Minute), fmt.Sprint(index+1))
+				item, err = w.(projectstore.GitHubOutboxWriter).ClaimGitHubOutbound(t.Context(), f.service.config.Clock(), f.service.config.Clock().Add(time.Minute), fmt.Sprint(index+1))
 				return err
 			})
 			found := err == nil
@@ -485,7 +485,7 @@ func TestHostedImportOutboxFields(t *testing.T) {
 		var item projectstore.GitHubOutbound
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 			var err error
-			item, err = w.(projectstore.GitHubOutboxWriter).ClaimGitHubOutbound(t.Context(), f.service.config.now(), f.service.config.now().Add(time.Minute), "attempted-"+status)
+			item, err = w.(projectstore.GitHubOutboxWriter).ClaimGitHubOutbound(t.Context(), f.service.config.Clock(), f.service.config.Clock().Add(time.Minute), "attempted-"+status)
 			return err
 		}); err != nil {
 			t.Fatal(err)

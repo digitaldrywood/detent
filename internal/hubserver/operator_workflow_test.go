@@ -63,7 +63,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 				t.Fatal(err)
 			}
 			issueID := f.seedIssue(t, 1)
-			now := f.service.config.now()
+			now := f.service.config.Clock()
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_security", ID: "machine_policy", Hostname: "runner", Capacity: 1, Version: "test"}); err != nil {
 					return err
@@ -470,7 +470,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 					t.Fatalf("%s approval changed active lease: %s %v", channel, pinned, err)
 				}
 			}
-			configuration := runnerauth.ProjectConfiguration{ProjectID: string(f.project), Authority: "local_global_configuration", ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, SelectedPolicy: &approved.Policy, EffectivePolicy: &approved.Policy, ObservedAt: f.service.config.now()}
+			configuration := runnerauth.ProjectConfiguration{ProjectID: string(f.project), Authority: "local_global_configuration", ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, SelectedPolicy: &approved.Policy, EffectivePolicy: &approved.Policy, ObservedAt: f.service.config.Clock()}
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: "org_security", UserID: user.identity.Subject, ProjectID: f.project, CanWrite: true, ManageRunner: true}); err != nil {
 					return err
@@ -747,14 +747,14 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					return w.RenewAccessCredential(t.Context(), key.ID, row.Hash, row.Fingerprint, f.service.config.now().Add(-time.Hour), f.service.config.now())
+					return w.RenewAccessCredential(t.Context(), key.ID, row.Hash, row.Fingerprint, f.service.config.Clock().Add(-time.Hour), f.service.config.Clock())
 				}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.pressure {
 				connection := operatortool.CurrentConnection(ctx)
-				storedAt := f.service.config.now().Add(-5 * time.Minute).UTC().Truncate(time.Microsecond)
+				storedAt := f.service.config.Clock().Add(-5 * time.Minute).UTC().Truncate(time.Microsecond)
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 					row, err := w.OperatorSession(t.Context(), connection.ID, storedAt.Add(-time.Hour))
 					if err != nil {
@@ -925,7 +925,7 @@ func readOperatorWorkflowPolicyHistory(t *testing.T, f hostedSecurityFixture) (p
 func revokeOperatorWorkflowCredential(t *testing.T, f hostedSecurityFixture, id string) {
 	t.Helper()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		return w.RevokeAccessCredential(t.Context(), id, f.service.config.now())
+		return w.RevokeAccessCredential(t.Context(), id, f.service.config.Clock())
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -111,7 +111,7 @@ func TestClaimNextCandidateConcurrent(t *testing.T) {
 				}
 			})
 			now := time.Now().UTC().Truncate(time.Microsecond)
-			service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
+			service := openLocalPostgresHubTestService(t, repository, Config{Clock: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 			type claimer struct {
 				scope   hubscope.NativeScope
 				request tracker.NativeClaim

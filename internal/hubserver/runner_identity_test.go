@@ -232,9 +232,9 @@ func assertRunnerRemovalWithZeroClock(t *testing.T, f nativeFixture, runnerID st
 	}
 
 	config := f.service.config
-	authorizationTime := config.now()
+	authorizationTime := config.Clock()
 	clockReads := 0
-	config.now = func() time.Time {
+	config.Clock = func() time.Time {
 		clockReads++
 		if clockReads == 1 {
 			return authorizationTime
@@ -459,7 +459,7 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 			case "nested":
 				body["project_configuration"] = map[string]any{
 					"project_id": string(f.project.ID), "authority": "local_global_configuration",
-					"source": "configured_committed_workflow", "observed_at": f.service.config.now(),
+					"source": "configured_committed_workflow", "observed_at": f.service.config.Clock(),
 					"future_observation": true,
 				}
 			}

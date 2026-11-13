@@ -26,7 +26,7 @@ func TestPostgresAttachmentExpiryPreservesReferencesAndTenantQuota(t *testing.T)
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	var diagnostics bytes.Buffer
-	service := &Service{echo: echo.New(), database: &database{postgres: repository}, config: Config{TenantRepository: repository, Logger: slog.New(slog.NewTextHandler(&diagnostics, nil)), now: func() time.Time { return now }}}
+	service := &Service{echo: echo.New(), database: &database{postgres: repository}, config: Config{TenantRepository: repository, Logger: slog.New(slog.NewTextHandler(&diagnostics, nil)), Clock: func() time.Time { return now }}}
 	cases := []struct {
 		name                string
 		age                 time.Duration

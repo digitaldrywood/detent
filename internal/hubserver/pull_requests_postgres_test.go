@@ -31,11 +31,11 @@ func newExportPostgresFixtureInOrganization(t *testing.T, admin *sql.DB, organiz
 	cfg.Hosted.Plans = &plans
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	cfg.now = func() time.Time { return now }
+	cfg.Clock = func() time.Time { return now }
 	for _, apply := range configure {
 		apply(&cfg)
 	}
-	now = cfg.now()
+	now = cfg.Clock()
 	store, err := openDatabase(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)

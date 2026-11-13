@@ -21,7 +21,7 @@ func (s *Service) hostedPlansHTTPDeps() hostedplans.HTTPDeps {
 		Plans:          func() *hostedplans.Service { return s.database.plansService() },
 		Hosted:         func() *hostedplans.HostedConfig { return s.config.Hosted },
 		Logger:         func() *slog.Logger { return s.config.Logger },
-		Now:            func() time.Time { return s.config.now() },
+		Now:            func() time.Time { return s.config.Clock() },
 		RuntimeMu:      &s.runtimeMu,
 		Error:          func(c echo.Context, err error) error { return s.nativeAPIError(c, err) },
 		InvalidRequest: s.invalidAPIRequest,

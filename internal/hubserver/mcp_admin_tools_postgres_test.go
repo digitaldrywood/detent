@@ -39,7 +39,7 @@ func TestPostgresMCPAdminChangeTools(t *testing.T) {
 			}
 			outsiderCtx := parityHostedContext(t, f.f, outsider)
 			if err := f.repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-				now := f.f.service.config.now()
+				now := f.f.service.config.Clock()
 				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "artifact-publisher", Name: "Example publisher", Hash: apikey.HashToken(string(organization) + "-publisher"), Scope: "worker", Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 					return err
 				}
@@ -176,7 +176,7 @@ func TestPostgresMCPAdminDeletionTools(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-				return w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: organization, ID: invitation.ID, Email: invitation.Email, Role: "member", CreatedAt: f.service.config.now(), ExpiresAt: invitation.ExpiresAt})
+				return w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: organization, ID: invitation.ID, Email: invitation.Email, Role: "member", CreatedAt: f.service.config.Clock(), ExpiresAt: invitation.ExpiresAt})
 			}); err != nil {
 				t.Fatal(err)
 			}

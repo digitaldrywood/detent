@@ -140,7 +140,7 @@ func (w *workspaceService) maintain(ctx context.Context) {
 
 // now reads the hub clock through the service's configuration so a test can
 // drive every deadline.
-func (w *workspaceService) now() time.Time { return w.server.config.now().UTC() }
+func (w *workspaceService) now() time.Time { return w.server.config.Clock().UTC() }
 
 // committed closes the relay connections of a workspace that
 // can no longer serve what a person is holding.

@@ -83,7 +83,7 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope hubscope.Na
 		return
 	}
 	if state != "" {
-		allowed, err := monthlySpriteAllowed(ctx, nil, hubscope.NativeScope{Organization: scope.Organization}, s.config.now(), s.database.billingRepository)
+		allowed, err := monthlySpriteAllowed(ctx, nil, hubscope.NativeScope{Organization: scope.Organization}, s.config.Clock(), s.database.billingRepository)
 		if err != nil {
 			s.config.Logger.Warn("Check Sprite lifecycle monthly budget", "error", err)
 			return
@@ -190,7 +190,7 @@ func (s *Service) wakeSpriteRunners(ctx context.Context, scope hubscope.NativeSc
 		}
 		failedAt := ""
 		if !started {
-			failedAt = hubapi.FormatHubTime(s.config.now())
+			failedAt = hubapi.FormatHubTime(s.config.Clock())
 		}
 		if err := s.recordSpriteWakeFacts(ctx, scope, candidate, failedAt, started); err != nil {
 			return woken, err
@@ -208,7 +208,7 @@ func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope hubscope.Na
 	if err != nil || !dispatchable {
 		return spriteWakeCandidate{}, false, err
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	configured := false
 	var runners []hubrecords.PlacementRunner
 	err = s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
@@ -319,7 +319,7 @@ func (s *Service) spriteWakeSecret(ctx context.Context, _ hubapi.NativeQueryer, 
 }
 
 func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretScope hubscope.NativeScope, client *http.Client, name string, envelope hubsecrets.Envelope) (bool, error) {
-	allowed, err := monthlySpriteAllowed(ctx, nil, scope, s.config.now(), s.database.billingRepository)
+	allowed, err := monthlySpriteAllowed(ctx, nil, scope, s.config.Clock(), s.database.billingRepository)
 	if err != nil || !allowed {
 		return false, err
 	}
@@ -372,7 +372,7 @@ func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope hubsc
 					if !state.Dispatchable || state.Terminal {
 						continue
 					}
-					candidates, err := r.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: project.ID, Scope: string(project.ID), States: []string{state.Name}, AvailableAt: s.config.now(), Limit: 1})
+					candidates, err := r.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: project.ID, Scope: string(project.ID), States: []string{state.Name}, AvailableAt: s.config.Clock(), Limit: 1})
 					if err != nil {
 						return err
 					}
@@ -420,7 +420,7 @@ func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope hubsc
 }
 
 func (s *Service) recordSpriteWakeFacts(ctx context.Context, scope hubscope.NativeScope, candidate spriteWakeCandidate, failedAt string, started bool) error {
-	now := s.config.now()
+	now := s.config.Clock()
 	update := leasestore.SpriteWake{MachineID: string(candidate.machineID), RunnerID: candidate.runnerID, Name: candidate.name, ObservedAt: now}
 	if failedAt != "" {
 		value, err := time.Parse(time.RFC3339Nano, failedAt)

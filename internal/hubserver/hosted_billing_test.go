@@ -119,7 +119,7 @@ func postBillingEvent(t *testing.T, f *browserHostedFixture, id, kind string, si
 		object = objects[0]
 	}
 	body := fmt.Sprintf(`{"id":%q,"type":%q,"livemode":false,"data":{"object":%s}}`, id, kind, object)
-	stamp := strconv.FormatInt(f.service.config.now().Unix(), 10)
+	stamp := strconv.FormatInt(f.service.config.Clock().Unix(), 10)
 	mac := hmac.New(sha256.New, f.service.config.Hosted.Billing.WebhookSecret)
 	mac.Write([]byte(stamp + "." + body))
 	r := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader(body))
@@ -167,7 +167,7 @@ func TestHostedBillingDiscountedInvoices(t *testing.T) {
 			}
 			start := time.Now().UTC().Truncate(time.Second)
 			at := start
-			f.service.config.now = func() time.Time { return at }
+			f.service.config.Clock = func() time.Time { return at }
 			paid, due := test.paid, test.paid
 			price, status, invoiceStatus, invoice := "price_fixture", "active", "paid", "in_initial"
 			periodEnd := start.Add(time.Hour)

@@ -74,7 +74,7 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 			t.Helper()
 			ctx := hubapi.WithMutationAuthority(t.Context(), native.Scope(), lease, nil)
 			sessions := hubapi.NewRunnerSessions(native)
-			now := f.service.config.now()
+			now := f.service.config.Clock()
 			id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(issue.WorkItemID), StartedAt: now, AgentRole: role, Model: "example-model"})
 			if err != nil {
 				t.Fatal(err)

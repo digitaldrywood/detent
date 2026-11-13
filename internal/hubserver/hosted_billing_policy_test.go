@@ -77,7 +77,7 @@ func TestHostedBillingDowngradePreservesGrantsAndData(t *testing.T) {
 					return hostedplans.ErrBillingUsageUnavailable
 				}
 				var err error
-				projects, complete, err = reader.BillingPopulation(t.Context(), "projects", f.service.config.now(), time.Minute)
+				projects, complete, err = reader.BillingPopulation(t.Context(), "projects", f.service.config.Clock(), time.Minute)
 				if err != nil {
 					return err
 				}

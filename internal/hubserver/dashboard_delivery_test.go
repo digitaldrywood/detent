@@ -395,7 +395,7 @@ func TestHostedEventsSlowConsumerResumes(t *testing.T) {
 func TestHostedEventsTwoHubOwnersRecoverOtherWriter(t *testing.T) {
 	t.Parallel()
 	f, user, first := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{})
-	secondService := &Service{config: f.service.config, echo: echo.New(), hostedSessions: f.service.hostedSessions, database: &database{postgres: f.service.database.postgres, billingRepository: f.service.database.billingRepository, now: f.service.config.now}, secretRewrapReady: make(chan struct{})}
+	secondService := &Service{config: f.service.config, echo: echo.New(), hostedSessions: f.service.hostedSessions, database: &database{postgres: f.service.database.postgres, billingRepository: f.service.database.billingRepository, now: f.service.config.Clock}, secretRewrapReady: make(chan struct{})}
 	secondService.ready.Store(true)
 	second := newDashboardDelivery(secondService)
 	secondService.dashboard = second
@@ -431,7 +431,7 @@ func TestHostedEventsActionRunDelivery(t *testing.T) {
 	decodeHubResponse(t, response, &workspace)
 	before := hostedDeliveryHead(t, f)
 	stream := openHostedTestStream(t, f, user, "?workspace="+workspace.ID+"&since="+strconv.FormatInt(before, 10))
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	var sequence, workspaceSequence int64
 	command, err := f.service.runDetailStore().StoreDetail(t.Context(), "org_security", []byte("true"))
 	if err != nil {
@@ -501,7 +501,7 @@ func TestHostedEventsCommitWakeAndRecoveryTimer(t *testing.T) {
 	dashboardPostgresGrant(t, f, user)
 	var clock atomic.Int64
 	clock.Store(time.Now().UnixNano())
-	f.service.config.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	f.service.config.Clock = func() time.Time { return time.Unix(0, clock.Load()) }
 	head := dashboardPostgresHead(t, f)
 	d.start()
 	stream := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(head, 10))
@@ -705,7 +705,7 @@ func TestHostedEventsDeletedEntityVisibility(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE projects SET deleted_at=$1 WHERE organization_id='org_security' AND id=$2", f.service.config.now(), f.project); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE projects SET deleted_at=$1 WHERE organization_id='org_security' AND id=$2", f.service.config.Clock(), f.project); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -35,7 +35,7 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 		repository, admin := projectRecordPostgresWithAdmin(t, 4, func(config *pgxpool.Config) {
 			config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, claimPreflightTrace{})
 		})
-		service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
+		service := openLocalPostgresHubTestService(t, repository, Config{Clock: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 		for _, organization := range []nativeOrganization{{ID: "org_first_second", Name: "Second", Slug: "second"}, {ID: "org_first", Name: "First", Slug: "first"}} {
 			seedPostgresHubAdmin(t, repository, service, organization)
 			key := bytes.Repeat([]byte{0x5a}, 32)
@@ -226,7 +226,7 @@ func TestClaimRetryAfterCommittedDecisionUsesFreshEventIDs(t *testing.T) {
 	runner.enroll(t)
 	org := f.project.OrganizationID
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.UpdateRunnerCapacityConfig(t.Context(), runner.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.now()})
+		return w.UpdateRunnerCapacityConfig(t.Context(), runner.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.Clock()})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestClaimRetryAfterCommittedDecisionUsesFreshEventIDs(t *testing.T) {
 			}
 		}
 		request := requestFor(selected)
-		now := f.service.config.now()
+		now := f.service.config.Clock()
 		stale, err := f.service.readNativeClaimPlan(t.Context(), scope, request, now)
 		if err != nil {
 			t.Fatal(err)

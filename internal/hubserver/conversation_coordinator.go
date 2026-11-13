@@ -410,7 +410,7 @@ func (c *conversationTurnCoordinator) pendingMessages(ctx context.Context, query
 // record inside the transaction keeps revision checks exact even when the
 // API changed the conversation during the turn.
 func (c *conversationTurnCoordinator) write(ctx context.Context, conversationID string, fn func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error, preparations ...func(context.Context, *conversationPublicationPlan) error) error {
-	now := c.server.config.now()
+	now := c.server.config.Clock()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err

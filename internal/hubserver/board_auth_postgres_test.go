@@ -44,7 +44,7 @@ func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
 			service.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 			service.config.SecretKeys = secretTestKeys(t, "1", "1")
 			service.database.hostedOrganization = org
-			service.config.now = func() time.Time { return now }
+			service.config.Clock = func() time.Time { return now }
 			content := eventstore.NewContent(service.config.RunDetails)
 			descriptor := hubTestPolicy()
 			policy, err := content.PrepareProjectPolicy(t.Context(), org, descriptor)

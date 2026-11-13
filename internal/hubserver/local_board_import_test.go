@@ -82,7 +82,7 @@ func localBoardTarget(t *testing.T, service *Service, name string) nativeFixture
 				if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: org, ID: hubapi.NewID("hub"), CursorKey: key}); err != nil {
 					return err
 				}
-				return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: service.config.now()}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: service.config.now()})
+				return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: service.config.Clock()}, accessstore.SecretAudit{OrganizationID: org, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: service.config.Clock()})
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -538,7 +538,7 @@ func TestLocalBoardImportHostedAuthorityAndAllowances(t *testing.T) {
 			localBoardHostedPlans(t, f.service, test.limits)
 			if test.name == "mutation allowance" {
 				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-					now := f.service.config.now()
+					now := f.service.config.Clock()
 					plans := f.service.database.plansService().Plans()
 					window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 					_, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: organization, ID: "existing-api-mutation", WindowStart: window, Metric: "api_mutations", Amount: 1}, 1)
@@ -691,7 +691,7 @@ func localBoardHostedUsage(t *testing.T, service *Service) (map[string]int64, er
 		result[key] = count
 	}
 	organization := service.accessOrganization()
-	now := service.config.now()
+	now := service.config.Clock()
 	plans := service.database.plansService().Plans()
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 	if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -715,7 +715,7 @@ func localBoardHostedUsage(t *testing.T, service *Service) (map[string]int64, er
 func localBoardWorker(t *testing.T, f nativeFixture) string {
 	t.Helper()
 	token := hubapi.NewID("worker")
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token, Name: "Example worker", Hash: apikey.HashToken(token), Scope: string(hubapi.APIScopeWorker), NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err

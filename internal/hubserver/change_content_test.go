@@ -128,7 +128,7 @@ func TestChangeContentObjects(t *testing.T) {
 	t.Parallel()
 	objects := &changeObjectFixture{}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	cfg := Config{Content: objects.call, RunDetails: objects, now: func() time.Time { return now }}
+	cfg := Config{Content: objects.call, RunDetails: objects, Clock: func() time.Time { return now }}
 	f := newChangeFixture(t, newPostgresNativeService(t, cfg))
 	admin := hostedPostgresAdmin(t, f.service)
 	scope := analyticsTestScope(t, f.nativeFixture)
@@ -213,7 +213,7 @@ func TestChangeContentObjects(t *testing.T) {
 	output := strings.Repeat("full command output\n", 11000)[:200<<10]
 	reviews := make([]tracker.ChangeReview, 2)
 	for i := range reviews {
-		reviews[i] = tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: versions[2].ID, Decision: "commented", Body: "Findings remain inline", CreatedAt: f.service.config.now(), Validator: &gate.ValidatorResult{VersionID: versions[2].ID, Repository: input.Repository, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, Verdict: "wait", NotVerified: []string{"Unresolved evidence question"}, Commands: []gate.CommandResult{{Command: "make check-land", Output: output, HeadSHA: input.HeadSHA, TreeSHA: input.BaseSHA, ExitCode: 1, DurationNS: 123}}}}
+		reviews[i] = tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: versions[2].ID, Decision: "commented", Body: "Findings remain inline", CreatedAt: f.service.config.Clock(), Validator: &gate.ValidatorResult{VersionID: versions[2].ID, Repository: input.Repository, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, Verdict: "wait", NotVerified: []string{"Unresolved evidence question"}, Commands: []gate.CommandResult{{Command: "make check-land", Output: output, HeadSHA: input.HeadSHA, TreeSHA: input.BaseSHA, ExitCode: 1, DurationNS: 123}}}}
 		if _, err := prepareChangeContent(ctx, string(f.project.OrganizationID), []byte(output)); err != nil {
 			t.Fatal(err)
 		}
@@ -536,7 +536,7 @@ func TestAttachmentReceiptSharedContentBilling(t *testing.T) {
 						if used != want {
 							t.Fatalf("durable replay usage=%d want=%d", used, want)
 						}
-						now := service.config.now()
+						now := service.config.Clock()
 						window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 						apiUsed, err := r.BillingUsage(t.Context(), window, "api_mutations")
 						if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -582,7 +582,7 @@ func TestAttachmentReceiptBillingMigration(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: org, ActorID: "historical-operator", Operation: operation, CommandKey: operation, RequestHash: artifact.Digest([]byte(operation)), CreatedAt: service.config.now()}, raw)
+				receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: org, ActorID: "historical-operator", Operation: operation, CommandKey: operation, RequestHash: artifact.Digest([]byte(operation)), CreatedAt: service.config.Clock()}, raw)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -919,7 +919,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: f.project.OrganizationID, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: service.config.now()})
+			_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: f.project.OrganizationID, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: service.config.Clock()})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -981,7 +981,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 		}
 
 		review := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: historical.ID, Decision: "commented",
-			Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer"}, CreatedAt: f.service.config.now().UTC().Truncate(time.Microsecond),
+			Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer"}, CreatedAt: f.service.config.Clock().UTC().Truncate(time.Microsecond),
 			Validator: &gate.ValidatorResult{VersionID: historical.ID, Repository: historical.Repository, BaseSHA: historical.BaseSHA,
 				HeadSHA: historical.HeadSHA, Verdict: "wait", NotVerified: []string{"Unresolved evidence question"},
 				Commands: []gate.CommandResult{{Command: "make check-land", Output: strings.Repeat("full command output\n", 11000)[:200<<10],

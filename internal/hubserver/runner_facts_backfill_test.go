@@ -25,7 +25,7 @@ import (
 func TestRunnerCommandFacts(t *testing.T) {
 	t.Parallel()
 	clock := time.Now().UTC().Truncate(time.Microsecond)
-	first := newDefaultNativeFixture(t, Config{now: func() time.Time { return clock }})
+	first := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return clock }})
 	second := newNativeFixture(t, first.service, first.project.OrganizationID, "other-command-facts")
 	for _, f := range []nativeFixture{first, second} {
 		credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
@@ -34,7 +34,7 @@ func TestRunnerCommandFacts(t *testing.T) {
 		}
 		scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 		content := eventstore.NewContent(f.service.runDetailStore())
-		now := f.service.config.now().UTC().Truncate(time.Microsecond)
+		now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 		store := func(key, operation, raw string, typed, referenced, pending bool, request string) eventstore.Receipt {
 			t.Helper()
 			historical := []byte(raw)
@@ -131,12 +131,12 @@ func TestConfigurationReceiptsExcludeExpiredHistory(t *testing.T) {
 	for _, history := range []int{100, 10000} {
 		t.Run(fmt.Sprint(history), func(t *testing.T) {
 			clock := time.Now().UTC().Truncate(time.Microsecond)
-			first := newDefaultNativeFixture(t, Config{now: func() time.Time { return clock }})
+			first := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return clock }})
 			second := newNativeFixture(t, first.service, first.project.OrganizationID, "other-configuration-receipts")
 			for _, f := range []nativeFixture{first, second} {
 				runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 				runner.enroll(t)
-				now := f.service.config.now().UTC().Truncate(time.Microsecond)
+				now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 				credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 				if err != nil {
 					t.Fatal(err)

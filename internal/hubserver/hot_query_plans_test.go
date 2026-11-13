@@ -38,26 +38,26 @@ func TestHotQueryPlans(t *testing.T) {
 	for n := range 64 {
 		organization := tracker.OrganizationID(fmt.Sprintf("org_plan_%d", n))
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", Slug: fmt.Sprintf("org-plan-%d", n), CreatedAt: f.service.config.now()})
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", Slug: fmt.Sprintf("org-plan-%d", n), CreatedAt: f.service.config.Clock()})
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	noise := make([]tracker.NativeIssue, 0, 254)
 	for n := 3; n <= 256; n++ {
-		noise = append(noise, seedAnalyticsTestWorkItem(t, f.service, scope.Organization, scope.Project, fmt.Sprintf("wi_plan_%d", n), 100000+n, "Example", "Todo", f.service.config.now()))
+		noise = append(noise, seedAnalyticsTestWorkItem(t, f.service, scope.Organization, scope.Project, fmt.Sprintf("wi_plan_%d", n), 100000+n, "Example", "Todo", f.service.config.Clock()))
 	}
 	for i := 1; i < len(noise); i++ {
 		edge := corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: noise[i-1].WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: noise[i].WorkItemID, Type: "related"}
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.SetRelationship(t.Context(), edge, "add", f.service.config.now())
+			return w.SetRelationship(t.Context(), edge, "add", f.service.config.Clock())
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	edge := corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: f.issue.WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: other.WorkItemID, Type: "related"}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.SetRelationship(t.Context(), edge, "add", f.service.config.now())
+		return w.SetRelationship(t.Context(), edge, "add", f.service.config.Clock())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestHotQueryPlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		now := f.service.config.now()
+		now := f.service.config.Clock()
 		for n := range 512 {
 			record := eventstore.Receipt{OrganizationID: scope.Organization, ActorID: fmt.Sprintf("actor_plan_%d", n%16), Operation: "POST /example", CommandKey: fmt.Sprintf("plan-%d", n), RequestHash: receiptHash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}
 			record, err := receiptContent.PrepareReceipt(t.Context(), record, []byte(fmt.Sprintf(`{"plan":%d}`, n)))
@@ -110,7 +110,7 @@ func TestHotQueryPlans(t *testing.T) {
 	if !ok {
 		t.Fatal("authority plan requires the PostgreSQL owner")
 	}
-	authority, capacity, err := repository.ReadRunnerAuthority(ctx, tenantauth.RequestIdentity{Organization: scope.Organization, CredentialHash: apikey.HashToken(r.redemption.Credential)}, f.service.config.now)
+	authority, capacity, err := repository.ReadRunnerAuthority(ctx, tenantauth.RequestIdentity{Organization: scope.Organization, CredentialHash: apikey.HashToken(r.redemption.Credential)}, f.service.config.Clock)
 	if err != nil || authority.RunnerID() != r.binding.RunnerID || capacity < 1 {
 		t.Fatalf("runner authority lost identity/capacity: runner=%s capacity=%d error=%v", authority.RunnerID(), capacity, err)
 	}

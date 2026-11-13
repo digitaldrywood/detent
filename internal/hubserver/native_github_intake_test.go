@@ -82,7 +82,7 @@ func applyLinkedWebhook(t *testing.T, f nativeFixture, action, event string, sna
 	if err != nil {
 		t.Fatal(err)
 	}
-	row := projectstore.GitHubWebhook{DeliveryID: identity, EventType: event, Action: action, Repository: scope.IntegrationRepository, ReceivedAt: f.service.config.now()}
+	row := projectstore.GitHubWebhook{DeliveryID: identity, EventType: event, Action: action, Repository: scope.IntegrationRepository, ReceivedAt: f.service.config.Clock()}
 	if err := f.service.applyGitHubWebhookRecord(ctx, scope, row, payload); err != nil {
 		t.Fatal(err)
 	}

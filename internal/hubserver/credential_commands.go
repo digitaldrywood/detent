@@ -23,7 +23,7 @@ func (s *Service) revokeAPITokenFor(ctx context.Context, id string) error {
 		if err := s.authorizeCredentialMaintenanceWrite(ctx, w, s.accessOrganization()); err != nil {
 			return err
 		}
-		return w.RevokeAccessCredential(ctx, id, s.config.now())
+		return w.RevokeAccessCredential(ctx, id, s.config.Clock())
 	})
 }
 
@@ -35,7 +35,7 @@ func (s *Service) grantNativeTokenFor(ctx context.Context, id, organization, pro
 		if err := s.authorizeCredentialMaintenanceWrite(ctx, w, tracker.OrganizationID(organization)); err != nil {
 			return err
 		}
-		if err := w.ScopeAccessCredentialToNative(ctx, id, s.config.now()); err != nil {
+		if err := w.ScopeAccessCredentialToNative(ctx, id, s.config.Clock()); err != nil {
 			return err
 		}
 		return w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: tracker.OrganizationID(organization), TokenID: id, ProjectID: tracker.ProjectID(project)})
@@ -53,7 +53,7 @@ func (s *Service) createNativeOrganizationFor(ctx context.Context, name string) 
 		return nativeOrganization{}, err
 	}
 	err = s.accessWrite(ctx, organization.ID, func(w tenantstore.Writer) error {
-		if err := w.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, CreatedAt: s.config.now()}); err != nil {
+		if err := w.CreateAccessOrganization(ctx, accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, CreatedAt: s.config.Clock()}); err != nil {
 			return err
 		}
 		return w.EnsureOrganizationSecret(ctx, secret, audit)

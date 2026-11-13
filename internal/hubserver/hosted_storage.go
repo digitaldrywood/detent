@@ -58,7 +58,7 @@ func (s *Service) readHostedMetadata(ctx context.Context) (hostedMetadataRespons
 	if status != http.StatusOK {
 		return hostedMetadataResponse{}, ErrHostedMetadataUnavailable
 	}
-	usage, err := s.operatorBillingUsage(ctx, s.config.now())
+	usage, err := s.operatorBillingUsage(ctx, s.config.Clock())
 	if err != nil {
 		return hostedMetadataResponse{}, ErrHostedMetadataUnavailable
 	}

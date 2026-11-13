@@ -34,7 +34,7 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{}
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, SecretKeys: secretTestKeys(t, "1", "1"), Logger: discardLogger(), now: func() time.Time { return now }}}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, SecretKeys: secretTestKeys(t, "1", "1"), Logger: discardLogger(), Clock: func() time.Time { return now }}}
 	var previousRecoveryCursor string
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service.localOrganization = string(org)

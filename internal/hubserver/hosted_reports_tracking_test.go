@@ -152,11 +152,11 @@ func TestReportsTrackingIssues(t *testing.T) {
 			path := f.base + "/work-items/" + string(failed.WorkItemID) + "/events"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome = "run.finished", "tracking-failed", 2, "failed"
-			event.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "hub request timed out", ErrorClass: "protocol", ObservedAt: f.service.config.now()}
+			event.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "hub request timed out", ErrorClass: "protocol", ObservedAt: f.service.config.Clock()}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			reportService := &Service{config: f.service.config}
 			reportService.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(scope.Organization)}
-			now := f.service.config.now()
+			now := f.service.config.Clock()
 			window := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}
 			report, err := reportService.readPostgresHostedReport(t.Context(), credential, []string{string(scope.Project)}, window, reportsFilter{}, true)
 			wantTracking := ""

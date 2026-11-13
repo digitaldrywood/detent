@@ -73,7 +73,7 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	if err := native.HeartbeatMachine(t.Context(), hubclient.Machine{
 		ID: f.runner.binding.MachineID, Hostname: "runner-host", DisplayName: "runner", Capacity: 4, Version: "test",
 		BackendIsolation:      f.runner.redemption.BackendIsolation,
-		CapacityConfig:        &runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 4, ClientLimit: 4, RuntimeLimit: 4, Manageable: true, ObservedAt: service.config.now()},
+		CapacityConfig:        &runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 4, ClientLimit: 4, RuntimeLimit: 4, Manageable: true, ObservedAt: service.config.Clock()},
 		WorkspaceCapabilities: workspacerunner.Capabilities(support), WorkspaceIsolation: workspacesession.IsolationUser,
 	}); err != nil {
 		t.Fatalf("heartbeat machine: %v", err)

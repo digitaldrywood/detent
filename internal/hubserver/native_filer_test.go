@@ -53,7 +53,7 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sourceCreated := f.service.config.now().Add(-time.Hour)
+	sourceCreated := f.service.config.Clock().Add(-time.Hour)
 	f.service.config.ImportBackend = scheduledContractImporter(func(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
 		if request.Stage != "issue" {
 			return GitHubImportPage{}, nil
@@ -205,11 +205,11 @@ func TestNativeFilerPublicNames(t *testing.T) {
 	for _, organization := range organizations {
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			for _, principal := range []string{"person", "service"} {
-				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: principal, Name: string(organization) + " <" + principal + ">", Hash: apikey.HashToken(string(organization) + principal), Scope: "operator", Kind: "service", ProjectAccess: "all", CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now()}); err != nil {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: principal, Name: string(organization) + " <" + principal + ">", Hash: apikey.HashToken(string(organization) + principal), Scope: "operator", Kind: "service", ProjectAccess: "all", CreatedAt: f.service.config.Clock(), UpdatedAt: f.service.config.Clock()}); err != nil {
 					return err
 				}
 			}
-			return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_person", PrincipalID: "person", MembershipID: "membership_person", Email: string(organization) + "@example.test", Role: "member", Active: true, CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now()})
+			return w.CreateAccessMember(t.Context(), accessstore.Member{OrganizationID: organization, UserID: "user_person", PrincipalID: "person", MembershipID: "membership_person", Email: string(organization) + "@example.test", Role: "member", Active: true, CreatedAt: f.service.config.Clock(), UpdatedAt: f.service.config.Clock()})
 		}); err != nil {
 			t.Fatal(err)
 		}

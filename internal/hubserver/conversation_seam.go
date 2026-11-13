@@ -86,7 +86,7 @@ func (s *Service) conversationContents(contents attachment.ArchiveContentStore) 
 func (s *Service) conversationDeps() conversations.Deps {
 	deps := conversations.Deps{
 		Config: func() conversations.Config {
-			cfg := conversations.Config{TenantRepository: s.config.TenantRepository, Now: s.config.now, ConversationDispatch: s.config.ConversationDispatch}
+			cfg := conversations.Config{TenantRepository: s.config.TenantRepository, Now: s.config.Clock, ConversationDispatch: s.config.ConversationDispatch}
 			if s.config.ConversationWorkerAuthority != nil {
 				cfg.ConversationWorkerAuthority = conversationFeatureWorkerAuthority{s.config.ConversationWorkerAuthority}
 			}

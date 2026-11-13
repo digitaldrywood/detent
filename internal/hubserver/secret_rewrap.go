@@ -45,7 +45,7 @@ func (s *Service) MaintainSecret(ctx context.Context, organization tracker.Organ
 		return next, true, err
 	}
 	err = s.config.AccessRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-		return w.RewrapAccessSecret(ctx, secret, envelope, accessstore.SecretAudit{OrganizationID: organization, ProjectID: secret.ProjectID, Kind: secret.Kind, Actor: "system:rewrap", Event: "rotate", KeyVersion: envelope.Version, RecordedAt: s.config.now()})
+		return w.RewrapAccessSecret(ctx, secret, envelope, accessstore.SecretAudit{OrganizationID: organization, ProjectID: secret.ProjectID, Kind: secret.Kind, Actor: "system:rewrap", Event: "rotate", KeyVersion: envelope.Version, RecordedAt: s.config.Clock()})
 	})
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		err = nil

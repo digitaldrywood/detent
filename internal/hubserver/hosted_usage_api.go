@@ -143,7 +143,7 @@ func (s *Service) usageLimits(ctx context.Context) (map[string]usageLimit, error
 	if s.database.plansService().Plans() == nil {
 		return limits, nil
 	}
-	entitlement, err := hubapi.FeatureResult(s.database.plansService().PlanUsage(ctx, s.config.now()))
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().PlanUsage(ctx, s.config.Clock()))
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +176,7 @@ func (s *Service) usageRunnerCapacity(ctx context.Context) (map[string]runnerCap
 }
 
 func (s *Service) readHostedUsage(ctx context.Context, credential hubapi.APICredential, rangeName, project string) (usageReport, error) {
-	window, err := usageRangeWindow(rangeName, s.config.now())
+	window, err := usageRangeWindow(rangeName, s.config.Clock())
 	if err != nil {
 		return usageReport{}, err
 	}
@@ -213,7 +213,7 @@ func (s *Service) readHostedUsage(ctx context.Context, credential hubapi.APICred
 	if err != nil {
 		return usageReport{}, err
 	}
-	month, err := costMonth("", s.config.now())
+	month, err := costMonth("", s.config.Clock())
 	if strings.HasPrefix(strings.TrimSpace(rangeName), "month:") {
 		month = window
 	}
@@ -224,7 +224,7 @@ func (s *Service) readHostedUsage(ctx context.Context, credential hubapi.APICred
 	if strings.TrimSpace(project) != "" {
 		costScope = "project"
 	}
-	costs, err := s.database.monthlyCosts(ctx, s.config.Hosted.OrganizationID, costScope, projects, month, s.config.now())
+	costs, err := s.database.monthlyCosts(ctx, s.config.Hosted.OrganizationID, costScope, projects, month, s.config.Clock())
 	if err != nil {
 		return usageReport{}, err
 	}

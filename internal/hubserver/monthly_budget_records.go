@@ -53,7 +53,7 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope hubscope.Nativ
 		return receipt, err
 	}
 	respond := func(receipt eventstore.Receipt) error {
-		if receipt.ResponseExpired || receipt.ResponseReplayUntilNs <= s.config.now().UnixNano() {
+		if receipt.ResponseExpired || receipt.ResponseReplayUntilNs <= s.config.Clock().UnixNano() {
 			return s.nativeAPIError(c, receiptstore.ErrExpired)
 		}
 		if receipt.RequestHash != hash {
@@ -82,7 +82,7 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope hubscope.Nativ
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config.Clock().UTC().Truncate(time.Microsecond)
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -95,7 +95,7 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope hubscope.Nativ
 			return err
 		}
 		if previous, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey); err == nil {
-			if previous.ResponseExpired || previous.ResponseReplayUntilNs <= s.config.now().UnixNano() {
+			if previous.ResponseExpired || previous.ResponseReplayUntilNs <= s.config.Clock().UnixNano() {
 				return receiptstore.ErrExpired
 			}
 			if previous.RequestHash != hash {

@@ -57,10 +57,10 @@ func publishReviewVersion(t *testing.T, f changeFixture, key, expected string) t
 		if err != nil {
 			return err
 		}
-		if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: f.project.OrganizationID, LeaseID: lease.LeaseID, RunnerID: credential.Runner.RunnerID, AssignedAt: f.service.config.now()}); err != nil {
+		if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: f.project.OrganizationID, LeaseID: lease.LeaseID, RunnerID: credential.Runner.RunnerID, AssignedAt: f.service.config.Clock()}); err != nil {
 			return err
 		}
-		return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: input.PolicyID, BoundAt: f.service.config.now()})
+		return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: input.PolicyID, BoundAt: f.service.config.Clock()})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -80,12 +80,12 @@ func publishReviewVersion(t *testing.T, f changeFixture, key, expected string) t
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: credential.ID}, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}))
+	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: credential.ID}, RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{Run: &data}}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: input.AttemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: input.RunID, Sequence: 1, Status: "succeeded", StartedAt: f.service.config.now(), PayloadObjectKey: payload.Key, PayloadReference: payload}); err != nil {
+		if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: input.AttemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: input.RunID, Sequence: 1, Status: "succeeded", StartedAt: f.service.config.Clock(), PayloadObjectKey: payload.Key, PayloadReference: payload}); err != nil {
 			return err
 		}
 		_, err := w.AppendEvent(t.Context(), event)

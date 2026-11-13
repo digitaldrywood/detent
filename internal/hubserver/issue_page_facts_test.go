@@ -115,7 +115,7 @@ func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			at := fixture.service.config.now().Add(time.Second)
+			at := fixture.service.config.Clock().Add(time.Second)
 			if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				lanes, err := r.BoardLanes(t.Context(), selection, at)
 				if err != nil {
@@ -270,7 +270,7 @@ func TestBlockerHistoryUsesTypedPostgresFacts(t *testing.T) {
 		issue := f.create(t, fmt.Sprintf("Blocker history %d", index))
 		appendTransition := func(t *testing.T, typed func(*eventstore.Event)) eventstore.Event {
 			t.Helper()
-			value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "Persisted reason", Run: &tracker.NativeRunData{AttemptID: "persisted-attempt", FencingToken: 3}}}
+			value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "Persisted reason", Run: &tracker.NativeRunData{AttemptID: "persisted-attempt", FencingToken: 3}}}
 			raw, err := json.Marshal(value)
 			if err != nil {
 				t.Fatal(err)
@@ -397,7 +397,7 @@ func TestIssuePageHistoryReadsPastStorageConversionBudget(t *testing.T) {
 		through := int64(0)
 		for index := range storageConversionRows + 3 {
 			for _, kind := range []string{"issue.edited", "comment.created", "workflow.transitioned"} {
-				value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now().Add(time.Duration(index) * time.Microsecond), Data: tracker.CollaborationData{Revision: tracker.Revision(index + 2), FromState: "Todo", ToState: "Done", Reason: strings.Repeat("x", 11000)}}
+				value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.Clock().Add(time.Duration(index) * time.Microsecond), Data: tracker.CollaborationData{Revision: tracker.Revision(index + 2), FromState: "Todo", ToState: "Done", Reason: strings.Repeat("x", 11000)}}
 				if index == storageConversionRows+2 {
 					value.Data.Fields = []string{"title", "body"}
 				}
@@ -507,7 +507,7 @@ func assertIssuePageNotificationParticipants(t *testing.T, f nativeFixture, issu
 			digest := sha256.Sum256([]byte(actor.PrincipalID))
 			user := fmt.Sprintf("page_participant_%x", digest[:8])
 			if _, err := w.AccessCredential(t.Context(), actor.PrincipalID); errors.Is(err, corestore.ErrNotFound) {
-				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: actor.PrincipalID, Name: "Example participant " + actor.PrincipalID, Hash: fmt.Sprintf("%x", digest), Scope: "operator", Kind: "personal", ProjectAccess: "selected", CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now()}); err != nil {
+				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: actor.PrincipalID, Name: "Example participant " + actor.PrincipalID, Hash: fmt.Sprintf("%x", digest), Scope: "operator", Kind: "personal", ProjectAccess: "selected", CreatedAt: f.service.config.Clock(), UpdatedAt: f.service.config.Clock()}); err != nil {
 					return err
 				}
 			} else if err != nil {
@@ -515,7 +515,7 @@ func assertIssuePageNotificationParticipants(t *testing.T, f nativeFixture, issu
 			}
 			member, err := w.AccessMember(t.Context(), user)
 			if errors.Is(err, corestore.ErrNotFound) {
-				member = accessstore.Member{OrganizationID: f.project.OrganizationID, UserID: user, Email: user + "@example.test", MembershipID: "membership_" + user, Role: "member", Active: true, PrincipalID: actor.PrincipalID, NotifyIssues: true, CreatedAt: f.service.config.now(), UpdatedAt: f.service.config.now()}
+				member = accessstore.Member{OrganizationID: f.project.OrganizationID, UserID: user, Email: user + "@example.test", MembershipID: "membership_" + user, Role: "member", Active: true, PrincipalID: actor.PrincipalID, NotifyIssues: true, CreatedAt: f.service.config.Clock(), UpdatedAt: f.service.config.Clock()}
 				if err := w.CreateAccessMember(t.Context(), member); err != nil {
 					return err
 				}
@@ -533,7 +533,7 @@ func assertIssuePageNotificationParticipants(t *testing.T, f nativeFixture, issu
 	}
 	appendEvent := func(kind string, actor tracker.Actor) eventstore.Event {
 		t.Helper()
-		value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Done"}}
+		value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{FromState: "Todo", ToState: "Done"}}
 		raw, err := json.Marshal(value)
 		if err != nil {
 			t.Fatal(err)
@@ -704,7 +704,7 @@ func TestIssuePagePullRequestBackfill(t *testing.T) {
 					head := request.Hydrations[0].HeadSHA
 					return ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_example", Owner: "example-org", Name: "example-project"}, PullRequests: []PullRequestSource{{Number: number, HeadSHA: head, State: "open", UpdatedAt: sourceAt}}, PullRequestDetails: []PullRequestDetailSource{{Number: number, HeadSHA: head, Checks: &tracker.CheckSummary{}, Reviews: &tracker.ReviewSummary{}}}}, nil
 				})
-				f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, ReconcileBackend: backend})
+				f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }, ReconcileBackend: backend})
 				adminValue, ok := projectRecordDatabases.Load(f.service.database.postgres)
 				if !ok {
 					t.Fatal("fixture PostgreSQL administration connection unavailable")

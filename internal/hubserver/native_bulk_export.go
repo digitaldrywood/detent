@@ -39,7 +39,7 @@ func (s *Service) exportNativeWorkItems(c echo.Context) error {
 func (s *Service) readBulkExport(ctx context.Context, scope hubscope.NativeScope, params url.Values) (operatortool.WorkBulkExportPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	page := operatortool.WorkBulkExportPage{ProjectID: string(scope.Project), GeneratedAt: s.config.now(), Freshness: explain.SourceAvailable, Items: []operatortool.WorkBulkExportItem{}}
+	page := operatortool.WorkBulkExportPage{ProjectID: string(scope.Project), GeneratedAt: s.config.Clock(), Freshness: explain.SourceAvailable, Items: []operatortool.WorkBulkExportItem{}}
 	single := url.Values{}
 	for name, values := range params {
 		single[name] = values
@@ -222,7 +222,7 @@ func (s *Service) authorizeBulkExportItem(ctx context.Context, r tenantstore.Rea
 		return err
 	}
 	if scope.Credential.Hosted != nil {
-		member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, false), s.config.now())
+		member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, false), s.config.Clock())
 		if err != nil {
 			return err
 		}

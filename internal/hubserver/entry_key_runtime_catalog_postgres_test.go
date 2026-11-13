@@ -44,7 +44,7 @@ func TestPostgresEntryKeyRuntimeCatalog(t *testing.T) {
 	}
 	for org, service := range f.services {
 		organization := tracker.OrganizationID(org)
-		now := service.config.now().UTC()
+		now := service.config.Clock().UTC()
 		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: "project", WorkItemID: "item", Number: 1, Revision: 1, Profile: "native"}, Title: org, State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: org + "_owner"}, CreatedAt: now, UpdatedAt: now}
 		raw, err := json.Marshal(issue)
 		if err != nil {
@@ -126,7 +126,7 @@ func seedEntryRuntimeAttempt(t *testing.T, s *Service, org tracker.OrganizationI
 		itemID = items[0]
 	}
 	t.Helper()
-	now := s.config.now()
+	now := s.config.Clock()
 	content := eventstore.NewContent(s.runDetailStore())
 	marshal := func(value any) []byte {
 		t.Helper()

@@ -93,7 +93,7 @@ func (p runtimeRevisionProbe) MissingConfiguredBillingPlan(context.Context, []bi
 func runtimeProbeService(repo tenantstore.Repository) *Service {
 	d := &database{billingRepository: repo, postgres: &postgres.Repository{}, logger: discardLogger(), now: time.Now}
 	d.hostedRuntime.Store(&hostedplans.RuntimeConfig{Revision: "loaded", Plans: hostedplans.PilotPlans()})
-	return &Service{database: d, config: Config{Logger: discardLogger(), now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_example", EntitlementAdminToken: []byte(testHostedPlanAdminToken)}}}
+	return &Service{database: d, config: Config{Logger: discardLogger(), Clock: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_example", EntitlementAdminToken: []byte(testHostedPlanAdminToken)}}}
 }
 func TestRuntimeRefreshExcludesUnrelatedRoutes(t *testing.T) {
 	t.Parallel()

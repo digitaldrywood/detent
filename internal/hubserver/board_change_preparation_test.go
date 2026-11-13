@@ -131,7 +131,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 	counted := &boardChangeCountingRepository{Repository: repository}
 	details := &memoryRunDetails{}
 	batchDetails := &boardDetailBatchCounter{DetailStore: details}
-	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: counted, AccessRepository: counted, SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: batchDetails, now: func() time.Time { return now }}}
+	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: counted, AccessRepository: counted, SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: batchDetails, Clock: func() time.Time { return now }}}
 	content := eventstore.NewContent(details)
 	maintain := func(org tracker.OrganizationID, ids ...tracker.NativeWorkItemID) {
 		original := service.config.TenantRepository

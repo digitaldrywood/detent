@@ -56,7 +56,7 @@ func seedArchiveIssues(t *testing.T, service *Service, scope hubscope.NativeScop
 		}); err != nil {
 			t.Fatal(err)
 		}
-		now := service.config.now().UTC().Truncate(time.Microsecond)
+		now := service.config.Clock().UTC().Truncate(time.Microsecond)
 		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: int(number), Revision: 1, Profile: "native"}, Title: fmt.Sprintf("Seed %d", index), Body: nativeContractTestBody, State: state, Actor: actor, Labels: []string{}, Assignees: []string{}, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, IssueContract: &issuecontract.State{ConfirmedSections: config.IssueContractSectionDigests(nativeContractTestBody)}}
 		for _, configured := range project.States {
 			if configured.Name == state {
@@ -164,7 +164,7 @@ func TestNativeArchiveLifecycle(t *testing.T) {
 				if err := f.service.authorizeAccessScope(t.Context(), r, scope, false); err != nil {
 					return err
 				}
-				page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: f.project.ID, Scope: string(f.project.ID), AvailableAt: f.service.config.now(), Limit: corestore.MaxPageSize})
+				page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: f.project.ID, Scope: string(f.project.ID), AvailableAt: f.service.config.Clock(), Limit: corestore.MaxPageSize})
 				for _, candidate := range page.Items {
 					ids = append(ids, candidate.WorkItemID)
 				}
@@ -204,7 +204,7 @@ func TestNativeArchiveActiveWork(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
 			}
 			if test.expired {
-				now := f.service.config.now().UTC()
+				now := f.service.config.Clock().UTC()
 				result, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$1,renewed_at=$2,expires_at=$3 WHERE organization_id=$4 AND lease_id=$5 AND fencing_token=$6", now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-time.Hour), f.project.OrganizationID, lease.ID, int64(lease.FencingToken))
 				if err != nil {
 					t.Fatal(err)

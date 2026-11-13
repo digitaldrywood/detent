@@ -16,7 +16,7 @@ func (s *Service) githubOutboundService() *githuboutbound.Service {
 	}
 	return githuboutbound.New(githuboutbound.Deps{
 		Repository: s.config.TenantRepository, Organization: organization,
-		Details: s.runDetailStore(), Backend: s.config.OutboxBackend, Now: s.config.now,
+		Details: s.runDetailStore(), Backend: s.config.OutboxBackend, Now: s.config.Clock,
 		Jitter: s.config.deps.Jitter, NewLeaseID: s.config.deps.NewLeaseID, Logger: s.config.Logger,
 		OutboxPollInterval: s.config.OutboxPollInterval, OutboxProcessingTimeout: s.config.OutboxProcessingTimeout,
 		OutboxBaseBackoff: s.config.OutboxBaseBackoff, OutboxMaxBackoff: s.config.OutboxMaxBackoff,

@@ -61,7 +61,7 @@ func TestHydrateWorkItemRelationshipFactsPagePreservesReporterRedaction(t *testi
 	const reporterUser = "user_reporter"
 	const reporterMembership = "membership_reporter"
 	const otherID = "principal_other"
-	now := fixture.service.config.now()
+	now := fixture.service.config.Clock()
 	if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		if _, err := writer.CreateProject(t.Context(), corestore.Project{OrganizationID: organization, ID: privateProject, Name: "Private project", Slug: "private-project", Profile: "native"}); err != nil {
 			return err
@@ -102,7 +102,7 @@ func TestHydrateWorkItemRelationshipFactsPagePreservesReporterRedaction(t *testi
 			{OrganizationID: organization, ProjectID: project, WorkItemID: "wi_source_two", RelatedProjectID: project, RelatedWorkItemID: "wi_visible_two", Type: "dependency"},
 			{OrganizationID: organization, ProjectID: project, WorkItemID: "wi_source_two", RelatedProjectID: sharedProject, RelatedWorkItemID: "wi_wrong_reporter", Type: "dependency"},
 		} {
-			if err := writer.SetRelationship(t.Context(), edge, "add", fixture.service.config.now()); err != nil {
+			if err := writer.SetRelationship(t.Context(), edge, "add", fixture.service.config.Clock()); err != nil {
 				return err
 			}
 		}

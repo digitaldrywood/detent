@@ -64,7 +64,7 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 	if s.runDetailStore() == nil {
 		return leasestore.Lease{}, hubapi.NativeRunEventStorageUnavailable()
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	if request.WorkItemID == "" {
 		scan, err := s.readNativeClaimCandidates(ctx, scope, request, now)
 		if err != nil {
@@ -182,7 +182,7 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	if err != nil {
 		return result, err
 	}
-	if err := runnerIdentityClaimRefusal(identity, scope, request.MachineID, s.config.now().UTC()); err != nil {
+	if err := runnerIdentityClaimRefusal(identity, scope, request.MachineID, s.config.Clock().UTC()); err != nil {
 		return result, err
 	}
 	currentPolicy, err := r.ProjectPolicy(ctx, scope.Project)
@@ -305,7 +305,7 @@ func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope hubscop
 		if _, err := w.LockWorkItem(ctx, scope.Project, request.WorkItemID); err != nil {
 			return err
 		}
-		current, err := s.readRequestedClaimRefusal(ctx, w, scope, request, s.config.now().UTC(), planRefused, reason)
+		current, err := s.readRequestedClaimRefusal(ctx, w, scope, request, s.config.Clock().UTC(), planRefused, reason)
 		if err != nil {
 			return err
 		}
@@ -540,7 +540,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 		if err != nil {
 			return err
 		}
-		authoritativeNow := s.config.now().UTC()
+		authoritativeNow := s.config.Clock().UTC()
 		if err := runnerIdentityClaimRefusal(identity, scope, request.MachineID, authoritativeNow); err != nil {
 			return err
 		}
@@ -985,7 +985,7 @@ func (s *Service) persistNativeClaimCursor(ctx context.Context, scope hubscope.N
 		if err != nil {
 			return err
 		}
-		authoritativeNow := s.config.now().UTC()
+		authoritativeNow := s.config.Clock().UTC()
 		if !runnerIdentityCanClaim(identity, scope, scope.Credential.Runner.MachineID, authoritativeNow) {
 			return tracker.ErrMachineNotFound
 		}

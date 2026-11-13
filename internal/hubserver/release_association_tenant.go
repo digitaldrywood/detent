@@ -32,7 +32,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 	if raw, found, err := s.releaseAssociationReceipt(ctx, scope, operation, request.IdempotencyKey, hash); err != nil || found {
 		return raw, err
 	}
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config.Clock().UTC().Truncate(time.Microsecond)
 	existing, refreshing, err := s.readReleaseDeliveryRecord(ctx, scope, item)
 	if err != nil {
 		return nil, err
@@ -182,7 +182,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 			return err
 		}
 		if s.database.plansService().Plans() != nil {
-			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
 				return err
 			}
 		}

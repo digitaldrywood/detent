@@ -24,7 +24,7 @@ import (
 func TestPostgresImportStarts(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
-	service := &Service{localOrganization: "org", notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), database: &database{now: time.Now}, config: Config{ImportBackend: gitHubLifecycleImporter{}, TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now}}
+	service := &Service{localOrganization: "org", notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), database: &database{now: time.Now}, config: Config{ImportBackend: gitHubLifecycleImporter{}, TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Clock: time.Now}}
 	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org", Name: "Example", Slug: "example"})
 	service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: "org"}
 	service.database.hostedOrganization = "org"
@@ -192,7 +192,7 @@ func TestPostgresImportStarts(t *testing.T) {
 	now := time.Now().UTC()
 	repair := &gitHubRepairFixture{}
 	service.config.ImportBackend, service.config.ReconcileBackend = repair, repair
-	service.config.now = func() time.Time { return now }
+	service.config.Clock = func() time.Time { return now }
 	service.config.deps.Jitter = func() float64 { return 0.5 }
 	service.config.ReconcileInterval = time.Minute
 	if err := service.maintainGitHubReconciliationRecords(t.Context()); !errors.Is(err, errGitHubRepairFixture) {
@@ -232,10 +232,10 @@ func TestPostgresImportStarts(t *testing.T) {
 	}
 
 	t.Run("delayed source edits retain their clock", func(t *testing.T) {
-		previousNow := service.config.now
-		t.Cleanup(func() { service.config.now = previousNow })
+		previousNow := service.config.Clock
+		t.Cleanup(func() { service.config.Clock = previousNow })
 		observed := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Hour)
-		service.config.now = func() time.Time { return observed }
+		service.config.Clock = func() time.Time { return observed }
 		for _, projectID := range []tracker.ProjectID{"historical_first", "historical_second"} {
 			scope := hubscope.NativeScope{Organization: "org", Project: projectID}
 			var project projectstore.Record

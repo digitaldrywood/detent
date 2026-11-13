@@ -281,7 +281,7 @@ func TestHostedAuditLegacyReadCleanup(t *testing.T) {
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	for _, test := range []struct {
 		route, event, actor, effective, reason string
 		status                                 int

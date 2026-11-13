@@ -187,13 +187,13 @@ func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker
 			if value.LinkedSource != nil {
 				value.LinkedSource.Snapshot = nil
 			}
-			itemPage = &viewstore.ItemPageRecord{Value: value, Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: s.config.now()}
+			itemPage = &viewstore.ItemPageRecord{Value: value, Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: s.config.Clock()}
 		} else {
 			value, err := s.hydrateCommentRecord(ctx, comment, version)
 			if err != nil {
 				return false, err
 			}
-			commentPage = &viewstore.CommentPageRecord{Value: value, Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: s.config.now()}
+			commentPage = &viewstore.CommentPageRecord{Value: value, Generation: candidate.Generation, SourceAt: candidate.SourceAt, ProjectedAt: s.config.Clock()}
 		}
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
@@ -207,7 +207,7 @@ func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker
 		return false, err
 	}
 	if s.config.Logger != nil {
-		s.config.Logger.LogAttrs(ctx, slog.LevelDebug, "project work item page", slog.String("organization_id", string(organization)), slog.String("kind", candidate.Kind), slog.Int64("generation", candidate.Generation), slog.Duration("projection_lag", s.config.now().Sub(candidate.SourceAt)))
+		s.config.Logger.LogAttrs(ctx, slog.LevelDebug, "project work item page", slog.String("organization_id", string(organization)), slog.String("kind", candidate.Kind), slog.Int64("generation", candidate.Generation), slog.Duration("projection_lag", s.config.Clock().Sub(candidate.SourceAt)))
 	}
 	return true, nil
 }

@@ -659,7 +659,7 @@ func TestConversationUsesExistingArchiveBackend(t *testing.T) {
 	t.Parallel()
 	objects := map[string][]byte{}
 	writes := 0
-	server := &Service{database: &database{}, notifications: newNotificationBroker(), config: Config{Logger: discardLogger(), now: time.Now}}
+	server := &Service{database: &database{}, notifications: newNotificationBroker(), config: Config{Logger: discardLogger(), Clock: time.Now}}
 	server.config.Content = func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 		if request.Write {
 			writes++

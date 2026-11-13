@@ -192,7 +192,7 @@ func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		now := s.config.now().UTC()
+		now := s.config.Clock().UTC()
 		_, err = owner.CreateRelayTicket(ctx, postgres.CreateRelayTicketInput{OrganizationID: scope.Organization, ProjectID: scope.Project, Digest: relayTicketDigest(ticket), WorkspaceID: record.ID, SessionID: principal.sessionID, PrincipalID: principal.principalID, Subject: principal.subject, SupportReason: principal.supportReason, CreatedAt: now, ExpiresAt: now.Add(workspacesession.TicketLifetime)})
 		return err
 	})

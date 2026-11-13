@@ -33,7 +33,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 		to := time.Date(2026, time.November, 6, 18, 0, 0, 0, time.UTC)
 		from := to.Add(-24 * time.Hour)
 		created := from.Add(-time.Hour)
-		service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return to }})
+		service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return to }})
 		repository := service.config.TenantRepository
 		content := eventstore.NewContent(service.runDetailStore())
 		for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
@@ -144,7 +144,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 	t.Run("PostgreSQL lifetime shipped population and prior boundaries", func(t *testing.T) {
 		to := time.Date(2026, time.November, 6, 18, 0, 0, 0, time.UTC)
 		w := operatortool.AnalyticsWindow{From: to.Add(-48 * time.Hour), To: to, Bucket: time.Hour}
-		service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return to }})
+		service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return to }})
 		repository := service.config.TenantRepository
 		content := eventstore.NewContent(service.runDetailStore())
 		for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
@@ -403,7 +403,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 func TestReportsFirstTryHistory(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.November, 6, 18, 0, 0, 0, time.UTC)
-	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return now.Add(-96 * time.Hour) }})
+	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return now.Add(-96 * time.Hour) }})
 	repository := service.config.TenantRepository
 	content := eventstore.NewContent(service.runDetailStore())
 	encode := func(value any) []byte {

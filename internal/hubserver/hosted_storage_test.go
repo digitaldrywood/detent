@@ -258,7 +258,7 @@ func TestHostedDatabaseConstrainsBackgroundWrites(t *testing.T) {
 	first := service.accessOrganization()
 	second := tracker.OrganizationID("org_other")
 	repository := service.config.TenantRepository
-	now := service.config.now()
+	now := service.config.Clock()
 	if err := repository.WriteTenant(t.Context(), second, corestore.Background, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: second, Name: "Other", CreatedAt: now}); err != nil {
 			return err
@@ -377,7 +377,7 @@ func TestHostedDatabaseConstrainsBackgroundWrites(t *testing.T) {
 func TestHostedMetadataExcludesCustomerContent(t *testing.T) {
 	t.Parallel()
 	expectedActivity := time.Date(2026, 9, 1, 12, 0, 0, 500_000_000, time.UTC)
-	cfg := hostedStorageConfig(t, func(cfg *Config) { cfg.now = func() time.Time { return expectedActivity } })
+	cfg := hostedStorageConfig(t, func(cfg *Config) { cfg.Clock = func() time.Time { return expectedActivity } })
 	service := openHostedStorage(t, cfg)
 	project := hostedStorageProject(t, service, "prj_metadata")
 	const sentinel = "private-content-credential-sentinel"

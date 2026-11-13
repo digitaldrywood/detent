@@ -342,7 +342,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
 	var humanWorkflowClock atomic.Int64
-	cfg.now = func() time.Time {
+	cfg.Clock = func() time.Time {
 		if value := humanWorkflowClock.Load(); value != 0 {
 			return time.Unix(0, value).UTC()
 		}
@@ -448,7 +448,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 	}
 	policyRevision.ProjectID = project.ID
 	policyRevision.ApprovedBy = "credential_owner"
-	policyRevision.ApprovedAt = service.config.now().UTC()
+	policyRevision.ApprovedAt = service.config.Clock().UTC()
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.ApproveProjectPolicy(t.Context(), policyRevision, "")
 	}); err != nil {
@@ -614,7 +614,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("authenticate diagnostic runner: status=%d error=%v", status, err)
 	}
-	diagnosticAt := service.config.now().UTC().Truncate(time.Microsecond).Add(-time.Second)
+	diagnosticAt := service.config.Clock().UTC().Truncate(time.Microsecond).Add(-time.Second)
 	diagnosticView := runnerauth.ProjectConfiguration{ProjectID: string(project.ID), ObservedAt: diagnosticAt, Diagnostics: &runnerauth.ProjectDiagnostics{
 		ObservedAt: diagnosticAt, RuntimeObservedAt: diagnosticAt, Source: "runner_runtime_and_durable_attempt_owners", Truncated: true,
 		RunningBuild: &runnerauth.BuildEvidence{Version: "v0.177.4", Commit: "abcdef1234567", Source: "development", OS: "darwin", Architecture: "arm64", ObservedAt: diagnosticAt},

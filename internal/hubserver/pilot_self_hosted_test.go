@@ -47,7 +47,7 @@ func TestPilotSelfHostedStaysFree(t *testing.T) {
 		if f.service.billing != nil || f.service.database.hostedBilling || f.service.config.Hosted.Billing != nil {
 			t.Fatal("identity provider selection enabled billing")
 		}
-		entitlement, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), f.service.config.now()))
+		entitlement, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), f.service.config.Clock()))
 		if err != nil {
 			t.Fatal(err)
 		}

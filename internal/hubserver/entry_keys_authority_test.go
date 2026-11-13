@@ -35,7 +35,7 @@ func TestEntryKeyCallReusesRequestAuthentication(t *testing.T) {
 			c.SetParamNames("organization")
 			c.SetParamValues("first")
 			probe := &authorityReaderProbe{err: tenantauth.ErrUnavailable}
-			service := &Service{config: Config{TenantRepository: probe, now: time.Now, Logger: slog.New(slog.DiscardHandler)}}
+			service := &Service{config: Config{TenantRepository: probe, Clock: time.Now, Logger: slog.New(slog.DiscardHandler)}}
 			if authenticated {
 				c.Set("hub_api_credential", hubapi.APICredential{ID: "key", Scope: hubapi.APIScopeOperator, EntryKey: &apikey.KeyAuthority{ID: "key"}, HostedKeyScope: "invalid"})
 			}

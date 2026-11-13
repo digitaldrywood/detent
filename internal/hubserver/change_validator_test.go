@@ -329,7 +329,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: selected.ID, ID: serverapi.NewID("hub"), CursorKey: key}); err != nil {
 						return err
 					}
-					return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: selected.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: service.config.now()}, accessstore.SecretAudit{OrganizationID: selected.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: service.config.now()})
+					return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: selected.ID, Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: service.config.Clock()}, accessstore.SecretAudit{OrganizationID: selected.ID, Kind: accessstore.NativeCursorKeyKind, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: service.config.Clock()})
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -461,7 +461,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 				ctx := hubapi.WithMutationAuthority(t.Context(), native.Scope(), lease, nil)
 				sessions := hubapi.NewRunnerSessions(native)
-				now := f.service.config.now()
+				now := f.service.config.Clock()
 				id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(issue.WorkItemID), StartedAt: now, AgentRole: role, Model: "example-model"})
 				if err != nil {
 					t.Fatal(err)
@@ -517,7 +517,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			acceptanceRequest := request
 			var recordedAudit *tracker.SecurityAuditReview
 			if audit || auditCollision {
-				now := f.service.config.now()
+				now := f.service.config.Clock()
 				request.SecurityAudit = &tracker.SecurityAuditReview{SessionID: 42, DiffDigest: version.Source.DiffSHA256, Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "audit-invocation", ProjectID: string(f.project.ID), IssueID: string(issue.WorkItemID), Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now.Add(-time.Second), CompletedAt: now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
 				recordedAudit = request.SecurityAudit
 				if audit {
@@ -582,7 +582,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					return w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: f.project.OrganizationID, Kind: "attachment", Metadata: attachment.Metadata{ID: "att_0123456789abcdef0123456789abcdef", ProjectID: string(f.project.ID), Uploader: uploader.ID, Name: "upload.png", ContentType: "image/png", Size: 100, SHA256: policy.Digest([]byte("image")), Width: 1, Height: 1, CreatedAt: f.service.config.now()}})
+					return w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: f.project.OrganizationID, Kind: "attachment", Metadata: attachment.Metadata{ID: "att_0123456789abcdef0123456789abcdef", ProjectID: string(f.project.ID), Uploader: uploader.ID, Name: "upload.png", ContentType: "image/png", Size: 100, SHA256: policy.Digest([]byte("image")), Width: 1, Height: 1, CreatedAt: f.service.config.Clock()}})
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -598,7 +598,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				if test.stages.retainedAcceptance {
 					retained := *acceptanceRequest.Validator
 					retained.SessionID = recordSession(44, "validator")
-					raw, err := serverapi.MarshalNative(tracker.ChangeReview{ID: "review_retained_acceptance", VersionID: version.ID, Decision: "approved", Validator: &retained, SessionMachineID: lease.MachineID, Actor: tracker.Actor{Kind: "runner", PrincipalID: "previous-worker"}, CreatedAt: f.service.config.now()})
+					raw, err := serverapi.MarshalNative(tracker.ChangeReview{ID: "review_retained_acceptance", VersionID: version.ID, Decision: "approved", Validator: &retained, SessionMachineID: lease.MachineID, Actor: tracker.Actor{Kind: "runner", PrincipalID: "previous-worker"}, CreatedAt: f.service.config.Clock()})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -641,7 +641,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				if test.name == "source review from another machine does not collide" || test.name == "audit from another machine does not collide" {
 					machine = "other-machine"
 				}
-				sourceReview := tracker.ChangeReview{SessionMachineID: machine, ID: "review_previous_source", VersionID: version.ID, Decision: "approved", ImplementationReview: &gate.ValidatorResult{VersionID: version.ID, Repository: version.Repository, HeadSHA: version.HeadSHA, BaseSHA: version.BaseSHA, SessionID: sessionIDs[42], Submitted: true, Verdict: "pass", Score: 1}, Actor: tracker.Actor{Kind: "runner", PrincipalID: "previous-worker"}, CreatedAt: f.service.config.now()}
+				sourceReview := tracker.ChangeReview{SessionMachineID: machine, ID: "review_previous_source", VersionID: version.ID, Decision: "approved", ImplementationReview: &gate.ValidatorResult{VersionID: version.ID, Repository: version.Repository, HeadSHA: version.HeadSHA, BaseSHA: version.BaseSHA, SessionID: sessionIDs[42], Submitted: true, Verdict: "pass", Score: 1}, Actor: tracker.Actor{Kind: "runner", PrincipalID: "previous-worker"}, CreatedAt: f.service.config.Clock()}
 				if auditCollision {
 					sourceReview.ImplementationReview = nil
 					sourceReview.SecurityAudit = recordedAudit
@@ -988,7 +988,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatalf("unsafe or missing SDK rejection: %v", err)
 				}
 				terminal := failure.NativeTerminalFailure()
-				terminal.Error, terminal.ObservedAt = err.Error(), f.service.config.now()
+				terminal.Error, terminal.ObservedAt = err.Error(), f.service.config.Clock()
 				terminal = terminal.Public()
 				finished := event
 				finished.Type, finished.IdempotencyKey, finished.Data.Sequence = "run.finished", "acceptance-failed", 2
@@ -1146,7 +1146,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				stageReviews++
 				wantSession = sessionIDs[43]
 			}
-			current, err := f.service.selectedCurrentChangeSummary(t.Context(), changeValidatorOperatorScope(t, f), issue.WorkItemID, detail.Change.ID, f.service.config.now())
+			current, err := f.service.selectedCurrentChangeSummary(t.Context(), changeValidatorOperatorScope(t, f), issue.WorkItemID, detail.Change.ID, f.service.config.Clock())
 			if err != nil || current.Status != detail.Summary.Status {
 				t.Fatalf("current summary differs: %+v, %v", current, err)
 			}
@@ -1428,7 +1428,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				decodeHubResponse(t, response, &version)
 				response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 				decodeHubResponse(t, response, &detail)
-				current, err = f.service.selectedCurrentChangeSummary(t.Context(), changeValidatorOperatorScope(t, f), issue.WorkItemID, detail.Change.ID, f.service.config.now())
+				current, err = f.service.selectedCurrentChangeSummary(t.Context(), changeValidatorOperatorScope(t, f), issue.WorkItemID, detail.Change.ID, f.service.config.Clock())
 				if err != nil || current.Status != "needs_evidence" || current.Status != detail.Summary.Status {
 					t.Fatalf("old validator approved new version: %+v, %v", current, err)
 				}

@@ -227,7 +227,7 @@ func (s *Service) recheckChangeReviewWorkflow(ctx context.Context, w tenantstore
 			}
 		}
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	return !now.Before(p.evaluatedAt) && (p.until.IsZero() || now.Before(p.until)), nil
 }
 
@@ -498,7 +498,7 @@ func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstor
 		return false, err
 	}
 	if err == nil {
-		if !p.cancellation.expiresLease(lease) && lease.ExpiresAt.After(s.config.now().UTC()) {
+		if !p.cancellation.expiresLease(lease) && lease.ExpiresAt.After(s.config.Clock().UTC()) {
 			return false, tracker.ErrLeaseConflict
 		}
 		if err := s.settleHumanWorkflowLease(ctx, w, scope, lease, p.request, p.cancellation, p.stopState); err != nil {
@@ -527,7 +527,7 @@ func (s *Service) applyChangeWorkflowTransition(ctx context.Context, w tenantsto
 		if s.config.ConversationDispatch == nil {
 			return conversationDispatchUnavailable()
 		}
-		if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.Project, string(p.plan.Current.NativeID), leasestore.Fence{}, s.config.now().UTC()); err != nil {
+		if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.Project, string(p.plan.Current.NativeID), leasestore.Fence{}, s.config.Clock().UTC()); err != nil {
 			return err
 		}
 	}

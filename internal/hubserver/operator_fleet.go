@@ -240,7 +240,7 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 				Fleet      hostedFleetResponse `json:"fleet"`
 				HasMore    bool                `json:"has_more"`
 				ObservedAt time.Time           `json:"observed_at"`
-			}{fleet, more, s.config.now()}
+			}{fleet, more, s.config.Clock()}
 		case operatortool.GetRunnerUpdate:
 			value, err = s.readRunnerUpdate(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), Credential: credential}, r.RunnerID)
 		case operatortool.GetUrgentRunnerUpdate:
@@ -268,7 +268,7 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 				Runners    []hubRunnerRouting `json:"runners"`
 				HasMore    bool               `json:"has_more"`
 				ObservedAt time.Time          `json:"observed_at"`
-			}{projected, more, s.config.now()}
+			}{projected, more, s.config.Clock()}
 		case operatortool.GitHubRequestCounts:
 			if s.config.Hosted != nil || credential.NativeOnly || credential.Scope != hubapi.APIScopeAdmin {
 				return operatortool.Result{}, operatortool.ErrAccessDenied
@@ -293,7 +293,7 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 			Data       any       `json:"data"`
 			ObservedAt time.Time `json:"observed_at"`
 			URL        string    `json:"url"`
-		}{value, s.config.now(), resourceURL})
+		}{value, s.config.Clock(), resourceURL})
 	}
 	if s.config.CredentialMaintenance {
 		return operatortool.Result{}, errHubOperatorUnavailable
@@ -466,10 +466,10 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 
 		if name == operatortool.UpdateApply {
 			var change runnerUpdateChange
-			if r.RunnerID == "" || r.Release || r.FromRelease || operatortool.DecodeArguments(r.Change, &change) != nil || change.Delivery("validate", e.service.config.now()).Validate() != nil {
+			if r.RunnerID == "" || r.Release || r.FromRelease || operatortool.DecodeArguments(r.Change, &change) != nil || change.Delivery("validate", e.service.config.Clock()).Validate() != nil {
 				return a, operatortool.ErrInvalidArguments
 			}
-			if err := runnerUpdateReady(runner, change, e.service.config.now()); err != nil {
+			if err := runnerUpdateReady(runner, change, e.service.config.Clock()); err != nil {
 				return a, safeHubOperatorError(err)
 			}
 			a.MaterialChange = true

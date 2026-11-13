@@ -398,7 +398,7 @@ func TestTeamThreadAuthorizationMCPRoutes(t *testing.T) {
 			}
 			if role == "removed" {
 				if err := v.service.config.AccessRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(writer tenantstore.Writer) error {
-					return writer.RevokeAccessMember(t.Context(), viewer.identity.Subject, v.service.config.now())
+					return writer.RevokeAccessMember(t.Context(), viewer.identity.Subject, v.service.config.Clock())
 				}); err != nil {
 					t.Fatal(err)
 				}

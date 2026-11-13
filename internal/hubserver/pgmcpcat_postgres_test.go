@@ -43,7 +43,7 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 	for _, org := range []string{"org_startup", "org_other"} {
 		service := f.services[org]
 		pgmcpcatSeed(t, service, tracker.OrganizationID(org))
-		now := service.config.now().UTC()
+		now := service.config.Clock().UTC()
 		blocker := tracker.NativeIssue{
 			NativeReference: tracker.NativeReference{OrganizationID: tracker.OrganizationID(org), ProjectID: "compat", WorkItemID: "wi_compat_blocker", Number: 2, Revision: 1, Profile: "github_compatible"},
 			Title:           "Example dependency blocker", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: org + "_owner"},
@@ -82,7 +82,7 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 			t.Fatal(err)
 		}
 		lease := seedEntryRuntimeAttempt(t, service, tracker.OrganizationID(org), "wi_00000000000000000000000000000001")
-		if err := service.refreshBoardRecord(t.Context(), tracker.OrganizationID(org), viewstore.BoardCandidate{ProjectID: "project", WorkItemID: "wi_00000000000000000000000000000001"}, service.config.now()); err != nil {
+		if err := service.refreshBoardRecord(t.Context(), tracker.OrganizationID(org), viewstore.BoardCandidate{ProjectID: "project", WorkItemID: "wi_00000000000000000000000000000001"}, service.config.Clock()); err != nil {
 			t.Fatal(err)
 		}
 		claims := func(c *cloudassert.Claims) {

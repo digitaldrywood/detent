@@ -97,7 +97,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	projectAccess := "all"
 	cfg := startupConfig(connection)
 	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
-	cfg.now = func() time.Time { return clock }
+	cfg.Clock = func() time.Time { return clock }
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	plans := hostedplans.CapacityPlans()
 	cfg.Hosted.Plans = &plans
@@ -190,7 +190,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	if service.database.postgres == nil || service.config.TenantRepository == nil {
 		t.Fatal("fixture requires the PostgreSQL repository")
 	}
-	service.config.Hosted.SharedEntry.Verifier().Now = cfg.now
+	service.config.Hosted.SharedEntry.Verifier().Now = cfg.Clock
 	repository := service.config.TenantRepository
 	base := "/api/v2/organizations/org_startup/projects/project_example/work-items"
 	var requestTrace *requestTiming
@@ -304,7 +304,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		target.config.Hosted.SharedEntry.Verifier().Now = cfg.now
+		target.config.Hosted.SharedEntry.Verifier().Now = cfg.Clock
 		prepareReadProject("org_startup", "project_parallel")
 		for index := range 2 {
 			response := requestFor(target, "owner", "/api/v2/organizations/org_startup/projects/project_parallel/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("parallel_%d", index)}, Title: "Example parallel item", Body: workItemRecordBody, State: "Todo", Type: "bug"})
@@ -365,7 +365,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 		if err := other.stopGitHubWebhookMaintenance(); err != nil {
 			t.Fatal(err)
 		}
-		other.config.Hosted.SharedEntry.Verifier().Now = cfg.now
+		other.config.Hosted.SharedEntry.Verifier().Now = cfg.Clock
 		poolConfig := postgresStartupTemplate.NativeConfig(t, admin, connection.User, connection.Password)
 		poolConfig.MaxConns = int32(cfg.Postgres.Pool.MaxConnections)
 		poolConfig.ConnConfig.Tracer = multitracer.New(poolConfig.ConnConfig.Tracer, entryKeyBoardTrace{})
@@ -602,7 +602,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	other.config.Hosted.SharedEntry.Verifier().Now = cfg.now
+	other.config.Hosted.SharedEntry.Verifier().Now = cfg.Clock
 	otherBase := "/api/v2/organizations/org_other/projects/project_example/work-items"
 	otherCreated := requestFor(other, "owner", otherBase, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other_issue"}, Title: "Other tenant issue", Body: workItemRecordBody, State: "Done", Type: "bug"})
 	requireNativeStatus(t, otherCreated, http.StatusOK)
@@ -2008,7 +2008,7 @@ func TestPostgresEntryKeyWorkCommandCatalog(t *testing.T) {
 		organization := tracker.OrganizationID(org)
 		pgmcpcatSeed(t, service, organization)
 		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-			now := service.config.now()
+			now := service.config.Clock()
 			for _, user := range []string{"admin", "member", "reporter", "reader"} {
 				id := org + "_" + user
 				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: id, Name: id, Hash: apikey.HashToken(id), Scope: "operator", Kind: "personal", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -2160,7 +2160,7 @@ func TestPostgresMutationReferencesWithoutLegacyDatabase(t *testing.T) {
 	projectAccess := "all"
 	cfg := startupConfig(connection)
 	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
-	cfg.now = func() time.Time { return clock }
+	cfg.Clock = func() time.Time { return clock }
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	plans := hostedplans.CapacityPlans()
 	cfg.Hosted.Plans = &plans
@@ -2253,7 +2253,7 @@ func TestPostgresMutationReferencesWithoutLegacyDatabase(t *testing.T) {
 	if service.database.postgres == nil || service.config.TenantRepository == nil {
 		t.Fatal("fixture requires the PostgreSQL repository")
 	}
-	service.config.Hosted.SharedEntry.Verifier().Now = cfg.now
+	service.config.Hosted.SharedEntry.Verifier().Now = cfg.Clock
 	requestFor := func(target *Service, user, path string, body any) *httptest.ResponseRecorder {
 		t.Helper()
 		raw, err := json.Marshal(body)
@@ -2296,7 +2296,7 @@ func TestPostgresMutationReferencesWithoutLegacyDatabase(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	other.config.Hosted.SharedEntry.Verifier().Now = cfg.now
+	other.config.Hosted.SharedEntry.Verifier().Now = cfg.Clock
 	decode := func(t *testing.T, response *httptest.ResponseRecorder) tracker.NativeIssue {
 		t.Helper()
 		requireNativeStatus(t, response, http.StatusOK)

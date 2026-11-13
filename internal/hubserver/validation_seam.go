@@ -23,7 +23,7 @@ func (s *Service) validationServiceForScope(caller hubscope.NativeScope) *valida
 		RecordError: hubapi.ProjectRecordError, OriginMatches: hubrecords.ScheduledRepairOriginMatches,
 
 		InvalidRequest: s.invalidAPIRequest,
-		Repository:     s.config.TenantRepository, Now: s.config.now, SecretKeys: s.config.SecretKeys,
+		Repository:     s.config.TenantRepository, Now: s.config.Clock, SecretKeys: s.config.SecretKeys,
 		Organization: func() tracker.OrganizationID {
 			if s.config.Hosted == nil {
 				return ""

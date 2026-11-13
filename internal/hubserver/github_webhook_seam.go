@@ -39,7 +39,7 @@ func (s *Service) githubWebhookService() *githubwebhook.Service {
 		Repository:       s.config.TenantRepository,
 		Organization:     organization,
 		Details:          s.runDetailStore(),
-		Now:              s.config.now,
+		Now:              s.config.Clock,
 		Jitter:           s.config.deps.Jitter,
 		Logger:           s.config.Logger,
 		Secret:           s.config.GitHubWebhookSecret,

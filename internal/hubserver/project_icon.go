@@ -104,7 +104,7 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope hubscope.Nati
 	value := projectIntegrationRecord(current)
 	applied := false
 	raw, err := s.tenantReceiptMutation(ctx, scope, options.OperationID, request.Mutation, request, value, func(w tenantstore.Writer) error {
-		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
 			return err
 		}
 		latest, err := w.ProjectRecord(ctx, scope.Project)
@@ -115,7 +115,7 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope hubscope.Nati
 			return hubapi.NativeConflict(tracker.Revision(latest.Settings.Revision))
 		}
 		if latest.Settings.Icon.Kind == "image" {
-			if err := w.DeleteIconAttachment(ctx, scope.Project, latest.Settings.Icon.ImageKey, s.config.now()); err != nil {
+			if err := w.DeleteIconAttachment(ctx, scope.Project, latest.Settings.Icon.ImageKey, s.config.Clock()); err != nil {
 				return err
 			}
 		}
@@ -155,7 +155,7 @@ func (s *Service) createIconAttachment(ctx context.Context, w tenantstore.Writer
 	if !usage.Allowed {
 		return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 	}
-	record.ProjectID, record.Uploader, record.CreatedAt = string(scope.Project), scope.Credential.ID, s.config.now()
+	record.ProjectID, record.Uploader, record.CreatedAt = string(scope.Project), scope.Credential.ID, s.config.Clock()
 	return w.CreateAttachment(ctx, attachmentstore.Record{OrganizationID: scope.Organization, Metadata: record, Kind: "attachment", Retention: "organization"})
 }
 
@@ -163,7 +163,7 @@ func (s *Service) cleanupProjectIcon(ctx context.Context, scope hubscope.NativeS
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
 	deleteErr := s.config.TenantRepository.WriteTenant(cleanup, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.DeleteIconAttachment(cleanup, scope.Project, id, s.config.now())
+		return w.DeleteIconAttachment(cleanup, scope.Project, id, s.config.Clock())
 	})
 	if deleteErr != nil {
 		return errors.Join(err, fmt.Errorf("tombstone uncommitted project icon: %w", deleteErr))

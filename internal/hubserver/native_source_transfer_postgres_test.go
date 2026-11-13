@@ -49,7 +49,7 @@ func sourceTransferPostgresFixture(t *testing.T) (*Service, *sql.DB) {
 			t.Log(logs.String())
 		}
 	})
-	service := &Service{notifications: newNotificationBroker(), echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))}}
+	service := &Service{notifications: newNotificationBroker(), echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: details, Clock: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))}}
 	provider := newHostedSecurityProvider()
 	service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_first", Provider: provider}
 	service.registerNativeRoutes(service.echo)
@@ -450,7 +450,7 @@ const (
 
 func seedSourceTransferAttempt(t *testing.T, s *Service, org tracker.OrganizationID) leasestore.Lease {
 	t.Helper()
-	now := s.config.now()
+	now := s.config.Clock()
 	content := eventstore.NewContent(s.runDetailStore())
 	marshal := func(value any) []byte {
 		t.Helper()
@@ -557,7 +557,7 @@ func TestPostgresSourceTransferCommitsAndReplays(t *testing.T) {
 				if _, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "released"); err != nil {
 					return err
 				}
-				now := s.config.now()
+				now := s.config.Clock()
 				if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "destination", Name: "Example destination", Hash: apikey.HashToken(string(org) + "_destination"), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 					return err
 				}

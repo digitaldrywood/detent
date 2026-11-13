@@ -18,7 +18,7 @@ import (
 
 func (s *Service) requestAuth() *hubauth.Authenticator {
 	deps := hubauth.Deps{
-		TrustedProxy: s.config.TrustedProxy, GenerateToken: s.config.deps.GenerateToken, Repository: s.config.TenantRepository, AccessRepository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.now,
+		TrustedProxy: s.config.TrustedProxy, GenerateToken: s.config.deps.GenerateToken, Repository: s.config.TenantRepository, AccessRepository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.Clock,
 		Classify: hubscope.OperatorAuthorizationError, SharedSession: s.sharedHostedSession, CompleteInvitation: s.completePendingHostedInvitation,
 
 		BoardCredential: func(ctx context.Context) (hubauth.Credential, bool) {
@@ -76,7 +76,7 @@ func (s *Service) authInput(scope hubscope.NativeScope) hubauth.Input {
 						return err
 					}
 					if fence.Reporter != nil {
-						if err := s.requireGitHubBatchRunner(ctx, reader, *fence.Reporter, fence.Reporter.Credential.Runner.RunnerID, scope.IntegrationRepository, s.config.now()); err != nil {
+						if err := s.requireGitHubBatchRunner(ctx, reader, *fence.Reporter, fence.Reporter.Credential.Runner.RunnerID, scope.IntegrationRepository, s.config.Clock()); err != nil {
 							return err
 						}
 					}

@@ -59,7 +59,7 @@ func (s *Service) accessSecretWrite(ctx context.Context, scope hubscope.NativeSc
 }
 
 func (s *Service) accessSecretAudit(scope hubscope.NativeScope, event string, version int) accessstore.SecretAudit {
-	return accessstore.SecretAudit{OrganizationID: scope.Organization, ProjectID: scope.Project, Actor: secretActor(scope), Kind: flySpritesToken, Event: event, KeyVersion: version, RecordedAt: s.config.now()}
+	return accessstore.SecretAudit{OrganizationID: scope.Organization, ProjectID: scope.Project, Actor: secretActor(scope), Kind: flySpritesToken, Event: event, KeyVersion: version, RecordedAt: s.config.Clock()}
 }
 
 func (s *Service) setAccessProjectSecret(c echo.Context, scope hubscope.NativeScope, token []byte) error {
@@ -78,7 +78,7 @@ func (s *Service) setAccessProjectSecret(c echo.Context, scope hubscope.NativeSc
 		return s.nativeAPIError(c, err)
 	}
 	clear(token)
-	secret := accessstore.Secret{OrganizationID: scope.Organization, ProjectID: scope.Project, Kind: flySpritesToken, OrganizationSlug: slug, Envelope: envelope, UpdatedAt: s.config.now()}
+	secret := accessstore.Secret{OrganizationID: scope.Organization, ProjectID: scope.Project, Kind: flySpritesToken, OrganizationSlug: slug, Envelope: envelope, UpdatedAt: s.config.Clock()}
 	if err := accessstore.VerifySecret(s.config.SecretKeys, secret); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -153,7 +153,7 @@ func (s *Service) rewrapAccessSecrets(ctx context.Context) error {
 			envelope, err := s.config.SecretKeys.Rewrap(secret.Envelope, accessstore.SecretAAD(secret.OrganizationID, secret.ProjectID, secret.Kind))
 			if err == nil {
 				err = s.config.AccessRepository.WriteTenant(ctx, secret.OrganizationID, corestore.Background, func(w tenantstore.Writer) error {
-					return w.RewrapAccessSecret(ctx, secret, envelope, accessstore.SecretAudit{OrganizationID: secret.OrganizationID, ProjectID: secret.ProjectID, Kind: secret.Kind, Actor: "system:rewrap", Event: "rotate", KeyVersion: envelope.Version, RecordedAt: s.config.now()})
+					return w.RewrapAccessSecret(ctx, secret, envelope, accessstore.SecretAudit{OrganizationID: secret.OrganizationID, ProjectID: secret.ProjectID, Kind: secret.Kind, Actor: "system:rewrap", Event: "rotate", KeyVersion: envelope.Version, RecordedAt: s.config.Clock()})
 				})
 			}
 			if err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {

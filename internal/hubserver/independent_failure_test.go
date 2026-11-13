@@ -28,7 +28,7 @@ import (
 func independentFailureFixture(t *testing.T) changeFixture {
 	t.Helper()
 	now := time.Date(2026, 10, 27, 7, 0, 0, 0, time.UTC)
-	f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }}))
+	f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }}))
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.ProjectRecord(t.Context(), f.project.ID)
 		if err != nil {
@@ -67,7 +67,7 @@ func independentDetail(t *testing.T, f changeFixture) tracker.ChangeDetail {
 	requireNativeStatus(t, response, http.StatusOK)
 	var detail tracker.ChangeDetail
 	decodeHubResponse(t, response, &detail)
-	current, err := f.service.selectedCurrentChangeSummary(t.Context(), independentFailureScope(t, f.nativeFixture), f.issue.WorkItemID, detail.Change.ID, f.service.config.now())
+	current, err := f.service.selectedCurrentChangeSummary(t.Context(), independentFailureScope(t, f.nativeFixture), f.issue.WorkItemID, detail.Change.ID, f.service.config.Clock())
 	if err != nil || !reflect.DeepEqual(current, detail.Summary) {
 		t.Fatalf("current summary = %#v, full summary = %#v, error = %v", current, detail.Summary, err)
 	}
@@ -187,7 +187,7 @@ func TestIndependentFailureRepairDependency(t *testing.T) {
 	f := independentFailureFixture(t)
 	version := f.publish(t, "version", "")
 	change := f.detail(t).Change
-	review := independentRepairReview(version, f.service.config.now())
+	review := independentRepairReview(version, f.service.config.Clock())
 	if _, err := nativeAttemptTestDatabase(t, f.nativeFixture).ExecContext(t.Context(), "UPDATE issues SET doctor_identity_revision=NULL WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", f.project.OrganizationID, f.project.ID, f.issue.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestIndependentFailureRepairRouting(t *testing.T) {
 			version := f.publish(t, "version", "")
 			change := f.detail(t).Change
 			scope := independentFailureScope(t, f.nativeFixture)
-			now := f.service.config.now()
+			now := f.service.config.Clock()
 			review := independentRepairReview(version, now)
 			if test.attribution == "change" {
 				review.Validator.Commands[0].BaseReproduction.ExitCode = 0
@@ -380,7 +380,7 @@ func TestIndependentFailureConcurrentRepairOwner(t *testing.T) {
 		go func() {
 			defer workers.Done()
 			<-start
-			review := independentRepairReview(version, f.service.config.now())
+			review := independentRepairReview(version, f.service.config.Clock())
 			results <- independentReview(t, f, change, &review, false)
 		}()
 	}
@@ -409,7 +409,7 @@ func TestIndependentFailureGateAttemptReplay(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			outcome := test.outcome
 			now := time.Date(2026, 10, 27, 7, 0, 0, 0, time.UTC)
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 			ctx := f.service.runDetailContext(t.Context())
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			issue := f.create(t, "source failure")

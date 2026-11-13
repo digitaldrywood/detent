@@ -368,7 +368,7 @@ func TestConversationStreamClosesOnRevocationAndShutdown(t *testing.T) {
 			t.Fatalf("frame = %#v", frame)
 		}
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
-			return writer.RevokeAccessCredential(t.Context(), f.ownerID, f.service.config.now())
+			return writer.RevokeAccessCredential(t.Context(), f.ownerID, f.service.config.Clock())
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -535,7 +535,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		{
 			name: "member token revoked", account: "owner", want: conversationClosedAccessRevoked,
 			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2", f.service.config.now(), scope.Organization); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2", f.service.config.Clock(), scope.Organization); err != nil {
 					t.Fatal(err)
 				}
 			},

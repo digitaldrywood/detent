@@ -378,7 +378,7 @@ func (d *dashboardDelivery) deliver(ctx context.Context) {
 			continue
 		}
 		readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-		now := d.service.config.now()
+		now := d.service.config.Clock()
 		state := d.projectState(readCtx, sub.projectKey(), now)
 		access, observed := state.access[sub]
 		if state.err == nil && observed && !sub.more && !sub.initial && state.live &&

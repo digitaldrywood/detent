@@ -64,7 +64,7 @@ func (s *Service) getBudgetOverride(c echo.Context) error {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		value, err = owner.ActiveBudgetOverride(ctx, scope.Project, s.config.now())
+		value, err = owner.ActiveBudgetOverride(ctx, scope.Project, s.config.Clock())
 		return err
 	})
 	if err != nil {
@@ -131,7 +131,7 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope hubscope.Nati
 	if raw, found, err := s.nativeCommandReplay(ctx, scope, operation, command.IdempotencyKey, input); err != nil || found {
 		return raw, err
 	}
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config.Clock().UTC().Truncate(time.Microsecond)
 	var record projectstore.Record
 	var previous postgres.BudgetOverride
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -209,7 +209,7 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope hubscope.Nati
 		}
 		if clear {
 			err = owner.ClearBudgetOverride(ctx, scope.Project)
-		} else if !value.ExpiresAt.After(s.config.now()) {
+		} else if !value.ExpiresAt.After(s.config.Clock()) {
 			return postgres.ErrBudgetOverride
 		} else {
 			_, err = owner.CompareAndSetBudgetOverride(ctx, value, policy, previous.Revision)

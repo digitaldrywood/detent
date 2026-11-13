@@ -297,7 +297,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		Revision      tracker.Revision `json:"revision,omitempty,string"`
 		CommentID     string           `json:"comment_id,omitempty"`
 		Data          json.RawMessage  `json:"data"`
-	}{metadata.CorrelationID, e.service.config.now(), resourceID, resourceURL, resource.Revision, resource.ID, raw})
+	}{metadata.CorrelationID, e.service.config.Clock(), resourceID, resourceURL, resource.Revision, resource.ID, raw})
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}

@@ -181,7 +181,7 @@ func (s *Service) pendingAccessInvitationFor(ctx context.Context, credential hub
 			}
 			return hubapi.NativeNotFound()
 		}
-		if row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.now()) {
+		if row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.Clock()) {
 			return hubapi.NativeNotFound()
 		}
 		if row.Role == "owner" && credential.HostedRole != "owner" {
@@ -197,7 +197,7 @@ func (s *Service) pendingAccessInvitationFor(ctx context.Context, credential hub
 	if err != nil {
 		return view, err
 	}
-	if invitation.ID != id || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, row.Email) || invitation.State != "pending" || !invitation.ExpiresAt.After(s.config.now()) {
+	if invitation.ID != id || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, row.Email) || invitation.State != "pending" || !invitation.ExpiresAt.After(s.config.Clock()) {
 		return view, hubapi.NativeNotFound()
 	}
 	if invitation.ExpiresAt.Before(row.ExpiresAt) {
@@ -214,7 +214,7 @@ func (s *Service) createAccessInvitation(ctx context.Context, credential hubapi.
 	if err != nil || invitation.ID == "" || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
 		return hostedInvitationView{}, errors.Join(mutation.ErrUncertain, err, nativeUnavailable("The invitation could not be sent"))
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	expires := invitation.ExpiresAt
 	if expires.IsZero() {
 		expires = now.Add(24 * time.Hour)
@@ -265,7 +265,7 @@ func (s *Service) editAccessInvitation(ctx context.Context, credential hubapi.AP
 			}
 			return hubapi.NativeNotFound()
 		}
-		if current.AcceptedUserID != "" || !current.ExpiresAt.After(s.config.now()) || current.Email != view.Email || current.Role != view.Role {
+		if current.AcceptedUserID != "" || !current.ExpiresAt.After(s.config.Clock()) || current.Email != view.Email || current.Role != view.Role {
 			return hubapi.NativeNotFound()
 		}
 		currentView, err := s.accessInvitationView(ctx, w, current)
@@ -313,7 +313,7 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential hubapi.
 	}); err != nil {
 		return err
 	}
-	if current.AcceptedUserID != "" || !current.ExpiresAt.After(s.config.now()) {
+	if current.AcceptedUserID != "" || !current.ExpiresAt.After(s.config.Clock()) {
 		return hubapi.NativeNotFound()
 	}
 	if current.Role == "owner" && credential.HostedRole != "owner" {
@@ -353,7 +353,7 @@ func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential hu
 	if runtimePlans == nil {
 		return false, errors.New("hosted entitlements are disabled")
 	}
-	entitlement, err := hubapi.FeatureResult(s.database.plansService().Entitlement(ctx, nil, s.config.now()))
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().Entitlement(ctx, nil, s.config.Clock()))
 	if err != nil {
 		return false, err
 	}
@@ -377,9 +377,9 @@ func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential hu
 		if credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
-		created, err = w.ReserveAccessMemberReservation(ctx, accessstore.MemberReservation{OrganizationID: s.accessOrganization(), Email: strings.ToLower(email), ExpiresAt: s.config.now().Add(time.Duration(runtimePlans.InvitationSeconds) * time.Second)}, s.config.now(), limit)
+		created, err = w.ReserveAccessMemberReservation(ctx, accessstore.MemberReservation{OrganizationID: s.accessOrganization(), Email: strings.ToLower(email), ExpiresAt: s.config.Clock().Add(time.Duration(runtimePlans.InvitationSeconds) * time.Second)}, s.config.Clock(), limit)
 		if errors.Is(err, accessstore.ErrSeatLimit) {
-			members, reservations, countErr := w.AccessMemberSeatCounts(ctx, s.config.now())
+			members, reservations, countErr := w.AccessMemberSeatCounts(ctx, s.config.Clock())
 			if countErr != nil {
 				return countErr
 			}

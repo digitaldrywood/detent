@@ -57,7 +57,7 @@ func (s *Service) hostedKeyCredentialFor(ctx context.Context, credential hubapi.
 	if s.config.Hosted == nil || credential.Hosted == nil || credential.SessionHash == "" || credential.HostedKeyScope != "" || credential.Hosted.SupportActor != "" {
 		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
-	session, err := s.WebSession(ctx, credential.SessionHash, s.config.now())
+	session, err := s.WebSession(ctx, credential.SessionHash, s.config.Clock())
 	if err != nil {
 		return hubapi.APICredential{}, hubscope.OperatorAuthorizationError(err)
 	}
@@ -190,7 +190,7 @@ func (s *Service) createHostedAPIKeyFor(ctx context.Context, credential hubapi.A
 	}
 	var expiry *time.Time
 	if !request.NeverExpires {
-		value := s.config.now().Add(time.Duration(request.Days) * 24 * time.Hour)
+		value := s.config.Clock().Add(time.Duration(request.Days) * 24 * time.Hour)
 		expiry = &value
 	}
 	scope := hubapi.APIScopeOperator

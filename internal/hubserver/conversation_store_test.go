@@ -33,7 +33,7 @@ type conversationFixture struct {
 func newConversationFixture(t *testing.T) conversationFixture {
 	t.Helper()
 	clock := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{Conversation: &ConversationConfig{Enabled: true, ArchiveContents: &conversationContentFixture{}}, now: func() time.Time { return clock }})
+	f := newDefaultNativeFixture(t, Config{Conversation: &ConversationConfig{Enabled: true, ArchiveContents: &conversationContentFixture{}}, Clock: func() time.Time { return clock }})
 	f.service.registerConversationRoutes(f.service.echo)
 	owner := conversationFixturePrincipal(t, f, "owner")
 	other := conversationFixturePrincipal(t, f, "other")

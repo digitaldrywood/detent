@@ -28,7 +28,7 @@ type cloudModelSelectionRequest = orgsettings.ModelRequest
 
 func (s *Service) organizationSettingsService(scope hubscope.NativeScope) *orgsettings.Service {
 	deps := orgsettings.Deps{
-		Repository: s.config.TenantRepository, AccessRepository: s.config.AccessRepository, Details: s.runDetailStore(), Now: s.config.now,
+		Repository: s.config.TenantRepository, AccessRepository: s.config.AccessRepository, Details: s.runDetailStore(), Now: s.config.Clock,
 		RecordError: hubapi.ProjectRecordError, Unavailable: hubapi.ErrProjectParticipants,
 		Recheck: func(ctx context.Context) error { return s.recheckProjectRecordMutation(ctx, scope) },
 		Receipt: func(ctx context.Context, operation, key, hash string) (json.RawMessage, bool, error) {

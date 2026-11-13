@@ -50,10 +50,10 @@ func (s *Service) startIssueMailer() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := s.deliverDailySummaries(ctx, s.config.now()); err != nil && ctx.Err() == nil {
+				if err := s.deliverDailySummaries(ctx, s.config.Clock()); err != nil && ctx.Err() == nil {
 					s.config.Logger.Warn("daily summary delivery failed", "error", err)
 				}
-				if err := s.deliverIssueEmails(ctx, s.config.now()); err != nil && ctx.Err() == nil {
+				if err := s.deliverIssueEmails(ctx, s.config.Clock()); err != nil && ctx.Err() == nil {
 					s.config.Logger.Warn("issue notification delivery failed", "error", err)
 				}
 			}

@@ -37,7 +37,7 @@ type runtimeAdmissionPage struct {
 }
 
 func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, evidence *tracker.NativeRuntimeEvidence, supplied []tracker.NativeAdmissionContext) error {
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	var records []runnerstore.RuntimeCapacityRunner
 	var capacity runnerstore.RuntimeCapacitySnapshot
 	var currentLease *tracker.NativeLease

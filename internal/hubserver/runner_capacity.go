@@ -85,7 +85,7 @@ func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope hubsco
 		return content.Receipt(ctx, receipt)
 	}
 	r.CapacityLimit, r.CapacityRequest, r.Revision = request.Capacity, &request.CapacityRequest, r.Revision+1
-	view, err := s.runnerCapacityView(ctx, nil, r, request.Backend, s.config.now().UTC())
+	view, err := s.runnerCapacityView(ctx, nil, r, request.Backend, s.config.Clock().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +93,7 @@ func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope hubsco
 	if err != nil {
 		return nil, err
 	}
-	receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, raw)
+	receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.Clock()}, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +120,7 @@ func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope hubsco
 			return hubapi.NativeConflict(tracker.Revision(identity.Revision))
 		}
 		current := runnerauth.Runner{CapacityConfig: identity.CapacityConfig, LastHeartbeatAt: identity.LastHeartbeatAt}
-		if !freshCapacityConfig(current, s.config.now().UTC()) || identity.CapacityConfig.Revision != request.ExpectedConfigRevision {
+		if !freshCapacityConfig(current, s.config.Clock().UTC()) || identity.CapacityConfig.Revision != request.ExpectedConfigRevision {
 			return &hubapi.NativeError{Code: "revision_conflict", Message: "Current enrolled runner configuration evidence is required; read runner capacity again", Status: http.StatusConflict, PublicMessage: true}
 		}
 		identity.CapacityLimit, identity.CapacityRequest = int64(request.Capacity), &request.CapacityRequest

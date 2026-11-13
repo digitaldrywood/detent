@@ -69,7 +69,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 	}); err != nil {
 		t.Fatal(err)
 	}
-	now := service.config.now().UTC()
+	now := service.config.Clock().UTC()
 	type runnerCredential struct{ token, runnerID string }
 	runners := []runnerCredential{{"example_runner_token_a", "runner_" + strings.Repeat("a", 32)}, {"example_runner_token_b", "runner_" + strings.Repeat("b", 32)}}
 	for index, runner := range runners {
@@ -478,7 +478,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 func TestSelectedPostgresPolicyApprovalFailsClosedWithoutAccessRepository(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
-	service := &Service{config: Config{TenantRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now, Logger: discardLogger()}}
+	service := &Service{config: Config{TenantRepository: repository, RunDetails: &memoryRunDetails{}, Clock: time.Now, Logger: discardLogger()}}
 	scope := hubscope.NativeScope{Organization: "org_example", Project: "prj_example", Credential: hubapi.APICredential{ID: "credential_example", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 	for name, operation := range map[string]func() error{
 		"route authorization": func() error { return service.authorizeProjectRecord(t.Context(), scope, true) },
@@ -515,7 +515,7 @@ func TestPostgresProjectPolicyApprovalRejectsDemotedHostedAdmin(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusCreated)
 	var project tracker.NativeProject
 	decodeHubResponse(t, response, &project)
-	now := service.config.now().UTC()
+	now := service.config.Clock().UTC()
 	const userID, memberID, credentialID, sessionHash = "user_example", "membership_example", "credential_example_owner", "session_example_owner"
 	credentialHash := apikey.HashToken("example_owner_token")
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -743,7 +743,7 @@ func assertPostgresPolicyApprovalLockOrdering(t *testing.T, service *Service, re
 		t.Fatal("default-branch observation read project settings before locking the project")
 	}
 	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		current, err := reader.CurrentProjectPolicyObservation(t.Context(), project, replacement.ID, service.config.now())
+		current, err := reader.CurrentProjectPolicyObservation(t.Context(), project, replacement.ID, service.config.Clock())
 		if err != nil {
 			return err
 		}
@@ -792,7 +792,7 @@ func assertPostgresPolicyObservationOrdering(t *testing.T, service *Service, rep
 	}
 	gate := &postgresPolicyObservationGate{reached: make(chan struct{}), release: make(chan struct{})}
 	originalRepository := service.config.TenantRepository
-	originalClock := service.config.now
+	originalClock := service.config.Clock
 	service.config.TenantRepository = postgresPolicyObservationRepository{Repository: repository, gate: gate}
 	var releaseOnce sync.Once
 	releaseOlder := func() { releaseOnce.Do(func() { close(gate.release) }) }
@@ -805,11 +805,11 @@ func assertPostgresPolicyObservationOrdering(t *testing.T, service *Service, rep
 			<-olderDone
 		}
 		service.config.TenantRepository = originalRepository
-		service.config.now = originalClock
+		service.config.Clock = originalClock
 	})
 	olderAt := originalClock().UTC().Truncate(time.Microsecond).Add(time.Second)
 	newerAt := olderAt.Add(time.Second)
-	service.config.now = func() time.Time { return olderAt }
+	service.config.Clock = func() time.Time { return olderAt }
 	olderContext := context.WithValue(t.Context(), postgresPolicyObservationGateKey{}, true)
 	olderStarted = true
 	go func() {
@@ -823,7 +823,7 @@ func assertPostgresPolicyObservationOrdering(t *testing.T, service *Service, rep
 		olderJoined = true
 		t.Fatalf("older observation did not reach the write barrier: %v", err)
 	}
-	service.config.now = func() time.Time { return newerAt }
+	service.config.Clock = func() time.Time { return newerAt }
 	newerSource := *source
 	newerSource.DefaultBranchHead = strings.Repeat("b", 40)
 	if err := service.observeTenantProjectPolicy(t.Context(), hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}, credential, runnerID, policy.Observation{Descriptor: descriptor, Source: &newerSource}); err != nil {
@@ -835,7 +835,7 @@ func assertPostgresPolicyObservationOrdering(t *testing.T, service *Service, rep
 		t.Fatalf("finish older observation: %v", err)
 	}
 	olderJoined = true
-	service.config.now = originalClock
+	service.config.Clock = originalClock
 	if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		rows, _, err := reader.ProjectPolicyObservations(t.Context(), project, "", descriptor.ID, originalClock(), 10)
 		if err != nil {
@@ -1240,7 +1240,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				}
 			}
 			if test.barrier {
-				plan, err := f.service.readNativeClaimPlan(t.Context(), scope, tracker.NativeClaim{WorkItemID: current.issue.WorkItemID, PolicyID: wantPolicy, MachineID: lease.MachineID, SessionID: "landing-evaluation", Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}, f.service.config.now())
+				plan, err := f.service.readNativeClaimPlan(t.Context(), scope, tracker.NativeClaim{WorkItemID: current.issue.WorkItemID, PolicyID: wantPolicy, MachineID: lease.MachineID, SessionID: "landing-evaluation", Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}, f.service.config.Clock())
 				if err != nil || plan.ChangeReady || plan.ChangeRecord.ID != current.change.ID {
 					t.Fatalf("stale landing eligibility ready=%t evaluated_change=%q error=%v", plan.ChangeReady, plan.ChangeRecord.ID, err)
 				}
@@ -1585,7 +1585,7 @@ func seedNativeFixturePolicyContext(ctx context.Context, t *testing.T, s *Servic
 	}
 	revision.ProjectID = projectID
 	revision.ApprovedBy = "fixture"
-	revision.ApprovedAt = s.config.now()
+	revision.ApprovedAt = s.config.Clock()
 	if err := s.config.TenantRepository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.ApproveProjectPolicy(ctx, revision, "")
 	}); err != nil {
@@ -1637,7 +1637,7 @@ func TestApprovedPolicyClaimExposure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			revision.ProjectID, revision.ApprovedBy, revision.ApprovedAt = scope.Project, "fixture", f.service.config.now()
+			revision.ProjectID, revision.ApprovedBy, revision.ApprovedAt = scope.Project, "fixture", f.service.config.Clock()
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.ImportProjectPolicyRevision(t.Context(), revision, true); err != nil {
 					return err
@@ -2202,7 +2202,7 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 				}
 			}
 			setMonthlyBudgetFixture(t, f, false, budget.MonthlyPolicy{Enabled: true, RunnerMicros: new(int64), Mode: budget.HardStop})
-			decision, err := checkMonthlyBudget(ctx, nil, readScope, budget.CostExposure{RunnerAPI: true}, false, f.service.config.now(), f.service.config.TenantRepository)
+			decision, err := checkMonthlyBudget(ctx, nil, readScope, budget.CostExposure{RunnerAPI: true}, false, f.service.config.Clock(), f.service.config.TenantRepository)
 			if err != nil || decision.Allowed || len(decision.Exhausted) != 1 || decision.Exhausted[0].Bucket != budget.RunnerAPI {
 				t.Fatalf("production monthly evaluation approved=%t decision=%+v error=%v", approved, decision, err)
 			}

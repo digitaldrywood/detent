@@ -33,7 +33,7 @@ func coordinatorReadFixture(t *testing.T) (hostedSecurityFixture, hostedSecurity
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.now = func() time.Time { return now }
+		cfg.Clock = func() time.Time { return now }
 		cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir()}
 		cfg.Version = "v0.117.99"
 	})
@@ -131,7 +131,7 @@ func TestCoordinatorScreenReads(t *testing.T) {
 				{"project_secret_metadata", `{}`, true, ""}, {"monthly_usage_costs", `{}`, true, ""},
 				{operatortool.WorkList, `{}`, true, ""}, {operatortool.HealthFindings, `{}`, true, ""}, {operatortool.BoardState, `{}`, true, ""},
 				{operatortool.TimeSeries, `{"window":"1h","bucket":"5m"}`, true, ""},
-				{operatortool.TimeSeries, fmt.Sprintf(`{"from":%q,"to":%q,"bucket":"5m"}`, f.service.config.now().Add(-49*time.Hour).Format(time.RFC3339Nano), f.service.config.now().Add(-48*time.Hour).Format(time.RFC3339Nano)), true, ""},
+				{operatortool.TimeSeries, fmt.Sprintf(`{"from":%q,"to":%q,"bucket":"5m"}`, f.service.config.Clock().Add(-49*time.Hour).Format(time.RFC3339Nano), f.service.config.Clock().Add(-48*time.Hour).Format(time.RFC3339Nano)), true, ""},
 				{operatortool.AnalyticsDashboard, `{}`, true, ""}, {operatortool.Reports, `{}`, true, ""}, {"get_project_usage", `{"range":"24h"}`, true, ""},
 				{"get_project_diagnostics", `{}`, true, ""}, {"get_project_reports", `{}`, true, ""},
 			}
@@ -158,7 +158,7 @@ func TestCoordinatorScreenReads(t *testing.T) {
 						if err := json.Unmarshal([]byte(result.Content), &report); err != nil {
 							t.Fatal(err)
 						}
-						if !report.Window.From.Equal(f.service.config.now().Add(-49*time.Hour)) || !report.Window.To.Equal(f.service.config.now().Add(-48*time.Hour)) {
+						if !report.Window.From.Equal(f.service.config.Clock().Add(-49*time.Hour)) || !report.Window.To.Equal(f.service.config.Clock().Add(-48*time.Hour)) {
 							t.Fatalf("historical interval was not preserved: %+v", report.Window)
 						}
 					}
@@ -354,8 +354,8 @@ func TestCoordinatorProjectRunners(t *testing.T) {
 				}
 				for i := range problems {
 					problems[i].FixHint = runnerauth.NewProblem(problems[i].Code).FixHint
-					problems[i].ReportedAt = f.service.config.now()
-					problems[i].FirstSeen = f.service.config.now()
+					problems[i].ReportedAt = f.service.config.Clock()
+					problems[i].FirstSeen = f.service.config.Clock()
 				}
 				coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error { return w.ReplaceRunnerProblems(t.Context(), ids[0], problems) })
 			}
@@ -405,7 +405,7 @@ func TestCoordinatorProjectRunners(t *testing.T) {
 					if _, ok := r.CapacityConfiguration.Projects[f.project]; !ok {
 						t.Fatalf("missing current project capacity: %s", result.Content)
 					}
-					if r.Connected == test.disabled || !r.Heartbeat.Equal(f.service.config.now()) || r.Capacity != 1 || r.Used != 0 || r.Sprite != nil {
+					if r.Connected == test.disabled || !r.Heartbeat.Equal(f.service.config.Clock()) || r.Capacity != 1 || r.Used != 0 || r.Sprite != nil {
 						t.Fatalf("incorrect runner health/capacity: %s", result.Content)
 					}
 					if test.organization && len(r.Routing.Projects) != 0 || !test.organization && (len(r.Routing.Projects) != 1 || r.Routing.Projects[0] != string(f.project)) {
@@ -456,7 +456,7 @@ func TestCoordinatorProjectRunners(t *testing.T) {
 func coordinatorReadSeedRunner(t *testing.T, f hostedSecurityFixture, id string, project tracker.ProjectID, organization bool) {
 	t.Helper()
 	coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
-		now := f.service.config.now()
+		now := f.service.config.Clock()
 		expires := now.Add(time.Hour)
 		token := "tok_" + id
 		machine := "machine_" + id

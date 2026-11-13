@@ -35,7 +35,7 @@ func (s *Service) hostedReportsDetailPostgres(c echo.Context, credential hubapi.
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 	}
-	w, err := reportsWindow(params, s.config.now())
+	w, err := reportsWindow(params, s.config.Clock())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

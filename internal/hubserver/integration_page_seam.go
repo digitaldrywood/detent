@@ -17,7 +17,7 @@ const integrationPageMaintenanceBytes = integrationpage.MaintenanceBytes
 
 func (s *Service) integrationPageService() *integrationpage.Service {
 	return integrationpage.New(integrationpage.Deps{
-		Repository: s.config.TenantRepository, Details: s.runDetailStore(), Now: s.config.now, Logger: s.config.Logger,
+		Repository: s.config.TenantRepository, Details: s.runDetailStore(), Now: s.config.Clock, Logger: s.config.Logger,
 		Workflow: s.projectRecordWorkflow, RecordError: hubapi.ProjectRecordError,
 		Resolve: s.resolveNativeRequestScope, Scope: func(c echo.Context) hubapi.Scope { return s.authorization().Scope(hubscope.NativeRequestScope(c)) },
 		ReadProject: func(ctx context.Context, scope hubapi.Scope) (projectstore.Record, error) {

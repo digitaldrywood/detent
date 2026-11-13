@@ -68,7 +68,7 @@ func TestProgressLeaseValidationDoesNotDeadlockClaim(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		writer := &progressLeaseOrderWriter{issue: make(chan struct{}, 1), lease: make(chan struct{}, 1), issueWait: make(chan struct{})}
 		writer.lease <- struct{}{}
-		owner := nativeProgressOwner{service: &Service{config: Config{now: time.Now}}, scope: hubscope.NativeScope{Credential: hubapi.APICredential{Scope: hubapi.APIScopeWorker}}}
+		owner := nativeProgressOwner{service: &Service{config: Config{Clock: time.Now}}, scope: hubscope.NativeScope{Credential: hubapi.APICredential{Scope: hubapi.APIScopeWorker}}}
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
@@ -114,7 +114,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 	t.Parallel()
 	var offset atomic.Int64
 	clock := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return clock.Add(time.Duration(offset.Load())) }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return clock.Add(time.Duration(offset.Load())) }})
 	scope := nativeBoardFixtureScope(t, f)
 	readRelationships := func(t *testing.T, id tracker.NativeWorkItemID) tracker.NativeIssue {
 		t.Helper()
@@ -160,7 +160,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", runner.redemption.Credential, start), http.StatusOK)
 			finish := start
 			finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", fmt.Sprintf("%s-finish-%d", key, index), 2, "failed"
-			finish.Data.TerminalFailure = &tracker.NativeTerminalFailure{Stage: "implement", Attribution: "instance", ErrorClass: "protocol", Error: fmt.Sprintf("backend protocol unavailable: request-%s-%d", key, index), ObservedAt: f.service.config.now(), Source: "backend", Coverage: "complete", Summary: "Example protocol refusal"}
+			finish.Data.TerminalFailure = &tracker.NativeTerminalFailure{Stage: "implement", Attribution: "instance", ErrorClass: "protocol", Error: fmt.Sprintf("backend protocol unavailable: request-%s-%d", key, index), ObservedAt: f.service.config.Clock(), Source: "backend", Coverage: "complete", Summary: "Example protocol refusal"}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", runner.redemption.Credential, finish), http.StatusOK)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 		}
@@ -169,7 +169,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 	}
 	appendHistory := func(t *testing.T, issue tracker.NativeIssue, eventType string) {
 		t.Helper()
-		raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: issue.WorkItemID, AggregateType: "issue", Type: eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: f.service.config.now()})
+		raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: issue.WorkItemID, AggregateType: "issue", Type: eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: f.service.config.Clock()})
 		if err != nil {
 			t.Fatal(err)
 		}

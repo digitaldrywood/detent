@@ -73,7 +73,7 @@ func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope hubscope.Native
 	if err != nil || fetchedURL != canonical {
 		return nil, hubapi.NativePublicInvalid("GitHub intake returned a different issue")
 	}
-	snapshot := linkedSnapshotFromSource(*page.Issue, s.config.now())
+	snapshot := linkedSnapshotFromSource(*page.Issue, s.config.Clock())
 	snapshot.URL = canonical
 	request.Stage = "comments"
 	seen := map[string]bool{}

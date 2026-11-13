@@ -82,7 +82,7 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 			return operatortool.Result{}, hubapi.SafeWorkReadError(fmt.Errorf("list projects: %w", err))
 		}
 	}
-	result := nativeBoardResult{GeneratedAt: s.config.now(), Freshness: explain.SourceAvailable, Projects: []nativeBoardProject{}, Truncated: projects.NextCursor != "", Unavailable: []string{"aggregate_dispatch_readiness"}, EligibilityTool: operatortool.ExplainItem}
+	result := nativeBoardResult{GeneratedAt: s.config.Clock(), Freshness: explain.SourceAvailable, Projects: []nativeBoardProject{}, Truncated: projects.NextCursor != "", Unavailable: []string{"aggregate_dispatch_readiness"}, EligibilityTool: operatortool.ExplainItem}
 	remaining := request.Limit
 	for _, project := range projects.Projects {
 		if project.Profile != "native" {

@@ -63,7 +63,7 @@ func TestPostgresGitHubImportRequiresEntitlement(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC()
-	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }}}
+	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return now }}}
 	service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
 	service.registerNativeRoutes(service.echo)
 	for _, org := range []tracker.OrganizationID{"org_entitled", "org_unentitled"} {

@@ -73,7 +73,7 @@ func (s *Service) recheckHostedChangeCheckPrincipal(ctx context.Context, r tenan
 	if err != nil {
 		return err
 	}
-	if token.Scope != string(hubapi.APIScopeOperator) || !token.Valid(credential.Hash, s.config.now()) {
+	if token.Scope != string(hubapi.APIScopeOperator) || !token.Valid(credential.Hash, s.config.Clock()) {
 		return hubapi.NativeNotFound()
 	}
 	if _, err := r.AccessTokenGrant(ctx, credential.ID, scope.Project); err != nil {
@@ -189,7 +189,7 @@ func (s *Service) getChange(c echo.Context) error {
 	if c.QueryParam("view") != "bounded" {
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 		defer cancel()
-		result, err := s.selectedChangeDetail(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("change"), s.config.now())
+		result, err := s.selectedChangeDetail(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("change"), s.config.Clock())
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}

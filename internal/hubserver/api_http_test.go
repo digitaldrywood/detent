@@ -191,7 +191,7 @@ func TestAPIRefusals(t *testing.T) {
 		{"plan update", hubapi.NativeBase + "/plan", "", "forbidden", "Entitlement administrator access is required", http.StatusForbidden, func(s *Service, c echo.Context) error { return hostedplans.NewHTTP(s.hostedPlansHTTPDeps()).UpdatePlan(c) }},
 		{"billing webhook", "/webhooks/stripe", `{"private-token":"test-secret"}`, "invalid_request", "Billing webhook signature, timestamp or mode is invalid", http.StatusBadRequest, func(s *Service, c echo.Context) error {
 			s.database = &database{}
-			s.config.now = time.Now
+			s.config.Clock = time.Now
 			s.config.Hosted.Billing = &hostedplans.HostedBillingConfig{WebhookSecret: []byte("test-secret")}
 			return s.hostedStripeWebhook(c)
 		}},

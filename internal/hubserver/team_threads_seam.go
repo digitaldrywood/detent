@@ -22,7 +22,7 @@ func (s *Service) threadsService() *threads.Service {
 	return threads.New(threads.Deps{
 		Repository:   s.config.TenantRepository,
 		Details:      s.runDetailStore,
-		Now:          s.config.now,
+		Now:          s.config.Clock,
 		Organization: func() tracker.OrganizationID { return tracker.OrganizationID(s.appOrganizationID()) },
 		RecordError:  hubapi.ProjectRecordError,
 		IsNotFound:   hubapi.IsNativeNotFound,

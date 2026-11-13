@@ -391,7 +391,7 @@ func TestHostedFleetVisibility(t *testing.T) {
 		t.Fatalf("started runner connection = %#v, want heartbeat received", connection.Runners)
 	}
 
-	now := f.service.config.now().UTC()
+	now := f.service.config.Clock().UTC()
 	summary := testHostSummary(now)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
 		acknowledged, err := w.AppendRunnerHostMetricSegments(t.Context(), activeID, []hostmetrics.Summary{summary}, now)
@@ -860,7 +860,7 @@ func TestHostedRunnerRoutingAuthority(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				now := f.service.config.now()
+				now := f.service.config.Clock()
 				enrollment = runnerauth.Enrollment{ID: hubapi.NewID("enrollment"), Token: token, ExpiresAt: now.Add(time.Minute)}
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
 					member, err := w.AccessMember(t.Context(), "user_browser_viewer")

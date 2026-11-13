@@ -70,7 +70,7 @@ func (f dispatchGuardFixture) candidate(t *testing.T) bool {
 	scope := f.scope()
 	ctx := f.service.runDetailContext(t.Context())
 	request := tracker.NativeClaim{WorkItemID: f.issue.WorkItemID, PolicyID: f.policy, MachineID: f.runner.binding.MachineID, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	var plan hubrecords.NativeClaimPlan
 	err := f.service.config.TenantRepository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := f.service.authorizeAccessScope(ctx, r, scope, true); err != nil {
@@ -252,7 +252,7 @@ func rewriteDispatchAttemptFixture(t *testing.T, f dispatchGuardFixture, mutate 
 		t.Fatal(err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: f.service.config.now()})
+		_, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: f.service.config.Clock()})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -1005,7 +1005,7 @@ func TestNativeRecordedDependencyUsesCurrentEdges(t *testing.T) {
 			if err := f.service.authorizeAccessScope(t.Context(), r, scope, false); err != nil {
 				return err
 			}
-			page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: scope.Project, Scope: string(scope.Project), WorkItemID: f.issue.WorkItemID, AvailableAt: f.service.config.now(), Limit: 1})
+			page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: scope.Project, Scope: string(scope.Project), WorkItemID: f.issue.WorkItemID, AvailableAt: f.service.config.Clock(), Limit: 1})
 			found = len(page.Items) == 1
 			return err
 		}); err != nil {
@@ -1054,7 +1054,7 @@ func TestNativeRecordedDependencyUsesCurrentEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: f.service.config.now()})
+		_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: f.service.config.Clock()})
 		return err
 	}); err != nil {
 		t.Fatal(err)

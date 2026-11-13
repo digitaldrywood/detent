@@ -42,10 +42,10 @@ import (
 func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
-	service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, now: time.Now}}
+	service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Clock: time.Now}}
 	first := nativeOrganization{ID: "org_first", Name: "First organization", Slug: "first"}
 	second := nativeOrganization{ID: "org_second", Name: "Second organization", Slug: "second"}
-	now := service.config.now()
+	now := service.config.Clock()
 	provider := newHostedSecurityProvider()
 	service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(first.ID), Provider: provider}
 	credential := "tenant_scoped_runner_token"
@@ -136,7 +136,7 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 		t.Fatalf("personal credential authentication=(%+v,%d,%v)", personal, status, err)
 	}
 	if err := repository.WriteTenant(t.Context(), first.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.RevokeAccessMember(t.Context(), "user_example", service.config.now()); err != nil {
+		if err := w.RevokeAccessMember(t.Context(), "user_example", service.config.Clock()); err != nil {
 			return err
 		}
 		scope := hubscope.NativeScope{Organization: first.ID, Credential: personal}
@@ -211,9 +211,9 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("expired identity renewal authentication=(%d,%v)", status, err)
 	}
-	originalNow := service.config.now
+	originalNow := service.config.Clock
 	clockNow := originalNow()
-	service.config.now = func() time.Time { return clockNow }
+	service.config.Clock = func() time.Time { return clockNow }
 	if err := repository.WriteTenant(t.Context(), first.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.RunnerIdentity(t.Context(), got.Runner.RunnerID)
 		if err != nil {
@@ -258,13 +258,13 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 		t.Fatal("credential rotation accepted identity that expired while waiting for its lock")
 	}
 	service.config.TenantRepository = repository
-	service.config.now = originalNow
+	service.config.Clock = originalNow
 	if err := repository.WriteTenant(t.Context(), first.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.RunnerIdentity(t.Context(), got.Runner.RunnerID)
 		if err != nil {
 			return err
 		}
-		record.ExpiresAt = service.config.now().Add(-time.Second)
+		record.ExpiresAt = service.config.Clock().Add(-time.Second)
 		return w.UpdateRunnerIdentity(t.Context(), record)
 	}); err != nil {
 		t.Fatal(err)
@@ -272,7 +272,7 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 	if _, err := service.changeRunnerCredentialTenant(t.Context(), currentCredential, "rotation_after_identity_expiry"); err == nil {
 		t.Fatal("credential rotation accepted an identity that expired after authentication")
 	}
-	if renewed, err := service.changeRunnerCredentialTenant(t.Context(), currentCredential, ""); err != nil || !renewed.ExpiresAt.After(service.config.now()) {
+	if renewed, err := service.changeRunnerCredentialTenant(t.Context(), currentCredential, ""); err != nil || !renewed.ExpiresAt.After(service.config.Clock()) {
 		t.Fatalf("expired identity renewal=(%+v,%v)", renewed, err)
 	}
 }
@@ -288,7 +288,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	service.database.billingRepository = repository
 	service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
 	usagePlan := billingstore.PlanReference{ID: "runner_protocol", Version: 1}
-	now := service.config.now()
+	now := service.config.Clock()
 	secret := "example_runner_heartbeat_secret"
 	hash := apikey.HashToken(secret)
 	secondSecret := "example_runner_heartbeat_secret_two"
@@ -399,7 +399,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	revoke := performHubAPIRequest(t, service, http.MethodDelete, enrollmentPath+"/"+enrollmentIDs[0], testHubAdminToken, nil)
 	requireNativeStatus(t, revoke, http.StatusNoContent)
 	redemptionIsolation := isolation.Report{"example-project/codex": {isolation.Sandbox, isolation.NativeTrusted}}
-	spriteNow := service.config.now()
+	spriteNow := service.config.Clock()
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: organization.ID, Name: "example-sprite", ProviderOrganization: "provider_example", EnrollmentID: enrollmentIDs[1], State: "enrolled", IdleSince: spriteNow, CreatedAt: spriteNow})
 	}); err != nil {
@@ -1189,7 +1189,7 @@ func TestRunnerTenantUsageUsesBillingReceiptsAndPreservesExemptions(t *testing.T
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Date(2026, time.November, 1, 22, 0, 0, 0, time.UTC)}
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, now: clock.Now}}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, Clock: clock.Now}}
 	organization := nativeOrganization{ID: "org_example", Name: "Example organization", Slug: "example"}
 	service.database.hostedOrganization = organization.ID
 	service.database.billingRepository = repository

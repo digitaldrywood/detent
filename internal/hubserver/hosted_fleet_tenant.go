@@ -48,7 +48,7 @@ func (s *Service) readHostedFleetTenant(ctx context.Context, credential hubapi.A
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	result, _, err := s.readHostedFleetSnapshotTenant(ctx, credential, projects, "", now)
 	if err != nil {
 		return hostedFleetResponse{}, err

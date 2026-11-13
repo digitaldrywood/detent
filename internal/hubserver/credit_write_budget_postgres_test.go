@@ -85,7 +85,7 @@ func TestPostgresCreditWritesStayBoundedWithHistory(t *testing.T) {
 			for _, size := range []int{2, 50} {
 				for seeded < size {
 					if err := hubapi.FromFeatureError(service.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
-						_, err := w.PostBillingCredit(t.Context(), billingstore.CreditTransaction{OrganizationID: service.database.hostedOrganization, Mode: billing.ModeTest, Source: fmt.Sprintf("history_%d", seeded), Kind: "purchase", AmountMicros: 1, RecordedAt: service.config.now()})
+						_, err := w.PostBillingCredit(t.Context(), billingstore.CreditTransaction{OrganizationID: service.database.hostedOrganization, Mode: billing.ModeTest, Source: fmt.Sprintf("history_%d", seeded), Kind: "purchase", AmountMicros: 1, RecordedAt: service.config.Clock()})
 						return err
 					})); err != nil {
 						t.Fatal(err)

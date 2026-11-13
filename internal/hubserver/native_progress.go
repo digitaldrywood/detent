@@ -82,7 +82,7 @@ func (o nativeProgressOwner) validateProgressLeaseWriter(ctx context.Context, wr
 	if err != nil {
 		return err
 	}
-	now := o.service.config.now().UTC()
+	now := o.service.config.Clock().UTC()
 	if lease.OrganizationID != o.scope.Organization || lease.FencingToken != int64(o.fencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || lease.IssueID != item.ID {
 		return tracker.ErrStaleFencingToken
 	}
@@ -133,10 +133,10 @@ func (o nativeProgressOwner) Load(ctx context.Context, project, issue, id string
 			if err != nil {
 				return err
 			}
-			if !runnerIdentityMatchesHeldLease(identity, o.scope.Organization, o.scope.Credential.Runner.RunnerID, o.scope.Credential.ID, o.scope.Credential.Runner.MachineID, o.service.config.now().UTC()) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Read) {
+			if !runnerIdentityMatchesHeldLease(identity, o.scope.Organization, o.scope.Credential.Runner.RunnerID, o.scope.Credential.ID, o.scope.Credential.Runner.MachineID, o.service.config.Clock().UTC()) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Read) {
 				return hubscope.RunnerUnauthorized()
 			}
-			allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, o.scope.Project, o.service.config.now().UTC())
+			allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, o.scope.Project, o.service.config.Clock().UTC())
 			if err != nil {
 				return err
 			}
@@ -468,7 +468,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 	if err != nil {
 		return progresscheck.Record{}, err
 	}
-	receipt, err := content.PrepareReceipt(contentCtx, eventstore.Receipt{OrganizationID: o.scope.Organization, ActorID: nativeProgressReceiptActor, Operation: nativeProgressReceiptOperation(o.scope, record.IssueID), CommandKey: record.RequestID, RequestHash: hash, CreatedAt: o.service.config.now().UTC()}, raw)
+	receipt, err := content.PrepareReceipt(contentCtx, eventstore.Receipt{OrganizationID: o.scope.Organization, ActorID: nativeProgressReceiptActor, Operation: nativeProgressReceiptOperation(o.scope, record.IssueID), CommandKey: record.RequestID, RequestHash: hash, CreatedAt: o.service.config.Clock().UTC()}, raw)
 	if err != nil {
 		return progresscheck.Record{}, err
 	}
@@ -527,7 +527,7 @@ func (o nativeProgressOwner) publishTenantOnce(ctx context.Context, record progr
 			}
 		}
 		if record.DefectIssueID != "" {
-			if err := writer.SetRelationship(ctx, corestore.Relationship{OrganizationID: o.scope.Organization, ProjectID: o.scope.Project, WorkItemID: tracker.NativeWorkItemID(record.IssueID), RelatedProjectID: o.scope.Project, RelatedWorkItemID: tracker.NativeWorkItemID(record.DefectIssueID), Type: "dependency", Provenance: "progress_check"}, "add", o.service.config.now().UTC()); err != nil {
+			if err := writer.SetRelationship(ctx, corestore.Relationship{OrganizationID: o.scope.Organization, ProjectID: o.scope.Project, WorkItemID: tracker.NativeWorkItemID(record.IssueID), RelatedProjectID: o.scope.Project, RelatedWorkItemID: tracker.NativeWorkItemID(record.DefectIssueID), Type: "dependency", Provenance: "progress_check"}, "add", o.service.config.Clock().UTC()); err != nil {
 				return err
 			}
 		}

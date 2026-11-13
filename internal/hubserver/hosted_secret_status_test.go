@@ -20,7 +20,7 @@ func TestHostedSecretStatusTenantPagesAndKeyChecks(t *testing.T) {
 	f := newSecretPostgresFixture(t)
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(organization), func(t *testing.T) {
-			now := f.service.config.now()
+			now := f.service.config.Clock()
 			keys := secretTestKeys(t, "1", "1", "2")
 			envelope, err := keys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD(organization, "second-project", flySpritesToken))
 			if err != nil {

@@ -24,7 +24,7 @@ func newSecretPostgresFixture(t *testing.T) secretPostgresFixture {
 	t.Helper()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
-	service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, SecretKeys: secretTestKeys(t, "1", "1"), Logger: discardLogger(), now: func() time.Time { return now }}}
+	service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, SecretKeys: secretTestKeys(t, "1", "1"), Logger: discardLogger(), Clock: func() time.Time { return now }}}
 	fixture := secretPostgresFixture{service: service, repository: repository, admin: admin}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

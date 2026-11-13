@@ -32,7 +32,7 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 6, 18, 0, 0, 0, time.UTC)
 	details := &memoryRunDetails{}
-	service := newPostgresNativeService(t, Config{RunDetails: details, now: func() time.Time { return now }})
+	service := newPostgresNativeService(t, Config{RunDetails: details, Clock: func() time.Time { return now }})
 	repository := service.config.TenantRepository
 	projects := map[tracker.OrganizationID]tracker.ProjectID{}
 	candidates := map[tracker.OrganizationID][]viewstore.BoardCandidate{}
@@ -263,7 +263,7 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 func TestBoardCountsFenceOwnershipUntilProjection(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 6, 18, 0, 0, 0, time.UTC)
-	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }})
+	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return now }})
 	repository := service.config.TenantRepository
 	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 		t.Run(string(org), func(t *testing.T) {

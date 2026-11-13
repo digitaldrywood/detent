@@ -87,7 +87,7 @@ func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
 	requireNativeStatus(t, created, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, created, &issue)
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	snapshot := tracker.GitHubIssueSnapshot{URL: sourceURL, Title: "Imported title", Body: "Imported body", Provenance: tracker.Provenance{Provider: "github", ExternalID: "node_12", AuthorID: "example-user", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
 	request := tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "selected-source-intake"}, Snapshot: snapshot}
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/source-intake", request)

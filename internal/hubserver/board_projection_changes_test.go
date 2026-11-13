@@ -93,7 +93,7 @@ func TestBoardProjectionDeletedChangeAndRealErrorsPostgres(t *testing.T) {
 	service := &Service{config: Config{TenantRepository: mutating, RunDetails: details}}
 	content := eventstore.NewContent(details)
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	service.config.now = func() time.Time { return now }
+	service.config.Clock = func() time.Time { return now }
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		policy, err := content.PrepareProjectPolicy(t.Context(), org, hubTestPolicy())
 		if err != nil {

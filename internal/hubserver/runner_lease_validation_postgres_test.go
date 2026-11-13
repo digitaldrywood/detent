@@ -66,7 +66,7 @@ func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 	const leaseID = "lease_example"
 	const workerToken = "example_runner_token"
 	workerHash := apikey.HashToken(workerToken)
-	now := service.config.now().UTC()
+	now := service.config.Clock().UTC()
 	expires := now.Add(time.Hour)
 	descriptor := hubTestPolicy()
 	descriptor.Requirements.RequiredTags = []string{"example-tag"}
@@ -168,7 +168,7 @@ func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 		wantCode     string
 		wantStale    bool
 	}
-	expiredLeaseStart := service.config.now().UTC().Add(-time.Minute)
+	expiredLeaseStart := service.config.Clock().UTC().Add(-time.Minute)
 	cases := []validationCase{
 		{name: "revoked credential", mutation: `UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2 AND id=$3`, mutationArgs: []any{now, "org_startup", tokenID}, restore: `UPDATE api_tokens SET revoked_at=NULL WHERE organization_id=$1 AND id=$2`, restoreArgs: []any{"org_startup", tokenID}, wantCode: "unauthorized"},
 		{name: "expired credential", mutation: `UPDATE api_tokens SET expires_at=$1 WHERE organization_id=$2 AND id=$3`, mutationArgs: []any{now.Add(-time.Second), "org_startup", tokenID}, restore: `UPDATE api_tokens SET expires_at=$1 WHERE organization_id=$2 AND id=$3`, restoreArgs: []any{expires, "org_startup", tokenID}, wantCode: "unauthorized"},

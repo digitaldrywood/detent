@@ -17,7 +17,7 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 	if err != nil {
 		return s.usageCredentialError(c, err)
 	}
-	window, err := usageRangeWindow(c.QueryParam("range"), s.config.now())
+	window, err := usageRangeWindow(c.QueryParam("range"), s.config.Clock())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

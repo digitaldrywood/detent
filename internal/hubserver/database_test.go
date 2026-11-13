@@ -118,7 +118,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 			cfg.Postgres = defaults.Postgres
 			if cfg.Hosted == nil {
 				cfg.Hosted = defaults.Hosted
-				seedSuppliedRepositoryBinding(t, repository, cfg.Hosted, cfg.normalized().now().UTC())
+				seedSuppliedRepositoryBinding(t, repository, cfg.Hosted, cfg.normalized().Clock().UTC())
 			}
 		}
 	}
@@ -130,8 +130,8 @@ func openTestService(t *testing.T, cfg Config) *Service {
 		cfg.DatabaseBackend = DatabasePostgres
 
 		cfg.Postgres = defaults.Postgres
-		if cfg.now != nil || cfg.Clock != nil {
-			cfg.Postgres.LeaseClock = cfg.normalized().now
+		if cfg.Clock != nil {
+			cfg.Postgres.LeaseClock = cfg.normalized().Clock
 		}
 		if cfg.Hosted == nil {
 			cfg.Hosted = defaults.Hosted
@@ -141,7 +141,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 			t.Fatalf("open PostgreSQL fixture: %v", err)
 		}
 		organization := tracker.OrganizationID(cfg.Hosted.OrganizationID)
-		now := cfg.normalized().now().UTC()
+		now := cfg.normalized().Clock().UTC()
 		err = store.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example organization", Slug: "example", CreatedAt: now}); err != nil {
 				return err
@@ -259,7 +259,7 @@ func newClockedPostgresNativeService(t *testing.T, cfg Config) *Service {
 	service.registerRunnerRoutes(service.echo)
 	service.registerCostUsageRoutes(service.echo)
 	service.registerOperatorTools(service.echo)
-	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.Clock))
 	primary := tracker.OrganizationID("org_first")
 	for _, organization := range []tracker.OrganizationID{primary, primary + "_second"} {
 		seedPostgresHubAdmin(t, service.config.TenantRepository, service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})

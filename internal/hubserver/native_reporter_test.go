@@ -448,7 +448,7 @@ func TestReporterAggregateReads(t *testing.T) {
 	v := newVerificationFixture(t)
 	own := v.file(t, "reporter", "own", nil, "")
 	other := v.file(t, "tester", "other", nil, "")
-	now := v.service.config.now().UTC()
+	now := v.service.config.Clock().UTC()
 	if err := v.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: "org_security", ID: "reporter-fixture", Hostname: "reporter-fixture", Capacity: 1, Version: "test"})
 	}); err != nil {
@@ -518,7 +518,7 @@ func TestReporterAggregateReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := hubscope.NativeScope{Organization: "org_security", Project: v.project, Credential: catalog.credential}
-	w := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: v.service.config.now().UTC(), Bucket: time.Hour}
+	w := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: v.service.config.Clock().UTC(), Bucket: time.Hour}
 	activity, err := v.service.readActivityReport(ctx, catalog.credential, operatortool.ActivityRequest{ProjectID: string(v.project), Limit: 100}, w)
 	if err != nil {
 		t.Fatal(err)

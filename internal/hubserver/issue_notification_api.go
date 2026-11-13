@@ -51,7 +51,7 @@ func (s *Service) issueNotificationPreference(c echo.Context) error {
 				return err
 			}
 			member.NotifyIssues = value.Enabled
-			member.UpdatedAt = s.config.now()
+			member.UpdatedAt = s.config.Clock()
 			return w.UpdateAccessMember(ctx, member)
 		})
 	} else {

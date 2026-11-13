@@ -47,7 +47,7 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 	s.registerCostUsageRoutes(e)
 	s.registerConversationRoutes(e)
 	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
-		s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.now))
+		s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.Clock))
 		s.registerHostedSharedRoutes(e)
 	}
 	s.registerTeamThreadRoutes(e)

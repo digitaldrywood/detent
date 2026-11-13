@@ -432,7 +432,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope hubs
 	if err != nil {
 		return nil, err
 	}
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config.Clock().UTC().Truncate(time.Microsecond)
 	receipt, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: options.OperationID, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, err
@@ -466,7 +466,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope hubs
 		}
 		stored, err := w.Receipt(ctx, scope.Credential.ID, options.OperationID, command.IdempotencyKey)
 		if err == nil {
-			if stored.ResponseExpired || stored.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= stored.ResponseReplayUntilNs {
+			if stored.ResponseExpired || stored.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= stored.ResponseReplayUntilNs {
 				return receiptstore.ErrExpired
 			}
 			if stored.RequestHash != hash {

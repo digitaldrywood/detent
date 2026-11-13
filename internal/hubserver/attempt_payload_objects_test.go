@@ -49,7 +49,7 @@ func TestEvidencePayloadSizeAndReadEquivalence(t *testing.T) {
 	var inlineBytes int
 	for _, size := range []int{32, 256 << 10} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
-			review := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version.ID, Decision: "commented", Body: strings.Repeat("x", size), CreatedAt: f.service.config.now().UTC()}
+			review := tracker.ChangeReview{ID: hubapi.NewID("review"), VersionID: version.ID, Decision: "commented", Body: strings.Repeat("x", size), CreatedAt: f.service.config.Clock().UTC()}
 			row := payloadEvidenceFixture(t, f.service, f.project.OrganizationID, f.change.ID, version.ID, "review", review.ID, review)
 			stored := len(row.PayloadObjectKey) + len(row.PayloadSHA256)
 			if inlineBytes != 0 && stored != inlineBytes {
@@ -150,7 +150,7 @@ func TestAttemptPayloadObjectsAndTypedReads(t *testing.T) {
 				return nil
 			}}
 			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-			f := claimedAttemptDiffFixture(t, false, Config{Content: contentCall, RunDetails: details, now: func() time.Time { return now }})
+			f := claimedAttemptDiffFixture(t, false, Config{Content: contentCall, RunDetails: details, Clock: func() time.Time { return now }})
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 				t.Fatal(err)
 			}
@@ -497,7 +497,7 @@ func TestPayloadPreparationRechecksLease(t *testing.T) {
 	var seconds atomic.Int64
 	seconds.Store(time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC).Unix())
 	var advanced atomic.Bool
-	f := claimedAttemptDiffFixture(t, false, Config{now: func() time.Time { return time.Unix(seconds.Load(), 0).UTC() }, Content: objects.call, RunDetails: &memoryRunDetails{afterStore: func(attachment.ArchiveReference) {
+	f := claimedAttemptDiffFixture(t, false, Config{Clock: func() time.Time { return time.Unix(seconds.Load(), 0).UTC() }, Content: objects.call, RunDetails: &memoryRunDetails{afterStore: func(attachment.ArchiveReference) {
 		if advanced.CompareAndSwap(false, true) {
 			seconds.Add(3600)
 		}
@@ -603,7 +603,7 @@ func TestRunHistoryWritesOnlyObjectReferences(t *testing.T) {
 	t.Run("missing storage context", func(t *testing.T) {
 		f := newDefaultNativeFixture(t, Config{})
 		issue := f.create(t, "history storage required")
-		raw, err := json.Marshal(tracker.CollaborationEvent{ID: "event-missing-storage", OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: issue.WorkItemID, AggregateType: "issue", Type: "run.finished", SchemaVersion: 1, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: "history detail"}}})
+		raw, err := json.Marshal(tracker.CollaborationEvent{ID: "event-missing-storage", OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: issue.WorkItemID, AggregateType: "issue", Type: "run.finished", SchemaVersion: 1, RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: "history detail"}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -637,7 +637,7 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			coordinatorFixtureProject(t, f.service, f.project.OrganizationID, f.project.ID, func(row *projectstore.Record) { row.States = states })
 			for index := range 5 {
 				data := tracker.CollaborationData{Revision: f.issue.Revision, ReasonDetail: strings.Repeat("x", attachment.MaxArchiveBytes/4) + strconv.Itoa(index), Run: &tracker.NativeRunData{AttemptID: fmt.Sprintf("attempt_old%d", index), FencingToken: 1}}
-				appendTestHealthEventAs(t, f.nativeFixture, tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, f.issue, "run.finished", data, f.service.config.now())
+				appendTestHealthEventAs(t, f.nativeFixture, tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, f.issue, "run.finished", data, f.service.config.Clock())
 			}
 			f.start(t)
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
@@ -695,7 +695,7 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.hydrateNativeAttemptTenant(t.Context(), attemptSnapshot, f.service.config.now()); err != nil {
+			if _, err := f.service.hydrateNativeAttemptTenant(t.Context(), attemptSnapshot, f.service.config.Clock()); err != nil {
 				t.Fatal(err)
 			}
 			probe := &payloadRecoveryRepository{Repository: f.service.config.TenantRepository.(*postgres.Repository)}
@@ -1288,7 +1288,7 @@ func payloadSeedRecoveryEdits(t *testing.T, f nativeFixture, issue tracker.Nativ
 			kind = "workflow.transitioned"
 			data = tracker.CollaborationData{Revision: data.Revision, FromState: "Todo", ToState: "Blocked", Reason: "worker_progress"}
 		}
-		event := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, RecordedAt: f.service.config.now(), Actor: actor, Data: data}
+		event := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, RecordedAt: f.service.config.Clock(), Actor: actor, Data: data}
 		raw, err := json.Marshal(event)
 		if err != nil {
 			t.Fatal(err)
@@ -1300,7 +1300,7 @@ func payloadSeedRecoveryEdits(t *testing.T, f nativeFixture, issue tracker.Nativ
 		events = append(events, prepared)
 	}
 	issue.Revision += tracker.Revision(count) + 1
-	issue.UpdatedAt = f.service.config.now()
+	issue.UpdatedAt = f.service.config.Clock()
 	raw, err := json.Marshal(issue)
 	if err != nil {
 		t.Fatal(err)

@@ -47,8 +47,8 @@ func TestHubMCPStopRun(t *testing.T) {
 			for _, runner := range []runnerFixture{r, otherRunner} {
 				reportRunnerCapacity(t, f.service, f.base, runner.redemption.Credential, runner.binding.MachineID, "Example runner", isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, 1)
 			}
-			publishCapacity(t, f.nativeFixture, r, capacityReport(f.service.config.now()))
-			otherCapacity := capacityReport(f.service.config.now())
+			publishCapacity(t, f.nativeFixture, r, capacityReport(f.service.config.Clock()))
+			otherCapacity := capacityReport(f.service.config.Clock())
 			otherCapacity.AccountAlias, otherCapacity.SharedAccountAlias = "other", "other-team"
 			publishCapacity(t, f.nativeFixture, otherRunner, otherCapacity)
 			worker := r.redemption.Credential

@@ -28,7 +28,7 @@ func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Rea
 	if rows.project.Core.DeletedAt != nil {
 		return rows, corestore.ErrNotFound
 	}
-	rows.checkoutVerified, err = r.RunnerCheckoutVerified(ctx, scope.Project, rows.project.Settings.CheckoutRepository, s.config.now())
+	rows.checkoutVerified, err = r.RunnerCheckoutVerified(ctx, scope.Project, rows.project.Settings.CheckoutRepository, s.config.Clock())
 	if err != nil {
 		return rows, err
 	}
@@ -211,7 +211,7 @@ func (s *Service) recheckReleaseDelivery(ctx context.Context, w tenantstore.Writ
 	if _, err := w.LockChange(ctx, plan.change.ID); err != nil {
 		return err
 	}
-	if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
+	if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.Clock())); err != nil {
 		return err
 	}
 	current, err := s.readReleaseDeliveryRows(ctx, w, scope, string(plan.current.NativeID), plan.request, plan.publishing)

@@ -25,7 +25,7 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	objects := &conversationContentFixture{}
-	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: func() time.Time { return now }}}
+	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), Clock: func() time.Time { return now }}}
 	service.conversations = &conversationService{Server: service.conversationServer(), Store: &conversationStore{Contents: objects}, Broker: newNotificationBroker().Broker, Coordinator: &recordingWaker{}}
 	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org_removal", Name: "Example", Slug: "example"})
 	scope := hubscope.NativeScope{Organization: "org_removal", Project: "prj_removal", Credential: hubapi.APICredential{ID: "test_hub_admin", Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}

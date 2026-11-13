@@ -111,7 +111,7 @@ func TestOperatorChangePublication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, ID: "issue:" + string(f.issue.WorkItemID), SourceID: string(f.issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(snapshot.Revision), UpdatedAt: f.service.config.now().UTC()}, searchstore.Text{Title: snapshot.Title, Body: snapshot.Body, Labels: snapshot.Labels})
+			document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, ID: "issue:" + string(f.issue.WorkItemID), SourceID: string(f.issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(snapshot.Revision), UpdatedAt: f.service.config.Clock().UTC()}, searchstore.Text{Title: snapshot.Title, Body: snapshot.Body, Labels: snapshot.Labels})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1337,7 +1337,7 @@ func TestOperatorArtifactResults(t *testing.T) {
 			}
 			if scenario == "revoked session" {
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-					return w.RevokeAccessSession(t.Context(), apikey.HashToken(u.token), f.service.config.now())
+					return w.RevokeAccessSession(t.Context(), apikey.HashToken(u.token), f.service.config.Clock())
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -1388,8 +1388,8 @@ func TestOperatorArchivedChangeReads(t *testing.T) {
 	for i := range 3 {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/discussion", f.token, tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprint("discussion-", i)}, VersionID: second.ID, Body: fmt.Sprint("Review discussion ", i)}), http.StatusOK)
 	}
-	at := f.service.config.now()
-	f.service.config.now = func() time.Time { return at }
+	at := f.service.config.Clock()
+	f.service.config.Clock = func() time.Time { return at }
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	call := hostedContextProtocol(t, f.service, ctx, "stdio")
 	read := func(t *testing.T, name, section, version, cursor string) []byte {

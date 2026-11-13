@@ -42,7 +42,7 @@ func (d *database) openRequestMetrics(ctx context.Context, org tracker.Organizat
 	return requestmetrics.New(requestmetrics.Deps{Repository: d.postgres, Organization: org})
 }
 func (s *Service) requestMetricsHTTP() *requestmetrics.HTTP {
-	return requestmetrics.NewHTTP(requestmetrics.HTTPDeps{Collector: s.requestMetrics, Repository: s.config.TenantRepository, Now: s.config.now, Logger: s.config.Logger, Echo: s.echo, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, err) }, Refuse: func(c echo.Context, status int, code, reason string, body any) error {
+	return requestmetrics.NewHTTP(requestmetrics.HTTPDeps{Collector: s.requestMetrics, Repository: s.config.TenantRepository, Now: s.config.Clock, Logger: s.config.Logger, Echo: s.echo, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, err) }, Refuse: func(c echo.Context, status int, code, reason string, body any) error {
 		return s.refusedAPIError(c, status, code, reason, body)
 	}, JSONError: s.hostedJSONError, Credential: func(c echo.Context) hubauth.Credential {
 		cred, _ := c.Get("hub_api_credential").(hubapi.APICredential)

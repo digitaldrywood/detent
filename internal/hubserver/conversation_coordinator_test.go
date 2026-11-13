@@ -172,7 +172,7 @@ func newConfiguredCoordinatorFixture(t *testing.T, name string, configure ...fun
 	service := newPostgresNativeService(t, config)
 	service.registerConversationRoutes(service.echo)
 	service.registerCostUsageRoutes(service.echo)
-	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now), chat.WithSessionStore(operatorChatStore{service.database}, service.resolveOperatorChatAuthority))
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.Clock), chat.WithSessionStore(operatorChatStore{service.database}, service.resolveOperatorChatAuthority))
 	if service.database.billingAuditStore == nil {
 		service.database.billingAuditStore = service.runDetailStore()
 	}
@@ -278,11 +278,11 @@ func TestCoordinatorPublicationRefreshesBeforeMutation(t *testing.T) {
 				}
 				return f.service.config.TenantRepository.WriteTenant(ctx, f.organization, corestore.Serving, func(w tenantstore.Writer) error {
 					if change == "event sequence" {
-						_, err := w.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: f.organization, ConversationID: record.ID, Event: conversation.Event{Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{}`), CreatedAt: f.service.config.now()}})
+						_, err := w.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: f.organization, ConversationID: record.ID, Event: conversation.Event{Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{}`), CreatedAt: f.service.config.Clock()}})
 						return err
 					}
 					prepared, _ := preparedUpdate.Value(conversationContentsKey{}).(preparedConversationContents)
-					if err := registerPreparedConversationObjects(ctx, w, f.organization, prepared, f.service.config.now()); err != nil {
+					if err := registerPreparedConversationObjects(ctx, w, f.organization, prepared, f.service.config.Clock()); err != nil {
 						return err
 					}
 					for _, ref := range prepared {
@@ -1867,7 +1867,7 @@ func TestConversationCoordinatorToolsHonourReadAccess(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.organization, ProjectID: blocked.ProjectID, WorkItemID: dependent, RelatedProjectID: blocking.ProjectID, RelatedWorkItemID: blocker, Type: "dependency"}, "add", f.service.config.now())
+					return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.organization, ProjectID: blocked.ProjectID, WorkItemID: dependent, RelatedProjectID: blocking.ProjectID, RelatedWorkItemID: blocker, Type: "dependency"}, "add", f.service.config.Clock())
 				})
 			}
 			record := f.seed(t, test.name, nil)
@@ -1878,7 +1878,7 @@ func TestConversationCoordinatorToolsHonourReadAccess(t *testing.T) {
 				})
 			case "token":
 				f.write(t, func(w tenantstore.Writer) error {
-					return w.RevokeAccessCredential(t.Context(), f.owner, f.service.config.now())
+					return w.RevokeAccessCredential(t.Context(), f.owner, f.service.config.Clock())
 				})
 			}
 			f.backend.setRun(callTool(test.tool, test.args(own.WorkItemID)))
@@ -2432,7 +2432,7 @@ func reopenCoordinatorService(t *testing.T, original *Service, configure ...func
 	} else {
 		service = openPostgresHubTestService(t, repository, cfg)
 	}
-	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now), chat.WithSessionStore(operatorChatStore{service.database}, service.resolveOperatorChatAuthority))
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.Clock), chat.WithSessionStore(operatorChatStore{service.database}, service.resolveOperatorChatAuthority))
 	service.database.hostedOrganization = organization
 	service.localOrganization = local
 	service.requestMetrics.Organization = organization

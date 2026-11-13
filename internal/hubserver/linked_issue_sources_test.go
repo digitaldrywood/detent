@@ -423,10 +423,10 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 				worker := runner.redemption.Credential
 				descriptor := hubTestPolicy()
 				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-				heartbeat := map[string]any{"display_name": runner.redemption.DisplayName, "capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.now()}}
+				heartbeat := map[string]any{"display_name": runner.redemption.DisplayName, "capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.Clock()}}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", worker, heartbeat), http.StatusOK)
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-					return w.ReplaceRunnerCheckoutReport(t.Context(), runnerstore.CheckoutReport{OrganizationID: f.project.OrganizationID, RunnerID: string(runner.binding.RunnerID), ProjectID: f.project.ID, Repository: "example-org/example-project", ReportedAt: f.service.config.now()})
+					return w.ReplaceRunnerCheckoutReport(t.Context(), runnerstore.CheckoutReport{OrganizationID: f.project.OrganizationID, RunnerID: string(runner.binding.RunnerID), ProjectID: f.project.ID, Repository: "example-org/example-project", ReportedAt: f.service.config.Clock()})
 				}); err != nil {
 					t.Fatal(err)
 				}

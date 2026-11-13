@@ -58,7 +58,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope hubscope.Na
 		if err != nil {
 			return nil, err
 		}
-		next = projectstore.GitHubImport{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: "imp_" + identity[:32], IssueNumber: int64(request.IssueNumber), Stage: "issue", Status: "pending", Revision: 1, Gaps: []string{}, ObservedAt: s.config.now()}
+		next = projectstore.GitHubImport{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: "imp_" + identity[:32], IssueNumber: int64(request.IssueNumber), Stage: "issue", Status: "pending", Revision: 1, Gaps: []string{}, ObservedAt: s.config.Clock()}
 	} else if request.Restart {
 		if current.Revision != int64(request.ExpectedRevision) {
 			return nil, hubapi.NativeConflict(tracker.Revision(current.Revision))
@@ -68,7 +68,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope hubscope.Na
 		next.Revision++
 	}
 	return s.tenantReceiptMutation(ctx, scope, operation, request.Mutation, request, importJobResponse(next), func(w tenantstore.Writer) error {
-		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.now())); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.Clock())); err != nil {
 			return err
 		}
 		latest, err := w.ProjectRecord(ctx, scope.Project)
@@ -119,7 +119,7 @@ func (s *Service) tenantReceiptMutation(ctx context.Context, scope hubscope.Nati
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	now := s.config.now()
+	now := s.config.Clock()
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, err
@@ -149,7 +149,7 @@ func (s *Service) tenantReceiptMutation(ctx context.Context, scope hubscope.Nati
 		if scope.Credential.Hosted != nil {
 			audit := projectRecordActor(scope).Audit
 			audit.Event, audit.Route, audit.Status = "action", operation, http.StatusOK
-			audit.RecordedAt = s.config.now()
+			audit.RecordedAt = s.config.Clock()
 			audit.RecordedAtNS = audit.RecordedAt.UnixNano()
 			if _, err := w.RecordAccessAudit(ctx, audit); err != nil {
 				return err

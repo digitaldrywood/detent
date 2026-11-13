@@ -169,10 +169,10 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			membership := auth.Membership{ID: "membership-" + string(org), UserID: user, OrganizationID: "provider_" + string(org), Status: "active"}
 			membership.Role.Slug = "owner"
 			provider.members[membership.ID] = membership
-			service := &Service{echo: echo.New(), notifications: newNotificationBroker(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: org, now: func() time.Time { return now }, logger: discardLogger()}, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "provider_" + string(org), Provider: provider, PublicURL: "http://example.test", Plans: &plans}, Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return now }}}
+			service := &Service{echo: echo.New(), notifications: newNotificationBroker(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: org, now: func() time.Time { return now }, logger: discardLogger()}, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), WorkOSOrganizationID: "provider_" + string(org), Provider: provider, PublicURL: "http://example.test", Plans: &plans}, Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, Clock: func() time.Time { return now }}}
 			service.ready.Store(true)
 			service.registerNativeRoutes(service.echo)
-			service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
+			service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.Clock))
 			service.echo.POST("/internal/v1/keys/catalog", service.entryKeyCatalog, service.hostedSharedEntry, service.operatorAuthority)
 			service.echo.POST("/internal/v1/keys/call", service.entryKeyCall, service.hostedSharedEntry, service.operatorAuthority)
 			if err := hubapi.FromFeatureError(service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{OrganizationID: string(org), Plans: &plans}))); err != nil {
@@ -696,7 +696,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			if err := service.config.Hosted.SharedEntry.Validate(string(org)); err != nil {
 				t.Fatal(err)
 			}
-			service.config.Hosted.SharedEntry.Verifier().Now = service.config.now
+			service.config.Hosted.SharedEntry.Verifier().Now = service.config.Clock
 			entryPermission := apikey.ScopeWrite
 			entryCall := func(path string, payload any, statuses ...int) *httptest.ResponseRecorder {
 				t.Helper()

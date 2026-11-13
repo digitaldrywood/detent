@@ -68,7 +68,7 @@ func unenrolledWorkflowPolicyFixtureCredential(t *testing.T, f nativeFixture) st
 		t.Fatal(err)
 	}
 	id := hubapi.NewID("credential")
-	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 	expires := now.Add(runnerauth.CredentialTTL)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: id, Name: "Unenrolled example reporter", Hash: apikey.HashToken(token), Fingerprint: hubapi.TokenFingerprint(apikey.HashToken(token)), Scope: "worker", Kind: "service", NativeOnly: true, ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
@@ -126,7 +126,7 @@ func seedWorkflowPolicyNativeLanding(t *testing.T, f nativeFixture, commit, base
 	}
 	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	actor := scope.Actor()
-	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 	change := tracker.ChangeRequest{ID: "change_landed", OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: source.WorkItemID, Title: "Landed source", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	content := eventstore.NewContent(f.service.runDetailStore())
 	changeRow, err := content.PrepareChange(t.Context(), f.project.OrganizationID, historyTestJSON(t, change))
@@ -212,7 +212,7 @@ func seedWorkflowPolicyPullRequest(t *testing.T, f nativeFixture, commit, baseRe
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 	row := projectstore.GitHubWebhook{DeliveryID: "policy-landing", Repository: "example-org/example-project", EventType: "pull_request", Action: "closed", Digest: policy.Digest(raw), Payload: ref, ReceivedAt: now, ExpiresAt: now.Add(time.Hour), NextAttemptAt: now, Status: "pending"}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		created, err := w.(projectstore.GitHubIntakeWriter).CreateGitHubWebhook(t.Context(), row)

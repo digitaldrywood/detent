@@ -106,7 +106,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 			t.Fatalf("canonical %s=%q want=%q error=%v", test.path, canonical, expected, err)
 		}
 	}
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	envelope, err := f.service.config.SecretKeys.Seal(bytes.Repeat([]byte{3}, 32), accessstore.SecretAAD(org, "", accessstore.NativeCursorKeyKind))
 	if err != nil {
 		t.Fatal(err)

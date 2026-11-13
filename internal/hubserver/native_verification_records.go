@@ -24,7 +24,7 @@ func (s *Service) planVerificationRecord(ctx context.Context, scope hubscope.Nat
 	if !nativeDoneState(plan.Issue.State) || plan.Issue.Verification == nil || plan.Issue.Verification.State != tracker.VerificationPending {
 		return plan, nativeVerificationInvalid("Issue is not awaiting verification")
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	if strings.TrimSpace(request.Comment) != "" {
 		comment, err := s.prepareEvidenceComment(ctx, scope, plan.Issue.WorkItemID, request.Comment, 0)
 		if err != nil {

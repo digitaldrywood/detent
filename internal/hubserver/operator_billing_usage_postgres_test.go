@@ -118,7 +118,7 @@ func TestOperatorBillingUsagePostgres(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	first := newHostedSecurityFixture(t, func(cfg *Config) {
-		cfg.now = func() time.Time { return now }
+		cfg.Clock = func() time.Time { return now }
 		cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir(), ArchiveContents: &conversationContentFixture{}}
 	})
 	second := coordinatorBudgetPeer(t, first)

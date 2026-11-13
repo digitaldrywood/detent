@@ -53,7 +53,7 @@ func claimNativeAttempt(t *testing.T, f nativeFixture, worker, hostname, session
 	machineID := credential.Runner.MachineID
 	report := map[string]any{"id": machineID, "hostname": hostname, "display_name": "Example runner", "version": "test", "capacity": 1, "backend_isolation": isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, report), http.StatusOK)
-	report["capacity_configuration"] = runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.now()}
+	report["capacity_configuration"] = runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.Clock()}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machineID)+"/heartbeat", worker, report), http.StatusOK)
 	policyID := hubTestPolicy().ID
 	if len(policyIDs) > 0 {
@@ -73,7 +73,7 @@ func reportRunnerCapacity(t *testing.T, service *Service, projectBase, credentia
 	t.Helper()
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, projectBase+"/machines/"+string(machine)+"/heartbeat", credential, map[string]any{
 		"display_name": displayName, "capacity": capacity, "version": "test", "backend_isolation": backends,
-		"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: capacity, ClientLimit: capacity, RuntimeLimit: capacity, Manageable: true, ObservedAt: service.config.now()},
+		"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: capacity, ClientLimit: capacity, RuntimeLimit: capacity, Manageable: true, ObservedAt: service.config.Clock()},
 	}), http.StatusOK)
 }
 
@@ -104,7 +104,7 @@ func nativeAttemptListingPayload(t *testing.T, f nativeFixture, id string, raw [
 		t.Fatalf("store listing payload: %v", err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: f.service.config.now().UTC()})
+		_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: organization, ID: hubapi.NewID("archive"), Reference: ref, CreatedAt: f.service.config.Clock().UTC()})
 		return err
 	}); err != nil {
 		t.Fatalf("register listing payload: %v", err)
@@ -152,7 +152,7 @@ func nativeAttemptFixtureLease(t *testing.T, runner runnerFixture, issue tracker
 		if err != nil {
 			return fmt.Errorf("claim work item: %w", err)
 		}
-		now := f.service.config.now().UTC()
+		now := f.service.config.Clock().UTC()
 		if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: issue.OrganizationID, LeaseID: claimed.LeaseID, RunnerID: runner.binding.RunnerID, AssignedAt: now}); err != nil {
 			return fmt.Errorf("assign attempt runner: %w", err)
 		}
@@ -169,7 +169,7 @@ func nativeAttemptFixtureLease(t *testing.T, runner runnerFixture, issue tracker
 func nativeAttemptListingFixture(t *testing.T, count, bodyBytes int) (nativeFixture, tracker.NativeIssue, []tracker.NativeRunData) {
 	t.Helper()
 	var frozen atomic.Pointer[time.Time]
-	f := newDefaultNativeFixture(t, Config{RunDetails: &verifiedAttemptDetails{}, now: func() time.Time {
+	f := newDefaultNativeFixture(t, Config{RunDetails: &verifiedAttemptDetails{}, Clock: func() time.Time {
 		if now := frozen.Load(); now != nil {
 			return *now
 		}
@@ -616,7 +616,7 @@ func copyNativeAttemptFixture(t *testing.T, f nativeFixture, worker string, issu
 		var history *eventstore.Event
 		if sequence == 3 {
 			actor := (hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}).Actor()
-			value := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}
+			value := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{Run: &data}}
 			raw, err := json.Marshal(value)
 			if err != nil {
 				t.Fatal(err)
@@ -1265,7 +1265,7 @@ func TestNativeCheckpointValidation(t *testing.T) {
 func TestNativeAttemptPageBounds(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "large-attempts")
 	worker := f.worker(t, "worker")
@@ -1296,7 +1296,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 		finish.Data.CompletionBody = "Completed attempt details"
 		finish.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "test-model", Input: 123, Output: 45, Currency: "USD"}}
 		finish.Data.Disposition = &tracker.NativeDisposition{Status: "blocked", HumanAction: true, FinalSummary: strings.Repeat("x", workpad.MaxFinalSummaryBytes)}
-		finish.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.now(),
+		finish.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.Clock(),
 			Validation: &gate.CommandResult{Command: "focused test", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: output},
 			Landing:    &tracker.NativeLandingReceipt{Waiting: true, HeadSHA: strings.Repeat("a", 40)}}
 		if err := validateNativeRuntime(finish.Data.Runtime); err != nil {
@@ -1480,7 +1480,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 		t.Fatal("blocker history omitted recorded run authority")
 	}
 	firstRun := full[0].NativeRunData
-	edit := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Revision: 9, Run: &firstRun}}
+	edit := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{Revision: 9, Run: &firstRun}}
 	appendNativeAttemptHistoryFixture(t, f, edit)
 	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers&limit=100", worker, nil)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -1651,7 +1651,7 @@ func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			ctx := t.Context()
 			clock := &leaseTestClock{value: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}
-			f := newDefaultNativeFixture(t, Config{now: clock.Now})
+			f := newDefaultNativeFixture(t, Config{Clock: clock.Now})
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			enroll := func() runnerFixture {
 				t.Helper()
@@ -1914,7 +1914,7 @@ func TestExpiredLeaseCancellationWithoutRunEvent(t *testing.T) {
 			return err
 		}
 		issueID = lease.IssueID
-		_, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: attemptID, RunID: runID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, Sequence: 1, Status: "running", StartedAt: f.service.config.now().UTC(), PayloadObjectKey: "example/attempt"})
+		_, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: attemptID, RunID: runID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, Sequence: 1, Status: "running", StartedAt: f.service.config.Clock().UTC(), PayloadObjectKey: "example/attempt"})
 		return err
 	}); err != nil {
 		t.Fatal(err)

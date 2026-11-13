@@ -59,7 +59,7 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 					fixture.add("change_requests", map[string]any{"id": id, "organization_id": target.project.OrganizationID, "project_id": target.project.ID, "work_item_id": target.issue.WorkItemID, "record_json": string(historyTestJSON(t, change))})
 					fixture.add("change_issue_links", map[string]any{"change_id": id, "organization_id": target.project.OrganizationID, "project_id": target.project.ID, "work_item_id": target.issue.WorkItemID})
 				case "escape":
-					discussion := tracker.ChangeDiscussion{ID: id, VersionID: version.ID, Body: "Historical discussion", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-author"}, CreatedAt: target.service.config.now()}
+					discussion := tracker.ChangeDiscussion{ID: id, VersionID: version.ID, Body: "Historical discussion", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-author"}, CreatedAt: target.service.config.Clock()}
 					fixture.add("change_evidence", map[string]any{"sequence": index + 1, "change_id": target.change.ID, "version_id": version.ID, "kind": "discussion", "source_key": nil, "record_json": string(historyTestJSON(t, discussion))})
 				case "comments":
 					historyRepairComment(t, target, id, int64(index+1))
@@ -165,9 +165,9 @@ func TestRecoveryUnknownHistoryBudgetPreservesOlderEvidence(t *testing.T) {
 			t.Run(f.change.ID+"/"+family, func(t *testing.T) {
 				if family == "landing exit" {
 					actor := tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}
-					appendTestHealthEventAs(t, f.nativeFixture, actor, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Merging", ToState: "Rework", Reason: "landing_refused"}, f.service.config.now())
+					appendTestHealthEventAs(t, f.nativeFixture, actor, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Merging", ToState: "Rework", Reason: "landing_refused"}, f.service.config.Clock())
 					for range hubrecords.ChangeLegacyReadLimit - 1 {
-						appendTestHealthEventAs(t, f.nativeFixture, actor, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, f.service.config.now())
+						appendTestHealthEventAs(t, f.nativeFixture, actor, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, f.service.config.Clock())
 					}
 					read := func(message string) {
 						t.Helper()
@@ -177,7 +177,7 @@ func TestRecoveryUnknownHistoryBudgetPreservesOlderEvidence(t *testing.T) {
 						}
 					}
 					read("boundary hid older evidence")
-					appendTestHealthEventAs(t, f.nativeFixture, actor, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, f.service.config.now())
+					appendTestHealthEventAs(t, f.nativeFixture, actor, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, f.service.config.Clock())
 					read("legacy overflow hid older evidence")
 					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 						rows, err := r.EventsBefore(t.Context(), f.project.ID, f.issue.WorkItemID, math.MaxInt64, corestore.MaxPageSize)
@@ -431,7 +431,7 @@ func historyRepairAttempt(t *testing.T, f changeFixture, data tracker.NativeRunD
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}))
+	event, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{Run: &data}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func historyRepairAttempt(t *testing.T, f changeFixture, data tracker.NativeRunD
 	var attempt leasestore.Attempt
 	coordinatorFixtureWrite(t, f.service, f.project.OrganizationID, func(w tenantstore.Writer) error {
 		var err error
-		attempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", LocalAttemptID: local, StartedAt: f.service.config.now(), PayloadObjectKey: ref.Key, PayloadReference: ref})
+		attempt, err = w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, Fence: leasestore.Fence{LeaseID: leaseID, FencingToken: lease.FencingToken}, RunID: data.RunID, Sequence: 1, Status: "succeeded", LocalAttemptID: local, StartedAt: f.service.config.Clock(), PayloadObjectKey: ref.Key, PayloadReference: ref})
 		if err != nil {
 			return err
 		}
@@ -457,7 +457,7 @@ func historyRepairAttempt(t *testing.T, f changeFixture, data tracker.NativeRunD
 
 func historyRepairComment(t *testing.T, f changeFixture, id string, sequence int64) {
 	t.Helper()
-	at := f.service.config.now()
+	at := f.service.config.Clock()
 	comment := tracker.NativeComment{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, ID: id, Revision: 1, Sequence: sequence, Actor: tracker.Actor{Kind: "runner", PrincipalID: "example-runner"}, Body: "Historical comment", CreatedAt: at, UpdatedAt: at}
 	content := eventstore.NewContent(f.service.runDetailStore())
 	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, RecordID: id, Revision: 1}, historyTestJSON(t, comment))
@@ -502,7 +502,7 @@ func historyRepairValidationSource(t *testing.T, f changeFixture, base tracker.C
 		if index == 0 {
 			merge = head
 		}
-		receipt := tracker.NativeLandingReceipt{ChangeID: target.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: merge, BaseRef: "develop", Landed: true, ObservedAt: target.service.config.now()}
+		receipt := tracker.NativeLandingReceipt{ChangeID: target.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: merge, BaseRef: "develop", Landed: true, ObservedAt: target.service.config.Clock()}
 		attempt := historyRepairAttempt(t, target, tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: int64(index + 1), Landing: &receipt}})
 		attempts = append(attempts, attempt)
 		fixture.add("change_landing_receipts", map[string]any{"attempt_id": attempt.ID, "version_id": version.ID, "record_json": string(historyTestJSON(t, receipt)), "merge_sha": nil})

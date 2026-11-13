@@ -31,7 +31,7 @@ import (
 func TestReportsLongRangeReadBudget(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
-	f := newUsageHostedFixture(t, func(cfg *Config) { cfg.now = func() time.Time { return now } })
+	f := newUsageHostedFixture(t, func(cfg *Config) { cfg.Clock = func() time.Time { return now } })
 	installReportsBudgetTrace(t, f.service)
 	scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}
 	seedProductionProject(t, f.service, scope, productionProjectShape{issues: 990, attempts: 990, usage: 660, leases: 1682, comments: 7000, days: 180})
@@ -92,7 +92,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 		{"90d/daytime", "90d", 10, 89},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f.service.config.now = func() time.Time { return now.Add(time.Duration(test.hour) * time.Hour) }
+			f.service.config.Clock = func() time.Time { return now.Add(time.Duration(test.hour) * time.Hour) }
 			var mu sync.Mutex
 			var statements []tracedStatement
 			timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
@@ -126,7 +126,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
 				t.Fatal(err)
 			}
-			now := f.service.config.now().UTC()
+			now := f.service.config.Clock().UTC()
 			wantFrom := now.Truncate(24*time.Hour).AddDate(0, 0, -test.days)
 			if !report.Analytics.Window.From.Equal(wantFrom) || !report.Analytics.Window.To.Equal(now) || report.Completion.Done < test.days {
 				t.Fatalf("window=%+v shipped=%d, want %s through %s and at least %d shipped", report.Analytics.Window, report.Completion.Done, wantFrom, now, test.days)

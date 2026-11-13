@@ -51,7 +51,7 @@ func TestOnboardingPageFencesPublicationAndAccess(t *testing.T) {
 			}
 			first, second := claim(), claim()
 			setupDeclared := false
-			now := service.config.now().UTC().Truncate(time.Microsecond)
+			now := service.config.Clock().UTC().Truncate(time.Microsecond)
 			value := onboarding.Project{
 				Repository: "owner/repository",
 				Progress:   onboarding.Progress{Revision: 2, Repository: "existing", Artifacts: "local"},
@@ -77,19 +77,19 @@ func TestOnboardingPageFencesPublicationAndAccess(t *testing.T) {
 			}
 			value.Evaluate()
 			if err := write(func(w projectstore.OnboardingPageWriter) error {
-				return w.PublishOnboardingPage(t.Context(), first, value, service.config.now())
+				return w.PublishOnboardingPage(t.Context(), first, value, service.config.Clock())
 			}); !errors.Is(err, corestore.ErrRevisionConflict) {
 				t.Fatalf("stale publication: %v", err)
 			}
 			if err := write(func(w projectstore.OnboardingPageWriter) error {
-				return w.PublishOnboardingPage(t.Context(), second, value, service.config.now())
+				return w.PublishOnboardingPage(t.Context(), second, value, service.config.Clock())
 			}); err != nil {
 				t.Fatal(err)
 			}
 			changed := value
 			changed.Repository = "owner/changed"
 			if err := write(func(w projectstore.OnboardingPageWriter) error {
-				return w.PublishOnboardingPage(t.Context(), second, changed, service.config.now())
+				return w.PublishOnboardingPage(t.Context(), second, changed, service.config.Clock())
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -125,13 +125,13 @@ func TestOnboardingPageFencesPublicationAndAccess(t *testing.T) {
 				t.Fatalf("access change did not invalidate readiness: %v", err)
 			}
 			if err := write(func(w projectstore.OnboardingPageWriter) error {
-				return w.PublishOnboardingPage(t.Context(), third, value, service.config.now())
+				return w.PublishOnboardingPage(t.Context(), third, value, service.config.Clock())
 			}); !errors.Is(err, corestore.ErrRevisionConflict) {
 				t.Fatalf("publication crossed access revision: %v", err)
 			}
 			current := claim()
 			if err := write(func(w projectstore.OnboardingPageWriter) error {
-				return w.PublishOnboardingPage(t.Context(), current, value, service.config.now())
+				return w.PublishOnboardingPage(t.Context(), current, value, service.config.Clock())
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -152,7 +152,7 @@ func TestOnboardingPageKeepsViewerVisibilityAndRevocation(t *testing.T) {
 			runner := prepareRunnerForScope(t, sibling, "projects", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			runner.enroll(t)
 			other := hubapi.TokenResponse{ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}
-			now := service.config.now().UTC().Truncate(time.Microsecond)
+			now := service.config.Clock().UTC().Truncate(time.Microsecond)
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: other.ID, Name: other.ID, Hash: apikey.HashToken(other.Token), Scope: "admin", Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now})
 			}); err != nil {
@@ -300,7 +300,7 @@ func TestOnboardingPageKeepsSavedProgressCurrent(t *testing.T) {
 			response := performHubAPIRequest(t, service, http.MethodPut, fixture.base+"/onboarding", fixture.token, map[string]any{"idempotency_key": "example-progress", "progress": onboarding.Progress{Repository: "existing", Artifacts: "local"}})
 			requireNativeStatus(t, response, http.StatusOK)
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Background, func(w tenantstore.Writer) error {
-				return w.(projectstore.OnboardingPageWriter).PublishOnboardingPage(t.Context(), candidate, stale, service.config.now())
+				return w.(projectstore.OnboardingPageWriter).PublishOnboardingPage(t.Context(), candidate, stale, service.config.Clock())
 			}); !errors.Is(err, corestore.ErrRevisionConflict) {
 				t.Errorf("saved progress accepted an older projection: %v", err)
 			}

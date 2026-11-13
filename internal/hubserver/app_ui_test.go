@@ -622,7 +622,7 @@ func TestAppUpdates(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		identity.LastHeartbeatAt = f.service.config.now().Add(-2 * runnerauth.HeartbeatTimeout)
+		identity.LastHeartbeatAt = f.service.config.Clock().Add(-2 * runnerauth.HeartbeatTimeout)
 		if err := writer.UpdateRunnerIdentity(t.Context(), identity); err != nil {
 			return err
 		}
@@ -630,7 +630,7 @@ func TestAppUpdates(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return writer.RevokeAccessCredential(t.Context(), identity.TokenID, f.service.config.now())
+		return writer.RevokeAccessCredential(t.Context(), identity.TokenID, f.service.config.Clock())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -722,7 +722,7 @@ func TestAppUpdatesPostgresProjectionAndFreshAuthorization(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, Version: "v1.2.4", now: func() time.Time { return now }}}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}, Version: "v1.2.4", Clock: func() time.Time { return now }}}
 	credential := hubapi.APICredential{ID: "operator_example", Hash: "example-hash", Scope: hubapi.APIScopeOperator, Hosted: &auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_example"}, HostedRole: "owner"}
 	updates, err := service.readAppUpdates(t.Context(), credential)
 	if err != nil {
@@ -837,7 +837,7 @@ func TestAppBootstrapWorkspaceAvailability(t *testing.T) {
 				case "stale report":
 					identity.LastHeartbeatAt = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 				case "revoked runner":
-					if err := writer.RevokeAccessCredential(t.Context(), identity.TokenID, f.service.config.now()); err != nil {
+					if err := writer.RevokeAccessCredential(t.Context(), identity.TokenID, f.service.config.Clock()); err != nil {
 						return err
 					}
 				case "missing project grant":

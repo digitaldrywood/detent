@@ -62,7 +62,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "hub_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.now()}
+			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "hub_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.Clock()}
 			seedHubConfiguration(t, f, r.binding.RunnerID, view)
 			post := func() {
 				t.Helper()
@@ -246,7 +246,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				view.Paused, view.Draining = false, true
 			}
 			if strings.HasPrefix(scenario, "settlement ") {
-				view.Diagnostics = &runnerauth.ProjectDiagnostics{Source: "runner_runtime_and_durable_attempt_owners", ObservedAt: f.service.config.now().UTC(), RuntimeObservedAt: f.service.config.now().UTC(), Counts: map[string]int{}, Unavailable: map[string]string{}}
+				view.Diagnostics = &runnerauth.ProjectDiagnostics{Source: "runner_runtime_and_durable_attempt_owners", ObservedAt: f.service.config.Clock().UTC(), RuntimeObservedAt: f.service.config.Clock().UTC(), Counts: map[string]int{}, Unavailable: map[string]string{}}
 			}
 			initialDiagnostics := view.Diagnostics
 			seedHubConfiguration(t, f, r.binding.RunnerID, view)
@@ -277,7 +277,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			var entryResolutions int
 			if strings.HasPrefix(scenario, "entry ") {
 				entryNow = time.Now().UTC()
-				f.service.config.now = func() time.Time { return entryNow }
+				f.service.config.Clock = func() time.Time { return entryNow }
 				provider := newHostedSecurityProvider()
 				shared := hostedSharedFixture{hostedSecurityFixture: hostedSecurityFixture{service: f.service, provider: provider, project: f.project.ID, base: f.base}}
 				f.service.config.Hosted = hostedSharedTestConfig(provider, hostedSharedKey(7), 1).Hosted
@@ -733,7 +733,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 			view = *snapshot.ProjectConfigurationRequest.Desired
 			if scenario == "settlement older diagnostics" {
-				view.Diagnostics = &runnerauth.ProjectDiagnostics{Source: "runner_runtime_and_durable_attempt_owners", ObservedAt: f.service.config.now().UTC().Add(-time.Hour), RuntimeObservedAt: f.service.config.now().UTC().Add(-time.Hour), Counts: map[string]int{}, Unavailable: map[string]string{}}
+				view.Diagnostics = &runnerauth.ProjectDiagnostics{Source: "runner_runtime_and_durable_attempt_owners", ObservedAt: f.service.config.Clock().UTC().Add(-time.Hour), RuntimeObservedAt: f.service.config.Clock().UTC().Add(-time.Hour), Counts: map[string]int{}, Unavailable: map[string]string{}}
 			}
 			view.RuntimeRegistered = true
 			view.RequestID, view.Saved, view.Applied, view.AllowLocalBinding = args.RequestID, true, true, true
@@ -865,7 +865,7 @@ func seedHubConfiguration(t *testing.T, f nativeFixture, runner string, view run
 			return err
 		}
 		owner := w.(postgres.ConfigurationWriter)
-		now := f.service.config.now().UTC()
+		now := f.service.config.Clock().UTC()
 		authority := postgres.ConfigurationAuthority{RunnerID: runner, EnrollmentID: identity.EnrollmentID, Revision: identity.Revision, At: now}
 		_, err = owner.InitializeConfiguration(t.Context(), postgres.ConfigurationHeader{OrganizationID: f.project.OrganizationID, RunnerID: runner, SourceRevision: view.ConfigRevision, CreatedAt: now}, authority)
 		if err != nil {

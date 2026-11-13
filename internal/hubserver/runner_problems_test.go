@@ -81,13 +81,13 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 			runner := readProblemFixtureRouting(t, f, r)
 			for _, connection := range []string{"online", "offline"} {
 				runner.ConnectionHealth = connection
-				fleet := hostedFleetRunnerView(runner, "test", map[tracker.ProjectID]bool{f.project.ID: true}, f.service.config.now())
+				fleet := hostedFleetRunnerView(runner, "test", map[tracker.ProjectID]bool{f.project.ID: true}, f.service.config.Clock())
 				if fleet.Health != "needs_attention" || fleet.CapacityHealth != connection {
 					t.Fatalf("project warning changed host availability: health=%s capacity_health=%s connection=%s", fleet.Health, fleet.CapacityHealth, connection)
 				}
 			}
 			runner.Problems[0].ProjectID = ""
-			if fleet := hostedFleetRunnerView(runner, "test", nil, f.service.config.now()); fleet.CapacityHealth != "" || fleet.Health != "needs_attention" {
+			if fleet := hostedFleetRunnerView(runner, "test", nil, f.service.config.Clock()); fleet.CapacityHealth != "" || fleet.Health != "needs_attention" {
 				t.Fatalf("runner-wide failure lost its availability warning: %+v", fleet)
 			}
 			if !problems[0].ReportedAt.Equal(observed) {
@@ -133,7 +133,7 @@ func TestRunnerHubProblems(t *testing.T) {
 			r.enroll(t)
 			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "protocol_major": test.protocol, "settings_rejected": test.rejected, "backend_isolation": isolation.Report{"codex": {isolation.NativeTrusted}}, "problems": []runnerauth.Problem{runnerauth.NewProblem("keep_awake_failed")}}
 			if test.code == "update_applied_not_running" {
-				now := f.service.config.now()
+				now := f.service.config.Clock()
 				running := runnerauth.BuildEvidence{Version: "1.0.0", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 				applied := running
 				applied.Version, applied.Commit, applied.SHA256, applied.VerifiedRelease = "1.0.1", strings.Repeat("c", 40), strings.Repeat("d", 64), true
@@ -281,7 +281,7 @@ func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
 			case "compatible approved revision", "compatible unapproved revision":
 				effective, selected = old, old
 			}
-			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", SelectedPolicy: &selected, EffectivePolicy: &effective, ObservedAt: f.service.config.now()}
+			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", SelectedPolicy: &selected, EffectivePolicy: &effective, ObservedAt: f.service.config.Clock()}
 			post := func(configuration *runnerauth.ProjectConfiguration) {
 				t.Helper()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": configuration}), http.StatusOK)
@@ -293,7 +293,7 @@ func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
 				configuration = &view
 			}
 			if test.name == "admission observation" || test.name == "effective overrides admission" || test.name == "compatible approved revision" || test.name == "compatible unapproved revision" {
-				observation := tracker.NativeAdmissionObservation{Context: tracker.NativeAdmissionContext{PolicyID: mismatch.ID, ObservedAt: f.service.config.now()}}
+				observation := tracker.NativeAdmissionObservation{Context: tracker.NativeAdmissionContext{PolicyID: mismatch.ID, ObservedAt: f.service.config.Clock()}}
 				if test.name == "compatible approved revision" || test.name == "compatible unapproved revision" {
 					observation.Context.PolicyID = old.ID
 				}
@@ -302,7 +302,7 @@ func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					observation.RunnerRevision, observation.ReceivedAt = identity.Revision, f.service.config.now()
+					observation.RunnerRevision, observation.ReceivedAt = identity.Revision, f.service.config.Clock()
 					return w.ReplaceRunnerAdmissionObservation(t.Context(), r.binding.RunnerID, f.project.ID, observation)
 				}); err != nil {
 					t.Fatal(err)
@@ -358,7 +358,7 @@ func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
 			read(test.want)
 			if test.name == "compatible approved revision" || test.name == "compatible unapproved revision" {
 				item := f.create(t, "policy capacity candidate")
-				configurePolicyCapacityRunner(t, f, r, f.service.config.now(), f.service.config.now())
+				configurePolicyCapacityRunner(t, f, r, f.service.config.Clock(), f.service.config.Clock())
 				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID)+"/runtime", f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				var evidence tracker.NativeRuntimeEvidence
@@ -591,7 +591,7 @@ func recordRunnerConfigurationPolicyObservation(t *testing.T, f nativeFixture, r
 	}
 	revision.ProjectID = f.project.ID
 	return f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.RecordProjectPolicyObservation(t.Context(), policystore.Observation{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, RunnerID: runner, PolicyID: descriptor.ID, ObservedAt: f.service.config.now(), Revision: revision})
+		_, err := w.RecordProjectPolicyObservation(t.Context(), policystore.Observation{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, RunnerID: runner, PolicyID: descriptor.ID, ObservedAt: f.service.config.Clock(), Revision: revision})
 		return err
 	})
 }
@@ -610,7 +610,7 @@ func configurePolicyCapacityRunner(t *testing.T, f nativeFixture, runner runnerF
 			return err
 		}
 		identity.LastHeartbeatAt = heartbeat
-		identity.ExpiresAt = f.service.config.now().Add(time.Hour)
+		identity.ExpiresAt = f.service.config.Clock().Add(time.Hour)
 		return w.UpdateRunnerIdentity(t.Context(), identity)
 	}); err != nil {
 		t.Fatal(err)

@@ -69,7 +69,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 		{"reports filtered by issue", organization + "/reports?project=" + f.project + "&range=30d&labels=cloud&priorities=1&types=bug&filed_by=principal"},
 		{"reports filtered by attempt", organization + "/reports?project=" + f.project + "&range=30d&runners=runner_browser_preview&models=gpt-6-astra&stages=code"},
 		{"report filter options", organization + "/reports/options?project=all&range=30d"},
-		{"reports all projects over a custom range", organization + "/reports?project=all&from=" + f.service.config.now().UTC().AddDate(0, 0, -89).Format(time.DateOnly) + "&to=" + f.service.config.now().UTC().Format(time.DateOnly) + "&labels=cloud"},
+		{"reports all projects over a custom range", organization + "/reports?project=all&from=" + f.service.config.Clock().UTC().AddDate(0, 0, -89).Format(time.DateOnly) + "&to=" + f.service.config.Clock().UTC().Format(time.DateOnly) + "&labels=cloud"},
 		{"diagnostics", organization + "/diagnostics?range=30d"},
 	} {
 		t.Run(read.name, func(t *testing.T) {
@@ -190,7 +190,7 @@ func TestAnalyticsReportPlans(t *testing.T) {
 func seedReportsVolumeTransitions(t *testing.T, s *Service, scope hubscope.NativeScope, count int) {
 	t.Helper()
 	content := eventstore.NewContent(s.runDetailStore())
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config.Clock().UTC().Truncate(time.Microsecond)
 	for first := 0; first < count; first += 100 {
 		records := make([]eventstore.Event, 0, 100)
 		for index := first; index < min(first+100, count); index++ {
@@ -229,7 +229,7 @@ type productionProjectShape struct {
 func seedProductionProject(t *testing.T, s *Service, scope hubscope.NativeScope, shape productionProjectShape) {
 	t.Helper()
 	admin := hostedPostgresAdmin(t, s)
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config.Clock().UTC().Truncate(time.Microsecond)
 	days := shape.days
 	if days == 0 {
 		days = 2

@@ -110,7 +110,7 @@ func (s *Service) changeRunnerCredentialTenant(ctx context.Context, credential h
 			}
 			return err
 		}
-		now := s.config.now()
+		now := s.config.Clock()
 		if current.ID != credential.ID || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || current.ExpiresAt == nil || !current.ExpiresAt.After(current.CreatedAt) || !validRunnerCredentialForRenewal(current, credential.Hash, now, replacement == "") || current.UserID != "" || current.MembershipID != "" {
 			return hubscope.RunnerUnauthorized()
 		}
@@ -165,7 +165,7 @@ func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope hubscop
 		if err := s.requireRunnerAdministrationTenant(ctx, w, scope); err != nil {
 			return err
 		}
-		return s.revokeRunnerIdentityTenant(ctx, w, scope.Organization, resource, scope.Credential.ID, s.config.now().UTC())
+		return s.revokeRunnerIdentityTenant(ctx, w, scope.Organization, resource, scope.Credential.ID, s.config.Clock().UTC())
 	})
 	if err != nil {
 		return nil, err

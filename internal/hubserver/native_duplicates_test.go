@@ -66,7 +66,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC).AddDate(0, 0, -test.closedDays)
-			service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
+			service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }})
 			f := newNativeFixture(t, service, "", "duplicates")
 			first := f.create(t, "Runner checkout deadlocks")
 			body := "Checkout hangs during repository association" + issueContractTestSections
@@ -302,7 +302,7 @@ func TestNativeDuplicateChallengeLifetime(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
-			service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
+			service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }})
 			f := newNativeFixture(t, service, "", "lifetime")
 			first := f.create(t, "Runner checkout deadlocks")
 			setNativeDuplicateChallengeFixture(t, f, true)

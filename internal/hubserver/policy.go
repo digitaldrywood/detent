@@ -116,7 +116,7 @@ func (s *Service) tenantProjectPolicyRead(ctx context.Context, organization trac
 	var policyCount int64
 	err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
-		rows, policyCount, err = reader.ProjectPolicyObservations(ctx, project, approval.Policy.ID, "", s.config.now(), projectPolicyObservationLimit)
+		rows, policyCount, err = reader.ProjectPolicyObservations(ctx, project, approval.Policy.ID, "", s.config.Clock(), projectPolicyObservationLimit)
 		return err
 	})
 	if err != nil {
@@ -401,7 +401,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 			return policy.Approval{}, err
 		}
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	if !revisionFound {
 		raw, err := json.Marshal(resolved)
 		if err != nil {
@@ -462,7 +462,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 			return err
 		}
 		if change.ObservedPolicyID != "" {
-			current, err := writer.CurrentProjectPolicyObservation(ctx, scope.Project, change.ObservedPolicyID, s.config.now())
+			current, err := writer.CurrentProjectPolicyObservation(ctx, scope.Project, change.ObservedPolicyID, s.config.Clock())
 			if err != nil {
 				return err
 			}
@@ -566,7 +566,7 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope hubsc
 		}
 		receipt, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{
 			OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: command.Operation,
-			CommandKey: command.Key, RequestHash: command.Hash, CreatedAt: s.config.now().UTC(),
+			CommandKey: command.Key, RequestHash: command.Hash, CreatedAt: s.config.Clock().UTC(),
 		}, raw)
 		if err != nil {
 			return policy.Approval{}, err
@@ -609,7 +609,7 @@ func (s *Service) reconcileTenantPolicyApproval(ctx context.Context, scope hubsc
 		if err := reconcileTenantWorkflowPolicy(ctx, writer, project, approval.Policy); err != nil {
 			return err
 		}
-		if err := applyDefaultReviewPolicy(ctx, writer, review, approval.ApprovedBy, s.config.now().UTC()); err != nil {
+		if err := applyDefaultReviewPolicy(ctx, writer, review, approval.ApprovedBy, s.config.Clock().UTC()); err != nil {
 			return err
 		}
 		if command != nil {
@@ -636,7 +636,7 @@ func (s *Service) readTenantObservedPolicy(ctx context.Context, organization tra
 	var rows []policystore.ObservedRevision
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
-		rows, _, err = reader.ProjectPolicyObservations(ctx, project, approvedPolicyID, policyID, s.config.now(), 1)
+		rows, _, err = reader.ProjectPolicyObservations(ctx, project, approvedPolicyID, policyID, s.config.Clock(), 1)
 		return err
 	})
 	if err != nil {
@@ -749,7 +749,7 @@ func (s *Service) observeTenantProjectPolicy(ctx context.Context, scope hubscope
 	if err != nil {
 		return err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	record := policystore.Observation{
 		OrganizationID: scope.Organization,
 		ProjectID:      scope.Project,

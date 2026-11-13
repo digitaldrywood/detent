@@ -50,7 +50,7 @@ func (a hubChangeApplication) authorized(ctx context.Context, args operatortool.
 }
 
 func (a hubChangeApplication) result(scope hubscope.NativeScope, args operatortool.ChangeArguments) operatortool.ChangeResult {
-	result := operatortool.ChangeResult{OrganizationID: string(scope.Organization), ProjectID: args.ProjectID, WorkItemID: args.ItemID, ChangeID: args.ChangeID, GeneratedAt: a.service.config.now().UTC(), Freshness: "live"}
+	result := operatortool.ChangeResult{OrganizationID: string(scope.Organization), ProjectID: args.ProjectID, WorkItemID: args.ItemID, ChangeID: args.ChangeID, GeneratedAt: a.service.config.Clock().UTC(), Freshness: "live"}
 	result.URL = "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(args.ProjectID)
 	if args.ItemID != "" {
 		result.URL += "/work-items/" + url.PathEscape(args.ItemID)
@@ -130,7 +130,7 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 			value.Artifacts, err = a.service.readArtifactReferences(ctx, scope, args.ItemID)
 		case operatortool.GetArtifactReference:
 			var reference artifact.Reference
-			reference, err = a.service.artifactReferenceCommand(ctx, scope, args.ItemID, args.ArtifactID, args.Revision, a.service.config.now())
+			reference, err = a.service.artifactReferenceCommand(ctx, scope, args.ItemID, args.ArtifactID, args.Revision, a.service.config.Clock())
 			if err == nil {
 				value.Artifacts = []artifact.Reference{reference}
 			}
@@ -278,7 +278,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		if err != nil {
 			return result, err
 		}
-		grant, err := s.artifactReadGrantCommand(ctx, scope, args.ItemID, args.ArtifactID, args.Revision, s.config.now())
+		grant, err := s.artifactReadGrantCommand(ctx, scope, args.ItemID, args.ArtifactID, args.Revision, s.config.Clock())
 		if err != nil {
 			return result, err
 		}
@@ -310,7 +310,7 @@ func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope h
 	if strings.TrimSpace(args.RequestID) == "" || len(args.RequestID) > 128 {
 		return nil, operatortool.ErrInvalidArguments
 	}
-	reference, err := s.artifactReferenceCommand(ctx, scope, args.ItemID, args.ArtifactID, args.Revision, s.config.now())
+	reference, err := s.artifactReferenceCommand(ctx, scope, args.ItemID, args.ArtifactID, args.Revision, s.config.Clock())
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +332,7 @@ func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope h
 	if err != nil {
 		return nil, err
 	}
-	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: args.RequestID, RequestHash: hash, CreatedAt: s.config.now()}, raw)
+	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: args.RequestID, RequestHash: hash, CreatedAt: s.config.Clock()}, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +361,7 @@ func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope h
 		if !artifact.ValidOrigin(binding.Origin) {
 			return artifact.ErrMissing
 		}
-		if !s.config.now().Before(reference.ExpiresAt) {
+		if !s.config.Clock().Before(reference.ExpiresAt) {
 			return artifact.ErrExpired
 		}
 		existing, err := w.Receipt(ctx, scope.Credential.ID, operation, args.RequestID)

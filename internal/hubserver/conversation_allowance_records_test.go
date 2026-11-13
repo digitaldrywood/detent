@@ -217,7 +217,7 @@ func TestRunEventGrowthCountsCompletionEventsPostgres(t *testing.T) {
 		{organization: "org_observation_events", wantLimit: "history_records"},
 	} {
 		seedConversationAllowancePostgres(t, repository, test.organization, ref, allowances)
-		service := &Service{database: conversationAllowanceDatabase(test.organization, ref, allowances, repository), config: Config{now: func() time.Time { return now }}}
+		service := &Service{database: conversationAllowanceDatabase(test.organization, ref, allowances, repository), config: Config{Clock: func() time.Time { return now }}}
 		err := repository.WriteTenant(t.Context(), test.organization, corestore.Serving, func(writer tenantstore.Writer) error {
 			growth, err := service.prepareRunEventGrowth(t.Context(), writer, test.completion)
 			if err != nil {

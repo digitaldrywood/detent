@@ -182,7 +182,7 @@ func TestHostedProjectRename(t *testing.T) {
 						return err
 					}
 					member.Role = "member"
-					member.UpdatedAt = f.service.config.now()
+					member.UpdatedAt = f.service.config.Clock()
 					return w.UpdateAccessMember(t.Context(), member)
 				}); err != nil {
 					t.Fatal(err)

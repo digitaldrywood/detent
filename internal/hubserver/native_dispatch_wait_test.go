@@ -253,7 +253,7 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 			var clock atomic.Int64
 			clock.Store(time.Now().UTC().Truncate(time.Microsecond).UnixNano())
 			now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
-			service := openLocalPostgresHubTestService(t, repository, Config{SecretKeys: secretTestKeys(t, "1", "1"), now: now})
+			service := openLocalPostgresHubTestService(t, repository, Config{SecretKeys: secretTestKeys(t, "1", "1"), Clock: now})
 			organization := nativeOrganization{ID: "org_first", Name: "org_first", Slug: "org-first"}
 			seedPostgresHubAdmin(t, repository, service, organization)
 			service.database.hostedOrganization = organization.ID
@@ -355,7 +355,7 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 			}
 			probe.candidates.Store(0)
 			if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(reader tenantstore.Reader) error {
-				_, err := reader.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: f.project.ID, Scope: string(f.project.ID), WorkItemID: item.WorkItemID, AvailableAt: service.config.now(), Limit: 1})
+				_, err := reader.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: f.project.ID, Scope: string(f.project.ID), WorkItemID: item.WorkItemID, AvailableAt: service.config.Clock(), Limit: 1})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -696,7 +696,7 @@ func newDispatchWaitFixture(t *testing.T, name string) (nativeFixture, *dispatch
 		config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, probe)
 	})
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := openLocalPostgresHubTestService(t, repository, Config{SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: probe.details, now: func() time.Time { return now }})
+	service := openLocalPostgresHubTestService(t, repository, Config{SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: probe.details, Clock: func() time.Time { return now }})
 	organization := nativeOrganization{ID: "org_first", Name: "org_first", Slug: "org-first"}
 	seedPostgresHubAdmin(t, repository, service, organization)
 	service.database.hostedOrganization = organization.ID
@@ -929,7 +929,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 					t.Fatal("attempt source read tracer was not exercised")
 				}
 			}
-			query := claimstore.CandidateQuery{ProjectID: f.project.ID, Scope: string(f.project.ID), AvailableAt: f.service.config.now().Truncate(time.Second), States: []string{"todo"}, Limit: 9, StatePriority: []string{"Todo"}, LabelPriority: []string{"hotfix"}}
+			query := claimstore.CandidateQuery{ProjectID: f.project.ID, Scope: string(f.project.ID), AvailableAt: f.service.config.Clock().Truncate(time.Second), States: []string{"todo"}, Limit: 9, StatePriority: []string{"Todo"}, LabelPriority: []string{"hotfix"}}
 			read := func(query claimstore.CandidateQuery) (claimstore.CandidatePage, error) {
 				var page claimstore.CandidatePage
 				err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -1092,7 +1092,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 					run.CompletionBody = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve scope\n```"
 				})
 				probe.candidates.Store(0)
-				_, err = f.service.previewProviderCandidatesTenant(t.Context(), scope, tracker.NativeCapacityPreview{NativeClaim: claim, After: tailID, Limit: 9}, f.service.config.now())
+				_, err = f.service.previewProviderCandidatesTenant(t.Context(), scope, tracker.NativeCapacityPreview{NativeClaim: claim, After: tailID, Limit: 9}, f.service.config.Clock())
 				if !isProviderWait(err) || probe.candidates.Load() != 1 {
 					t.Errorf("answered cursor must refresh without reading next page: candidate_queries=%d err=%v", probe.candidates.Load(), err)
 				}

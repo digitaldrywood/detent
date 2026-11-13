@@ -172,7 +172,7 @@ func seedScaleSoak(t *testing.T, root string, config scaleSoakConfig) scaleSoakS
 		if err != nil {
 			t.Fatal(err)
 		}
-		now := service.config.now().UTC()
+		now := service.config.Clock().UTC()
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: hubapi.NewID("hub"), CursorKey: key}); err != nil {
 				return err

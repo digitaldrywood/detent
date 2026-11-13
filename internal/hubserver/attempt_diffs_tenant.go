@@ -97,7 +97,7 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.Nati
 	for _, file := range files {
 		truncated = truncated || file.Truncated
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	diffID, archiveID := hubapi.NewID("diff"), hubapi.NewID("archive")
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if _, err := resolveAttemptDiffTenant(ctx, w, scope, attemptID, request, now); err != nil {
@@ -110,7 +110,7 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.Nati
 		if request.Generation.Seq <= latest {
 			return attemptDiffStaleGeneration("Generation " + strconv.FormatInt(request.Generation.Seq, 10) + " is not ahead of the stored generation " + strconv.FormatInt(latest, 10))
 		}
-		item, err := resolveAttemptDiffTenant(ctx, w, scope, attemptID, request, s.config.now().UTC())
+		item, err := resolveAttemptDiffTenant(ctx, w, scope, attemptID, request, s.config.Clock().UTC())
 		if err != nil {
 			return err
 		}
@@ -192,7 +192,7 @@ func (s *Service) checkAttemptDiffStorageAdmission(ctx context.Context, scope hu
 
 func (s *Service) validateAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, attemptID string, request tracker.AttemptDiffRequest) error {
 	return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		_, err := resolveAttemptDiffTenant(ctx, r, scope, attemptID, request, s.config.now().UTC())
+		_, err := resolveAttemptDiffTenant(ctx, r, scope, attemptID, request, s.config.Clock().UTC())
 		if err != nil {
 			return err
 		}

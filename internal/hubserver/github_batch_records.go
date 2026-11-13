@@ -194,7 +194,7 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope hubscope.N
 		batch = &tracker.GitHubBatch{ID: hubapi.NewID("intake"), Revision: expected, HubOwned: true, Automatic: request.Action == "start", RequestedBy: &actor, Limit: limit, Discovery: tracker.GitHubDiscovery{Repository: strings.ToLower(repository), Snapshots: true, Labels: request.Labels, IncludeClosed: request.IncludeClosed, ProjectV2: request.ProjectV2}, Status: "discovering", Page: tracker.GitHubDiscoveryPage{Issues: []tracker.GitHubIssuePreview{}}, Items: []tracker.GitHubBatchItem{}}
 		if s.config.ImportBackend == nil {
 			if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-				return s.requireGitHubBatchRunner(ctx, reader, scope, scope.GitHubIntakeRevision.FallbackRunner, batch.Discovery.Repository, s.config.now())
+				return s.requireGitHubBatchRunner(ctx, reader, scope, scope.GitHubIntakeRevision.FallbackRunner, batch.Discovery.Repository, s.config.Clock())
 			}); err != nil {
 				return nil, err
 			}
@@ -238,12 +238,12 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope hubscope.N
 		if batch == nil {
 			return nil, intakeInvalid("No intake exists")
 		}
-		if err := batchRetryAllowed(batch.RetryAt, s.config.now()); err != nil {
+		if err := batchRetryAllowed(batch.RetryAt, s.config.Clock()); err != nil {
 			return nil, err
 		}
 		for _, item := range batch.Items {
 			if item.Status == "failed" {
-				if err := batchRetryAllowed(item.RetryAt, s.config.now()); err != nil {
+				if err := batchRetryAllowed(item.RetryAt, s.config.Clock()); err != nil {
 					return nil, err
 				}
 			}
@@ -277,7 +277,7 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope hubscope.N
 		batch.RequestedBy = &actor
 		if request.RunnerID != "" && !batch.HubOwned {
 			if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-				return s.requireGitHubBatchRunner(ctx, reader, scope, request.RunnerID, batch.Discovery.Repository, s.config.now())
+				return s.requireGitHubBatchRunner(ctx, reader, scope, request.RunnerID, batch.Discovery.Repository, s.config.Clock())
 			}); err != nil {
 				return nil, err
 			}
@@ -305,7 +305,7 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope hubscope.N
 		if err := s.gitHubBatchRequestAuthority(ctx, w, scope, scope.GitHubIntakeRevision.RequireAdminKey); err != nil {
 			return err
 		}
-		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.now())); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.Clock())); err != nil {
 			return err
 		}
 		current, err := w.ProjectRecord(ctx, scope.Project)
@@ -535,7 +535,7 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope hubscope.N
 			}
 			if (errors.Is(fetchErr, githubconnector.ErrNotFound) || status != nil && status.StatusCode == http.StatusNotFound) && scope.GitHubIntakeRevision.FallbackRunner != "" {
 				if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-					return s.requireGitHubBatchRunner(ctx, reader, scope, scope.GitHubIntakeRevision.FallbackRunner, batch.Discovery.Repository, s.config.now())
+					return s.requireGitHubBatchRunner(ctx, reader, scope, scope.GitHubIntakeRevision.FallbackRunner, batch.Discovery.Repository, s.config.Clock())
 				}); err != nil {
 					return err
 				}
@@ -543,13 +543,13 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope hubscope.N
 				return save()
 			}
 			batch.Status = "discovery_failed"
-			batch.Error, batch.RetryAt = githubBatchSourceFailure(fetchErr, s.config.now(), page.RetryAt)
+			batch.Error, batch.RetryAt = githubBatchSourceFailure(fetchErr, s.config.Clock(), page.RetryAt)
 			return errors.Join(fetchErr, save())
 		}
 		if len(page.Gaps) != 0 {
 			batch.Status = "discovery_failed"
 			partial := hubapi.NativePublicInvalid("Source discovery context is incomplete")
-			batch.Error, batch.RetryAt = githubBatchSourceFailure(partial, s.config.now(), page.RetryAt)
+			batch.Error, batch.RetryAt = githubBatchSourceFailure(partial, s.config.Clock(), page.RetryAt)
 			return errors.Join(partial, save())
 		}
 		if page.BatchPage == nil {
@@ -602,7 +602,7 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope hubscope.N
 				return itemErr
 			}
 			item.Status = "failed"
-			item.Error, item.RetryAt = githubBatchSourceFailure(itemErr, s.config.now(), time.Time{})
+			item.Error, item.RetryAt = githubBatchSourceFailure(itemErr, s.config.Clock(), time.Time{})
 			if item.RetryAt != "" {
 				for j := range batch.Items {
 					if batch.Items[j].Status == "pending" {
@@ -765,7 +765,7 @@ func (s *Service) githubBatchRecordLimit(ctx context.Context, scope hubscope.Nat
 	var entitlement hostedplans.HostedEntitlement
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		entitlement, err = hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, s.config.now()))
+		entitlement, err = hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, s.config.Clock()))
 		return err
 	})
 	if err != nil {
@@ -821,7 +821,7 @@ func (s *Service) closeGitHubBatchSources(ctx context.Context, scope hubscope.Na
 		if err != nil {
 			return nil, err
 		}
-		outbound = append(outbound, projectstore.GitHubOutbound{ProjectID: scope.Project, WorkItemID: item.WorkItemID, Key: "native:" + string(item.WorkItemID) + ":intake", Repository: batch.Discovery.Repository, IssueNumber: int64(item.Number), Kind: string(MutationWorkpad), CreatedAt: s.config.now(), Payload: payload})
+		outbound = append(outbound, projectstore.GitHubOutbound{ProjectID: scope.Project, WorkItemID: item.WorkItemID, Key: "native:" + string(item.WorkItemID) + ":intake", Repository: batch.Discovery.Repository, IssueNumber: int64(item.Number), Kind: string(MutationWorkpad), CreatedAt: s.config.Clock(), Payload: payload})
 		item.SourceCloseRequested = true
 		if len(outbound) == githubBatchMaintenanceLimit {
 			break
@@ -836,7 +836,7 @@ func (s *Service) closeGitHubBatchSources(ctx context.Context, scope hubscope.Na
 		if err := s.gitHubBatchRequestAuthority(ctx, writer, scope, scope.GitHubIntakeRevision.RequireAdminKey); err != nil {
 			return err
 		}
-		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, writer, "github_integration", s.config.now())); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, writer, "github_integration", s.config.Clock())); err != nil {
 			return err
 		}
 		current, err := writer.ProjectRecord(ctx, scope.Project)
@@ -876,7 +876,7 @@ func (s *Service) closeGitHubBatchSources(ctx context.Context, scope hubscope.Na
 
 func (s *Service) gitHubBatchRequestAuthority(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, requireAdminKey bool) error {
 	if requireAdminKey {
-		return s.configurationRequestAuthority(ctx, reader, scope, s.config.now(), "github_intake")
+		return s.configurationRequestAuthority(ctx, reader, scope, s.config.Clock(), "github_intake")
 	}
 	if scope.Credential.Runner.RunnerID != "" {
 		return hubapi.NativeNotFound()
@@ -1021,7 +1021,7 @@ func (s *Service) readGitHubBatchTaskRecord(ctx context.Context, scope hubscope.
 		if err := s.gitHubBatchRequestAuthority(ctx, reader, *background.GitHubIntakeRevision.Authority, background.GitHubIntakeRevision.RequireAdminKey); err != nil {
 			return err
 		}
-		return s.requireGitHubBatchRunner(ctx, reader, scope, record.RunnerID, record.Discovery.Repository, s.config.now())
+		return s.requireGitHubBatchRunner(ctx, reader, scope, record.RunnerID, record.Discovery.Repository, s.config.Clock())
 	}); err != nil {
 		return nil, err
 	}
@@ -1048,7 +1048,7 @@ func (s *Service) reconcileRunnerGitHubBatch(ctx context.Context, scope hubscope
 		return corestore.ErrNotFound
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Background, func(reader tenantstore.Reader) error {
-		return s.requireGitHubBatchRunner(ctx, reader, scope, batch.RunnerID, batch.Discovery.Repository, s.config.now())
+		return s.requireGitHubBatchRunner(ctx, reader, scope, batch.RunnerID, batch.Discovery.Repository, s.config.Clock())
 	}); err != nil {
 		return err
 	}
@@ -1084,7 +1084,7 @@ func (s *Service) reconcileRunnerGitHubBatch(ctx context.Context, scope hubscope
 		return s.saveGitHubBatchRecord(ctx, scope, batch)
 	}
 	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Background, func(writer tenantstore.Writer) error {
-		return writer.(projectstore.GitHubIntakeWriter).DeferGitHubIntake(ctx, scope.Project, s.config.now(), s.config.deps.Jitter())
+		return writer.(projectstore.GitHubIntakeWriter).DeferGitHubIntake(ctx, scope.Project, s.config.Clock(), s.config.deps.Jitter())
 	})
 }
 
@@ -1114,7 +1114,7 @@ func (s *Service) reportGitHubBatchRecord(ctx context.Context, scope hubscope.Na
 	}
 	background.GitHubIntakeRevision.Reporter = &scope
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		return s.requireGitHubBatchRunner(ctx, reader, scope, batch.RunnerID, batch.Discovery.Repository, s.config.now())
+		return s.requireGitHubBatchRunner(ctx, reader, scope, batch.RunnerID, batch.Discovery.Repository, s.config.Clock())
 	}); err != nil {
 		return nil, err
 	}
@@ -1217,7 +1217,7 @@ func (s *Service) reportGitHubBatchRecord(ctx context.Context, scope hubscope.Na
 						return nil, itemErr
 					}
 					item.Status = "failed"
-					item.Error, item.RetryAt = githubBatchSourceFailure(itemErr, s.config.now(), time.Time{})
+					item.Error, item.RetryAt = githubBatchSourceFailure(itemErr, s.config.Clock(), time.Time{})
 				} else {
 					batch.Page.Issues[previewIndex].Body = ""
 					batch.Page.Issues[previewIndex].Snapshot = nil
@@ -1246,7 +1246,7 @@ func (s *Service) reportGitHubBatchRecord(ctx context.Context, scope hubscope.Na
 	}
 	receipt := tracker.GitHubBatchReceipt{Revision: batch.Revision, Status: batch.Status, Next: next}
 	return s.tenantReceiptMutation(ctx, scope, operation, request.Mutation, request, receipt, func(writer tenantstore.Writer) error {
-		if err := s.requireGitHubBatchRunner(ctx, writer, scope, batch.RunnerID, batch.Discovery.Repository, s.config.now()); err != nil {
+		if err := s.requireGitHubBatchRunner(ctx, writer, scope, batch.RunnerID, batch.Discovery.Repository, s.config.Clock()); err != nil {
 			return err
 		}
 		if err := s.gitHubBatchRequestAuthority(ctx, writer, *background.GitHubIntakeRevision.Authority, background.GitHubIntakeRevision.RequireAdminKey); err != nil {

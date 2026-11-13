@@ -110,14 +110,14 @@ func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
 					}
 					requireNativeStatus(t, read(path), want)
 					f.grant(t, owner, true, true)
-					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=$1 WHERE organization_id=$2 AND token_hash=$3", f.service.config.now().Add(-time.Minute), "org_security", apikey.HashToken(key.Token)); err != nil {
+					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=$1 WHERE organization_id=$2 AND token_hash=$3", f.service.config.Clock().Add(-time.Minute), "org_security", apikey.HashToken(key.Token)); err != nil {
 						t.Fatal(err)
 					}
 					requireNativeStatus(t, read(path), http.StatusNotFound)
 					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET expires_at=NULL WHERE organization_id=$1 AND token_hash=$2", "org_security", apikey.HashToken(key.Token)); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2 AND token_hash=$3", f.service.config.now(), "org_security", apikey.HashToken(key.Token)); err != nil {
+					if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2 AND token_hash=$3", f.service.config.Clock(), "org_security", apikey.HashToken(key.Token)); err != nil {
 						t.Fatal(err)
 					}
 					requireNativeStatus(t, read(path), http.StatusNotFound)
@@ -164,7 +164,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			f := newNativeFixture(t, service, "", "follow-hub")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
-			now := service.config.now()
+			now := service.config.Clock()
 			build := runnerauth.BuildEvidence{Version: test.runner, VerifiedRelease: test.verified, Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 			report := &runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: test.supported, Running: build, ObservedAt: now}
 			report.Revision = report.BuildRevision()
@@ -241,8 +241,8 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 					t.Fatalf("lost historical refusal: %+v %v", stored.Update, err)
 				}
 				if test.verified {
-					if stored.UpdateView(service.config.now()).Status != "running" || *snapshot.Routing.UpdateRequest != *previous {
-						t.Fatalf("verified CLI repair retained current refusal: %+v", stored.UpdateView(service.config.now()))
+					if stored.UpdateView(service.config.Clock()).Status != "running" || *snapshot.Routing.UpdateRequest != *previous {
+						t.Fatalf("verified CLI repair retained current refusal: %+v", stored.UpdateView(service.config.Clock()))
 					}
 					return
 				}
@@ -283,7 +283,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 					t.Fatalf("routing reader status=%d error=%v", routingStatus1, routingError1)
 				}
 				stored, err := service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential1}, r.binding.RunnerID)
-				if err != nil || stored.UpdateView(service.config.now()).Status != "refused" || stored.Update.Receipt.FailureReason != "Update download failed" {
+				if err != nil || stored.UpdateView(service.config.Clock()).Status != "refused" || stored.Update.Receipt.FailureReason != "Update download failed" {
 					t.Fatalf("failed update not reported: %+v %v", stored.Update, err)
 				}
 				return
@@ -299,7 +299,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			report.Receipt.Status = "running"
 			report.Revision = report.BuildRevision()
 			send()
-			observedAt := service.config.now()
+			observedAt := service.config.Clock()
 			routingCredential2, routingStatus2, routingError2 := service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 			if routingError2 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus2, routingError2)

@@ -304,7 +304,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cursor.Expires = f.service.config.now().Add(-time.Second).Unix()
+			cursor.Expires = f.service.config.Clock().Add(-time.Second).Unix()
 			expired, err := encodeNativeCursor(cursor, key)
 			if err != nil {
 				t.Fatal(err)
@@ -400,7 +400,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 		t.Fatal("original list cursor is incompatible with summary projection")
 	}
 	credential := operatortool.ConnectionIdentity(ctx).PrincipalID
-	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2 AND id=$3", f.service.config.now(), f.project.OrganizationID, credential); err != nil {
+	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2 AND id=$3", f.service.config.Clock(), f.project.OrganizationID, credential); err != nil {
 		t.Fatal(err)
 	}
 	for _, transport := range []string{"stdio", "http"} {
@@ -417,7 +417,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	// losing cursor pages, dropping reads from the combined command dispatcher,
 	// and leaking hidden relationship IDs in saved versions.
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
-	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: clock.Now}), "", "read-tools")
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now}), "", "read-tools")
 	first := f.create(t, "needle first")
 	second := f.create(t, "needle second")
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign")
@@ -789,7 +789,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if err != nil || json.Unmarshal(result.Content, &explanation) != nil || explanation.Eligibility.Latest != nil || explanation.Eligibility.Source != explain.SourceAvailable || explanation.NativeRuntime == nil || len(explanation.NativeRuntime.Admission) == 0 {
 		t.Fatalf("missing scheduler history was fabricated: %s %v", result.Content, err)
 	}
-	publishCapacity(t, f, registered, capacityReport(f.service.config.now()))
+	publishCapacity(t, f, registered, capacityReport(f.service.config.Clock()))
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, providerClaim(registered, second, "runtime-session"))
 	requireNativeStatus(t, response, http.StatusOK)
 	var lease tracker.NativeLease
@@ -1297,10 +1297,10 @@ func TestOperatorArchivedWorkReads(t *testing.T) {
 		}
 		return bytes.Clone(data), nil
 	}
-	f := claimedAttemptDiffFixture(t, false, Config{now: clock.Now, RunDetails: details, Content: content})
+	f := claimedAttemptDiffFixture(t, false, Config{Clock: clock.Now, RunDetails: details, Content: content})
 	f.start(t)
 	requireNativeStatus(t, f.post(t, f.request(1, tracker.AttemptDiffFile{Path: "first.go", Status: "added", Additions: 1, Patch: "+first"}, tracker.AttemptDiffFile{Path: "second.go", Status: "added", Additions: 1, Patch: "+second"})), http.StatusAccepted)
-	at := f.service.config.now()
+	at := f.service.config.Clock()
 	finished := tracker.NativeRunEvent{
 		Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("event")}, Type: "run.finished", SchemaVersion: 1,
 		Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},

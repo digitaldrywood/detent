@@ -125,7 +125,7 @@ func TestNativeClaimRequiresReportedProviderSelection(t *testing.T) {
 				t.Fatalf("runner authentication=%d %v", status, err)
 			}
 			reportRunnerCapacity(t, f.service, f.base, worker, credential.Runner.MachineID, "Example runner", isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}, 1)
-			report := providercapacity.Report{Provider: "example-provider", Backend: "codex", AccountAlias: credential.Runner.RunnerID, Billing: "subscription", Models: []string{"example-model"}, MaxConcurrent: 1, Availability: "exhausted", ObservedAt: f.service.config.now()}
+			report := providercapacity.Report{Provider: "example-provider", Backend: "codex", AccountAlias: credential.Runner.RunnerID, Billing: "subscription", Models: []string{"example-model"}, MaxConcurrent: 1, Availability: "exhausted", ObservedAt: f.service.config.Clock()}
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.ReplaceRunnerProviderReports(t.Context(), credential.Runner.RunnerID, []providercapacity.Report{report})
 			}); err != nil {
@@ -337,14 +337,14 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	}
 	policyRevision.ProjectID = project.ID
 	policyRevision.ApprovedBy = "test_hub_admin"
-	policyRevision.ApprovedAt = service.config.now().UTC()
+	policyRevision.ApprovedAt = service.config.Clock().UTC()
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.ApproveProjectPolicy(t.Context(), policyRevision, "")
 	}); err != nil {
 		t.Fatal(err)
 	}
 	itemsPath := projectPath + "/" + string(project.ID) + "/work-items"
-	now := service.config.now().UTC()
+	now := service.config.Clock().UTC()
 	service.localOrganization = string(organization.ID)
 	items := make([]tracker.NativeIssue, 0, 2)
 	for _, idempotencyKey := range []string{"issue-first", "issue-second"} {
@@ -1287,7 +1287,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 			t.Fatalf("authenticate compatible runner: status=%d error=%v", status, err)
 		}
 		scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
-		plan, err := f.service.readNativeClaimPlan(t.Context(), scope, request, f.service.config.now())
+		plan, err := f.service.readNativeClaimPlan(t.Context(), scope, request, f.service.config.Clock())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1306,7 +1306,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 			}
 		}
 		setIntegration(false, "example-org/example-project")
-		if _, err := f.service.claimNativeIssueTenantWithPlan(t.Context(), scope, request, 90*time.Second, f.service.config.now(), plan, nil); !errors.Is(err, ErrNoClaimableWork) {
+		if _, err := f.service.claimNativeIssueTenantWithPlan(t.Context(), scope, request, 90*time.Second, f.service.config.Clock(), plan, nil); !errors.Is(err, ErrNoClaimableWork) {
 			t.Fatalf("stale compatible settings allowed claim: %v", err)
 		}
 		for _, test := range []struct {

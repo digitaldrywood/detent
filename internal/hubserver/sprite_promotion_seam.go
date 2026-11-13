@@ -18,7 +18,7 @@ import (
 
 func (s *Service) spritePromotionService(scope hubscope.NativeScope) *spritepromotion.Service {
 	return spritepromotion.New(spritepromotion.Deps{
-		Organization: scope.Organization, Keys: s.config.SecretKeys, Now: s.config.now, Decode: decodeCoordinatorArguments,
+		Organization: scope.Organization, Keys: s.config.SecretKeys, Now: s.config.Clock, Decode: decodeCoordinatorArguments,
 		Read: func(ctx context.Context, read func(tenantstore.Reader) error) error {
 			return s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 				if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {

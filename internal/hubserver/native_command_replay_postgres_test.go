@@ -18,7 +18,7 @@ func TestNativeCommandReplayUsesTenantReceipt(t *testing.T) {
 	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
-	service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }}}
+	service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return now }}}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(organization), func(t *testing.T) {
 			principal := "principal_" + string(organization)
@@ -37,7 +37,7 @@ func TestNativeCommandReplayUsesTenantReceipt(t *testing.T) {
 				t.Fatal(err)
 			}
 			content := eventstore.NewContent(service.runDetailStore())
-			receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: "example", CommandKey: "example-key", RequestHash: hash, CreatedAt: service.config.now()}, json.RawMessage(`{"result":"saved"}`))
+			receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: "example", CommandKey: "example-key", RequestHash: hash, CreatedAt: service.config.Clock()}, json.RawMessage(`{"result":"saved"}`))
 			if err != nil {
 				t.Fatal(err)
 			}

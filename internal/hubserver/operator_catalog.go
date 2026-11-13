@@ -32,7 +32,7 @@ func (s *Service) withOperatorCatalog(ctx context.Context, credential hubapi.API
 		catalog.runnerAccess = s.requireHostedRunnerAdministration(readCtx, credential)
 	}
 	if s.config.Hosted != nil && !s.hostedShared() && credential.Hosted != nil && credential.SessionHash != "" && credential.Hosted.SupportActor == "" {
-		if session, err := s.storedWebSession(readCtx, credential.SessionHash, s.config.now()); err == nil {
+		if session, err := s.storedWebSession(readCtx, credential.SessionHash, s.config.Clock()); err == nil {
 			catalog.support = hostedplans.EmailListed(s.config.Hosted.SupportActors, session.Email)
 			if credential.Hosted.Subject == s.config.Hosted.BootstrapSubject && !hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) {
 				setup, err := s.hostedAccountSetupFor(readCtx, session)

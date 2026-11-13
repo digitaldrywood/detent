@@ -111,7 +111,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 						t.Fatal(err)
 					}
 					for range 3 {
-						if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
+						if err := a.service.maintainNativeRetention(t.Context(), a.service.config.Clock()); err != nil {
 							t.Fatal(err)
 						}
 						rows, payloads := a.canonicalEvents(t)
@@ -336,7 +336,7 @@ func TestEventCompactionRollback(t *testing.T) {
 	a.advance(2 * time.Hour)
 	beforeRows, beforePayloads := a.canonicalEvents(t)
 	scope := nativeAttemptListingScope(t, a.nativeFixture)
-	value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: a.scope.Organization, ProjectID: a.scope.Project, AggregateType: "issue", AggregateID: a.issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: a.service.config.now(), Data: tracker.CollaborationData{Run: &a.start.Data}}
+	value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: a.scope.Organization, ProjectID: a.scope.Project, AggregateType: "issue", AggregateID: a.issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: a.service.config.Clock(), Data: tracker.CollaborationData{Run: &a.start.Data}}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
@@ -347,7 +347,7 @@ func TestEventCompactionRollback(t *testing.T) {
 	}
 	injected := errors.New("injected rollback")
 	err = a.service.config.TenantRepository.WriteTenant(t.Context(), a.scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: a.scope.Organization, ID: "archive_" + row.PayloadSHA256, Reference: eventstore.Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), CreatedAt: a.service.config.now()}); err != nil {
+		if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: a.scope.Organization, ID: "archive_" + row.PayloadSHA256, Reference: eventstore.Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), CreatedAt: a.service.config.Clock()}); err != nil {
 			return err
 		}
 		if _, err := w.AppendEvent(t.Context(), row); err != nil {
@@ -421,7 +421,7 @@ func newTerminalAttemptFixture(t *testing.T, shared ...*terminalAttemptFixture) 
 	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
 	var f nativeFixture
 	if len(shared) == 0 {
-		f = newDefaultNativeFixture(t, Config{now: now})
+		f = newDefaultNativeFixture(t, Config{Clock: now})
 	} else {
 		clock = shared[0].clock
 		f = newNativeFixture(t, shared[0].service, "org_first_second", "terminal history second organization")
@@ -619,7 +619,7 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		return r
 	}
 	a.snapshots(t, 12)
-	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
+	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.Clock()); err != nil {
 		t.Fatal(err)
 	}
 	if counts := a.runEvents(t); counts["run.checkpointed"] != 12 || counts["run.observed"] != 12 {
@@ -628,7 +628,7 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 	a.finish(t)
 	beforeRows, beforePayloads := a.canonicalEvents(t)
 	a.advance(2 * time.Hour)
-	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
+	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.Clock()); err != nil {
 		t.Fatal(err)
 	}
 	ctx := changeOperatorContext(t, a.service, a.token, string(a.project.OrganizationID))
@@ -662,7 +662,7 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		t.Fatalf("receipt lacks the terminal answer: %s", before[operatortool.WorkAttemptReceipt])
 	}
 	for range 2 {
-		if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
+		if err := a.service.maintainNativeRetention(t.Context(), a.service.config.Clock()); err != nil {
 			t.Fatal(err)
 		}
 	}

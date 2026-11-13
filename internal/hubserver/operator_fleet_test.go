@@ -222,7 +222,7 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.redemption.Capacity = 8
 	r.enroll(t)
-	report := capacityReport(f.service.config.now())
+	report := capacityReport(f.service.config.Clock())
 	percent := 85.0
 	report.Billing = "subscription"
 	report.UsageWindows = []providercapacity.UsageWindow{{Kind: "five_hour", PercentUsed: &percent, ObservedAt: report.ObservedAt, ResetAt: report.ObservedAt.Add(time.Hour)}}
@@ -301,10 +301,10 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 					{name: "policy-only growth and revoked pin", promptSize: 140376, revokePin: true},
 				} {
 					t.Run(policyCase.name, func(t *testing.T) {
-						report := capacityReport(f.service.config.now())
+						report := capacityReport(f.service.config.Clock())
 						report.MaxConcurrent, report.Availability = 8, "unknown"
 						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
-							map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "Runner", "capacity": 8, "version": "test", "provider_reports": []providercapacity.Report{report}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.now()}}), http.StatusOK)
+							map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "Runner", "capacity": 8, "version": "test", "provider_reports": []providercapacity.Report{report}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.Clock()}}), http.StatusOK)
 						workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
 							WorkflowPath: "WORKFLOW.md",
 							Workflow: []byte(fmt.Sprintf(`---
@@ -367,7 +367,7 @@ Run focused diagnostics with an explicit timeout.
 						if policyCase.revokePin {
 							coordinatorFixtureClearPolicyPin(t, f.service, f.project.OrganizationID, f.project.ID)
 						}
-						full, err := readPostgresTestRunner(t.Context(), f.service, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+						full, err := readPostgresTestRunner(t.Context(), f.service, f.project.OrganizationID, r.binding.RunnerID, f.service.config.Clock())
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -476,7 +476,7 @@ Run focused diagnostics with an explicit timeout.
 						if err := json.Unmarshal(stored, &committed); err != nil {
 							t.Fatal(err)
 						}
-						current, err := readPostgresTestRunner(t.Context(), f.service, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+						current, err := readPostgresTestRunner(t.Context(), f.service, f.project.OrganizationID, r.binding.RunnerID, f.service.config.Clock())
 						if err != nil || committed.ProjectCapacityLimits[f.project.ID] != 8 || committed.Availability.WindowSlots["Mon-Sun 00:00-24:00"] != 2 || committed.Revision != full.Revision+1 || committed.State != "draining" || committed.Used != 8 || committed.HostUsed != 8 || len(committed.Leases) != 8 || !reflect.DeepEqual(current, committed) {
 							t.Fatalf("routing mutation receipt did not describe the committed revision: %v", err)
 						}
@@ -552,7 +552,7 @@ Run focused diagnostics with an explicit timeout.
 								t.Logf("bounded receipt=%d bytes, revision=%d, leases=%d", len(result.Content), got.Receipt.Revision, len(got.Receipt.Leases))
 							})
 						}
-						current, err = readPostgresTestRunner(t.Context(), f.service, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+						current, err = readPostgresTestRunner(t.Context(), f.service, f.project.OrganizationID, r.binding.RunnerID, f.service.config.Clock())
 						if err != nil || current.Revision != committed.Revision+1 || current.State != "active" {
 							t.Fatalf("replay repeated the routing mutation: %v", err)
 						}

@@ -79,7 +79,7 @@ func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversa
 		lease, err = r.ActiveLeaseForIssue(ctx, item.ID)
 		return err
 	})
-	if errors.Is(err, corestore.ErrNotFound) || err == nil && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(server.config.now())) {
+	if errors.Is(err, corestore.ErrNotFound) || err == nil && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(server.config.Clock())) {
 		return nil, hubapi.NativePublicInvalid("This item has no active runner attempt")
 	}
 	if err != nil {

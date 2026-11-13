@@ -109,7 +109,7 @@ func (s *Service) applyScheduledRepairRecord(ctx context.Context, scope hubscope
 	}
 	issue.State, issue.Priority = "Todo", new(priority)
 	issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(body)
-	issue.IssueContract.RecordedAt = s.config.now()
+	issue.IssueContract.RecordedAt = s.config.Clock()
 	body += fmt.Sprintf("\n\n## Verified CI occurrence\nRun: %s\nJob: %s\nTested commit: %s\nApproved policy: %s", verified.Evidence.RunURL, verified.Evidence.JobURL, verified.Evidence.HeadSHA, verified.PolicyID)
 	body += "\n\n## Diagnostic evidence (untrusted)\n\n> " + strings.ReplaceAll(html.EscapeString(strings.ReplaceAll(issue.Body, "\r", "")), "\n", "\n> ")
 	issue.Body = issueorigin.Stamp(body, origin) + verified.Evidence.Stamp()

@@ -265,7 +265,7 @@ func validateWorkItemRecordCreateInput(ctx context.Context, scope hubscope.Nativ
 }
 
 func (s *Service) planWorkItemRecord(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.WorkItemRecordPlan, input any) (hubrecords.WorkItemRecordPlan, error) {
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config.Clock().UTC().Truncate(time.Microsecond)
 	if plan.Existing {
 		return plan, nil
 	}
@@ -783,7 +783,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 					return nil, err
 				}
 				if len(duplicateSearch.Matches) > 0 {
-					now := s.config.now().UTC().Truncate(time.Microsecond)
+					now := s.config.Clock().UTC().Truncate(time.Microsecond)
 					challenge = &corestore.DuplicateChallenge{OrganizationID: scope.Organization, ProjectID: scope.Project, Token: hubapi.NewID("dup"), PrincipalID: scope.Actor().PrincipalID, RequestID: request.IdempotencyKey, ContentHash: hash, PolicyHash: policyHash, SourceSequence: duplicateSearch.Sequence, CreatedAt: now, ExpiresAt: now.Add(duplicateChallengeLifetime)}
 					for _, candidate := range duplicateSearch.Matches {
 						challenge.Candidates = append(challenge.Candidates, corestore.DuplicateCandidate{WorkItemID: candidate.WorkItemID, Number: int64(candidate.Number), Revision: int64(candidate.Revision)})
@@ -849,7 +849,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 		if err != nil {
 			return nil, err
 		}
-		now := s.config.now().UTC().Truncate(time.Microsecond)
+		now := s.config.Clock().UTC().Truncate(time.Microsecond)
 		receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: options.OperationID, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 		if err != nil {
 			return nil, err
@@ -1075,7 +1075,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 				}
 			}
 			if confirmation != nil {
-				if err := consumeWorkItemDuplicateConfirmation(ctx, w, scope, confirmation, s.config.now()); err != nil {
+				if err := consumeWorkItemDuplicateConfirmation(ctx, w, scope, confirmation, s.config.Clock()); err != nil {
 					return err
 				}
 			}
@@ -1096,7 +1096,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 			}
 			previous, err := w.Receipt(ctx, scope.Credential.ID, options.OperationID, command.IdempotencyKey)
 			if err == nil {
-				if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= previous.ResponseReplayUntilNs {
+				if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= previous.ResponseReplayUntilNs {
 					return receiptstore.ErrExpired
 				}
 				if previous.RequestHash != hash {
@@ -1225,7 +1225,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 					if s.config.ConversationDispatch == nil {
 						return conversationDispatchUnavailable()
 					}
-					if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.Project, string(plan.Issue.WorkItemID), leasestore.Fence{}, s.config.now()); err != nil {
+					if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.Project, string(plan.Issue.WorkItemID), leasestore.Fence{}, s.config.Clock()); err != nil {
 						return err
 					}
 				}
@@ -1403,7 +1403,7 @@ func (s *Service) prepareLinkedScheduledDuplicate(ctx context.Context, scope hub
 	if !errors.Is(err, corestore.ErrNotFound) {
 		return plan, search, false, hubapi.ProjectRecordError(err)
 	}
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config.Clock().UTC().Truncate(time.Microsecond)
 	body := fmt.Sprintf("Verified CI report: %s\nRun: %s\nJob: %s\nTested commit: %s\n", verified.ImportURL, verified.Evidence.RunURL, verified.Evidence.JobURL, verified.Evidence.HeadSHA) + verified.Evidence.Stamp()
 	comment := tracker.CreateComment{Body: body, Provenance: &tracker.Provenance{Provider: "github", ExternalID: externalID, AuthorID: "github-actions[bot]", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
 	matched, err = s.planWorkItemRecord(ctx, scope, matched, comment)
@@ -1458,7 +1458,7 @@ func (s *Service) mutateCompatibilityDependency(ctx context.Context, scope hubsc
 	if err != nil {
 		return nil, err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	eventRaw, err := json.Marshal(tracker.CollaborationEvent{
 		OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "work_item", AggregateID: source.NativeID,
 		ID: hubapi.NewID("evt"), Type: "dependency.changed", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now,
@@ -1505,7 +1505,7 @@ func (s *Service) mutateCompatibilityDependency(ctx context.Context, scope hubsc
 		}
 		previous, err = w.Receipt(ctx, scope.Credential.ID, operation, command.IdempotencyKey)
 		if err == nil {
-			if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= previous.ResponseReplayUntilNs {
+			if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= previous.ResponseReplayUntilNs {
 				return receiptstore.ErrExpired
 			}
 			if previous.RequestHash != hash {
@@ -1588,7 +1588,7 @@ func (s *Service) workItemRecordReceipt(ctx context.Context, scope hubscope.Nati
 			if err != nil {
 				return err
 			}
-			if receipt.RequestHash == hash && !receipt.ResponseExpired && (receipt.ResponseReplayUntilNs == 0 || s.config.now().UnixNano() < receipt.ResponseReplayUntilNs) {
+			if receipt.RequestHash == hash && !receipt.ResponseExpired && (receipt.ResponseReplayUntilNs == 0 || s.config.Clock().UnixNano() < receipt.ResponseReplayUntilNs) {
 				return s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), http.StatusOK)
 			}
 			return nil
@@ -1597,7 +1597,7 @@ func (s *Service) workItemRecordReceipt(ctx context.Context, scope hubscope.Nati
 			return receipt, false, err
 		}
 	}
-	if receipt.ResponseExpired || receipt.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= receipt.ResponseReplayUntilNs {
+	if receipt.ResponseExpired || receipt.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= receipt.ResponseReplayUntilNs {
 		return receipt, false, receiptstore.ErrExpired
 	}
 	if receipt.RequestHash != hash {
@@ -1613,7 +1613,7 @@ func (s *Service) authorizeWorkItemRecordScope(ctx context.Context, reader acces
 	if scope.Credential.Hosted == nil {
 		return nil
 	}
-	member, err := reader.AuthorizeAccess(ctx, s.accessAuthority(scope, true), s.config.now())
+	member, err := reader.AuthorizeAccess(ctx, s.accessAuthority(scope, true), s.config.Clock())
 	if err != nil {
 		return err
 	}

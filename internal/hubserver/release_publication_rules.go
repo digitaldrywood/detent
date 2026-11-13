@@ -27,7 +27,7 @@ func (s *Service) checkReleasePublicationRules(ctx context.Context, scope hubsco
 		}
 		attempt := plan.attempt.Attempt
 		if attempt.ID != "" && attempt.Status == "succeeded" && attempt.WorkItemRevision >= plan.current.Revision && attempt.DispatchGeneration >= plan.current.DispatchGeneration {
-			run, err := s.hydrateNativeAttemptTenant(ctx, plan.attempt, s.config.now())
+			run, err := s.hydrateNativeAttemptTenant(ctx, plan.attempt, s.config.Clock())
 			if err != nil {
 				return err
 			}

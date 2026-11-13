@@ -216,7 +216,7 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 				spriteFixtureExec(t, f, `UPDATE projects SET scheduling_rank=0 WHERE organization_id=$1 AND id=$2`, f.project.OrganizationID, ranked.project.ID)
 			}
 			if test.budget == "provider" {
-				report := capacityReport(f.service.config.now())
+				report := capacityReport(f.service.config.Clock())
 				report.Models = []string{"test-model", "gpt-6.1-sol"}
 				report.Availability = "exhausted"
 				publishCapacity(t, f, r, report)
@@ -256,8 +256,8 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 				t.Fatalf("allocation changed: %+v %v", allocation, err)
 			}
 			if test.status == http.StatusOK && !test.managed && landing.service == nil {
-				spriteFixtureExec(t, f, `UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND machine_id=$3`, f.service.config.now(), f.project.OrganizationID, r.binding.MachineID)
-				placement, err := f.service.readOrganizationPlacementSnapshot(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID}, f.service.config.now())
+				spriteFixtureExec(t, f, `UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND machine_id=$3`, f.service.config.Clock(), f.project.OrganizationID, r.binding.MachineID)
+				placement, err := f.service.readOrganizationPlacementSnapshot(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID}, f.service.config.Clock())
 				if err != nil || placement.SpriteFree != 1 || placement.Provisionable != 0 {
 					t.Fatalf("idle sharing provisioned extra capacity: %+v %v", placement, err)
 				}

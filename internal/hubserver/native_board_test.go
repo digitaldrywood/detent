@@ -59,7 +59,7 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			clock := &leaseTestClock{value: time.Date(2026, 10, 16, 20, 0, 0, 0, time.UTC)}
-			service := newClockedPostgresNativeService(t, Config{now: clock.Now})
+			service := newClockedPostgresNativeService(t, Config{Clock: clock.Now})
 			if err := service.stopGitHubWebhookMaintenance(); err != nil {
 				t.Fatal(err)
 			}
@@ -469,7 +469,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	t.Parallel()
 	clock := &leaseTestClock{value: time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)}
 	now := clock.Now()
-	f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{now: clock.Now}))
+	f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now}))
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -857,11 +857,11 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 			project tracker.ProjectID
 			item    tracker.NativeWorkItemID
 		}{{f.project, related}, {private.project, blocker}} {
-			if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.service.accessOrganization(), ProjectID: f.project, WorkItemID: item, RelatedProjectID: target.project, RelatedWorkItemID: target.item, Type: "related"}, "add", f.service.config.now()); err != nil {
+			if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.service.accessOrganization(), ProjectID: f.project, WorkItemID: item, RelatedProjectID: target.project, RelatedWorkItemID: target.item, Type: "related"}, "add", f.service.config.Clock()); err != nil {
 				return err
 			}
 		}
-		return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.service.accessOrganization(), ProjectID: f.project, WorkItemID: item, RelatedProjectID: private.project, RelatedWorkItemID: blocker, Type: "dependency", Provenance: "native"}, "add", f.service.config.now())
+		return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.service.accessOrganization(), ProjectID: f.project, WorkItemID: item, RelatedProjectID: private.project, RelatedWorkItemID: blocker, Type: "dependency", Provenance: "native"}, "add", f.service.config.Clock())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1197,7 +1197,7 @@ func drainTestNativeBoard(t *testing.T, service *Service) {
 			}
 			pending = !expected || candidate.Required || !row.Display.Ready || row.PageIssue == nil || row.ListIssue == nil ||
 				row.SourceRevision != item.Revision || row.SourceEventSequence != item.EventSequence ||
-				row.SourceProjectRevision != project.ContentSettingsRevision || row.RefreshAfter != nil && !row.RefreshAfter.After(service.config.now())
+				row.SourceProjectRevision != project.ContentSettingsRevision || row.RefreshAfter != nil && !row.RefreshAfter.After(service.config.Clock())
 			return nil
 		})
 		if err != nil {

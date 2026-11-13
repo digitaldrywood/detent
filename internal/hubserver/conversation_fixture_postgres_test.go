@@ -98,7 +98,7 @@ func (f conversationFixture) publishedRecordEvents(ctx context.Context, record c
 func conversationFixturePrincipal(t *testing.T, f nativeFixture, name string) hubapi.TokenResponse {
 	t.Helper()
 	token := hubapi.TokenResponse{ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}
-	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 	err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: token.ID, Name: name, Hash: apikey.HashToken(token.Token), Scope: "operator", Kind: "service", NativeOnly: true, ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 			return err

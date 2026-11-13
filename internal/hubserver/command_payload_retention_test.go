@@ -27,7 +27,7 @@ func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(start.UnixNano())
 	repository, admin := projectRecordPostgresWithAdmin(t, 4)
-	s := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }}}
+	s := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() }}}
 	content := eventstore.NewContent(s.runDetailStore())
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		actor := "principal_" + string(organization)
@@ -104,7 +104,7 @@ func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
 				ownersBeforeExpiry := archiveOwners()
 				for _, age := range []time.Duration{0, 24 * time.Hour, 24*time.Hour + time.Second} {
 					clock.Store(start.Add(age).UnixNano())
-					if err := s.retainCommandPayloads(ctx, s.config.now()); err != nil {
+					if err := s.retainCommandPayloads(ctx, s.config.Clock()); err != nil {
 						t.Fatal(err)
 					}
 					wantOwners := ownersBeforeExpiry
@@ -175,7 +175,7 @@ func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
 				if _, err := s.completeHostedOperation(ctx, reconciled, json.RawMessage(raw)); err != nil {
 					t.Fatal(err)
 				}
-				if err := s.retainCommandPayloads(ctx, s.config.now()); err != nil {
+				if err := s.retainCommandPayloads(ctx, s.config.Clock()); err != nil {
 					t.Fatal(err)
 				}
 				if claimed, body, err := s.claimHostedOperation(ctx, reconciled); claimed || err != nil || string(body) != raw {

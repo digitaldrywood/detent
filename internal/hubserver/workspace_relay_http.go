@@ -87,7 +87,7 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		redeemed, err := tickets.RedeemRelayTicket(ctx, postgres.RedeemRelayTicketInput{OrganizationID: scope.Organization, ProjectID: scope.Project, Digest: relayTicketDigest(ticket), SessionID: principal.sessionID, PrincipalID: principal.principalID, Subject: principal.subject, Now: s.config.now().UTC()})
+		redeemed, err := tickets.RedeemRelayTicket(ctx, postgres.RedeemRelayTicketInput{OrganizationID: scope.Organization, ProjectID: scope.Project, Digest: relayTicketDigest(ticket), SessionID: principal.sessionID, PrincipalID: principal.principalID, Subject: principal.subject, Now: s.config.Clock().UTC()})
 		if errors.Is(err, corestore.ErrRevisionConflict) || errors.Is(err, corestore.ErrNotFound) {
 			return hubapi.NativeNotFound()
 		}

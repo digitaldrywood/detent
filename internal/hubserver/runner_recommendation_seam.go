@@ -45,7 +45,7 @@ func mergeHostSummary(a, b hostmetrics.Summary) (hostmetrics.Summary, bool) {
 
 func (s *Service) runnerAdviceService() *runneradvice.Service {
 	return runneradvice.New(runneradvice.Deps{
-		Repository: s.config.TenantRepository, Now: s.config.now, Auth: s.requestAuth, RecordError: hubapi.ProjectRecordError,
+		Repository: s.config.TenantRepository, Now: s.config.Clock, Auth: s.requestAuth, RecordError: hubapi.ProjectRecordError,
 		ReadRouting: func(ctx context.Context, input hubauth.Input, resource string) (runnerauth.Runner, error) {
 			return s.readRunnerRouting(ctx, hubscope.ScopeFromAuthInput(input), resource)
 		},

@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Service) accessDirectoryService() *accessdirectory.Service {
-	return accessdirectory.New(accessdirectory.Deps{Repository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.now, Claims: hostedSharedClaims, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) }, Invalid: s.invalidAPIRequest})
+	return accessdirectory.New(accessdirectory.Deps{Repository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.Clock, Claims: hostedSharedClaims, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) }, Invalid: s.invalidAPIRequest})
 }
 func (s *Service) hostedPlatformUsers(c echo.Context) error {
 	return s.accessDirectoryService().ServeHTTP(c)

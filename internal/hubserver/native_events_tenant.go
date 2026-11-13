@@ -245,7 +245,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 			if event.Type == "run.started" && event.Data.Sequence == 1 && event.Data.AttemptID == request.Data.AttemptID && event.Data.RunID == request.Data.RunID {
 				batchStartIndex = i
 				if events[i].OccurredAt.IsZero() {
-					events[i].OccurredAt = s.config.now().UTC()
+					events[i].OccurredAt = s.config.Clock().UTC()
 				}
 				break
 			}
@@ -327,7 +327,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		if present {
 			cleanupPredecessor = previous
 		}
-		if err := admitNativeRunEventBatch(ctx, r, scope.Project, workItem.NativeID, lease, events, s.config.now().UTC()); err != nil {
+		if err := admitNativeRunEventBatch(ctx, r, scope.Project, workItem.NativeID, lease, events, s.config.Clock().UTC()); err != nil {
 			return err
 		}
 		if cleanupPredecessor != nil && cleanupPredecessor.attempt.CheckpointObjectKey != nil {
@@ -370,7 +370,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 				if machine.SpriteName != "" {
 					placement = "sprite"
 				}
-				usageFacts = runnerUsageFacts{WorkItemID: string(workItem.NativeID), RunnerID: identity.RunnerID, MachineID: lease.MachineID, Placement: placement, StartedAt: attempt.StartedAt, EndedAt: s.config.now().UTC()}
+				usageFacts = runnerUsageFacts{WorkItemID: string(workItem.NativeID), RunnerID: identity.RunnerID, MachineID: lease.MachineID, Placement: placement, StartedAt: attempt.StartedAt, EndedAt: s.config.Clock().UTC()}
 				usageFactsFound = true
 			} else if errors.Is(attemptErr, corestore.ErrNotFound) || errors.Is(attemptErr, sql.ErrNoRows) {
 				identity, err := r.RunnerForLease(ctx, lease.LeaseID)
@@ -389,7 +389,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 				if batchStartIndex >= 0 {
 					startedAt = events[batchStartIndex].OccurredAt
 				}
-				usageFacts = runnerUsageFacts{WorkItemID: string(workItem.NativeID), RunnerID: identity.RunnerID, MachineID: lease.MachineID, Placement: placement, StartedAt: startedAt, EndedAt: s.config.now().UTC()}
+				usageFacts = runnerUsageFacts{WorkItemID: string(workItem.NativeID), RunnerID: identity.RunnerID, MachineID: lease.MachineID, Placement: placement, StartedAt: startedAt, EndedAt: s.config.Clock().UTC()}
 				usageFactsFound = true
 			} else if !errors.Is(attemptErr, corestore.ErrNotFound) && !errors.Is(attemptErr, sql.ErrNoRows) {
 				return attemptErr
@@ -405,7 +405,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		}
 		return content.Receipt(ctx, replay)
 	}
-	termination := (lease.ReleasedAt != nil || !lease.ExpiresAt.After(s.config.now().UTC())) && request.Type == "run.finished" && request.Data.Outcome == "cancelled" && request.Data.Sequence > 1 && len(request.PriorEvents) == 0
+	termination := (lease.ReleasedAt != nil || !lease.ExpiresAt.After(s.config.Clock().UTC())) && request.Type == "run.finished" && request.Data.Outcome == "cancelled" && request.Data.Sequence > 1 && len(request.PriorEvents) == 0
 	if termination && !nativeTerminationData(request.Data) {
 		return nil, nativeExecutionConflict("Released execution may acknowledge termination only")
 	}
@@ -456,7 +456,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 	}
 	if request.Type == "run.finished" && len(request.Data.Usage) > 0 && !termination {
 		if request.OccurredAt.IsZero() {
-			request.OccurredAt = s.config.now().UTC()
+			request.OccurredAt = s.config.Clock().UTC()
 		}
 		if usageFactsFound {
 			for i := range request.Data.Usage {
@@ -508,7 +508,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		}
 	}
 	if usageFactsFound && !termination {
-		usageCosts, err = s.prepareRunnerCostRecords(ctx, scope, request, usageFacts, s.config.now().UTC(), usageHistorical...)
+		usageCosts, err = s.prepareRunnerCostRecords(ctx, scope, request, usageFacts, s.config.Clock().UTC(), usageHistorical...)
 		if err != nil {
 			return nil, err
 		}
@@ -592,7 +592,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 				return nil, err
 			}
 			failures := independentRunFailures(issue, event.Data, effectiveCheckpoint)
-			independent, err = s.prepareIndependentRepairs(ctx, scope, issue.WorkItemID, failures, event.Data.AttemptID, s.config.now().UTC())
+			independent, err = s.prepareIndependentRepairs(ctx, scope, issue.WorkItemID, failures, event.Data.AttemptID, s.config.Clock().UTC())
 			if err != nil {
 				return nil, err
 			}
@@ -700,7 +700,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		collaboration := tracker.CollaborationEvent{
 			ID: nativeAttemptHistoryID(event.Type, event.Data), OrganizationID: scope.Organization, ProjectID: scope.Project,
 			AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(item), Type: event.Type,
-			SchemaVersion: 1, RecordedAt: s.config.now().UTC().Truncate(time.Microsecond), Actor: scope.Actor(), Data: dataRecord,
+			SchemaVersion: 1, RecordedAt: s.config.Clock().UTC().Truncate(time.Microsecond), Actor: scope.Actor(), Data: dataRecord,
 		}
 		var usageReport *reportstore.AttemptUsage
 		if termination || len(event.Data.Usage) > 0 {
@@ -792,7 +792,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 	response := json.RawMessage(`{"accepted":true}`)
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{
 		OrganizationID: scope.Organization, ActorID: actorID, Operation: operation,
-		CommandKey: request.IdempotencyKey, RequestHash: requestHash, CreatedAt: s.config.now().UTC(),
+		CommandKey: request.IdempotencyKey, RequestHash: requestHash, CreatedAt: s.config.Clock().UTC(),
 	}, response)
 	if err != nil {
 		return nil, err
@@ -918,7 +918,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 				}
 			}
 			if ref := event.artifactList; ref.Key != "" {
-				if _, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: s.config.now().UTC()}); err != nil {
+				if _, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: s.config.Clock().UTC()}); err != nil {
 					return err
 				}
 			}
@@ -963,7 +963,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 				return err
 			}
 			ref := eventstore.Reference(event.history.PayloadObjectKey, event.history.PayloadSHA256, event.history.PayloadBytes, event.history.PayloadContentBytes)
-			if _, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: s.config.now().UTC()}); err != nil {
+			if _, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: s.config.Clock().UTC()}); err != nil {
 				return err
 			}
 			writtenHistory, err := w.AppendEvent(ctx, event.history)

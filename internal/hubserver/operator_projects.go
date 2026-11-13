@@ -428,7 +428,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return nil, operatortool.ErrAccessDenied
 		}
 		request := spriteUsageRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Observations: r.Input.Observations}
-		if err := validateSpriteUsageRequest(&request, s.config.now()); err != nil {
+		if err := validateSpriteUsageRequest(&request, s.config.Clock()); err != nil {
 			return nil, operatortool.ErrInvalidArguments
 		}
 		if mode == projectCommandPreview {

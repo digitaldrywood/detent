@@ -373,7 +373,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				assertReadinessOmitted(afterEventREST)
 
 				readerID, readerToken := "detail_reader", "example-detail-reader-"+string(org.ID)
-				now := service.config.now()
+				now := service.config.Clock()
 				if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
 					return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org.ID, ID: readerID, Name: "Example detail reader", Hash: apikey.HashToken(readerToken), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now})
 				}); err != nil {
@@ -388,7 +388,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				objects.afterRead = func() {
 					changed = true
 					if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
-						return w.RevokeAccessCredential(t.Context(), readerID, service.config.now())
+						return w.RevokeAccessCredential(t.Context(), readerID, service.config.Clock())
 					}); err != nil {
 						t.Fatal(err)
 					}

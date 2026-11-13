@@ -40,7 +40,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 			service.config.TenantRepository = original
 			service.config.AccessRepository = original
 			fixture := newNativeFixture(t, service, org, "Example")
-			raw, err := json.Marshal(healthEvidence{Reason: string(org), EventIDs: []string{"event"}, Counts: map[string]int{"attempts": 3}, Values: map[string]float64{"rate": 2.5}, Queues: map[string]healthQueueEvidence{string(fixture.project.ID): {QueueDepth: 4}}, Productivity: &healthProductivityEvidence{WindowFrom: service.config.now(), WindowTo: service.config.now(), LatestFailureStage: "pre_provider"}})
+			raw, err := json.Marshal(healthEvidence{Reason: string(org), EventIDs: []string{"event"}, Counts: map[string]int{"attempts": 3}, Values: map[string]float64{"rate": 2.5}, Queues: map[string]healthQueueEvidence{string(fixture.project.ID): {QueueDepth: 4}}, Productivity: &healthProductivityEvidence{WindowFrom: service.config.Clock(), WindowTo: service.config.Clock(), LatestFailureStage: "pre_provider"}})
 			if err != nil {
 				t.Fatal(err)
 			}

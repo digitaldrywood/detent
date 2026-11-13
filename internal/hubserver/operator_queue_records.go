@@ -53,7 +53,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope hubscope.NativeSc
 			return nil, err
 		}
 		if name == operatortool.OrderItem {
-			raw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "work_item", AggregateID: source.NativeID, ID: hubapi.NewID("evt"), Type: "queue.order_changed", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: s.config.now().UTC(), Data: tracker.CollaborationData{Revision: tracker.Revision(source.Revision), Operation: "order", Fields: []string{"queue_order"}}})
+			raw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "work_item", AggregateID: source.NativeID, ID: hubapi.NewID("evt"), Type: "queue.order_changed", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: s.config.Clock().UTC(), Data: tracker.CollaborationData{Revision: tracker.Revision(source.Revision), Operation: "order", Fields: []string{"queue_order"}}})
 			if err != nil {
 				return nil, err
 			}
@@ -92,7 +92,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope hubscope.NativeSc
 				if err != nil {
 					return nil, err
 				}
-				outbound = &projectstore.GitHubOutbound{ProjectID: scope.Project, WorkItemID: source.NativeID, Key: "queue-priority:" + key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkflowLabel), CreatedAt: s.config.now().UTC(), Payload: payload, CoalesceKey: "managed-label:" + repository + ":" + string(source.NativeID) + ":priority:"}
+				outbound = &projectstore.GitHubOutbound{ProjectID: scope.Project, WorkItemID: source.NativeID, Key: "queue-priority:" + key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkflowLabel), CreatedAt: s.config.Clock().UTC(), Payload: payload, CoalesceKey: "managed-label:" + repository + ":" + string(source.NativeID) + ":priority:"}
 			}
 		}
 	}
@@ -106,7 +106,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope hubscope.NativeSc
 	if err != nil {
 		return nil, err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, err
@@ -135,7 +135,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope hubscope.NativeSc
 			if previous.RequestHash != hash {
 				return hubapi.NativeConflict(0)
 			}
-			if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= previous.ResponseReplayUntilNs {
+			if previous.ResponseExpired || previous.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= previous.ResponseReplayUntilNs {
 				return receiptstore.ErrExpired
 			}
 			replay = &previous

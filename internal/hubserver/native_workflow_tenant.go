@@ -207,7 +207,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		previousUpdatedAt, previousActivityAt := issue.UpdatedAt, issue.LastActivityAt
 		previousState := issue.State
-		now := s.config.now().UTC().Truncate(time.Microsecond)
+		now := s.config.Clock().UTC().Truncate(time.Microsecond)
 		awaitsFiler := false
 		if stop != nil && stop.Priority != nil {
 			issue.Priority = new(*stop.Priority - 1)
@@ -466,10 +466,10 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 						return tracker.ErrStaleFencingToken
 					}
 				}
-				if stop != nil && (leaseErr != nil || lease.ReleasedAt != nil || !lease.ExpiresAt.After(s.config.now().UTC())) {
+				if stop != nil && (leaseErr != nil || lease.ReleasedAt != nil || !lease.ExpiresAt.After(s.config.Clock().UTC())) {
 					return tracker.ErrLeaseConflict
 				}
-				activeLease = leaseErr == nil && lease.ReleasedAt == nil && lease.ExpiresAt.After(s.config.now().UTC()) && (cancellation == nil || cancellation.expired && !cancellation.expiresLease(lease))
+				activeLease = leaseErr == nil && lease.ReleasedAt == nil && lease.ExpiresAt.After(s.config.Clock().UTC()) && (cancellation == nil || cancellation.expired && !cancellation.expiresLease(lease))
 				if leaseErr == nil && (!unchanged || stop != nil) {
 					if err := s.settleHumanWorkflowLease(ctx, w, scope, lease, request, cancellation, stopState); err != nil {
 						return err
@@ -502,7 +502,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				if err != nil || credential.OrganizationID != scope.Organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" {
 					return hubscope.RunnerUnauthorized()
 				}
-				currentTime := s.config.now().UTC()
+				currentTime := s.config.Clock().UTC()
 				if !lease.ExpiresAt.After(currentTime) || !credential.Valid(scope.Credential.Hash, currentTime) {
 					return tracker.ErrStaleFencingToken
 				}
@@ -517,7 +517,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 					return tracker.ErrMachineNotFound
 				}
 			}
-			currentTime := s.config.now().UTC()
+			currentTime := s.config.Clock().UTC()
 			if options.Feature != "" && (human || s.database.billingRepository != nil) {
 				if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, options.Feature, currentTime)); err != nil {
 					return err
@@ -652,7 +652,7 @@ func (s *Service) humanWorkflowReceipt(ctx context.Context, scope hubscope.Nativ
 		if receipt.RequestHash != hash {
 			return hubapi.NativeConflict(0)
 		}
-		now := s.config.now().UTC()
+		now := s.config.Clock().UTC()
 		if !receipt.ResponseExpired && receipt.ResponseReplayUntilNs > 0 && receipt.ResponseReplayUntilNs <= now.UnixNano() {
 			writer, ok := w.(receiptstore.RetentionWriter)
 			if !ok {
@@ -738,7 +738,7 @@ func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, sco
 	}
 	*stopState = workflow.Config.Agent.StopRun.TargetState
 	if project != nil {
-		if err := applyHumanWorkflowContract(issue, previousState, request, descriptor, workflow, s.config.now().UTC()); err != nil {
+		if err := applyHumanWorkflowContract(issue, previousState, request, descriptor, workflow, s.config.Clock().UTC()); err != nil {
 			return revision, found, err
 		}
 	}

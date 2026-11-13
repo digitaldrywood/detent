@@ -46,7 +46,7 @@ func coordinatorBudgetPeer(t *testing.T, first hostedSecurityFixture) hostedSecu
 	hosted.Provider = coordinatorBudgetProvider{hostedSecurityProvider: provider, organization: hosted.OrganizationID}
 	cfg.InitialAdminToken = []byte("example-second-budget-admin")
 	organization := tracker.OrganizationID(hosted.OrganizationID)
-	now := cfg.now()
+	now := cfg.Clock()
 	key := sha256.Sum256([]byte(hosted.OrganizationID))
 	envelope, err := cfg.SecretKeys.Seal(key[:], accessstore.SecretAAD(organization, "", accessstore.NativeCursorKeyKind))
 	if err != nil {
@@ -82,7 +82,7 @@ func coordinatorBudgetPeer(t *testing.T, first hostedSecurityFixture) hostedSecu
 func coordinatorBudgetUser(t *testing.T, f hostedSecurityFixture, name, role string, manageRunner bool) hostedSecurityUser {
 	t.Helper()
 	organization := f.service.config.Hosted.OrganizationID
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	subject := organization + "_" + name
 	identity := auth.Identity{Subject: subject, Email: subject + "@example.test", EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: subject, OrganizationID: f.service.config.Hosted.WorkOSOrganizationID, SessionID: "session_" + subject, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}}
 	f.provider.mu.Lock()
@@ -117,7 +117,7 @@ func coordinatorBudgetUser(t *testing.T, f hostedSecurityFixture, name, role str
 func coordinatorBudgetTools(t *testing.T, f hostedSecurityFixture, user hostedSecurityUser) (*coordinatorToolset, context.Context, conversationRecord) {
 	t.Helper()
 	organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	var record conversationRecord
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		member, err := w.AccessMember(t.Context(), user.identity.Subject)
@@ -186,7 +186,7 @@ func TestCoordinatorProjectBudgetPostgres(t *testing.T) {
 		organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
 		total := int64(1000 * (index + 1))
 		policy := budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, TotalMicros: &total}
-		now := f.service.config.now()
+		now := f.service.config.Clock()
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.SetBillingMonthlyPolicy(t.Context(), billingstore.MonthlyPolicy{OrganizationID: organization, Policy: budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, TotalMicros: new(int64(9000))}, Actor: "example-operator", UpdatedAt: now}, 0)
 		}); err != nil {

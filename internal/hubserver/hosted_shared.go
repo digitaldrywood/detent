@@ -241,13 +241,13 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 	defer cancelRead()
 	cfg := s.hostedBillingConfig()
 	result := hostedSharedBilling{Status: "free"}
-	entitlement, err := hubapi.FeatureResult(s.database.plansService().Entitlement(readCtx, nil, s.config.now()))
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().Entitlement(readCtx, nil, s.config.Clock()))
 	if err != nil {
 		return s.internalAPIError(c, "entitlements_unavailable", "Organization entitlements are unavailable", err)
 	}
 	result.FreeOrganization = entitlement.EffectiveBase.ID == "free"
 	for _, grant := range entitlement.Grants {
-		if grant.RevokedAt == nil && !grant.StartsAt.After(s.config.now()) && (grant.ExpiresAt == nil || grant.ExpiresAt.After(s.config.now())) && grant.Plan.ID != "free" && (slices.Contains(grant.Scope, "projects") || slices.Contains(grant.Scope, "native_execution")) {
+		if grant.RevokedAt == nil && !grant.StartsAt.After(s.config.Clock()) && (grant.ExpiresAt == nil || grant.ExpiresAt.After(s.config.Clock())) && grant.Plan.ID != "free" && (slices.Contains(grant.Scope, "projects") || slices.Contains(grant.Scope, "native_execution")) {
 			result.FreeOrganization = false
 		}
 	}
@@ -279,7 +279,7 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 				return nil
 			}
 			if err == nil {
-				result.CheckoutPending = account.Checkout.ExpiresAt.After(s.config.now())
+				result.CheckoutPending = account.Checkout.ExpiresAt.After(s.config.Clock())
 			}
 			return err
 		})); err != nil {
@@ -324,7 +324,7 @@ func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 		return s.refusedAPIError(c, http.StatusConflict, "customer_mismatch", "The event customer is not bound to this organization", hubapi.APIErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
 	}
 	err = hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
-		_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: request.EventID, Type: request.EventType, ReceivedAt: s.config.now().UTC()})
+		_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: request.EventID, Type: request.EventType, ReceivedAt: s.config.Clock().UTC()})
 		return err
 	}))
 	if err != nil {
@@ -445,7 +445,7 @@ func (s *Service) revokeHostedSharedSessions(c echo.Context) error {
 		return s.invalidAPIRequest(c, errors.New("invalid revocation"))
 	}
 	ctx := c.Request().Context()
-	now := hubapi.FormatHubTime(s.config.now())
+	now := hubapi.FormatHubTime(s.config.Clock())
 	for _, binding := range request.Bindings {
 		if len(binding) != 64 {
 			return s.invalidAPIRequest(c, errors.New("invalid binding"))

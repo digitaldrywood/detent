@@ -79,7 +79,7 @@ func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operato
 		ProjectID      tracker.ProjectID      `json:"project_id,omitempty"`
 		ObservedAt     time.Time              `json:"observed_at"`
 		Data           cloudModelSelection    `json:"data"`
-	}{scope.Organization, scope.Project, e.service.config.now().UTC(), selection})
+	}{scope.Organization, scope.Project, e.service.config.Clock().UTC(), selection})
 }
 
 func (e hubProjectExecutor) modelSelectionCommand(ctx context.Context, call operatortool.Call, mode projectCommandMode) (json.RawMessage, error) {

@@ -60,7 +60,7 @@ func (s *Service) newHostedTransaction(c echo.Context, organization, actor, sess
 	if actor != "" {
 		verifier = ""
 	}
-	expires := s.config.now().Add(10 * time.Minute)
+	expires := s.config.Clock().Add(10 * time.Minute)
 
 	err = s.accessWrite(c.Request().Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
 		return w.CreateAccessLoginTransaction(c.Request().Context(), accessstore.LoginTransaction{OrganizationID: s.accessOrganization(), Hash: apikey.HashToken(token), State: state, Verifier: verifier, ProviderOrganizationID: organization, SupportActor: actor, SupportSession: session, ExpiresAt: expires})
@@ -110,12 +110,12 @@ func (s *Service) consumeHostedTransaction(c echo.Context) (hostedTransaction, e
 	var transaction accessstore.LoginTransaction
 	err = s.accessWrite(c.Request().Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
 		var err error
-		transaction, err = w.ConsumeAccessTransaction(c.Request().Context(), apikey.HashToken(cookie.Value), c.QueryParam("state"), s.config.now())
+		transaction, err = w.ConsumeAccessTransaction(c.Request().Context(), apikey.HashToken(cookie.Value), c.QueryParam("state"), s.config.Clock())
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
 		pending, readErr := w.AccessLoginTransaction(c.Request().Context(), apikey.HashToken(cookie.Value))
-		if readErr == nil && pending.ConsumedAt == nil && pending.SupportActor == "" && pending.ExpiresAt.After(s.config.now()) && pending.State != c.QueryParam("state") {
+		if readErr == nil && pending.ConsumedAt == nil && pending.SupportActor == "" && pending.ExpiresAt.After(s.config.Clock()) && pending.State != c.QueryParam("state") {
 			return errHostedStateMismatch
 		}
 		return err
@@ -141,7 +141,7 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 			invitation, err := s.config.Hosted.Provider.Invitation(c.Request().Context(), transaction.InvitationToken)
 			message := auth.InvitationUnavailable
 			if err == nil {
-				if problem := auth.InvitationProblem(invitation, "", "", s.config.now()); problem != "" {
+				if problem := auth.InvitationProblem(invitation, "", "", s.config.Clock()); problem != "" {
 					message = problem
 				}
 			}
@@ -208,7 +208,7 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 			invitation, lookupErr := s.config.Hosted.Provider.Invitation(c.Request().Context(), transaction.InvitationToken)
 			message := auth.InvitationUnavailable
 			if lookupErr == nil {
-				if problem := auth.InvitationProblem(invitation, identity.Subject, identity.Email, s.config.now()); problem != "" {
+				if problem := auth.InvitationProblem(invitation, identity.Subject, identity.Email, s.config.Clock()); problem != "" {
 					message = problem
 				}
 			}
@@ -226,7 +226,7 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 	}
 	if cookie, err := c.Cookie(hostedCookie); err == nil {
 		if err := s.accessWrite(c.Request().Context(), s.accessOrganization(), func(w tenantstore.Writer) error {
-			return w.RevokeAccessSession(c.Request().Context(), apikey.HashToken(cookie.Value), s.config.now())
+			return w.RevokeAccessSession(c.Request().Context(), apikey.HashToken(cookie.Value), s.config.Clock())
 		}); err != nil {
 			denial.Reason = "session_store_failed"
 			return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", denial)
@@ -433,7 +433,7 @@ func (s *Service) startHostedInvitation(c echo.Context) error {
 		denial.Err = err
 		return s.hostedInvitationDenied(c, auth.InvitationUnavailable, denial)
 	}
-	if problem := auth.InvitationProblem(invitation, "", "", s.config.now()); problem != "" {
+	if problem := auth.InvitationProblem(invitation, "", "", s.config.Clock()); problem != "" {
 		return s.hostedInvitationDenied(c, problem, denial)
 	}
 	var accepted string
@@ -442,7 +442,7 @@ func (s *Service) startHostedInvitation(c echo.Context) error {
 
 	err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		row, err := r.AccessInvitation(readCtx, invitation.ID)
-		if err != nil || !strings.EqualFold(row.Email, invitation.Email) || !row.ExpiresAt.After(s.config.now()) {
+		if err != nil || !strings.EqualFold(row.Email, invitation.Email) || !row.ExpiresAt.After(s.config.Clock()) {
 			return auth.ErrHostedIdentity
 		}
 		accepted = row.AcceptedUserID

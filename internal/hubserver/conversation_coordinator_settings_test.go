@@ -33,9 +33,9 @@ func coordinatorSettingsArguments(t *testing.T, f hostedSecurityFixture, tool, r
 	var value any = map[string]any{"input": map[string]any{}}
 	switch tool {
 	case operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerRouting:
-		config := runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.now()}
+		config := runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.Clock()}
 		coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
-			now := f.service.config.now()
+			now := f.service.config.Clock()
 			token := "tok_" + runnerID
 			machine := "machine_" + runnerID
 			enrollment := "enr_" + runnerID
@@ -68,7 +68,7 @@ func coordinatorSettingsArguments(t *testing.T, f hostedSecurityFixture, tool, r
 			}
 			return w.UpdateRunnerCapacityConfig(t.Context(), runnerID, config)
 		})
-		r, err := readPostgresTestRunner(t.Context(), f.service, "org_security", runnerID, f.service.config.now())
+		r, err := readPostgresTestRunner(t.Context(), f.service, "org_security", runnerID, f.service.config.Clock())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -159,7 +159,7 @@ func TestCoordinatorSettingsActions(t *testing.T) {
 				}
 				action := coordinatorSettingsProposal(t, f, record.ID)
 				if hubFleetTool(tool) {
-					r, err := readPostgresTestRunner(t.Context(), f.service, record.OrganizationID, "settings-runner", f.service.config.now())
+					r, err := readPostgresTestRunner(t.Context(), f.service, record.OrganizationID, "settings-runner", f.service.config.Clock())
 					if err != nil || r.CapacityLimit != 1 || r.Revision != 1 || r.CapacityRequest != nil {
 						t.Fatalf("preview changed runner configuration: %+v, %v", r, err)
 					}
@@ -181,7 +181,7 @@ func TestCoordinatorSettingsActions(t *testing.T) {
 						if !strings.Contains(response.Body.String(), `\"desired\":6`) || !strings.Contains(response.Body.String(), "application evidence") {
 							t.Fatalf("capacity confirmation omitted read-back: %s", response.Body.String())
 						}
-						r, err := readPostgresTestRunner(t.Context(), f.service, record.OrganizationID, "settings-runner", f.service.config.now())
+						r, err := readPostgresTestRunner(t.Context(), f.service, record.OrganizationID, "settings-runner", f.service.config.Clock())
 						if err != nil || r.CapacityLimit != 6 || r.CapacityRequest == nil || r.CapacityRequest.Capacity != 6 {
 							t.Fatalf("capacity intent not applied: %+v, %v", r, err)
 						}
@@ -333,7 +333,7 @@ func TestCoordinatorSettingsCapacityBatch(t *testing.T) {
 		response := f.request(t, owner, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
 		requireNativeStatus(t, response, http.StatusOK)
 		requireNativeStatus(t, f.request(t, owner, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action), http.StatusOK)
-		r, err := readPostgresTestRunner(t.Context(), f.service, record.OrganizationID, action.IssueID, f.service.config.now())
+		r, err := readPostgresTestRunner(t.Context(), f.service, record.OrganizationID, action.IssueID, f.service.config.Clock())
 		if err != nil || r.CapacityLimit != 6 || r.Revision != 2 {
 			t.Fatalf("runner applied more than once or unchanged: %+v, %v", r, err)
 		}

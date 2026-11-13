@@ -45,7 +45,7 @@ func configureHumanWorkflowProject(t *testing.T, service *Service, organization 
 	if err != nil {
 		t.Fatal(err)
 	}
-	approved.ProjectID, approved.ApprovedBy, approved.ApprovedAt = project, "credential_owner", service.config.now()
+	approved.ProjectID, approved.ApprovedBy, approved.ApprovedAt = project, "credential_owner", service.config.Clock()
 	var previousApproval policystore.Revision
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		previous, err := w.ProjectPolicy(t.Context(), project)

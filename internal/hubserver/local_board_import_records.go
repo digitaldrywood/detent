@@ -214,7 +214,7 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope hubscope.Nativ
 }
 
 func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.NativeScope, record localboard.Record, plan localBoardImportPlan) (localBoardImportPlan, error) {
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config.Clock().UTC().Truncate(time.Microsecond)
 	provenance := &tracker.Provenance{Provider: record.Kind, ExternalID: record.Key, AuthorID: record.Author, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, ObservedAt: now}
 	current := plan.current
 	issue := plan.issue
@@ -484,7 +484,7 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.Nat
 			if !ok {
 				return hubapi.NativeWorkItemStorageUnavailable()
 			}
-			if _, err := writer.PutLocalImportMapping(ctx, postgres.PutLocalImportMappingInput{OrganizationID: scope.Organization, ProjectID: scope.Project, SourceKey: request.Record.Key, SourceKind: request.Record.Kind, SourceDigest: plan.digest, WorkItemID: string(plan.result.WorkItemID), ImportedAt: s.config.now()}); err != nil {
+			if _, err := writer.PutLocalImportMapping(ctx, postgres.PutLocalImportMappingInput{OrganizationID: scope.Organization, ProjectID: scope.Project, SourceKey: request.Record.Key, SourceKind: request.Record.Kind, SourceDigest: plan.digest, WorkItemID: string(plan.result.WorkItemID), ImportedAt: s.config.Clock()}); err != nil {
 				return err
 			}
 			return s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), 200)
@@ -507,7 +507,7 @@ func (s *Service) localBoardAllowances(ctx context.Context, scope hubscope.Nativ
 	if s.database.plansService().Plans() == nil {
 		return nil
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "collaboration", now)); err != nil {
 		return err
 	}

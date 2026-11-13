@@ -108,7 +108,7 @@ func (s *Service) readSlackWebhook(ctx context.Context, organization tracker.Org
 		return nil, err
 	}
 	err = s.accessWrite(ctx, organization, func(w tenantstore.Writer) error {
-		return w.RecordAccessSecretAudit(ctx, accessstore.SecretAudit{OrganizationID: organization, Actor: actor, Kind: slackWebhookSecret, Event: "use", KeyVersion: secret.Envelope.Version, RecordedAt: s.config.now()})
+		return w.RecordAccessSecretAudit(ctx, accessstore.SecretAudit{OrganizationID: organization, Actor: actor, Kind: slackWebhookSecret, Event: "use", KeyVersion: secret.Envelope.Version, RecordedAt: s.config.Clock()})
 	})
 	if err != nil {
 		clear(value)
@@ -182,7 +182,7 @@ func (s *Service) processSlackDelivery(ctx context.Context, organization tracker
 	if s.config.SecretKeys == nil || s.database == nil || s.database.postgres == nil {
 		return false, nil
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	var settings postgres.SlackIntegration
 	var pending []postgres.SlackDelivery
 	err := s.database.postgres.ReadSlack(ctx, organization, corestore.Background, func(r postgres.SlackReader) error {
@@ -263,7 +263,7 @@ func (s *Service) processSlackDelivery(ctx context.Context, organization tracker
 	}
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.config.BusyTimeout)
 	defer cancel()
-	at := s.config.now()
+	at := s.config.Clock()
 	err = s.database.postgres.WriteSlack(finishCtx, organization, corestore.Background, func(w postgres.SlackWriter) error {
 		if _, err := w.FinishSlackDelivery(finishCtx, postgres.FinishSlackDeliveryInput{OrganizationID: organization, ID: delivery.ID, ExpectedAttempts: delivery.Attempts + 1, Outcome: result.outcome, ExternalReceipt: receipt, StatusCode: int32(result.status), At: at, NextAttemptAt: next}); err != nil {
 			return err

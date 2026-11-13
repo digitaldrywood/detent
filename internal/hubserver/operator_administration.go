@@ -64,7 +64,7 @@ func (a hubAdministration) credential(ctx context.Context) (hubapi.APICredential
 		return resolve(ctx)
 	}
 	if c.Identity.SessionID != "" {
-		session, err := s.storedWebSession(ctx, c.Identity.SessionID, s.config.now())
+		session, err := s.storedWebSession(ctx, c.Identity.SessionID, s.config.Clock())
 		if err != nil || session.Identity == nil {
 			return hubapi.APICredential{}, operatortool.ErrAccessDenied
 		}
@@ -209,7 +209,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 				projects := append([]string(nil), in.ProjectIDs...)
 				sort.Strings(projects)
 				projects = slices.Compact(projects)
-				if len(in.Scopes) != 1 || err != nil || key.Revoked || !expiry.After(s.config.now()) || key.Scope != apikey.Scope(in.Scopes[0]) || len(key.Projects) != len(projects) {
+				if len(in.Scopes) != 1 || err != nil || key.Revoked || !expiry.After(s.config.Clock()) || key.Scope != apikey.Scope(in.Scopes[0]) || len(key.Projects) != len(projects) {
 					return operatortool.ErrAccessDenied
 				}
 				for i, project := range projects {
@@ -222,14 +222,14 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		return nil
 	}
 	if name == operatortool.SupportStart {
-		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.Clock())
 		if err != nil || credential.Hosted.SupportActor != "" || !hostedplans.EmailListed(s.config.Hosted.SupportActors, session.Email) || in.OrganizationID != "" && in.OrganizationID != s.config.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
 		return nil
 	}
 	if name == operatortool.OrganizationCreate {
-		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.Clock())
 		if err != nil || credential.Hosted.Subject != s.config.Hosted.BootstrapSubject || credential.Hosted.SupportActor != "" || hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) {
 			return operatortool.ErrAccessDenied
 		}
@@ -254,13 +254,13 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		return nil
 	}
 	if name == operatortool.InvitationAccept && in.InvitationID != "" {
-		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+		session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.Clock())
 		if err != nil || hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) {
 			return operatortool.ErrAccessDenied
 		}
 		invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, in.InvitationID)
 		providerID, providerErr := s.hostedProviderOrganization(ctx)
-		if err != nil || providerErr != nil || providerID == "" || invitation.OrganizationID != providerID || auth.InvitationProblem(invitation, credential.Hosted.Subject, session.Email, s.config.now()) != "" {
+		if err != nil || providerErr != nil || providerID == "" || invitation.OrganizationID != providerID || auth.InvitationProblem(invitation, credential.Hosted.Subject, session.Email, s.config.Clock()) != "" {
 			return operatortool.ErrAccessDenied
 		}
 		var count int
@@ -336,7 +336,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		var invitationErr error
 		invitationErr = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
 			row, err := r.AccessInvitation(readCtx, invitation)
-			if err != nil || row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.now()) {
+			if err != nil || row.AcceptedUserID != "" || !row.ExpiresAt.After(s.config.Clock()) {
 				return operatortool.ErrAccessDenied
 			}
 			count = 1
@@ -363,7 +363,7 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 	case operatortool.OrganizationSession:
 		setup := hostedAccountSetup{}
 		if credential.Hosted != nil && credential.SessionHash != "" {
-			session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+			session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.Clock())
 			if err != nil {
 				return nil, err
 			}
@@ -608,7 +608,7 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 		output.URL, err = s.hostedSwitchFor(ctx, credential.Hosted, in.OrganizationID)
 		output.Reconnect = true
 	case operatortool.InvitationAccept:
-		session, sessionErr := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
+		session, sessionErr := s.storedWebSession(ctx, credential.SessionHash, s.config.Clock())
 		if sessionErr != nil {
 			return output, sessionErr
 		}

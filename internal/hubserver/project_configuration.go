@@ -95,7 +95,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 		return operatortool.Result{}, err
 	}
 	if err := e.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		return e.service.configurationRequestAuthority(ctx, r, scope, e.service.config.now(), name)
+		return e.service.configurationRequestAuthority(ctx, r, scope, e.service.config.Clock(), name)
 	}); err != nil {
 		return operatortool.Result{}, err
 	}
@@ -180,7 +180,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	now := e.service.config.now().UTC()
+	now := e.service.config.Clock().UTC()
 	receipt, err := eventstore.NewContent(e.service.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: args.RequestID, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return operatortool.Result{}, err
@@ -320,7 +320,7 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope hubsco
 	defer cancel()
 	var plan projectConfigurationPlan
 	plan.View = project.MissingConfigurationOwner(args.ProjectID)
-	now := s.config.now()
+	now := s.config.Clock()
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
@@ -493,7 +493,7 @@ func (s *Service) configurationReceipt(ctx context.Context, scope hubscope.Nativ
 	if receipt.RequestHash != hash {
 		return nil, false, configurationIdempotencyConflict()
 	}
-	if receipt.ResponseExpired || receipt.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= receipt.ResponseReplayUntilNs {
+	if receipt.ResponseExpired || receipt.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= receipt.ResponseReplayUntilNs {
 		return nil, false, receiptstore.ErrExpired
 	}
 	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
@@ -613,7 +613,7 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 			return err
 		}
 		p.identityRevision = identity.Revision
-		assigned, err = r.RunnerProjectAuthorized(ctx, identity.RunnerID, projectID, s.config.now())
+		assigned, err = r.RunnerProjectAuthorized(ctx, identity.RunnerID, projectID, s.config.Clock())
 		if err != nil {
 			return err
 		}
@@ -653,7 +653,7 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 		if err != nil {
 			return nil, err
 		}
-		p.view = runnerauth.ProjectConfiguration{ProjectID: string(projectID), Authority: "hub_configuration", Registered: true, Source: "cloud_workflow", EffectivePolicy: &approval.Policy, SelectedPolicy: &approval.Policy, ObservedAt: s.config.now().UTC()}
+		p.view = runnerauth.ProjectConfiguration{ProjectID: string(projectID), Authority: "hub_configuration", Registered: true, Source: "cloud_workflow", EffectivePolicy: &approval.Policy, SelectedPolicy: &approval.Policy, ObservedAt: s.config.Clock().UTC()}
 		p.view.ConfigRevision, err = projectConfigurationDigest(p.view)
 		if err != nil {
 			return nil, err
@@ -774,7 +774,7 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 	result.Pending = false
 	result.RequestID = p.command.RequestID
 	result.Authority = "hub_configuration"
-	result.ObservedAt = s.config.now().UTC()
+	result.ObservedAt = s.config.Clock().UTC()
 	p.view = result
 	p.payload, err = s.prepareConfigurationPayload(ctx, org, result)
 	if err != nil {
@@ -784,7 +784,7 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 	if err != nil {
 		return nil, err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	p.completion, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: org, ActorID: p.command.ActorID, Operation: "configuration result " + p.command.Operation, CommandKey: p.command.RequestID, RequestHash: p.command.RequestHash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, errors.Join(errConfigurationPayloadUnavailable, err)
@@ -804,7 +804,7 @@ func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore
 	if !ok {
 		return hubapi.ErrProjectServiceUnavailable
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	authority := postgres.ConfigurationAuthority{RunnerID: identity.RunnerID, EnrollmentID: identity.EnrollmentID, Revision: identity.Revision, At: now}
 	row, err := owner.ConfigurationProject(ctx, identity.RunnerID, projectID)
 	if p.initialize {
@@ -947,7 +947,7 @@ func (s *Service) recordConfigurationPolicyObservation(ctx context.Context, scop
 	if err != nil {
 		return err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		locker, ok := w.(runnerstore.UpdateLocker)
 		if !ok {

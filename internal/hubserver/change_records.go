@@ -473,7 +473,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 		}
 		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	if now.IsZero() {
 		return s.nativeAPIError(c, ErrInvalidClock)
 	}
@@ -772,7 +772,7 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope hubscope.
 			if current.RequestHash != hash {
 				return hubapi.NativeConflict(0)
 			}
-			if current.ResponseExpired || current.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= current.ResponseReplayUntilNs {
+			if current.ResponseExpired || current.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= current.ResponseReplayUntilNs {
 				return receiptstore.ErrExpired
 			}
 			if !reflect.DeepEqual(current, receipt) {
@@ -1427,7 +1427,7 @@ func (s *Service) changeOperationRecordReceipt(ctx context.Context, scope hubsco
 		if current.RequestHash != hash {
 			return hubapi.NativeConflict(0)
 		}
-		if current.ResponseExpired || current.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= current.ResponseReplayUntilNs {
+		if current.ResponseExpired || current.ResponseReplayUntilNs > 0 && s.config.Clock().UnixNano() >= current.ResponseReplayUntilNs {
 			return receiptstore.ErrExpired
 		}
 		if !reflect.DeepEqual(current, receipt) {

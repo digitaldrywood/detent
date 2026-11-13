@@ -46,7 +46,7 @@ func TestPostgresLegacyBootstrapTenants(t *testing.T) {
 			if err := entry.Validate(org); err != nil {
 				t.Fatal(err)
 			}
-			service := &Service{secretRewrapReady: make(chan struct{}), echo: echo.New(), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: org, PublicURL: "https://hub.example.test", SharedEntry: entry}}}
+			service := &Service{secretRewrapReady: make(chan struct{}), echo: echo.New(), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), Clock: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: org, PublicURL: "https://hub.example.test", SharedEntry: entry}}}
 			service.echo.Pre(service.hostedSharedEntry)
 			service.echo.GET("/app/bootstrap", service.appBootstrapPayload)
 			target := "/organizations/" + org + "/app/bootstrap"

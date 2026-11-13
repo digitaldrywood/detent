@@ -62,7 +62,7 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 	if err != nil {
 		return err
 	}
-	now := p.service.config.now().UTC()
+	now := p.service.config.Clock().UTC()
 	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || !authority.Termination && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) {
 		return &leasestore.FenceError{Check: "lease_current"}
 	}
@@ -133,7 +133,7 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEvent(ctx context.Cont
 		}
 		authority.DispatchGeneration = state.Generation
 		if event.Type == "run.started" && event.Data.Identity != nil {
-			if err := validateTenantProviderAttempt(ctx, reader, authority.Scope.Credential.Runner.RunnerID, event.Data, p.service.config.now().UTC()); err != nil {
+			if err := validateTenantProviderAttempt(ctx, reader, authority.Scope.Credential.Runner.RunnerID, event.Data, p.service.config.Clock().UTC()); err != nil {
 				return err
 			}
 		}
@@ -255,7 +255,7 @@ func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context
 	if err != nil {
 		return err
 	}
-	now := p.service.config.now().UTC()
+	now := p.service.config.Clock().UTC()
 	if !human {
 		identity, err := reader.RunnerForLease(ctx, lease.LeaseID)
 		if err != nil {

@@ -30,7 +30,7 @@ func (s *Service) readNativeAttemptTenant(ctx context.Context, scope hubscope.Na
 	if err != nil {
 		return tracker.NativeAttempt{}, err
 	}
-	return s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.now())
+	return s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.Clock())
 }
 
 func (s *Service) readNativeAttemptSnapshotTenant(ctx context.Context, scope hubscope.NativeScope, item, id string) (hubrecords.TenantAttemptSnapshot, error) {
@@ -201,7 +201,7 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope hubscop
 	result := nativeAttemptPage{Page: tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{}}, encoded: []byte(`{"items":[`)}
 	hasMore := page.Next != (leasestore.AttemptCursor{})
 	for _, snapshot := range snapshots {
-		attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.now())
+		attempt, err := s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.Clock())
 		if err != nil {
 			return nativeAttemptPage{}, err
 		}

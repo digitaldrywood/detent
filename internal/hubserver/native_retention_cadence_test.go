@@ -33,7 +33,7 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(start.Add(-31 * 24 * time.Hour).UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
-	f := newDefaultNativeFixture(t, Config{now: now, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+	f := newDefaultNativeFixture(t, Config{Clock: now, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}}, WebhookMaintenanceInterval: 10 * time.Millisecond})
@@ -231,7 +231,7 @@ func TestNativeRetentionCompletedBackfillsAvoidWriter(t *testing.T) {
 	s := f.service
 	item := f.create(t, "historical checkpoint projection")
 	content := eventstore.NewContent(s.runDetailStore())
-	value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: item.WorkItemID, Type: "run.checkpointed", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-principal"}, RecordedAt: s.config.now()}
+	value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateID: item.WorkItemID, Type: "run.checkpointed", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-principal"}, RecordedAt: s.config.Clock()}
 	row, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, value))
 	if err != nil {
 		t.Fatal(err)

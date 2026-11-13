@@ -265,7 +265,7 @@ func TestNativeEventRejectionsLeaveNoContent(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 			store := &memoryRunDetails{}
-			f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store, now: clock.Now})
+			f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store, Clock: clock.Now})
 			f.start(t)
 			event := pendingRunEvent(f, "rejected-event")
 			status := http.StatusConflict
@@ -361,7 +361,7 @@ func TestNativeEventUploadsOnlyAfterCommit(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 			store := &memoryRunDetails{}
-			f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store, now: clock.Now})
+			f := claimedAttemptDiffFixture(t, false, Config{RunDetails: store, Clock: clock.Now})
 			f.start(t)
 			before := readPendingRunSnapshot(t, f)
 			uploaded, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})

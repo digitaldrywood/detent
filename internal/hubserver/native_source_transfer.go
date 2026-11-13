@@ -299,7 +299,7 @@ func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, sc
 	if approval.Policy.ID == "" {
 		return []sourceRecoveryRunner{}, "", nil
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	destinations := []sourceRecoveryRunner{}
 	var next string
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -454,7 +454,7 @@ func (s *Service) validateSourceDestinationTenant(ctx context.Context, r tenants
 	if !ok {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	candidate, err := reader.SourceRecoveryDestination(ctx, scope.Project, id, now)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return sourceRecoveryRefusal("Destination runner must be online, eligible and have available capacity")

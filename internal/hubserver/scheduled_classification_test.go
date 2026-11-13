@@ -67,7 +67,7 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			storage := projectRecordPostgres(t)
 			backend := &ciDecisionBackend{t: t, decision: test.decision, fail: test.fail}
-			service := &Service{echo: echo.New(), config: Config{Logger: discardLogger(), TenantRepository: storage, now: time.Now, Conversation: &ConversationConfig{Backend: backend, Model: "configured-model"}}}
+			service := &Service{echo: echo.New(), config: Config{Logger: discardLogger(), TenantRepository: storage, Clock: time.Now, Conversation: &ConversationConfig{Backend: backend, Model: "configured-model"}}}
 			repository := "owner/repository"
 			err := storage.WriteTenant(t.Context(), "org_example", corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_example", Name: "Example", CreatedAt: time.Now()}); err != nil {

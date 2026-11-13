@@ -247,9 +247,9 @@ func newPostgresAICreditFixture(t *testing.T, automatic bool) (*Service, *hosted
 	plans := hostedplans.PilotPlans()
 	f.service.config.Hosted.Plans = &plans
 	now := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
-	f.service.config.now = func() time.Time { return now }
+	f.service.config.Clock = func() time.Time { return now }
 	d := f.service.database
-	d.now = f.service.config.now
+	d.now = f.service.config.Clock
 	d.aiCreditMode = billing.ModeTest
 	d.billingAuditStore = &memoryRunDetails{}
 	base := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
@@ -514,7 +514,7 @@ func TestAICreditAutoFund(t *testing.T) {
 				if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 					t.Fatal(err)
 				}
-				now := f.service.config.now()
+				now := f.service.config.Clock()
 				setIncludedCreditSubscription(t, d, d.hostedOrganization, now.Add(-time.Hour), now.Add(time.Hour), now.Add(time.Hour), hostedplans.PlanReference{ID: "team", Version: 2})
 			}
 			for range 2 {
@@ -548,7 +548,7 @@ func TestAICreditAutoFund(t *testing.T) {
 			}
 			if test.status == "processing" {
 				err := hubapi.FromFeatureError(f.service.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
-					return w.CreateBillingCreditPurchase(t.Context(), billingstore.CreditPurchase{OrganizationID: f.service.database.hostedOrganization, Key: "duplicate_auto", Mode: billing.ModeTest, PriceID: "price_credit", USDCents: 500, Automatic: true, State: "pending", CreatedAt: f.service.config.now().UTC()})
+					return w.CreateBillingCreditPurchase(t.Context(), billingstore.CreditPurchase{OrganizationID: f.service.database.hostedOrganization, Key: "duplicate_auto", Mode: billing.ModeTest, PriceID: "price_credit", USDCents: 500, Automatic: true, State: "pending", CreatedAt: f.service.config.Clock().UTC()})
 				}))
 				if err == nil {
 					t.Fatal("second in-flight charge accepted")
@@ -667,7 +667,7 @@ func TestIncludedAICreditAllowance(t *testing.T) {
 	if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 		t.Fatal(err)
 	}
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	for _, test := range []struct {
 		name   string
 		ref    hostedplans.PlanReference

@@ -22,7 +22,7 @@ func TestRunnerDiagnosticsUsesTenantOwnerWithoutLegacyAlias(t *testing.T) {
 	t.Parallel()
 	repository, _ := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC()
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, now: func() time.Time { return now }}}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, Clock: func() time.Time { return now }}}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(organization), func(t *testing.T) {
 			seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: organization, Name: "Example", Slug: string(organization)})
@@ -49,7 +49,7 @@ func TestRunnerRemovalUsesTenantAuthorityAndActiveLeases(t *testing.T) {
 	t.Parallel()
 	repository, _ := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC()
-	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, now: func() time.Time { return now }}}
+	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, Clock: func() time.Time { return now }}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: org, Name: "Example", Slug: string(org)})
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

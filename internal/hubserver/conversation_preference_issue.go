@@ -46,7 +46,7 @@ func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope 
 	}); err != nil {
 		return result, err
 	}
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config.Clock().UTC().Truncate(time.Microsecond)
 	plan.Issue.Body = body
 	plan.Issue.Revision++
 	plan.Issue.UpdatedAt, plan.Issue.LastActivityAt = now, now

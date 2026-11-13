@@ -30,9 +30,9 @@ import (
 
 func placementNativeFixture(t *testing.T, cfg Config) nativeFixture {
 	t.Helper()
-	if cfg.now == nil {
+	if cfg.Clock == nil {
 		now := time.Now().UTC().Truncate(time.Microsecond)
-		cfg.now = func() time.Time { return now }
+		cfg.Clock = func() time.Time { return now }
 	}
 	f := newDefaultNativeFixture(t, cfg)
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
@@ -116,7 +116,7 @@ func setPlacementFixture(t *testing.T, f nativeFixture, placement policy.Placeme
 		if err != nil {
 			return err
 		}
-		return w.AddArchiveOwner(t.Context(), artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "sprite-pool", ID: string(scope.Organization), CreatedAt: f.service.config.now()})
+		return w.AddArchiveOwner(t.Context(), artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "sprite-pool", ID: string(scope.Organization), CreatedAt: f.service.config.Clock()})
 	})
 	return scope
 }
@@ -125,7 +125,7 @@ func setPlacementAllocationFixture(t *testing.T, f nativeFixture, desired int, r
 	t.Helper()
 	scope := placementFixtureScope(t, f)
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
-		_, err := w.(postgres.SpriteWriter).PutSpriteAllocation(t.Context(), postgres.SpriteAllocation{OrganizationID: scope.Organization, ProjectID: scope.Project, DesiredCount: int32(desired), RequestedAt: f.service.config.now(), ConfiguredBy: scope.Credential.ID}, int64(revision))
+		_, err := w.(postgres.SpriteWriter).PutSpriteAllocation(t.Context(), postgres.SpriteAllocation{OrganizationID: scope.Organization, ProjectID: scope.Project, DesiredCount: int32(desired), RequestedAt: f.service.config.Clock(), ConfiguredBy: scope.Credential.ID}, int64(revision))
 		return err
 	})
 	result, err := f.service.readProjectSpriteAllocation(t.Context(), scope)
@@ -162,7 +162,7 @@ func placementFixtureHeartbeat(t *testing.T, f nativeFixture, runner string, at 
 
 func placementFixtureMember(t *testing.T, f nativeFixture, r runnerFixture, name, state string) {
 	t.Helper()
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	bootstrapLog := ""
 	if state == "deleted" {
 		bootstrapLog = "bootstrap failed"
@@ -191,7 +191,7 @@ func placementFixtureRunners(t *testing.T, f nativeFixture, scope hubscope.Nativ
 	var rows []hubrecords.PlacementRunner
 	err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		rows, err = readPlacementRunners(t.Context(), r, scope, f.service.config.now())
+		rows, err = readPlacementRunners(t.Context(), r, scope, f.service.config.Clock())
 		return err
 	})
 	return rows, err
@@ -210,11 +210,11 @@ func placementFixtureRunnerWithScope(t *testing.T, f nativeFixture, name, accoun
 		r.redemption.SpriteName = name
 	}
 	r.enroll(t)
-	report := capacityReport(f.service.config.now())
+	report := capacityReport(f.service.config.Clock())
 	report.Models, report.MaxConcurrent, report.SharedAccountAlias = models, capacity, account
 	publishCapacity(t, f, r, report)
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
-		return w.UpdateRunnerCapacityConfig(t.Context(), r.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: capacity, ClientLimit: capacity, RuntimeLimit: capacity, Manageable: true, ObservedAt: f.service.config.now()})
+		return w.UpdateRunnerCapacityConfig(t.Context(), r.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: capacity, ClientLimit: capacity, RuntimeLimit: capacity, Manageable: true, ObservedAt: f.service.config.Clock()})
 	})
 	return r
 }
@@ -317,7 +317,7 @@ func TestPlacementClaims(t *testing.T) {
 					busy := f.create(t, "already running")
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", local.redemption.Credential, providerClaim(local, busy, "busy")), http.StatusOK)
 				case "offline":
-					placementFixtureHeartbeat(t, f, local.binding.RunnerID, f.service.config.now().Add(-3*time.Minute))
+					placementFixtureHeartbeat(t, f, local.binding.RunnerID, f.service.config.Clock().Add(-3*time.Minute))
 				case "draining":
 					placementFixtureRouting(t, f, local.binding.RunnerID, func(row *runnerstore.Identity) { row.State = "draining" })
 				}
@@ -391,7 +391,7 @@ func TestPlacementClaims(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "provider_full":
-				report := capacityReport(f.service.config.now())
+				report := capacityReport(f.service.config.Clock())
 				report.Availability = "exhausted"
 				publishCapacity(t, f, r, report)
 			case "policy":
@@ -527,7 +527,7 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 					account = "local"
 				}
 				r := placementFixtureRunnerWithScope(t, f, account, account, false, 2, runnerScope, "gpt-6.1-sol", "test-model")
-				report := capacityReport(f.service.config.now())
+				report := capacityReport(f.service.config.Clock())
 				report.Models, report.SharedAccountAlias, report.MaxConcurrent = []string{"gpt-6.1-sol", "test-model"}, account, test.providerMax
 				if test.local {
 					report.SharedAccountAlias = ""
@@ -575,12 +575,12 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 			}
 			if test.pending {
 				placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
-					now := f.service.config.now()
+					now := f.service.config.Clock()
 					return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: f.project.OrganizationID, Name: sprite.redemption.Hostname, ProviderOrganization: "example-org", EnrollmentID: sprite.enrollment.ID, State: "bootstrapping", IdleSince: now, CreatedAt: now})
 				})
-				placementFixtureHeartbeat(t, f, sprite.binding.RunnerID, f.service.config.now().Add(-time.Minute))
+				placementFixtureHeartbeat(t, f, sprite.binding.RunnerID, f.service.config.Clock().Add(-time.Minute))
 				placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
-					return w.UpdateMachineSpriteWake(t.Context(), leasestore.SpriteWake{MachineID: string(sprite.binding.MachineID), RunnerID: sprite.binding.RunnerID, Name: sprite.redemption.Hostname, WokenAt: new(f.service.config.now()), ObservedAt: f.service.config.now()})
+					return w.UpdateMachineSpriteWake(t.Context(), leasestore.SpriteWake{MachineID: string(sprite.binding.MachineID), RunnerID: sprite.binding.RunnerID, Name: sprite.redemption.Hostname, WokenAt: new(f.service.config.Clock()), ObservedAt: f.service.config.Clock()})
 				})
 			}
 			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
@@ -595,7 +595,7 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 			var usage int
 			err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				usage, err = readPlacementSpriteUsage(t.Context(), r, scope, f.service.config.now())
+				usage, err = readPlacementSpriteUsage(t.Context(), r, scope, f.service.config.Clock())
 				return err
 			})
 			wantUsage := 0
@@ -606,12 +606,12 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 				t.Fatalf("Sprite usage=%d err=%v, want %d", usage, err, wantUsage)
 			}
 
-			decision, err := f.service.readPlacementSnapshot(t.Context(), scope, f.service.config.now(), nil)
+			decision, err := f.service.readPlacementSnapshot(t.Context(), scope, f.service.config.Clock(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if test.organization {
-				decision, err = f.service.readOrganizationPlacementSnapshot(t.Context(), scope, f.service.config.now())
+				decision, err = f.service.readOrganizationPlacementSnapshot(t.Context(), scope, f.service.config.Clock())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -665,7 +665,7 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 				if test.allocation == "owned" {
 					placementFixtureMember(t, f, sprite, sprite.redemption.Hostname, "enrolled")
 					placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
-						return w.ReplaceRunnerLocalChecks(t.Context(), sprite.binding.RunnerID, f.project.ID, runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}, ObservedAt: f.service.config.now()})
+						return w.ReplaceRunnerLocalChecks(t.Context(), sprite.binding.RunnerID, f.project.ID, runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}, ObservedAt: f.service.config.Clock()})
 					})
 				}
 			}
@@ -732,7 +732,7 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 				t.Fatalf("running=%d claimed=%d promoted=%d", running, claimed, promoted)
 			}
 			if placement.SpriteLimit() > 0 {
-				decision, err := f.service.readPlacementSnapshot(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, f.service.config.now(), nil)
+				decision, err := f.service.readPlacementSnapshot(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, f.service.config.Clock(), nil)
 				if err != nil || decision.Reason != "Configured maximum Sprite concurrency is full" || decision.SpriteTarget != 0 {
 					t.Fatalf("concurrency diagnostic=%+v err=%v", decision.PlacementDecision, err)
 				}
@@ -755,7 +755,7 @@ func TestPlacementClaimTenantBoundaries(t *testing.T) {
 	sprite := placementFixtureRunnerWithScope(t, f, "sprite-runner", "sprite", true, 4, "organization", "gpt-6.1-sol", "test-model")
 	placementFixtureMember(t, f, sprite, sprite.redemption.Hostname, "enrolled")
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
-		return w.ReplaceRunnerLocalChecks(t.Context(), sprite.binding.RunnerID, f.project.ID, runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}, ObservedAt: f.service.config.now()})
+		return w.ReplaceRunnerLocalChecks(t.Context(), sprite.binding.RunnerID, f.project.ID, runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}, ObservedAt: f.service.config.Clock()})
 	})
 	local := placementFixtureRunnerWithScope(t, f, "local-runner", "local", false, 4, "organization", "gpt-6.1-sol", "test-model")
 	otherLocal := placementFixtureRunnerWithScope(t, other, "other-local", "other", false, 2, "projects", "gpt-6.1-sol", "test-model")
@@ -800,13 +800,13 @@ func TestPlacementIgnoresExhaustedSubscriptionQuota(t *testing.T) {
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			sprite := placementFixtureRunner(t, f, "sprite-runner", "sprite", true, 2, "gpt-6.1-sol", "test-model")
 			local := placementFixtureRunner(t, f, "local-runner", "local", false, 1, "gpt-6.1-sol", "test-model")
-			report := capacityReport(f.service.config.now())
+			report := capacityReport(f.service.config.Clock())
 			report.Models, report.SharedAccountAlias, report.Availability = []string{"gpt-6.1-sol", "test-model"}, "sprite", "exhausted"
 			publishCapacity(t, f, sprite, report)
 			scope := setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 3)
 			issue := f.create(t, "first")
 			f.create(t, "second")
-			decision, err := f.service.readPlacementSnapshot(t.Context(), scope, f.service.config.now(), nil)
+			decision, err := f.service.readPlacementSnapshot(t.Context(), scope, f.service.config.Clock(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -851,18 +851,18 @@ func TestPlacementWake(t *testing.T) {
 				t.Fatal(err)
 			}
 			placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
-				return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: scope.Organization, ProjectID: scope.Project, Kind: flySpritesToken, OrganizationSlug: "example-org", Envelope: envelope, UpdatedAt: f.service.config.now()}, accessstore.SecretAudit{OrganizationID: scope.Organization, ProjectID: scope.Project, Actor: scope.Credential.ID, Kind: flySpritesToken, Event: "set", KeyVersion: envelope.Version, RecordedAt: f.service.config.now()})
+				return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: scope.Organization, ProjectID: scope.Project, Kind: flySpritesToken, OrganizationSlug: "example-org", Envelope: envelope, UpdatedAt: f.service.config.Clock()}, accessstore.SecretAudit{OrganizationID: scope.Organization, ProjectID: scope.Project, Actor: scope.Credential.ID, Kind: flySpritesToken, Event: "set", KeyVersion: envelope.Version, RecordedAt: f.service.config.Clock()})
 			})
 			keys := f.service.config.SecretKeys
 			f.service.config.SecretKeys = nil
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			sprite := placementFixtureRunner(t, f, "sprite-runner", "sprite", true, 2, "gpt-6.1-sol")
 			if test.exhausted {
-				report := capacityReport(f.service.config.now())
+				report := capacityReport(f.service.config.Clock())
 				report.Models, report.SharedAccountAlias, report.Availability = []string{"gpt-6.1-sol"}, "sprite", "exhausted"
 				publishCapacity(t, f, sprite, report)
 			}
-			placementFixtureHeartbeat(t, f, sprite.binding.RunnerID, f.service.config.now().Add(-time.Minute))
+			placementFixtureHeartbeat(t, f, sprite.binding.RunnerID, f.service.config.Clock().Add(-time.Minute))
 			if test.localFree {
 				placementFixtureRunner(t, f, "local-runner", "local", false, 1, "gpt-6.1-sol")
 			}

@@ -32,7 +32,7 @@ func TestPostgresOperatorCatalogFamilies(t *testing.T) {
 			c.Key = &apikey.KeyAuthority{ID: "key_" + org, Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}
 		}
 		if err := s.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(org), corestore.Serving, func(w tenantstore.Writer) error {
-			now := s.config.now()
+			now := s.config.Clock()
 			if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: tracker.OrganizationID(org), ID: "example_host", Hostname: "example", Capacity: 1}); err != nil {
 				return err
 			}

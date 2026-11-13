@@ -69,7 +69,7 @@ func (s *Service) coordinatorRunners(ctx context.Context, scope hubscope.NativeS
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		now := s.config.now()
+		now := s.config.Clock()
 		var records []runnerstore.RoutingRecord
 		if args.RunnerID != "" {
 			reader, ok := r.(runnerstore.RoutingReader)
@@ -183,7 +183,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 		problems := slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.Project) })
 		views = append(views, map[string]any{"runner_id": r.RunnerID, "display_name": r.DisplayName, "revision": r.Revision, "scope": r.Scope, "isolation_tier": r.IsolationTier, "backend_isolation": r.BackendIsolation, "problems": problems, "health": r.Health, "connection_health": r.ConnectionHealth, "last_heartbeat_at": r.LastHeartbeatAt})
 	}
-	return map[string]any{"runners": views, "observed_at": s.config.now().UTC()}, nil
+	return map[string]any{"runners": views, "observed_at": s.config.Clock().UTC()}, nil
 }
 
 func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {

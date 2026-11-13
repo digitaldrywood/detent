@@ -49,7 +49,7 @@ func TestChangeLandingPreservesCompatiblePolicyEvidence(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				row.ProjectID, row.ApprovedBy, row.ApprovedAt = item.ProjectID, "example-owner", f.service.config.now()
+				row.ProjectID, row.ApprovedBy, row.ApprovedAt = item.ProjectID, "example-owner", f.service.config.Clock()
 				if err := repository.WriteTenant(t.Context(), item.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					return w.ApproveProjectPolicy(t.Context(), row, input.PolicyID)
 				}); err != nil {

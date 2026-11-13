@@ -404,7 +404,7 @@ func (d *database) authorizeNativeProject(ctx context.Context, scope hubscope.Na
 	if d.postgres == nil {
 		return hubapi.NativeNotFound()
 	}
-	service := &Service{config: Config{now: d.now}}
+	service := &Service{config: Config{Clock: d.now}}
 	return d.postgres.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if scope.Credential.Runner.RunnerID != "" {
 			if scope.Credential.Runner.OrganizationID != scope.Organization {

@@ -272,7 +272,7 @@ func TestHostedChangePolicyCIPrincipals(t *testing.T) {
 					return err
 				}
 				if test.revoked {
-					return w.RevokeAccessCredential(t.Context(), "ci", f.service.config.now())
+					return w.RevokeAccessCredential(t.Context(), "ci", f.service.config.Clock())
 				}
 				return nil
 			}); err != nil {

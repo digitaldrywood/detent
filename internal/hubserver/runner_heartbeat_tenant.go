@@ -160,7 +160,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			}
 			return err
 		}
-		receivedAt := s.config.now().UTC()
+		receivedAt := s.config.Clock().UTC()
 		if identity.OrganizationID != credential.Runner.OrganizationID || identity.RunnerID != credential.Runner.RunnerID || identity.MachineID != credential.Runner.MachineID || identity.RemovedAt != nil || identity.TokenID != credential.ID || !identity.ExpiresAt.After(receivedAt) || current.OrganizationID != identity.OrganizationID || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, receivedAt) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
 			return hubscope.RunnerUnauthorized()
 		}
@@ -467,13 +467,13 @@ func (s *Service) readRunnerResponseSnapshot(ctx context.Context, organization t
 	if owner, ok := s.config.TenantRepository.(interface {
 		ReadRunnerHeartbeatSnapshot(context.Context, tracker.OrganizationID, string, string, tracker.ProjectID, func() time.Time, func(context.Context, tenantstore.Reader, time.Time) error) error
 	}); ok {
-		return owner.ReadRunnerHeartbeatSnapshot(ctx, organization, credential, runner, project, s.config.now, read)
+		return owner.ReadRunnerHeartbeatSnapshot(ctx, organization, credential, runner, project, s.config.Clock, read)
 	}
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return hubapi.NativeRunEventStorageUnavailable()
 	}
-	return repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error { return read(ctx, r, s.config.now().UTC()) })
+	return repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error { return read(ctx, r, s.config.Clock().UTC()) })
 }
 
 func readRunnerResponseRouting(ctx context.Context, r tenantstore.Reader, identity runnerstore.Identity, snapshot *runnerauth.RoutingSnapshot) error {

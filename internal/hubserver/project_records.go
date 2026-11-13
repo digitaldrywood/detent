@@ -355,13 +355,13 @@ func (s *Service) executeProjectRecordMutation(ctx context.Context, scope hubsco
 			if s.config.ProjectParticipants == nil {
 				return hubapi.ErrProjectParticipants
 			}
-			err = s.config.ProjectParticipants.RetireProject(ctx, w, projectRecordActor(scope), current, s.config.now())
+			err = s.config.ProjectParticipants.RetireProject(ctx, w, projectRecordActor(scope), current, s.config.Clock())
 			if err == nil {
-				err = w.RetireProject(ctx, scope.Project, current.Settings.Revision, s.config.now())
+				err = w.RetireProject(ctx, scope.Project, current.Settings.Revision, s.config.Clock())
 			}
 		default:
 			if request, ok := input.(updateProjectIntegrationRequest); ok && projectIntegrationChanges(current, request) {
-				if err := w.RequireProjectIdle(ctx, scope.Project, s.config.now()); err != nil {
+				if err := w.RequireProjectIdle(ctx, scope.Project, s.config.Clock()); err != nil {
 					return err
 				}
 			}

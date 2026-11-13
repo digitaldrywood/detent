@@ -262,7 +262,7 @@ func hubWorkResult[T any](r operatorWorkReads, request operatortool.WorkReadRequ
 	if err != nil {
 		return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 	}
-	view := operatortool.WorkReadResult[T]{ProjectID: request.ProjectID, Reference: request.Reference, URL: operatortool.WorkItemURL(request.ProjectID, request.Reference), GeneratedAt: r.service.config.now(), Freshness: explain.SourceAvailable, Data: data}
+	view := operatortool.WorkReadResult[T]{ProjectID: request.ProjectID, Reference: request.Reference, URL: operatortool.WorkItemURL(request.ProjectID, request.Reference), GeneratedAt: r.service.config.Clock(), Freshness: explain.SourceAvailable, Data: data}
 	if _, ok := any(data).(operatortool.NativeItem); ok {
 		return operatortool.EncodeWorkItemResult(view)
 	}
@@ -315,7 +315,7 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 
 func (s *Service) readOperatorExplanation(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue) (tracker.NativeRuntimeEvidence, []nativeFailure, bool, error) {
 	item := string(issue.WorkItemID)
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	evidence := tracker.NativeRuntimeEvidence{Issue: issue.RuntimeReference(), Selection: "latest", ObservedAt: now,
 		Unavailable: []string{"efficiency_receipt", "scheduler_history_projection", "runner_capacity_projection", "native_admission_projection"}, Capacity: []tracker.NativeRuntimeCapacity{},
 		Scheduling: tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "unknown", At: now, WorkItemRevision: issue.Revision, Reason: "Runner capacity and admission projection are not available from this typed read"}}

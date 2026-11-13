@@ -49,7 +49,7 @@ func newArchiveRevisionFixture(t *testing.T, f nativeFixture, title string, coun
 	}); err != nil {
 		t.Fatal(err)
 	}
-	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: int(number), Revision: tracker.Revision(count + 1), Profile: "native"}, Title: title, State: "Todo", Actor: scope.Actor(), CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
 	content := eventstore.NewContent(f.service.runDetailStore())
 	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: count + 1}, historyTestJSON(t, issue))
@@ -101,7 +101,7 @@ func (f archiveRevisionFixture) publish(t *testing.T) (attachment.ArchiveReferen
 		t.Fatal(err)
 	}
 	attachmentID := "att_" + ref.SHA256[:32]
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	record := attachmentstore.ArchiveRecord{OrganizationID: f.scope.Organization, ProjectID: f.scope.Project, ID: attachmentID, Uploader: f.scope.Actor().PrincipalID, Reference: ref, CreatedAt: now}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if _, err := w.PrepareAttachmentArchive(t.Context(), record); err != nil {
@@ -191,7 +191,7 @@ func TestNativeArchiveSectionFailures(t *testing.T) {
 				}
 				response := entryauthority.ArchiveResponse{Data: data}
 				if presign {
-					response.Access = &attachment.ArchiveRead{ArchiveReference: ref, URL: "https://objects.example.test/section", ExpiresAt: f.service.config.now().Add(5 * time.Minute)}
+					response.Access = &attachment.ArchiveRead{ArchiveReference: ref, URL: "https://objects.example.test/section", ExpiresAt: f.service.config.Clock().Add(5 * time.Minute)}
 				}
 				return response, nil
 			}
@@ -574,7 +574,7 @@ func TestOlderArchiveViews(t *testing.T) {
 	t.Run("change recovery", func(t *testing.T) {
 		f := newChangeFixture(t, nil)
 		version := f.publish(t, "legacy-version", "")
-		review := tracker.ChangeReview{ID: "legacy-review", VersionID: version.ID, Decision: "commented", Body: "Historical review", CreatedAt: f.service.config.now()}
+		review := tracker.ChangeReview{ID: "legacy-review", VersionID: version.ID, Decision: "commented", Body: "Historical review", CreatedAt: f.service.config.Clock()}
 		fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
 		fixture.add("change_evidence", map[string]any{"change_id": f.change.ID, "sequence": int64(1), "version_id": version.ID, "kind": "review", "source_key": review.ID, "record_json": string(historyTestJSON(t, review)), "payload_object_key": ""})
 		source := CoreChangeImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, SourceObjects: f.service.runDetailStore(), Objects: f.service.runDetailStore()}
@@ -634,7 +634,7 @@ func TestOlderArchiveViews(t *testing.T) {
 			before[suffix] = bytes.Clone(response.Body.Bytes())
 		}
 		a.service.tokenUseWork.Wait()
-		if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
+		if err := a.service.maintainNativeRetention(t.Context(), a.service.config.Clock()); err != nil {
 			t.Fatal(err)
 		}
 		for _, suffix := range suffixes {

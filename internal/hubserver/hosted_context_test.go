@@ -138,7 +138,7 @@ func hostedContextData(t *testing.T, reply hostedContextReply, denied bool) json
 
 func seedHostedContextRunner(t *testing.T, f hostedSecurityFixture, id, version string, heartbeat time.Time, revoked bool) {
 	t.Helper()
-	now := f.service.config.now().UTC()
+	now := f.service.config.Clock().UTC()
 	expires := now.Add(time.Hour)
 	token := "tok_" + id
 	db := hostedPostgresAdmin(t, f.service)

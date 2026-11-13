@@ -127,7 +127,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			case "intake pending":
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					imports := w.(projectstore.GitHubImportWriter)
-					record, err := imports.CreateGitHubImport(t.Context(), projectstore.GitHubImport{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: hubapi.NewID("import"), IssueNumber: 1, ObservedAt: f.service.config.now()})
+					record, err := imports.CreateGitHubImport(t.Context(), projectstore.GitHubImport{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: hubapi.NewID("import"), IssueNumber: 1, ObservedAt: f.service.config.Clock()})
 					if err != nil {
 						return err
 					}
@@ -416,7 +416,7 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 		{name: "revoked credential", revoked: true, want: "revoked"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			before := f.service.config.now().UTC().Truncate(time.Microsecond)
+			before := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 			heartbeatAt := before.Add(time.Second)
 			observedAt := heartbeatAt.Add(test.elapsed)
 			clock.Store(before.UnixNano())
@@ -508,7 +508,7 @@ func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	var snapshot runnerstore.RuntimeCapacitySnapshot
 	var identity runnerstore.Identity
 	var backend isolation.Report
@@ -599,7 +599,7 @@ func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture, 
 func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	cfg := Config{now: func() time.Time { return now }}
+	cfg := Config{Clock: func() time.Time { return now }}
 	f := newNativeFixture(t, newClockedPostgresNativeService(t, cfg), "", "shared")
 	otherProject := newNativeFixture(t, f.service, f.project.OrganizationID, "other-shared")
 	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
@@ -799,7 +799,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 					test.status, test.code = http.StatusOK, ""
 				}
 				now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
-				f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }}), "", "lease-accounting")
+				f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }}), "", "lease-accounting")
 				r := prepareRunnerForScope(t, f, scope, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 				r.enroll(t)
 				r.reportCapacity(t)

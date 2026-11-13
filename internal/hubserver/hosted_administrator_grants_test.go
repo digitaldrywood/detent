@@ -37,7 +37,7 @@ func TestHostedAdministratorProjectGrants(t *testing.T) {
 							return err
 						}
 						member.Active = false
-						member.UpdatedAt = f.service.config.now().UTC()
+						member.UpdatedAt = f.service.config.Clock().UTC()
 						return w.UpdateAccessMember(t.Context(), member)
 					}); err != nil {
 						t.Fatal(err)
@@ -187,7 +187,7 @@ func TestHostedAdministratorProjectGrants(t *testing.T) {
 					if err := w.(accessstore.ProjectAccessCleaner).DeleteAccessProjectGrants(t.Context(), tracker.ProjectID(project)); err != nil {
 						return err
 					}
-					return w.RetireProject(t.Context(), tracker.ProjectID(project), row.Settings.Revision, f.service.config.now())
+					return w.RetireProject(t.Context(), tracker.ProjectID(project), row.Settings.Revision, f.service.config.Clock())
 				}); err != nil {
 					t.Fatal(err)
 				}

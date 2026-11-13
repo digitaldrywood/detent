@@ -25,7 +25,7 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 	f := newConversationTenantFixture(t, repository, now)
 	f.service.config.TenantRepository = repository
 	f.service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID)}
-	f.service.config.now = func() time.Time { return now }
+	f.service.config.Clock = func() time.Time { return now }
 	owner := conversationLifecyclePostgresOwner(t, f, now)
 
 	var issue corestore.WorkItem
@@ -454,7 +454,7 @@ func (r *blockingLifecycleRepository) releaseNow() {
 func newConversationTenantFixture(t *testing.T, repository tenantstore.Repository, now time.Time) conversationAPIFixture {
 	t.Helper()
 	service := &Service{
-		config:   Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_conversation"}},
+		config:   Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), Clock: func() time.Time { return now }, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_conversation"}},
 		database: &database{}, notifications: newNotificationBroker(),
 	}
 	service.ready.Store(true)

@@ -71,7 +71,7 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope hubscope.NativeSc
 	}
 	var runner runnerauth.Runner
 	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		now := s.config.now().UTC()
+		now := s.config.Clock().UTC()
 		if credential.Runner.RunnerID != "" {
 			current, err := reader.AccessCredential(ctx, credential.ID)
 			if err != nil {
@@ -311,7 +311,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope hubscope
 	if change.CapacityLimit != current.CapacityLimit {
 		change.CapacityRequest = nil
 	}
-	if (change.CapacityLimit != current.CapacityLimit || current.CapacityRequiresApplication(change.CapacityLimit)) && change.CapacityLimit > 0 && freshCapacityConfig(current, s.config.now()) {
+	if (change.CapacityLimit != current.CapacityLimit || current.CapacityRequiresApplication(change.CapacityLimit)) && change.CapacityLimit > 0 && freshCapacityConfig(current, s.config.Clock()) {
 		change.CapacityRequest = &runnerauth.CapacityRequest{ExpectedConfigRevision: current.CapacityConfig.Revision, Capacity: change.CapacityLimit}
 	}
 	identity.CapacityRequest = change.CapacityRequest
@@ -353,7 +353,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope hubscope
 		return nil, err
 	}
 	if request.IdempotencyKey != "" {
-		receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, raw)
+		receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.Clock()}, raw)
 		if err != nil {
 			return nil, err
 		}
@@ -497,7 +497,7 @@ func (s *Service) requireRunnerAdministrationTenant(ctx context.Context, reader 
 	if credential.Hosted == nil {
 		return nil
 	}
-	if !credential.Hosted.ExpiresAt.IsZero() && !credential.Hosted.ExpiresAt.After(s.config.now()) || credential.Hosted.SupportActor != "" {
+	if !credential.Hosted.ExpiresAt.IsZero() && !credential.Hosted.ExpiresAt.After(s.config.Clock()) || credential.Hosted.SupportActor != "" {
 		return accessstore.ErrDenied
 	}
 	if credential.EntryKey != nil && !credential.EntryKey.Valid() {
@@ -595,7 +595,7 @@ func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracke
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
-		now := s.config.now()
+		now := s.config.Clock()
 		records, err := fleet.RunnerRoutingRecords(ctx, limit, offset, now)
 		if err != nil {
 			return err

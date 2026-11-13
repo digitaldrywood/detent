@@ -45,11 +45,11 @@ func monthlyBudgetRunner(t *testing.T, f nativeFixture, name, account string, sp
 		r.redemption.SpriteName = name
 	}
 	r.enroll(t)
-	report := capacityReport(f.service.config.now())
+	report := capacityReport(f.service.config.Clock())
 	report.Models, report.MaxConcurrent, report.SharedAccountAlias = models, capacity, account
 	publishCapacity(t, f, r, report)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.UpdateRunnerCapacityConfig(t.Context(), r.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: capacity, ClientLimit: capacity, RuntimeLimit: capacity, Manageable: true, ObservedAt: f.service.config.now()})
+		return w.UpdateRunnerCapacityConfig(t.Context(), r.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: capacity, ClientLimit: capacity, RuntimeLimit: capacity, Manageable: true, ObservedAt: f.service.config.Clock()})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func setMonthlyBudgetFixture(t *testing.T, f nativeFixture, organization bool, p
 func TestSelectedBillingLeaseAllowsDisabledPolicyAndFailsClosedWhenEnabled(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	f.service.registerCostUsageRoutes(f.service.echo)
 	r := monthlyBudgetRunner(t, f, "selected-budget", "budget", true, 2, "test-model", "gpt-6.1-sol")
 	issue := f.create(t, "selected-budget")
@@ -294,7 +294,7 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 			}
 			workspace := f.createIndependent(t, "monthly workspace exposure")
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
-				now := f.service.config.now()
+				now := f.service.config.Clock()
 				id := workspacesession.NewID()
 				if _, err := writer.(postgres.WorkspaceWriter).CreateWorkspaceSession(t.Context(), postgres.WorkspaceCreate{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: id, SubjectWorkItemID: string(workspace.WorkItemID), Ref: "refs/heads/example", Requires: []string{workspacesession.CapabilityFiles}, IdleTimeoutSeconds: 300, ExpiresAt: now.Add(time.Hour), RequestedExpiresAt: now.Add(time.Hour), CreatedBy: "test_hub_admin", CreatedAt: now}); err != nil {
 					return err
@@ -393,7 +393,7 @@ func TestMonthlyBudgetHistoricalAdmissionsCannotFundNewClaims(t *testing.T) {
 		for _, archived := range []bool{false, true} {
 			t.Run(fmt.Sprintf("organization=%t/archived=%t", organization, archived), func(t *testing.T) {
 				now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
-				first := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+				first := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 				first.service.registerCostUsageRoutes(first.service.echo)
 				second := newNativeFixture(t, first.service, first.project.OrganizationID+"_second", "Example second project")
 				for i, f := range []nativeFixture{first, second} {
@@ -498,7 +498,7 @@ func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 			t.Logf("server logs:\n%s", logs.String())
 		}
 	})
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	f.service.registerCostUsageRoutes(f.service.echo)
 	descriptor := monthlyBudgetDrainPolicy(t, f)
 	claimRequest := func(r runnerFixture, issue tracker.NativeIssue, session string) tracker.NativeClaim {
@@ -545,11 +545,11 @@ func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 		item := f.create(t, fmt.Sprintf("closed admission %d", i))
 		monthlyBudgetQueuePriority(t, f, item.WorkItemID)
 	}
-	allowed, err := monthlySpriteAllowed(t.Context(), nil, scope, f.service.config.now(), f.service.config.TenantRepository)
+	allowed, err := monthlySpriteAllowed(t.Context(), nil, scope, f.service.config.Clock(), f.service.config.TenantRepository)
 	if err != nil || !allowed {
 		t.Fatalf("ranked cohort beyond first page lost Sprite continuation: %t %v", allowed, err)
 	}
-	allowed, err = monthlySpriteAllowed(t.Context(), nil, hubscope.NativeScope{Organization: scope.Organization}, f.service.config.now(), f.service.config.TenantRepository)
+	allowed, err = monthlySpriteAllowed(t.Context(), nil, hubscope.NativeScope{Organization: scope.Organization}, f.service.config.Clock(), f.service.config.TenantRepository)
 	if err != nil || !allowed {
 		t.Fatalf("organization Sprite lifecycle lost the admitted cohort: %t %v", allowed, err)
 	}
@@ -570,7 +570,7 @@ func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 			if !monthlyBudgetAdmission(t, f, admitted.WorkItemID) {
 				t.Fatal("merge cohort was lost")
 			}
-			decision, err := checkMonthlyBudget(t.Context(), nil, scope, budget.CostExposure{SpriteInfrastructure: true, RunnerAPI: true}, true, f.service.config.now(), f.service.config.TenantRepository)
+			decision, err := checkMonthlyBudget(t.Context(), nil, scope, budget.CostExposure{SpriteInfrastructure: true, RunnerAPI: true}, true, f.service.config.Clock(), f.service.config.TenantRepository)
 			if err != nil || !decision.Allowed {
 				t.Fatalf("merge drain=%+v err=%v", decision, err)
 			}
@@ -631,7 +631,7 @@ func TestMonthlyBudgetConcurrentAndDirectClaims(t *testing.T) {
 func TestMonthlyBudgetHardStopAndRecovery(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	f.service.registerCostUsageRoutes(f.service.echo)
 	monthlyPolicyFixture(t, f, false)
 	r := monthlyBudgetRunner(t, f, "hard-budget", "budget", true, 2, "test-model", "gpt-6.1-sol")
@@ -675,7 +675,7 @@ func TestMonthlyBudgetHardStopAndRecovery(t *testing.T) {
 func TestMonthlyBudgetCorrectionsAndSettingsAuthority(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.April, 15, 12, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	f.service.registerCostUsageRoutes(f.service.echo)
 	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	o := costTestObservation("cpu", now.Add(-time.Hour), now)
@@ -736,7 +736,7 @@ func TestMonthlyBudgetClaimsApplyCorrectionsAcrossTenants(t *testing.T) {
 			t.Log(logs.String())
 		}
 	})
-	first := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	first := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	first.service.registerCostUsageRoutes(first.service.echo)
 	second := newNativeFixture(t, first.service, first.project.OrganizationID+"_second", "Example second project")
 	admin := usagePostgresAdmin(t, first.service)

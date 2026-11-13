@@ -558,9 +558,9 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 		t.Fatal(err)
 	}
 	t.Run("later window replay", func(t *testing.T) {
-		originalClock := service.config.now
-		defer func() { service.config.now = originalClock }()
-		service.config.now = func() time.Time { return now.Add(2 * time.Minute) }
+		originalClock := service.config.Clock
+		defer func() { service.config.Clock = originalClock }()
+		service.config.Clock = func() time.Time { return now.Add(2 * time.Minute) }
 		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, publisherToken, reference), http.StatusNoContent)
 		if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 			usages, err := r.BillingUsages(t.Context(), window.Add(2*time.Minute), 64)

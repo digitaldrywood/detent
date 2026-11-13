@@ -420,7 +420,7 @@ func newPostgresWorkViewFixture(t *testing.T) postgresWorkViewFixture {
 	t.Helper()
 	repository, admin := hubPostgresRepository(t, 4)
 	fixture, _ := newChangePolicyPostgresTenantFixture(t, repository, "org_security", &memoryRunDetails{})
-	fixture.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{fixture.service}, chat.WithClock(fixture.service.config.now))
+	fixture.service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{fixture.service}, chat.WithClock(fixture.service.config.Clock))
 	if err := fixture.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func newPostgresWorkViewFixture(t *testing.T) postgresWorkViewFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := fixture.service.config.now()
+	now := fixture.service.config.Clock()
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: "org_security", Kind: accessstore.NativeCursorKeyKind, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: "org_security", Kind: accessstore.NativeCursorKeyKind, Actor: "migration", Event: "import", KeyVersion: envelope.Version, RecordedAt: now})
 	}); err != nil {

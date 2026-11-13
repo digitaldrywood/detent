@@ -30,7 +30,7 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 		if !ok {
 			return hubapi.ErrPostgresFeatureUnavailable
 		}
-		project, err = gitHubIntakeReader.NextGitHubIntake(ctx, s.config.now())
+		project, err = gitHubIntakeReader.NextGitHubIntake(ctx, s.config.Clock())
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -51,7 +51,7 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 			if !ok {
 				return hubapi.ErrPostgresFeatureUnavailable
 			}
-			return gitHubIntakeWriter.DeferGitHubIntake(cleanup, project, s.config.now(), s.config.deps.Jitter())
+			return gitHubIntakeWriter.DeferGitHubIntake(cleanup, project, s.config.Clock(), s.config.deps.Jitter())
 		})
 		if errors.Is(err, corestore.ErrNotFound) {
 			return retryErr

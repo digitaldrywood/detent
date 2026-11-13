@@ -208,7 +208,7 @@ func newRetainedWorkListFixtureWith(t *testing.T, objects *memoryRunDetails) (na
 	t.Helper()
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	clock := &leaseTestClock{value: now}
-	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{now: clock.Now, RunDetails: objects}), "", "Work list authority")
+	f := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: clock.Now, RunDetails: objects}), "", "Work list authority")
 	organization := f.project.OrganizationID
 	project := tracker.ProjectID(hubapi.NewID("prj"))
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -350,7 +350,7 @@ func TestWorkItemAPIUsesStableFilteredCursorsAndDetailTimeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: ids[2], Key: "workpad-api", Repository: "example-org/example-project", IssueNumber: 3, Kind: string(MutationWorkpad), CreatedAt: f.service.config.now(), Payload: payload})
+		return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: ids[2], Key: "workpad-api", Repository: "example-org/example-project", IssueNumber: 3, Kind: string(MutationWorkpad), CreatedAt: f.service.config.Clock(), Payload: payload})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 	t.Parallel()
 	f, _, ids, descriptor := newRetainedWorkListFixture(t)
 	service := f.service
-	now := service.config.now()
+	now := service.config.Clock()
 	runner := prepareRunnerForScope(t, f, "organization", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	runner.redemption.BackendIsolation = isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}
 	runner.enroll(t)
@@ -542,7 +542,7 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 func TestClaimNextAPIAppliesAuthorizationFiltersBeforeClaim(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 3, 13, 0, 0, 0, time.UTC)
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	descriptor := hubTestPolicy()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 	var accepted tracker.NativeIssue
@@ -638,7 +638,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	approved.ProjectID, approved.ApprovedBy, approved.ApprovedAt = project, "credential_owner", service.config.now()
+	approved.ProjectID, approved.ApprovedBy, approved.ApprovedAt = project, "credential_owner", service.config.Clock()
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.ApproveProjectPolicy(t.Context(), approved, ""); err != nil {
 			return err
@@ -972,7 +972,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 			t.Fatalf("authenticate change operator: status=%d error=%v", status, err)
 		}
 		scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}
-		plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, hubrecords.ChangeVersionApproval{Policy: descriptor}, false, service.config.now().UTC())
+		plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, hubrecords.ChangeVersionApproval{Policy: descriptor}, false, service.config.Clock().UTC())
 		if err != nil || plan == nil || !plan.eligible {
 			t.Fatalf("prepare compatible change transition: plan=%+v error=%v", plan, err)
 		}
@@ -1069,7 +1069,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			revision.ProjectID, revision.ApprovedBy, revision.ApprovedAt = project, "credential_owner", service.config.now()
+			revision.ProjectID, revision.ApprovedBy, revision.ApprovedAt = project, "credential_owner", service.config.Clock()
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 				current, err := w.ProjectPolicy(t.Context(), project)
 				if err != nil {
@@ -1097,7 +1097,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 				t.Fatalf("authenticate automated transition operator: status=%d error=%v", status, err)
 			}
 			scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}
-			plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, hubrecords.ChangeVersionApproval{Policy: selectedPolicy}, test.rework, service.config.now().UTC())
+			plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, hubrecords.ChangeVersionApproval{Policy: selectedPolicy}, test.rework, service.config.Clock().UTC())
 			if err != nil || plan == nil || !plan.eligible || plan.outbound != nil {
 				t.Fatalf("local automated transition refused or prepared external write: plan=%+v error=%v", plan, err)
 			}
@@ -1249,7 +1249,7 @@ func decodeHubResponse(t *testing.T, response *httptest.ResponseRecorder, target
 func seedHubAPIToken(t *testing.T, service *Service, id string, token string, scope hubapi.APIScope) {
 	t.Helper()
 	hash := apikey.HashToken(token)
-	now := service.config.now().UTC().Truncate(time.Microsecond)
+	now := service.config.Clock().UTC().Truncate(time.Microsecond)
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
 		return w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: service.accessOrganization(), ID: id, Name: id, Hash: hash, Fingerprint: hubapi.TokenFingerprint(hash), Scope: string(scope), Kind: "service", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now})
 	}); err != nil {

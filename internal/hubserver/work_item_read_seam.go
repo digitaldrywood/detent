@@ -12,7 +12,7 @@ import (
 )
 
 func (s *Service) workItemReader() workitemread.Reader {
-	deps := workitemread.Deps{Tenants: s.config.TenantRepository, Access: s.config.AccessRepository, Details: s.runDetailStore(), Now: s.config.now, Organization: s.accessOrganization(), Authority: s.accessAuthority, Authorize: s.authorizeAccessScope}
+	deps := workitemread.Deps{Tenants: s.config.TenantRepository, Access: s.config.AccessRepository, Details: s.runDetailStore(), Now: s.config.Clock, Organization: s.accessOrganization(), Authority: s.accessAuthority, Authorize: s.authorizeAccessScope}
 	if s.config.Hosted != nil {
 		deps.Hosted, deps.PublicURL = true, s.config.Hosted.PublicURL
 	}
@@ -60,7 +60,7 @@ func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeI
 }
 
 func (s *Service) duplicateDeps() workduplicates.Deps {
-	return workduplicates.Deps{Tenants: s.config.TenantRepository, Details: s.runDetailStore(), Now: s.config.now, Logger: s.config.Logger, AuthorizeRecord: s.authorizeWorkItemRecordScope, Read: s.readWorkItem}
+	return workduplicates.Deps{Tenants: s.config.TenantRepository, Details: s.runDetailStore(), Now: s.config.Clock, Logger: s.config.Logger, AuthorizeRecord: s.authorizeWorkItemRecordScope, Read: s.readWorkItem}
 }
 
 func (s *Service) prepareWorkItemDuplicates(ctx context.Context, scope hubscope.NativeScope, request tracker.CreateIssue, machine bool) (*workduplicates.Search, error) {

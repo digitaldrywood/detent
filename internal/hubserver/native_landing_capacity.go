@@ -52,7 +52,7 @@ func (s *Service) prepareNativeLandingRenewal(ctx context.Context, scope hubscop
 	if capacity <= 0 {
 		return nil, nil
 	}
-	p := &nativeLandingRenewal{evaluatedAt: s.config.now().UTC()}
+	p := &nativeLandingRenewal{evaluatedAt: s.config.Clock().UTC()}
 	var item corestore.WorkItem
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -118,7 +118,7 @@ func (s *Service) reserveNativeLandingRenewal(ctx context.Context, w tenantstore
 	if lease.LeaseID != p.lease.LeaseID || lease.FencingToken != p.lease.FencingToken {
 		return 0, tracker.ErrStaleFencingToken
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	if lease.LandingCapacity == 0 {
 		current, err := w.LatestChange(ctx, scope.Project, p.change.WorkItemID)
 		if err != nil {

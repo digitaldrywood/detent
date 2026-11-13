@@ -72,7 +72,7 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 	authorize := func() error {
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 		defer cancel()
-		now := s.config.now().UTC()
+		now := s.config.Clock().UTC()
 		return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				var lookup *accessstore.LookupError

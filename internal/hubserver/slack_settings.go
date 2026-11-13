@@ -158,7 +158,7 @@ func (s *Service) setSlackIntegration(c echo.Context) error {
 		if secretErr != nil && !errors.Is(secretErr, corestore.ErrNotFound) {
 			return secretErr
 		}
-		now := s.config.now()
+		now := s.config.Clock()
 		settings, err := owner.SlackIntegration(ctx)
 		enabled := err == nil && settings.Enabled
 		if request.Webhook != nil {
@@ -247,7 +247,7 @@ func (s *Service) testSlackIntegration(c echo.Context) error {
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		if err := owner.RecordSlackStatus(finishCtx, postgres.RecordSlackStatusInput{OrganizationID: scope.Organization, ExpectedRevision: revision, StatusCode: int32(statusCode), Failed: !delivered, At: s.config.now()}); err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
+		if err := owner.RecordSlackStatus(finishCtx, postgres.RecordSlackStatusInput{OrganizationID: scope.Organization, ExpectedRevision: revision, StatusCode: int32(statusCode), Failed: !delivered, At: s.config.Clock()}); err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
 			return err
 		}
 		var err error

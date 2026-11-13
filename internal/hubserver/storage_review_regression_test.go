@@ -52,7 +52,7 @@ func TestReportObjectDownloadsReleaseReaders(t *testing.T) {
 	t.Run("diagnostics", func(t *testing.T) {
 		for _, fixture := range diagnosticsPostgresFixtures(t) {
 			t.Run(string(fixture.organization), func(t *testing.T) {
-				now := fixture.hosted.service.config.now().UTC().Truncate(time.Hour)
+				now := fixture.hosted.service.config.Clock().UTC().Truncate(time.Hour)
 				diagnosticsFixtureAttempts(t.Context(), t, fixture, fixture.hosted.project, "download-source", "download", 1, 1, now.Add(-2*time.Hour), now.Add(-time.Hour), tracker.NativeRunData{Outcome: "failed", TerminalFailure: &tracker.NativeTerminalFailure{Error: "Recorded failure"}})
 				fixture.hosted.service.tokenUseWork.Wait()
 				guard := &diagnosticsSnapshotGuard{Repository: fixture.repository}

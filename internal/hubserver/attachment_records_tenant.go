@@ -48,10 +48,10 @@ func (s *Service) attachmentQuotaLimit(ctx context.Context, r tenantstore.Reader
 	if s.database.plansService().Plans() == nil {
 		return math.MaxInt64, nil
 	}
-	if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "collaboration", s.config.now())); err != nil {
+	if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "collaboration", s.config.Clock())); err != nil {
 		return 0, err
 	}
-	entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, s.config.now()))
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, s.config.Clock()))
 	if err != nil {
 		return 0, err
 	}
@@ -82,7 +82,7 @@ func (s *Service) attachmentWriteAuthority(ctx context.Context, w tenantstore.Wr
 	if err != nil {
 		return corestore.WorkItem{}, err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	if credential.OrganizationID != scope.Organization || credential.Kind != "service" || credential.Scope != string(hubapi.APIScopeWorker) || !credential.Valid(scope.Credential.Hash, now) || identity.OrganizationID != scope.Organization || identity.RunnerID != scope.Credential.Runner.RunnerID || identity.TokenID != credential.ID || identity.RemovedAt != nil || identity.State == "disabled" || !identity.ExpiresAt.After(now) {
 		return corestore.WorkItem{}, hubscope.RunnerUnauthorized()
 	}
@@ -119,7 +119,7 @@ func (s *Service) attachmentWriteAuthority(ctx context.Context, w tenantstore.Wr
 	if err != nil {
 		return item, err
 	}
-	now = s.config.now().UTC()
+	now = s.config.Clock().UTC()
 	if !credential.Valid(scope.Credential.Hash, now) || item.Archived || lease.OrganizationID != scope.Organization || lease.IssueID != item.ID || lease.FencingToken != int64(evidence.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || !runnerIdentityMatchesHeldLease(owner, scope.Organization, identity.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) {
 		return item, hubapi.NativeStaleExecution("Evidence producer lease is no longer current")
 	}
@@ -187,7 +187,7 @@ func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.
 		if scope.Credential.HostedRole == "reporter" {
 			metadata.Uploader = scope.Actor().PrincipalID
 		}
-		metadata.CreatedAt = s.config.now().UTC().Truncate(time.Microsecond)
+		metadata.CreatedAt = s.config.Clock().UTC().Truncate(time.Microsecond)
 		raw, err := json.Marshal(metadata)
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -227,7 +227,7 @@ func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.
 					return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
 				}
 			}
-			if err := s.database.chargeAttachmentAPIMutationsPostgres(ctx, w, "attachment/"+scope.Credential.ID+"/"+operation+"/"+input.RequestID, s.config.now(), "mutation"); err != nil {
+			if err := s.database.chargeAttachmentAPIMutationsPostgres(ctx, w, "attachment/"+scope.Credential.ID+"/"+operation+"/"+input.RequestID, s.config.Clock(), "mutation"); err != nil {
 				return err
 			}
 			_, err := w.PutReceipt(ctx, prepared)
@@ -267,7 +267,7 @@ func (s *Service) prepareEvidenceCommentRecord(ctx context.Context, scope hubsco
 		return result, err
 	}
 	row.EventSequence += offset
-	at := s.config.now().UTC().Truncate(time.Microsecond)
+	at := s.config.Clock().UTC().Truncate(time.Microsecond)
 	comment := tracker.NativeComment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, ID: hubapi.NewID("cmt"), Revision: 1, Sequence: row.EventSequence + 1, Body: body, Actor: scope.Actor(), CreatedAt: at, UpdatedAt: at}
 	result.Plan = hubrecords.WorkItemRecordPlan{Current: row, Issue: issue, Comment: comment, Create: true, EventType: "comment.created"}
 	result.Fields, err = s.prepareWorkItemFields(ctx, scope.Organization, result.Plan)
@@ -367,7 +367,7 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 			if scope.Credential.HostedRole == "reporter" {
 				metadata.Uploader = scope.Actor().PrincipalID
 			}
-			metadata.CreatedAt = s.config.now().UTC().Truncate(time.Microsecond)
+			metadata.CreatedAt = s.config.Clock().UTC().Truncate(time.Microsecond)
 		}
 		publication, err := s.prepareAttachmentEvidencePublication(ctx, scope, input.Evidence, metadata)
 		if err != nil {
@@ -423,7 +423,7 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 					return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 				}
 			}
-			if err := s.database.chargeAttachmentAPIMutationsPostgres(ctx, w, "attachment/"+scope.Credential.ID+"/"+operation+"/"+key, s.config.now(), "record", "mutation"); err != nil {
+			if err := s.database.chargeAttachmentAPIMutationsPostgres(ctx, w, "attachment/"+scope.Credential.ID+"/"+operation+"/"+key, s.config.Clock(), "record", "mutation"); err != nil {
 				return err
 			}
 			if input.Evidence != nil {
@@ -661,7 +661,7 @@ func (s *Service) authorizeAttachmentCommentLease(ctx context.Context, w tenants
 	if err != nil {
 		return err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	if lease.OrganizationID != scope.Organization || lease.IssueID != row.ID || lease.FencingToken != int64(command.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
 		return tracker.ErrStaleFencingToken
 	}
@@ -730,7 +730,7 @@ func (s *Service) deleteCloudAttachmentTenant(ctx context.Context, scope hubscop
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.DeleteAttachment(ctx, scope.Project, id, s.config.now().UTC())
+		return owner.DeleteAttachment(ctx, scope.Project, id, s.config.Clock().UTC())
 	})
 	return hubapi.ProjectRecordError(err)
 }
@@ -753,7 +753,7 @@ func (s *Service) finishCloudAttachmentDeletionTenant(c echo.Context) error {
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.FinishAttachmentDeletion(ctx, input.ID, s.config.now().UTC())
+		return owner.FinishAttachmentDeletion(ctx, input.ID, s.config.Clock().UTC())
 	})
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
@@ -769,7 +769,7 @@ func (s *Service) expiredCloudAttachmentsTenant(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	organization := tracker.OrganizationID(claims.Audience)
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	cutoff := now.Add(-attachment.OrphanTTL)
 	var candidates []attachmentstore.Record
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {

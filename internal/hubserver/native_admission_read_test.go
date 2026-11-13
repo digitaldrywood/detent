@@ -105,7 +105,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Now().UTC().Truncate(time.Microsecond)
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 				project, err := w.ProjectRecord(t.Context(), f.project.ID)
 				if err != nil {
@@ -571,7 +571,7 @@ func writeAdmissionIssue(t *testing.T, f nativeFixture, issue tracker.NativeIssu
 	}
 	change(&issue)
 	issue.Revision++
-	issue.UpdatedAt = f.service.config.now()
+	issue.UpdatedAt = f.service.config.Clock()
 	issue.LastActivityAt = issue.UpdatedAt
 	fields, err := f.service.prepareWorkItemFields(t.Context(), f.project.OrganizationID, hubrecords.WorkItemRecordPlan{Issue: issue})
 	if err != nil {

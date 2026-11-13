@@ -25,7 +25,7 @@ func TestAnalyticsQualityEvidencePopulationOrder(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}})
 	scope := analyticsTestScope(t, f)
-	now := f.service.config.now().UTC().Truncate(time.Hour)
+	now := f.service.config.Clock().UTC().Truncate(time.Hour)
 	content := eventstore.NewContent(f.service.runDetailStore())
 	for index, name := range []string{"first", "second"} {
 		issue := seedAnalyticsTestWorkItem(t, f.service, scope.Organization, scope.Project, "quality-"+name, index+1, name, "Todo", now.Add(-time.Hour))
@@ -85,7 +85,7 @@ func TestQualityEscapeApplicationAndRead(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	details := &memoryRunDetails{}
-	f := newChangeFixture(t, newPostgresNativeService(t, Config{now: func() time.Time { return now }, RunDetails: details}))
+	f := newChangeFixture(t, newPostgresNativeService(t, Config{Clock: func() time.Time { return now }, RunDetails: details}))
 	scope := analyticsTestScope(t, f.nativeFixture)
 	version := f.publish(t, "v1", "")
 	landing := tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: strings.Repeat("d", 40), BaseRef: "develop", LandedAt: now.Add(-time.Hour), Quality: &tracker.LandingQualitySnapshot{IssueBody: "Must accept valid input", Criteria: []string{"Accept valid input"}, Evidence: []gate.CriterionEvidence{}}}
@@ -187,7 +187,7 @@ func replaceAnalyticsTestIssueBody(t *testing.T, service *Service, scope hubscop
 	}
 	issue.Body = body
 	issue.Revision++
-	issue.UpdatedAt = service.config.now().UTC().Truncate(time.Microsecond)
+	issue.UpdatedAt = service.config.Clock().UTC().Truncate(time.Microsecond)
 	fields, err := service.prepareWorkItemFields(t.Context(), scope.Organization, hubrecords.WorkItemRecordPlan{Issue: issue})
 	if err != nil {
 		t.Fatal(err)

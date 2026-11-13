@@ -169,7 +169,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 					t.Fatal(err)
 				}
 				operatorRefreshSearch(t, f)
-				if err := f.service.refreshBoardRecord(t.Context(), scope.Organization, viewstore.BoardCandidate{ProjectID: project, WorkItemID: issue.WorkItemID}, f.service.config.now()); err != nil {
+				if err := f.service.refreshBoardRecord(t.Context(), scope.Organization, viewstore.BoardCandidate{ProjectID: project, WorkItemID: issue.WorkItemID}, f.service.config.Clock()); err != nil {
 					t.Fatal(err)
 				}
 				return issue

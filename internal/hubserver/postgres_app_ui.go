@@ -117,7 +117,7 @@ func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential hubap
 		payload.Organization.Name = organization.Name
 		payload.Organization.Slug = organization.Slug
 		if s.database.plansService().Plans() != nil {
-			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, s.config.now()))
+			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, s.config.Clock()))
 			if err != nil {
 				return err
 			}
@@ -209,7 +209,7 @@ func (s *Service) postgresAppProjects(ctx context.Context, credential hubapi.API
 			for _, row := range rows {
 				ids = append(ids, row.ProjectID)
 			}
-			workspaceRows, err = workspaceReader.ProjectWorkspaceAvailability(ctx, ids, s.config.now())
+			workspaceRows, err = workspaceReader.ProjectWorkspaceAvailability(ctx, ids, s.config.Clock())
 			return err
 		}
 		return nil

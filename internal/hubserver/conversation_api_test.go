@@ -48,7 +48,7 @@ func newConversationAPIFixture(t *testing.T, cfg *ConversationConfig, clocks ...
 	t.Helper()
 	config := Config{}
 	if len(clocks) > 0 {
-		config.now = clocks[0]
+		config.Clock = clocks[0]
 	}
 	return newConversationAPIFixtureConfig(t, cfg, config)
 }
@@ -64,7 +64,7 @@ func newConversationAPIFixtureConfig(t *testing.T, cfg *ConversationConfig, conf
 	config.Conversation = cfg
 	f := newDefaultNativeFixture(t, config)
 	f.service.registerConversationRoutes(f.service.echo)
-	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 	tokens := []hubapi.TokenResponse{{ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}, {ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		for _, token := range tokens {
@@ -162,7 +162,7 @@ func (f conversationAPIFixture) setExecution(t *testing.T, id string, execution 
 		if err != nil {
 			return err
 		}
-		record.Execution, record.UpdatedAt = execution, f.service.config.now()
+		record.Execution, record.UpdatedAt = execution, f.service.config.Clock()
 		_, err = writer.UpdateConversation(t.Context(), record, record.Revision)
 		return err
 	}); err != nil {
@@ -192,7 +192,7 @@ func (f conversationAPIFixture) settle(t *testing.T, id string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	settled, err := f.service.conversations.SettleIdleConversationPG(t.Context(), f.project.OrganizationID, record, f.service.config.now().Add(time.Hour), f.service.config.now().Add(time.Hour))
+	settled, err := f.service.conversations.SettleIdleConversationPG(t.Context(), f.project.OrganizationID, record, f.service.config.Clock().Add(time.Hour), f.service.config.Clock().Add(time.Hour))
 	if err != nil || !settled {
 		t.Fatalf("settle conversation: settled=%t err=%v", settled, err)
 	}
@@ -290,7 +290,7 @@ func TestConversationAPIListVisibility(t *testing.T) {
 	decodeHubResponse(t, linkedResponse, &linked)
 	shared = f.snapshot(t, f.token, shared.ID).Conversation
 	issue := f.nativeFixture.create(t, "Runner session")
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	worker := conversationRecord{ID: conversation.NewConversationID(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, OwnerPrincipalID: f.ownerID, Origin: conversationOriginWorker, Title: "Runner session", Visibility: conversation.VisibilityShared, Status: conversation.StatusActive, WorkItemID: string(issue.WorkItemID), LinkedAt: &now, Revision: 1, Preferences: conversation.DefaultPreferences(), Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.CreateConversation(t.Context(), conversationRecordToStore(worker))
@@ -583,7 +583,7 @@ func TestConversationAPICommands(t *testing.T) {
 		if !ok {
 			t.Fatal("pending cancellation target is missing")
 		}
-		now := fixture.service.config.now()
+		now := fixture.service.config.Clock()
 		if err := fixture.service.config.TenantRepository.WriteTenant(t.Context(), fixture.organization, corestore.Serving, func(w tenantstore.Writer) error {
 			for number := 1; number <= 2*conversationLifecycleBatchSize; number++ {
 				if _, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: fixture.organization, ProjectID: fixture.project.ID, ID: id(number), OwnerPrincipalID: fixture.owner, Origin: conversationOriginUser, Title: "Inactive conversation", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Execution: conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: now}, Preferences: conversation.DefaultPreferences(), CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -877,7 +877,7 @@ func TestConversationAPICommands(t *testing.T) {
 			}
 
 			ids = append(ids, record.ID)
-			now := fixture.service.config.now()
+			now := fixture.service.config.Clock()
 			if err := fixture.service.config.TenantRepository.WriteTenant(t.Context(), fixture.organization, corestore.Serving, func(w tenantstore.Writer) error {
 				_, _, err := w.ReserveCommand(t.Context(), conversationstore.Command{OrganizationID: fixture.organization, ConversationID: record.ID, Key: "scan_cancel", Kind: conversation.CommandCancel, TargetTurnID: target.ID, RequestHash: "scan_" + record.ID, Receipt: conversation.Receipt{Key: "scan_cancel", Kind: conversation.CommandCancel, Status: conversation.DeliverySaved, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now})
 				return err
@@ -997,7 +997,7 @@ func TestConversationAPICommands(t *testing.T) {
 					record.ID = fmt.Sprintf("conv_%032x", index)
 					if index == 3 {
 						record.WorkItemID = string(issue.WorkItemID)
-						linkedAt := fixture.service.config.now()
+						linkedAt := fixture.service.config.Clock()
 						record.LinkedAt = &linkedAt
 						record.Visibility = conversation.VisibilityShared
 					}
@@ -1012,7 +1012,7 @@ func TestConversationAPICommands(t *testing.T) {
 				if !ok {
 					t.Fatal("pending cancellation target is missing")
 				}
-				now := fixture.service.config.now()
+				now := fixture.service.config.Clock()
 				if err := fixture.service.config.TenantRepository.WriteTenant(t.Context(), fixture.organization, corestore.Serving, func(w tenantstore.Writer) error {
 					_, _, err := w.ReserveCommand(t.Context(), conversationstore.Command{OrganizationID: fixture.organization, ConversationID: record.ID, Key: "scan_continue", Kind: conversation.CommandCancel, TargetTurnID: target.ID, RequestHash: "scan_" + record.ID, Receipt: conversation.Receipt{Key: "scan_continue", Kind: conversation.CommandCancel, Status: conversation.DeliverySaved, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now})
 					return err
@@ -1632,7 +1632,7 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 		if _, err := w.UpdateConversation(t.Context(), current, current.Revision); err != nil {
 			return err
 		}
-		return w.RecordStart(t.Context(), "attempt-finished", created.Conversation.ID, f.service.config.now())
+		return w.RecordStart(t.Context(), "attempt-finished", created.Conversation.ID, f.service.config.Clock())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1701,7 +1701,7 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		message.Delivery, message.UpdatedAt = conversation.DeliveryFailed, f.service.config.now()
+		message.Delivery, message.UpdatedAt = conversation.DeliveryFailed, f.service.config.Clock()
 		message, err = w.UpdateMessage(t.Context(), message, message.Revision)
 		if err != nil {
 			return err
@@ -1810,7 +1810,7 @@ func TestConversationContinueRequiresExpectedAttempt(t *testing.T) {
 
 	// Record an attempt the way a bind does.
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.RecordStart(t.Context(), "att_past", record.ID, f.service.config.now())
+		return w.RecordStart(t.Context(), "att_past", record.ID, f.service.config.Clock())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1829,7 +1829,7 @@ func TestConversationContinueRequiresExpectedAttempt(t *testing.T) {
 	t.Run("null is refused while an attempt owns the conversation", func(t *testing.T) {
 		owned := f.create(t, f.token, map[string]any{"title": "Owned"}).Conversation
 		requireNativeStatus(t, f.link(t, f.token, owned.ID, "link-owned", true, "Owned"), http.StatusOK)
-		f.setExecution(t, owned.ID, conversation.Execution{Owner: conversation.Owner{AttemptID: "att_live"}, Status: conversation.ExecutionCompleted, UpdatedAt: f.service.config.now()})
+		f.setExecution(t, owned.ID, conversation.Execution{Owner: conversation.Owner{AttemptID: "att_live"}, Status: conversation.ExecutionCompleted, UpdatedAt: f.service.config.Clock()})
 		requireNativeError(t, f.command(t, f.token, owned.ID, conversation.Command{Key: "continue-4", Kind: conversation.CommandContinue}), http.StatusUnprocessableEntity, "invalid_request")
 	})
 }

@@ -353,7 +353,7 @@ func TestReviewTerminalLease(t *testing.T) {
 					}); err != nil {
 						t.Fatal(err)
 					}
-					service.config.now = func() time.Time { return expires }
+					service.config.Clock = func() time.Time { return expires }
 				}
 				var before leasestore.Lease
 				if err := service.config.TenantRepository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {

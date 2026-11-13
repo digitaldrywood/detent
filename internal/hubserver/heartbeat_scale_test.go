@@ -47,7 +47,7 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 	}
 	f.bindings = append(f.bindings, binding)
 	f.tokens = append(f.tokens, token)
-	now := f.service.config.now()
+	now := f.service.config.Clock()
 	content := eventstore.NewContent(f.service.runDetailStore())
 	versions := make([]eventstore.CollaborationVersion, 0, 1500)
 	for i := range 1500 {
@@ -367,7 +367,7 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 					totalPostCommitReads++
 				}
 			}}
-			summary := testHostSummary(f.service.config.now())
+			summary := testHostSummary(f.service.config.Clock())
 			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"display_name": "Example runner", "capacity": test.capacity, "version": "test", "change_cursor": "", "host_metrics": []hostmetrics.Summary{summary}})
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(ctx, timing)))
@@ -515,7 +515,7 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 			var lease tracker.NativeLease
 			decodeHubResponse(t, response, &lease)
 			event := nativeStartedEvent(lease)
-			now := f.service.config.now()
+			now := f.service.config.Clock()
 			event.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 1, Generation: 1, HeartbeatAt: now, Phase: "implementation", WorkerLaunch: &tracker.NativeWorkerLaunch{
 				PID: 1, GroupID: 1, ProcessStart: now, PolicyID: hubTestPolicy().ID, ExecutionVersion: "test", ControlVersion: "test",
 				ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), Protocol: 6, SelectedAt: now,
@@ -659,7 +659,7 @@ func TestHeartbeatClaimSkipsUnknownLegacySource(t *testing.T) {
 	clean := f.create(t, "Known clean repository source")
 	known := f.create(t, "Known dirty repository source")
 	org, project := f.project.OrganizationID, f.project.ID
-	now := f.service.config.now().UTC().Truncate(time.Microsecond)
+	now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 	content := eventstore.NewContent(f.service.runDetailStore())
 	unknownRef, err := content.PreparePayload(t.Context(), org, []byte(`{}`))
 	if err != nil {
@@ -845,7 +845,7 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 			r.enroll(t)
 			installReportsBudgetTrace(t, f.service)
 			admin := hostedPostgresAdmin(t, f.service)
-			now := f.service.config.now().UTC().Truncate(time.Microsecond)
+			now := f.service.config.Clock().UTC().Truncate(time.Microsecond)
 			org, project := f.project.OrganizationID, f.project.ID
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				identity, err := w.RunnerIdentity(t.Context(), r.binding.RunnerID)

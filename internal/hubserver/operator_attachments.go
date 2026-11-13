@@ -161,7 +161,7 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.DeleteAttachment(ctx, scope.Project, r.AttachmentID, e.service.config.now().UTC())
+		return owner.DeleteAttachment(ctx, scope.Project, r.AttachmentID, e.service.config.Clock().UTC())
 	})
 	if err != nil {
 		return chat.ActionExecution{}, hubSafeChangeError(err)

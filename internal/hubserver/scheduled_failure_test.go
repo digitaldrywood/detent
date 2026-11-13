@@ -25,7 +25,7 @@ func TestScheduledFailureAttribution(t *testing.T) {
 	storage, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{}
-	service := &Service{database: &database{now: func() time.Time { return now }}, config: Config{TenantRepository: storage, AccessRepository: storage, RunDetails: details, Logger: discardLogger(), now: func() time.Time { return now }}}
+	service := &Service{database: &database{now: func() time.Time { return now }}, config: Config{TenantRepository: storage, AccessRepository: storage, RunDetails: details, Logger: discardLogger(), Clock: func() time.Time { return now }}}
 	content := eventstore.NewContent(details)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		service.localOrganization = string(org)

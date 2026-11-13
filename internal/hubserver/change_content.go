@@ -176,7 +176,7 @@ func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore
 		return err
 	}
 	completion := changeContentCompletion(ctx)
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	limit := int64(math.MaxInt64)
 	plans := s.database.plansService().Plans()
 	var entitlement hostedplans.HostedEntitlement
@@ -232,7 +232,7 @@ func (s *Service) checkChangeContentAllowance(ctx context.Context, organization 
 	if plans == nil || changeContentCompletion(ctx) {
 		return nil
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	return s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(organization), corestore.Serving, func(r tenantstore.Reader) error {
 		entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, now))
 		if err != nil {

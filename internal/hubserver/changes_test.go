@@ -120,7 +120,7 @@ func (f changeFixture) detail(t *testing.T) tracker.ChangeDetail {
 	requireNativeStatus(t, response, http.StatusOK)
 	var detail tracker.ChangeDetail
 	decodeHubResponse(t, response, &detail)
-	current, err := f.service.selectedCurrentChangeSummary(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, f.issue.WorkItemID, detail.Change.ID, f.service.config.now())
+	current, err := f.service.selectedCurrentChangeSummary(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, f.issue.WorkItemID, detail.Change.ID, f.service.config.Clock())
 	if err != nil || !reflect.DeepEqual(current, detail.Summary) {
 		t.Fatalf("current summary = %#v, full summary = %#v, error = %v", current, detail.Summary, err)
 	}
@@ -551,7 +551,7 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 func TestChangeVersionsAndEvidenceSurviveRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	config := Config{now: func() time.Time { return now }}
+	config := Config{Clock: func() time.Time { return now }}
 	f := newChangeFixture(t, newPostgresNativeService(t, config))
 	if detail := f.detail(t); detail.Summary.Status != "draft" || len(detail.Versions) != 0 {
 		t.Fatalf("draft = %#v", detail)
@@ -867,7 +867,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 	t.Parallel()
 	t.Run("compacted history", func(t *testing.T) {
 		now := time.Now().UTC().Truncate(time.Microsecond)
-		service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
+		service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }})
 		for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 			t.Run(string(organization), func(t *testing.T) {
 				f := newChangeFixture(t, service, organization)
@@ -948,7 +948,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 
 	now := time.Date(2026, time.October, 25, 12, 0, 0, 0, time.UTC)
 	details := &memoryRunDetails{}
-	service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }, RunDetails: details})
+	service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }, RunDetails: details})
 	f := newChangeFixture(t, service)
 	descriptor := hubTestPolicy()
 	descriptor.Gates.GitHubPullRequest = true
@@ -1838,7 +1838,7 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &version)
 			} else {
-				now := service.config.now().UTC().Truncate(time.Microsecond)
+				now := service.config.Clock().UTC().Truncate(time.Microsecond)
 				version = tracker.ChangeVersion{ChangeVersionInput: input, ID: "version_historical", ChangeID: "change_historical", Number: 1, Policy: hubTestPolicy(), ReviewPolicy: f.rules, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: now}
 				for index, check := range f.rules.RequiredChecks {
 					version.Checks = append(version.Checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: check, CheckRunID: fmt.Sprintf("check_historical_%d", index)})
@@ -1872,7 +1872,7 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 				}
 				f.path = f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes/" + f.change.ID
 			}
-			if err := service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Required: true}, service.config.now()); err != nil {
+			if err := service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Required: true}, service.config.Clock()); err != nil {
 				t.Fatal(err)
 			}
 			projected := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
@@ -1882,7 +1882,7 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 			key := projectstore.GitHubPullRequestRefreshKey{ProjectID: f.project.ID, ChangeID: version.ChangeID, Repository: "example/repo", Number: 1}
 			observe := func(head string) {
 				t.Helper()
-				at := service.config.now().UTC()
+				at := service.config.Clock().UTC()
 				if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					return w.(projectstore.GitHubPullRequestRefreshWriter).RequestGitHubPullRequests(t.Context(), []projectstore.GitHubPullRequestRefresh{{GitHubPullRequestRefreshKey: key, WorkItemID: f.issue.WorkItemID, RequestedVersion: version.ID, RequestedHeadSHA: version.HeadSHA, RequestedAt: at}})
 				}); err != nil {
@@ -1915,7 +1915,7 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-				return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Key: "protected-merge", Repository: "example/repo", IssueNumber: int64(f.issue.Number), Kind: string(MutationMergePullRequest), CreatedAt: service.config.now(), Payload: payload})
+				return w.(projectstore.GitHubOutboxWriter).EnqueueGitHubOutbound(t.Context(), projectstore.GitHubOutbound{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Key: "protected-merge", Repository: "example/repo", IssueNumber: int64(f.issue.Number), Kind: string(MutationMergePullRequest), CreatedAt: service.config.Clock(), Payload: payload})
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -2046,7 +2046,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				if test.boundary == "fractional" {
 					now = now.Add(800 * time.Millisecond)
 				}
-				service = newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
+				service = newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }})
 			}
 			f := newLandingCapacityFixture(t, service, "landing-capacity", !test.nativeOnly)
 			first := f.ready(t, "first change")
@@ -2075,7 +2075,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			reportRunnerCapacity(t, f.service, f.base, owner.redemption.Credential, owner.binding.MachineID, owner.redemption.DisplayName, owner.redemption.BackendIsolation, owner.redemption.Capacity)
 			if test.provider {
 				f.requirement = providercapacity.Requirement{Role: "merge", Backend: "git", Model: "git"}
-				report := capacityReport(f.service.config.now())
+				report := capacityReport(f.service.config.Clock())
 				report.Backend, report.Models = "git", []string{"git"}
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 					return w.ReplaceRunnerProviderReports(t.Context(), owner.binding.RunnerID, []providercapacity.Report{report})
@@ -2127,7 +2127,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusOK)
 					var lease tracker.NativeLease
 					decodeHubResponse(t, response, &lease)
-					if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '1 minute'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 minute'),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.now().Add(-time.Second), f.project.OrganizationID, lease.ID); err != nil {
+					if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '1 minute'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 minute'),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.Clock().Add(-time.Second), f.project.OrganizationID, lease.ID); err != nil {
 						t.Fatal(err)
 					}
 					acquire = func() *httptest.ResponseRecorder {
@@ -2241,7 +2241,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				path := f.base + "/work-items/" + string(second.WorkItemID)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", waiter.redemption.Credential, event), http.StatusOK)
 				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "landing-wait", 2
-				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.now(), Landing: &tracker.NativeLandingReceipt{ChangeID: change, VersionID: version, HeadSHA: published.HeadSHA, Waiting: true}}
+				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.Clock(), Landing: &tracker.NativeLandingReceipt{ChangeID: change, VersionID: version, HeadSHA: published.HeadSHA, Waiting: true}}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", waiter.redemption.Credential, event), http.StatusOK)
 				event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome = "run.finished", "finish-wait", 3, "succeeded"
 				event.Data.Disposition = &tracker.NativeDisposition{Status: "in_progress"}
@@ -2295,12 +2295,12 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				first = updateNativeWorkPageFixtureIssue(t, f.nativeFixture, first.WorkItemID, func(issue *tracker.NativeIssue) { issue.State = "In Progress" })
 			}
 			if test.expired {
-				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '1 minute'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 minute'),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.now().Add(-time.Second), f.project.OrganizationID, lease.ID); err != nil {
+				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '1 minute'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 minute'),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.service.config.Clock().Add(-time.Second), f.project.OrganizationID, lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.boundary != "" {
-				expiry := f.service.config.now()
+				expiry := f.service.config.Clock()
 				switch test.boundary {
 				case "integral":
 					expiry = expiry.Add(100 * time.Millisecond)
@@ -2395,7 +2395,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 							var used int
 							err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
 								var err error
-								used, err = readPlacementSpriteUsage(t.Context(), reader, hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, f.service.config.now())
+								used, err = readPlacementSpriteUsage(t.Context(), reader, hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, f.service.config.Clock())
 								return err
 							})
 							if err != nil || used != 1 {
@@ -2441,7 +2441,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					t.Run(exclusion.name, func(t *testing.T) {
 						args := exclusion.args
 						if exclusion.name == "provider incompatible" {
-							report := capacityReport(f.service.config.now())
+							report := capacityReport(f.service.config.Clock())
 							report.Availability = "exhausted"
 							if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 								return w.ReplaceRunnerProviderReports(t.Context(), owner.binding.RunnerID, []providercapacity.Report{report})
@@ -2459,7 +2459,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 							t.Fatalf("refusal=%s, want %s", refusal.Code, exclusion.code)
 						}
 						if exclusion.name == "offline" {
-							args = []any{f.project.OrganizationID, owner.binding.RunnerID, f.service.config.now()}
+							args = []any{f.project.OrganizationID, owner.binding.RunnerID, f.service.config.Clock()}
 						}
 						if exclusion.name == "provider incompatible" {
 							if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -2553,7 +2553,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				}
 			}
 			if test.admission != "" {
-				context := tracker.NativeAdmissionContext{ObservedAt: f.service.config.now(), PolicyID: secondFixture.descriptor.ID, WorkflowStates: []string{"Merging"}}
+				context := tracker.NativeAdmissionContext{ObservedAt: f.service.config.Clock(), PolicyID: secondFixture.descriptor.ID, WorkflowStates: []string{"Merging"}}
 				raw, err := json.Marshal(context)
 				if err != nil {
 					t.Fatal(err)
@@ -2635,7 +2635,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 func TestChangeLanding(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 29, 1, 0, 0, 0, time.UTC)
-	f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }}))
+	f := newChangeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }}))
 	first := f.publish(t, "v1", "")
 	landing := func(key, version string, request tracker.LandChangeVersion) *httptest.ResponseRecorder {
 		request.IdempotencyKey = key
@@ -2688,7 +2688,7 @@ func TestChangeLanding(t *testing.T) {
 		t.Fatalf("persistent landing context = %+v", stored)
 	}
 
-	if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Required: true}, f.service.config.now()); err != nil {
+	if err := f.service.refreshBoardRecord(t.Context(), f.project.OrganizationID, viewstore.BoardCandidate{ProjectID: f.project.ID, WorkItemID: f.issue.WorkItemID, Required: true}, f.service.config.Clock()); err != nil {
 		t.Fatal(err)
 	}
 	projected := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "?include=change")
@@ -2829,7 +2829,7 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 				}
 				claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "capacity-refusal", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 				if test.provider {
-					publishCapacity(t, f, r, capacityReport(f.service.config.now()))
+					publishCapacity(t, f, r, capacityReport(f.service.config.Clock()))
 					claim.WorkItemID = ""
 					claim.SessionID = "landing/batch/candidate"
 					claim.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: providercapacity.Requirement{Role: "merge", Backend: "codex", Model: "test-model"}}}
@@ -2950,7 +2950,7 @@ func TestReviewedChangePromotesOnAnyEvidence(t *testing.T) {
 			var clock atomic.Int64
 			if test.expireDuringPreparation {
 				clock.Store(time.Now().UTC().UnixNano())
-				service = newClockedPostgresNativeService(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
+				service = newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
 			}
 			f := newNativeFixture(t, service, "", "promote")
 			setChangeFixtureStates(t, f, HostedProjectStates())

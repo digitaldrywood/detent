@@ -33,7 +33,7 @@ func TestProgressPublicationKeepsNewestEvidenceDuringLiveAttempt(t *testing.T) {
 				finish := start
 				finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", fmt.Sprintf("finish-%d", i), 2, "failed"
 				for _, step := range []string{"agent_turn", "validator", "review"} {
-					finish.Data.Steps = append(finish.Data.Steps, tracker.NativeStepReceipt{Step: step, PolicyID: lease.PolicyID, ReviewState: strings.Repeat("a", 64), Source: tracker.NativeCheckpoint{HeadSHA: strings.Repeat("b", 40), WorkspaceDigest: strings.Repeat("c", 64)}, CompletedAt: f.service.config.now().UTC(), CompletionBody: "Retained failure"})
+					finish.Data.Steps = append(finish.Data.Steps, tracker.NativeStepReceipt{Step: step, PolicyID: lease.PolicyID, ReviewState: strings.Repeat("a", 64), Source: tracker.NativeCheckpoint{HeadSHA: strings.Repeat("b", 40), WorkspaceDigest: strings.Repeat("c", 64)}, CompletedAt: f.service.config.Clock().UTC(), CompletionBody: "Retained failure"})
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, finish), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)

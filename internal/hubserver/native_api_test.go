@@ -60,7 +60,7 @@ func newNativeFixture(t *testing.T, service *Service, organization tracker.Organ
 	}
 	project := tracker.NativeProject{OrganizationID: organization, ID: tracker.ProjectID(hubapi.NewID("prj")), Name: name, States: nativeFixtureStates(), Profile: "native", RequireDependencies: true}
 	token := hubapi.TokenResponse{ID: hubapi.NewID("credential"), Token: hubapi.NewID("token")}
-	now := service.config.now().UTC().Truncate(time.Microsecond)
+	now := service.config.Clock().UTC().Truncate(time.Microsecond)
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project.ID, Name: name, Profile: "native", RequireDependencies: project.RequireDependencies}, States: project.States})
 		if err != nil {
@@ -125,7 +125,7 @@ func newPostgresNativeService(t *testing.T, cfg Config) *Service {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		seedSuppliedRepositoryBinding(t, repository, cfg.Hosted, cfg.normalized().now().UTC())
+		seedSuppliedRepositoryBinding(t, repository, cfg.Hosted, cfg.normalized().Clock().UTC())
 		service = openPostgresHubTestService(t, repository, cfg)
 	}
 	for _, organization := range []tracker.OrganizationID{primary + "_second", primary} {

@@ -78,7 +78,7 @@ func TestNativeClaimReleaseHTTPWireIncludesAuthentication(t *testing.T) {
 			if err := w.ReplaceRunnerBackendIsolation(t.Context(), binding.RunnerID, isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}); err != nil {
 				return err
 			}
-			return w.UpdateRunnerCapacityConfig(t.Context(), binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, ObservedAt: f.service.config.now().UTC()})
+			return w.UpdateRunnerCapacityConfig(t.Context(), binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, ObservedAt: f.service.config.Clock().UTC()})
 		}); err != nil {
 			t.Fatal(err)
 		}

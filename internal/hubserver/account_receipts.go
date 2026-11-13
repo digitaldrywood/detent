@@ -72,7 +72,7 @@ func (s *Service) storeAccessAccountReceipt(ctx context.Context, credential huba
 	if !bytes.Equal(verified, raw) {
 		return artifact.ErrIntegrity
 	}
-	now := s.config.now()
+	now := s.config.Clock()
 	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
 		if reserve {
 			if err := w.LockAccessOrganization(ctx); err != nil {

@@ -52,7 +52,7 @@ func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }}}
+	service := &Service{echo: echo.New(), database: &database{postgres: repository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Clock: func() time.Time { return now }}}
 	service.ready.Store(true)
 	service.echo.Use(middleware.Recover())
 	service.registerNativeRoutes(service.echo)

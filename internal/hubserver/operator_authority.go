@@ -24,7 +24,7 @@ func operatorRequestCredential(c echo.Context) (hubapi.APICredential, error) {
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
 	// Hubs expose native work commands and hosted billing/usage operations.
-	s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.now), chat.WithSessionStore(operatorChatStore{s.database}, s.resolveOperatorChatAuthority))
+	s.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{s}, chat.WithClock(s.config.Clock), chat.WithSessionStore(operatorChatStore{s.database}, s.resolveOperatorChatAuthority))
 	s.administration = s.operatorAdministration()
 	s.administration.Chat = s.operatorChat
 	executor := hostedOperatorExecutor{s}

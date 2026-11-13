@@ -129,7 +129,7 @@ func (s *Service) removeHostedMemberFor(ctx context.Context, credential hubapi.A
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		if err := w.RevokeAccessMember(ctx, member.UserID, s.config.now()); err != nil {
+		if err := w.RevokeAccessMember(ctx, member.UserID, s.config.Clock()); err != nil {
 			return err
 		}
 		if audit != nil {

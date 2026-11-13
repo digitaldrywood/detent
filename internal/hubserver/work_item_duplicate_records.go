@@ -167,7 +167,7 @@ func (s *Service) readWorkItemRecordReceipt(ctx context.Context, scope hubscope.
 		stored, err = challenges.DuplicateChallenge(ctx, scope.Project, challenge.ChallengeToken)
 		return err
 	})
-	if errors.Is(err, corestore.ErrNotFound) || err == nil && (stored.PrincipalID != scope.Actor().PrincipalID || stored.RequestID != receipt.CommandKey || stored.ContentHash != receipt.RequestHash || !s.config.now().Before(stored.ExpiresAt)) {
+	if errors.Is(err, corestore.ErrNotFound) || err == nil && (stored.PrincipalID != scope.Actor().PrincipalID || stored.RequestID != receipt.CommandKey || stored.ContentHash != receipt.RequestHash || !s.config.Clock().Before(stored.ExpiresAt)) {
 		return nil, receiptstore.ErrExpired
 	}
 	if err != nil {
@@ -256,7 +256,7 @@ func (s *Service) validateWorkItemChallengeReplay(ctx context.Context, scope hub
 			}
 			return err
 		}
-		if !s.config.now().Before(challenge.ExpiresAt) {
+		if !s.config.Clock().Before(challenge.ExpiresAt) {
 			return receiptstore.ErrExpired
 		}
 		challenges, ok := w.(corestore.DuplicateChallengeReader)
@@ -362,7 +362,7 @@ func (s *Service) prepareWorkItemDuplicateConfirmation(ctx context.Context, scop
 		if err != nil {
 			return err
 		}
-		if stored.PrincipalID != scope.Actor().PrincipalID || stored.RequestID != request.IdempotencyKey || stored.ContentHash != hash || !s.config.now().Before(stored.ExpiresAt) {
+		if stored.PrincipalID != scope.Actor().PrincipalID || stored.RequestID != request.IdempotencyKey || stored.ContentHash != hash || !s.config.Clock().Before(stored.ExpiresAt) {
 			return receiptstore.ErrExpired
 		}
 		confirmation.challenge = stored
@@ -472,7 +472,7 @@ func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope hubs
 	plan := hubrecords.WorkItemRecordPlan{Project: occurrence.Project, Current: occurrence.Current, Issue: occurrence.Issue, Fields: []string{"priority"}, EventType: "issue.edited"}
 	plan.Issue.Priority = priority
 	plan.Issue.Revision++
-	plan.Issue.UpdatedAt = s.config.now().UTC().Truncate(time.Microsecond)
+	plan.Issue.UpdatedAt = s.config.Clock().UTC().Truncate(time.Microsecond)
 	plan.Issue.LastActivityAt = plan.Issue.UpdatedAt
 	fields, err := s.prepareWorkItemFields(ctx, scope.Organization, plan)
 	if err != nil {

@@ -32,7 +32,7 @@ import (
 func TestCollaborationPayloadInlineBytes(t *testing.T) {
 	t.Parallel()
 	store := &memoryRunDetails{}
-	f := newDefaultNativeFixture(t, Config{Content: (&changeObjectFixture{}).call, RunDetails: store, Conversation: &ConversationConfig{Enabled: true}, now: func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }})
+	f := newDefaultNativeFixture(t, Config{Content: (&changeObjectFixture{}).call, RunDetails: store, Conversation: &ConversationConfig{Enabled: true}, Clock: func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }})
 	repository := f.service.database.postgres
 	admin := usagePostgresAdmin(t, f.service)
 	content := eventstore.NewContent(store)
@@ -54,7 +54,7 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 				ctx := t.Context()
 				data := tracker.CollaborationData{Revision: issue.Revision}
 				if kind == "scheduler.decision" {
-					data.Decision = &tracker.NativeSchedulerDecision{RunnerID: "runner", Source: "native_claim", Outcome: "skipped", Reason: "capacity", At: f.service.config.now(), WorkItemRevision: issue.Revision}
+					data.Decision = &tracker.NativeSchedulerDecision{RunnerID: "runner", Source: "native_claim", Outcome: "skipped", Reason: "capacity", At: f.service.config.Clock(), WorkItemRevision: issue.Revision}
 					data.Change = &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "head"}
 					data.ReasonDetail = "retain scheduler audit context"
 				} else {
@@ -63,7 +63,7 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 				}
 				actor := scope.Actor()
 				actor.ViaKey, actor.DisplayName, actor.Agent = "example_key", "Example operator", "Example assistant"
-				raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: data})
+				raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.Clock(), Data: data})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -283,7 +283,7 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 	unrelated := make([]eventstore.Event, 128)
 	for index := range unrelated {
 		item := tracker.NativeWorkItemID(fmt.Sprintf("wi_unrelated_%d", index))
-		raw, err := json.Marshal(tracker.CollaborationEvent{ID: fmt.Sprintf("evt_unrelated_%d", index), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready", Reason: "available"}}})
+		raw, err := json.Marshal(tracker.CollaborationEvent{ID: fmt.Sprintf("evt_unrelated_%d", index), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready", Reason: "available"}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -314,7 +314,7 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 				decision.Outcome = "skipped"
 				decision.Reason = fmt.Sprintf("historical refusal %d", i)
 			}
-			raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: issue.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Decision: &decision}})
+			raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: issue.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: f.service.config.Clock(), Data: tracker.CollaborationData{Decision: &decision}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -588,7 +588,7 @@ func TestSchedulerPayloadRequiresArchive(t *testing.T) {
 	request := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: "scheduler-session", TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	for _, failure := range []string{"missing storage", "upload rejected", "verification failed"} {
 		t.Run(failure, func(t *testing.T) {
-			now := f.service.config.now()
+			now := f.service.config.Clock()
 			plan, err := f.service.readNativeClaimPlan(t.Context(), scope, request, now)
 			if err != nil {
 				t.Fatal(err)

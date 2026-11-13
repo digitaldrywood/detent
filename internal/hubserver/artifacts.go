@@ -159,7 +159,7 @@ func (s *Service) readArtifactReferences(ctx context.Context, scope hubscope.Nat
 		return nil, hubapi.ProjectRecordError(err)
 	}
 	for i := range refs {
-		if !s.config.now().Before(refs[i].ExpiresAt) {
+		if !s.config.Clock().Before(refs[i].ExpiresAt) {
 			refs[i].Availability = "expired"
 		}
 	}
@@ -192,7 +192,7 @@ func (s *Service) artifactReadGrant(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &input); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	result, err := s.artifactReadGrantCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("artifact"), input.Revision, s.config.now())
+	result, err := s.artifactReadGrantCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("artifact"), input.Revision, s.config.Clock())
 	if errors.Is(err, artifact.ErrExpired) {
 		return s.refusedAPIError(c, http.StatusGone, "expired", "Artifact retention has expired", hubapi.APIErrorResponse{Code: "expired", Message: "Artifact retention has expired"})
 	}
@@ -263,7 +263,7 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 		}
 		return credential, nil
 	}
-	session, err := s.WebSession(ctx, sessionHash, s.config.now())
+	session, err := s.WebSession(ctx, sessionHash, s.config.Clock())
 	if err != nil {
 		return hubapi.APICredential{}, err
 	}
@@ -317,7 +317,7 @@ func (s *Service) getArtifactReference(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid artifact revision"))
 	}
-	result, err := s.artifactReferenceCommand(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("artifact"), revision, s.config.now())
+	result, err := s.artifactReferenceCommand(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("artifact"), revision, s.config.Clock())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

@@ -100,7 +100,7 @@ func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record con
 			return nil, hubapi.NativeInvalid("A Merging issue cannot be archived: " + id)
 		}
 		err = s.config.TenantRepository.ReadTenant(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-			active, err := r.WorkItemHasActiveLease(readCtx, scope.Project, row.NativeID, s.config.now())
+			active, err := r.WorkItemHasActiveLease(readCtx, scope.Project, row.NativeID, s.config.Clock())
 			if err != nil {
 				return err
 			}
@@ -260,7 +260,7 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscop
 		if err != nil {
 			return nil, err
 		}
-		now := s.config.now().UTC().Truncate(time.Microsecond)
+		now := s.config.Clock().UTC().Truncate(time.Microsecond)
 		receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 		if err != nil {
 			return nil, err

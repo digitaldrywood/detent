@@ -74,7 +74,7 @@ func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope 
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	scope.Project = tracker.ProjectID(args.ProjectID)
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	page, err := (*runnerauth.ProjectDiagnostics)(nil).Page(args.ProjectID, args.RunnerID, args.IssueID, args.AttemptID, args.Cursor, args.Limit, now)
 	if err != nil {
 		return runnerauth.DiagnosticPage{}, operatortool.ErrInvalidArguments

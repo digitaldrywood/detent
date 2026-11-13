@@ -77,7 +77,7 @@ func TestPostgresLinkedCacheKeepsReporterVisibility(t *testing.T) {
 		}
 	}
 	if err := repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: "org_security", ProjectID: f.project, WorkItemID: secondary, ChangeID: changes[primary], CreatedAt: f.service.config.now()})
+		return w.LinkIssue(t.Context(), eventstore.Link{OrganizationID: "org_security", ProjectID: f.project, WorkItemID: secondary, ChangeID: changes[primary], CreatedAt: f.service.config.Clock()})
 	}); err != nil {
 		t.Fatal(err)
 	}

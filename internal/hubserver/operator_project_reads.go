@@ -137,7 +137,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		ProjectID      tracker.ProjectID      `json:"project_id,omitempty"`
 		ObservedAt     time.Time              `json:"observed_at"`
 		Data           any                    `json:"data"`
-	}{scope.Organization, scope.Project, s.config.now().UTC(), value}
+	}{scope.Organization, scope.Project, s.config.Clock().UTC(), value}
 	if call.Name == "get_project_policy" {
 		view, ok := value.(projectPolicyRead)
 		if !ok {

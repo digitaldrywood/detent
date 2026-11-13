@@ -103,7 +103,7 @@ func (s *Service) MaintainProjectPage(ctx context.Context, org tracker.Organizat
 		return err
 	})
 	if published && s.config.Logger != nil {
-		s.config.Logger.LogAttrs(ctx, slog.LevelDebug, "project settings page", slog.String("organization_id", string(org)), slog.Int64("generation", candidate.Record.Settings.Revision), slog.Duration("projection_lag", s.config.now().Sub(candidate.SourceAt)))
+		s.config.Logger.LogAttrs(ctx, slog.LevelDebug, "project settings page", slog.String("organization_id", string(org)), slog.Int64("generation", candidate.Record.Settings.Revision), slog.Duration("projection_lag", s.config.Clock().Sub(candidate.SourceAt)))
 	}
 	return next, published, err
 }

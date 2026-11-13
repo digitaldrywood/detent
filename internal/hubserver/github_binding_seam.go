@@ -19,7 +19,7 @@ import (
 
 func (s *Service) githubBindingService(scope hubscope.NativeScope) *githubbinding.Service {
 	return githubbinding.New(githubbinding.Deps{
-		Repository: s.config.TenantRepository, Now: s.config.now, Backend: s.config.ReconcileBackend,
+		Repository: s.config.TenantRepository, Now: s.config.Clock, Backend: s.config.ReconcileBackend,
 		Recheck: func(ctx context.Context, _ hubapi.Scope) error { return s.recheckProjectRecordMutation(ctx, scope) },
 		Receipt: func(ctx context.Context, _ hubapi.Scope, operation, key, hash string) (json.RawMessage, bool, error) {
 			return s.authorizedChangeRecordReceipt(ctx, scope, operation, key, hash)

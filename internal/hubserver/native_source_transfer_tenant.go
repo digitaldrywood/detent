@@ -72,7 +72,7 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope hubscop
 	if err != nil {
 		return nil, err
 	}
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	view.Revision, view.DestinationRunnerID = request.ExpectedRevision+1, request.DestinationRunnerID
 	raw, err := json.Marshal(view)
 	if err != nil {

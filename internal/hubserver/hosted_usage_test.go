@@ -101,7 +101,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 		t.Helper()
 		var facts []reportstore.UsageFact
 		scope := analyticsTestScope(t, f)
-		window := usageWindow{From: f.service.config.now().Add(-time.Hour), To: f.service.config.now().Add(time.Hour)}
+		window := usageWindow{From: f.service.config.Clock().Add(-time.Hour), To: f.service.config.Clock().Add(time.Hour)}
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			var err error
 			facts, err = reader.(reportstore.UsageReader).ReadReportUsage(t.Context(), reportstore.OverviewQuery{Projects: []tracker.ProjectID{scope.Project}, From: window.From, Split: window.From, To: window.To, Limit: maxAnalyticsPopulation})
@@ -175,7 +175,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	if stored[1].input != 3000 || stored[1].cost != 0.75 {
 		t.Fatalf("replaced row = %+v, want the running total, not a sum", stored[1])
 	}
-	window := usageWindow{From: f.service.config.now().Add(-time.Hour), To: f.service.config.now().Add(time.Hour)}
+	window := usageWindow{From: f.service.config.Clock().Add(-time.Hour), To: f.service.config.Clock().Add(time.Hour)}
 	reportRows, err := f.service.usageRows(t.Context(), window, []string{string(f.project.ID)})
 	if err != nil {
 		t.Fatal(err)
@@ -686,7 +686,7 @@ func TestHostedUsageReportAccess(t *testing.T) {
 		f.usage(t, "", browserHostedOrganizationBase+"/diagnostics", http.StatusUnauthorized)
 		f.usage(t, "staff", browserHostedOrganizationBase+"/diagnostics", http.StatusForbidden)
 		f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=1y", http.StatusUnprocessableEntity)
-		now := f.service.config.now().UTC().Add(-time.Minute)
+		now := f.service.config.Clock().UTC().Add(-time.Minute)
 		admin := hostedPostgresAdmin(t, f.service)
 		var item tracker.NativeWorkItemID
 		if err := admin.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE organization_id=$1 AND project_id=$2 ORDER BY id LIMIT 1", "org_browser_preview", f.project).Scan(&item); err != nil {
@@ -881,7 +881,7 @@ func usageDecode(t *testing.T, response *httptest.ResponseRecorder, target any) 
 // machine, so the runner rows have a host, sessions and busy time.
 func (f usageHostedFixture) seedUsage(t *testing.T) {
 	t.Helper()
-	now := f.service.config.now().UTC()
+	now := f.service.config.Clock().UTC()
 	prices := f.service.usagePrices()
 	machine := f.enrollUsageRunner(t)
 	admin := hostedPostgresAdmin(t, f.service)
@@ -949,7 +949,7 @@ func (f usageHostedFixture) seedUsage(t *testing.T) {
 
 func (f usageHostedFixture) enrollUsageRunner(t *testing.T) string {
 	t.Helper()
-	now := f.service.config.now().UTC()
+	now := f.service.config.Clock().UTC()
 	later := now.Add(time.Hour)
 	org := tracker.OrganizationID("org_browser_preview")
 	machine := tracker.MachineID("machine_browser_preview_runner")

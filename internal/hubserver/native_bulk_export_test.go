@@ -228,7 +228,7 @@ func TestPostgresBulkExport(t *testing.T) {
 func seedExportComment(t *testing.T, repository tenantstore.Repository, service *Service, project tracker.ProjectID, item tracker.NativeWorkItemID, sequence int64, body string) {
 	t.Helper()
 	sequence += 1000
-	now := service.config.now()
+	now := service.config.Clock()
 	comment := tracker.NativeComment{OrganizationID: "org_security", ProjectID: project, WorkItemID: item, ID: fmt.Sprintf("comment_%s_%d", item, sequence), Revision: 1, Sequence: sequence, Body: body, CreatedAt: now, UpdatedAt: now}
 	raw, err := json.Marshal(comment)
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Service) hostedPlanUsageTenant(ctx context.Context, unlimited ...string) (hostedplans.HostedEntitlement, error) {
-	now := s.config.now().UTC()
+	now := s.config.Clock().UTC()
 	var result hostedplans.HostedEntitlement
 	err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
 		var err error

@@ -455,7 +455,7 @@ func TestHostedSharedEntryInvitationAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
-		now := f.service.config.now()
+		now := f.service.config.Clock()
 		return w.CreateAccessInvitation(t.Context(), accessstore.Invitation{OrganizationID: "org_security", ID: invitation.ID, Email: "invitee@example.test", Role: "member", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
 	}); err != nil {
 		t.Fatal(err)

@@ -51,7 +51,7 @@ func newOperatorSecurityFixture(t *testing.T, configure ...func(*Config)) operat
 	}
 	for _, org := range []tracker.OrganizationID{"org_security", "org_security_second"} {
 		if err := store.postgres.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			now := cfg.normalized().now().UTC().Truncate(time.Microsecond)
+			now := cfg.normalized().Clock().UTC().Truncate(time.Microsecond)
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
 				return err
 			}

@@ -296,7 +296,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 		echo: echo.New(), database: &database{now: time.Now, billingRepository: repository, billingAuditStore: details}, secretRewrapReady: make(chan struct{}),
 		notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1),
 		config: Config{
-			Logger: discardLogger(), now: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
+			Logger: discardLogger(), Clock: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
 			TenantRepository: repository, AccessRepository: repository, RunDetails: details,
 			NativeRunEvents: participant, SecretKeys: keys,
 		},
@@ -308,7 +308,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 	for _, organizationName := range []string{"Example organization one", "Example organization two"} {
 		t.Run(organizationName, func(t *testing.T) {
 			organization := nativeOrganization{ID: tracker.OrganizationID(hubapi.NewID("org")), Name: organizationName, Slug: strings.ReplaceAll(strings.ToLower(organizationName), " ", "-")}
-			now := service.config.now().UTC()
+			now := service.config.Clock().UTC()
 			cursorKey := bytes.Repeat([]byte{1}, 32)
 			cursorEnvelope, err := keys.Seal(cursorKey, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
 			if err != nil {
@@ -453,7 +453,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 					if err != nil {
 						return tracker.NativeAttempt{}, err
 					}
-					return service.hydrateNativeAttemptTenant(ctx, snapshot, service.config.now())
+					return service.hydrateNativeAttemptTenant(ctx, snapshot, service.config.Clock())
 				default:
 					page, err := service.readNativeAttemptPageTenant(ctx, scope, string(issue.WorkItemID), url.Values{"view": {view}}, json.Marshal)
 					if err != nil || len(page.Items) != 1 {
@@ -571,7 +571,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 		echo: echo.New(), database: &database{now: time.Now, billingRepository: repository, billingAuditStore: details}, secretRewrapReady: make(chan struct{}),
 		notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1),
 		config: Config{
-			Logger: discardLogger(), now: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
+			Logger: discardLogger(), Clock: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
 			TenantRepository: repository, AccessRepository: repository, RunDetails: details,
 			NativeRunEvents: participant, SecretKeys: keys,
 		},
@@ -586,7 +586,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 	for _, organizationName := range []string{"Example organization one", "Example organization two"} {
 		t.Run(organizationName, func(t *testing.T) {
 			organization := nativeOrganization{ID: tracker.OrganizationID(hubapi.NewID("org")), Name: organizationName, Slug: strings.ReplaceAll(strings.ToLower(organizationName), " ", "-")}
-			now := service.config.now().UTC()
+			now := service.config.Clock().UTC()
 			cursorKey := bytes.Repeat([]byte{1}, 32)
 			cursorEnvelope, err := keys.Seal(cursorKey, accessstore.SecretAAD(organization.ID, "", accessstore.NativeCursorKeyKind))
 			if err != nil {
@@ -996,7 +996,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 					if err != nil {
 						return tracker.NativeAttempt{}, err
 					}
-					return service.hydrateNativeAttemptTenant(readContext, snapshot, service.config.now())
+					return service.hydrateNativeAttemptTenant(readContext, snapshot, service.config.Clock())
 				}},
 			}
 			sequence := int64(1)
@@ -1008,7 +1008,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 					observation.IdempotencyKey = fmt.Sprintf("observation-%d", sequence)
 					observation.Type = "run.observed"
 					observation.Data.Sequence = sequence
-					observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.now().UTC()}
+					observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: service.config.Clock().UTC()}
 					appended := false
 					wrapped.beforeLatest = func() error {
 						if wrapped.active != 1 {
