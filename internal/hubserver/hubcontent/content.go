@@ -244,7 +244,7 @@ func IsolateContentContext(ctx context.Context) context.Context {
 	}
 	if current, ok := ctx.Value(RunDetailContextKey{}).(*RunDetailContext); ok {
 		current.Mu.Lock()
-		isolated := &RunDetailContext{Store: current.Store, Organization: current.Organization, Cache: make(map[string]map[string]tracker.NativeRunData), Reference: current.Reference, Runs: maps.Clone(current.Runs), cancellation: current.cancellation}
+		isolated := &RunDetailContext{Store: current.Store, Organization: current.Organization, Cache: make(map[string]map[string]tracker.NativeRunData), Reference: current.Reference, Runs: maps.Clone(current.Runs)}
 		current.Mu.Unlock()
 		ctx = context.WithValue(ctx, RunDetailContextKey{}, isolated)
 	}

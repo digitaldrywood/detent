@@ -2,7 +2,6 @@ package hubcontent
 
 import (
 	"sync"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -17,10 +16,4 @@ type RunDetailContext struct {
 	Reference    *attachment.ArchiveReference                `json:"-"`
 	Runs         map[string]tracker.NativeRunData            `json:"-"`
 	Cache        map[string]map[string]tracker.NativeRunData `json:"-"`
-	cancellation *NativeLeaseCancellation
-}
-
-type NativeLeaseCancellation struct {
-	source string
-	at     time.Time
 }
