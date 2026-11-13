@@ -384,7 +384,7 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 	if after > record.EventSeq {
 		return stream.Closed(conversationClosedCursorExpired)
 	}
-	subscription, cancel := conversationSubscribe(service.Broker, record.ID)
+	subscription, cancel := service.Broker.Subscribe(record.ID)
 	defer cancel()
 	heartbeat := time.NewTicker(conversationStreamHeartbeat)
 	defer heartbeat.Stop()
@@ -415,13 +415,13 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-subscription.closed:
+			case <-subscription.Closed():
 				return stream.Closed(conversationClosedShutdown)
 			case <-heartbeat.C:
 				if err := stream.Heartbeat(cursor); err != nil {
 					return nil
 				}
-			case <-subscription.wake:
+			case <-subscription.Wake():
 				break wait
 			case <-authorize.C:
 				break wait
@@ -741,5 +741,5 @@ func (s *Service) registerConversationRoutes(e *echo.Echo) {
 		return
 	}
 	s.registerConversationAPIRoutes(e)
-	s.registerConversationWorkerRoutes(e)
+	s.conversations.RegisterWorkerRoutes(e, s.requireNativeScope(hubapi.APIScopeWorker))
 }

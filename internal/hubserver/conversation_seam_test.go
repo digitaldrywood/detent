@@ -7,12 +7,17 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventbroker"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type conversationContentsKey = conversations.ConversationContentsKey
+type conversationWorkerRouter = conversations.WorkerRouter
+type conversationBindResponse = conversations.WorkerBindResponse
+type conversationControlsResponse = conversations.WorkerControlsResponse
+type conversationTurnEventsResponse = conversations.WorkerTurnEventsResponse
 type conversationCreatedResponse = conversations.ConversationCreatedResponse
 type conversationFirstMessage = conversations.ConversationFirstMessage
 type conversationLinkIssue = conversations.ConversationLinkIssue
@@ -67,6 +72,10 @@ func conversationStaleOwner(p0 string, p1 string, p2 string) error {
 	return hubapi.FromFeatureError(conversations.ConversationStaleOwner(p0, p1, p2))
 }
 
+func preparePGWorkerEvent(p0 context.Context, p1 *conversations.ConversationPublicationPlan, p2 any) error {
+	return hubapi.FromFeatureError(conversations.PreparePGWorkerEvent(p0, p1, p2))
+}
+
 func conversationTime(p0 time.Time) string { return conversations.ConversationTime(p0) }
 
 func coordinatorConnectionData(p0 context.Context) json.RawMessage {
@@ -80,4 +89,8 @@ func newConversationStore(p0 *sql.DB) *conversations.ConversationStore {
 func questionPayload(p0 conversations.ConversationQuestionRecord) ([]byte, error) {
 	r0, r1 := conversations.QuestionPayload(p0)
 	return r0, hubapi.FromFeatureError(r1)
+}
+
+func conversationSubscribe(broker *eventbroker.Broker, key string) (*notificationSubscription, func()) {
+	return (&notificationBroker{broker}).subscribe(key)
 }

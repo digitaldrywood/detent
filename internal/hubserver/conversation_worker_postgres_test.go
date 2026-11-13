@@ -243,7 +243,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 
 	bindBody := map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "run_id": "run-pg-worker", "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
 	bind := func() *httptest.ResponseRecorder {
-		return callConversationWorkerRoute(t, router.bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", bindBody, identity)
+		return callConversationWorkerRoute(t, router.Bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", bindBody, identity)
 	}
 	var bound *httptest.ResponseRecorder
 	if concurrent {
@@ -318,7 +318,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}
 	turnBody := map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "batch_key": "batch-pg-worker", "events": []map[string]any{{"type": "turn_started", "thread_id": "thread-pg-worker", "turn_id": "turn-pg-worker"}, {"type": "delta", "provider_item_id": "item-pg-worker", "text": "example response"}}}
 	authorityCalls, deniedAuthorityCall = 0, 2
-	rejectedTurn := callConversationWorkerRoute(t, router.turnEvents, scope, http.MethodPost, "/turn-events", "", linked.ID, turnBody, identity)
+	rejectedTurn := callConversationWorkerRoute(t, router.TurnEvents, scope, http.MethodPost, "/turn-events", "", linked.ID, turnBody, identity)
 	if rejectedTurn.Code != http.StatusForbidden {
 		t.Fatalf("rejected worker identity status = %d, body = %s", rejectedTurn.Code, rejectedTurn.Body.String())
 	}
@@ -331,7 +331,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		t.Fatal(err)
 	}
 	authorityCalls, deniedAuthorityCall = 0, 0
-	turn := callConversationWorkerRoute(t, router.turnEvents, scope, http.MethodPost, "/turn-events", "", linked.ID, turnBody, identity)
+	turn := callConversationWorkerRoute(t, router.TurnEvents, scope, http.MethodPost, "/turn-events", "", linked.ID, turnBody, identity)
 	if turn.Code != http.StatusAccepted {
 		t.Fatalf("turn events status = %d, body = %s, log = %s", turn.Code, turn.Body.String(), logs.String())
 	}
@@ -360,11 +360,11 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	stale := identity
 	stale.FencingToken++
 	staleTurnBody := map[string]any{"lease_id": stale.LeaseID, "fencing_token": stale.FencingToken, "attempt_id": stale.AttemptID, "batch_key": "stale-batch-pg-worker", "events": turnBody["events"]}
-	staleTurn := callConversationWorkerRoute(t, router.turnEvents, scope, http.MethodPost, "/turn-events", "", linked.ID, staleTurnBody, stale)
+	staleTurn := callConversationWorkerRoute(t, router.TurnEvents, scope, http.MethodPost, "/turn-events", "", linked.ID, staleTurnBody, stale)
 	if staleTurn.Code != http.StatusConflict {
 		t.Fatalf("stale fencing token status = %d, body = %s", staleTurn.Code, staleTurn.Body.String())
 	}
-	replayed := callConversationWorkerRoute(t, router.turnEvents, scope, http.MethodPost, "/turn-events", "", linked.ID, turnBody, identity)
+	replayed := callConversationWorkerRoute(t, router.TurnEvents, scope, http.MethodPost, "/turn-events", "", linked.ID, turnBody, identity)
 	if replayed.Code != http.StatusAccepted {
 		t.Fatalf("turn replay status = %d, body = %s", replayed.Code, replayed.Body.String())
 	}
@@ -391,7 +391,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	if _, err := f.service.commandPostConversation(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: hubapi.APICredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator}}, linked.ID, conversation.Command{Key: "pg-control", Kind: conversation.CommandMessage, Text: "Example instruction"}); err != nil {
 		t.Fatal(err)
 	}
-	controls := callConversationWorkerRoute(t, router.controls, scope, http.MethodGet, "/controls?after=0&wait=0", "", linked.ID, nil, identity)
+	controls := callConversationWorkerRoute(t, router.Controls, scope, http.MethodGet, "/controls?after=0&wait=0", "", linked.ID, nil, identity)
 	if controls.Code != http.StatusOK {
 		t.Fatalf("controls status = %d, body = %s", controls.Code, controls.Body.String())
 	}
@@ -415,7 +415,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 			})
 		}}
 		t.Cleanup(func() { f.service.config.TenantRepository = repository })
-		response := callConversationWorkerRoute(t, router.controls, scope, http.MethodGet, fmt.Sprintf("/controls?after=%d&wait=0", controlPage.Cursor), "", linked.ID, nil, identity)
+		response := callConversationWorkerRoute(t, router.Controls, scope, http.MethodGet, fmt.Sprintf("/controls?after=%d&wait=0", controlPage.Cursor), "", linked.ID, nil, identity)
 		f.service.config.TenantRepository = repository
 		requireConversationErrorCode(t, response, http.StatusConflict, "revision_conflict")
 		if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -430,7 +430,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		}); err != nil {
 			t.Fatal(err)
 		}
-		page, err := router.pollControlsPostgres(t.Context(), scope, linked.ID, identity, 0)
+		page, err := router.PollControls(t.Context(), scope, linked.ID, identity, 0)
 		if err != nil || len(page.Controls) != 1 || page.Controls[0].Key != "pg-control" || page.Controls[0].Expected.AttemptID != identity.AttemptID {
 			t.Fatalf("same worker could not resume its control poll: %+v, %v", page, err)
 		}
@@ -481,13 +481,13 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 				}}
 			}
 			t.Cleanup(func() { f.service.config.TenantRepository = repository })
-			page, err := router.pollControlsPostgres(t.Context(), scope, linked.ID, identity, controlCursor)
+			page, err := router.PollControls(t.Context(), scope, linked.ID, identity, controlCursor)
 			f.service.config.TenantRepository = repository
 			if test.late || test.changed {
 				if err != nil || len(page.Controls) != 0 || page.Cursor != controlCursor {
 					t.Fatalf("unloaded control advanced delivery: %+v, %v", page, err)
 				}
-				page, err = router.pollControlsPostgres(t.Context(), scope, linked.ID, identity, controlCursor)
+				page, err = router.PollControls(t.Context(), scope, linked.ID, identity, controlCursor)
 			}
 			if err != nil || len(page.Controls) != 1 || page.Controls[0].MessageID != message.ID || page.Controls[0].Text != wantText || page.Controls[0].Expected.AttemptID != identity.AttemptID {
 				t.Fatalf("control lost its loaded body or owner: %+v, %v", page, err)
@@ -535,7 +535,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		if remaining == 1 {
 			acknowledged = pollControlsAgainstRunnerEvent(t, admin, f.service, router, scope, linked.ID, identity, acknowledgementCursor)
 		} else {
-			acknowledged, err = router.pollControlsPostgres(t.Context(), scope, linked.ID, identity, acknowledgementCursor)
+			acknowledged, err = router.PollControls(t.Context(), scope, linked.ID, identity, acknowledgementCursor)
 		}
 		if err != nil || len(acknowledged.Controls) != 0 {
 			t.Fatalf("bounded acknowledgement poll controls=%d error=%v", len(acknowledged.Controls), err)
@@ -590,7 +590,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	staleRebind := callConversationWorkerRoute(t, router.bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", bindBody, identity)
+	staleRebind := callConversationWorkerRoute(t, router.Bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", bindBody, identity)
 	if staleRebind.Code != http.StatusConflict {
 		t.Fatalf("released lease bind status = %d, body = %s", staleRebind.Code, staleRebind.Body.String())
 	}
@@ -611,7 +611,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	nextIdentity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(nextLease.LeaseID), FencingToken: tracker.FencingToken(nextLease.FencingToken), AttemptID: hubapi.NewID("attempt")}
 	nextRunID := hubapi.NewID("run")
 	nextBindBody := map[string]any{"lease_id": nextIdentity.LeaseID, "fencing_token": nextIdentity.FencingToken, "attempt_id": nextIdentity.AttemptID, "run_id": nextRunID, "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
-	takeover := callConversationWorkerRoute(t, router.bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", nextBindBody, nextIdentity)
+	takeover := callConversationWorkerRoute(t, router.Bind, scope, http.MethodPost, "/bind", string(issue.NativeID), "", nextBindBody, nextIdentity)
 	if takeover.Code != http.StatusOK {
 		t.Fatalf("replacement bind status = %d, body = %s, log = %s", takeover.Code, takeover.Body.String(), logs.String())
 	}
@@ -708,7 +708,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	unbound := callConversationWorkerRoute(t, router.unbind, scope, http.MethodPost, "/unbind", string(issue.NativeID), "", map[string]any{"lease_id": nextIdentity.LeaseID, "fencing_token": nextIdentity.FencingToken, "attempt_id": nextIdentity.AttemptID, "outcome": "succeeded"}, nextIdentity)
+	unbound := callConversationWorkerRoute(t, router.Unbind, scope, http.MethodPost, "/unbind", string(issue.NativeID), "", map[string]any{"lease_id": nextIdentity.LeaseID, "fencing_token": nextIdentity.FencingToken, "attempt_id": nextIdentity.AttemptID, "outcome": "succeeded"}, nextIdentity)
 	if unbound.Code != http.StatusOK {
 		t.Fatalf("unbind status = %d, body = %s, log = %s", unbound.Code, unbound.Body.String(), logs.String())
 	}
@@ -929,7 +929,7 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 		service.config.now = func() time.Time { return lease.RenewedAt }
 		identity = conversationWorkerIdentity{LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), AttemptID: "attempt-pg-continuation-" + suffix}
 		body := map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "run_id": "run-pg-continuation-" + suffix, "capabilities": map[string]bool{"steer": true, "interrupt": true, "answer": true, "continue": true}}
-		response := callConversationWorkerRoute(t, router.bind, scope, http.MethodPost, "/bind", string(item.NativeID), "", body, identity)
+		response := callConversationWorkerRoute(t, router.Bind, scope, http.MethodPost, "/bind", string(item.NativeID), "", body, identity)
 		if response.Code != http.StatusOK {
 			t.Fatalf("continuation bind = %d: %s", response.Code, response.Body.String())
 		}
@@ -964,7 +964,7 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 			t.Fatalf("active Continue = %v", err)
 		}
 		if acknowledged {
-			if _, err := router.pollControlsPostgres(t.Context(), scope, conversationID, identity, bound.Cursor); err != nil {
+			if _, err := router.PollControls(t.Context(), scope, conversationID, identity, bound.Cursor); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -993,7 +993,7 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 		}
 		if acknowledged {
 			for _, status := range []string{"completed", "interrupted"} {
-				response := callConversationWorkerRoute(t, router.turnEvents, scope, http.MethodPost, "/turn-events", "", conversationID, map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "batch_key": key + "-" + status, "events": []map[string]any{{"type": "execution_status", "status": status}}}, identity)
+				response := callConversationWorkerRoute(t, router.TurnEvents, scope, http.MethodPost, "/turn-events", "", conversationID, map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "batch_key": key + "-" + status, "events": []map[string]any{{"type": "execution_status", "status": status}}}, identity)
 				wantStatus := http.StatusAccepted
 				if status == "interrupted" {
 					wantStatus = http.StatusConflict
@@ -1016,7 +1016,7 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 			}
 		}
 
-		response := callConversationWorkerRoute(t, router.unbind, scope, http.MethodPost, "/unbind", string(item.NativeID), "", map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "outcome": "succeeded"}, identity)
+		response := callConversationWorkerRoute(t, router.Unbind, scope, http.MethodPost, "/unbind", string(item.NativeID), "", map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "outcome": "succeeded"}, identity)
 		if response.Code != http.StatusOK {
 			t.Fatalf("continuation unbind = %d: %s", response.Code, response.Body.String())
 		}
@@ -1027,7 +1027,7 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 				t.Fatalf("completed Continue reclaimed ordinary ownership: %+v", bound)
 			}
 		}
-		response = callConversationWorkerRoute(t, router.unbind, scope, http.MethodPost, "/unbind", string(item.NativeID), "", map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "outcome": "succeeded"}, identity)
+		response = callConversationWorkerRoute(t, router.Unbind, scope, http.MethodPost, "/unbind", string(item.NativeID), "", map[string]any{"lease_id": identity.LeaseID, "fencing_token": identity.FencingToken, "attempt_id": identity.AttemptID, "outcome": "succeeded"}, identity)
 		if response.Code != http.StatusOK {
 			t.Fatalf("ordinary unbind = %d: %s", response.Code, response.Body.String())
 		}
@@ -1224,7 +1224,7 @@ func pollControlsAgainstRunnerEvent(t *testing.T, admin *sql.DB, service *Servic
 	var pollErr error
 	go func() {
 		defer close(finished)
-		page, pollErr = router.pollControlsPostgres(t.Context(), scope, id, identity, after)
+		page, pollErr = router.PollControls(t.Context(), scope, id, identity, after)
 	}()
 	select {
 	case <-order.attempted:

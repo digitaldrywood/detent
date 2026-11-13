@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -459,7 +460,7 @@ func newConversationTenantFixture(t *testing.T, repository tenantstore.Repositor
 	chat := &conversationService{Server: service.conversationServer(), Store: &conversationStore{Contents: &conversationContentFixture{}}, Broker: service.notifications.Broker, Logger: service.config.Logger, Config: (ConversationConfig{Enabled: true}).Normalized(), Settle: make(chan struct{}), Settled: make(chan struct{})}
 	close(chat.Settled)
 	chat.Coordinator = newConversationCoordinator(service, chat)
-	chat.Controls = &conversationWorkerRouter{server: service, service: chat, stop: make(chan struct{})}
+	chat.Controls = conversations.NewWorkerRouter(chat)
 	service.conversations = chat
 	t.Cleanup(service.conversations.Stop)
 	return conversationAPIFixture{nativeFixture: nativeFixture{service: service, project: tracker.NativeProject{OrganizationID: "org_conversation", ID: "prj_conversation", Name: "Example project", Slug: "example-project", Profile: "native", States: nativeFixtureStates()}}, ownerID: "owner_conversation"}

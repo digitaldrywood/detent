@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -20,36 +20,40 @@ import (
 // executions whose lease was released or expired without an unbind.
 var conversationReconcileInterval = 30 * time.Second
 
-// conversationWorkerRouter delivers committed controls to bound workers over
+// WorkerRouter delivers committed controls to bound workers over
 // the long-poll endpoint and reconciles executions whose lease was lost.
 // The durable store is the queue: Wake only signals broker subscribers.
-type conversationWorkerRouter struct {
-	server  *Service
-	service *conversationService
+type WorkerRouter struct {
+	server  *Server
+	service *ConversationService
 	stop    chan struct{}
 	once    sync.Once
 	wg      sync.WaitGroup
 }
 
-func newConversationControlRouter(server *Service, service *conversationService) conversationControlRouter {
-	router := &conversationWorkerRouter{server: server, service: service, stop: make(chan struct{})}
+func NewWorkerRouter(service *ConversationService) *WorkerRouter {
+	return &WorkerRouter{server: service.Server, service: service, stop: make(chan struct{})}
+}
+
+func NewControlRouter(service *ConversationService) ConversationControlRouter {
+	router := NewWorkerRouter(service)
 	router.wg.Add(1)
 	go router.reconcileLoop()
 	return router
 }
 
 // Wake notifies long-polling workers that queued controls may exist.
-func (r *conversationWorkerRouter) Wake(conversationID string) {
+func (r *WorkerRouter) Wake(conversationID string) {
 	r.service.Broker.Notify(conversationID)
 }
 
 // Stop ends the reconcile loop and every in-flight long poll.
-func (r *conversationWorkerRouter) Stop() {
+func (r *WorkerRouter) Stop() {
 	r.once.Do(func() { close(r.stop) })
 	r.wg.Wait()
 }
 
-func (r *conversationWorkerRouter) reconcileLoop() {
+func (r *WorkerRouter) reconcileLoop() {
 	defer r.wg.Done()
 	ticker := time.NewTicker(conversationReconcileInterval)
 	defer ticker.Stop()
@@ -65,59 +69,58 @@ func (r *conversationWorkerRouter) reconcileLoop() {
 	}
 }
 
-// registerConversationWorkerRoutes mounts the lease-fenced worker endpoints.
-func (s *Service) registerConversationWorkerRoutes(e *echo.Echo) {
-	router, ok := s.conversations.Controls.(*conversationWorkerRouter)
+// RegisterWorkerRoutes mounts the lease-fenced worker endpoints.
+func (c *ConversationService) RegisterWorkerRoutes(e *echo.Echo, worker echo.MiddlewareFunc) {
+	router, ok := c.Controls.(*WorkerRouter)
 	if !ok {
 		return
 	}
-	worker := s.requireNativeScope(hubapi.APIScopeWorker)
-	e.POST(hubapi.NativeBase+"/work-items/:item/conversation/bind", router.bind, worker)
-	e.POST(hubapi.NativeBase+"/work-items/:item/conversation/unbind", router.unbind, worker)
-	e.GET(hubapi.NativeBase+"/conversations/:conversation/controls", router.controls, worker)
-	e.POST(hubapi.NativeBase+"/conversations/:conversation/turn-events", router.turnEvents, worker)
+	e.POST(hubapi.NativeBase+"/work-items/:item/conversation/bind", router.Bind, worker)
+	e.POST(hubapi.NativeBase+"/work-items/:item/conversation/unbind", router.Unbind, worker)
+	e.GET(hubapi.NativeBase+"/conversations/:conversation/controls", router.Controls, worker)
+	e.POST(hubapi.NativeBase+"/conversations/:conversation/turn-events", router.TurnEvents, worker)
 }
 
 // Wire shapes.
 
 type conversationBindRequest struct {
-	conversationWorkerIdentity
+	WorkerIdentity
 	RunID        string                    `json:"run_id"`
 	Capabilities conversation.Capabilities `json:"capabilities"`
 	ThreadID     string                    `json:"thread_id,omitempty"`
 }
 
-type conversationBindResponse struct {
+type WorkerBindResponse struct {
 	ConversationID string `json:"conversation_id"`
 	Continuation   bool   `json:"continuation"`
 	// Preferences are the conversation's turn preferences. The runner
 	// applies the explicit ones to its turn request and leaves "auto" to the
 	// project's configured defaults.
 	Preferences conversation.Preferences   `json:"preferences"`
-	Resume      conversationResumeResource `json:"resume"`
-	Pending     []conversationControl      `json:"pending"`
+	Resume      ConversationResumeResource `json:"resume"`
+	Pending     []WorkerControl      `json:"pending"`
 	Cursor      int64                      `json:"cursor"`
 }
 
 type conversationUnbindRequest struct {
-	conversationWorkerIdentity
+	WorkerIdentity
 	Outcome string `json:"outcome"`
 	Error   string `json:"error,omitempty"`
 }
 
 type conversationUnbindResponse struct {
 	ConversationID string                        `json:"conversation_id"`
-	Execution      conversationExecutionResource `json:"execution"`
+	Execution      ConversationExecutionResource `json:"execution"`
 }
 
-type conversationControlsResponse struct {
-	Controls []conversationControl `json:"controls"`
+type WorkerControlsResponse struct {
+	Controls []WorkerControl `json:"controls"`
 	Cursor   int64                 `json:"cursor"`
 }
 
-// conversationControl is the envelope handed to the worker. Its kind is the
+// WorkerControl is the envelope handed to the worker. Its kind is the
 // runner control vocabulary: a continuation intent is a user message.
-type conversationControl struct {
+type WorkerControl struct {
 	Cursor     int64               `json:"cursor"`
 	Key        string              `json:"key"`
 	Kind       string              `json:"kind"`
@@ -178,7 +181,7 @@ type conversationTurnEvent struct {
 }
 
 type conversationTurnEventsRequest struct {
-	conversationWorkerIdentity
+	WorkerIdentity
 	// BatchKey identifies one worker batch and is repeated when the worker
 	// retries it. A repeat applies nothing and answers with the event
 	// sequence the first attempt produced, so a retried batch never appends
@@ -188,22 +191,22 @@ type conversationTurnEventsRequest struct {
 	Events   []conversationTurnEvent `json:"events"`
 }
 
-type conversationTurnEventsResponse struct {
+type WorkerTurnEventsResponse struct {
 	EventSeq int64 `json:"event_seq"`
 }
 
 // Ownership checks.
 
-func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity, error) {
+func conversationIdentityFromHeaders(c echo.Context) (WorkerIdentity, error) {
 	header := c.Request().Header
-	token, err := strconv.ParseInt(strings.TrimSpace(header.Get(conversationHeaderFencingToken)), 10, 64)
+	token, err := strconv.ParseInt(strings.TrimSpace(header.Get(ConversationHeaderFencingToken)), 10, 64)
 	if err != nil {
-		return conversationWorkerIdentity{}, hubapi.NativePublicInvalid("A numeric fencing token header is required")
+		return WorkerIdentity{}, hubapi.NativePublicInvalid("A numeric fencing token header is required")
 	}
-	identity := conversationWorkerIdentity{
-		LeaseID:      tracker.LeaseID(strings.TrimSpace(header.Get(conversationHeaderLease))),
+	identity := WorkerIdentity{
+		LeaseID:      tracker.LeaseID(strings.TrimSpace(header.Get(ConversationHeaderLease))),
 		FencingToken: tracker.FencingToken(token),
-		AttemptID:    strings.TrimSpace(header.Get(conversationHeaderAttempt)),
+		AttemptID:    strings.TrimSpace(header.Get(ConversationHeaderAttempt)),
 	}
 	return identity, identity.Validate()
 }
@@ -216,51 +219,51 @@ func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity
 
 // Handlers.
 
-func (r *conversationWorkerRouter) bind(e echo.Context) error {
+func (r *WorkerRouter) Bind(e echo.Context) error {
 	s := r.server
 	var request conversationBindRequest
 	if err := hubapi.DecodeAPIJSON(e, &request); err != nil {
-		return s.invalidAPIRequest(e, err)
+		return s.invalidRequest(e, err)
 	}
 	if err := request.Validate(); err != nil {
-		return s.nativeAPIError(e, err)
+		return s.apiError(e, err)
 	}
 	if strings.TrimSpace(request.RunID) == "" {
-		return s.nativeAPIError(e, hubapi.NativePublicInvalid("run_id is required"))
+		return s.apiError(e, hubapi.NativePublicInvalid("run_id is required"))
 	}
 
 	return r.bindPostgres(e, request)
 }
 
-func (r *conversationWorkerRouter) unbind(e echo.Context) error {
+func (r *WorkerRouter) Unbind(e echo.Context) error {
 	s := r.server
 	var request conversationUnbindRequest
 	if err := hubapi.DecodeAPIJSON(e, &request); err != nil {
-		return s.invalidAPIRequest(e, err)
+		return s.invalidRequest(e, err)
 	}
 	if err := request.Validate(); err != nil {
-		return s.nativeAPIError(e, err)
+		return s.apiError(e, err)
 	}
 	status, ok := map[string]conversation.ExecutionStatus{
 		"succeeded": conversation.ExecutionCompleted, "failed": conversation.ExecutionFailed,
 		"cancelled": conversation.ExecutionInterrupted, "interrupted": conversation.ExecutionInterrupted,
 	}[request.Outcome]
 	if !ok {
-		return s.nativeAPIError(e, hubapi.NativePublicInvalid("outcome must be succeeded, failed, cancelled or interrupted"))
+		return s.apiError(e, hubapi.NativePublicInvalid("outcome must be succeeded, failed, cancelled or interrupted"))
 	}
 
 	return r.unbindPostgres(e, request, status)
 }
 
-func (r *conversationWorkerRouter) controls(e echo.Context) error {
+func (r *WorkerRouter) Controls(e echo.Context) error {
 	s := r.server
 	identity, err := conversationIdentityFromHeaders(e)
 	if err != nil {
-		return s.nativeAPIError(e, err)
+		return s.apiError(e, err)
 	}
 	after, wait, err := conversationControlQuery(e)
 	if err != nil {
-		return s.nativeAPIError(e, err)
+		return s.apiError(e, err)
 	}
 	id := e.Param("conversation")
 
@@ -279,7 +282,7 @@ func conversationControlQuery(e echo.Context) (after int64, wait time.Duration, 
 		if err != nil || seconds < 0 {
 			return 0, 0, hubapi.NativePublicInvalid("wait must be a number of seconds")
 		}
-		wait = min(time.Duration(seconds)*time.Second, conversationControlMaxWait)
+		wait = min(time.Duration(seconds)*time.Second, ConversationControlMaxWait)
 	}
 	return after, wait, nil
 }
@@ -288,21 +291,21 @@ func conversationControlQuery(e echo.Context) (after int64, wait time.Duration, 
 // queued controls in one transaction. Nothing is committed when the poll
 // changed nothing, so an idle worker never produces events.
 
-func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
+func (r *WorkerRouter) TurnEvents(e echo.Context) error {
 	s := r.server
 	var request conversationTurnEventsRequest
 	if err := hubapi.DecodeAPIJSON(e, &request); err != nil {
-		return s.invalidAPIRequest(e, err)
+		return s.invalidRequest(e, err)
 	}
 	if err := request.Validate(); err != nil {
-		return s.nativeAPIError(e, err)
+		return s.apiError(e, err)
 	}
-	if len(request.Events) > conversationMaxTurnEvents {
-		return s.nativeAPIError(e, hubapi.NativePublicInvalid("Too many events in one batch"))
+	if len(request.Events) > ConversationMaxTurnEvents {
+		return s.apiError(e, hubapi.NativePublicInvalid("Too many events in one batch"))
 	}
 	request.BatchKey = strings.TrimSpace(request.BatchKey)
 	if len(request.BatchKey) > conversation.MaxCommandKeyBytes {
-		return s.nativeAPIError(e, hubapi.NativePublicInvalid(fmt.Sprintf("batch_key must be at most %d bytes", conversation.MaxCommandKeyBytes)))
+		return s.apiError(e, hubapi.NativePublicInvalid(fmt.Sprintf("batch_key must be at most %d bytes", conversation.MaxCommandKeyBytes)))
 	}
 	id := e.Param("conversation")
 
@@ -315,7 +318,7 @@ func conversationItemData(raw json.RawMessage) (json.RawMessage, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	if len(raw) > conversationMaxItemDataBytes {
+	if len(raw) > ConversationMaxItemDataBytes {
 		return nil, hubapi.NativePublicInvalid("item data is too long")
 	}
 	var object map[string]json.RawMessage

@@ -6,10 +6,13 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventbroker"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -83,6 +86,8 @@ type Deps struct {
 	WorkerAuthorityAt              func(time.Time) ConversationWorkerAuthority
 	IssueBrowserPath               func(context.Context, Queryer, string) (string, error)
 	ResolveWorkItems               func(context.Context, Queryer, []*ConversationRecord) error
+	APIError                       func(echo.Context, error) error
+	InvalidRequest                 func(echo.Context, error) error
 }
 
 type Server struct {
@@ -143,4 +148,20 @@ func (s *Server) grantedAccessProjects(ctx context.Context, reader accessstore.R
 
 func (s *Server) Now() time.Time {
 	return s.config().Now()
+}
+
+func ScopeInput(scope hubscope.NativeScope) hubauth.Input {
+	return hubauth.Input{Organization: scope.Organization, Project: scope.Project, Credential: hubscope.AuthCredential(scope.Credential), Admin: scope.RequireHostedAdmin, Action: scope.Action, IntegrationRepository: scope.IntegrationRepository, IntegrationOwned: scope.IntegrationOwned}
+}
+
+func staleExecutionError(path, conversationID string, err error) error {
+	return ConversationStaleExecutionError(path, conversationID, hubapi.ToFeatureError(err))
+}
+
+func (s *Server) apiError(c echo.Context, err error) error {
+	return s.deps.APIError(c, err)
+}
+
+func (s *Server) invalidRequest(c echo.Context, err error) error {
+	return s.deps.InvalidRequest(c, err)
 }

@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -25,20 +25,20 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversationBindRequest) error {
+func (r *WorkerRouter) bindPostgres(e echo.Context, request conversationBindRequest) error {
 	c, s := r.service, r.server
 	ctx := e.Request().Context()
 	scope := hubscope.NativeRequestScope(e)
 	itemID := e.Param("item")
-	now := s.config.now()
-	var record conversationRecord
+	now := s.Now()
+	var record ConversationRecord
 	var item corestore.WorkItem
 	var found bool
 	var pendingCandidates []conversationstore.Message
 	pendingContentRefs := make(map[string]attachment.ArchiveReference)
-	pendingContent := make(map[string]conversationContent)
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+	pendingContent := make(map[string]ConversationContent)
+	err := s.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := s.deps.Authorization.Access(ctx, reader, scope, false); err != nil {
 			return err
 		}
 		var err error
@@ -49,12 +49,12 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 		if item.Archived {
 			return hubapi.NativeNotFound()
 		}
-		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, reader, scope, itemID, request.conversationWorkerIdentity, request.RunID, false, true); err != nil {
+		if _, _, err := s.AuthorizeConversationWorkerLeasePG(ctx, reader, ScopeInput(scope), itemID, request.WorkerIdentity, request.RunID, false, true); err != nil {
 			return err
 		}
 		stored, err := reader.ConversationByWorkItem(ctx, scope.Project, itemID)
 		if err == nil {
-			record, found = conversationRecordFromStore(stored), true
+			record, found = ConversationRecordFromStore(stored), true
 			messages, err := reader.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: record.ID, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliveryQueued, conversation.DeliverySending, conversation.DeliverySaved}, Limit: 128})
 			if err != nil {
 				return err
@@ -75,10 +75,10 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 		if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		record = conversationRecord{
+		record = ConversationRecord{
 			ID: conversation.NewConversationID(), OrganizationID: scope.Organization, ProjectID: scope.Project,
-			OwnerPrincipalID: scope.Credential.ID, Origin: conversationOriginWorker,
-			Title: deriveConversationTitle(item.Title), Visibility: conversation.VisibilityShared, Status: conversation.StatusActive,
+			OwnerPrincipalID: scope.Credential.ID, Origin: ConversationOriginWorker,
+			Title: DeriveConversationTitle(item.Title), Visibility: conversation.VisibilityShared, Status: conversation.StatusActive,
 			WorkItemID: itemID, LinkedAt: &now, Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now},
 			CreatedAt: now, UpdatedAt: now, Revision: 1, Preferences: conversation.DefaultPreferences(),
 		}
@@ -88,20 +88,20 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 		return nil
 	})
 	if err != nil {
-		return s.nativeAPIError(e, conversationStaleExecutionError("bind", record.ID, translateConversationError(err)))
+		return s.apiError(e, staleExecutionError("bind", record.ID, TranslateConversationError(err)))
 	}
 	for messageID, reference := range pendingContentRefs {
-		var payload conversationContent
-		if err := s.readConversationObject(ctx, string(scope.Organization), reference, &payload); err != nil {
-			return s.nativeAPIError(e, conversationStaleExecutionError("bind", record.ID, err))
+		var payload ConversationContent
+		if err := s.ReadConversationObject(ctx, string(scope.Organization), reference, &payload); err != nil {
+			return s.apiError(e, staleExecutionError("bind", record.ID, err))
 		}
 		pendingContent[messageID] = payload
 	}
-	resume := conversationResumeResource{ThreadOrigin: conversation.ThreadOriginWorker}
+	resume := ConversationResumeResource{ThreadOrigin: conversation.ThreadOriginWorker}
 	if found {
 		resume, err = s.conversationBindResumePG(ctx, scope, record, request, pendingCandidates)
 		if err != nil {
-			return s.nativeAPIError(e, conversationStaleExecutionError("bind", record.ID, err))
+			return s.apiError(e, staleExecutionError("bind", record.ID, err))
 		}
 	}
 	initialRecord := record
@@ -111,7 +111,7 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 			AttemptID: request.AttemptID, RunID: request.RunID, LeaseID: string(request.LeaseID), FencingToken: int64(request.FencingToken),
 			RunnerID: scope.Credential.Runner.RunnerID, MachineID: string(scope.Credential.Runner.MachineID), ThreadID: resume.ThreadID,
 		},
-		Capabilities: request.Capabilities, Resume: conversationResumeKind(resume), UpdatedAt: now,
+		Capabilities: request.Capabilities, Resume: ConversationResumeKind(resume), UpdatedAt: now,
 	}
 	if resume.ThreadID != "" && strings.TrimSpace(request.ThreadID) != "" {
 		record.ProviderThreadID = resume.ThreadID
@@ -120,12 +120,12 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 	}
 	record.Execution = execution
 	record.UpdatedAt = now
-	var response conversationBindResponse
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
+	var response WorkerBindResponse
+	err = s.config().TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		if _, err := writer.RunnerIdentityByCredential(ctx, scope.Credential.ID); err != nil {
 			return fmt.Errorf("lock bind runner: %w", err)
 		}
-		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
+		if err := s.deps.Authorization.Access(ctx, writer, scope, false); err != nil {
 			return err
 		}
 		if err := writer.LockWorkItemProject(ctx, scope.Project); err != nil {
@@ -138,12 +138,12 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 			LockLease(context.Context, string) (leasestore.Lease, error)
 		})
 		if !ok {
-			return conversationWorkerAuthorityUnavailable()
+			return ConversationWorkerAuthorityUnavailable()
 		}
 		if _, err := locker.LockLease(ctx, string(request.LeaseID)); err != nil {
 			return fmt.Errorf("lock bind lease: %w", err)
 		}
-		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, writer, scope, itemID, request.conversationWorkerIdentity, request.RunID, false, true); err != nil {
+		if _, _, err := s.AuthorizeConversationWorkerLeasePG(ctx, writer, ScopeInput(scope), itemID, request.WorkerIdentity, request.RunID, false, true); err != nil {
 			return err
 		}
 		var stored conversationstore.Conversation
@@ -153,17 +153,17 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 				return err
 			}
 			if stored.Revision != record.Revision {
-				return conversationStale("The conversation changed before the turn was bound")
+				return ConversationStale("The conversation changed before the turn was bound")
 			}
-			previous := conversationRecordFromStore(stored)
+			previous := ConversationRecordFromStore(stored)
 			if !previous.Execution.Status.Terminal() && previous.Execution.Owner.AttemptID != "" && previous.Execution.Owner.AttemptID != request.AttemptID {
 				if previous.Execution.Owner.LeaseID == string(request.LeaseID) {
-					return conversationStale("The lease is already bound to another attempt")
+					return ConversationStale("The lease is already bound to another attempt")
 				}
-				if err := settlePGWorkerMessages(ctx, writer, &previous, conversation.ExecutionInterrupted, now, conversationPGWorkerPageSize); err != nil {
+				if err := SettlePGWorkerMessages(ctx, writer, &previous, conversation.ExecutionInterrupted, now, ConversationPGWorkerPageSize); err != nil {
 					return fmt.Errorf("settle previous conversation execution: %w", err)
 				}
-				if err := appendPGConversationEvent(ctx, writer, scope.Organization, record.ID, conversation.EventExecutionUpdated, projectExecution(previous.Execution), now); err != nil {
+				if err := AppendPGConversationEvent(ctx, writer, scope.Organization, record.ID, conversation.EventExecutionUpdated, ProjectExecution(previous.Execution), now); err != nil {
 					return fmt.Errorf("append previous conversation execution event: %w", err)
 				}
 				_, err = writer.Conversation(ctx, scope.Project, record.ID)
@@ -172,14 +172,14 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 				}
 			}
 		} else {
-			_, err = writer.CreateConversation(ctx, conversationRecordToStore(initialRecord))
+			_, err = writer.CreateConversation(ctx, ConversationRecordToStore(initialRecord))
 			if err != nil {
 				return err
 			}
 		}
 		if err := writer.RecordStart(ctx, request.AttemptID, record.ID, now); err != nil {
 			if errors.Is(err, corestore.ErrUniqueViolation) {
-				return conversationStale("The attempt already started a conversation turn")
+				return ConversationStale("The attempt already started a conversation turn")
 			}
 			return err
 		}
@@ -200,7 +200,7 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 		if err != nil {
 			return err
 		}
-		eventBody, err := json.Marshal(projectExecution(execution))
+		eventBody, err := json.Marshal(ProjectExecution(execution))
 		if err != nil {
 			return err
 		}
@@ -208,12 +208,12 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 			return err
 		}
 		if execution.Resume == conversation.ResumeTranscript {
-			notice := conversationstore.Message{OrganizationID: scope.Organization, ConversationID: record.ID, ID: conversation.NewMessageID(), Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: conversationTranscriptNotice(len(resume.Transcript)), Delivery: conversation.DeliverySaved, AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID, Actor: conversationActorFor(scope), CreatedAt: now, UpdatedAt: now}
+			notice := conversationstore.Message{OrganizationID: scope.Organization, ConversationID: record.ID, ID: conversation.NewMessageID(), Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: ConversationTranscriptNotice(len(resume.Transcript)), Delivery: conversation.DeliverySaved, AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID, Actor: ConversationActorFor(ScopeInput(scope)), CreatedAt: now, UpdatedAt: now}
 			created, err := writer.CreateMessage(ctx, notice)
 			if err != nil {
 				return err
 			}
-			if err := appendPGConversationEvent(ctx, writer, scope.Organization, record.ID, conversation.EventMessageAccepted, projectMessage(conversationMessageFromStore(created)), now); err != nil {
+			if err := AppendPGConversationEvent(ctx, writer, scope.Organization, record.ID, conversation.EventMessageAccepted, ProjectMessage(ConversationMessageFromStore(created)), now); err != nil {
 				return err
 			}
 		}
@@ -221,15 +221,15 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 		if err != nil {
 			return err
 		}
-		record = conversationRecordFromStore(stored)
-		response = conversationBindResponse{ConversationID: record.ID, Continuation: record.Origin == conversationOriginUser || record.ExecutionContinuation, Resume: resume, Pending: pending, Preferences: record.Preferences.Normalized()}
+		record = ConversationRecordFromStore(stored)
+		response = WorkerBindResponse{ConversationID: record.ID, Continuation: record.Origin == ConversationOriginUser || record.ExecutionContinuation, Resume: resume, Pending: pending, Preferences: record.Preferences.Normalized()}
 		if len(pending) > 0 {
 			response.Cursor = pending[len(pending)-1].Cursor
 		}
 		return nil
 	})
 	if err != nil {
-		return s.nativeAPIError(e, conversationStaleExecutionError("bind", record.ID, translateConversationError(err)))
+		return s.apiError(e, staleExecutionError("bind", record.ID, TranslateConversationError(err)))
 	}
 	c.Committed(record)
 	return e.JSON(http.StatusOK, response)
@@ -238,22 +238,22 @@ func (r *conversationWorkerRouter) bindPostgres(e echo.Context, request conversa
 func pgControlAttachments(ctx context.Context, reader tenantstore.Reader, project tracker.ProjectID, conversationID, messageID string) ([]conversation.Attachment, error) {
 	owner, ok := reader.(conversationstore.AttachmentReader)
 	if !ok {
-		return nil, conversationUnsupported("Conversation attachment owner is unavailable")
+		return nil, ConversationUnsupported("Conversation attachment owner is unavailable")
 	}
 	rows, err := owner.MessageAttachments(ctx, project, conversationID, []string{messageID})
 	if err != nil {
 		return nil, err
 	}
-	records := make([]conversationAttachmentRecord, 0, len(rows[messageID]))
+	records := make([]ConversationAttachmentRecord, 0, len(rows[messageID]))
 	for _, row := range rows[messageID] {
-		records = append(records, conversationAttachmentFromStore(row))
+		records = append(records, ConversationAttachmentFromStore(row))
 	}
-	return projectAttachments(records), nil
+	return ProjectAttachments(records), nil
 }
 
-func handoffPGBindControls(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, record *conversationRecord, candidates []conversationstore.Message, content map[string]conversationContent, now time.Time, limit int) ([]conversationControl, error) {
-	controls := make([]conversationControl, 0, min(limit, len(candidates)))
-	if conversationBetweenTurns(record.Execution) {
+func handoffPGBindControls(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, record *ConversationRecord, candidates []conversationstore.Message, content map[string]ConversationContent, now time.Time, limit int) ([]WorkerControl, error) {
+	controls := make([]WorkerControl, 0, min(limit, len(candidates)))
+	if ConversationBetweenTurns(record.Execution) {
 		return controls, nil
 	}
 	for _, candidate := range candidates {
@@ -265,7 +265,7 @@ func handoffPGBindControls(ctx context.Context, writer tenantstore.Writer, scope
 			return nil, err
 		}
 		if message.Revision != candidate.Revision && message.ContentReference != candidate.ContentReference {
-			return nil, conversationStale("A pending control changed before the turn was bound")
+			return nil, ConversationStale("A pending control changed before the turn was bound")
 		}
 		if message.Kind != conversation.MessageText && message.Kind != conversation.MessageContinue && message.Kind != conversation.MessageAnswer && message.Kind != conversation.MessageInterrupt {
 			continue
@@ -274,7 +274,7 @@ func handoffPGBindControls(ctx context.Context, writer tenantstore.Writer, scope
 		if message.Delivery != conversation.DeliveryQueued && message.Delivery != conversation.DeliverySending && !savedContinue {
 			continue
 		}
-		control := conversationControl{Cursor: message.Sequence, Key: message.CommandKey, MessageID: message.ID, Expected: conversation.Expected{AttemptID: record.Execution.Owner.AttemptID, TurnID: record.Execution.Owner.TurnID}}
+		control := WorkerControl{Cursor: message.Sequence, Key: message.CommandKey, MessageID: message.ID, Expected: conversation.Expected{AttemptID: record.Execution.Owner.AttemptID, TurnID: record.Execution.Owner.TurnID}}
 		payload := content[message.ID]
 		switch message.Kind {
 		case conversation.MessageText, conversation.MessageContinue:
@@ -308,7 +308,7 @@ func handoffPGBindControls(ctx context.Context, writer tenantstore.Writer, scope
 			if err != nil || (question.Status != conversation.QuestionPending && question.Status != conversation.QuestionSending && question.Status != conversation.QuestionSent) {
 				message.Delivery, message.UpdatedAt = conversation.DeliveryUnknown, now
 				failure := &conversation.ReceiptError{Code: "unknown", Message: "The question is no longer available"}
-				if err := updatePGWorkerMessage(ctx, writer, message, now, failure); err != nil {
+				if err := UpdatePGWorkerMessage(ctx, writer, message, now, failure); err != nil {
 					return nil, err
 				}
 				continue
@@ -322,7 +322,7 @@ func handoffPGBindControls(ctx context.Context, writer tenantstore.Writer, scope
 		if message.Delivery != conversation.DeliverySending || message.AttemptID != record.Execution.Owner.AttemptID {
 			message.AttemptID, message.ThreadID, message.TurnID = record.Execution.Owner.AttemptID, record.Execution.Owner.ThreadID, record.Execution.Owner.TurnID
 			message.Delivery, message.UpdatedAt = conversation.DeliverySending, now
-			if err := updatePGWorkerMessage(ctx, writer, message, now, nil); err != nil {
+			if err := UpdatePGWorkerMessage(ctx, writer, message, now, nil); err != nil {
 				return nil, err
 			}
 		}
@@ -331,21 +331,21 @@ func handoffPGBindControls(ctx context.Context, writer tenantstore.Writer, scope
 	return controls, nil
 }
 
-func (s *Service) conversationBindResumePG(ctx context.Context, scope hubscope.NativeScope, record conversationRecord, request conversationBindRequest, pendingCandidates []conversationstore.Message) (conversationResumeResource, error) {
+func (s *Server) conversationBindResumePG(ctx context.Context, scope hubscope.NativeScope, record ConversationRecord, request conversationBindRequest, pendingCandidates []conversationstore.Message) (ConversationResumeResource, error) {
 	thread := strings.TrimSpace(request.ThreadID)
 	if thread == "" {
 		thread = record.ProviderThreadID
 	}
-	decision := conversationResumeDecision{RunnerThreadID: request.ThreadID, RecordedRunnerID: record.ProviderThreadRunnerID, RecordedOrigin: record.ProviderThreadOrigin, BindingRunnerID: scope.Credential.Runner.RunnerID}
+	decision := ConversationResumeDecision{RunnerThreadID: request.ThreadID, RecordedRunnerID: record.ProviderThreadRunnerID, RecordedOrigin: record.ProviderThreadOrigin, BindingRunnerID: scope.Credential.Runner.RunnerID}
 	if decision.ResumeThread() {
-		return conversationResumeResource{ThreadID: thread, ThreadOrigin: conversation.ThreadOriginWorker}, nil
+		return ConversationResumeResource{ThreadID: thread, ThreadOrigin: conversation.ThreadOriginWorker}, nil
 	}
 	if record.ReadAudience != "" {
-		return conversationResumeResource{}, nil
+		return ConversationResumeResource{}, nil
 	}
-	page, err := s.readPGConversationPage(ctx, scope, record.ID, 0, conversationTranscriptMessages+len(pendingCandidates))
+	page, err := s.ReadPGConversationPage(ctx, ScopeInput(scope), record.ID, 0, ConversationTranscriptMessages+len(pendingCandidates))
 	if err != nil {
-		return conversationResumeResource{}, err
+		return ConversationResumeResource{}, err
 	}
 	handed := make(map[string]struct{}, len(pendingCandidates))
 	for _, message := range pendingCandidates {
@@ -356,29 +356,29 @@ func (s *Service) conversationBindResumePG(ctx context.Context, scope hubscope.N
 			handed[message.ID] = struct{}{}
 		}
 	}
-	transcript := make([]conversationTranscriptEntry, 0, len(page.Messages))
+	transcript := make([]ConversationTranscriptEntry, 0, len(page.Messages))
 	for _, message := range page.Messages {
 		if _, pending := handed[message.ID]; pending {
 			continue
 		}
-		transcript = append(transcript, conversationTranscriptEntry{Role: message.Role, Kind: message.Kind, Text: boundRunes(message.Text, conversationTranscriptRunes)})
+		transcript = append(transcript, ConversationTranscriptEntry{Role: message.Role, Kind: message.Kind, Text: BoundRunes(message.Text, ConversationTranscriptRunes)})
 	}
 	slices.Reverse(transcript)
-	return conversationResumeResource{ThreadOrigin: conversation.ThreadOriginWorker, Transcript: transcript}, nil
+	return ConversationResumeResource{ThreadOrigin: conversation.ThreadOriginWorker, Transcript: transcript}, nil
 }
 
-func (r *conversationWorkerRouter) unbindPostgres(e echo.Context, request conversationUnbindRequest, status conversation.ExecutionStatus) error {
+func (r *WorkerRouter) unbindPostgres(e echo.Context, request conversationUnbindRequest, status conversation.ExecutionStatus) error {
 	c, s := r.service, r.server
 	ctx := e.Request().Context()
 	scope := hubscope.NativeRequestScope(e)
 	itemID := e.Param("item")
-	now := s.config.now()
-	var record conversationRecord
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
+	now := s.Now()
+	var record ConversationRecord
+	err := s.config().TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		if _, err := writer.RunnerIdentityByCredential(ctx, scope.Credential.ID); err != nil {
 			return fmt.Errorf("lock unbind runner: %w", err)
 		}
-		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
+		if err := s.deps.Authorization.Access(ctx, writer, scope, false); err != nil {
 			return fmt.Errorf("authorize conversation unbind access: %w", err)
 		}
 		stored, err := writer.ConversationByWorkItem(ctx, scope.Project, itemID)
@@ -389,25 +389,25 @@ func (r *conversationWorkerRouter) unbindPostgres(e echo.Context, request conver
 		if err != nil {
 			return fmt.Errorf("lock conversation for unbind: %w", err)
 		}
-		record = conversationRecordFromStore(stored)
-		if _, _, err := s.authorizeConversationWorkerLeasePG(ctx, writer, scope, itemID, request.conversationWorkerIdentity, record.Execution.Owner.RunID, true, true); err != nil {
+		record = ConversationRecordFromStore(stored)
+		if _, _, err := s.AuthorizeConversationWorkerLeasePG(ctx, writer, ScopeInput(scope), itemID, request.WorkerIdentity, record.Execution.Owner.RunID, true, true); err != nil {
 			return fmt.Errorf("verify worker lease for unbind: %w", err)
 		}
-		if err := requireConversationRecordOwner(record, request.conversationWorkerIdentity, true); err != nil {
+		if err := RequireConversationRecordOwner(record, request.WorkerIdentity, true); err != nil {
 			return fmt.Errorf("verify conversation owner for unbind: %w", err)
 		}
 		if record.Execution.Settled {
 			return nil
 		}
-		if err := settlePGWorkerMessages(ctx, writer, &record, status, now, conversationPGWorkerPageSize); err != nil {
+		if err := SettlePGWorkerMessages(ctx, writer, &record, status, now, ConversationPGWorkerPageSize); err != nil {
 			return fmt.Errorf("settle conversation worker messages: %w", err)
 		}
-		if err := expirePGOutstandingQuestions(ctx, writer, record.ID, record.Execution.Owner.AttemptID, "", func(question conversationstore.Question) error {
+		if err := ExpirePGOutstandingQuestions(ctx, writer, record.ID, record.Execution.Owner.AttemptID, "", func(question conversationstore.Question) error {
 			question.Status, question.UpdatedAt = conversation.QuestionExpired, now
 			if err := writer.UpsertQuestion(ctx, question); err != nil {
 				return err
 			}
-			return appendPGConversationEvent(ctx, writer, scope.Organization, record.ID, conversation.EventQuestionUpdated, question.Question, now)
+			return AppendPGConversationEvent(ctx, writer, scope.Organization, record.ID, conversation.EventQuestionUpdated, question.Question, now)
 		}); err != nil {
 			return fmt.Errorf("expire conversation worker questions: %w", err)
 		}
@@ -427,28 +427,28 @@ func (r *conversationWorkerRouter) unbindPostgres(e echo.Context, request conver
 		if err != nil {
 			return fmt.Errorf("update conversation worker execution: %w", err)
 		}
-		if err := appendPGConversationEvent(ctx, writer, scope.Organization, record.ID, conversation.EventExecutionUpdated, projectExecution(execution), now); err != nil {
+		if err := AppendPGConversationEvent(ctx, writer, scope.Organization, record.ID, conversation.EventExecutionUpdated, ProjectExecution(execution), now); err != nil {
 			return fmt.Errorf("append conversation worker execution event: %w", err)
 		}
-		record = conversationRecordFromStore(stored)
+		record = ConversationRecordFromStore(stored)
 		return nil
 	})
 	if err != nil {
-		return s.nativeAPIError(e, conversationStaleExecutionError("unbind", record.ID, fmt.Errorf("write conversation unbind transaction: %w", translateConversationError(err))))
+		return s.apiError(e, staleExecutionError("unbind", record.ID, fmt.Errorf("write conversation unbind transaction: %w", TranslateConversationError(err))))
 	}
 	c.Committed(record)
-	return e.JSON(http.StatusOK, conversationUnbindResponse{ConversationID: record.ID, Execution: projectExecution(record.Execution)})
+	return e.JSON(http.StatusOK, conversationUnbindResponse{ConversationID: record.ID, Execution: ProjectExecution(record.Execution)})
 }
 
 var errConversationTurnSnapshotMoved = errors.New("conversation changed after the turn event snapshot")
 
-func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string, request conversationTurnEventsRequest) error {
+func (r *WorkerRouter) turnEventsPostgres(e echo.Context, id string, request conversationTurnEventsRequest) error {
 	s := r.server
 	request.BatchKey = strings.TrimSpace(request.BatchKey)
-	if len(request.Events) > conversationMaxTurnEvents || len(request.BatchKey) > conversation.MaxCommandKeyBytes {
-		return s.nativeAPIError(e, hubapi.NativePublicInvalid("The turn event batch exceeds its limit"))
+	if len(request.Events) > ConversationMaxTurnEvents || len(request.BatchKey) > conversation.MaxCommandKeyBytes {
+		return s.apiError(e, hubapi.NativePublicInvalid("The turn event batch exceeds its limit"))
 	}
-	now := s.config.now()
+	now := s.Now()
 	for {
 		err := r.turnEventsPostgresAttempt(e, id, request, now)
 		if !errors.Is(err, errConversationTurnSnapshotMoved) {
@@ -457,23 +457,23 @@ func (r *conversationWorkerRouter) turnEventsPostgres(e echo.Context, id string,
 	}
 }
 
-func (r *conversationWorkerRouter) turnEventsPostgresAttempt(e echo.Context, id string, request conversationTurnEventsRequest, now time.Time) error {
+func (r *WorkerRouter) turnEventsPostgresAttempt(e echo.Context, id string, request conversationTurnEventsRequest, now time.Time) error {
 	c, s := r.service, r.server
 	ctx := e.Request().Context()
 	scope := hubscope.NativeRequestScope(e)
-	var current conversationRecord
+	var current ConversationRecord
 	var storedSequence int64
 	var foundBatch bool
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+	err := s.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := s.deps.Authorization.Access(ctx, reader, scope, false); err != nil {
 			return err
 		}
 		stored, err := reader.Conversation(ctx, scope.Project, id)
 		if err != nil {
 			return err
 		}
-		current = conversationRecordFromStore(stored)
-		if _, err := s.authorizeConversationWorkerPG(ctx, reader, scope, current, request.conversationWorkerIdentity, "", false, true); err != nil {
+		current = ConversationRecordFromStore(stored)
+		if _, err := s.AuthorizeConversationWorkerPG(ctx, reader, ScopeInput(scope), current, request.WorkerIdentity, "", false, true); err != nil {
 			return err
 		}
 		if request.BatchKey != "" {
@@ -502,36 +502,36 @@ func (r *conversationWorkerRouter) turnEventsPostgresAttempt(e echo.Context, id 
 		return nil
 	})
 	if err != nil {
-		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, translateConversationError(err)))
+		return s.apiError(e, staleExecutionError("turn_events", id, TranslateConversationError(err)))
 	}
 	if foundBatch {
-		return e.JSON(http.StatusAccepted, conversationTurnEventsResponse{EventSeq: storedSequence})
+		return e.JSON(http.StatusAccepted, WorkerTurnEventsResponse{EventSeq: storedSequence})
 	}
-	plan := &conversationPublicationPlan{Service: c, Record: current, Original: current, Now: now, Prepared: make(preparedConversationContents), Reads: &conversationArchiveReads{Content: map[string][]byte{}}}
+	plan := &ConversationPublicationPlan{Service: c, Record: current, Original: current, Now: now, Prepared: make(PreparedConversationContents), Reads: &ConversationArchiveReads{Content: map[string][]byte{}}}
 	preparedItems, err := r.preparePGTurnMessages(ctx, scope, plan, request.Events)
 	if err != nil {
-		return s.nativeAPIError(e, err)
+		return s.apiError(e, err)
 	}
-	ctx = context.WithValue(ctx, pgWorkerPublicationKey{}, plan)
-	var result conversationTurnEventsResponse
+	ctx = context.WithValue(ctx, PgWorkerPublicationKey{}, plan)
+	var result WorkerTurnEventsResponse
 	changed := false
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
+	err = s.config().TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		if _, err := writer.RunnerIdentityByCredential(ctx, scope.Credential.ID); err != nil {
 			return fmt.Errorf("lock turn event runner: %w", err)
 		}
-		if err := s.authorizeAccessScope(ctx, writer, scope, false); err != nil {
+		if err := s.deps.Authorization.Access(ctx, writer, scope, false); err != nil {
 			return err
 		}
 		stored, err := writer.LockConversation(ctx, scope.Project, id)
 		if err != nil {
 			return err
 		}
-		record := conversationRecordFromStore(stored)
+		record := ConversationRecordFromStore(stored)
 		originalExecution := record.Execution
 		originalProviderThreadID := record.ProviderThreadID
 		originalProviderThreadRunnerID := record.ProviderThreadRunnerID
 		originalProviderThreadOrigin := record.ProviderThreadOrigin
-		if _, err := s.authorizeConversationWorkerPG(ctx, writer, scope, record, request.conversationWorkerIdentity, "", false, true); err != nil {
+		if _, err := s.AuthorizeConversationWorkerPG(ctx, writer, ScopeInput(scope), record, request.WorkerIdentity, "", false, true); err != nil {
 			return err
 		}
 		if request.BatchKey != "" {
@@ -547,7 +547,7 @@ func (r *conversationWorkerRouter) turnEventsPostgresAttempt(e echo.Context, id 
 		if stored.Revision != current.Revision || stored.EventSequence != current.EventSeq || stored.Execution.Owner != current.Execution.Owner {
 			return errConversationTurnSnapshotMoved
 		}
-		if err := registerPreparedConversationObjects(ctx, writer, scope.Organization, plan.Prepared, now); err != nil {
+		if err := RegisterPreparedConversationObjects(ctx, writer, scope.Organization, plan.Prepared, now); err != nil {
 			return err
 		}
 		execution := record.Execution
@@ -578,7 +578,7 @@ func (r *conversationWorkerRouter) turnEventsPostgresAttempt(e echo.Context, id 
 			if err != nil {
 				return err
 			}
-			if err := appendPGConversationEvent(ctx, writer, scope.Organization, id, conversation.EventExecutionUpdated, projectExecution(execution), now); err != nil {
+			if err := AppendPGConversationEvent(ctx, writer, scope.Organization, id, conversation.EventExecutionUpdated, ProjectExecution(execution), now); err != nil {
 				return err
 			}
 			changed = true
@@ -593,30 +593,30 @@ func (r *conversationWorkerRouter) turnEventsPostgresAttempt(e echo.Context, id 
 				return err
 			}
 		}
-		record = conversationRecordFromStore(latest)
+		record = ConversationRecordFromStore(latest)
 		return nil
 	})
 	if errors.Is(err, errConversationTurnSnapshotMoved) {
 		return err
 	}
 	if err != nil {
-		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, translateConversationError(err)))
+		return s.apiError(e, staleExecutionError("turn_events", id, TranslateConversationError(err)))
 	}
 	if changed {
-		var record conversationRecord
-		if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		var record ConversationRecord
+		if err := s.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			var err error
-			record, err = readConversationRecordFromTenant(ctx, reader, scope.Project, id)
+			record, err = ReadConversationRecordFromTenant(ctx, reader, scope.Project, id)
 			return err
 		}); err != nil {
-			return s.nativeAPIError(e, err)
+			return s.apiError(e, err)
 		}
 		c.Committed(record)
 	}
 	return e.JSON(http.StatusAccepted, result)
 }
 
-func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record conversationRecord, execution conversation.Execution, event conversationTurnEvent) error {
+func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record ConversationRecord, execution conversation.Execution, event conversationTurnEvent) error {
 	switch event.Type {
 	case "execution_status":
 		if !conversation.ExecutionStatus(event.Status).Valid() {
@@ -627,10 +627,10 @@ func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record 
 			return hubapi.NativePublicInvalid("turn_started requires a turn_id")
 		}
 		if execution.Owner.TurnID != "" && execution.Owner.TurnID != event.TurnID {
-			return conversationStale("Another turn is still in progress")
+			return ConversationStale("Another turn is still in progress")
 		}
 	case "delta":
-		if strings.TrimSpace(event.ProviderItemID) == "" || len(event.Text) > conversationMaxDeltaBytes {
+		if strings.TrimSpace(event.ProviderItemID) == "" || len(event.Text) > ConversationMaxDeltaBytes {
 			return hubapi.NativePublicInvalid("delta requires a provider_item_id and bounded text")
 		}
 	case "item":
@@ -647,7 +647,7 @@ func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record 
 			return hubapi.NativeInvalid(err.Error())
 		}
 		if event.TurnID != "" && execution.Owner.TurnID != "" && event.TurnID != execution.Owner.TurnID {
-			return conversationStale("The question belongs to another turn")
+			return ConversationStale("The question belongs to another turn")
 		}
 	case "control_result":
 		if strings.TrimSpace(event.Key) == "" {
@@ -661,7 +661,7 @@ func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record 
 			return hubapi.NativeInvalid("Unknown control key " + fmt.Sprintf("%q", event.Key))
 		}
 		if message.AttemptID != execution.Owner.AttemptID {
-			return conversationStale("The control was handed to another attempt")
+			return ConversationStale("The control was handed to another attempt")
 		}
 		switch event.Status {
 		case "delivered", "rejected", "unknown":
@@ -673,7 +673,7 @@ func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record 
 			return hubapi.NativePublicInvalid("turn_completed requires a turn_id")
 		}
 		if execution.Owner.TurnID != "" && execution.Owner.TurnID != event.TurnID {
-			return conversationStale("The completed turn is not the current turn")
+			return ConversationStale("The completed turn is not the current turn")
 		}
 		switch event.Status {
 		case "completed", "interrupted", "failed":
@@ -686,13 +686,13 @@ func validatePGTurnEvent(ctx context.Context, reader tenantstore.Reader, record 
 	return nil
 }
 
-func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, record *conversationRecord, execution *conversation.Execution, event conversationTurnEvent, preparedItem conversationMessageRecord, now time.Time, questionTimeout time.Duration) error {
+func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, record *ConversationRecord, execution *conversation.Execution, event conversationTurnEvent, preparedItem ConversationMessageRecord, now time.Time, questionTimeout time.Duration) error {
 	appendEvent := func(eventType conversation.EventType, body any) error {
-		return appendPGConversationEvent(ctx, writer, scope.Organization, record.ID, eventType, body, now)
+		return AppendPGConversationEvent(ctx, writer, scope.Organization, record.ID, eventType, body, now)
 	}
 	updateMessage := func(message conversationstore.Message, failure *conversation.ReceiptError) error {
 		message.UpdatedAt = now
-		return updatePGWorkerMessage(ctx, writer, message, now, failure)
+		return UpdatePGWorkerMessage(ctx, writer, message, now, failure)
 	}
 	switch event.Type {
 	case "execution_status":
@@ -703,12 +703,12 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope hubs
 			record.ProviderThreadID, record.ProviderThreadRunnerID, record.ProviderThreadOrigin = thread, scope.Credential.Runner.RunnerID, conversation.ThreadOriginWorker
 		}
 		execution.Owner.TurnID, execution.Status, execution.Error = strings.TrimSpace(event.TurnID), conversation.ExecutionRunning, ""
-		prompted, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: record.ID, AttemptID: execution.Owner.AttemptID, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliverySending, conversation.DeliverySent}, Limit: conversationPGWorkerPageSize})
+		prompted, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: record.ID, AttemptID: execution.Owner.AttemptID, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliverySending, conversation.DeliverySent}, Limit: ConversationPGWorkerPageSize})
 		if err != nil {
 			return err
 		}
 		if prompted.Next != 0 {
-			return conversationUnsupported("The turn control set exceeds the bounded event batch")
+			return ConversationUnsupported("The turn control set exceeds the bounded event batch")
 		}
 		for _, message := range prompted.Items {
 			if message.Kind != conversation.MessageText && message.Kind != conversation.MessageContinue {
@@ -725,11 +725,11 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope hubs
 		if preparedItem.Revision == 0 {
 			accepted := preparedItem
 			accepted.Text, accepted.TextBytes = "", 0
-			message, err = writer.CreateMessage(ctx, conversationMessageToStore(scope.Organization, accepted))
+			message, err = writer.CreateMessage(ctx, ConversationMessageToStore(scope.Organization, accepted))
 			if err != nil {
 				return err
 			}
-			if err := appendEvent(conversation.EventMessageAccepted, projectMessage(conversationMessageFromStore(message))); err != nil {
+			if err := appendEvent(conversation.EventMessageAccepted, ProjectMessage(ConversationMessageFromStore(message))); err != nil {
 				return err
 			}
 		} else {
@@ -738,32 +738,32 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope hubs
 				return err
 			}
 			if message.Revision != preparedItem.Revision || message.AttemptID != execution.Owner.AttemptID {
-				return conversationStale("The assistant message changed before the event batch was committed")
+				return ConversationStale("The assistant message changed before the event batch was committed")
 			}
 		}
 		if event.Text != "" {
 			offset := message.TextBytes
-			next := conversationMessageToStore(scope.Organization, preparedItem)
+			next := ConversationMessageToStore(scope.Organization, preparedItem)
 			next.Sequence, next.Revision = message.Sequence, message.Revision
 			updated, err := writer.UpdateMessage(ctx, next, message.Revision)
 			if err != nil {
 				return err
 			}
-			fact := conversationDeltaFact{Text: event.Text, Revision: updated.Revision, MessageID: message.ID, Offset: offset, Bytes: len(event.Text)}
+			fact := ConversationDeltaFact{Text: event.Text, Revision: updated.Revision, MessageID: message.ID, Offset: offset, Bytes: len(event.Text)}
 			if err := appendEvent(conversation.EventMessageDelta, fact); err != nil {
 				return err
 			}
 		}
 	case "item":
 		preparedItem.AttemptID, preparedItem.ThreadID, preparedItem.TurnID = execution.Owner.AttemptID, execution.Owner.ThreadID, execution.Owner.TurnID
-		created, err := writer.CreateMessage(ctx, conversationMessageToStore(scope.Organization, preparedItem))
+		created, err := writer.CreateMessage(ctx, ConversationMessageToStore(scope.Organization, preparedItem))
 		if err != nil {
 			return err
 		}
 		preparedItem.Seq, preparedItem.Revision = created.Sequence, created.Revision
-		return appendEvent(conversation.EventMessageAccepted, projectMessage(preparedItem))
+		return appendEvent(conversation.EventMessageAccepted, ProjectMessage(preparedItem))
 	case "question_opened":
-		questions, err := writer.Questions(ctx, record.ID, execution.Owner.AttemptID, conversationPGWorkerPageSize)
+		questions, err := writer.Questions(ctx, record.ID, execution.Owner.AttemptID, ConversationPGWorkerPageSize)
 		if err != nil {
 			return err
 		}
@@ -778,12 +778,12 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope hubs
 		}
 		messageRecord := preparedItem
 		messageRecord.AttemptID, messageRecord.ThreadID, messageRecord.TurnID = execution.Owner.AttemptID, execution.Owner.ThreadID, turnID
-		message, err := writer.CreateMessage(ctx, conversationMessageToStore(scope.Organization, messageRecord))
+		message, err := writer.CreateMessage(ctx, ConversationMessageToStore(scope.Organization, messageRecord))
 		if err != nil {
 			return err
 		}
 		messageRecord.Seq, messageRecord.Revision = message.Sequence, message.Revision
-		if err := appendEvent(conversation.EventMessageAccepted, projectMessage(messageRecord)); err != nil {
+		if err := appendEvent(conversation.EventMessageAccepted, ProjectMessage(messageRecord)); err != nil {
 			return err
 		}
 		questionOwner := execution.Owner
@@ -791,8 +791,8 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope hubs
 		if event.ThreadID != "" {
 			questionOwner.ThreadID = event.ThreadID
 		}
-		question := conversationstore.Question{OrganizationID: scope.Organization, ConversationID: record.ID, Question: conversation.Question{ID: conversationQuestionID(ctx), ConversationID: record.ID, MessageID: message.ID, Status: conversation.QuestionPending, Owner: questionOwner, Prompts: event.Prompts, ExpiresAt: timePtr(now.Add(questionTimeout)), CreatedAt: now, UpdatedAt: now}, RequestID: strings.TrimSpace(event.RequestID)}
-		question, err = preparedPGConversationQuestion(ctx, question)
+		question := conversationstore.Question{OrganizationID: scope.Organization, ConversationID: record.ID, Question: conversation.Question{ID: ConversationQuestionID(ctx), ConversationID: record.ID, MessageID: message.ID, Status: conversation.QuestionPending, Owner: questionOwner, Prompts: event.Prompts, ExpiresAt: timePtr(now.Add(questionTimeout)), CreatedAt: now, UpdatedAt: now}, RequestID: strings.TrimSpace(event.RequestID)}
+		question, err = PreparedPGConversationQuestion(ctx, question)
 		if err != nil {
 			return err
 		}
@@ -864,12 +864,12 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope hubs
 		}
 	case "turn_completed":
 		delivery := map[string]conversation.Delivery{"completed": conversation.DeliveryCompleted, "interrupted": conversation.DeliveryInterrupted, "failed": conversation.DeliveryFailed}[event.Status]
-		responding, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: record.ID, AttemptID: execution.Owner.AttemptID, TurnID: strings.TrimSpace(event.TurnID), Role: conversation.RoleAssistant, Deliveries: []conversation.Delivery{conversation.DeliveryResponding}, Limit: conversationPGWorkerPageSize})
+		responding, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: record.ID, AttemptID: execution.Owner.AttemptID, TurnID: strings.TrimSpace(event.TurnID), Role: conversation.RoleAssistant, Deliveries: []conversation.Delivery{conversation.DeliveryResponding}, Limit: ConversationPGWorkerPageSize})
 		if err != nil {
 			return err
 		}
 		if responding.Next != 0 {
-			return conversationUnsupported("The turn message set exceeds the bounded event batch")
+			return ConversationUnsupported("The turn message set exceeds the bounded event batch")
 		}
 		for _, message := range responding.Items {
 			message.Delivery = delivery
@@ -877,7 +877,7 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope hubs
 				return err
 			}
 		}
-		if err := expirePGOutstandingQuestions(ctx, writer, record.ID, execution.Owner.AttemptID, event.TurnID, func(question conversationstore.Question) error {
+		if err := ExpirePGOutstandingQuestions(ctx, writer, record.ID, execution.Owner.AttemptID, event.TurnID, func(question conversationstore.Question) error {
 			question.Status, question.UpdatedAt = conversation.QuestionExpired, now
 			if err := writer.UpsertQuestion(ctx, question); err != nil {
 				return err
@@ -900,15 +900,11 @@ func applyPGTurnEvent(ctx context.Context, writer tenantstore.Writer, scope hubs
 	return nil
 }
 
-func timePtr(value time.Time) *time.Time {
-	return &value
-}
-
-func (r *conversationWorkerRouter) controlsPostgres(e echo.Context, id string, identity conversationWorkerIdentity, after int64, wait time.Duration) error {
+func (r *WorkerRouter) controlsPostgres(e echo.Context, id string, identity WorkerIdentity, after int64, wait time.Duration) error {
 	c, s := r.service, r.server
 	ctx := e.Request().Context()
 	scope := hubscope.NativeRequestScope(e)
-	subscription, cancel := conversationSubscribe(c.Broker, id)
+	subscription, cancel := c.Broker.Subscribe(id)
 	defer cancel()
 	var deadline <-chan time.Time
 	if wait > 0 {
@@ -917,16 +913,16 @@ func (r *conversationWorkerRouter) controlsPostgres(e echo.Context, id string, i
 		deadline = timer.C
 	}
 	for {
-		page, err := r.pollControlsPostgres(ctx, scope, id, identity, after)
+		page, err := r.PollControls(ctx, scope, id, identity, after)
 		if err != nil && (wait == 0 || !hubapi.IsNativeConflict(err)) {
-			return s.nativeAPIError(e, conversationStaleExecutionError("controls", id, translateConversationError(err)))
+			return s.apiError(e, staleExecutionError("controls", id, TranslateConversationError(err)))
 		}
 		if len(page.Controls) > 0 || wait == 0 {
 			return e.JSON(http.StatusOK, page)
 		}
 		select {
-		case <-subscription.wake:
-		case <-subscription.closed:
+		case <-subscription.Wake():
+		case <-subscription.Closed():
 			return e.JSON(http.StatusOK, page)
 		case <-r.stop:
 			return e.JSON(http.StatusOK, page)
@@ -938,23 +934,23 @@ func (r *conversationWorkerRouter) controlsPostgres(e echo.Context, id string, i
 	}
 }
 
-func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, scope hubscope.NativeScope, id string, identity conversationWorkerIdentity, after int64) (conversationControlsResponse, error) {
-	page := conversationControlsResponse{Controls: []conversationControl{}, Cursor: after}
+func (r *WorkerRouter) PollControls(ctx context.Context, scope hubscope.NativeScope, id string, identity WorkerIdentity, after int64) (WorkerControlsResponse, error) {
+	page := WorkerControlsResponse{Controls: []WorkerControl{}, Cursor: after}
 	const limit = 128
-	var snapshot conversationRecord
+	var snapshot ConversationRecord
 	var candidates []conversationstore.Message
 	contentReferences := make(map[string]attachment.ArchiveReference)
-	content := make(map[string]conversationContent)
-	err := r.server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		if err := r.server.authorizeAccessScope(ctx, reader, scope, false); err != nil {
+	content := make(map[string]ConversationContent)
+	err := r.server.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := r.server.deps.Authorization.Access(ctx, reader, scope, false); err != nil {
 			return err
 		}
 		stored, err := reader.Conversation(ctx, scope.Project, id)
 		if err != nil {
 			return err
 		}
-		snapshot = conversationRecordFromStore(stored)
-		if _, err := r.server.authorizeConversationWorkerPG(ctx, reader, scope, snapshot, identity, "", false, false); err != nil {
+		snapshot = ConversationRecordFromStore(stored)
+		if _, err := r.server.AuthorizeConversationWorkerPG(ctx, reader, ScopeInput(scope), snapshot, identity, "", false, false); err != nil {
 			return err
 		}
 		messages, err := reader.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: id, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliveryQueued, conversation.DeliverySending, conversation.DeliverySaved}, Limit: limit})
@@ -978,8 +974,8 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 		return page, err
 	}
 	for messageID, reference := range contentReferences {
-		var payload conversationContent
-		if err := r.server.readConversationObject(ctx, string(scope.Organization), reference, &payload); err != nil {
+		var payload ConversationContent
+		if err := r.server.ReadConversationObject(ctx, string(scope.Organization), reference, &payload); err != nil {
 			return page, err
 		}
 		content[messageID] = payload
@@ -989,25 +985,25 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 		loadedMessages[message.ID] = message
 	}
 	changed := false
-	err = r.server.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
+	err = r.server.config().TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		if _, err := writer.RunnerIdentityByCredential(ctx, scope.Credential.ID); err != nil {
 			return fmt.Errorf("lock control poll runner: %w", err)
 		}
-		if err := r.server.authorizeAccessScope(ctx, writer, scope, false); err != nil {
+		if err := r.server.deps.Authorization.Access(ctx, writer, scope, false); err != nil {
 			return err
 		}
-		if _, err := r.server.authorizeConversationWorkerPG(ctx, writer, scope, snapshot, identity, "", false, false); err != nil {
+		if _, err := r.server.AuthorizeConversationWorkerPG(ctx, writer, ScopeInput(scope), snapshot, identity, "", false, false); err != nil {
 			return err
 		}
 		stored, err := writer.LockConversation(ctx, scope.Project, id)
 		if err != nil {
 			return err
 		}
-		record := conversationRecordFromStore(stored)
+		record := ConversationRecordFromStore(stored)
 		if stored.Execution.Owner != snapshot.Execution.Owner || stored.WorkItemID != snapshot.WorkItemID {
-			return conversationStale("The conversation worker changed")
+			return ConversationStale("The conversation worker changed")
 		}
-		if err := requireConversationRecordOwner(record, identity, false); err != nil {
+		if err := RequireConversationRecordOwner(record, identity, false); err != nil {
 			return err
 		}
 		if stored.Revision != snapshot.Revision {
@@ -1018,13 +1014,13 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 			return err
 		}
 		for _, message := range acknowledged.Items {
-			message.Delivery, message.UpdatedAt = conversation.DeliverySent, r.server.config.now()
-			if err := updatePGWorkerMessage(ctx, writer, message, message.UpdatedAt, nil); err != nil {
+			message.Delivery, message.UpdatedAt = conversation.DeliverySent, r.server.Now()
+			if err := UpdatePGWorkerMessage(ctx, writer, message, message.UpdatedAt, nil); err != nil {
 				return err
 			}
 			changed = true
 		}
-		if conversationBetweenTurns(record.Execution) {
+		if ConversationBetweenTurns(record.Execution) {
 			return nil
 		}
 		messages, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: id, Role: conversation.RoleUser, Deliveries: []conversation.Delivery{conversation.DeliveryQueued, conversation.DeliverySending, conversation.DeliverySaved}, Limit: limit})
@@ -1051,7 +1047,7 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 				break
 			}
 			payload := content[message.ID]
-			control := conversationControl{Cursor: message.Sequence, Key: message.CommandKey, MessageID: message.ID, Expected: conversation.Expected{AttemptID: record.Execution.Owner.AttemptID, TurnID: record.Execution.Owner.TurnID}}
+			control := WorkerControl{Cursor: message.Sequence, Key: message.CommandKey, MessageID: message.ID, Expected: conversation.Expected{AttemptID: record.Execution.Owner.AttemptID, TurnID: record.Execution.Owner.TurnID}}
 			switch message.Kind {
 			case conversation.MessageText, conversation.MessageContinue:
 				control.Kind, control.Text = "message", payload.Text
@@ -1082,9 +1078,9 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 				}
 				question, err := writer.Question(ctx, id, questionID)
 				if err != nil || (question.Status != conversation.QuestionPending && question.Status != conversation.QuestionSending && question.Status != conversation.QuestionSent) {
-					message.Delivery, message.UpdatedAt = conversation.DeliveryUnknown, r.server.config.now()
+					message.Delivery, message.UpdatedAt = conversation.DeliveryUnknown, r.server.Now()
 					failure := &conversation.ReceiptError{Code: "unknown", Message: "The question is no longer available"}
-					if err := updatePGWorkerMessage(ctx, writer, message, message.UpdatedAt, failure); err != nil {
+					if err := UpdatePGWorkerMessage(ctx, writer, message, message.UpdatedAt, failure); err != nil {
 						return err
 					}
 					changed = true
@@ -1098,8 +1094,8 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 			}
 			if message.Delivery != conversation.DeliverySending || message.AttemptID != record.Execution.Owner.AttemptID {
 				message.AttemptID, message.ThreadID, message.TurnID = record.Execution.Owner.AttemptID, record.Execution.Owner.ThreadID, record.Execution.Owner.TurnID
-				message.Delivery, message.UpdatedAt = conversation.DeliverySending, r.server.config.now()
-				if err := updatePGWorkerMessage(ctx, writer, message, message.UpdatedAt, nil); err != nil {
+				message.Delivery, message.UpdatedAt = conversation.DeliverySending, r.server.Now()
+				if err := UpdatePGWorkerMessage(ctx, writer, message, message.UpdatedAt, nil); err != nil {
 					return err
 				}
 				changed = true
@@ -1115,10 +1111,10 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 		return page, err
 	}
 	if changed {
-		var record conversationRecord
-		if err := r.server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		var record ConversationRecord
+		if err := r.server.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			var err error
-			record, err = readConversationRecordFromTenant(ctx, reader, scope.Project, id)
+			record, err = ReadConversationRecordFromTenant(ctx, reader, scope.Project, id)
 			return err
 		}); err != nil {
 			return page, err
@@ -1126,4 +1122,8 @@ func (r *conversationWorkerRouter) pollControlsPostgres(ctx context.Context, sco
 		r.service.Committed(record)
 	}
 	return page, nil
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
 }

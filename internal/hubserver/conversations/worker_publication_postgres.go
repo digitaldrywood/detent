@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -14,8 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-func preparePGWorkerEvent(ctx context.Context, plan *conversationPublicationPlan, body any) error {
-	if message, ok := body.(conversationMessageResource); ok {
+func PreparePGWorkerEvent(ctx context.Context, plan *ConversationPublicationPlan, body any) error {
+	if message, ok := body.(ConversationMessageResource); ok {
 		message.Seq = 0
 		body = message
 	}
@@ -23,7 +23,7 @@ func preparePGWorkerEvent(ctx context.Context, plan *conversationPublicationPlan
 	if err != nil {
 		return err
 	}
-	content, err := messageContent(conversationMessageRecord{Data: raw})
+	content, err := MessageContent(ConversationMessageRecord{Data: raw})
 	if err != nil {
 		return err
 	}
@@ -31,9 +31,9 @@ func preparePGWorkerEvent(ctx context.Context, plan *conversationPublicationPlan
 	return err
 }
 
-func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, scope hubscope.NativeScope, plan *conversationPublicationPlan, events []conversationTurnEvent) ([]conversationMessageRecord, error) {
-	prepared := make([]conversationMessageRecord, len(events))
-	messages := map[string]conversationMessageRecord{}
+func (r *WorkerRouter) preparePGTurnMessages(ctx context.Context, scope hubscope.NativeScope, plan *ConversationPublicationPlan, events []conversationTurnEvent) ([]ConversationMessageRecord, error) {
+	prepared := make([]ConversationMessageRecord, len(events))
+	messages := map[string]ConversationMessageRecord{}
 	providers := map[string]string{}
 	execution := plan.Record.Execution
 	for index, event := range events {
@@ -50,7 +50,7 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 			}
 			message, found := messages[id]
 			if !found {
-				if err := r.server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				if err := r.server.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 					var row conversationstore.Message
 					if id != "" {
 						var err error
@@ -69,7 +69,7 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 						row = page.Items[0]
 					}
 					if row.AttemptID == execution.Owner.AttemptID && row.Role == conversation.RoleAssistant {
-						message, found = conversationMessageFromStore(row), true
+						message, found = ConversationMessageFromStore(row), true
 					}
 					return nil
 				}); err != nil {
@@ -84,7 +84,7 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 				}
 			}
 			if !found {
-				message = conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: plan.Record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID, TurnID: execution.Owner.TurnID, ProviderItemID: strings.TrimSpace(event.ProviderItemID), Actor: conversationActorFor(scope), CreatedAt: plan.Now.Truncate(time.Microsecond), UpdatedAt: plan.Now}
+				message = ConversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: plan.Record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID, TurnID: execution.Owner.TurnID, ProviderItemID: strings.TrimSpace(event.ProviderItemID), Actor: ConversationActorFor(ScopeInput(scope)), CreatedAt: plan.Now.Truncate(time.Microsecond), UpdatedAt: plan.Now}
 			}
 			revision, offset := message.Revision, message.TextBytes
 			message.Text += event.Text
@@ -100,14 +100,14 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 			if !found {
 				accepted := message
 				accepted.Text, accepted.TextBytes, accepted.Revision = "", 0, 1
-				if err := preparePGWorkerEvent(ctx, plan, projectMessage(accepted)); err != nil {
+				if err := PreparePGWorkerEvent(ctx, plan, ProjectMessage(accepted)); err != nil {
 					return nil, err
 				}
 				revision = 1
 			}
 			if event.Text != "" {
 				revision++
-				if err := preparePGWorkerEvent(ctx, plan, conversationDeltaFact{Text: event.Text, Revision: revision, MessageID: message.ID, Offset: offset, Bytes: len(event.Text)}); err != nil {
+				if err := PreparePGWorkerEvent(ctx, plan, ConversationDeltaFact{Text: event.Text, Revision: revision, MessageID: message.ID, Offset: offset, Bytes: len(event.Text)}); err != nil {
 					return nil, err
 				}
 			}
@@ -116,11 +116,11 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 			plan.RememberMessage(message)
 		case "item", "question_opened":
 			if event.Type == "question_opened" {
-				if err := plan.PrepareQuestion(ctx, conversationQuestionRecord{Question: conversation.Question{Prompts: event.Prompts}}); err != nil {
+				if err := plan.PrepareQuestion(ctx, ConversationQuestionRecord{Question: conversation.Question{Prompts: event.Prompts}}); err != nil {
 					return nil, err
 				}
 			}
-			message := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageKind(event.Kind), Text: conversationTruncate(event.Summary, conversationMaxSummaryBytes), Delivery: conversation.DeliveryCompleted, ProviderItemID: strings.TrimSpace(event.ProviderItemID), AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID, TurnID: execution.Owner.TurnID, Actor: conversationActorFor(scope), CreatedAt: plan.Now.Truncate(time.Microsecond), UpdatedAt: plan.Now}
+			message := ConversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageKind(event.Kind), Text: conversationTruncate(event.Summary, ConversationMaxSummaryBytes), Delivery: conversation.DeliveryCompleted, ProviderItemID: strings.TrimSpace(event.ProviderItemID), AttemptID: execution.Owner.AttemptID, ThreadID: execution.Owner.ThreadID, TurnID: execution.Owner.TurnID, Actor: ConversationActorFor(ScopeInput(scope)), CreatedAt: plan.Now.Truncate(time.Microsecond), UpdatedAt: plan.Now}
 			if event.Type == "item" {
 				var err error
 				message.Data, err = conversationItemData(event.Data)
@@ -128,32 +128,32 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 					return nil, err
 				}
 			} else {
-				message.Role, message.Kind, message.Text = conversation.RoleAssistant, conversation.MessageStatus, conversationQuestionPrompt
+				message.Role, message.Kind, message.Text = conversation.RoleAssistant, conversation.MessageStatus, ConversationQuestionPrompt
 				message.ProviderItemID = ""
 				if turn := strings.TrimSpace(event.TurnID); turn != "" {
 					message.TurnID = turn
 				}
 			}
-			if err := preparePGConversationMessage(ctx, plan, &message); err != nil {
+			if err := PreparePGConversationMessage(ctx, plan, &message); err != nil {
 				return nil, err
 			}
 			prepared[index] = message
-			if err := preparePGWorkerEvent(ctx, plan, projectMessage(message)); err != nil {
+			if err := PreparePGWorkerEvent(ctx, plan, ProjectMessage(message)); err != nil {
 				return nil, err
 			}
 		case "turn_completed":
 			turnID := strings.TrimSpace(event.TurnID)
-			if err := r.server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-				page, err := reader.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: plan.Record.ID, AttemptID: execution.Owner.AttemptID, TurnID: turnID, Role: conversation.RoleAssistant, Deliveries: []conversation.Delivery{conversation.DeliveryResponding}, Limit: conversationPGWorkerPageSize})
+			if err := r.server.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				page, err := reader.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: plan.Record.ID, AttemptID: execution.Owner.AttemptID, TurnID: turnID, Role: conversation.RoleAssistant, Deliveries: []conversation.Delivery{conversation.DeliveryResponding}, Limit: ConversationPGWorkerPageSize})
 				if err != nil {
 					return err
 				}
 				if page.Next != 0 {
-					return conversationUnsupported("The turn message set exceeds the bounded event batch")
+					return ConversationUnsupported("The turn message set exceeds the bounded event batch")
 				}
 				for _, row := range page.Items {
 					if _, found := messages[row.ID]; !found {
-						messages[row.ID] = conversationMessageFromStore(row)
+						messages[row.ID] = ConversationMessageFromStore(row)
 					}
 				}
 				return nil
@@ -180,7 +180,7 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 				}
 				message.Delivery, message.UpdatedAt = delivery, plan.Now
 				message.Revision++
-				if err := preparePGWorkerEvent(ctx, plan, projectMessage(message)); err != nil {
+				if err := PreparePGWorkerEvent(ctx, plan, ProjectMessage(message)); err != nil {
 					return nil, err
 				}
 				plan.RememberMessage(message)

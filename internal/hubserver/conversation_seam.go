@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"slices"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
-	"github.com/digitaldrywood/detent/internal/hubserver/eventbroker"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
@@ -34,21 +32,10 @@ type (
 )
 
 func conversationInput(scope hubscope.NativeScope) hubauth.Input {
-	return hubauth.Input{Organization: scope.Organization, Project: scope.Project, Credential: hubscope.AuthCredential(scope.Credential), Admin: scope.RequireHostedAdmin, Action: scope.Action, IntegrationRepository: scope.IntegrationRepository, IntegrationOwned: scope.IntegrationOwned}
+	return conversations.ScopeInput(scope)
 }
 
-func conversationSubscribe(broker *eventbroker.Broker, key string) (*notificationSubscription, func()) {
-	return (&notificationBroker{broker}).subscribe(key)
-}
-
-func toFeatureError(err error) error {
-	var native *hubapi.NativeError
-	if !errors.As(err, &native) || native == nil {
-		return err
-	}
-	failure := &hubapi.Error{Code: native.Code, Message: native.Message, CurrentRevision: native.CurrentRevision, Details: native.Details, Status: native.Status, Public: native.PublicMessage}
-	return failure.WithLogAttributes(native.LogAttributes...)
-}
+func toFeatureError(err error) error { return hubapi.ToFeatureError(err) }
 
 type conversationFeatureWorkerAuthority struct{ inner ConversationWorkerAuthority }
 
@@ -112,9 +99,7 @@ func (s *Service) conversationDeps() conversations.Deps {
 		NewCoordinator: func(service *conversationService) conversationCoordinator {
 			return newConversationCoordinator(s, service)
 		},
-		NewControls: func(service *conversationService) conversationControlRouter {
-			return newConversationControlRouter(s, service)
-		},
+		NewControls:  conversations.NewControlRouter,
 		Ready:        s.ready.Load,
 		Organization: s.appOrganizationID,
 		Authorization: hubscope.Authorization{
@@ -200,6 +185,10 @@ func (s *Service) conversationDeps() conversations.Deps {
 		ResolveWorkItems: func(ctx context.Context, query conversations.Queryer, records []*conversationRecord) error {
 			return resolveConversationWorkItems(ctx, query, records)
 		},
+		APIError: func(c echo.Context, err error) error {
+			return s.nativeAPIError(c, err)
+		},
+		InvalidRequest: s.invalidAPIRequest,
 	}
 	if s.notifications != nil {
 		deps.Broker = s.notifications.Broker
