@@ -116,6 +116,20 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
+	if request.SpriteName != "" {
+		if err := s.config.TenantRepository.ReadTenant(ctx, credential.Runner.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			machine, err := r.Machine(ctx, string(credential.Runner.MachineID))
+			if err != nil {
+				return err
+			}
+			if machine.Hostname != request.SpriteName {
+				return nativePublicInvalid("Sprite name must match the runner hostname")
+			}
+			return nil
+		}); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	configuration, err := s.prepareConfigurationHeartbeat(ctx, credential, projectID, request.ProjectConfiguration)
 	if err != nil {
 		if !errors.Is(err, errConfigurationPayloadUnavailable) {
