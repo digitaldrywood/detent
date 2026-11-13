@@ -21,7 +21,6 @@ type requestMetricsReport = requestmetrics.Report
 type routeLatencyBucket = requestmetrics.Bucket
 type routeLatencyHistory = requestmetrics.History
 type hostedRequestUsage = requestmetrics.Usage
-type RequestMetrics = requestmetrics.RequestMetrics
 type runnerRequestBudgetContext = requestmetrics.RunnerBudgetContext
 
 func hostedRequestUsageFor(c echo.Context, elapsed time.Duration) hostedRequestUsage {

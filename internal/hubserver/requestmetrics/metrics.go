@@ -2,7 +2,6 @@ package requestmetrics
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/bits"
 	"net/http"
@@ -12,98 +11,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
 )
-
-const sharedMetricKeyLimit = 2048
-
-type sharedMetricKey struct {
-	tenant hubmaintenance.Tenant
-	metric Key
-}
-
-type RequestMetrics struct {
-	Repository metricsstore.Repository
-	mu         sync.Mutex
-	pending    map[sharedMetricKey]Latency
-	flushing   map[hubmaintenance.Tenant]bool
-	inflight   int
-}
-
-func NewRequestMetrics(repository metricsstore.Repository) (*RequestMetrics, error) {
-	if repository == nil {
-		return nil, errors.New("request metrics repository is required")
-	}
-	return &RequestMetrics{Repository: repository, pending: make(map[sharedMetricKey]Latency), flushing: make(map[hubmaintenance.Tenant]bool)}, nil
-}
-
-func (m *RequestMetrics) Record(tenant hubmaintenance.Tenant, now time.Time, route, kind, caller string, status int, elapsed time.Duration) bool {
-	if now.IsZero() || tenant.Organization == "" || len(tenant.Organization) > 128 || tenant.Generation <= 0 || len(route) > 1024 || len(caller) > 256 || status < 100 || status >= 600 || elapsed < 0 {
-		return false
-	}
-	switch kind {
-	case "runner", "browser", "mcp", "ci", "anonymous":
-	default:
-		kind, caller = metricsstore.OverflowKind, metricsstore.OverflowCaller
-	}
-	key := sharedMetricKey{tenant: tenant, metric: Key{Minute: now.Unix() / 60 * 60, Route: route, Kind: kind, Caller: caller, Status: status / 100}}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, exists := m.pending[key]; !exists && len(m.pending)+m.inflight >= sharedMetricKeyLimit-1 {
-		key.metric.Route, key.metric.Kind, key.metric.Caller = "OTHER <overflow>", metricsstore.OverflowKind, metricsstore.OverflowCaller
-		if _, exists := m.pending[key]; !exists && len(m.pending)+m.inflight >= sharedMetricKeyLimit {
-			return false
-		}
-	}
-	value := m.pending[key]
-	value.Observe(elapsed)
-	m.pending[key] = value
-	return true
-}
-
-func (m *RequestMetrics) Flush(ctx context.Context, tenant hubmaintenance.Tenant, now time.Time) error {
-	m.mu.Lock()
-	if m.flushing[tenant] {
-		m.mu.Unlock()
-		return nil
-	}
-	batch := make(map[Key]Latency)
-	for key, value := range m.pending {
-		if key.tenant == tenant {
-			batch[key.metric] = value
-			delete(m.pending, key)
-			if len(batch) == metricsstore.MergeLimit {
-				break
-			}
-		}
-	}
-	if len(batch) == 0 {
-		m.mu.Unlock()
-		return nil
-	}
-	m.flushing[tenant] = true
-	count := len(batch)
-	m.inflight += count
-	m.mu.Unlock()
-	writer := &Service{Repository: m.Repository, Organization: tracker.OrganizationID(tenant.Organization)}
-	err := writer.writeRepository(ctx, now, batch)
-	m.mu.Lock()
-	m.inflight -= count
-	delete(m.flushing, tenant)
-	for metric, value := range batch {
-		key := sharedMetricKey{tenant: tenant, metric: metric}
-		current := m.pending[key]
-		current.Merge(value)
-		m.pending[key] = current
-	}
-	m.mu.Unlock()
-	return err
-}
 
 type Key struct {
 	Minute int64
