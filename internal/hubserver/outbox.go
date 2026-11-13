@@ -345,13 +345,6 @@ func processOutboxStep(ctx context.Context, github func(context.Context) (bool, 
 	return github(ctx)
 }
 
-func (w *outboxWorker) signal() {
-	select {
-	case w.wake <- struct{}{}:
-	default:
-	}
-}
-
 func (w *outboxWorker) stop() {
 	if w == nil {
 		return
