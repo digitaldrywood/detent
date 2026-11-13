@@ -22,10 +22,12 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -248,6 +250,55 @@ func configuredPlanPostgresServices(t *testing.T, plans HostedPlansConfig, repo 
 type entitlementFixture struct {
 	service *hubService
 	admin   *sql.DB
+	http    *hubtest.HTTPHarness
+}
+
+func newEntitlementSessionFixture(t *testing.T) entitlementFixture {
+	t.Helper()
+	repo, admin := postgresWithAdmin(t, 4)
+	const organization = tracker.OrganizationID("org_security")
+	hubtest.Organization(t, repo, hubtest.OrganizationOptions{ID: organization})
+	hubtest.Project(t, repo, organization, hubtest.ProjectOptions{ID: "prj_security", Name: "private-project-sentinel"})
+	legacyPlans := PilotPlans()
+	s := &hubService{database: &hubDatabase{billingRepository: repo, hostedOrganization: organization, billingAuditStore: hubtest.NewDetails(), now: time.Now, logger: discardLogger()}, config: hubConfig{Logger: discardLogger(), now: time.Now, Hosted: &HostedConfig{OrganizationID: string(organization), Plans: &legacyPlans}}}
+	if err := hubapi.FromFeatureError(s.database.plansService().ConfigurePlans(t.Context(), PlansInput(s.config.Hosted))); err != nil {
+		t.Fatal(err)
+	}
+	h := hubtest.NewHTTP(t, hubtest.HTTPOptions{Repository: repo, Organization: organization, Hosted: &hubauth.Hosted{}}, func(g *echo.Group, harness hubtest.HTTPDeps) {
+		deps := s.httpDeps()
+		deps.Administrator = func(c echo.Context) (string, error) {
+			credential, _, err := harness.Auth.HostedCredential(c.Request().Context(), c)
+			if err != nil {
+				return "", err
+			}
+			if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+				return "", auth.ErrHostedIdentity
+			}
+			return credential.HostedRole, nil
+		}
+		deps.Render = func(c echo.Context, status int, data templates.HostedPageData) error {
+			data.OrganizationID = s.config.Hosted.OrganizationID
+			c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
+			c.Response().WriteHeader(status)
+			return templates.HostedPage(data).Render(c.Request().Context(), c.Response())
+		}
+		deps.PageError = func(c echo.Context, status int, message string) error {
+			return deps.Render(c, status, templates.HostedPageData{Mode: "denied", Title: "Access unavailable", Error: message})
+		}
+		RegisterRoutes(g, deps)
+	})
+	s.echo = h.Echo
+	return entitlementFixture{service: s, admin: admin, http: h}
+}
+
+func (f entitlementFixture) user(t *testing.T, _, role, email, _, _ string) hubtest.HTTPActor {
+	t.Helper()
+	return f.http.MemberSession(t, hubtest.MemberOptions{Role: role, Email: email})
+}
+
+func (f entitlementFixture) request(t *testing.T, user hubtest.HTTPActor, method, target string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	return f.http.Request(t, user, method, target, body).Recorder
 }
 
 func newEntitlementFixture(t *testing.T) entitlementFixture {
