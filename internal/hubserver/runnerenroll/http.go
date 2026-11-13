@@ -32,7 +32,7 @@ func RegisterRoutes(e *echo.Group, deps HTTPDeps) {
 	e.POST(base+"/redeem", s.redeemRunnerEnrollment)
 }
 func (s *httpRoutes) scope(c echo.Context, credential hubauth.Credential) hubapi.Scope {
-	return s.deps.Auth().Scope(hubauth.Input{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential, Admin: true})
+	return s.deps.Auth().Scope(hubauth.Input{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential, Admin: credential.Hosted == nil || !credential.ManageRunners})
 }
 
 func (s *httpRoutes) createRunnerEnrollment(c echo.Context) error {

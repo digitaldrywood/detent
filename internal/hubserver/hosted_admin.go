@@ -174,17 +174,21 @@ func (s *Service) requireHostedRunnerProjects(ctx context.Context, credential ap
 		return tenantauth.ErrUnavailable
 	}
 	return s.config.TenantRepository.ReadTenant(ctx, s.accessOrganization(), corestore.Serving, func(reader tenantstore.Reader) error {
-		total := 0
+		total, absent := 0, false
+		var missing *corestore.Project
 		check := func(project corestore.Project) error {
 			if project.DeletedAt != nil {
-				return corestore.ErrNotFound
+				absent = true
+				return nil
 			}
 			grant, err := reader.AccessProjectGrant(ctx, credential.Hosted.Subject, project.ID)
-			if err != nil {
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}
-			if !grant.ManageRunner {
-				return refusal
+			if err != nil || !grant.ManageRunner {
+				if missing == nil || project.Name < missing.Name || project.Name == missing.Name && project.ID < missing.ID {
+					missing = &project
+				}
 			}
 			total++
 			return nil
@@ -200,6 +204,10 @@ func (s *Service) requireHostedRunnerProjects(ctx context.Context, credential ap
 				}
 				seen[id] = true
 				project, err := reader.Project(ctx, id)
+				if errors.Is(err, corestore.ErrNotFound) {
+					absent = true
+					continue
+				}
 				if err != nil {
 					return err
 				}
@@ -223,7 +231,10 @@ func (s *Service) requireHostedRunnerProjects(ctx context.Context, credential ap
 				}
 			}
 		}
-		if total == 0 {
+		if missing != nil {
+			return fmt.Errorf("%w: project %q (%s) lacks a manage_runner grant; ask an owner or admin", operatortool.ErrAccessDenied, missing.Name, missing.ID)
+		}
+		if absent || total == 0 {
 			return refusal
 		}
 		return nil

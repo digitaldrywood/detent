@@ -49,6 +49,9 @@ func Classify(err error) error {
 	if errors.As(err, &refusal) || errors.As(err, &native) && (native.Status == http.StatusForbidden || native.Status == http.StatusNotFound) {
 		return operatortool.ErrAccessDenied
 	}
+	if errors.Is(err, operatortool.ErrAccessDenied) {
+		return err
+	}
 	for _, denial := range []error{operatortool.ErrAccessDenied, accessstore.ErrDenied, auth.ErrHostedIdentity, auth.ErrInvalidSession, auth.ErrAccessExpired, cloudassert.ErrInvalid, corestore.ErrNotFound, corestore.ErrTenantMismatch, sql.ErrNoRows} {
 		if errors.Is(err, denial) {
 			return operatortool.ErrAccessDenied

@@ -75,15 +75,33 @@ func runnerUnauthorized() error { return fromFeatureError(runnerenroll.Unauthori
 func runnerCollision() error    { return fromFeatureError(runnerenroll.Collision()) }
 
 func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope nativeScope, request runnerauth.EnrollmentRequest) (any, error) {
-	scope.requireHostedAdmin = true
+	scope, err := s.runnerEnrollmentScope(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
 	value, err := s.runnerEnrollmentService().Create(ctx, s.featureScope(scope), request)
 	return value, fromFeatureError(err)
 }
 
 func (s *Service) revokeRunnerEnrollmentCommand(ctx context.Context, scope nativeScope, resource string) (any, error) {
-	scope.requireHostedAdmin = true
+	scope, err := s.runnerEnrollmentScope(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
 	value, err := s.runnerEnrollmentService().Revoke(ctx, s.featureScope(scope), resource)
 	return value, fromFeatureError(err)
+}
+
+func (s *Service) runnerEnrollmentScope(ctx context.Context, scope nativeScope) (nativeScope, error) {
+	scope.requireHostedAdmin = scope.credential.Hosted == nil
+	if scope.credential.Hosted == nil {
+		return scope, nil
+	}
+	if err := s.requireHostedRunnerAdministration(ctx, scope.credential); err != nil {
+		return scope, err
+	}
+	scope.credential.ManageRunners = true
+	return scope, nil
 }
 
 func (s *Service) runnerEnrollmentWriteTenant(ctx context.Context, scope nativeScope, write func(context.Context, tenantstore.Writer, time.Time) error) error {
