@@ -466,7 +466,7 @@ func TestHostedIssueAllowanceAcrossProjects(t *testing.T) {
 	request := tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "allocate"}, Title: "Across projects", State: "Todo"}
 	requireNativeStatus(t, f.request(t, owner, http.MethodPost, base+"/work-items", request), http.StatusTooManyRequests)
 	viewer := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
-	requireNativeStatus(t, f.request(t, viewer, http.MethodPost, f.base+"/work-items/"+string(first.WorkItemID)+"/archive", archiveRequest(first, "viewer-archive")), http.StatusNotFound)
+	requireNativeStatus(t, f.request(t, viewer, http.MethodPost, f.base+"/work-items/"+string(first.WorkItemID)+"/archive", archiveRequest(first, "viewer-archive")), http.StatusForbidden)
 	requireNativeStatus(t, f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(first.WorkItemID)+"/archive", archiveRequest(first, "archive")), http.StatusOK)
 	requireNativeStatus(t, f.request(t, owner, http.MethodPost, base+"/work-items", request), http.StatusOK)
 }
