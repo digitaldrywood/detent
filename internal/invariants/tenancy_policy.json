@@ -1,0 +1,208 @@
+{
+  "files": {
+    "internal/cloudentry/storage_backend.go": {
+      "pool_open": 1
+    },
+    "internal/cloudentry/tenant/launcher.go": {
+      "process_launch": 1
+    },
+    "internal/hubserver/access_records.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/account_commands.go": {
+      "process_organization": 4
+    },
+    "internal/hubserver/administration_commands.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/ai_credit_commands.go": {
+      "process_organization": 2
+    },
+    "internal/hubserver/app_ui.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/changes.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/conversation_allowance_records.go": {
+      "process_organization": 2
+    },
+    "internal/hubserver/conversation_coordinator_reads.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/conversation_seam.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/credits_seam.go": {
+      "process_organization": 4
+    },
+    "internal/hubserver/database.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/entry_keys.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/github_batch_worker.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/github_outbound_seam.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/github_reconciliation_records.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/github_webhook_seam.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hosted_admin.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hosted_auth.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hosted_billing_api.go": {
+      "process_organization": 8
+    },
+    "internal/hubserver/hosted_billing_ui.go": {
+      "process_organization": 3
+    },
+    "internal/hubserver/hosted_billing_worker.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hosted_context.go": {
+      "process_organization": 3
+    },
+    "internal/hubserver/hosted_fleet_usage_tenant.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hosted_github_seam.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hosted_login.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hosted_operator_keys.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hosted_org_api.go": {
+      "process_organization": 2
+    },
+    "internal/hubserver/hosted_plans_seam.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hosted_reports_tracking.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hosted_shared.go": {
+      "process_organization": 4
+    },
+    "internal/hubserver/hosted_ui.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hosted_usage_api.go": {
+      "process_organization": 2
+    },
+    "internal/hubserver/hostedplans/allowances.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hostedplans/billing_config.go": {
+      "process_organization": 7
+    },
+    "internal/hubserver/hostedplans/billing_records.go": {
+      "process_organization": 5
+    },
+    "internal/hubserver/hostedplans/billing_state.go": {
+      "process_organization": 2
+    },
+    "internal/hubserver/hostedplans/plan_api.go": {
+      "process_organization": 5
+    },
+    "internal/hubserver/hostedplans/plans.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hostedplans/runtime_publication.go": {
+      "process_organization": 3
+    },
+    "internal/hubserver/hostedplans/runtime_records.go": {
+      "process_organization": 7
+    },
+    "internal/hubserver/hostedplans/service.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hubauth/operator.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hubauth/operator_checks.go": {
+      "process_organization": 2
+    },
+    "internal/hubserver/hubauth/organization.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hubauth/request.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/hubauth_seam.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/local_app.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/native_projects.go": {
+      "process_organization": 2
+    },
+    "internal/hubserver/operator_administration.go": {
+      "process_organization": 6
+    },
+    "internal/hubserver/operator_analytics.go": {
+      "process_organization": 2
+    },
+    "internal/hubserver/operator_billing.go": {
+      "process_organization": 2
+    },
+    "internal/hubserver/operator_catalog.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/operator_model_selection.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/policy.go": {
+      "process_organization": 2
+    },
+    "internal/hubserver/postgres/lifecycle.go": {
+      "pool_open": 2
+    },
+    "internal/hubserver/postgres_app_ui.go": {
+      "process_organization": 5
+    },
+    "internal/hubserver/project_record_participants.go": {
+      "process_organization": 2
+    },
+    "internal/hubserver/project_records.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/report_detail_postgres.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/report_productivity_postgres.go": {
+      "process_organization": 5
+    },
+    "internal/hubserver/request_metrics_seam.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/run_details.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/runner_usage_tenant.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/service.go": {
+      "process_organization": 5
+    },
+    "internal/hubserver/usage_costs_seam.go": {
+      "process_organization": 1
+    },
+    "internal/hubserver/validation_seam.go": {
+      "process_organization": 1
+    }
+  }
+}

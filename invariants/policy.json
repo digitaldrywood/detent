@@ -136,6 +136,8 @@
       "TestSQLiteShrinkData",
       "TestSQLiteWorkspacePolicy",
       "TestSQLiteDependencyCompletion",
+      "TestRepositoryTenancy",
+      "TestTenancyPolicyViolations",
       "TestRepositorySources",
       "TestRepositoryWorkflow",
       "TestRepositoryHasNoPullRequestActions",
