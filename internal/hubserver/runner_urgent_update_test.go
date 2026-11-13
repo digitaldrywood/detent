@@ -392,8 +392,10 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 				var admitted tracker.NativeLease
 				decodeHubResponse(t, claimResponse, &admitted)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(admitted.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: admitted.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			} else if test.state == "draining" {
+				requireNativeError(t, claimResponse, http.StatusConflict, "runner_draining")
 			} else {
-				requireNativeError(t, claimResponse, http.StatusNotFound, "machine_not_found")
+				requireNativeError(t, claimResponse, http.StatusConflict, "runner_disabled")
 			}
 			applied.Version = deliveredVersion
 			applied.Commit = strings.Repeat("c", 40)
