@@ -359,7 +359,7 @@ func TestReleaseAssociationPostgres(t *testing.T) {
 				}
 			}
 			if test.driftAtClaim {
-				service.config.TenantRepository = &releaseAdmissionBeforeWriteRepository{projectUpdateBeforeWriteRepository: &projectUpdateBeforeWriteRepository{Repository: f.repository, before: invalidate}, SnapshotRepository: f.repository.(tenantstore.SnapshotRepository)}
+				service.config.TenantRepository = &projectUpdateBeforeWriteRepository{Repository: f.repository, before: invalidate}
 			}
 			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: f.delivery.WorkItemID, MachineID: machineID, SessionID: "delegated-claim", TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 			if test.scan {
@@ -556,7 +556,3 @@ func seedReleaseAdmissionRunner(t *testing.T, f *releaseTenantFixture, policyID 
 	return credential, binding.RunnerID, binding.MachineID
 }
 
-type releaseAdmissionBeforeWriteRepository struct {
-	*projectUpdateBeforeWriteRepository
-	tenantstore.SnapshotRepository
-}
