@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -284,11 +285,18 @@ func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, compet
 			continue
 		}
 		if plan.LandingRequired {
-			available, err := s.nativeClaimLandingCapacityAvailable(ctx, competitor.scope.Organization, competitor.scope.Project, request.LandingCapacity, now)
+			available, reason, err := s.nativeClaimForeignLandingAvailable(ctx, competitor.scope, request, now)
 			if err != nil {
 				return false, false, err
 			}
 			if !available {
+				if reason != "" {
+					refused := competitor.request
+					refused.WorkItemID = plan.Candidate.WorkItemID
+					if err := s.recordRequestedClaimRefusal(ctx, competitor.scope, refused, now, true, reason, nil); err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
+						return false, false, err
+					}
+				}
 				continue
 			}
 		}
@@ -372,4 +380,27 @@ func nativeClaimRankProviderSupported(resolver *runner.BoardIdentityResolver, pl
 		return false
 	}
 	return slices.ContainsFunc(reports, func(report providercapacity.Report) bool { return report.Supports(requirement) })
+}
+
+func (s *Service) nativeClaimForeignLandingAvailable(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (bool, string, error) {
+	if request.LandingCapacity <= 0 && !slices.Contains(request.Capabilities, tracker.NativeLandingCapacityCapability) {
+		available, err := s.nativeClaimLandingCapacityAvailable(ctx, scope.Organization, scope.Project, 0, now)
+		return available, "", err
+	}
+	var usage claimstore.LandingCapacityUsage
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		usage, err = r.LandingCapacityUsage(ctx, scope.Project, now)
+		return err
+	})
+	if err != nil {
+		return false, "", fmt.Errorf("read foreign landing capacity: %w", err)
+	}
+	switch {
+	case usage.Limit > 0 && usage.Active >= usage.Limit:
+		return false, "Project landing capacity is full", nil
+	case usage.Active > 0 || usage.Unknown:
+		return false, "Project landing capacity cannot be determined without the incoming ceiling", nil
+	}
+	return true, "", nil
 }

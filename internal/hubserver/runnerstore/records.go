@@ -33,6 +33,7 @@ type ProjectRanking struct {
 	Own       int
 	Projects  []ProjectRank
 	Preferred tracker.ProjectID
+	Reachable int
 }
 
 const MaxRunnerProjectList = 2000

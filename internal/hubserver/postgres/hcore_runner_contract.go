@@ -49,7 +49,8 @@ const runnerOutrankingProjectsSQL = `WITH runner AS (
  SELECT COALESCE(o.rank,p.scheduling_rank) AS rank FROM runner JOIN projects p ON p.organization_id=$1 AND p.id=$3 AND p.deleted_at IS NULL
  LEFT JOIN runner_project_ranks o ON o.organization_id=$1 AND o.runner_id=runner.runner_id AND o.project_id=p.id
 )
-SELECT ranked.id,ranked.rank,own.rank,(SELECT id FROM preferred LIMIT 1) FROM own LEFT JOIN LATERAL (
+SELECT ranked.id,ranked.rank,own.rank,(SELECT id FROM preferred LIMIT 1),(SELECT count(*) FROM (SELECT 1 FROM runner JOIN projects p ON p.organization_id=$1 AND p.deleted_at IS NULL
+ WHERE runner.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=$1 AND g.token_id=runner.token_id AND g.project_id=p.id) LIMIT $5) reachable)::bigint FROM own LEFT JOIN LATERAL (
  SELECT candidate.id,candidate.rank FROM (
   (SELECT p.id,o.rank FROM runner JOIN runner_project_ranks o ON o.organization_id=$1 AND o.runner_id=runner.runner_id
    JOIN projects p ON p.organization_id=o.organization_id AND p.id=o.project_id AND p.deleted_at IS NULL
@@ -72,7 +73,7 @@ func (s *session) RunnerOutrankingProjects(ctx context.Context, runnerID string,
 	if runnerID == "" || project == "" || limit < 1 || limit > runnerstore.MaxRunnerProjectRanks {
 		return runnerstore.ProjectRanking{}, corestore.ErrInvalidPage
 	}
-	rows, err := s.db.Query(ctx, runnerOutrankingProjectsSQL, s.organization, runnerID, project, limit)
+	rows, err := s.db.Query(ctx, runnerOutrankingProjectsSQL, s.organization, runnerID, project, limit, runnerstore.MaxRunnerProjectRanks)
 	if err != nil {
 		return runnerstore.ProjectRanking{}, mapError(ctx, err)
 	}
@@ -82,7 +83,7 @@ func (s *session) RunnerOutrankingProjects(ctx context.Context, runnerID string,
 	for rows.Next() {
 		var id, preferred *string
 		var rank *int
-		if err := rows.Scan(&id, &rank, &ranking.Own, &preferred); err != nil {
+		if err := rows.Scan(&id, &rank, &ranking.Own, &preferred, &ranking.Reachable); err != nil {
 			return runnerstore.ProjectRanking{}, mapError(ctx, err)
 		}
 		found = true

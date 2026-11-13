@@ -495,7 +495,7 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.
 				return err
 			}
 		}
-		query.Limit = nativeClaimCandidatePageSize
+		query.Limit = max(1, nativeClaimCandidatePageSize/max(1, ranking.Reachable))
 		query.After = cursor.Position
 		page, err := r.CandidatePage(ctx, query)
 		if err != nil {
