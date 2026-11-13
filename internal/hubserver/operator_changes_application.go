@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -123,6 +124,9 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 			rules, err = a.service.changeReviewPolicyRecord(ctx, scope)
 			if err == nil {
 				value.Policy = &rules
+			}
+			if errors.Is(err, hubrecords.ErrNoApprovedRepositoryPolicy) {
+				err = &operatortool.RequestError{Code: "not_found", Message: "No approved Change review policy exists for this project"}
 			}
 		case operatortool.ArtifactServices:
 			value.Services, err = a.service.artifactServicesCommand(ctx, scope)
