@@ -174,7 +174,7 @@ func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			call(http.MethodPost, suffix+"/runs", `{"idempotency_key":"run-action","workspace_id":"workspace_example"}`, http.StatusServiceUnavailable)
+			call(http.MethodPost, suffix+"/runs", `{"idempotency_key":"run-action","workspace_id":"workspace_example"}`, http.StatusUnprocessableEntity)
 			credentialID := "action_operator_" + string(organization)
 			project := tracker.ProjectID("project_" + string(organization))
 			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error { return w.DeleteAccessTokenGrant(t.Context(), credentialID, project) }); err != nil {
