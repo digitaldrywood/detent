@@ -276,7 +276,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: f.project.OrganizationID, NativeProjects: map[string]tracker.ProjectID{"local": f.project.ID}, Machine: hubclient.Machine{ID: f.runner.binding.MachineID, Hostname: "fixture", Capacity: 1, Version: "test", BackendIsolation: f.runner.redemption.BackendIsolation}, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second, LeaseHold: func(context.Context) (func(), error) { return func() {}, nil }})
+			scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{Now: f.service.config.now, OrganizationID: f.project.OrganizationID, NativeProjects: map[string]tracker.ProjectID{"local": f.project.ID}, Machine: hubclient.Machine{ID: f.runner.binding.MachineID, Hostname: "fixture", Capacity: 1, Version: "test", BackendIsolation: f.runner.redemption.BackendIsolation}, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second, LeaseHold: func(context.Context) (func(), error) { return func() {}, nil }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -284,7 +284,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if err != nil || len(candidates) != 1 {
 				t.Fatalf("claim candidates=%v err=%v", candidates, err)
 			}
-			claim, err := scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
+			claim, err := scheduler.AdoptClaim(t.Context(), candidates[0], f.service.config.now())
 			if err != nil {
 				t.Fatal(err)
 			}
