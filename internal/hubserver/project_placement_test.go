@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -981,4 +983,110 @@ func TestClaimSourceAvailabilityFollowsCurrentSource(t *testing.T) {
 	input := changeTestInput()
 	publish("sourced-version", input, changeTestSource(t, &input), unsourced.ID, change.ID)
 	claim(other, "other-after-source", http.StatusOK)
+}
+
+func TestClaimScanSkipsUnreadableSourceCheckpoint(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		bad    int
+		damage func(*memoryRunDetails, string)
+		status int
+	}{
+		{"missing across a page boundary", nativeClaimCandidatePageSize, func(objects *memoryRunDetails, key string) { delete(objects.data, key) }, http.StatusConflict},
+		{"corrupt", 1, func(objects *memoryRunDetails, key string) { objects.data[key] = []byte(`{"resume":`) }, http.StatusConflict},
+		{"storage outage", 1, func(objects *memoryRunDetails, _ string) {
+			objects.beforeRead = func(context.Context) error { return errors.New("object store unavailable") }
+		}, http.StatusServiceUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			objects := &memoryRunDetails{}
+			f := placementNativeFixture(t, Config{RunDetails: objects})
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			runner := prepareRunnerForScope(t, f, "projects", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+			runner.enroll(t)
+			placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
+				return w.UpdateRunnerCapacityConfig(t.Context(), runner.binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.Clock()})
+			})
+			request := func(session string, item tracker.NativeWorkItemID) tracker.NativeClaim {
+				return tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: item, MachineID: runner.binding.MachineID, SessionID: session, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
+			}
+			var items []tracker.NativeWorkItemID
+			for index := range test.bad {
+				issue := f.create(t, fmt.Sprintf("unreadable checkpoint %03d", index))
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request(fmt.Sprintf("bad-%03d", index), issue.WorkItemID))
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				event := nativeStartedEvent(lease)
+				path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, event), http.StatusOK)
+				event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Handoff = "run.checkpointed", "bad-checkpoint", 2, nativeTestCheckpoint()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.redemption.Credential, event), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
+				items = append(items, issue.WorkItemID)
+			}
+			healthy := f.create(t, "healthy after unreadable checkpoints").WorkItemID
+			var keys []string
+			placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
+				for index, id := range append(items, healthy) {
+					entry, err := w.QueueEntry(t.Context(), f.project.ID, id, string(f.project.ID))
+					if err != nil {
+						return err
+					}
+					entry.Priority, entry.Rank = new(int64(0)), fmt.Sprintf("%05d", index)
+					if err := w.PutQueueEntry(t.Context(), entry); err != nil {
+						return err
+					}
+					if id == healthy {
+						continue
+					}
+					item, err := w.WorkItem(t.Context(), f.project.ID, id)
+					if err != nil {
+						return err
+					}
+					attempt, err := w.(leasestore.CheckpointAttemptReader).SourceCheckpointAttempt(t.Context(), item.ID)
+					if err != nil {
+						return err
+					}
+					keys = append(keys, *attempt.CheckpointObjectKey)
+				}
+				return nil
+			})
+			objects.mu.Lock()
+			for _, key := range keys {
+				test.damage(objects, key)
+			}
+			objects.mu.Unlock()
+			if test.bad > 1 {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request("scan-first-page", "")), test.status)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", runner.redemption.Credential, request("scan", ""))
+			if test.status != http.StatusConflict {
+				requireNativeStatus(t, response, test.status)
+				return
+			}
+			requireNativeStatus(t, response, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, response, &lease)
+			if lease.WorkItemID != healthy {
+				t.Fatalf("scan claimed %s, want healthy %s", lease.WorkItemID, healthy)
+			}
+			var decision tracker.CollaborationEvent
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				rows, err := r.(eventstore.SchedulerDecisionReader).SchedulerDecisions(t.Context(), f.project.ID, items[0])
+				if err != nil || rows.Latest == nil {
+					return errors.Join(err, corestore.ErrNotFound)
+				}
+				decision, err = eventstore.NewContent(f.service.runDetailStore()).Event(t.Context(), *rows.Latest)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if decision.Data.Decision == nil || decision.Data.Decision.Source != "native_runner_routing" || decision.Data.Decision.Outcome != "skipped" || !strings.Contains(decision.Data.Decision.Reason, "is unreadable; restore and verify source") {
+				t.Fatalf("unreadable checkpoint diagnostic=%#v", decision.Data.Decision)
+			}
+		})
+	}
 }

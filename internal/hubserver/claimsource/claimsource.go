@@ -118,6 +118,9 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 	}
 	if facts.AttemptID != "" {
 		checkpoint, err := deps.Checkpoint(ctx, snapshot)
+		if candidateLocal(err) {
+			facts.CheckpointUnreadable, checkpoint, err = true, nil, nil
+		}
 		if err != nil {
 			return facts, err
 		}
@@ -129,6 +132,13 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 		facts.VersionStored, err = VersionStored(ctx, deps.Details, organization, *version)
 	}
 	return facts, err
+}
+
+func candidateLocal(err error) bool {
+	if err == nil || errors.Is(err, artifact.ErrStorage) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return errors.Is(err, artifact.ErrMissing) || errors.Is(err, artifact.ErrIntegrity) || errors.Is(err, attachment.ErrInvalid)
 }
 
 func Refusal(ctx context.Context, r tenantstore.Reader, project tracker.ProjectID, item corestore.WorkItem, facts hubrecords.ClaimSourceFacts, machine, runner string) (string, error) {
@@ -174,6 +184,9 @@ func Allowed(facts hubrecords.ClaimSourceFacts, machine, runner string) (bool, s
 	}
 	if facts.VersionID != "" && facts.VersionStored {
 		return true, "Verified Change source is stored on the Hub; any eligible runner restores it"
+	}
+	if facts.CheckpointUnreadable {
+		return false, fmt.Sprintf("Checkpoint %s on source runner %s is unreadable; restore and verify source before recovery", facts.AttemptID, facts.CheckpointMachine)
 	}
 	if checkpoint != nil && (checkpoint.Availability == "missing" || checkpoint.Availability == "inaccessible" || checkpoint.Storage == "customer_store") {
 		return false, fmt.Sprintf("Checkpoint %s on source runner %s is %s; restore and verify source before recovery", facts.AttemptID, facts.CheckpointMachine, checkpoint.Availability)

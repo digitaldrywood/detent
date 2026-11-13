@@ -56,7 +56,7 @@ type ClaimSourceFacts struct {
 	CheckpointMachine, CheckpointRunner string
 	ChangeID, VersionID                 string
 	VersionMachine, VersionRunner       string
-	VersionStored                       bool
+	VersionStored, CheckpointUnreadable bool
 }
 
 func SameNativeClaimProjectPolicy(left, right policystore.Revision) bool {
