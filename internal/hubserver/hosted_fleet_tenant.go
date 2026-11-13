@@ -236,6 +236,12 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 			for project := range identity.ProjectCapacityLimits {
 				capacityProjects[project] = true
 			}
+			for _, project := range identity.ProjectIDs {
+				capacityProjects[project] = true
+			}
+			if selectedProject != "" {
+				capacityProjects[selectedProject] = true
+			}
 			for project := range capacityProjects {
 				if !visible[project] || !runner.AllowsProject(project) {
 					continue
