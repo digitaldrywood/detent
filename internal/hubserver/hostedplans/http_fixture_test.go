@@ -40,19 +40,29 @@ const bootstrapTokenID = "bootstrap-admin"
 const testHubAdminToken = "detent_test_hub_admin_token_00000000000000000000000000000000"
 
 type hubDatabase struct {
-	billingRepository  tenantstore.Repository
-	billingAuditStore  attachment.DetailStore
-	hostedOrganization tracker.OrganizationID
-	hostedRuntime      atomic.Pointer[RuntimeConfig]
-	runtimeLoads       singleflight.Group
-	runtimeBilling     *HostedBillingConfig
-	hostedBilling      bool
-	logger             *slog.Logger
-	now                func() time.Time
+	billingRepository      tenantstore.Repository
+	billingAuditStore      attachment.DetailStore
+	hostedOrganization     tracker.OrganizationID
+	hostedRuntime          atomic.Pointer[RuntimeConfig]
+	runtimeLoads           singleflight.Group
+	runtimeBilling         *HostedBillingConfig
+	hostedBilling          bool
+	aiCreditMode           string
+	aiCreditCostMultiplier float64
+	logger                 *slog.Logger
+	now                    func() time.Time
 }
 
 func (d *hubDatabase) plansService() *Service {
-	return New(Deps{Repository: d.billingRepository, Details: d.billingAuditStore, Organization: d.hostedOrganization, Runtime: &d.hostedRuntime, Loads: &d.runtimeLoads, RuntimeBilling: d.runtimeBilling, HostedBilling: d.hostedBilling, Logger: d.logger, Now: d.now, Configured: func(string, float64, bool) { d.hostedBilling = true }})
+	return New(Deps{Repository: d.billingRepository, Details: d.billingAuditStore, Organization: d.hostedOrganization, Runtime: &d.hostedRuntime, Loads: &d.runtimeLoads, RuntimeBilling: d.runtimeBilling, HostedBilling: d.hostedBilling, Logger: d.logger, Now: d.now, Configured: func(mode string, multiplier float64, credits bool) {
+		d.hostedBilling = true
+		if credits {
+			d.aiCreditMode = mode
+			d.aiCreditCostMultiplier = multiplier
+		} else {
+			d.aiCreditMode = ""
+		}
+	}})
 }
 
 type hubConfig struct {
@@ -371,4 +381,41 @@ func (c *leaseTestClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.value
+}
+
+type runtimeCreditProvider struct{ runtimeBillingProvider }
+
+func (runtimeCreditProvider) SavedCreditPaymentMethod(context.Context, billing.Binding) (string, error) {
+	return "", nil
+}
+
+func (runtimeCreditProvider) CreditCheckout(context.Context, billing.CreditRequest) (billing.Session, error) {
+	return billing.Session{}, nil
+}
+
+func (runtimeCreditProvider) CreditCharge(context.Context, billing.CreditRequest, string) (billing.CreditPayment, error) {
+	return billing.CreditPayment{}, nil
+}
+
+func (runtimeCreditProvider) CreditEvent(context.Context, billing.Binding, string) (billing.CreditPayment, error) {
+	return billing.CreditPayment{}, nil
+}
+
+func newHostedBillingFixture(t *testing.T) (entitlementFixture, runtimeBillingProvider) {
+	t.Helper()
+	f := newEntitlementFixture(t)
+	plans := hostedTestPlans(t, f, map[string]int64{"projects": 2})
+	p := runtimeBillingProvider{}
+	f.service.config.Hosted.Plans = &plans
+	f.service.config.Hosted.Billing = &HostedBillingConfig{
+		AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_2196_secret"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: p,
+		Prices: []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}},
+	}
+	if err := f.service.config.Hosted.Billing.Validate(f.service.config.Hosted.Plans); err != nil {
+		t.Fatal(err)
+	}
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigureBilling(t.Context(), PlansInput(f.service.config.Hosted))); err != nil {
+		t.Fatal(err)
+	}
+	return f, p
 }
