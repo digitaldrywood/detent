@@ -791,6 +791,11 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 			e.Data.Handoff = nativeTestCheckpoint()
 		}},
 		{"second attempt on same lease", func(e *tracker.NativeRunEvent) { *e = nativeStartedEvent(lease) }},
+		{"changed earlier checkpoint", func(e *tracker.NativeRunEvent) {
+			*e = checkpoint
+			e.Data.Handoff = nativeTestCheckpoint()
+			e.Data.Handoff.WorktreeState = "clean"
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			event := finish
