@@ -361,7 +361,7 @@ func TestVersionSourceAndDiffPayloadObjects(t *testing.T) {
 				config.Content = nil
 				config.RunDetails = &memoryRunDetails{}
 			}
-			f := newChangeFixture(t, openTestService(t, config))
+			f := newChangeFixture(t, newPostgresNativeService(t, config))
 			expectedVersion := ""
 			for _, size := range []int{32, 32 << 10} {
 				t.Run(strconv.Itoa(size), func(t *testing.T) {
@@ -398,7 +398,7 @@ func TestVersionSourceAndDiffPayloadObjects(t *testing.T) {
 					if string(got) != string(bundle) {
 						t.Fatal("source object changed bundle bytes")
 					}
-					payloadAssertHistoricalVersion(t, f, version, bundle)
+					payloadAssertHistoricalVersion(t, newChangeFixture(t, newPostgresNativeService(t, config)), version, bundle)
 				})
 			}
 			for _, size := range []int{32, 32 << 10} {
