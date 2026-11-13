@@ -46,6 +46,15 @@ func (s *session) UpdateProject(ctx context.Context, record corestore.Project) (
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
 		return corestore.Project{}, err
 	}
+	var name string
+	if err := s.db.QueryRow(ctx, `SELECT name FROM projects WHERE organization_id=$1 AND id=$2 FOR NO KEY UPDATE`, s.organization, record.ID).Scan(&name); err != nil {
+		return corestore.Project{}, updated(ctx, err)
+	}
+	if name != record.Name {
+		if err := s.lockOrganizationCounter(ctx); err != nil {
+			return corestore.Project{}, err
+		}
+	}
 	row, err := s.queries.UpdateProject(ctx, pgquery.UpdateProjectParams{
 		Name:                    record.Name,
 		Slug:                    record.Slug,

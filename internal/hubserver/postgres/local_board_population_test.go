@@ -726,6 +726,19 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 			return err
 		}
 	}
+	extra := func(ctx context.Context, w tenantstore.Writer) error {
+		current, err := w.WorkItem(ctx, "prj_first", "wi_first_1")
+		if err != nil {
+			return err
+		}
+		_, err = w.CreateWorkItem(ctx, corestore.WorkItem{OrganizationID: current.OrganizationID, NativeID: "wi_first_3", ProjectID: "prj_first", Number: 3, NativeSourceKey: new("source_3"), Title: "Example title", BodyObjectKey: new("example/body"), IssueContractObjectKey: new("example/contract"), ReportContextObjectKey: new("example/report"), ActorKind: new("human"), ActorPrincipalID: new("example")})
+		return err
+	}
+	remove := func(item tracker.NativeWorkItemID) step {
+		return func(ctx context.Context, w tenantstore.Writer) error {
+			return w.DeleteWorkItem(ctx, "prj_first", item)
+		}
+	}
 	publish := func(item tracker.NativeWorkItemID) step {
 		return func(ctx context.Context, w tenantstore.Writer) error {
 			owner := w.(attachmentstore.StorageArchiveWriter)
@@ -770,6 +783,7 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		{"project key change waits for foreign key insert before receipt", noop, bind, receipt, noop, rename, true, 4},
 		{"storage archive publication while archive holder checks keys", complete("wi_first_2"), archive, converseOn("wi_first_2"), noop, publish("wi_first_2"), false, 3},
 		{"unlocked issue key change while issue writer awaits counter", noop, holdIssue("wi_first_1"), counterAfterIssue, noop, renumberUnlocked, true, 4},
+		{"issue delete while archive holder checks keys", extra, archive, converseOn("wi_first_3"), noop, remove("wi_first_3"), false, 4},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			admin := template.Database(t)

@@ -175,11 +175,15 @@ func (s *session) updateWorkItem(ctx context.Context, record corestore.WorkItem,
 }
 
 func (s *session) DeleteWorkItem(ctx context.Context, project tracker.ProjectID, id tracker.NativeWorkItemID) error {
-	previous, err := s.WorkItem(ctx, project, id)
-	if err != nil {
+	if err := s.advanceDuplicateSource(ctx, project); err != nil {
 		return err
 	}
-	if err := s.advanceDuplicateSource(ctx, project); err != nil {
+	locked, err := s.queries.LockWorkItem(ctx, pgquery.LockWorkItemParams{OrganizationID: s.organization, ProjectID: project, NativeID: id})
+	if err != nil {
+		return mapError(ctx, err)
+	}
+	previous := corestore.WorkItem(locked)
+	if err := s.lockOrganizationCounter(ctx); err != nil {
 		return err
 	}
 	rows, err := s.queries.DeleteWorkItem(ctx, pgquery.DeleteWorkItemParams{
