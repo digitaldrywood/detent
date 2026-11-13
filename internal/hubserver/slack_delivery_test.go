@@ -367,7 +367,12 @@ func TestSlackSecretRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	service = openTestService(t, cfg)
-	<-service.secretRewrapDone
+	service.workerCancel()
+	select {
+	case <-service.secretRewrapDone:
+	case <-testenv.WaitContext(t, t.Context()).Done():
+		t.Fatal("startup secret rewrap did not stop")
+	}
 	if err := service.rewrapAccessSecrets(t.Context()); err != nil {
 		t.Fatal(err)
 	}
