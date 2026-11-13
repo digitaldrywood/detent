@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -21,7 +21,7 @@ func (r *Reconciler) PublishReleasePick(ctx context.Context, item tracker.Native
 	repository := strings.TrimPrefix(input.Repository, "https://github.com/")
 	parts := strings.Split(repository, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || input.PRNumber < 0 {
-		return result, fmt.Errorf("%w: invalid publication identity", hubserver.ErrReleasePickMismatch)
+		return result, fmt.Errorf("%w: invalid publication identity", githubcontract.ErrReleasePickMismatch)
 	}
 	if input.PRNumber > 0 {
 		if err := r.VerifyReleasePick(ctx, input); err != nil {
@@ -47,7 +47,7 @@ func (r *Reconciler) PublishReleasePick(ctx context.Context, item tracker.Native
 				return err
 			}
 			if actual.Object.SHA != ref.sha {
-				return fmt.Errorf("%w: prepared branch moved", hubserver.ErrReleasePickMismatch)
+				return fmt.Errorf("%w: prepared branch moved", githubcontract.ErrReleasePickMismatch)
 			}
 		}
 		return nil
@@ -61,7 +61,7 @@ func (r *Reconciler) PublishReleasePick(ctx context.Context, item tracker.Native
 		return result, err
 	}
 	if next != "" || pick.SHA != input.HeadSHA || len(pick.Parents) != 1 || pick.Parents[0].SHA != input.BaseSHA {
-		return result, fmt.Errorf("%w: prepared head must be one pick from the exact base", hubserver.ErrReleasePickMismatch)
+		return result, fmt.Errorf("%w: prepared head must be one pick from the exact base", githubcontract.ErrReleasePickMismatch)
 	}
 	if err := r.verifyReleaseSource(ctx, path, input, pick); err != nil {
 		return result, err
@@ -73,7 +73,7 @@ func (r *Reconciler) PublishReleasePick(ctx context.Context, item tracker.Native
 		return result, err
 	}
 	if next != "" || len(pulls) > 1 {
-		return result, fmt.Errorf("%w: ambiguous existing release PRs", hubserver.ErrReleasePickMismatch)
+		return result, fmt.Errorf("%w: ambiguous existing release PRs", githubcontract.ErrReleasePickMismatch)
 	}
 	if err := checkRefs(); err != nil {
 		return result, err
@@ -98,7 +98,7 @@ func (r *Reconciler) PublishReleasePick(ctx context.Context, item tracker.Native
 		}
 	}
 	if pull.Number < 1 || pull.Body != body || pull.State != "open" || pull.Draft || pull.Merged || pull.Head.Ref != input.HeadRef || pull.Head.SHA != input.HeadSHA || pull.Base.Ref != input.BaseRef || pull.Base.SHA != input.BaseSHA || pull.Head.Repo.FullName != repository || pull.Base.Repo.FullName != repository {
-		return result, fmt.Errorf("%w: differing existing release PR", hubserver.ErrReleasePickMismatch)
+		return result, fmt.Errorf("%w: differing existing release PR", githubcontract.ErrReleasePickMismatch)
 	}
 	input.PRNumber = pull.Number
 	if err := r.VerifyReleasePick(ctx, input); err != nil {

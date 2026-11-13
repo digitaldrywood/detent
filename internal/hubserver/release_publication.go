@@ -13,10 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type ReleasePickPublisher interface {
-	PublishReleasePick(context.Context, tracker.NativeWorkItemID, tracker.ReleasePickInput, func(context.Context) error) (tracker.ReleasePickPublication, error)
-}
-
 func (s *Service) prepareReleasePublication(ctx context.Context, scope nativeScope, item string, r tracker.PublishReleasePick) (tracker.ReleasePickPublication, error) {
 	var result tracker.ReleasePickPublication
 	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin || scope.credential.Runner.RunnerID != "" {

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 )
 
 func TestReconcilerUsesCursorAndRepositoryIdentity(t *testing.T) {
@@ -80,9 +80,9 @@ func TestReconcilerUsesCursorAndRepositoryIdentity(t *testing.T) {
 		},
 	}}
 	databaseID := int64(100)
-	snapshot, err := (&Reconciler{client: client}).Reconcile(t.Context(), hubserver.ReconcileRequest{
-		Repository: hubserver.RepositoryTarget{ID: 1, NodeID: "R_repo", DatabaseID: &databaseID, Owner: "old-owner", Name: "old-name"},
-		Mode:       hubserver.ReconcileIncremental,
+	snapshot, err := (&Reconciler{client: client}).Reconcile(t.Context(), githubcontract.ReconcileRequest{
+		Repository: githubcontract.RepositoryTarget{ID: 1, NodeID: "R_repo", DatabaseID: &databaseID, Owner: "old-owner", Name: "old-name"},
+		Mode:       githubcontract.ReconcileIncremental,
 		Since:      &since,
 		Through:    updatedAt,
 	})
@@ -90,7 +90,7 @@ func TestReconcilerUsesCursorAndRepositoryIdentity(t *testing.T) {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 	client.assertDone()
-	wantRepository := hubserver.RepositorySource{DefaultBranch: "primary", NodeID: "R_repo", DatabaseID: &databaseID, Owner: "new-owner", Name: "renamed", UpdatedAt: updatedAt}
+	wantRepository := githubcontract.RepositorySource{DefaultBranch: "primary", NodeID: "R_repo", DatabaseID: &databaseID, Owner: "new-owner", Name: "renamed", UpdatedAt: updatedAt}
 	if !reflect.DeepEqual(snapshot.Repository, wantRepository) {
 		t.Fatalf("repository = %#v, want %#v", snapshot.Repository, wantRepository)
 	}
@@ -120,9 +120,9 @@ func TestReconcilerFullRepairOmitsIncrementalCursor(t *testing.T) {
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head/statuses?per_page=100", response: []restStatus{}},
 		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/18/reviews?per_page=100", response: []restReview{}},
 	}}
-	snapshot, err := (&Reconciler{client: client}).Reconcile(t.Context(), hubserver.ReconcileRequest{
-		Repository: hubserver.RepositoryTarget{ID: 1, NodeID: "R_repo", Owner: "digitaldrywood", Name: "detent"},
-		Mode:       hubserver.ReconcileFullRepair,
+	snapshot, err := (&Reconciler{client: client}).Reconcile(t.Context(), githubcontract.ReconcileRequest{
+		Repository: githubcontract.RepositoryTarget{ID: 1, NodeID: "R_repo", Owner: "digitaldrywood", Name: "detent"},
+		Mode:       githubcontract.ReconcileFullRepair,
 		Since:      &updatedAt,
 		Through:    updatedAt,
 	})
@@ -166,11 +166,11 @@ func TestReconcilerHydratesRequestedPullRequestDetails(t *testing.T) {
 		{method: http.MethodGet, path: "/repos/new-owner/renamed/pulls/18/reviews?per_page=100", response: []restReview{changesRequested, approved, commented}},
 	}}
 	databaseID := int64(100)
-	snapshot, err := (&Reconciler{client: client}).Reconcile(t.Context(), hubserver.ReconcileRequest{
-		Repository: hubserver.RepositoryTarget{ID: 1, NodeID: "R_repo", DatabaseID: &databaseID, Owner: "old-owner", Name: "old-name"},
-		Mode:       hubserver.ReconcileIncremental,
+	snapshot, err := (&Reconciler{client: client}).Reconcile(t.Context(), githubcontract.ReconcileRequest{
+		Repository: githubcontract.RepositoryTarget{ID: 1, NodeID: "R_repo", DatabaseID: &databaseID, Owner: "old-owner", Name: "old-name"},
+		Mode:       githubcontract.ReconcileIncremental,
 		Through:    updatedAt,
-		Hydrations: []hubserver.HydrationRequest{
+		Hydrations: []githubcontract.HydrationRequest{
 			{ID: 1, ObjectKind: "pull_request_checks", ObjectKey: "18", GitHubNumber: 18, RequestCount: 1},
 			{ID: 2, ObjectKind: "pull_request_reviews", ObjectKey: "18", GitHubNumber: 18, RequestCount: 1},
 			{ID: 3, ObjectKind: "commit_checks", ObjectKey: "head", HeadSHA: "head", RequestCount: 1},
@@ -220,13 +220,13 @@ func TestReconcilerHydratesRequestedPullRequestDetails(t *testing.T) {
 						restStep{method: http.MethodGet, path: "/repos/new-owner/renamed/pulls/18/reviews?per_page=100", response: []restReview{changesRequested, approved, commented}})
 				}
 				client := &scriptedRESTClient{t: t, steps: steps}
-				snapshot, err := (&Reconciler{client: client}).Reconcile(t.Context(), hubserver.ReconcileRequest{
-					Repository: hubserver.RepositoryTarget{Owner: "new-owner", Name: "renamed", NodeID: "R_repo"}, TargetedPullRequests: true,
-					Hydrations: []hubserver.HydrationRequest{{ObjectKind: "pull_request", GitHubNumber: 18, HeadSHA: "head", RequestCount: 1}},
+				snapshot, err := (&Reconciler{client: client}).Reconcile(t.Context(), githubcontract.ReconcileRequest{
+					Repository: githubcontract.RepositoryTarget{Owner: "new-owner", Name: "renamed", NodeID: "R_repo"}, TargetedPullRequests: true,
+					Hydrations: []githubcontract.HydrationRequest{{ObjectKind: "pull_request", GitHubNumber: 18, HeadSHA: "head", RequestCount: 1}},
 				})
 				client.assertDone()
 				if name != "current" {
-					if err == nil || !hubserver.IsPermanent(err) {
+					if err == nil || !githubcontract.IsPermanent(err) {
 						t.Fatalf("changed provider identity was not definitely refused: %v", err)
 					}
 					return
@@ -304,27 +304,27 @@ func TestReconcilerHydratesRequestedPullRequestDetails(t *testing.T) {
 					}
 				}
 				client := &scriptedRESTClient{t: t, steps: steps}
-				_, err := (&Reconciler{client: client}).Reconcile(t.Context(), hubserver.ReconcileRequest{Repository: hubserver.RepositoryTarget{Owner: "new-owner", Name: "renamed", NodeID: "R_repo"}, TargetedPullRequests: true, Hydrations: []hubserver.HydrationRequest{{ObjectKind: "pull_request", GitHubNumber: 18, HeadSHA: "head", RequestCount: 1}}})
+				_, err := (&Reconciler{client: client}).Reconcile(t.Context(), githubcontract.ReconcileRequest{Repository: githubcontract.RepositoryTarget{Owner: "new-owner", Name: "renamed", NodeID: "R_repo"}, TargetedPullRequests: true, Hydrations: []githubcontract.HydrationRequest{{ObjectKind: "pull_request", GitHubNumber: 18, HeadSHA: "head", RequestCount: 1}}})
 				client.assertDone()
-				if !errors.Is(err, test.err) || hubserver.IsPermanent(err) != test.permanent {
-					t.Fatalf("targeted failure=%v permanent=%v want=%v", err, hubserver.IsPermanent(err), test.permanent)
+				if !errors.Is(err, test.err) || githubcontract.IsPermanent(err) != test.permanent {
+					t.Fatalf("targeted failure=%v permanent=%v want=%v", err, githubcontract.IsPermanent(err), test.permanent)
 				}
 			})
 		}
 		t.Run("invalid_target_request", func(t *testing.T) {
 			client := &scriptedRESTClient{t: t}
-			_, err := (&Reconciler{client: client}).Reconcile(t.Context(), hubserver.ReconcileRequest{Repository: hubserver.RepositoryTarget{Owner: "new-owner", Name: "renamed"}, TargetedPullRequests: true})
+			_, err := (&Reconciler{client: client}).Reconcile(t.Context(), githubcontract.ReconcileRequest{Repository: githubcontract.RepositoryTarget{Owner: "new-owner", Name: "renamed"}, TargetedPullRequests: true})
 			client.assertDone()
-			if err == nil || hubserver.IsPermanent(err) {
+			if err == nil || githubcontract.IsPermanent(err) {
 				t.Fatalf("request-shape fault became definite PR refusal: %v", err)
 			}
 		})
 		incomplete := detailedPullRequest
 		incomplete.Base.Repository = nil
 		client := &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/new-owner/renamed/pulls/18", response: incomplete}}}
-		_, err := (&Reconciler{client: client}).Reconcile(t.Context(), hubserver.ReconcileRequest{Repository: hubserver.RepositoryTarget{Owner: "new-owner", Name: "renamed"}, TargetedPullRequests: true, Hydrations: []hubserver.HydrationRequest{{ObjectKind: "pull_request", GitHubNumber: 18, HeadSHA: "head", RequestCount: 1}}})
+		_, err := (&Reconciler{client: client}).Reconcile(t.Context(), githubcontract.ReconcileRequest{Repository: githubcontract.RepositoryTarget{Owner: "new-owner", Name: "renamed"}, TargetedPullRequests: true, Hydrations: []githubcontract.HydrationRequest{{ObjectKind: "pull_request", GitHubNumber: 18, HeadSHA: "head", RequestCount: 1}}})
 		client.assertDone()
-		if err == nil || hubserver.IsPermanent(err) {
+		if err == nil || githubcontract.IsPermanent(err) {
 			t.Fatalf("incomplete source falsely classified definite: %v", err)
 		}
 	})

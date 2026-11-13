@@ -1,4 +1,4 @@
-package hubgithub
+package github_test
 
 import (
 	"bytes"
@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubgithub"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -106,7 +107,7 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 			if test.state == "Todo" {
 				client.steps = append(client.steps, restStep{method: http.MethodGet, path: path + "/jobs?per_page=100", response: map[string]any{"jobs": []map[string]any{{"id": 456, "run_id": 123, "name": "Verify", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-01T00:00:00Z", "completed_at": "2026-10-01T00:01:00Z"}}}})
 			}
-			service, err := openGitHubService(t, hubserver.Config{InitialAdminToken: []byte(token), GitHubWebhookSecret: []byte(secret), ImportBackend: NewImporter(client), ReconcileBackend: NewReconciler(client), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			service, err := openGitHubService(t, hubserver.Config{InitialAdminToken: []byte(token), GitHubWebhookSecret: []byte(secret), ImportBackend: hubgithub.NewImporter(client), ReconcileBackend: hubgithub.NewReconciler(client), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}

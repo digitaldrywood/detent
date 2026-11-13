@@ -12,7 +12,7 @@ import (
 	"time"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/reviewseverity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -25,20 +25,20 @@ func NewReconciler(client restClient) *Reconciler {
 	return &Reconciler{client: client}
 }
 
-func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileRequest) (hubserver.ReconcileSnapshot, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, request githubcontract.ReconcileRequest) (githubcontract.ReconcileSnapshot, error) {
 	ctx = scopedRequests(ctx, request.Profile, "reconcile")
 	if request.Profile == "native" {
 		request.SkipIssues = true
 	}
 	if r == nil || r.client == nil {
-		return hubserver.ReconcileSnapshot{}, errors.New("github reconciler is not configured")
+		return githubcontract.ReconcileSnapshot{}, errors.New("github reconciler is not configured")
 	}
 	if request.TargetedPullRequests {
 		return r.reconcileTargetedPullRequest(ctx, request)
 	}
 	repository, err := r.fetchRepository(ctx, request.Repository)
 	if err != nil {
-		return hubserver.ReconcileSnapshot{}, err
+		return githubcontract.ReconcileSnapshot{}, err
 	}
 	issuesPath := repositoryRESTPath(repository.Owner.Login, repository.Name) + "/issues"
 	issueQuery := url.Values{
@@ -47,7 +47,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileR
 		"sort":      {"updated"},
 		"state":     {"all"},
 	}
-	if request.Mode == hubserver.ReconcileIncremental && request.Since != nil {
+	if request.Mode == githubcontract.ReconcileIncremental && request.Since != nil {
 		issueQuery.Set("since", request.Since.UTC().Format(time.RFC3339Nano))
 	}
 	issuesPath += "?" + issueQuery.Encode()
@@ -55,7 +55,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileR
 	if !request.SkipIssues {
 		remoteIssues, err = fetchRESTList[reconcileIssue](ctx, r.client, issuesPath)
 		if err != nil {
-			return hubserver.ReconcileSnapshot{}, fmt.Errorf("list github repository issues: %w", err)
+			return githubcontract.ReconcileSnapshot{}, fmt.Errorf("list github repository issues: %w", err)
 		}
 	}
 	pullsPath := repositoryRESTPath(repository.Owner.Login, repository.Name) + "/pulls?direction=asc&per_page=100&sort=updated&state=all"
@@ -63,19 +63,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileR
 	if !request.SkipRepository {
 		remotePulls, err = fetchRESTList[reconcilePullRequest](ctx, r.client, pullsPath)
 		if err != nil {
-			return hubserver.ReconcileSnapshot{}, fmt.Errorf("list github repository pull requests: %w", err)
+			return githubcontract.ReconcileSnapshot{}, fmt.Errorf("list github repository pull requests: %w", err)
 		}
 	}
-	snapshot := hubserver.ReconcileSnapshot{
-		Repository: hubserver.RepositorySource{
+	snapshot := githubcontract.ReconcileSnapshot{
+		Repository: githubcontract.RepositorySource{
 			NodeID: repository.NodeID, DatabaseID: positiveID(repository.ID),
 			Owner: repository.Owner.Login, Name: repository.Name, DefaultBranch: repository.DefaultBranch, UpdatedAt: repository.UpdatedAt,
 		},
-		Issues:       make([]hubserver.IssueSource, 0, len(remoteIssues)),
-		PullRequests: make([]hubserver.PullRequestSource, 0, len(remotePulls)),
+		Issues:       make([]githubcontract.IssueSource, 0, len(remoteIssues)),
+		PullRequests: make([]githubcontract.PullRequestSource, 0, len(remotePulls)),
 	}
 	if err := validateRepositorySource(snapshot.Repository); err != nil {
-		return hubserver.ReconcileSnapshot{}, err
+		return githubcontract.ReconcileSnapshot{}, err
 	}
 	for _, issue := range remoteIssues {
 		if issue.PullRequest != nil {
@@ -83,28 +83,28 @@ func (r *Reconciler) Reconcile(ctx context.Context, request hubserver.ReconcileR
 		}
 		source := issue.source()
 		if err := validateIssueSource(source); err != nil {
-			return hubserver.ReconcileSnapshot{}, err
+			return githubcontract.ReconcileSnapshot{}, err
 		}
 		snapshot.Issues = append(snapshot.Issues, source)
 	}
 	for _, pullRequest := range remotePulls {
 		source := pullRequest.source()
 		if err := validatePullRequestSource(source); err != nil {
-			return hubserver.ReconcileSnapshot{}, err
+			return githubcontract.ReconcileSnapshot{}, err
 		}
 		snapshot.PullRequests = append(snapshot.PullRequests, source)
 	}
 	if !request.SkipRepository {
 		if err := r.hydratePullRequestDetails(ctx, repositoryRESTPath(repository.Owner.Login, repository.Name), request.Mode, request.Since, request.Hydrations, &snapshot); err != nil {
-			return hubserver.ReconcileSnapshot{}, err
+			return githubcontract.ReconcileSnapshot{}, err
 		}
 	}
 	return snapshot, nil
 }
 
-func (r *Reconciler) reconcileTargetedPullRequest(ctx context.Context, request hubserver.ReconcileRequest) (hubserver.ReconcileSnapshot, error) {
+func (r *Reconciler) reconcileTargetedPullRequest(ctx context.Context, request githubcontract.ReconcileRequest) (githubcontract.ReconcileSnapshot, error) {
 	if len(request.Hydrations) != 1 || request.Hydrations[0].ObjectKind != "pull_request" || request.Hydrations[0].GitHubNumber <= 0 || request.Hydrations[0].HeadSHA == "" || strings.TrimSpace(request.Repository.Owner) == "" || strings.TrimSpace(request.Repository.Name) == "" {
-		return hubserver.ReconcileSnapshot{}, errors.New("targeted pull request request is incomplete")
+		return githubcontract.ReconcileSnapshot{}, errors.New("targeted pull request request is incomplete")
 	}
 	target := request.Hydrations[0]
 	path := repositoryRESTPath(request.Repository.Owner, request.Repository.Name)
@@ -112,34 +112,34 @@ func (r *Reconciler) reconcileTargetedPullRequest(ctx context.Context, request h
 	if err := r.client.REST(ctx, http.MethodGet, path+"/pulls/"+strconv.Itoa(target.GitHubNumber), nil, &pull); err != nil {
 		var status *connectorgithub.StatusError
 		if errors.Is(err, connectorgithub.ErrNotFound) || errors.As(err, &status) && (status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusGone) {
-			err = hubserver.Permanent(err)
+			err = githubcontract.Permanent(err)
 		}
-		return hubserver.ReconcileSnapshot{}, fmt.Errorf("refresh targeted github pull request: %w", err)
+		return githubcontract.ReconcileSnapshot{}, fmt.Errorf("refresh targeted github pull request: %w", err)
 	}
 	repository := pull.Base.Repository
 	if repository == nil || repository.NodeID == "" || repository.Owner.Login == "" || repository.Name == "" || pull.Number <= 0 || pull.Head.SHA == "" {
-		return hubserver.ReconcileSnapshot{}, errors.New("targeted pull request source identity is incomplete")
+		return githubcontract.ReconcileSnapshot{}, errors.New("targeted pull request source identity is incomplete")
 	}
 	if !strings.EqualFold(repository.Owner.Login, request.Repository.Owner) || !strings.EqualFold(repository.Name, request.Repository.Name) || request.Repository.NodeID != "" && repository.NodeID != request.Repository.NodeID || pull.Number != target.GitHubNumber || pull.Head.SHA != target.HeadSHA {
-		return hubserver.ReconcileSnapshot{}, hubserver.Permanent(errors.New("targeted pull request source identity changed"))
+		return githubcontract.ReconcileSnapshot{}, githubcontract.Permanent(errors.New("targeted pull request source identity changed"))
 	}
 	source := pull.source()
 	if err := validatePullRequestSource(source); err != nil {
-		return hubserver.ReconcileSnapshot{}, err
+		return githubcontract.ReconcileSnapshot{}, err
 	}
 	checks, err := r.fetchCheckSummary(ctx, path, source.HeadSHA)
 	if err != nil {
-		return hubserver.ReconcileSnapshot{}, err
+		return githubcontract.ReconcileSnapshot{}, err
 	}
 	reviews, err := r.fetchReviewSummary(ctx, path, source.Number)
 	if err != nil {
-		return hubserver.ReconcileSnapshot{}, err
+		return githubcontract.ReconcileSnapshot{}, err
 	}
 	mergeable := strings.ToLower(strings.TrimSpace(pull.MergeableState))
-	return hubserver.ReconcileSnapshot{
-		Repository:         hubserver.RepositorySource{NodeID: repository.NodeID, DatabaseID: positiveID(repository.ID), Owner: repository.Owner.Login, Name: repository.Name, DefaultBranch: repository.DefaultBranch, UpdatedAt: repository.UpdatedAt},
-		PullRequests:       []hubserver.PullRequestSource{source},
-		PullRequestDetails: []hubserver.PullRequestDetailSource{{Number: source.Number, HeadSHA: source.HeadSHA, MergeableState: &mergeable, Checks: &checks, Reviews: &reviews}},
+	return githubcontract.ReconcileSnapshot{
+		Repository:         githubcontract.RepositorySource{NodeID: repository.NodeID, DatabaseID: positiveID(repository.ID), Owner: repository.Owner.Login, Name: repository.Name, DefaultBranch: repository.DefaultBranch, UpdatedAt: repository.UpdatedAt},
+		PullRequests:       []githubcontract.PullRequestSource{source},
+		PullRequestDetails: []githubcontract.PullRequestDetailSource{{Number: source.Number, HeadSHA: source.HeadSHA, MergeableState: &mergeable, Checks: &checks, Reviews: &reviews}},
 	}, nil
 }
 
@@ -148,7 +148,7 @@ type pullRequestDetailNeed struct {
 	reviews bool
 }
 
-func (r *Reconciler) hydratePullRequestDetails(ctx context.Context, repositoryPath string, mode hubserver.ReconcileMode, since *time.Time, hydrations []hubserver.HydrationRequest, snapshot *hubserver.ReconcileSnapshot) error {
+func (r *Reconciler) hydratePullRequestDetails(ctx context.Context, repositoryPath string, mode githubcontract.ReconcileMode, since *time.Time, hydrations []githubcontract.HydrationRequest, snapshot *githubcontract.ReconcileSnapshot) error {
 	needs := make(map[int]pullRequestDetailNeed)
 	commitChecks := make(map[string]struct{})
 	for _, hydration := range hydrations {
@@ -181,14 +181,14 @@ func (r *Reconciler) hydratePullRequestDetails(ctx context.Context, repositoryPa
 		}
 	}
 	for _, pullRequest := range snapshot.PullRequests {
-		if pullRequest.MergedAt.IsZero() || pullRequest.MergedBy != "" || mode == hubserver.ReconcileIncremental && since != nil && pullRequest.UpdatedAt.Before(*since) {
+		if pullRequest.MergedAt.IsZero() || pullRequest.MergedBy != "" || mode == githubcontract.ReconcileIncremental && since != nil && pullRequest.UpdatedAt.Before(*since) {
 			continue
 		}
 		if _, requested := needs[pullRequest.Number]; !requested {
 			needs[pullRequest.Number] = pullRequestDetailNeed{}
 		}
 	}
-	if mode == hubserver.ReconcileFullRepair {
+	if mode == githubcontract.ReconcileFullRepair {
 		for _, pullRequest := range snapshot.PullRequests {
 			if !strings.EqualFold(strings.TrimSpace(pullRequest.State), "open") {
 				continue
@@ -222,7 +222,7 @@ func (r *Reconciler) hydratePullRequestDetails(ctx context.Context, repositoryPa
 		}
 		replacePullRequestSource(&snapshot.PullRequests, source)
 		mergeableState := strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
-		details := hubserver.PullRequestDetailSource{
+		details := githubcontract.PullRequestDetailSource{
 			Number: number, HeadSHA: source.HeadSHA, MergeableState: &mergeableState,
 		}
 		need := needs[number]
@@ -259,14 +259,14 @@ func (r *Reconciler) hydratePullRequestDetails(ctx context.Context, repositoryPa
 		if err != nil {
 			return err
 		}
-		snapshot.PullRequestDetails = append(snapshot.PullRequestDetails, hubserver.PullRequestDetailSource{
+		snapshot.PullRequestDetails = append(snapshot.PullRequestDetails, githubcontract.PullRequestDetailSource{
 			HeadSHA: headSHA, Checks: &checks,
 		})
 	}
 	return nil
 }
 
-func replacePullRequestSource(sources *[]hubserver.PullRequestSource, replacement hubserver.PullRequestSource) {
+func replacePullRequestSource(sources *[]githubcontract.PullRequestSource, replacement githubcontract.PullRequestSource) {
 	for index := range *sources {
 		if (*sources)[index].Number == replacement.Number {
 			(*sources)[index] = replacement
@@ -296,7 +296,7 @@ func (r *Reconciler) fetchReviewSummary(ctx context.Context, repositoryPath stri
 	return summarizeReviews(reviews), nil
 }
 
-func (r *Reconciler) fetchRepository(ctx context.Context, target hubserver.RepositoryTarget) (reconcileRepository, error) {
+func (r *Reconciler) fetchRepository(ctx context.Context, target githubcontract.RepositoryTarget) (reconcileRepository, error) {
 	path := repositoryRESTPath(target.Owner, target.Name)
 	if target.DatabaseID != nil && *target.DatabaseID > 0 {
 		path = "/repositories/" + strconv.FormatInt(*target.DatabaseID, 10)
@@ -341,7 +341,7 @@ type reconcileIssue struct {
 	UpdatedAt   time.Time   `json:"updated_at"`
 }
 
-func (i reconcileIssue) source() hubserver.IssueSource {
+func (i reconcileIssue) source() githubcontract.IssueSource {
 	body := ""
 	if i.Body != nil {
 		body = *i.Body
@@ -354,7 +354,7 @@ func (i reconcileIssue) source() hubserver.IssueSource {
 	for _, assignee := range i.Assignees {
 		assignees = append(assignees, assignee.Login)
 	}
-	return hubserver.IssueSource{
+	return githubcontract.IssueSource{
 		NodeID: i.NodeID, DatabaseID: positiveID(i.ID), Number: i.Number,
 		Title: i.Title, Body: body, URL: i.HTMLURL, State: i.State, AuthorID: i.User.Login,
 		Labels: labels, Assignees: assignees, CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt,
@@ -508,8 +508,8 @@ func reviewAfter(left restReview, right restReview) bool {
 	return right.SubmittedAt == nil || left.SubmittedAt.After(*right.SubmittedAt)
 }
 
-func (p reconcilePullRequest) source() hubserver.PullRequestSource {
-	return hubserver.PullRequestSource{
+func (p reconcilePullRequest) source() githubcontract.PullRequestSource {
+	return githubcontract.PullRequestSource{
 		NodeID: p.NodeID, DatabaseID: positiveID(p.ID), Number: p.Number,
 		Title: p.Title, URL: p.HTMLURL, State: p.State, Draft: p.Draft,
 		HeadRef: p.Head.Ref, HeadSHA: p.Head.SHA, BaseRef: p.Base.Ref, BaseSHA: p.Base.SHA,
@@ -518,21 +518,21 @@ func (p reconcilePullRequest) source() hubserver.PullRequestSource {
 	}
 }
 
-func validateRepositorySource(source hubserver.RepositorySource) error {
+func validateRepositorySource(source githubcontract.RepositorySource) error {
 	if strings.TrimSpace(source.NodeID) == "" || strings.TrimSpace(source.Owner) == "" || strings.TrimSpace(source.Name) == "" || source.UpdatedAt.IsZero() {
 		return errors.New("github repository reconciliation returned an incomplete repository")
 	}
 	return nil
 }
 
-func validateIssueSource(source hubserver.IssueSource) error {
+func validateIssueSource(source githubcontract.IssueSource) error {
 	if strings.TrimSpace(source.NodeID) == "" || source.Number <= 0 || strings.TrimSpace(source.Title) == "" || strings.TrimSpace(source.URL) == "" || strings.TrimSpace(source.State) == "" || source.CreatedAt.IsZero() || source.UpdatedAt.IsZero() {
 		return fmt.Errorf("github repository reconciliation returned incomplete issue %d", source.Number)
 	}
 	return nil
 }
 
-func validatePullRequestSource(source hubserver.PullRequestSource) error {
+func validatePullRequestSource(source githubcontract.PullRequestSource) error {
 	if strings.TrimSpace(source.NodeID) == "" || source.Number <= 0 || strings.TrimSpace(source.Title) == "" || strings.TrimSpace(source.URL) == "" || strings.TrimSpace(source.State) == "" || strings.TrimSpace(source.HeadRef) == "" || strings.TrimSpace(source.HeadSHA) == "" || strings.TrimSpace(source.BaseRef) == "" || strings.TrimSpace(source.BaseSHA) == "" || source.CreatedAt.IsZero() || source.UpdatedAt.IsZero() {
 		return fmt.Errorf("github repository reconciliation returned incomplete pull request %d", source.Number)
 	}
@@ -546,4 +546,4 @@ func positiveID(value int64) *int64 {
 	return &value
 }
 
-var _ hubserver.ReconcileBackend = (*Reconciler)(nil)
+var _ githubcontract.ReconcileBackend = (*Reconciler)(nil)

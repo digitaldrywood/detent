@@ -12,7 +12,7 @@ import (
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -28,7 +28,7 @@ func TestImportPagesPreserveSourceRecords(t *testing.T) {
 	} {
 		t.Run(test.stage, func(t *testing.T) {
 			client := &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/org/repo/issues/1" + test.path + "?per_page=100", response: json.RawMessage(test.raw), next: test.next}}}
-			page, err := NewImporter(client).FetchImportPage(t.Context(), hubserver.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: test.stage})
+			page, err := NewImporter(client).FetchImportPage(t.Context(), githubcontract.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: test.stage})
 			if err != nil || len(page.Records) != 1 || page.NextCursor != test.next {
 				t.Fatalf("page = %+v, %v", page, err)
 			}
@@ -47,15 +47,15 @@ func TestImporterRejectsChangedCursorAndPartialResponses(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name    string
-		request hubserver.GitHubImportRequest
+		request githubcontract.GitHubImportRequest
 		client  *scriptedRESTClient
 	}{
-		{name: "changed endpoint", request: hubserver.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: "comments", Cursor: "/repos/elsewhere/private/issues/1/comments?page=2"}},
-		{name: "missing repository", request: hubserver.GitHubImportRequest{Repository: "bad", IssueNumber: 1, Stage: "comments"}},
-		{name: "unknown stage", request: hubserver.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: "unknown"}},
-		{name: "issue excerpt", request: hubserver.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: "issue"}, client: &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/org/repo/issues/1", response: json.RawMessage(`{"id":123,"node_id":"I_issue","number":1,"title":"Excerpt"}`)}}}},
-		{name: "403", request: hubserver.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: "comments"}, client: &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/org/repo/issues/1/comments?per_page=100", err: &connectorgithub.StatusError{StatusCode: 403}}}}},
-		{name: "429", request: hubserver.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: "comments"}, client: &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/org/repo/issues/1/comments?per_page=100", err: &connectorgithub.StatusError{StatusCode: 429}}}}},
+		{name: "changed endpoint", request: githubcontract.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: "comments", Cursor: "/repos/elsewhere/private/issues/1/comments?page=2"}},
+		{name: "missing repository", request: githubcontract.GitHubImportRequest{Repository: "bad", IssueNumber: 1, Stage: "comments"}},
+		{name: "unknown stage", request: githubcontract.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: "unknown"}},
+		{name: "issue excerpt", request: githubcontract.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: "issue"}, client: &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/org/repo/issues/1", response: json.RawMessage(`{"id":123,"node_id":"I_issue","number":1,"title":"Excerpt"}`)}}}},
+		{name: "403", request: githubcontract.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: "comments"}, client: &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/org/repo/issues/1/comments?per_page=100", err: &connectorgithub.StatusError{StatusCode: 403}}}}},
+		{name: "429", request: githubcontract.GitHubImportRequest{Repository: "org/repo", IssueNumber: 1, Stage: "comments"}, client: &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/org/repo/issues/1/comments?per_page=100", err: &connectorgithub.StatusError{StatusCode: 429}}}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			client := test.client
@@ -104,7 +104,7 @@ func TestImportEditHistoryPaginationAndRedaction(t *testing.T) {
 		{"missing cursor", `{"node":{"userContentEdits":{"nodes":[],"pageInfo":{"hasNextPage":true}}}}`, "", true, 0, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			page, err := NewImporter(editFixtureClient{response: json.RawMessage(test.raw)}).FetchImportPage(t.Context(), hubserver.GitHubImportRequest{Stage: "edits", SourceID: "I_issue"})
+			page, err := NewImporter(editFixtureClient{response: json.RawMessage(test.raw)}).FetchImportPage(t.Context(), githubcontract.GitHubImportRequest{Stage: "edits", SourceID: "I_issue"})
 			if (err != nil) != test.wantError || page.NextCursor != test.cursor || len(page.Records) != test.records || len(page.Gaps) != test.gaps {
 				t.Fatalf("edit page = %+v, %v", page, err)
 			}
@@ -148,7 +148,7 @@ func TestReconcileNativeProfileDoesNotFetchIssues(t *testing.T) {
 			if !skipRepository {
 				client.steps = append(client.steps, restStep{method: http.MethodGet, path: "/repos/org/repo/pulls?direction=asc&per_page=100&sort=updated&state=all", response: []reconcilePullRequest{}})
 			}
-			_, err := NewReconciler(client).Reconcile(t.Context(), hubserver.ReconcileRequest{Profile: "native", Repository: hubserver.RepositoryTarget{Owner: "org", Name: "repo"}, SkipRepository: skipRepository})
+			_, err := NewReconciler(client).Reconcile(t.Context(), githubcontract.ReconcileRequest{Profile: "native", Repository: githubcontract.RepositoryTarget{Owner: "org", Name: "repo"}, SkipRepository: skipRepository})
 			if err != nil || len(client.steps) != 0 {
 				t.Fatalf("native reconciliation: %v, %d calls left", err, len(client.steps))
 			}
@@ -204,7 +204,7 @@ func TestImportScheduledOccurrence(t *testing.T) {
 				steps = append(steps, restStep{method: http.MethodGet, path: path + "/jobs?per_page=100", response: map[string]any{"jobs": []map[string]any{job}}})
 			}
 			client := &scriptedRESTClient{t: t, steps: steps}
-			page, err := NewImporter(client).FetchImportPage(t.Context(), hubserver.GitHubImportRequest{Profile: "native", Repository: "org/repo", Stage: "scheduled", Scheduled: &evidence})
+			page, err := NewImporter(client).FetchImportPage(t.Context(), githubcontract.GitHubImportRequest{Profile: "native", Repository: "org/repo", Stage: "scheduled", Scheduled: &evidence})
 			if (err == nil) != test.valid || (page.Scheduled != nil) != test.valid {
 				t.Fatalf("page=%+v err=%v", page, err)
 			}
@@ -249,7 +249,7 @@ func TestImportBatchCompletesDiscussionPages(t *testing.T) {
 			response := json.RawMessage(`{"repository":{"nameWithOwner":"example-org/example-project","issues":{"totalCount":1,"nodes":[{"id":"I_12","number":12,"url":"https://github.com/example-org/example-project/issues/12","title":"Issue","body":"Complete body","createdAt":"2020-01-01T00:00:00Z","updatedAt":"2021-01-01T00:00:00Z","author":{"login":"source-user"},"labels":{"nodes":[{"name":"bug"}]},"comments":{"totalCount":101,"nodes":[],"pageInfo":{"hasNextPage":true}}}],"pageInfo":{"hasNextPage":false}}}}`)
 			importer := NewImporter(editFixtureClient{response: response, pageClient: pages})
 			discovery := tracker.GitHubDiscovery{Repository: "example-org/example-project", Snapshots: true}
-			result, err := importer.FetchImportPage(t.Context(), hubserver.GitHubImportRequest{Profile: "native", Repository: discovery.Repository, Stage: "batch", Discovery: &discovery})
+			result, err := importer.FetchImportPage(t.Context(), githubcontract.GitHubImportRequest{Profile: "native", Repository: discovery.Repository, Stage: "batch", Discovery: &discovery})
 			if test.incomplete {
 				if err == nil || result.BatchPage != nil {
 					t.Fatalf("partial discussion accepted: %+v %v", result, err)
@@ -279,7 +279,7 @@ func TestScheduledRangeRequiresCompleteAncestry(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			client := &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/example-org/example-project/compare/base...head?per_page=100", response: json.RawMessage(test.body)}}}
-			page, err := NewImporter(client).FetchImportPage(t.Context(), hubserver.GitHubImportRequest{Repository: "example-org/example-project", Stage: "scheduled-range", CompareBase: "base", CompareHead: "head"})
+			page, err := NewImporter(client).FetchImportPage(t.Context(), githubcontract.GitHubImportRequest{Repository: "example-org/example-project", Stage: "scheduled-range", CompareBase: "base", CompareHead: "head"})
 			if err != nil || len(page.Commits) != test.count {
 				t.Fatalf("commits=%v error=%v", page.Commits, err)
 			}

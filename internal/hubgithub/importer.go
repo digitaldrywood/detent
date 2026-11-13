@@ -15,7 +15,7 @@ import (
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -23,7 +23,7 @@ type Importer struct{ client restClient }
 
 func NewImporter(client restClient) *Importer { return &Importer{client: client} }
 
-func (i *Importer) FetchImportPage(ctx context.Context, request hubserver.GitHubImportRequest) (result hubserver.GitHubImportPage, resultErr error) {
+func (i *Importer) FetchImportPage(ctx context.Context, request githubcontract.GitHubImportRequest) (result githubcontract.GitHubImportPage, resultErr error) {
 	defer func() {
 		var status *connectorgithub.StatusError
 		if errors.As(resultErr, &status) {
@@ -83,7 +83,7 @@ func (i *Importer) FetchImportPage(ctx context.Context, request hubserver.GitHub
 		if err != nil {
 			return result, err
 		}
-		result.Records = []hubserver.GitHubImportRecord{record}
+		result.Records = []githubcontract.GitHubImportRecord{record}
 		return result, nil
 	}
 	var kind string
@@ -128,7 +128,7 @@ func (i *Importer) FetchImportPage(ctx context.Context, request hubserver.GitHub
 	return result, nil
 }
 
-func importRecord(raw json.RawMessage, kind string) (hubserver.GitHubImportRecord, error) {
+func importRecord(raw json.RawMessage, kind string) (githubcontract.GitHubImportRecord, error) {
 	var source struct {
 		ID        json.RawMessage `json:"id"`
 		NodeID    string          `json:"node_id"`
@@ -146,7 +146,7 @@ func importRecord(raw json.RawMessage, kind string) (hubserver.GitHubImportRecor
 		} `json:"actor"`
 	}
 	if err := json.Unmarshal(raw, &source); err != nil {
-		return hubserver.GitHubImportRecord{}, err
+		return githubcontract.GitHubImportRecord{}, err
 	}
 	id := source.NodeID
 	if id == "" && len(source.ID) > 0 && string(source.ID) != "null" {
@@ -175,7 +175,7 @@ func importRecord(raw json.RawMessage, kind string) (hubserver.GitHubImportRecor
 	if updated.IsZero() {
 		updated = source.CreatedAt
 	}
-	record := hubserver.GitHubImportRecord{SourceKey: kind + ":" + id, Kind: kind, Data: raw, Provenance: tracker.Provenance{Provider: "github", ExternalID: id, AuthorID: author, AuthorDisplayName: name, CreatedAt: source.CreatedAt, UpdatedAt: updated, ObservedAt: time.Now().UTC()}}
+	record := githubcontract.GitHubImportRecord{SourceKey: kind + ":" + id, Kind: kind, Data: raw, Provenance: tracker.Provenance{Provider: "github", ExternalID: id, AuthorID: author, AuthorDisplayName: name, CreatedAt: source.CreatedAt, UpdatedAt: updated, ObservedAt: time.Now().UTC()}}
 	if kind == "comment" {
 		record.Body = source.Body
 	}
@@ -185,14 +185,14 @@ func importRecord(raw json.RawMessage, kind string) (hubserver.GitHubImportRecor
 	return record, nil
 }
 
-func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
+func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request githubcontract.GitHubImportRequest) (githubcontract.GitHubImportPage, error) {
 	if request.Scheduled == nil {
-		return hubserver.GitHubImportPage{}, errors.New("scheduled occurrence is required")
+		return githubcontract.GitHubImportPage{}, errors.New("scheduled occurrence is required")
 	}
 	evidence := *request.Scheduled
 	parsed := gate.ParseScheduledEvidence(evidence.Stamp())
 	if len(parsed) != 1 || evidence.Repository != request.Repository || evidence.JobID == "0" {
-		return hubserver.GitHubImportPage{}, errors.New("scheduled occurrence is invalid")
+		return githubcontract.GitHubImportPage{}, errors.New("scheduled occurrence is invalid")
 	}
 	path := "/repos/" + request.Repository + "/actions/runs/" + evidence.RunID + "/attempts/" + evidence.RunAttempt
 	var run struct {
@@ -210,10 +210,10 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request hubserv
 		} `json:"head_repository"`
 	}
 	if err := i.client.REST(ctx, http.MethodGet, path, nil, &run); err != nil {
-		return hubserver.GitHubImportPage{}, err
+		return githubcontract.GitHubImportPage{}, err
 	}
 	if strconv.FormatInt(run.ID, 10) != evidence.RunID || strconv.FormatInt(run.Attempt, 10) != evidence.RunAttempt || !matchesScheduledCIWorkflow(request, run.Path, run.HeadBranch) || run.HeadSHA != evidence.HeadSHA || !strings.EqualFold(run.Repository.Name, request.Repository) || !strings.EqualFold(run.HeadRepository.Name, request.Repository) || (run.Event != "schedule" && run.Event != "push" && run.Event != "workflow_dispatch") {
-		return hubserver.GitHubImportPage{}, errors.New("scheduled occurrence does not match the repository CI run attempt")
+		return githubcontract.GitHubImportPage{}, errors.New("scheduled occurrence does not match the repository CI run attempt")
 	}
 	var jobs struct {
 		Jobs []struct {
@@ -228,20 +228,20 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request hubserv
 		} `json:"jobs"`
 	}
 	if err := i.client.REST(ctx, http.MethodGet, path+"/jobs?per_page=100", nil, &jobs); err != nil {
-		return hubserver.GitHubImportPage{}, err
+		return githubcontract.GitHubImportPage{}, err
 	}
 	for _, job := range jobs.Jobs {
 		if strconv.FormatInt(job.ID, 10) == evidence.JobID && job.RunID == run.ID && job.HeadSHA == evidence.HeadSHA && job.Name == evidence.JobName && job.Status == "completed" && job.Conclusion == evidence.Conclusion && (job.Conclusion == "failure" || job.Conclusion == "timed_out") {
 			evidence.Checks = nil
 			evidence.StartedAt, evidence.FinishedAt = job.StartedAt, job.CompletedAt
 			evidence.JobURL = "https://github.com/" + request.Repository + "/actions/jobs/" + evidence.JobID
-			return hubserver.GitHubImportPage{Scheduled: &evidence}, nil
+			return githubcontract.GitHubImportPage{Scheduled: &evidence}, nil
 		}
 	}
-	return hubserver.GitHubImportPage{}, errors.New("scheduled occurrence does not match a failed job in the run attempt")
+	return githubcontract.GitHubImportPage{}, errors.New("scheduled occurrence does not match a failed job in the run attempt")
 }
 
-func matchesScheduledCIWorkflow(request hubserver.GitHubImportRequest, workflow, branch string) bool {
+func matchesScheduledCIWorkflow(request githubcontract.GitHubImportRequest, workflow, branch string) bool {
 	expectedWorkflow := request.ScheduledWorkflow
 	if expectedWorkflow == "" {
 		expectedWorkflow = ".github/workflows/ci.yml"
@@ -259,14 +259,14 @@ func matchesScheduledCIWorkflow(request hubserver.GitHubImportRequest, workflow,
 	return expectedWorkflow == ".github/workflows/ci.yml" && (branch == "develop" || strings.HasPrefix(branch, "release/v"))
 }
 
-func (i *Importer) fetchBatch(ctx context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
+func (i *Importer) fetchBatch(ctx context.Context, request githubcontract.GitHubImportRequest) (githubcontract.GitHubImportPage, error) {
 	client, ok := i.client.(graphQLClient)
 	if !ok || request.Discovery == nil {
-		return hubserver.GitHubImportPage{}, errors.New("github GraphQL batch transport is unavailable")
+		return githubcontract.GitHubImportPage{}, errors.New("github GraphQL batch transport is unavailable")
 	}
 	page, err := connectorgithub.FetchDiscoveryPage(ctx, client, *request.Discovery)
 	if err != nil {
-		return hubserver.GitHubImportPage{}, err
+		return githubcontract.GitHubImportPage{}, err
 	}
 	for index := range page.Issues {
 		preview := &page.Issues[index]
@@ -274,12 +274,12 @@ func (i *Importer) fetchBatch(ctx context.Context, request hubserver.GitHubImpor
 			continue
 		}
 		preview.Snapshot.Comments = nil
-		comments := hubserver.GitHubImportRequest{Profile: request.Profile, Repository: request.Repository, IssueNumber: preview.Number, Stage: "comments"}
+		comments := githubcontract.GitHubImportRequest{Profile: request.Profile, Repository: request.Repository, IssueNumber: preview.Number, Stage: "comments"}
 		seen := map[string]bool{}
 		commentCount := 0
 		for pages := 0; ; pages++ {
 			if pages == 500 {
-				return hubserver.GitHubImportPage{}, errors.New("github discussion exceeds intake page bound")
+				return githubcontract.GitHubImportPage{}, errors.New("github discussion exceeds intake page bound")
 			}
 			result, err := i.FetchImportPage(ctx, comments)
 			if err != nil {
@@ -297,20 +297,20 @@ func (i *Importer) fetchBatch(ctx context.Context, request hubserver.GitHubImpor
 				break
 			}
 			if seen[result.NextCursor] {
-				return hubserver.GitHubImportPage{}, errors.New("github discussion pagination did not advance")
+				return githubcontract.GitHubImportPage{}, errors.New("github discussion pagination did not advance")
 			}
 			seen[result.NextCursor] = true
 			comments.Cursor = result.NextCursor
 		}
 		if commentCount != preview.DiscussionCount {
-			return hubserver.GitHubImportPage{}, errors.New("github discussion changed or is incomplete; retry intake")
+			return githubcontract.GitHubImportPage{}, errors.New("github discussion changed or is incomplete; retry intake")
 		}
 		preview.NeedsDiscussion = false
 	}
-	return hubserver.GitHubImportPage{BatchPage: &page}, nil
+	return githubcontract.GitHubImportPage{BatchPage: &page}, nil
 }
 
-func (i *Importer) fetchScheduledRange(ctx context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
+func (i *Importer) fetchScheduledRange(ctx context.Context, request githubcontract.GitHubImportRequest) (githubcontract.GitHubImportPage, error) {
 	var result struct {
 		Status  string `json:"status"`
 		Total   int    `json:"total_commits"`
@@ -320,12 +320,12 @@ func (i *Importer) fetchScheduledRange(ctx context.Context, request hubserver.Gi
 	}
 	endpoint := "/repos/" + request.Repository + "/compare/" + url.PathEscape(request.CompareBase) + "..." + url.PathEscape(request.CompareHead) + "?per_page=100"
 	if err := i.client.REST(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
-		return hubserver.GitHubImportPage{}, err
+		return githubcontract.GitHubImportPage{}, err
 	}
 	if result.Status != "ahead" || result.Total == 0 || result.Total > 100 || result.Total != len(result.Commits) {
-		return hubserver.GitHubImportPage{}, nil
+		return githubcontract.GitHubImportPage{}, nil
 	}
-	page := hubserver.GitHubImportPage{}
+	page := githubcontract.GitHubImportPage{}
 	for _, commit := range result.Commits {
 		page.Commits = append(page.Commits, commit.SHA)
 	}

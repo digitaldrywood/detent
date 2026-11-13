@@ -14,17 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-var ErrReleasePickMismatch = errors.New("release pick provenance mismatch")
-
-type ReleasePickVerifier interface {
-	VerifyReleasePick(context.Context, tracker.ReleasePickInput) error
-	VerifyReleasePickRefresh(context.Context, tracker.ReleasePickInput, tracker.ReleasePickInput) error
-}
-
-type ReleaseDeliveryVerifier interface {
-	ReleaseDeliveryStatus(context.Context, tracker.ReleasePickInput) (tracker.ReleaseDeliveryStatus, error)
-}
-
 func (s *Service) getReleaseDeliveryStatus(c echo.Context) error {
 	ctx := c.Request().Context()
 	scope := nativeRequestScope(c)

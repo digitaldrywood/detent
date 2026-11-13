@@ -1,4 +1,4 @@
-package hubgithub
+package github_test
 
 import (
 	"context"
@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubgithub"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -83,11 +83,11 @@ func (c *lostOutboundResponse) REST(ctx context.Context, method, _ string, input
 
 func postgresOutboundFixture(t *testing.T, client restClient, now func() time.Time) (*hubserver.Service, tenantstore.Repository, hubserver.Config) {
 	t.Helper()
-	cfg, err := gitHubServiceConfig(t, hubserver.Config{InitialAdminToken: []byte("example-outbound-admin"), OutboxBackend: NewWriter(client), Clock: now, OutboxPollInterval: time.Hour, OutboxProcessingTimeout: time.Hour})
+	cfg, err := gitHubServiceConfig(t, hubserver.Config{InitialAdminToken: []byte("example-outbound-admin"), OutboxBackend: hubgithub.NewWriter(client), Clock: now, OutboxPollInterval: time.Hour, OutboxProcessingTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err := postgres.Open(t.Context(), *cfg.Postgres, os.DirFS("../hubserver/postgres/migrations"))
+	repository, err := postgres.Open(t.Context(), *cfg.Postgres, postgresFiles(t))
 	if err != nil {
 		t.Fatal(err)
 	}

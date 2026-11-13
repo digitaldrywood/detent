@@ -159,7 +159,7 @@ func (s *Service) executeGitHubOutboundStep(parent context.Context, row projects
 	if err := item.BeforeWrite(ctx); err != nil {
 		return result, false, err
 	}
-	if item.Kind.irreversible() {
+	if item.Kind.Irreversible() {
 		resultErr = s.config.OutboxBackend.VerifyAndExecute(ctx, item)
 	} else {
 		resultErr = s.config.OutboxBackend.Execute(ctx, item)

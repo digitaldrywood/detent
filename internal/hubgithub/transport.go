@@ -10,7 +10,7 @@ import (
 	"time"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 )
 
 type requestScopeKey struct{}
@@ -36,20 +36,20 @@ type Transport struct {
 	client       restClient
 	queue        chan struct{}
 	mu           sync.Mutex
-	counts       map[string]hubserver.GitHubRequestCount
+	counts       map[string]githubcontract.GitHubRequestCount
 	backoff      time.Time
 	lastMutation time.Time
 	now          func() time.Time
 }
 
 func NewTransport(client *connectorgithub.Client) *Transport {
-	return &Transport{client: client, queue: make(chan struct{}, 1), counts: make(map[string]hubserver.GitHubRequestCount), now: time.Now}
+	return &Transport{client: client, queue: make(chan struct{}, 1), counts: make(map[string]githubcontract.GitHubRequestCount), now: time.Now}
 }
 
-func (t *Transport) Counts() []hubserver.GitHubRequestCount {
+func (t *Transport) Counts() []githubcontract.GitHubRequestCount {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	result := make([]hubserver.GitHubRequestCount, 0, len(t.counts))
+	result := make([]githubcontract.GitHubRequestCount, 0, len(t.counts))
 	for _, count := range t.counts {
 		result = append(result, count)
 	}

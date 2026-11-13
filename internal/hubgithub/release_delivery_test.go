@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -50,7 +50,7 @@ func TestVerifyReleasePickRefresh(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-			} else if !errors.Is(err, hubserver.ErrReleasePickMismatch) {
+			} else if !errors.Is(err, githubcontract.ErrReleasePickMismatch) {
 				t.Fatalf("unsafe refresh accepted: %v", err)
 			}
 			if f.creates != 0 {
@@ -220,7 +220,7 @@ func TestVerifyReleasePick(t *testing.T) {
 			if (err == nil) != (name == "valid") {
 				t.Fatalf("verification error=%v", err)
 			}
-			if err != nil && !errors.Is(err, hubserver.ErrReleasePickMismatch) {
+			if err != nil && !errors.Is(err, githubcontract.ErrReleasePickMismatch) {
 				t.Fatalf("refusal lost provenance classification: %v", err)
 			}
 			if name == "valid" && client.pulls != 2 {

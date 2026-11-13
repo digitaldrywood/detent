@@ -11,70 +11,70 @@ import (
 	"strings"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 )
 
-func (w *Writer) Step(ctx context.Context, item hubserver.OutboxItem) (hubserver.OutboxStepResult, error) {
+func (w *Writer) Step(ctx context.Context, item githubcontract.OutboxItem) (githubcontract.OutboxStepResult, error) {
 	ctx = scopedRequests(ctx, item.Profile, "projection")
-	result := hubserver.OutboxStepResult{Progress: item.Progress}
+	result := githubcontract.OutboxStepResult{Progress: item.Progress}
 	if w == nil || w.client == nil {
-		return result, hubserver.Permanent(errors.New("GitHub outbound transport is unavailable"))
+		return result, githubcontract.Permanent(errors.New("GitHub outbound transport is unavailable"))
 	}
 	if err := validateRepository(item); err != nil {
 		return result, err
 	}
 	if item.IdempotencyKey == "" || item.OrganizationID == "" {
-		return result, hubserver.Permanent(errors.New("GitHub outbound identity is incomplete"))
+		return result, githubcontract.Permanent(errors.New("GitHub outbound identity is incomplete"))
 	}
 	if item.BeforeWrite == nil {
-		return result, hubserver.Permanent(errors.New("GitHub outbound ownership is unavailable"))
+		return result, githubcontract.Permanent(errors.New("GitHub outbound ownership is unavailable"))
 	}
 	var err error
 	switch item.Kind {
-	case hubserver.MutationWorkpad:
+	case githubcontract.MutationWorkpad:
 		result, err = w.stepWorkpad(ctx, item)
-	case hubserver.MutationWorkflowLabel:
+	case githubcontract.MutationWorkflowLabel:
 		err = w.updateWorkflowLabel(ctx, item)
 		result.Done = err == nil
-	case hubserver.MutationMergePullRequest:
+	case githubcontract.MutationMergePullRequest:
 		result, err = w.stepMerge(ctx, item)
 	default:
-		err = hubserver.Permanent(errors.New("GitHub outbound mutation is unsupported"))
+		err = githubcontract.Permanent(errors.New("GitHub outbound mutation is unsupported"))
 	}
 	return result, classifyError(err)
 }
 
-func (w *Writer) writeOutbound(ctx context.Context, item hubserver.OutboxItem, method, path string, body, output any) error {
+func (w *Writer) writeOutbound(ctx context.Context, item githubcontract.OutboxItem, method, path string, body, output any) error {
 	if item.BeforeWrite != nil {
 		if err := item.BeforeWrite(ctx); err != nil {
-			return hubserver.RejectedOutboxWrite(err)
+			return githubcontract.RejectedOutboxWrite(err)
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return hubserver.RejectedOutboxWrite(err)
+		return githubcontract.RejectedOutboxWrite(err)
 	}
 	err := w.client.REST(ctx, method, path, body, output)
 	var status *connectorgithub.StatusError
 	if errors.As(err, &status) && status.StatusCode >= 400 && status.StatusCode < 500 && status.StatusCode != http.StatusRequestTimeout {
-		return hubserver.RejectedOutboxWrite(err)
+		return githubcontract.RejectedOutboxWrite(err)
 	}
 	if errors.Is(err, connectorgithub.ErrMissingToken) || errors.Is(err, connectorgithub.ErrRESTBudgetReserved) {
-		return hubserver.RejectedOutboxWrite(err)
+		return githubcontract.RejectedOutboxWrite(err)
 	}
 	return err
 }
 
-func (w *Writer) stepWorkpad(ctx context.Context, item hubserver.OutboxItem) (hubserver.OutboxStepResult, error) {
-	result := hubserver.OutboxStepResult{Progress: item.Progress}
+func (w *Writer) stepWorkpad(ctx context.Context, item githubcontract.OutboxItem) (githubcontract.OutboxStepResult, error) {
+	result := githubcontract.OutboxStepResult{Progress: item.Progress}
 	if err := validateIssueTarget(item); err != nil {
 		return result, err
 	}
-	var desired hubserver.WorkpadDesired
+	var desired githubcontract.WorkpadDesired
 	if err := decodeDesired(item, &desired); err != nil {
 		return result, err
 	}
 	if strings.TrimSpace(desired.Body) == "" || strings.TrimSpace(desired.Marker) == "" {
-		return result, hubserver.Permanent(errors.New("GitHub workpad is incomplete"))
+		return result, githubcontract.Permanent(errors.New("GitHub workpad is incomplete"))
 	}
 	if result.Progress.Stage == "close" {
 		if item.Uncertain {
@@ -106,7 +106,7 @@ func (w *Writer) stepWorkpad(ctx context.Context, item hubserver.OutboxItem) (hu
 		return result, err
 	}
 	if len(comments) > 100 {
-		return result, hubserver.Permanent(errors.New("GitHub comment page exceeded its budget"))
+		return result, githubcontract.Permanent(errors.New("GitHub comment page exceeded its budget"))
 	}
 	digest := sha256.Sum256([]byte(string(item.OrganizationID) + "\x00" + item.IdempotencyKey))
 	marker := "<!-- detent-outbound:" + hex.EncodeToString(digest[:]) + " -->"
@@ -131,8 +131,8 @@ func (w *Writer) stepWorkpad(ctx context.Context, item hubserver.OutboxItem) (hu
 		return result, nil
 	}
 	if item.Uncertain {
-		result.Progress = hubserver.OutboxProgress{}
-		return result, hubserver.ErrOutboxUncertain
+		result.Progress = githubcontract.OutboxProgress{}
+		return result, githubcontract.ErrOutboxUncertain
 	}
 	body := strings.TrimSpace(desired.Body)
 	if !strings.Contains(body, desired.Marker) {
@@ -155,7 +155,7 @@ func (w *Writer) stepWorkpad(ctx context.Context, item hubserver.OutboxItem) (hu
 		err = w.writeOutbound(ctx, item, http.MethodPatch, repositoryPath(item)+"/issues/comments/"+strconv.FormatInt(commentID, 10), map[string]any{"body": body}, nil)
 	}
 	if err != nil {
-		result.Progress = hubserver.OutboxProgress{}
+		result.Progress = githubcontract.OutboxProgress{}
 		return result, fmt.Errorf("publish GitHub workpad: %w", err)
 	}
 	result.Progress.Stage, result.Progress.Cursor = "close", ""
@@ -163,4 +163,4 @@ func (w *Writer) stepWorkpad(ctx context.Context, item hubserver.OutboxItem) (hu
 	return result, nil
 }
 
-var _ hubserver.OutboxStepBackend = (*Writer)(nil)
+var _ githubcontract.OutboxStepBackend = (*Writer)(nil)

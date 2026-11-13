@@ -10,7 +10,7 @@ import (
 	"time"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -21,22 +21,22 @@ type appClient struct {
 }
 
 func NewAppTransport(config connectorgithub.InstallationTokenConfig) *Transport {
-	return &Transport{client: &appClient{config: config, clients: make(map[string]*connectorgithub.Client)}, queue: make(chan struct{}, 1), counts: make(map[string]hubserver.GitHubRequestCount), now: time.Now}
+	return &Transport{client: &appClient{config: config, clients: make(map[string]*connectorgithub.Client)}, queue: make(chan struct{}, 1), counts: make(map[string]githubcontract.GitHubRequestCount), now: time.Now}
 }
 
-func (t *Transport) AppInstallation(ctx context.Context, repository string) (hubserver.GitHubAppInstallation, error) {
+func (t *Transport) AppInstallation(ctx context.Context, repository string) (githubcontract.GitHubAppInstallation, error) {
 	app, ok := t.client.(*appClient)
 	if !ok {
-		return hubserver.GitHubAppInstallation{}, errors.New("GitHub App transport is unavailable")
+		return githubcontract.GitHubAppInstallation{}, errors.New("GitHub App transport is unavailable")
 	}
 	config := app.config
 	config.Repository = repository
 	source, err := connectorgithub.NewInstallationTokenSource(config)
 	if err != nil {
-		return hubserver.GitHubAppInstallation{}, err
+		return githubcontract.GitHubAppInstallation{}, err
 	}
 	ctx = scopedRequests(ctx, "native", "integration")
-	var result hubserver.GitHubAppInstallation
+	var result githubcontract.GitHubAppInstallation
 	_, err = t.request(ctx, http.MethodGet, "/app", func() (string, error) {
 		var err error
 		result.Slug, err = source.AppSlug(ctx)

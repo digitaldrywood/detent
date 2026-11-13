@@ -13,7 +13,7 @@ import (
 	"time"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 )
 
 const workpadHeading = "## Codex Workpad"
@@ -31,19 +31,19 @@ func NewWriter(client restClient) *Writer {
 	return &Writer{client: client}
 }
 
-func (w *Writer) Execute(ctx context.Context, item hubserver.OutboxItem) error {
+func (w *Writer) Execute(ctx context.Context, item githubcontract.OutboxItem) error {
 	ctx = scopedRequests(ctx, item.Profile, "projection")
 	if w == nil || w.client == nil {
-		return hubserver.Permanent(errors.New("github outbox writer is not configured"))
+		return githubcontract.Permanent(errors.New("github outbox writer is not configured"))
 	}
 	var err error
 	switch item.Kind {
-	case hubserver.MutationWorkflowLabel:
+	case githubcontract.MutationWorkflowLabel:
 		err = w.updateWorkflowLabel(ctx, item)
-	case hubserver.MutationWorkpad:
+	case githubcontract.MutationWorkpad:
 		err = w.upsertWorkpad(ctx, item)
 		if err == nil {
-			var desired hubserver.WorkpadDesired
+			var desired githubcontract.WorkpadDesired
 			if err = decodeDesired(item, &desired); err == nil && desired.CloseSource {
 				body := map[string]any{"state": "closed"}
 				if desired.StateReason != "" {
@@ -52,37 +52,37 @@ func (w *Writer) Execute(ctx context.Context, item hubserver.OutboxItem) error {
 				err = w.client.REST(ctx, http.MethodPatch, issuePath(item), body, nil)
 			}
 		}
-	case hubserver.MutationMergePullRequest:
-		return hubserver.Permanent(errors.New("irreversible github mutation requires fresh verification"))
+	case githubcontract.MutationMergePullRequest:
+		return githubcontract.Permanent(errors.New("irreversible github mutation requires fresh verification"))
 	default:
-		return hubserver.Permanent(fmt.Errorf("unsupported github mutation kind %q", item.Kind))
+		return githubcontract.Permanent(fmt.Errorf("unsupported github mutation kind %q", item.Kind))
 	}
 	return classifyError(err)
 }
 
-func (w *Writer) VerifyAndExecute(ctx context.Context, item hubserver.OutboxItem) error {
+func (w *Writer) VerifyAndExecute(ctx context.Context, item githubcontract.OutboxItem) error {
 	ctx = scopedRequests(ctx, item.Profile, "merge")
 	if w == nil || w.client == nil {
-		return hubserver.Permanent(errors.New("github outbox writer is not configured"))
+		return githubcontract.Permanent(errors.New("github outbox writer is not configured"))
 	}
-	if item.Kind != hubserver.MutationMergePullRequest {
-		return hubserver.Permanent(fmt.Errorf("github mutation %q is not irreversible", item.Kind))
+	if item.Kind != githubcontract.MutationMergePullRequest {
+		return githubcontract.Permanent(fmt.Errorf("github mutation %q is not irreversible", item.Kind))
 	}
 	return classifyError(w.verifyAndMerge(ctx, item))
 }
 
-func (w *Writer) updateWorkflowLabel(ctx context.Context, item hubserver.OutboxItem) error {
+func (w *Writer) updateWorkflowLabel(ctx context.Context, item githubcontract.OutboxItem) error {
 	if err := validateIssueTarget(item); err != nil {
 		return err
 	}
-	var desired hubserver.WorkflowLabelDesired
+	var desired githubcontract.WorkflowLabelDesired
 	if err := decodeDesired(item, &desired); err != nil {
 		return err
 	}
 	desired.Label = strings.TrimSpace(desired.Label)
 	desired.ManagedPrefix = strings.TrimSpace(desired.ManagedPrefix)
 	if desired.ManagedPrefix == "" || (desired.Label == "" && !desired.Clear) {
-		return hubserver.Permanent(errors.New("workflow label mutation is incomplete"))
+		return githubcontract.Permanent(errors.New("workflow label mutation is incomplete"))
 	}
 
 	var issue restIssue
@@ -109,18 +109,18 @@ func (w *Writer) updateWorkflowLabel(ctx context.Context, item hubserver.OutboxI
 	return nil
 }
 
-func (w *Writer) upsertWorkpad(ctx context.Context, item hubserver.OutboxItem) error {
+func (w *Writer) upsertWorkpad(ctx context.Context, item githubcontract.OutboxItem) error {
 	if err := validateIssueTarget(item); err != nil {
 		return err
 	}
-	var desired hubserver.WorkpadDesired
+	var desired githubcontract.WorkpadDesired
 	if err := decodeDesired(item, &desired); err != nil {
 		return err
 	}
 	body := strings.TrimSpace(desired.Body)
 	marker := strings.TrimSpace(desired.Marker)
 	if body == "" || marker == "" {
-		return hubserver.Permanent(errors.New("workpad mutation is incomplete"))
+		return githubcontract.Permanent(errors.New("workpad mutation is incomplete"))
 	}
 	if !strings.Contains(body, marker) {
 		body += "\n\n" + marker
@@ -158,16 +158,16 @@ func (w *Writer) upsertWorkpad(ctx context.Context, item hubserver.OutboxItem) e
 	return nil
 }
 
-func (w *Writer) verifyAndMerge(ctx context.Context, item hubserver.OutboxItem) error {
+func (w *Writer) verifyAndMerge(ctx context.Context, item githubcontract.OutboxItem) error {
 	if err := validateRepository(item); err != nil {
 		return err
 	}
-	var desired hubserver.MergePullRequestDesired
+	var desired githubcontract.MergePullRequestDesired
 	if err := decodeDesired(item, &desired); err != nil {
 		return err
 	}
 	if desired.PullRequestNumber <= 0 || strings.TrimSpace(desired.HeadSHA) == "" {
-		return hubserver.Permanent(errors.New("merge pull request mutation is incomplete"))
+		return githubcontract.Permanent(errors.New("merge pull request mutation is incomplete"))
 	}
 
 	pullPath := repositoryPath(item) + "/pulls/" + strconv.Itoa(desired.PullRequestNumber)
@@ -176,22 +176,22 @@ func (w *Writer) verifyAndMerge(ctx context.Context, item hubserver.OutboxItem) 
 		return fmt.Errorf("refresh github pull request before merge: %w", err)
 	}
 	if strings.TrimSpace(pullRequest.Head.SHA) != strings.TrimSpace(desired.HeadSHA) {
-		return hubserver.Permanent(errors.New("fresh github pull request head does not match the requested head"))
+		return githubcontract.Permanent(errors.New("fresh github pull request head does not match the requested head"))
 	}
 	if !strings.EqualFold(strings.TrimSpace(pullRequest.State), "open") {
 		if pullRequest.Merged {
 			return nil
 		}
-		return hubserver.Permanent(errors.New("fresh github pull request is not open"))
+		return githubcontract.Permanent(errors.New("fresh github pull request is not open"))
 	}
 	if pullRequest.Draft {
-		return hubserver.Permanent(errors.New("fresh github pull request is a draft"))
+		return githubcontract.Permanent(errors.New("fresh github pull request is a draft"))
 	}
 	if pullRequest.Mergeable == nil {
 		return errors.New("fresh github pull request mergeability is not yet available")
 	}
 	if !*pullRequest.Mergeable {
-		return hubserver.Permanent(errors.New("fresh github pull request has merge conflicts"))
+		return githubcontract.Permanent(errors.New("fresh github pull request has merge conflicts"))
 	}
 	if !strings.EqualFold(strings.TrimSpace(pullRequest.MergeableState), "clean") {
 		return errors.New("fresh github pull request is not cleanly mergeable")
@@ -227,7 +227,7 @@ func (w *Writer) verifyAndMerge(ctx context.Context, item hubserver.OutboxItem) 
 	switch method {
 	case "merge", "rebase", "squash":
 	default:
-		return hubserver.Permanent(errors.New("merge pull request mutation has an invalid merge method"))
+		return githubcontract.Permanent(errors.New("merge pull request mutation has an invalid merge method"))
 	}
 	var response restMergeResponse
 	if err := w.client.REST(ctx, http.MethodPut, pullPath+"/merge", map[string]string{
@@ -246,35 +246,35 @@ func (w *Writer) verifyAndMerge(ctx context.Context, item hubserver.OutboxItem) 
 	return nil
 }
 
-func decodeDesired(item hubserver.OutboxItem, target any) error {
+func decodeDesired(item githubcontract.OutboxItem, target any) error {
 	if err := json.Unmarshal(item.Desired, target); err != nil {
-		return hubserver.Permanent(fmt.Errorf("decode github %s desired state: %w", item.Kind, err))
+		return githubcontract.Permanent(fmt.Errorf("decode github %s desired state: %w", item.Kind, err))
 	}
 	return nil
 }
 
-func validateRepository(item hubserver.OutboxItem) error {
+func validateRepository(item githubcontract.OutboxItem) error {
 	if strings.TrimSpace(item.RepositoryOwner) == "" || strings.TrimSpace(item.RepositoryName) == "" {
-		return hubserver.Permanent(errors.New("github mutation repository is incomplete"))
+		return githubcontract.Permanent(errors.New("github mutation repository is incomplete"))
 	}
 	return nil
 }
 
-func validateIssueTarget(item hubserver.OutboxItem) error {
+func validateIssueTarget(item githubcontract.OutboxItem) error {
 	if err := validateRepository(item); err != nil {
 		return err
 	}
 	if item.IssueNumber <= 0 {
-		return hubserver.Permanent(errors.New("github mutation issue number must be positive"))
+		return githubcontract.Permanent(errors.New("github mutation issue number must be positive"))
 	}
 	return nil
 }
 
-func repositoryPath(item hubserver.OutboxItem) string {
+func repositoryPath(item githubcontract.OutboxItem) string {
 	return "/repos/" + url.PathEscape(strings.TrimSpace(item.RepositoryOwner)) + "/" + url.PathEscape(strings.TrimSpace(item.RepositoryName))
 }
 
-func issuePath(item hubserver.OutboxItem) string {
+func issuePath(item githubcontract.OutboxItem) string {
 	return repositoryPath(item) + "/issues/" + strconv.Itoa(item.IssueNumber)
 }
 
@@ -418,13 +418,13 @@ func unreadyStatus(statuses []restStatus) string {
 }
 
 func classifyError(err error) error {
-	if err == nil || hubserver.IsPermanent(err) {
+	if err == nil || githubcontract.IsPermanent(err) {
 		return err
 	}
 	if errors.Is(err, connectorgithub.ErrMissingToken) ||
 		errors.Is(err, connectorgithub.ErrAuthenticationFailed) ||
 		errors.Is(err, connectorgithub.ErrNotFound) {
-		return hubserver.Permanent(err)
+		return githubcontract.Permanent(err)
 	}
 	if errors.Is(err, connectorgithub.ErrRateLimited) ||
 		errors.Is(err, connectorgithub.ErrRESTBudgetReserved) ||
@@ -436,7 +436,7 @@ func classifyError(err error) error {
 		switch statusErr.StatusCode {
 		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusNotFound,
 			http.StatusMethodNotAllowed, http.StatusGone, http.StatusUnprocessableEntity:
-			return hubserver.Permanent(err)
+			return githubcontract.Permanent(err)
 		}
 	}
 	return err
@@ -498,4 +498,4 @@ type restMergeResponse struct {
 	Message string `json:"message"`
 }
 
-var _ hubserver.OutboxBackend = (*Writer)(nil)
+var _ githubcontract.OutboxBackend = (*Writer)(nil)

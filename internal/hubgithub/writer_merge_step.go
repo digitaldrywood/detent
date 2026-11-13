@@ -8,18 +8,18 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 )
 
-func outboundPullReady(pull restPullRequest, desired hubserver.MergePullRequestDesired) (bool, error) {
+func outboundPullReady(pull restPullRequest, desired githubcontract.MergePullRequestDesired) (bool, error) {
 	if strings.TrimSpace(pull.Head.SHA) != strings.TrimSpace(desired.HeadSHA) {
-		return false, hubserver.Permanent(errors.New("GitHub pull request head changed"))
+		return false, githubcontract.Permanent(errors.New("GitHub pull request head changed"))
 	}
 	if !strings.EqualFold(pull.State, "open") {
 		if pull.Merged {
 			return true, nil
 		}
-		return false, hubserver.Permanent(errors.New("GitHub pull request is not open"))
+		return false, githubcontract.Permanent(errors.New("GitHub pull request is not open"))
 	}
 	if pull.Draft || pull.Mergeable == nil || !*pull.Mergeable || !strings.EqualFold(pull.MergeableState, "clean") {
 		return false, errors.New("GitHub pull request is not ready to merge")
@@ -27,18 +27,18 @@ func outboundPullReady(pull restPullRequest, desired hubserver.MergePullRequestD
 	return false, nil
 }
 
-func (w *Writer) stepMerge(ctx context.Context, item hubserver.OutboxItem) (hubserver.OutboxStepResult, error) {
-	result := hubserver.OutboxStepResult{Progress: item.Progress}
-	var desired hubserver.MergePullRequestDesired
+func (w *Writer) stepMerge(ctx context.Context, item githubcontract.OutboxItem) (githubcontract.OutboxStepResult, error) {
+	result := githubcontract.OutboxStepResult{Progress: item.Progress}
+	var desired githubcontract.MergePullRequestDesired
 	if err := decodeDesired(item, &desired); err != nil {
 		return result, err
 	}
 	if desired.PullRequestNumber <= 0 || strings.TrimSpace(desired.HeadSHA) == "" {
-		return result, hubserver.Permanent(errors.New("GitHub merge target is incomplete"))
+		return result, githubcontract.Permanent(errors.New("GitHub merge target is incomplete"))
 	}
 	method := strings.ToLower(strings.TrimSpace(desired.MergeMethod))
 	if method != "merge" && method != "rebase" && method != "squash" {
-		return result, hubserver.Permanent(errors.New("GitHub merge method is invalid"))
+		return result, githubcontract.Permanent(errors.New("GitHub merge method is invalid"))
 	}
 	pullPath := repositoryPath(item) + "/pulls/" + strconv.Itoa(desired.PullRequestNumber)
 	commitPath := repositoryPath(item) + "/commits/" + url.PathEscape(strings.TrimSpace(desired.HeadSHA))
@@ -59,13 +59,13 @@ func (w *Writer) stepMerge(ctx context.Context, item hubserver.OutboxItem) (hubs
 		}
 		if item.Uncertain {
 			result.Progress.Stage, result.Progress.Cursor = "", ""
-			return result, hubserver.ErrOutboxUncertain
+			return result, githubcontract.ErrOutboxUncertain
 		}
 		if pull.UpdatedAt.IsZero() {
 			return result, errors.New("GitHub pull request observation is incomplete")
 		}
 		if result.Progress.Stage == "" || !pull.UpdatedAt.Equal(result.Progress.SourceUpdatedAt) {
-			result.Progress = hubserver.OutboxProgress{Stage: "reviews", Verification: result.Progress.Verification + 1, SourceUpdatedAt: pull.UpdatedAt}
+			result.Progress = githubcontract.OutboxProgress{Stage: "reviews", Verification: result.Progress.Verification + 1, SourceUpdatedAt: pull.UpdatedAt}
 			return result, nil
 		}
 		if item.Blocked {
@@ -78,7 +78,7 @@ func (w *Writer) stepMerge(ctx context.Context, item hubserver.OutboxItem) (hubs
 			return result, err
 		}
 		if !response.Merged {
-			return result, hubserver.RejectedOutboxWrite(errors.New("GitHub rejected the requested merge"))
+			return result, githubcontract.RejectedOutboxWrite(errors.New("GitHub rejected the requested merge"))
 		}
 		result.Done = true
 		return result, nil
@@ -100,7 +100,7 @@ func (w *Writer) stepMerge(ctx context.Context, item hubserver.OutboxItem) (hubs
 			if key == "" || state == "COMMENTED" || state == "PENDING" {
 				continue
 			}
-			result.Observations = append(result.Observations, hubserver.OutboxObservation{Kind: "review", Key: key, Sequence: result.Progress.Page*100 + int64(index) + 1, Ready: state != "CHANGES_REQUESTED"})
+			result.Observations = append(result.Observations, githubcontract.OutboxObservation{Kind: "review", Key: key, Sequence: result.Progress.Page*100 + int64(index) + 1, Ready: state != "CHANGES_REQUESTED"})
 		}
 		result.Progress.Cursor = next
 		result.Progress.Page++
@@ -123,7 +123,7 @@ func (w *Writer) stepMerge(ctx context.Context, item hubserver.OutboxItem) (hubs
 		for _, check := range page.CheckRuns {
 			key := strings.ToLower(strings.TrimSpace(check.Name))
 			if key != "" {
-				result.Observations = append(result.Observations, hubserver.OutboxObservation{Kind: "check", Key: key, Sequence: check.ID, Ready: unreadyCheck([]restCheckRun{check}) == ""})
+				result.Observations = append(result.Observations, githubcontract.OutboxObservation{Kind: "check", Key: key, Sequence: check.ID, Ready: unreadyCheck([]restCheckRun{check}) == ""})
 			}
 		}
 		result.Progress.Cursor = next
@@ -146,7 +146,7 @@ func (w *Writer) stepMerge(ctx context.Context, item hubserver.OutboxItem) (hubs
 		for index, status := range page {
 			key := strings.ToLower(strings.TrimSpace(status.Context))
 			if key != "" {
-				result.Observations = append(result.Observations, hubserver.OutboxObservation{Kind: "status", Key: key, Sequence: -(result.Progress.Page*100 + int64(index) + 1), Ready: strings.EqualFold(strings.TrimSpace(status.State), "success")})
+				result.Observations = append(result.Observations, githubcontract.OutboxObservation{Kind: "status", Key: key, Sequence: -(result.Progress.Page*100 + int64(index) + 1), Ready: strings.EqualFold(strings.TrimSpace(status.State), "success")})
 			}
 		}
 		result.Progress.Cursor = next
@@ -155,7 +155,7 @@ func (w *Writer) stepMerge(ctx context.Context, item hubserver.OutboxItem) (hubs
 			result.Progress.Stage, result.Progress.Page = "verify", 0
 		}
 	default:
-		return result, hubserver.Permanent(errors.New("GitHub outbound verification phase is invalid"))
+		return result, githubcontract.Permanent(errors.New("GitHub outbound verification phase is invalid"))
 	}
 	return result, nil
 }

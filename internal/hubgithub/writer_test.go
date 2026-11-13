@@ -9,13 +9,13 @@ import (
 	"testing"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 )
 
 func TestWriterReplaysWorkflowLabelAsDesiredState(t *testing.T) {
 	t.Parallel()
 
-	item := testOutboxItem(t, hubserver.MutationWorkflowLabel, hubserver.WorkflowLabelDesired{
+	item := testOutboxItem(t, githubcontract.MutationWorkflowLabel, githubcontract.WorkflowLabelDesired{
 		Label:         "detent:in-progress",
 		ManagedPrefix: "detent:",
 	})
@@ -43,32 +43,32 @@ func TestWriterClearsAManagedLabelPrefix(t *testing.T) {
 
 	for _, test := range []struct {
 		name       string
-		desired    hubserver.WorkflowLabelDesired
+		desired    githubcontract.WorkflowLabelDesired
 		labels     []restLabel
 		wantLabels []string
 		wantErr    bool
 	}{
 		{
 			name:       "clears every label under the prefix",
-			desired:    hubserver.WorkflowLabelDesired{ManagedPrefix: "priority:", Clear: true},
+			desired:    githubcontract.WorkflowLabelDesired{ManagedPrefix: "priority:", Clear: true},
 			labels:     []restLabel{{Name: "feature"}, {Name: "priority:high"}, {Name: "priority:low"}},
 			wantLabels: []string{"feature"},
 		},
 		{
 			name:       "leaves an issue that has none alone",
-			desired:    hubserver.WorkflowLabelDesired{ManagedPrefix: "priority:", Clear: true},
+			desired:    githubcontract.WorkflowLabelDesired{ManagedPrefix: "priority:", Clear: true},
 			labels:     []restLabel{{Name: "feature"}},
 			wantLabels: []string{"feature"},
 		},
 		{
 			name:    "still refuses a record with neither a label nor a clear",
-			desired: hubserver.WorkflowLabelDesired{ManagedPrefix: "priority:"},
+			desired: githubcontract.WorkflowLabelDesired{ManagedPrefix: "priority:"},
 			wantErr: true,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			item := testOutboxItem(t, hubserver.MutationWorkflowLabel, test.desired)
+			item := testOutboxItem(t, githubcontract.MutationWorkflowLabel, test.desired)
 			steps := []restStep{}
 			if !test.wantErr {
 				steps = []restStep{
@@ -93,7 +93,7 @@ func TestWriterReplaysWorkpadIntoOneComment(t *testing.T) {
 	body := "## Codex Workpad\n\nTesting complete."
 	marker := "<!-- detent-workpad -->"
 	wantBody := body + "\n\n" + marker
-	item := testOutboxItem(t, hubserver.MutationWorkpad, hubserver.WorkpadDesired{
+	item := testOutboxItem(t, githubcontract.MutationWorkpad, githubcontract.WorkpadDesired{
 		Phase:  "testing",
 		Body:   body,
 		Marker: marker,
@@ -120,7 +120,7 @@ func TestWriterFindsWorkpadOnLaterCommentPage(t *testing.T) {
 	body := "## Codex Workpad\n\nTesting complete."
 	marker := "<!-- detent-workpad -->"
 	wantBody := body + "\n\n" + marker
-	item := testOutboxItem(t, hubserver.MutationWorkpad, hubserver.WorkpadDesired{
+	item := testOutboxItem(t, githubcontract.MutationWorkpad, githubcontract.WorkpadDesired{
 		Phase:  "testing",
 		Body:   body,
 		Marker: marker,
@@ -143,7 +143,7 @@ func TestWriterVerifiesFreshStateBeforeMerge(t *testing.T) {
 	t.Parallel()
 
 	ready := true
-	item := testOutboxItem(t, hubserver.MutationMergePullRequest, hubserver.MergePullRequestDesired{
+	item := testOutboxItem(t, githubcontract.MutationMergePullRequest, githubcontract.MergePullRequestDesired{
 		PullRequestNumber: 29,
 		HeadSHA:           "abc123",
 		MergeMethod:       "squash",
@@ -281,7 +281,7 @@ func TestWriterVerifiesFreshStateBeforeMerge(t *testing.T) {
 			if (err != nil) != test.wantError {
 				t.Fatalf("VerifyAndExecute() error = %v, wantError %t", err, test.wantError)
 			}
-			if got := hubserver.IsPermanent(err); got != test.wantPermanent {
+			if got := githubcontract.IsPermanent(err); got != test.wantPermanent {
 				t.Fatalf("VerifyAndExecute() permanent = %t, want %t; error = %v", got, test.wantPermanent, err)
 			}
 			client.assertDone()
@@ -307,7 +307,7 @@ func TestWriterClassifiesDeliveryErrors(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got := classifyError(test.err)
-			if permanent := hubserver.IsPermanent(got); permanent != test.wantPermanent {
+			if permanent := githubcontract.IsPermanent(got); permanent != test.wantPermanent {
 				t.Fatalf("classifyError() permanent = %t, want %t; error = %v", permanent, test.wantPermanent, got)
 			}
 		})
@@ -373,13 +373,13 @@ func (c *scriptedRESTClient) assertDone() {
 	}
 }
 
-func testOutboxItem(t *testing.T, kind hubserver.MutationKind, desired any) hubserver.OutboxItem {
+func testOutboxItem(t *testing.T, kind githubcontract.MutationKind, desired any) githubcontract.OutboxItem {
 	t.Helper()
 	raw, err := json.Marshal(desired)
 	if err != nil {
 		t.Fatalf("marshal desired state: %v", err)
 	}
-	return hubserver.OutboxItem{
+	return githubcontract.OutboxItem{
 		IdempotencyKey:  "stable-key",
 		RepositoryOwner: "digitaldrywood",
 		RepositoryName:  "detent",
@@ -413,8 +413,8 @@ func TestWriterLinkedSourceEffects(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			desired := hubserver.WorkpadDesired{Summary: true, CloseSource: test.close, StateReason: test.reason, Phase: "summary", Body: "Tracked in Detent: https://cloud.example/work/i/wi_source", Marker: "<!-- detent-summary:wi_source:intake -->"}
-			item := testOutboxItem(t, hubserver.MutationWorkpad, desired)
+			desired := githubcontract.WorkpadDesired{Summary: true, CloseSource: test.close, StateReason: test.reason, Phase: "summary", Body: "Tracked in Detent: https://cloud.example/work/i/wi_source", Marker: "<!-- detent-summary:wi_source:intake -->"}
+			item := testOutboxItem(t, githubcontract.MutationWorkpad, desired)
 			body := desired.Body + "\n\n" + desired.Marker
 			steps := []restStep{
 				{method: http.MethodGet, path: "/repos/digitaldrywood/detent/issues/17/comments?per_page=100", response: []restComment{}},

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 )
 
 func TestPilotGitHubImportBudget(t *testing.T) {
@@ -20,7 +20,7 @@ func TestPilotGitHubImportBudget(t *testing.T) {
 	}}
 	transport := NewTransport(nil)
 	transport.client = client
-	request := hubserver.GitHubImportRequest{Profile: "native", Repository: "pilot/repo", IssueNumber: 1, Stage: "comments"}
+	request := githubcontract.GitHubImportRequest{Profile: "native", Repository: "pilot/repo", IssueNumber: 1, Stage: "comments"}
 	for _, wantCursor := range []bool{true, false} {
 		page, err := NewImporter(transport).FetchImportPage(t.Context(), request)
 		if err != nil || (page.NextCursor != "") != wantCursor {
@@ -42,13 +42,13 @@ func TestPilotGitHubRequestBudgets(t *testing.T) {
 	pull := reconcilePullRequest{ID: 1, NodeID: "PR_pilot", Number: 1, Title: "Pilot change", HTMLURL: "https://github.test/pilot/repo/pull/1", State: "open", Head: restRef{Ref: "work", SHA: "head"}, Base: restRef{Ref: "main", SHA: "base"}, CreatedAt: now, UpdatedAt: now}
 	for _, test := range []struct {
 		name  string
-		mode  hubserver.ReconcileMode
+		mode  githubcontract.ReconcileMode
 		pulls []reconcilePullRequest
 		want  map[string]int64
 	}{
-		{"idle repository", hubserver.ReconcileIncremental, nil, map[string]int64{"reconcile.repository": 1, "reconcile.pull_request": 1}},
-		{"active repository", hubserver.ReconcileIncremental, []reconcilePullRequest{pull}, map[string]int64{"reconcile.repository": 1, "reconcile.pull_request": 1}},
-		{"full repair", hubserver.ReconcileFullRepair, []reconcilePullRequest{pull}, map[string]int64{"reconcile.repository": 1, "reconcile.pull_request": 3, "reconcile.ci": 2}},
+		{"idle repository", githubcontract.ReconcileIncremental, nil, map[string]int64{"reconcile.repository": 1, "reconcile.pull_request": 1}},
+		{"active repository", githubcontract.ReconcileIncremental, []reconcilePullRequest{pull}, map[string]int64{"reconcile.repository": 1, "reconcile.pull_request": 1}},
+		{"full repair", githubcontract.ReconcileFullRepair, []reconcilePullRequest{pull}, map[string]int64{"reconcile.repository": 1, "reconcile.pull_request": 3, "reconcile.ci": 2}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -56,7 +56,7 @@ func TestPilotGitHubRequestBudgets(t *testing.T) {
 				{method: http.MethodGet, path: "/repos/pilot/repo", response: reconcileRepository{NodeID: "R_pilot", Name: "repo", Owner: restActor{Login: "pilot"}, UpdatedAt: now}},
 				{method: http.MethodGet, path: "/repos/pilot/repo/pulls?direction=asc&per_page=100&sort=updated&state=all", response: test.pulls},
 			}}
-			if test.mode == hubserver.ReconcileFullRepair {
+			if test.mode == githubcontract.ReconcileFullRepair {
 				client.steps = append(client.steps,
 					restStep{method: http.MethodGet, path: "/repos/pilot/repo/pulls/1", response: pull},
 					restStep{method: http.MethodGet, path: "/repos/pilot/repo/commits/head/check-runs?per_page=100", response: restCheckRuns{}},
@@ -66,7 +66,7 @@ func TestPilotGitHubRequestBudgets(t *testing.T) {
 			}
 			transport := NewTransport(nil)
 			transport.client = client
-			snapshot, err := NewReconciler(transport).Reconcile(t.Context(), hubserver.ReconcileRequest{Profile: "native", Mode: test.mode, Repository: hubserver.RepositoryTarget{Owner: "pilot", Name: "repo"}})
+			snapshot, err := NewReconciler(transport).Reconcile(t.Context(), githubcontract.ReconcileRequest{Profile: "native", Mode: test.mode, Repository: githubcontract.RepositoryTarget{Owner: "pilot", Name: "repo"}})
 			if err != nil {
 				t.Fatal(err)
 			}

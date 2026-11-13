@@ -1,4 +1,4 @@
-package hubgithub
+package github_test
 
 import (
 	"bytes"
@@ -22,6 +22,7 @@ import (
 	"time"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/hubgithub"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -152,8 +153,8 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 	}))
 	t.Cleanup(source.Close)
 	opened := time.Now()
-	transport := NewAppTransport(connectorgithub.InstallationTokenConfig{Endpoint: source.URL + "/graphql", AppID: "123", PrivateKey: privateKey, HTTPClient: source.Client()})
-	service, err := openGitHubService(t, hubserver.Config{InitialAdminToken: []byte(adminToken), ImportBackend: NewImporter(transport), ReconcileBackend: NewReconciler(transport), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	transport := hubgithub.NewAppTransport(connectorgithub.InstallationTokenConfig{Endpoint: source.URL + "/graphql", AppID: "123", PrivateKey: privateKey, HTTPClient: source.Client()})
+	service, err := openGitHubService(t, hubserver.Config{InitialAdminToken: []byte(adminToken), ImportBackend: hubgithub.NewImporter(transport), ReconcileBackend: hubgithub.NewReconciler(transport), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}

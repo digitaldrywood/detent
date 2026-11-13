@@ -12,7 +12,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -32,48 +31,6 @@ type GitHubImport struct {
 	RetryAfter      *time.Time       `json:"retry_after,omitempty"`
 	SourceUpdatedAt string           `json:"source_updated_at,omitempty"`
 	ObservedAt      string           `json:"observed_at"`
-}
-
-type GitHubImportRequest struct {
-	CompareBase       string
-	CompareHead       string
-	Discovery         *tracker.GitHubDiscovery
-	Scheduled         *gate.ScheduledEvidence
-	ScheduledWorkflow string
-	ScheduledBranch   string
-	SourceID          string
-	Repository        string
-	Profile           string
-	IssueNumber       int
-	Stage             string
-	Cursor            string
-}
-
-type GitHubImportRecord struct {
-	CurrentDependency *bool              `json:"current_dependency,omitempty"`
-	SourceKey         string             `json:"source_key"`
-	Kind              string             `json:"kind"`
-	Data              json.RawMessage    `json:"data"`
-	Provenance        tracker.Provenance `json:"provenance"`
-	Body              string             `json:"body,omitempty"`
-	DependencyID      string             `json:"dependency_id,omitempty"`
-}
-
-type GitHubImportPage struct {
-	Commits       []string
-	BatchPage     *tracker.GitHubDiscoveryPage
-	Scheduled     *gate.ScheduledEvidence
-	RetryAt       time.Time
-	EditSequence  int64
-	EditsFinished bool
-	Issue         *IssueSource
-	Records       []GitHubImportRecord
-	NextCursor    string
-	Gaps          []string
-}
-
-type ImportBackend interface {
-	FetchImportPage(context.Context, GitHubImportRequest) (GitHubImportPage, error)
 }
 
 func readGitHubImport(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (GitHubImport, error) {

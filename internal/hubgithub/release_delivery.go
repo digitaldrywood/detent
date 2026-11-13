@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -59,7 +59,7 @@ func (r *Reconciler) ReleaseDeliveryStatus(ctx context.Context, input tracker.Re
 	repository := strings.TrimPrefix(input.Repository, "https://github.com/")
 	parts := strings.Split(repository, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return result, fmt.Errorf("%w: invalid release repository", hubserver.ErrReleasePickMismatch)
+		return result, fmt.Errorf("%w: invalid release repository", githubcontract.ErrReleasePickMismatch)
 	}
 	path := repositoryRESTPath(parts[0], parts[1])
 	readPull := func() (releasePickPull, error) {
@@ -68,7 +68,7 @@ func (r *Reconciler) ReleaseDeliveryStatus(ctx context.Context, input tracker.Re
 			return pull, fmt.Errorf("read delivery PR: %w", err)
 		}
 		if pull.Number != input.PRNumber || pull.Base.Ref != input.BaseRef || pull.Head.Ref != input.HeadRef || pull.Head.Repo.FullName != repository || pull.Base.Repo.FullName != repository || pull.State != "open" && pull.State != "closed" {
-			return pull, fmt.Errorf("%w: release PR identity mismatch", hubserver.ErrReleasePickMismatch)
+			return pull, fmt.Errorf("%w: release PR identity mismatch", githubcontract.ErrReleasePickMismatch)
 		}
 		return pull, nil
 	}
@@ -112,7 +112,7 @@ func (r *Reconciler) ReleaseDeliveryStatus(ctx context.Context, input tracker.Re
 		return result, errors.New("release provenance history exceeds its bound")
 	}
 	if comparison.MergeBaseCommit.SHA != input.FrozenSHA || comparison.Status != "ahead" && comparison.Status != "identical" {
-		return result, fmt.Errorf("%w: release branch does not retain its frozen source", hubserver.ErrReleasePickMismatch)
+		return result, fmt.Errorf("%w: release branch does not retain its frozen source", githubcontract.ErrReleasePickMismatch)
 	}
 	var source releasePickCommit
 	next, err = r.client.RESTPage(ctx, path+"/commits/"+input.SourceMergeSHA+"?per_page=100", &source)
@@ -120,7 +120,7 @@ func (r *Reconciler) ReleaseDeliveryStatus(ctx context.Context, input tracker.Re
 		return result, fmt.Errorf("read delivered source patch: %w", err)
 	}
 	if next != "" || source.SHA != input.SourceMergeSHA || len(source.Files) == 0 || len(source.Files) >= 300 {
-		return result, fmt.Errorf("%w: source patch is unavailable", hubserver.ErrReleasePickMismatch)
+		return result, fmt.Errorf("%w: source patch is unavailable", githubcontract.ErrReleasePickMismatch)
 	}
 	for _, commit := range comparison.Commits {
 		if len(commit.Parents) != 1 {
@@ -155,7 +155,7 @@ func (r *Reconciler) ReleaseDeliveryStatus(ctx context.Context, input tracker.Re
 		return result, err
 	}
 	if current != head {
-		return result, fmt.Errorf("%w: release branch moved during verification", hubserver.ErrReleasePickMismatch)
+		return result, fmt.Errorf("%w: release branch moved during verification", githubcontract.ErrReleasePickMismatch)
 	}
 	return result, nil
 }
@@ -170,14 +170,14 @@ func (r *Reconciler) VerifyReleasePickRefresh(ctx context.Context, prior, next t
 	identity := next
 	identity.BaseSHA, identity.HeadSHA = prior.BaseSHA, prior.HeadSHA
 	if identity != prior || prior.BaseSHA == next.BaseSHA || prior.HeadSHA == next.HeadSHA {
-		return fmt.Errorf("%w: refresh changes the release delivery identity", hubserver.ErrReleasePickMismatch)
+		return fmt.Errorf("%w: refresh changes the release delivery identity", githubcontract.ErrReleasePickMismatch)
 	}
 	repository := strings.TrimPrefix(next.Repository, "https://github.com/")
 	if err := r.client.REST(scopedRequests(ctx, "native", "reconcile"), http.MethodGet, "/repos/"+repository+"/compare/"+prior.BaseSHA+"..."+next.BaseSHA, nil, &comparison); err != nil {
 		return fmt.Errorf("verify release base advancement: %w", err)
 	}
 	if comparison.Status != "ahead" {
-		return fmt.Errorf("%w: release base must advance its prior recorded head", hubserver.ErrReleasePickMismatch)
+		return fmt.Errorf("%w: release base must advance its prior recorded head", githubcontract.ErrReleasePickMismatch)
 	}
 	return r.VerifyReleasePick(ctx, next)
 }
@@ -190,7 +190,7 @@ func (r *Reconciler) VerifyReleasePick(ctx context.Context, input tracker.Releas
 	repository := strings.TrimPrefix(input.Repository, "https://github.com/")
 	parts := strings.Split(repository, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return fmt.Errorf("%w: invalid release repository", hubserver.ErrReleasePickMismatch)
+		return fmt.Errorf("%w: invalid release repository", githubcontract.ErrReleasePickMismatch)
 	}
 	path := repositoryRESTPath(parts[0], parts[1])
 	pullPath := fmt.Sprintf("%s/pulls/%d", path, input.PRNumber)
@@ -200,7 +200,7 @@ func (r *Reconciler) VerifyReleasePick(ctx context.Context, input tracker.Releas
 			return fmt.Errorf("read release PR: %w", err)
 		}
 		if pull.Number != input.PRNumber || pull.State != "open" || pull.Draft || pull.Merged || pull.Head.Ref != input.HeadRef || pull.Head.SHA != input.HeadSHA || pull.Base.Ref != input.BaseRef || pull.Base.SHA != input.BaseSHA || pull.Head.Repo.FullName != repository || pull.Base.Repo.FullName != repository {
-			return fmt.Errorf("%w: release PR identity mismatch", hubserver.ErrReleasePickMismatch)
+			return fmt.Errorf("%w: release PR identity mismatch", githubcontract.ErrReleasePickMismatch)
 		}
 		var ref struct {
 			Object struct {
@@ -211,7 +211,7 @@ func (r *Reconciler) VerifyReleasePick(ctx context.Context, input tracker.Releas
 			return fmt.Errorf("read frozen branch: %w", err)
 		}
 		if ref.Object.SHA != input.BaseSHA {
-			return fmt.Errorf("%w: frozen release head changed", hubserver.ErrReleasePickMismatch)
+			return fmt.Errorf("%w: frozen release head changed", githubcontract.ErrReleasePickMismatch)
 		}
 		return nil
 	}
@@ -223,7 +223,7 @@ func (r *Reconciler) VerifyReleasePick(ctx context.Context, input tracker.Releas
 		return fmt.Errorf("read release commits: %w", err)
 	}
 	if len(commits) != 1 || commits[0].SHA != input.HeadSHA || len(commits[0].Parents) != 1 || commits[0].Parents[0].SHA != input.BaseSHA {
-		return fmt.Errorf("%w: release PR must contain exactly one pick from the recorded base", hubserver.ErrReleasePickMismatch)
+		return fmt.Errorf("%w: release PR must contain exactly one pick from the recorded base", githubcontract.ErrReleasePickMismatch)
 	}
 	if err := r.verifyReleaseSource(ctx, path, input, commits[0]); err != nil {
 		return err
@@ -239,7 +239,7 @@ func (r *Reconciler) verifyReleaseAncestry(ctx context.Context, path string, inp
 		return fmt.Errorf("verify develop ancestry: %w", err)
 	}
 	if sourceCompare.Status != "ahead" && sourceCompare.Status != "identical" {
-		return fmt.Errorf("%w: source commit is not merged into develop", hubserver.ErrReleasePickMismatch)
+		return fmt.Errorf("%w: source commit is not merged into develop", githubcontract.ErrReleasePickMismatch)
 	}
 	var releaseCompare struct {
 		MergeBaseCommit struct {
@@ -250,7 +250,7 @@ func (r *Reconciler) verifyReleaseAncestry(ctx context.Context, path string, inp
 		return fmt.Errorf("verify frozen source: %w", err)
 	}
 	if releaseCompare.MergeBaseCommit.SHA != input.FrozenSHA {
-		return fmt.Errorf("%w: frozen release identity mismatch", hubserver.ErrReleasePickMismatch)
+		return fmt.Errorf("%w: frozen release identity mismatch", githubcontract.ErrReleasePickMismatch)
 	}
 	return nil
 }
@@ -264,13 +264,13 @@ func (r *Reconciler) verifyReleaseSource(ctx context.Context, path string, input
 	for _, line := range strings.Split(pick.Commit.Message, "\n") {
 		if strings.HasPrefix(line, "(cherry picked from commit ") {
 			if linked || line != trailer {
-				return fmt.Errorf("%w: release source trailer mismatch", hubserver.ErrReleasePickMismatch)
+				return fmt.Errorf("%w: release source trailer mismatch", githubcontract.ErrReleasePickMismatch)
 			}
 			linked = true
 		}
 	}
 	if !linked {
-		return fmt.Errorf("%w: release commit lacks source provenance", hubserver.ErrReleasePickMismatch)
+		return fmt.Errorf("%w: release commit lacks source provenance", githubcontract.ErrReleasePickMismatch)
 	}
 	var source releasePickCommit
 	for _, commit := range []struct {
@@ -282,11 +282,11 @@ func (r *Reconciler) verifyReleaseSource(ctx context.Context, path string, input
 			return fmt.Errorf("read release provenance patch: %w", err)
 		}
 		if next != "" {
-			return fmt.Errorf("%w: truncated release provenance patch", hubserver.ErrReleasePickMismatch)
+			return fmt.Errorf("%w: truncated release provenance patch", githubcontract.ErrReleasePickMismatch)
 		}
 	}
 	if source.SHA != input.SourceMergeSHA || pick.SHA != input.HeadSHA || !equivalentReleasePatch(source.Files, pick.Files) {
-		return fmt.Errorf("%w: release patch does not match the merged source", hubserver.ErrReleasePickMismatch)
+		return fmt.Errorf("%w: release patch does not match the merged source", githubcontract.ErrReleasePickMismatch)
 	}
 	return nil
 }

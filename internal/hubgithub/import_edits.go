@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -26,8 +26,8 @@ fragment Edits on UserContentEditConnection {
   pageInfo { hasNextPage endCursor }
 }`
 
-func (i *Importer) fetchEdits(ctx context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
-	var result hubserver.GitHubImportPage
+func (i *Importer) fetchEdits(ctx context.Context, request githubcontract.GitHubImportRequest) (githubcontract.GitHubImportPage, error) {
+	var result githubcontract.GitHubImportPage
 	client, ok := i.client.(graphQLClient)
 	if !ok {
 		return result, errors.New("github GraphQL edit-history transport is unavailable")
@@ -51,7 +51,7 @@ func (i *Importer) fetchEdits(ctx context.Context, request hubserver.GitHubImpor
 		return result, err
 	}
 	if response.Node == nil {
-		return hubserver.GitHubImportPage{Gaps: []string{"Edit-history source is deleted or inaccessible: " + request.SourceID}}, nil
+		return githubcontract.GitHubImportPage{Gaps: []string{"Edit-history source is deleted or inaccessible: " + request.SourceID}}, nil
 	}
 	if response.Node.Edits.PageInfo.HasNextPage {
 		result.NextCursor = response.Node.Edits.PageInfo.EndCursor
@@ -81,7 +81,7 @@ func (i *Importer) fetchEdits(ctx context.Context, request hubserver.GitHubImpor
 		if edit.Diff == nil || edit.DeletedAt != nil {
 			result.Gaps = append(result.Gaps, "Edit diff was redacted or unavailable: "+edit.ID)
 		}
-		result.Records = append(result.Records, hubserver.GitHubImportRecord{SourceKey: "edit:" + edit.ID, Kind: "edit", Data: raw, Provenance: tracker.Provenance{Provider: "github", ExternalID: edit.ID, AuthorID: edit.Editor.ID, AuthorDisplayName: edit.Editor.Login, CreatedAt: edit.CreatedAt, UpdatedAt: edit.UpdatedAt, ObservedAt: time.Now().UTC()}})
+		result.Records = append(result.Records, githubcontract.GitHubImportRecord{SourceKey: "edit:" + edit.ID, Kind: "edit", Data: raw, Provenance: tracker.Provenance{Provider: "github", ExternalID: edit.ID, AuthorID: edit.Editor.ID, AuthorDisplayName: edit.Editor.Login, CreatedAt: edit.CreatedAt, UpdatedAt: edit.UpdatedAt, ObservedAt: time.Now().UTC()}})
 	}
 	return result, nil
 }
