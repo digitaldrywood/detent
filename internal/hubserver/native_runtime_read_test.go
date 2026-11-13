@@ -998,10 +998,12 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 				}
 			}
 			t.Cleanup(func() {
-				if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET removed_at=NULL WHERE organization_id=$1`, scope.organization); err != nil {
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
+				defer cancel()
+				if _, err := admin.ExecContext(cleanup, `UPDATE runner_identities SET removed_at=NULL WHERE organization_id=$1`, scope.organization); err != nil {
 					t.Error(err)
 				}
-				if _, err := admin.ExecContext(t.Context(), `INSERT INTO token_grants(organization_id,token_id,project_id) SELECT organization_id,token_id,$2 FROM runner_identities WHERE organization_id=$1 ON CONFLICT DO NOTHING`, scope.organization, scope.project); err != nil {
+				if _, err := admin.ExecContext(cleanup, `INSERT INTO token_grants(organization_id,token_id,project_id) SELECT organization_id,token_id,$2 FROM runner_identities WHERE organization_id=$1 ON CONFLICT DO NOTHING`, scope.organization, scope.project); err != nil {
 					t.Error(err)
 				}
 			})
@@ -1136,7 +1138,9 @@ SELECT organization_id,project_id,$7,'capacity_'||native_id,id,$6,native_id,1,$5
 						t.Fatal(err)
 					}
 					t.Cleanup(func() {
-						if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.CreateProviderReservation(t.Context(), reservation) }); err != nil {
+						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
+						defer cancel()
+						if err := repository.WriteTenant(cleanup, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.CreateProviderReservation(cleanup, reservation) }); err != nil {
 							t.Error(err)
 						}
 					})
