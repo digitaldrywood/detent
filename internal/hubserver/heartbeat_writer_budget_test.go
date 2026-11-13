@@ -120,9 +120,30 @@ func TestHeartbeatContentAccounting(t *testing.T) {
 			if !strings.Contains(response.Body.String(), "Sprite name must match the runner hostname") {
 				t.Fatalf("unexpected preparation refusal: %s", response.Body.String())
 			}
-			if len(uploaded) != 2 {
-				t.Fatalf("configuration objects=%d, want canonical configuration and reported observation", len(uploaded))
+			configuration := uploaded[:0]
+			decisions := 0
+			for _, ref := range uploaded {
+				raw, err := details.ReadDetail(t.Context(), string(f.project.OrganizationID), ref)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var event tracker.CollaborationEvent
+				if json.Unmarshal(raw, &event) == nil && event.Type == "scheduler.decision" && event.Data.Decision != nil && event.Data.Decision.Source == "native_runner_admission" {
+					decisions++
+					if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+						_, err := r.ArchiveObjectByReference(t.Context(), ref)
+						return err
+					}); !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("refused heartbeat registered admission decision payload: %v", err)
+					}
+					continue
+				}
+				configuration = append(configuration, ref)
 			}
+			if len(configuration) != 2 || decisions != len(view.Diagnostics.Admissions) {
+				t.Fatalf("configuration objects=%d decision payloads=%d, want canonical configuration and reported observation plus one prepared decision per skipped admission (%d)", len(configuration), decisions, len(view.Diagnostics.Admissions))
+			}
+			uploaded = configuration
 			want := before
 			for _, ref := range uploaded {
 				if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -166,8 +187,8 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 		statements int
 	}{
 		{name: "heartbeat", statements: 12},
-		{name: "heartbeat admission", admission: true, statements: 30},
-		{name: "heartbeat hosted admission", admission: true, hosted: true, statements: 50},
+		{name: "heartbeat admission", admission: true, statements: 40},
+		{name: "heartbeat hosted admission", admission: true, hosted: true, statements: 60},
 		{name: "heartbeat concurrent admission", admission: true, concurrent: true, statements: 40},
 		{name: "renew", renew: true, statements: 12},
 		{name: "hosted renew", renew: true, hosted: true, statements: 20},
