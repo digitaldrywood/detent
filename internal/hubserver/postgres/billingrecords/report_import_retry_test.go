@@ -3,6 +3,7 @@ package billingrecords_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,11 +16,26 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+type deadlockVictimTrace struct{ victims atomic.Int64 }
+
+func (*deadlockVictimTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	return ctx
+}
+
+func (trace *deadlockVictimTrace) TraceQueryEnd(_ context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	var failure *pgconn.PgError
+	if errors.As(data.Err, &failure) && failure.Code == "40P01" {
+		trace.victims.Add(1)
+	}
+}
 
 func TestReportUsageImportRetriesDeadlockVictim(t *testing.T) {
 	admin := pgstoretest.Template.Database(t)
-	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
+	config := pgstoretest.SmallPool()
+	repository, pool := pgstoretest.RepositoryFor(t, admin, config)
 	ctx := t.Context()
 	var database, login string
 	if err := admin.QueryRowContext(ctx, `SELECT current_database()`).Scan(&database); err != nil {
@@ -31,7 +47,22 @@ func TestReportUsageImportRetriesDeadlockVictim(t *testing.T) {
 	if _, err := admin.ExecContext(ctx, "ALTER ROLE "+pgx.Identifier{login}.Sanitize()+" IN DATABASE "+pgx.Identifier{database}.Sanitize()+" SET deadlock_timeout='10ms'"); err != nil {
 		t.Fatal(err)
 	}
-	pool.Reset()
+	if err := repository.Close(); err != nil {
+		t.Fatal(err)
+	}
+	trace := &deadlockVictimTrace{}
+	traced := pgstoretest.TracedFeaturePool(t, pool, trace)
+	pool.Close()
+	pool = traced
+	repository, err := postgres.NewRepository(ctx, pool, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := repository.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	for _, org := range []tracker.OrganizationID{"org_retry_first", "org_retry_second"} {
 		t.Run(string(org), func(t *testing.T) {
 			if _, err := admin.ExecContext(ctx, `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
@@ -49,10 +80,7 @@ func TestReportUsageImportRetriesDeadlockVictim(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			var deadlocks int64
-			if err := admin.QueryRowContext(ctx, `SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()`).Scan(&deadlocks); err != nil {
-				t.Fatal(err)
-			}
+			victims := trace.victims.Load()
 			holder, err := admin.Conn(ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -98,16 +126,9 @@ func TestReportUsageImportRetriesDeadlockVictim(t *testing.T) {
 			if err := importer.Wait(t); err != nil {
 				t.Fatalf("deadlock victim import error: %v", err)
 			}
-			testenv.WaitUntil(t, ctx, func() error {
-				var current int64
-				if err := admin.QueryRowContext(ctx, `SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()`).Scan(&current); err != nil {
-					return err
-				}
-				if current <= deadlocks {
-					return errors.New("import was not chosen as a deadlock victim")
-				}
-				return nil
-			})
+			if trace.victims.Load() <= victims {
+				t.Fatal("import was not chosen as a deadlock victim")
+			}
 			var rows int
 			if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM attempt_usage WHERE organization_id=$1 AND attempt_id='attempt_retry'`, org).Scan(&rows); err != nil {
 				t.Fatal(err)
