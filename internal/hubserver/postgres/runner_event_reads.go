@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -55,6 +56,19 @@ func (f *runnerEventSession) Attempt(ctx context.Context, id string) (leasestore
 		return f.Writer.Attempt(ctx, id)
 	}
 	return attemptFromPG(f.attempt.value), f.attempt.err
+}
+func (f *runnerEventSession) AttemptReceiptSequences(ctx context.Context, id string, sequences []int64) ([]int64, error) {
+	if id != f.command.AttemptID || slices.ContainsFunc(sequences, func(sequence int64) bool { return !slices.Contains(f.command.Sequences, sequence) }) {
+		return f.session.AttemptReceiptSequences(ctx, id, sequences)
+	}
+	found := []int64{}
+	for _, sequence := range sequences {
+		if _, ok := f.attemptReceipts[sequence]; ok && !slices.Contains(found, sequence) {
+			found = append(found, sequence)
+		}
+	}
+	slices.Sort(found)
+	return found, nil
 }
 func (f *runnerEventSession) LatestAttempt(ctx context.Context, id int64) (leasestore.Attempt, error) {
 	if id != f.item.value.ID {

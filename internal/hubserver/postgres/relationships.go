@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -144,6 +145,31 @@ func (s *session) CheckDependency(ctx context.Context, relationship corestore.Re
 		return err
 	}
 	return s.checkDependencyCycle(ctx, dependent.ID, blocker.ID)
+}
+
+func (s *session) DependencyCreatesCycle(ctx context.Context, relationship corestore.Relationship) (bool, error) {
+	if err := s.checkOrganization(relationship.OrganizationID); err != nil {
+		return false, err
+	}
+	if relationship.Type != "dependency" || relationship.ProjectID == "" || relationship.RelatedProjectID == "" || relationship.WorkItemID == "" || relationship.RelatedWorkItemID == "" {
+		return false, corestore.ErrInvalidRelationship
+	}
+	if relationship.ProjectID == relationship.RelatedProjectID && relationship.WorkItemID == relationship.RelatedWorkItemID {
+		return true, nil
+	}
+	dependent, err := s.WorkItem(ctx, relationship.ProjectID, relationship.WorkItemID)
+	if err != nil {
+		return false, err
+	}
+	blocker, err := s.WorkItem(ctx, relationship.RelatedProjectID, relationship.RelatedWorkItemID)
+	if err != nil {
+		return false, err
+	}
+	err = s.checkDependencyCycle(ctx, dependent.ID, blocker.ID)
+	if errors.Is(err, corestore.ErrDependencyCycle) {
+		return true, nil
+	}
+	return false, err
 }
 
 func (s *session) checkDependencyCycle(ctx context.Context, dependent, blocker int64) error {

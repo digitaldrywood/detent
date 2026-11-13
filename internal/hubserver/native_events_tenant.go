@@ -330,6 +330,9 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		if err := admitNativeRunEventBatch(ctx, r, scope.Project, workItem.NativeID, lease, events, s.config.Clock().UTC()); err != nil {
 			return err
 		}
+		if err := admitNativeAttemptSequences(ctx, r, request.Data.AttemptID, events); err != nil {
+			return err
+		}
 		if cleanupPredecessor != nil && cleanupPredecessor.attempt.CheckpointObjectKey != nil {
 			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: cleanupPredecessor.attempt, Lease: cleanupPredecessor.lease, Event: cleanupPredecessor.event}
 			if err := hubrecords.ReadTenantAttemptCheckpointPayload(ctx, r, &snapshot); err != nil {
@@ -1131,6 +1134,32 @@ func admitNativeRunEventBatch(ctx context.Context, r tenantstore.Reader, project
 		} else if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func admitNativeAttemptSequences(ctx context.Context, r tenantstore.Reader, attemptID string, events []tracker.NativeRunEvent) error {
+	reader, ok := r.(leasestore.AttemptReceiptReader)
+	if !ok {
+		return nil
+	}
+	sequences := make([]int64, 0, len(events))
+	for _, event := range events {
+		sequences = append(sequences, event.Data.Sequence)
+	}
+	receipts, err := reader.AttemptReceiptSequences(ctx, attemptID, sequences)
+	if err != nil || len(receipts) == 0 {
+		return err
+	}
+	var persisted int64
+	attempt, err := r.Attempt(ctx, attemptID)
+	if err == nil {
+		persisted = attempt.Sequence
+	} else if !errors.Is(err, corestore.ErrNotFound) {
+		return err
+	}
+	if receipts[len(receipts)-1] > persisted {
+		return leasestore.ErrAttemptConflict
 	}
 	return nil
 }

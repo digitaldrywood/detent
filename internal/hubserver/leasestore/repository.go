@@ -300,3 +300,7 @@ type AttemptFailureFact struct {
 type AttemptFailureWriter interface {
 	SetAttemptFailure(context.Context, AttemptFailureFact) error
 }
+
+type AttemptReceiptReader interface {
+	AttemptReceiptSequences(context.Context, string, []int64) ([]int64, error)
+}

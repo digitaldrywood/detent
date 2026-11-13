@@ -374,6 +374,18 @@ func (s *session) AttemptFailures(ctx context.Context, issueID int64, limit int)
 	return result, nil
 }
 
+func (s *session) AttemptReceiptSequences(ctx context.Context, attemptID string, sequences []int64) ([]int64, error) {
+	if attemptID == "" || len(sequences) == 0 || len(sequences) > corestore.MaxPageSize {
+		return nil, corestore.ErrInvalidPage
+	}
+	rows, err := s.db.Query(ctx, `SELECT sequence FROM native_attempt_events WHERE organization_id=$1 AND attempt_id=$2 AND sequence=ANY($3::bigint[]) ORDER BY sequence`, s.organization, attemptID, sequences)
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	found, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	return found, mapError(ctx, err)
+}
+
 func (s *session) SetAttemptFailure(ctx context.Context, fact leasestore.AttemptFailureFact) error {
 	if s.readOnly || fact.AttemptID == "" || fact.IssueID < 1 || fact.Sequence < 1 {
 		return corestore.ErrInvalidPage

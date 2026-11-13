@@ -175,8 +175,8 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 		}
 		out.repairs = append(out.repairs, repair)
 	}
-	if err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		refusal, err := s.checkIndependentRepairs(ctx, w, scope, out)
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		refusal, err := s.previewIndependentRepairs(ctx, r, scope, out)
 		if err == nil && refusal != "" {
 			out.refusal = refusal
 		}
@@ -207,6 +207,51 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.
 	}
 	out.update = &prepared
 	return out, nil
+}
+
+func (s *Service) previewIndependentRepairs(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plan *preparedIndependentRepairs) (string, error) {
+	cycles, ok := r.(corestore.DependencyCycleReader)
+	if !ok {
+		return "", hubapi.NativeRunEventStorageUnavailable()
+	}
+	if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+		return "", err
+	}
+	project, err := r.ProjectRecord(ctx, scope.Project)
+	if err != nil {
+		return "", err
+	}
+	if project.Core.DeletedAt != nil || !hubrecords.SameWorkItemProjectPlan(plan.source.Project, project) {
+		return "", corestore.ErrSerializationFailure
+	}
+	current, err := r.WorkItem(ctx, scope.Project, plan.source.Current.NativeID)
+	if err != nil {
+		return "", err
+	}
+	if current.Revision != plan.source.Current.Revision || current.Archived || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
+		return "", corestore.ErrSerializationFailure
+	}
+	refusal := plan.refusal
+	for _, repair := range plan.repairs {
+		if repair.target.NativeID == "" {
+			continue
+		}
+		target, err := r.WorkItem(ctx, scope.Project, repair.target.NativeID)
+		if err != nil {
+			return "", err
+		}
+		if !reflect.DeepEqual(target, repair.target) {
+			return "", corestore.ErrSerializationFailure
+		}
+		cycle, err := cycles.DependencyCreatesCycle(ctx, corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: current.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: target.NativeID, Type: "dependency"})
+		if err != nil {
+			return "", err
+		}
+		if cycle {
+			refusal = "Dependencies cannot form a cycle"
+		}
+	}
+	return refusal, nil
 }
 
 func (s *Service) checkIndependentRepairs(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, plan *preparedIndependentRepairs) (string, error) {

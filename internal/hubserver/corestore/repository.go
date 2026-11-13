@@ -69,6 +69,10 @@ type Reader interface {
 	ScanComments(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, ScanCursor, int) (Scan[Comment], error)
 }
 
+type DependencyCycleReader interface {
+	DependencyCreatesCycle(context.Context, Relationship) (bool, error)
+}
+
 type Writer interface {
 	Reader
 	LockRelationshipGraph(context.Context) error
