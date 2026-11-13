@@ -1,16 +1,15 @@
-package hubserver
+package storageconversion
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 )
 
-type storageJSONReference struct {
+type JSONReference struct {
 	Organization string                      `json:"organization_id"`
 	Project      string                      `json:"project_id"`
 	Family       string                      `json:"family"`
@@ -18,7 +17,7 @@ type storageJSONReference struct {
 	Reference    attachment.ArchiveReference `json:"reference"`
 }
 
-type storageJSONPayload struct {
+type JSONPayload struct {
 	Organization string          `json:"organization_id"`
 	Project      string          `json:"project_id"`
 	Family       string          `json:"family"`
@@ -26,22 +25,12 @@ type storageJSONPayload struct {
 	Data         json.RawMessage `json:"data"`
 }
 
-func resolveStorageJSON(ctx context.Context, raw []byte) ([]byte, error) {
-	if bytes.HasPrefix(raw, []byte("orgs/")) {
-		return readStoredPayload(ctx, string(raw))
-	}
-	if explanationRead(ctx) {
-		return raw, nil
-	}
-	return resolveStorageJSONWith(ctx, raw, readChangeContent)
-}
-
-func resolveStorageJSONWith(ctx context.Context, raw []byte, read func(context.Context, string, attachment.ArchiveReference) ([]byte, error)) ([]byte, error) {
+func ResolveJSONWith(ctx context.Context, raw []byte, read func(context.Context, string, attachment.ArchiveReference) ([]byte, error)) ([]byte, error) {
 	if !bytes.Contains(raw, []byte(`"_storage_archive"`)) {
 		return raw, nil
 	}
 	var envelope struct {
-		Archive *storageJSONReference `json:"_storage_archive"`
+		Archive *JSONReference `json:"_storage_archive"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, err
@@ -54,33 +43,22 @@ func resolveStorageJSONWith(ctx context.Context, raw []byte, read func(context.C
 	if err != nil {
 		return nil, err
 	}
-	var payload storageJSONPayload
+	var payload JSONPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, err
 	}
 	if payload.Organization != r.Organization || payload.Project != r.Project || payload.Family != r.Family || payload.Row != r.Row || !json.Valid(payload.Data) {
 		return nil, artifact.ErrIntegrity
 	}
-	expected, err := compactStorageJSON(payload.Data, *r)
+	expected, err := CompactJSON(payload.Data, *r)
 	if err != nil {
 		return nil, err
 	}
-	resolved, _, err := mergeStorageJSON(payload.Data, expected, raw)
+	resolved, _, err := MergeJSON(payload.Data, expected, raw)
 	return resolved, err
 }
 
-func decodeStorageJSON(ctx context.Context, raw []byte, result any) error {
-	data, err := resolveStorageJSON(ctx, raw)
-	if err != nil {
-		return fmt.Errorf("read converted content: %w", err)
-	}
-	if err := expandStorageConversion(ctx, len(data)); err != nil {
-		return err
-	}
-	return json.Unmarshal(data, result)
-}
-
-func compactStorageJSON(raw []byte, ref storageJSONReference) ([]byte, error) {
+func CompactJSON(raw []byte, ref JSONReference) ([]byte, error) {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return nil, err
@@ -97,7 +75,7 @@ func compactStorageJSON(raw []byte, ref storageJSONReference) ([]byte, error) {
 				object[key] = json.RawMessage(`""`)
 			}
 		default:
-			trimmed, err := trimStorageJSON(value)
+			trimmed, err := trimJSON(value)
 			if err != nil {
 				return nil, err
 			}
@@ -115,7 +93,7 @@ func compactStorageJSON(raw []byte, ref storageJSONReference) ([]byte, error) {
 	return json.Marshal(object)
 }
 
-func trimStorageJSON(raw json.RawMessage) (json.RawMessage, error) {
+func trimJSON(raw json.RawMessage) (json.RawMessage, error) {
 	if bytes.HasPrefix(raw, []byte("{")) {
 		var object map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &object); err != nil {
@@ -126,7 +104,7 @@ func trimStorageJSON(raw json.RawMessage) (json.RawMessage, error) {
 				object[key] = json.RawMessage(`""`)
 				continue
 			}
-			trimmed, err := trimStorageJSON(value)
+			trimmed, err := trimJSON(value)
 			if err != nil {
 				return nil, err
 			}
@@ -140,7 +118,7 @@ func trimStorageJSON(raw json.RawMessage) (json.RawMessage, error) {
 			return nil, err
 		}
 		for i, value := range array {
-			trimmed, err := trimStorageJSON(value)
+			trimmed, err := trimJSON(value)
 			if err != nil {
 				return nil, err
 			}
@@ -151,7 +129,7 @@ func trimStorageJSON(raw json.RawMessage) (json.RawMessage, error) {
 	return raw, nil
 }
 
-func mergeStorageJSON(original, expected, current json.RawMessage) (json.RawMessage, bool, error) {
+func MergeJSON(original, expected, current json.RawMessage) (json.RawMessage, bool, error) {
 	if bytes.Equal(bytes.TrimSpace(expected), bytes.TrimSpace(current)) {
 		return original, false, nil
 	}
@@ -193,7 +171,7 @@ func mergeStorageJSON(original, expected, current json.RawMessage) (json.RawMess
 			changed = true
 			continue
 		}
-		resolved, updated, err := mergeStorageJSON(source[key], previous, value)
+		resolved, updated, err := MergeJSON(source[key], previous, value)
 		if err != nil {
 			return nil, false, err
 		}

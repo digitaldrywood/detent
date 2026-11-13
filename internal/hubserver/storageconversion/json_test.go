@@ -1,32 +1,28 @@
-package hubserver
+package storageconversion_test
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 )
 
 func TestStorageConversionHistoricalJSONScope(t *testing.T) {
-	scope := nativeScope{organization: "org_example", project: "prj_example"}
+	organization, project := "org_example", "prj_example"
 	raw := []byte(`{"output":"` + strings.Repeat("old snapshot", 2048) + `","runtime":{"landing":{"waiting":true}},"usage":{"output":42}}`)
-	ctx := context.WithValue(t.Context(), changeContentKey{}, &changeContent{
-		store: &memoryRunDetails{},
-		register: func(_ context.Context, organization string, ref attachment.ArchiveReference, _ bool) error {
-			return ref.Validate(organization)
-		},
-	})
-	payload, err := json.Marshal(storageJSONPayload{Organization: string(scope.organization), Project: string(scope.project), Family: "attempts", Row: 1, Data: raw})
+	ctx := t.Context()
+	store := hubtest.NewDetails()
+	payload, err := json.Marshal(storageconversion.JSONPayload{Organization: organization, Project: project, Family: "attempts", Row: 1, Data: raw})
 	if err != nil {
 		t.Fatal(err)
 	}
-	archive, err := prepareChangeContent(ctx, string(scope.organization), payload)
+	archive, err := store.StoreDetail(ctx, organization, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	converted, err := compactStorageJSON(raw, storageJSONReference{Organization: string(scope.organization), Project: string(scope.project), Family: "attempts", Row: 1, Reference: archive})
+	converted, err := storageconversion.CompactJSON(raw, storageconversion.JSONReference{Organization: organization, Project: project, Family: "attempts", Row: 1, Reference: archive})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +38,7 @@ func TestStorageConversionHistoricalJSONScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := resolveStorageJSON(ctx, updated)
+	resolved, err := storageconversion.ResolveJSONWith(ctx, updated, store.ReadDetail)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +60,7 @@ func TestStorageConversionHistoricalJSONScope(t *testing.T) {
 	if run.Output != strings.Repeat("old snapshot", 2048) || run.Runtime.Landing.Waiting || !run.Runtime.Landing.Landed || run.Usage.Output != 42 {
 		t.Fatal("mutable landing metadata or immutable historical content changed")
 	}
-	var ref storageJSONReference
+	var ref storageconversion.JSONReference
 	if err := json.Unmarshal(envelope["_storage_archive"], &ref); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +73,7 @@ func TestStorageConversionHistoricalJSONScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveStorageJSON(ctx, tampered); err == nil {
+	if _, err := storageconversion.ResolveJSONWith(ctx, tampered, store.ReadDetail); err == nil {
 		t.Fatal("accepted content from another project")
 	}
 }
