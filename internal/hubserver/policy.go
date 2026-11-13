@@ -520,7 +520,7 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 			return err
 		}
 		if currentID != resolved.ID && (resolved.Workflow != nil || previous.Policy.SameAuthoredInputs(resolved)) {
-			if err := s.createTenantWorkflowApply(ctx, writer, scope, project, currentID, previous.Policy, resolved, actor, "", now, eventstore.PolicyLanding{}); err != nil {
+			if err := s.createTenantWorkflowApply(ctx, writer, scope, project, currentID, previous.Policy, resolved, actor, "", now, eventstore.PolicyLanding{}, false); err != nil {
 				return err
 			}
 		}
@@ -960,13 +960,14 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 	}
 	carryover := descriptor.SameAuthoredInputs(previous.Policy)
 	landing := eventstore.PolicyLanding{}
+	sourceUnavailable := false
 	if descriptor.Workflow != nil {
 		repository := project.Settings.CheckoutRepository
 		if repository == "" {
 			repository = project.Settings.Repository
 		}
 		source := observation.Source
-		sourceUnavailable := source == nil || !hubapi.ValidCommitID(source.Commit) || !hubapi.ValidCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision || repository == "" || !strings.EqualFold(repository, source.Repository)
+		sourceUnavailable = source == nil || !hubapi.ValidCommitID(source.Commit) || !hubapi.ValidCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision || repository == "" || !strings.EqualFold(repository, source.Repository)
 		if !sourceUnavailable {
 			landing, err = writer.ProjectPolicyLanding(ctx, scope.Project, repository, source.Commit, source.DefaultBranch)
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -1011,7 +1012,7 @@ func (s *Service) applyObservedTenantDefaultBranchPolicy(ctx context.Context, wr
 	if descriptor.Workflow == nil && !carryover {
 		return nil
 	}
-	return s.createTenantWorkflowApply(ctx, writer, scope, project, current.PolicyID, previous.Policy, descriptor, actor, reporter, now, landing)
+	return s.createTenantWorkflowApply(ctx, writer, scope, project, current.PolicyID, previous.Policy, descriptor, actor, reporter, now, landing, sourceUnavailable)
 }
 
 func reconcileTenantWorkflowPolicy(ctx context.Context, writer tenantstore.Writer, project projectstore.Record, descriptor policy.Descriptor) error {
@@ -1046,7 +1047,7 @@ func sameProjectPolicySnapshot(current, planned policystore.Revision) bool {
 	return hubrecords.SameNativeClaimProjectPolicy(current, planned)
 }
 
-func (s *Service) createTenantWorkflowApply(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, project projectstore.Record, previousID string, previous policy.Descriptor, descriptor policy.Descriptor, actor, runner string, appliedAt time.Time, landing eventstore.PolicyLanding) error {
+func (s *Service) createTenantWorkflowApply(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, project projectstore.Record, previousID string, previous policy.Descriptor, descriptor policy.Descriptor, actor, runner string, appliedAt time.Time, landing eventstore.PolicyLanding, sourceUnavailable bool) error {
 	repository := project.Settings.CheckoutRepository
 	if repository == "" {
 		repository = project.Settings.Repository
@@ -1058,6 +1059,9 @@ func (s *Service) createTenantWorkflowApply(ctx context.Context, writer tenantst
 	commit := ""
 	if descriptor.Workflow != nil {
 		commit = descriptor.Workflow.Revision
+	}
+	if sourceUnavailable {
+		repository, commit = "", ""
 	}
 	_, err := writer.CreateProjectWorkflowApply(ctx, policystore.WorkflowApply{
 		OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: descriptor.ID, PreviousPolicyID: previousID,
