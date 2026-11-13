@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -37,8 +38,16 @@ func coordinatorCatalogExcluded(name string) bool {
 	case coordinatorToolFindTools, coordinatorToolCallTool, string(chat.ActionStopRun), string(chat.ActionFileIssue), string(chat.ActionSetPriority), operatortool.ActionResult, operatortool.ConnectionInfo, "get_operator_chat", "post_operator_chat", "post_conversation_command", "stream_conversation_events":
 		return true
 	}
-	return slices.ContainsFunc((&coordinatorToolset{}).tools(), func(tool runner.AgentTool) bool { return tool.Name == name })
+	return coordinatorToolNames()[name]
 }
+
+var coordinatorToolNames = sync.OnceValue(func() map[string]bool {
+	names := map[string]bool{}
+	for _, tool := range (&coordinatorToolset{}).tools() {
+		names[tool.Name] = true
+	}
+	return names
+})
 
 // coordinatorCatalogWrite reports whether a confirmed chat action runs a
 // catalog tool through the operator executor rather than a coordinator tool.
