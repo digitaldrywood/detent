@@ -435,7 +435,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						coordinatorActionWriteIssue(t, f.service, "org_security", f.project, tracker.NativeWorkItemID(archiveIDs[4]), func(issue *tracker.NativeIssue) { issue.State = "Merging" })
 					}
 					if outcome == "already archived" {
-						coordinatorActionWriteIssue(t, f.service, "org_security", f.project, tracker.NativeWorkItemID(archiveIDs[4]), func(issue *tracker.NativeIssue) { issue.Archived = true })
+						tamperPostgresRows(t, hostedPostgresAdmin(t, f.service), "UPDATE issues SET archived=true WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", "org_security", f.project, archiveIDs[4])
 					}
 					if outcome == "outside project" {
 						response := f.request(t, u, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{"idempotency_key": "archive-other-project", "name": "Other project", "grant_access": true})
