@@ -58,7 +58,7 @@ func (d *DetailStore) StoreDetail(ctx context.Context, organization string, data
 	if err != nil {
 		return attachment.ArchiveReference{}, err
 	}
-	err = d.repository.transaction(ctx, tracker.OrganizationID(organization), corestore.Serving, false, func(s *session) error {
+	err = d.repository.leafTransaction(ctx, tracker.OrganizationID(organization), false, func(s *session) error {
 		return s.putDetailObject(ctx, ref, compressed, d.now().UTC())
 	})
 	if err != nil {
@@ -91,7 +91,7 @@ func (d *DetailStore) ReadCanonicalDetail(ctx context.Context, organization, pro
 
 func (d *DetailStore) read(ctx context.Context, organization, key string) ([]byte, error) {
 	var compressed []byte
-	err := d.repository.transaction(ctx, tracker.OrganizationID(organization), corestore.Serving, true, func(s *session) error {
+	err := d.repository.leafTransaction(ctx, tracker.OrganizationID(organization), true, func(s *session) error {
 		var err error
 		compressed, err = s.detailObject(ctx, key)
 		return err

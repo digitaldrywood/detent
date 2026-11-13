@@ -131,7 +131,7 @@ func transactionSpan(ctx context.Context, name string) func() {
 	return pgcore.TransactionSpan(ctx, name)
 }
 
-func (r *Repository) transactionIsolation(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, isolation pgx.TxIsoLevel, run func(*session) error) (resultErr error) {
+func (r *Repository) transactionIsolation(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, readOnly bool, isolation pgx.TxIsoLevel, run func(*session) error) error {
 	if request, ok := ctx.Value(readRequestKey{}).(*readRequest); ok {
 		if request.repository != r || request.session.organization != organization || workload != corestore.Serving || !readOnly {
 			return corestore.ErrTenantMismatch
@@ -145,6 +145,20 @@ func (r *Repository) transactionIsolation(ctx context.Context, organization trac
 		return err
 	}
 	defer release()
+	return r.begin(ctx, organization, readOnly, isolation, run)
+}
+
+func (r *Repository) leafTransaction(ctx context.Context, organization tracker.OrganizationID, readOnly bool, run func(*session) error) error {
+	if request, ok := ctx.Value(readRequestKey{}).(*readRequest); ok && readOnly {
+		if request.repository != r || request.session.organization != organization {
+			return corestore.ErrTenantMismatch
+		}
+		return run(request.session)
+	}
+	return r.begin(ctx, organization, readOnly, pgx.ReadCommitted, run)
+}
+
+func (r *Repository) begin(ctx context.Context, organization tracker.OrganizationID, readOnly bool, isolation pgx.TxIsoLevel, run func(*session) error) (resultErr error) {
 	finishBegin := transactionSpan(ctx, "pg_begin")
 	tx, err := r.runtime.Begin(ctx, organization, pgtransport.Options{Isolation: isolation, ReadOnly: readOnly})
 	finishBegin()

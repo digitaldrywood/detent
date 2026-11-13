@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -86,5 +88,67 @@ func TestDetailStoreKeepsContentPerOrganization(t *testing.T) {
 	}
 	if got, err := store.ReadDetail(t.Context(), string(organizations[1]), refs[organizations[1]]); err != nil || !bytes.Equal(got, data) {
 		t.Fatalf("corruption in one organization changed the other: %q %v", got, err)
+	}
+}
+
+func TestDetailStoreProgressesInsideSaturatedTransactions(t *testing.T) {
+	t.Parallel()
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
+	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+	store := repository.DetailStore(func() time.Time { return now })
+	const org = tracker.OrganizationID("org_detail_saturated")
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: string(org), CreatedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.StoreDetail(t.Context(), string(org), []byte(`{"existing":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	background := make(chan error, 1)
+	go func() {
+		background <- repository.ReadTenant(t.Context(), org, corestore.Background, func(tenantstore.Reader) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	<-entered
+	guard, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	for _, workload := range []string{"read", "write"} {
+		run := func(fn func(tenantstore.Reader) error) error {
+			if workload == "read" {
+				return repository.ReadTenant(guard, org, corestore.Serving, fn)
+			}
+			return repository.WriteTenant(guard, org, corestore.Serving, func(w tenantstore.Writer) error { return fn(w) })
+		}
+		if err := run(func(tenantstore.Reader) error {
+			ref, err := store.StoreDetail(guard, string(org), []byte(`{"nested":"`+workload+`"}`))
+			if err != nil {
+				return err
+			}
+			if got, err := store.ReadDetail(guard, string(org), ref); err != nil || !bytes.Contains(got, []byte(workload)) {
+				return errors.Join(err, errors.New("nested read returned other content"))
+			}
+			_, err = store.ReadCanonicalDetail(guard, string(org), "prj_example", stored.Key)
+			return err
+		}); err != nil {
+			t.Fatalf("%s transaction with every serving and background slot held: %v", workload, err)
+		}
+	}
+	close(release)
+	if err := <-background; err != nil {
+		t.Fatal(err)
 	}
 }
