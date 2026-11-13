@@ -65,7 +65,7 @@ func TestNativeDependencyReasonCAS(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, request), test.want)
 		})
 	}
-	current = readWorkItem(t, f, dependent.WorkItemID, "")
+	current = readWorkItemWithoutBoardRefresh(t, f, dependent.WorkItemID, "")
 	if current.BlockedReason.Text != "Waits for the shared foundation." || current.Revision != 2 || current.State != dependent.State {
 		t.Fatalf("reason changed issue state or revision: %+v", current)
 	}
