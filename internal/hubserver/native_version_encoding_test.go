@@ -352,8 +352,8 @@ func TestNativeNoOpRevisions(t *testing.T) {
 		reason string
 		status int
 	}{
-		{reason: "worker_progress", status: http.StatusServiceUnavailable},
-		{reason: "dependency_ready", status: http.StatusServiceUnavailable},
+		{reason: "worker_progress", status: http.StatusUnprocessableEntity},
+		{reason: "dependency_ready", status: http.StatusUnprocessableEntity},
 		{reason: "user_requested", status: http.StatusOK},
 	} {
 		t.Run("same state command "+test.reason, func(t *testing.T) {
