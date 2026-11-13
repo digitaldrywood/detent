@@ -171,16 +171,13 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 
 	}()
 	if request.Data.Sequence <= 0 {
-		return nil, nativePublicInvalid("Current run events require a positive sequence")
+		return nil, nativeRejection(nativePublicInvalid("Current run events require a positive sequence"), "owner_validation", "data.sequence")
 	}
-	if s.config.NativeRunEvents == nil {
+	if request.IdempotencyKey == "" || len(request.IdempotencyKey) > 128 {
+		return nil, nativeRejection(nativePublicInvalid("An idempotency key of at most 128 bytes is required"), "event_validation", "")
+	}
+	if s.config.NativeRunEvents == nil || s.config.TenantRepository == nil || scope.project == "" || item == "" {
 		return nil, nativeRunEventStorageUnavailable()
-	}
-	if s.config.TenantRepository == nil || scope.project == "" || item == "" || request.IdempotencyKey == "" {
-		return nil, nativeRunEventStorageUnavailable()
-	}
-	if len(request.IdempotencyKey) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	store := s.runDetailStore()
 	if store == nil {

@@ -84,6 +84,38 @@ func (*nativeRunEventParticipantFixture) NativeLeaseResponse(ctx context.Context
 	return NativeLeaseResponseDetails{WorkItemID: item.NativeID}, nil
 }
 
+func TestNativeRunEventMutationValidation(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		sequence int64
+		key      string
+		status   int
+		category string
+		field    string
+	}{
+		{name: "missing sequence", key: "event", status: http.StatusUnprocessableEntity, category: "owner_validation", field: "data.sequence"},
+		{name: "negative sequence", sequence: -1, key: "event", status: http.StatusUnprocessableEntity, category: "owner_validation", field: "data.sequence"},
+		{name: "missing key", sequence: 1, status: http.StatusUnprocessableEntity, category: "event_validation"},
+		{name: "oversized key", sequence: 1, key: strings.Repeat("x", 129), status: http.StatusUnprocessableEntity, category: "event_validation"},
+		{name: "unavailable storage", sequence: 1, key: "event", status: http.StatusServiceUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &Service{}
+			_, err := service.appendNativeRunEventTenant(t.Context(), nativeScope{}, "wi_example", tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: test.key}, Data: tracker.NativeRunData{Sequence: test.sequence}})
+			var failure *nativeError
+			if !errors.As(err, &failure) || failure.status != test.status {
+				t.Fatalf("command error=%v, want status %d", err, test.status)
+			}
+			if test.category != "" {
+				got, ok := failure.Details["rejection"].(runnerauth.PublicationRejection)
+				if !ok || got.Category != test.category || got.Field != test.field {
+					t.Fatalf("rejection=%+v, want %s/%s", got, test.category, test.field)
+				}
+			}
+		})
+	}
+}
+
 func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	participant := &nativeRunEventParticipantFixture{}
