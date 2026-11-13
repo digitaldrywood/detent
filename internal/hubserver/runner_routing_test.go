@@ -675,7 +675,7 @@ func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 		t.Fatalf("shared host allocated %d leases, want 2", len(winners))
 	}
 	for _, runner := range []runnerFixture{first, second} {
-		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"display_name": "Shared runner", "capacity": 8, "version": "test"})
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"display_name": "Shared runner", "capacity": 8, "version": "test", "backend_isolation": runner.redemption.BackendIsolation})
 		requireNativeStatus(t, response, http.StatusOK)
 		var snapshot runnerauth.RoutingSnapshot
 		decodeHubResponse(t, response, &snapshot)
