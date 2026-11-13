@@ -18,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -55,7 +54,6 @@ func newBrowserBindingFixture(t *testing.T, backend *scriptedReconcileBackend) *
 	project := hubtest.Project(t, f.repository, f.organization, hubtest.ProjectOptions{Name: "Browser collaboration"})
 	f.project = string(project.ID)
 	hubtest.Policy(t, f.repository, f.config.RunDetails, project, hubtest.PolicyOptions{})
-	updateOnboardingFixtureProject(t, fixture, f.organization, project.ID, func(record *projectstore.Record) { record.Settings.DuplicateChallenge = false })
 	for _, account := range []struct {
 		name, role string
 		write      bool
