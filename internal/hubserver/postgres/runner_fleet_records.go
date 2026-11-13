@@ -94,6 +94,7 @@ AND ($3='' OR (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHE
 		for i, key := range ranks {
 			identity.ProjectRanks[tracker.ProjectID(key)] = int(rankValues[i])
 		}
+		identity.ProjectIDs = make([]tracker.ProjectID, 0, len(projects))
 		for _, project := range projects {
 			identity.ProjectIDs = append(identity.ProjectIDs, tracker.ProjectID(project))
 		}
