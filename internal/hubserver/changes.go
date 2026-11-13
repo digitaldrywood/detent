@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -190,6 +191,9 @@ func (s *Service) getChange(c echo.Context) error {
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 		defer cancel()
 		result, err := s.selectedChangeDetail(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("change"), s.config.Clock())
+		if errors.Is(err, corestore.ErrInvalidPage) {
+			err = &hubapi.NativeError{Code: "change_detail_too_large", Message: fmt.Sprintf("Change has more than %d versions or evidence records; read it with view=bounded", corestore.MaxPageSize), Status: http.StatusUnprocessableEntity, PublicMessage: true}
+		}
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
