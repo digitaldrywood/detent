@@ -104,7 +104,7 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 		}
 		projectScope.project = project.ID
 		params := (operatortool.WorkReadRequest{Limit: remaining, State: request.State, Include: []string{"work"}}).NativeWorkQuery()
-		page, err := s.readIssues(projectCtx, projectScope, params)
+		page, err := s.readIssueLanes(projectCtx, projectScope, params)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("read board snapshot: %w", err))
 		}

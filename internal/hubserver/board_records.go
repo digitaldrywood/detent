@@ -112,10 +112,10 @@ func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, param
 }
 
 func (s *Service) readBoardRecordsFor(ctx context.Context, scope nativeScope, params url.Values, legacy bool) (tracker.NativeIssuePage, error) {
-	return s.readBoardProjection(ctx, scope, params, legacy, false)
+	return s.readBoardProjection(ctx, scope, params, legacy, false, false)
 }
 
-func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, params url.Values, legacy, compact bool) (tracker.NativeIssuePage, error) {
+func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, params url.Values, legacy, compact, lanes bool) (tracker.NativeIssuePage, error) {
 	if value, present := params["archive_url"]; present && (len(value) != 1 || value[0] != "true" && value[0] != "false") {
 		return tracker.NativeIssuePage{}, nativePublicInvalid("archive_url supports true or false")
 	}
@@ -153,7 +153,7 @@ func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, pa
 			return err
 		}
 		var err error
-		page, err = s.readBoardRecordSnapshot(ctx, scope, params, legacy, compact)
+		page, err = s.readBoardRecordSnapshot(ctx, scope, params, legacy, compact, lanes)
 		return err
 	}
 	var err error
@@ -172,7 +172,7 @@ func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, pa
 	return page, err
 }
 
-func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope, params url.Values, legacy, compact bool) (tracker.NativeIssuePage, error) {
+func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope, params url.Values, legacy, compact, lanes bool) (tracker.NativeIssuePage, error) {
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return page, workItemStorageUnavailable()
@@ -234,7 +234,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	if !legacy {
 		limit = min(limit, 200)
 	}
-	selection.Summary = legacy && selection.SupportsSummary()
+	selection.Summary = (legacy || lanes && includeWork) && selection.SupportsSummary()
 	selection.Limit = limit + 1
 	selection.Compact = includeSummary || includeWork
 	if position := cursor.Issues; position != nil {

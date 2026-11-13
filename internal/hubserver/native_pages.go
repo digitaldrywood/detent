@@ -148,7 +148,11 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 }
 
 func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, params url.Values, compact bool) (tracker.NativeIssuePage, error) {
-	return s.readBoardProjection(ctx, scope, params, false, compact)
+	return s.readBoardProjection(ctx, scope, params, false, compact, false)
+}
+
+func (s *Service) readIssueLanes(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+	return s.readBoardProjection(ctx, scope, params, false, false, true)
 }
 
 func nativePageIDs(ctx context.Context, query nativeQueryer, statement string, args ...any) ([]string, error) {
