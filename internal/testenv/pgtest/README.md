@@ -76,19 +76,19 @@ TMPDIR="$PWD/tmp" DETENT_TEST_POSTGRES=binary \
 ```
 
 In binary mode, at most four top-level tests own fixtures across all Templates
-at once, with one shared administrative connection. URL attachment retains
+at once, sharing one administrative pool of four connections. URL attachment retains
 per-Template admission and administrative pools. A test and its subtests share
 admission, so requesting another database cannot wait on a slot held by that same
 test. Every database remains isolated, with two client connections per database.
 The disposable binary server provisions 16 simultaneous full Template budgets:
-`16 * (4 owners * 2 pool connections + 1 admin) = 144` connections, plus
-`16 * (4 + 1) = 80` headroom, for `max_connections=224`. Headroom allows an
+`16 * (4 owners * 2 pool connections + 4 admin) = 192` connections, plus
+`16 * (4 + 4) = 128` headroom, for `max_connections=320`. Headroom allows an
 additional setup/role connection per owner and a migration or diagnostic
 connection per Template. Reserving an admin slot per Template is conservative
 because the binary admin pool is shared. This is capacity planning, not a limit
 on how many Templates can be constructed. Admission and pool limits are unchanged;
 URL attachment never changes the caller's server capacity. Total connections
-depend on the number of databases those tests keep open; close unused pools promptly. The admin pool serializes cloning. Each Template retains
+depend on the number of databases those tests keep open; close unused pools promptly. Each Template keeps up to two databases cloned ahead from its immutable migrated template, so a fixture usually starts without waiting for `CREATE DATABASE`; each prepared database is handed to exactly one fixture and dropped by that fixture's cleanup, and `Close` drops prepared databases nobody took. Each Template retains
 its own exact-name ownership set; closing a borrower never drops another
 Template's databases. Cleanup never enumerates other processes' databases.
 

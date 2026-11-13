@@ -34,7 +34,8 @@ import (
 const Environment = "DETENT_TEST_POSTGRES"
 const fixtureLimit = 4
 const connectionLimit = 2
-const adminConnectionLimit = 1
+const preparedClones = 2
+const adminConnectionLimit = preparedClones + 2
 const binaryTemplateCapacity = 16
 const binaryConnectionHeadroom = binaryTemplateCapacity * (fixtureLimit + adminConnectionLimit)
 const binaryConnectionLimit = binaryTemplateCapacity*(fixtureLimit*connectionLimit+adminConnectionLimit) + binaryConnectionHeadroom
@@ -65,6 +66,11 @@ type Template struct {
 	mu        sync.Mutex
 	owners    map[string]int
 	changed   chan struct{}
+	prepareMu sync.Mutex
+	prepared  []string
+	preparing int
+	closing   bool
+	prepares  sync.WaitGroup
 }
 
 type server struct {
@@ -276,7 +282,11 @@ func (p *Template) clone(ctx context.Context, owner string, setup func(context.C
 	if err != nil {
 		return nil, nil, err
 	}
-	name, err := p.server.create(ctx, p.name)
+	name, ok := p.takePrepared()
+	if !ok {
+		name, err = p.server.create(ctx, p.name)
+	}
+	p.prepare(ctx)
 	if err != nil {
 		release()
 		return nil, nil, err
@@ -313,6 +323,45 @@ func (p *Template) clone(ctx context.Context, owner string, setup func(context.C
 	return db, cleanup, nil
 }
 
+func (p *Template) takePrepared() (string, bool) {
+	p.prepareMu.Lock()
+	defer p.prepareMu.Unlock()
+	if len(p.prepared) == 0 {
+		return "", false
+	}
+	name := p.prepared[0]
+	p.prepared = p.prepared[1:]
+	return name, true
+}
+
+func (p *Template) prepare(ctx context.Context) {
+	p.prepareMu.Lock()
+	defer p.prepareMu.Unlock()
+	server, template := p.server, p.name
+	for !p.closing && len(p.prepared)+p.preparing < preparedClones {
+		p.preparing++
+		p.prepares.Go(func() {
+			createCtx, cancel := cleanupContext(ctx)
+			defer cancel()
+			name, err := server.create(createCtx, template)
+			p.prepareMu.Lock()
+			defer p.prepareMu.Unlock()
+			p.preparing--
+			if err == nil {
+				p.prepared = append(p.prepared, name)
+			}
+		})
+	}
+}
+
+func (p *Template) stopPreparing() {
+	p.prepareMu.Lock()
+	p.closing = true
+	p.prepared = nil
+	p.prepareMu.Unlock()
+	p.prepares.Wait()
+}
+
 func (p *Template) Close(ctx context.Context) error {
 	ctx, cancel := cleanupContext(ctx)
 	defer cancel()
@@ -322,6 +371,7 @@ func (p *Template) Close(ctx context.Context) error {
 func (p *Template) closeDatabases(ctx context.Context) error {
 	ctx, cancel := cleanupContext(ctx)
 	defer cancel()
+	p.stopPreparing()
 	if p.server == nil {
 		return nil
 	}
