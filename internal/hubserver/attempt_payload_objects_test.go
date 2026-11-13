@@ -483,8 +483,8 @@ func TestPayloadPreparationPreservesMutationIDs(t *testing.T) {
 		}
 		previousID = firstID
 	}
-	if dispatches != 2 {
-		t.Fatalf("prepared mutation dispatches=%d want=2", dispatches)
+	if dispatches != 0 {
+		t.Fatalf("conversation link requested dispatch: dispatches=%d want=0", dispatches)
 	}
 }
 
