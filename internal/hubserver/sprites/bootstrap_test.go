@@ -1,4 +1,4 @@
-package hubserver
+package sprites
 
 import (
 	"errors"
@@ -34,7 +34,7 @@ func TestSpritePoolBootstrapShell(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "curl"), []byte(curl), 0700); err != nil {
 				t.Fatal(err)
 			}
-			script := spritePoolBootstrapScript("org_example", "https://example.com", test.setup, "enrollment-secret", "v0.1.0")
+			script := BootstrapScript("org_example", "https://example.com", test.setup, "enrollment-secret", "v0.1.0")
 			cmd := exec.CommandContext(t.Context(), "bash", "-s")
 			cmd.Env = append(os.Environ(), "HOME="+root, "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"), "FIXTURE_INSTALLER="+installer)
 			cmd.Stdin = strings.NewReader(script)
@@ -62,7 +62,7 @@ func TestSpritePoolBootstrapShell(t *testing.T) {
 			}
 			var log strings.Builder
 			for _, line := range strings.Split(string(output), "\n") {
-				if safe := spriteBootstrapDiagnostic(line); safe != "" {
+				if safe := BootstrapDiagnostic(line); safe != "" {
 					log.WriteString(safe + "\n")
 				}
 			}

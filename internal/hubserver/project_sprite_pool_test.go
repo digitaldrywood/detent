@@ -35,36 +35,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestSpriteScaleDecision(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name  string
-		input spriteScaleInput
-		want  spriteScaleDecision
-	}{
-		{"two queued issues on an empty project", spriteScaleInput{Depth: 2, Ceiling: 2}, spriteScaleDecision{Create: 2}},
-		{"free capacity absorbs queue", spriteScaleInput{Depth: 2, Free: 2, Count: 1, Ceiling: 2}, spriteScaleDecision{}},
-		{"only unmet depth scales", spriteScaleInput{Depth: 3, Free: 1, Count: 1, Ceiling: 4}, spriteScaleDecision{Create: 2}},
-		{"ceiling caps a burst", spriteScaleInput{Depth: 10, Count: 1, Ceiling: 2}, spriteScaleDecision{Create: 1}},
-		{"ceiling already reached", spriteScaleInput{Depth: 2, Count: 2, Ceiling: 2}, spriteScaleDecision{}},
-		{"floor keeps warm members without work", spriteScaleInput{Floor: 1, Ceiling: 2}, spriteScaleDecision{Create: 1}},
-		{"pending bootstrap or wake absorbs demand", spriteScaleInput{Depth: 2, Pending: 2, Count: 2, Ceiling: 3}, spriteScaleDecision{}},
-		{"idle pool scales to zero", spriteScaleInput{Count: 2, Idle: 2, Ceiling: 2}, spriteScaleDecision{Delete: 2}},
-		{"floor survives idle deletion", spriteScaleInput{Count: 2, Idle: 2, Floor: 1, Ceiling: 2}, spriteScaleDecision{Delete: 1}},
-		{"busy or recently idle members stay", spriteScaleInput{Count: 2, Ceiling: 2}, spriteScaleDecision{}},
-		{"queued demand keeps needed idle capacity", spriteScaleInput{Depth: 1, Free: 1, Count: 1, Idle: 1, Ceiling: 1}, spriteScaleDecision{}},
-		{"surplus idle capacity is removed", spriteScaleInput{Depth: 1, Free: 2, Count: 2, Idle: 2, Ceiling: 2}, spriteScaleDecision{Delete: 1}},
-		{"disabled pool never provisions", spriteScaleInput{Depth: 2}, spriteScaleDecision{}},
-		{"shared ceiling reduction overrides queued demand", spriteScaleInput{Depth: 3, Count: 2, Idle: 2, Floor: 1, Ceiling: 1}, spriteScaleDecision{Delete: 1}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := decideSpriteScale(test.input); got != test.want {
-				t.Fatalf("decision = %+v, want %+v", got, test.want)
-			}
-		})
-	}
-}
-
 func TestSpritePoolPlacement(t *testing.T) {
 	for _, test := range []struct {
 		name, mode                   string
@@ -856,31 +826,6 @@ func TestSpritePoolMutationDuringDeletion(t *testing.T) {
 	}
 	if active != 2 {
 		t.Fatalf("active members=%d, want 2", active)
-	}
-}
-
-func TestSpritePoolSettingsValidation(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name     string
-		settings spritePoolSettings
-		valid    bool
-	}{
-		{"enabled without bootstrap", spritePoolSettings{MinRunners: 2, MaxRunners: 2}, true},
-		{"bootstrap byte limit", spritePoolSettings{MaxRunners: 1, Bootstrap: strings.Repeat("x", 65536)}, true},
-		{"bootstrap too large", spritePoolSettings{MaxRunners: 1, Bootstrap: strings.Repeat("x", 65537)}, false},
-		{"negative floor", spritePoolSettings{MinRunners: -1, MaxRunners: 1}, false},
-		{"inverted bounds", spritePoolSettings{MinRunners: 2, MaxRunners: 1}, false},
-		{"organization ceiling beyond project limit", spritePoolSettings{MaxRunners: 101}, true},
-		{"idle too small", spritePoolSettings{MaxRunners: 1, IdleSeconds: 29}, false},
-		{"idle too large", spritePoolSettings{MaxRunners: 1, IdleSeconds: 86401}, false},
-		{"negative revision", spritePoolSettings{MaxRunners: 1, Revision: -1}, false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if err := validateSpritePoolSettings(&test.settings); (err == nil) != test.valid {
-				t.Fatalf("validation error = %v, valid = %t", err, test.valid)
-			}
-		})
 	}
 }
 

@@ -25,19 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const spriteSandboxUnavailableReason = "Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support."
-
-type spritePoolSettings struct {
-	ShareIdleCapacity bool              `json:"share_idle_capacity"`
-	IsolationTier     string            `json:"isolation_tier"`
-	Placement         *policy.Placement `json:"placement,omitempty"`
-	MinRunners        int               `json:"min_runners"`
-	MaxRunners        int               `json:"max_runners"`
-	IdleSeconds       int               `json:"idle_seconds"`
-	Bootstrap         string            `json:"bootstrap"`
-	Revision          int64             `json:"revision"`
-}
-
 type spritePoolCommand struct {
 	tracker.Mutation
 	spritePoolSettings
@@ -69,30 +56,6 @@ type spritePoolView struct {
 	Members                        []spritePoolMember `json:"members"`
 	Decision                       *placementDecision `json:"placement_decision,omitempty"`
 	RunnerSetupDeclared            *bool              `json:"runner_setup_declared"`
-}
-
-type spriteScaleInput struct {
-	Depth, Free, Pending, Count, Floor, Ceiling, Idle int
-	CreateLimit                                       *int
-}
-
-type spriteScaleDecision struct {
-	Create, Delete int
-}
-
-func decideSpriteScale(input spriteScaleInput) spriteScaleDecision {
-	create := min(max(input.Floor-input.Count, input.Depth-input.Free-input.Pending, 0), max(input.Ceiling-input.Count, 0))
-	if input.CreateLimit != nil {
-		create = min(create, *input.CreateLimit)
-	}
-	if create > 0 {
-		return spriteScaleDecision{Create: create}
-	}
-	surplus := max(input.Free+input.Pending-input.Depth, 0)
-	if input.Depth == 0 {
-		surplus = input.Idle
-	}
-	return spriteScaleDecision{Delete: min(input.Idle, max(input.Count-input.Floor, 0), max(surplus, input.Count-input.Ceiling))}
 }
 
 func (s *Service) registerSpritePoolRoutes(e *echo.Echo) {
@@ -390,36 +353,6 @@ func (s *Service) executeSpritePoolSettingsCommand(ctx context.Context, scope na
 		return nativeConflict(tracker.Revision(fresh.Revision))
 	}
 	return projectRecordError(err)
-}
-
-func validateSpritePoolAccess(tier *string) error {
-	if tier != nil && *tier == isolation.Sandbox {
-		return spritePoolInvalid(spriteSandboxUnavailableReason)
-	}
-	return nil
-}
-
-func validateSpritePoolSettings(settings *spritePoolSettings) error {
-	if settings.IsolationTier == "" {
-		settings.IsolationTier = isolation.NativeTrusted
-	}
-	if settings.IsolationTier != isolation.Sandbox && settings.IsolationTier != isolation.NativeTrusted {
-		return spritePoolInvalid("Sprite pool access must be sandbox or native-trusted")
-	}
-	if settings.Placement != nil {
-		resolved := settings.Placement.Resolved()
-		if err := resolved.Validate(); err != nil {
-			return spritePoolInvalid(err.Error())
-		}
-		settings.Placement = &resolved
-	}
-	if settings.IdleSeconds == 0 {
-		settings.IdleSeconds = 300
-	}
-	if settings.MinRunners < 0 || settings.MaxRunners < settings.MinRunners || settings.IdleSeconds < 30 || settings.IdleSeconds > 86400 || len(settings.Bootstrap) > 65536 || settings.Revision < 0 {
-		return spritePoolInvalid("Sprite pools require 0 <= min_runners <= max_runners, an idle threshold of 30 to 86400 seconds, optional bootstrap of at most 65536 bytes, and a nonnegative revision")
-	}
-	return nil
 }
 
 func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, settings spritePoolSettings, tier *string) error {

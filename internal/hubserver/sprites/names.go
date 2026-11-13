@@ -1,4 +1,4 @@
-package hubserver
+package sprites
 
 import (
 	"errors"
@@ -19,15 +19,15 @@ var spriteNouns = []string{
 	"robin", "seal", "sparrow", "swan", "turtle", "walrus", "whale", "wren",
 }
 
-var errSpriteNameTaken = errors.New("sprite name is already taken")
-var errSpriteNamesExhausted = errors.New("could not find an available Sprite name")
+var ErrNameTaken = errors.New("sprite name is already taken")
+var ErrNamesExhausted = errors.New("could not find an available Sprite name")
 
-type spriteNameGenerator struct {
+type NameGenerator struct {
 	intN     func(int) int
 	attempts int
 }
 
-func (g *spriteNameGenerator) next(taken func(string) (bool, error)) (string, error) {
+func (g *NameGenerator) Next(taken func(string) (bool, error)) (string, error) {
 	for g.attempts < 10 {
 		name := "sprite-" + spriteAdjectives[g.intN(len(spriteAdjectives))] + "-" + spriteNouns[g.intN(len(spriteNouns))]
 		if g.attempts >= 5 {
@@ -42,5 +42,7 @@ func (g *spriteNameGenerator) next(taken func(string) (bool, error)) (string, er
 			return name, nil
 		}
 	}
-	return "", errSpriteNamesExhausted
+	return "", ErrNamesExhausted
 }
+
+func NewNameGenerator(intN func(int) int) *NameGenerator { return &NameGenerator{intN: intN} }
