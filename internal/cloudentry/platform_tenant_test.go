@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"slices"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 type platformTimeoutTransport struct{}
@@ -81,12 +83,19 @@ func TestPlatformTenantDetail(t *testing.T) {
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET state='ready' WHERE id='org_alpha'"); err != nil {
 		t.Fatal(err)
 	}
-	f.service.config.transport = func(Organization) (http.RoundTripper, error) { return platformTimeoutTransport{}, nil }
-	response, body = admin.get("/api/cloud/platform/organizations/org_alpha")
-	decodeJSON(t, body, &detail)
-	if response.StatusCode != http.StatusOK || detail.Members != nil || detail.Runners != nil || detail.Projects != nil || detail.Entitlements != nil || detail.CreditBalanceMicros != nil || detail.Organization.Billing.Available || len(detail.Unavailable) != 7 {
-		t.Fatalf("timeout = %d %+v", response.StatusCode, detail)
-	}
+	now := time.Now()
+	f.service.config.now = func() time.Time { return now }
+	f.service.auth.now = f.service.config.now
+	f.service.registry.now = f.service.config.now
+	synctest.Test(t, func(t *testing.T) {
+		admin := &browser{t: t, entry: admin.entry, jar: admin.jar, origin: admin.origin}
+		f.service.config.transport = func(Organization) (http.RoundTripper, error) { return platformTimeoutTransport{}, nil }
+		response, body = admin.get("/api/cloud/platform/organizations/org_alpha")
+		decodeJSON(t, body, &detail)
+		if response.StatusCode != http.StatusOK || detail.Members != nil || detail.Runners != nil || detail.Projects != nil || detail.Entitlements != nil || detail.CreditBalanceMicros != nil || detail.Organization.Billing.Available || len(detail.Unavailable) != 7 {
+			t.Fatalf("timeout = %d %+v", response.StatusCode, detail)
+		}
+	})
 
 }
 
