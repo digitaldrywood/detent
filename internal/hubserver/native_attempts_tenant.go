@@ -588,7 +588,7 @@ func nativeAttemptArchiveReadError(ref *attachment.ArchiveReference, err error) 
 	switch {
 	case errors.Is(err, artifact.ErrIntegrity), errors.Is(err, attachment.ErrInvalid):
 		availability = "invalid"
-	case errors.Is(err, artifact.ErrStorage):
+	case errors.Is(err, artifact.ErrStorage), errors.Is(err, artifact.ErrMissing):
 		availability = "unavailable"
 	default:
 		return errors.Join(artifact.ErrIntegrity, err)

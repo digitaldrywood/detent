@@ -137,8 +137,17 @@ func TestAttemptPayloadObjectsAndTypedReads(t *testing.T) {
 				}
 				return objects.call(ctx, request)
 			}
+			retained := &memoryRunDetails{}
+			details := collaborationReadProbe{DetailStore: retained, beforeRead: func(ctx context.Context, ref attachment.ArchiveReference) error {
+				if ctx.Value(analyticsPayloadReadKey{}) == true {
+					objects.mu.Lock()
+					fetches[ref]++
+					objects.mu.Unlock()
+				}
+				return nil
+			}}
 			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-			f := claimedAttemptDiffFixture(t, false, Config{Content: contentCall, now: func() time.Time { return now }})
+			f := claimedAttemptDiffFixture(t, false, Config{Content: contentCall, RunDetails: details, now: func() time.Time { return now }})
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 				t.Fatal(err)
 			}
@@ -310,19 +319,22 @@ func TestAttemptPayloadObjectsAndTypedReads(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			objects.mu.Lock()
-			artifactContent := bytes.Clone(objects.objects[artifactKey])
-			objects.mu.Unlock()
+			retained.mu.Lock()
+			artifactContent := bytes.Clone(retained.data[artifactKey])
+			retained.mu.Unlock()
+			if len(artifactContent) == 0 {
+				t.Fatal("retained artifact list is not stored in the run detail owner")
+			}
 			for _, failure := range []string{"missing", "corrupt"} {
 				t.Run("retained artifact/"+failure, func(t *testing.T) {
-					objects.mu.Lock()
+					retained.mu.Lock()
 					if failure == "missing" {
-						delete(objects.objects, artifactKey)
+						delete(retained.data, artifactKey)
 					} else {
-						objects.objects[artifactKey] = []byte("corrupt")
+						retained.data[artifactKey] = []byte("corrupt")
 					}
-					objects.mu.Unlock()
-					defer func() { objects.mu.Lock(); objects.objects[artifactKey] = artifactContent; objects.mu.Unlock() }()
+					retained.mu.Unlock()
+					defer func() { retained.mu.Lock(); retained.data[artifactKey] = artifactContent; retained.mu.Unlock() }()
 					_, err := f.service.readNativeAttemptTenant(ctx, scope, string(f.issue.WorkItemID), f.attempt)
 					if !errors.Is(err, artifact.ErrIntegrity) {
 						t.Fatalf("retained artifact %s silently fell back: %v", failure, err)
@@ -1066,7 +1078,7 @@ func payloadAssertAttemptReferences(t *testing.T, s *Service, organization track
 
 func payloadAssertHistoricalAttemptReads(t *testing.T, data tracker.NativeRunData, artifacts []string) {
 	t.Helper()
-	repository, admin := coreImportPostgresWithAdmin(t, 3, nil)
+	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	objects := &memoryRunDetails{}
 	service := &Service{config: Config{RunDetails: objects}}
 	for _, organization := range []tracker.OrganizationID{"org_payload_import_first", "org_payload_import_second"} {
@@ -1224,7 +1236,7 @@ func payloadAssertHistoricalVersion(t *testing.T, f changeFixture, version track
 
 func payloadAssertHistoricalDiff(t *testing.T, patch string) {
 	t.Helper()
-	repository, admin := coreImportPostgresWithAdmin(t, 3, nil)
+	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	objects := &memoryRunDetails{}
 	service := &Service{config: Config{TenantRepository: repository, RunDetails: objects}}
 	for _, organization := range []tracker.OrganizationID{"org_payload_diff_first", "org_payload_diff_second"} {
