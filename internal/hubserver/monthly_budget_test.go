@@ -328,7 +328,7 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 			var directLease tracker.NativeLease
 			if test.directBeforePolicy {
 				request := providerClaim(r, issue, "direct-before-budget")
-				request.PolicyID, request.ProviderCandidates = descriptor.ID, nil
+				request.PolicyID = descriptor.ID
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, request)
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &directLease)
