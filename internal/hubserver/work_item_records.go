@@ -637,6 +637,9 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 			}
 			return nil, hubapi.NativePublicInvalid("Runner credentials cannot perform this work item mutation")
 		}
+		if command.LeaseID == "" || command.FencingToken <= 0 {
+			return nil, tracker.ErrStaleFencingToken
+		}
 		if _, err := s.validateRunnerLeaseTenant(ctx, scope, command.LeaseID, command.FencingToken); err != nil {
 			return nil, err
 		}
