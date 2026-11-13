@@ -115,6 +115,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 		{"other project held", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", true, "Todo", true, false, "Problem: `go-test:example/hub:TestJourney`\n## Roadmap Summary\nRepair the failed build.\n<!-- detent:no-dispatch -->", "Done", false},
 	} {
 		t.Run("typed intake/"+test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newDefaultNativeFixture(t, Config{})
 			states := append(f.project.States, tracker.NativeState{Name: "Backlog"}, tracker.NativeState{Name: "Cancelled", Terminal: true}, tracker.NativeState{Name: "Shipped", Terminal: true})
 			for i := range states {
@@ -366,6 +367,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 		{name: "verified Urgent", evidence: true, verifier: true, delegation: true, admitted: true},
 	} {
 		t.Run("scheduled API/"+test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newDefaultNativeFixture(t, Config{})
 			existing := f.create(t, "Unchanged owner")
 			const repository = "example-org/example-project"
@@ -493,6 +495,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 	}
 	for _, change := range []string{"revision", "archive"} {
 		t.Run("fresh episode fencing/"+change, func(t *testing.T) {
+			t.Parallel()
 			f := newPostgresDefaultNativeFixture(t, Config{})
 			if serving, _ := f.service.database.postgres.WorkloadCapacities(); serving < 2 {
 				t.Fatal("candidate mutation fixture requires two serving transactions")
