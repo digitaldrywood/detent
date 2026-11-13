@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -49,6 +50,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	var candidates []claimstore.Candidate
 	var plans []hubrecords.NativeClaimPlan
 	var projectPolicy policystore.Revision
+	var identity runnerstore.Identity
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return tracker.NativeCapacityPage{}, hubapi.NativeRunEventStorageUnavailable()
@@ -57,7 +59,8 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		identity, err := r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
+		var err error
+		identity, err = r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
 		if err != nil {
 			return err
 		}
@@ -189,6 +192,9 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 			return tracker.NativeCapacityPage{}, err
 		}
 		descriptor = &loaded
+		if err := loaded.Requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags); err != nil {
+			return tracker.NativeCapacityPage{}, &hubapi.NativeError{Code: "selector_no_match", Message: err.Error(), Status: http.StatusConflict}
+		}
 	}
 	for index := range plans {
 		claim := request.NativeClaim
