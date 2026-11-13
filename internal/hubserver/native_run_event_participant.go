@@ -78,7 +78,7 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 		if err != nil {
 			return err
 		}
-		if identity.OrganizationID != authority.OrganizationID || identity.RunnerID == "" || identity.RunnerID != authority.Scope.Credential.Runner.RunnerID || identity.TokenID != authority.Scope.Credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || identity.State != "active" || !identity.ExpiresAt.After(now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
+		if identity.OrganizationID != authority.OrganizationID || identity.RunnerID == "" || identity.RunnerID != authority.Scope.Credential.Runner.RunnerID || identity.TokenID != authority.Scope.Credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || !runnerStateHoldsLease(identity.State) || !identity.ExpiresAt.After(now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
 			return &leasestore.FenceError{Check: "runner_owner"}
 		}
 		allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, authority.ProjectID, now)
@@ -261,7 +261,13 @@ func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context
 		if err != nil {
 			return err
 		}
-		if identity.OrganizationID != authority.Scope.Organization || identity.RunnerID == "" || identity.RunnerID != authority.Scope.Credential.Runner.RunnerID || identity.TokenID != authority.Scope.Credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || identity.State != "active" || !identity.ExpiresAt.After(now) {
+		if identity.OrganizationID != authority.Scope.Organization || identity.RunnerID == "" || identity.RunnerID != authority.Scope.Credential.Runner.RunnerID || identity.TokenID != authority.Scope.Credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || !identity.ExpiresAt.After(now) {
+			return tracker.ErrMachineNotFound
+		}
+		if identity.State == "disabled" {
+			return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_disabled", Message: "Runner is disabled"}})
+		}
+		if !runnerStateHoldsLease(identity.State) {
 			return tracker.ErrMachineNotFound
 		}
 		allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, authority.Scope.Project, now)
@@ -328,3 +334,7 @@ func (p tenantNativeRunEventParticipant) NativeLeaseResponse(ctx context.Context
 }
 
 var _ NativeRunEventParticipant = tenantNativeRunEventParticipant{}
+
+func runnerStateHoldsLease(state string) bool {
+	return state == "active" || state == "draining"
+}
