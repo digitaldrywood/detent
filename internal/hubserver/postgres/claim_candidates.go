@@ -220,9 +220,9 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 	if query.PrioritizeUnblockers {
 		unblockerRank = "-(" + unblockers + ")"
 	}
-	order := priority + "," + aging + "," + landing + "," + statePriority + "," + labelPriority + "," + unblockerRank + "," + rank + "," + created + ",i.native_id"
+	order := priority + "," + aging + "," + landing + "," + created + "," + statePriority + "," + labelPriority + "," + unblockerRank + "," + rank + ",i.native_id"
 	if query.RunnerSelection {
-		order = lane + "," + priority + "," + aging + "," + statePriority + "," + labelPriority + "," + unblockerRank + "," + rank + "," + created + ",i.native_id"
+		order = lane + "," + priority + "," + aging + "," + created + "," + statePriority + "," + labelPriority + "," + unblockerRank + "," + rank + ",i.native_id"
 	}
 	workspaceLane := bind(query.WorkspaceLane)
 	statement := `SELECT i.id,i.revision,i.number,i.native_id,lower(trim(ws.name)),f.author_login,f.repository,
@@ -287,11 +287,11 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 		statement += ` AND i.native_id=ANY(` + bind(itemIDs) + `::text[])`
 	}
 	if query.After.WorkItemID != "" {
-		cursorOrder := strings.Join([]string{priority, aging, landing, statePriority, labelPriority, unblockerRank, rank, created, "i.native_id"}, ",")
-		cursorValues := []any{query.After.Priority, query.After.AgingBoost, query.After.LandingRank, query.After.StateRank, query.After.LabelRank, query.After.UnblockerRank, query.After.Rank, query.After.Created, query.After.WorkItemID}
+		cursorOrder := strings.Join([]string{priority, aging, landing, created, statePriority, labelPriority, unblockerRank, rank, "i.native_id"}, ",")
+		cursorValues := []any{query.After.Priority, query.After.AgingBoost, query.After.LandingRank, query.After.Created, query.After.StateRank, query.After.LabelRank, query.After.UnblockerRank, query.After.Rank, query.After.WorkItemID}
 		if query.RunnerSelection {
-			cursorOrder = strings.Join([]string{lane, priority, aging, statePriority, labelPriority, unblockerRank, rank, created, "i.native_id"}, ",")
-			cursorValues = []any{query.After.LaneRank, query.After.Priority, query.After.AgingBoost, query.After.StateRank, query.After.LabelRank, query.After.UnblockerRank, query.After.Rank, query.After.Created, query.After.WorkItemID}
+			cursorOrder = strings.Join([]string{lane, priority, aging, created, statePriority, labelPriority, unblockerRank, rank, "i.native_id"}, ",")
+			cursorValues = []any{query.After.LaneRank, query.After.Priority, query.After.AgingBoost, query.After.Created, query.After.StateRank, query.After.LabelRank, query.After.UnblockerRank, query.After.Rank, query.After.WorkItemID}
 		}
 		cursorPlaceholders := make([]string, len(cursorValues))
 		for i, value := range cursorValues {

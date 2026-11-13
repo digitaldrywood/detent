@@ -1051,7 +1051,8 @@ func nativeClaimSelectionSourceRevision(project projectstore.Record, policy poli
 		Query                         claimstore.CandidateQuery
 		CompatibilitySettingsRevision int64 `json:"compatibility_settings_revision,omitempty"`
 		CompatibilityContentRevision  int64 `json:"compatibility_content_revision,omitempty"`
-	}{project.Core.WorkflowSourceRevision, policy.PolicyID, policy.PayloadSHA256, query, settingsRevision, contentRevision})
+		CandidateOrder                string
+	}{project.Core.WorkflowSourceRevision, policy.PolicyID, policy.PayloadSHA256, query, settingsRevision, contentRevision, "created_before_preferences"})
 }
 
 func selectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, request tracker.NativeClaim, item tracker.NativeWorkItemID, now time.Time) (providercapacity.Reservation, error) {
