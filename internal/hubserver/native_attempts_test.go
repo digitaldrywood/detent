@@ -1007,6 +1007,8 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 				if successorMachine == firstMachine || successor.binding.RunnerID == owner.binding.RunnerID {
 					t.Fatal("recovery reused the original runner")
 				}
+			} else {
+				reportRunnerCapacity(t, f.service, f.base, owner.redemption.Credential, owner.binding.MachineID, owner.redemption.DisplayName, owner.redemption.BackendIsolation, owner.redemption.Capacity)
 			}
 			replacement := claim(other, successorMachine, "other-session")
 			if replacement.FencingToken <= lease.FencingToken {
