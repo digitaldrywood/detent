@@ -31,6 +31,7 @@ func createTestAccessKey(t *testing.T, b *browser, context string, organizations
 }
 
 func TestAccessKeyActive(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 31, 8, 0, 0, 0, time.UTC)
 	past, future := now.Add(-time.Second), now.Add(time.Hour)
 	for _, test := range []struct {
@@ -52,6 +53,7 @@ func TestAccessKeyActive(t *testing.T) {
 }
 
 func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	for id, tenant := range f.fixtures {
 		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true WHERE id=$1", id); err != nil {
@@ -216,6 +218,7 @@ func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 }
 
 func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	if err := f.service.closeAllocator(); err != nil {
 		t.Fatal(err)
@@ -359,6 +362,7 @@ func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 }
 
 func TestAccessKeyOrganizationControls(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	owner := newBrowser(t, f.service.Handler())
 	owner.Login("/organizations", "user_alice:")
@@ -441,6 +445,7 @@ func TestAccessKeyOrganizationControls(t *testing.T) {
 }
 
 func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
+	t.Parallel()
 	f := newPostgresTenantEntryFixture(t)
 	owner := newBrowser(t, f.service.Handler())
 	owner.Login("/organizations", "user_alice:")
@@ -614,6 +619,7 @@ func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
 }
 
 func TestAccessKeyMembershipAndPolicyMatrix(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	org, err := f.service.readyOrganization(t.Context(), "org_alpha")
 	if err != nil {
@@ -681,6 +687,7 @@ func TestAccessKeyMembershipAndPolicyMatrix(t *testing.T) {
 }
 
 func TestAccessKeyLifecycleAndREST(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testAccessKeyLifecycleAndREST(t, entryBackendConfig(t, backend)) })
 	}
@@ -800,6 +807,7 @@ func testAccessKeyLifecycleAndREST(t *testing.T, configureStorage func(*Config))
 }
 
 func TestAccessKeyMemberSettingsIsolation(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	owner := newBrowser(t, f.service.Handler())
 	owner.Login("/organizations", "user_alice:")
@@ -832,6 +840,7 @@ func TestAccessKeyMemberSettingsIsolation(t *testing.T) {
 }
 
 func TestAccessKeyMCPPreservesMoveItemRequestErrors(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	const org = "org_alpha"
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true WHERE id=$1", org); err != nil {
@@ -917,12 +926,14 @@ func TestAccessKeyMCPPreservesMoveItemRequestErrors(t *testing.T) {
 }
 
 func TestAccessKeyMutationAuditResponses(t *testing.T) {
+	t.Parallel()
 	for _, transport := range []string{"HTTP", "MCP"} {
 		for _, failure := range []string{"none", "post-handler audit", "pre-handler audit", "service"} {
 			if transport == "HTTP" && failure == "service" {
 				continue
 			}
 			t.Run(transport+"/"+failure, func(t *testing.T) {
+				t.Parallel()
 				f := newEntryFixture(t)
 				const org = "org_alpha"
 				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true WHERE id=$1", org); err != nil {

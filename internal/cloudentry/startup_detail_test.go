@@ -12,6 +12,7 @@ import (
 )
 
 func TestTenantDetailStoreWritesBeforeTenantHTTPStarts(t *testing.T) {
+	t.Parallel()
 	store := newSpacesFixture(t, false)
 	var tenantCalls atomic.Int64
 	f := newEntryFixture(t, entryPostgresConfig(t), func(config *Config) {

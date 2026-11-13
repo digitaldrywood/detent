@@ -36,7 +36,7 @@ import (
 )
 
 func TestNativeAgentEvidence(t *testing.T) {
-
+	t.Parallel()
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, false)
 	storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)

@@ -23,9 +23,10 @@ import (
 // Catches account context switching retaining grants, cross-account selection,
 // staff privilege leakage, and revoked membership/session receipt replay.
 func TestEntryAdministrationContext(t *testing.T) {
-
+	t.Parallel()
 	for _, scenario := range []string{"transport", "key boundary", "switch", "foreign organization", "revoked membership", "revoked session", "support denied", "support actor", "logout direct", "logout provider failure", "logout revoked session", "logout revoked provider"} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			f := newEntryFixture(t)
 			b := newBrowser(t, f.service.Handler())
 			user := "user_alice"

@@ -14,6 +14,7 @@ import (
 )
 
 func TestOAuthClientMigrationAndBackfill(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	admin := entryPostgresDatabase(t)
 	var logs lockedBuffer

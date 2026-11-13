@@ -817,6 +817,7 @@ func (b *pilotBrowser) stream(t *testing.T, path string) pilotStream {
 // enrollment and execution, artifact endpoints, entitlements, durable
 // provisioning retry, capacity refusal and entry restart.
 func TestSharedOriginPilotAcceptance(t *testing.T) {
+	t.Parallel()
 	p := newSharedOriginPilot(t, 2, 1)
 	p.launcher.version = "v0.172.12"
 	origin, err := url.Parse(p.base)
@@ -1344,6 +1345,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 }
 
 func TestSharedOriginAPIKeyConnection(t *testing.T) {
+	t.Parallel()
 	p := newSharedOriginPilot(t, 1, 1)
 	owner := p.browser(t)
 	pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_member:"), http.StatusSeeOther)

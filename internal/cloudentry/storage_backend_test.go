@@ -159,8 +159,10 @@ func configurePostgresTenants(t *testing.T, databases map[string]*sql.DB) func(*
 }
 
 func TestEntryBackendPlatformOwners(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
 			configure := entryBackendConfig(t, backend)
 			objects := newSpacesFixture(t, false)
 			f := newEntryFixture(t, configure, func(cfg *Config) {
@@ -264,6 +266,7 @@ func TestEntryBackendPlatformOwners(t *testing.T) {
 }
 
 func TestEntryPostgresLogin(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t, entryPostgresConfig(t))
 	b := newBrowser(t, f.service.Handler())
 	if location := b.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha"); location != "/organizations/org_alpha/organization" {
@@ -282,6 +285,7 @@ func entryBackendConfig(t *testing.T, backend string) func(*Config) {
 }
 
 func TestEntryStorageSelectionFailsClosed(t *testing.T) {
+	t.Parallel()
 	for _, selection := range []StorageConfig{{}, {Backend: "sqlite"}, {Backend: "other"}, {Backend: "postgres"}, {PostgresDSN: "postgres://example.invalid/example"}, {Backend: "postgres", PostgresDSN: "postgres://example.invalid/example", Pool: platformstore.PoolConfig{MaxConnections: 2, ServingConnections: 2, BackgroundConnections: 1}}} {
 		t.Run(selection.Backend, func(t *testing.T) {
 			var logs lockedBuffer
@@ -320,6 +324,7 @@ func TestEntryDSNRejectsAmbientCredentialDiscovery(t *testing.T) {
 }
 
 func TestEntryAuthStoreFailures(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	b := newBrowser(t, f.service.Handler())
 	b.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")

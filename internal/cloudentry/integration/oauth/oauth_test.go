@@ -26,9 +26,11 @@ import (
 )
 
 func TestOAuthEndpointAuthorityFailures(t *testing.T) {
+	t.Parallel()
 	for _, orgID := range []string{"org_alpha", "org_beta"} {
 		for _, endpoint := range []string{"authorization_code", "refresh_token", "bearer", "authorize", "consent", "approve", "grants", "revoke"} {
 			t.Run(orgID+"/"+endpoint, func(t *testing.T) {
+				t.Parallel()
 				ctx := t.Context()
 				admin := harness.PostgresDatabase(t)
 				swap := &harness.SwappableProvider{}
@@ -261,6 +263,7 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 }
 
 func TestOAuthAnonymousRequestsDoNotPersist(t *testing.T) {
+	t.Parallel()
 	f := entryfixture.New(t)
 	b := harness.NewBrowser(t, f.Service.Handler())
 	for _, name := range []string{"First assistant", "Second assistant"} {
@@ -297,6 +300,7 @@ func TestOAuthAnonymousRequestsDoNotPersist(t *testing.T) {
 }
 
 func TestOAuthAnonymousRequestThrottling(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, method, peer, forwarded string
 		status                        int
@@ -307,6 +311,7 @@ func TestOAuthAnonymousRequestThrottling(t *testing.T) {
 		{"authorization proxy", http.MethodGet, "[::1]:1234", "198.51.100.1, 192.0.2.10", http.StatusSeeOther},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := entryfixture.New(t)
 			now := f.Seams.Now()
 			f.Seams.SetNow(func() time.Time { return now })
@@ -378,6 +383,7 @@ func TestOAuthAnonymousRequestThrottling(t *testing.T) {
 }
 
 func TestOAuthDiscoveryAndRegistration(t *testing.T) {
+	t.Parallel()
 	f := entryfixture.New(t)
 	b := harness.NewBrowser(t, f.Service.Handler())
 	for _, path := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"} {
@@ -429,6 +435,7 @@ func TestOAuthDiscoveryAndRegistration(t *testing.T) {
 }
 
 func TestOAuthCodeExchangeAndRotation(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testOAuthCodeExchangeAndRotation(t, entryfixture.PostgresConfig(t)) })
 	}
@@ -559,6 +566,7 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*cloud
 }
 
 func TestOAuthConsentBinding(t *testing.T) {
+	t.Parallel()
 	f := entryfixture.New(t)
 	b := harness.NewBrowser(t, f.Service.Handler())
 	client := harness.RegisterOAuth(t, b, "Assistant", "none")
@@ -750,12 +758,14 @@ func connectTestOAuth(t *testing.T, b *harness.Browser, endpoint, name, redirect
 }
 
 func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, redirect string }{
 		{"ChatGPT", "https://chatgpt.com/connector_platform_oauth_redirect"},
 		{"ChatGPT callback ID", "https://chatgpt.com/connector/oauth/example-callback"},
 		{"Claude", "https://claude.ai/api/mcp/auth_callback"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := entryfixture.New(t)
 			f.Provider.Member("user_alice", "porg_alpha", "reporter")
 			transport, _ := harness.TenantTransport(t, f.Service.Handler())
@@ -880,8 +890,10 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 }
 
 func TestOAuthCurrentAuthority(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"membership removed", "project grant removed", "role downgraded", "policy blocked", "policy approval", "refresh expired", "expired consumed refresh", "browser revoke"} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
 			f := entryfixture.New(t)
 			b := harness.NewBrowser(t, f.Service.Handler())
 			b.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")

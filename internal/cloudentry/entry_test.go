@@ -110,6 +110,7 @@ func (h handlerTransport) RoundTrip(request *http.Request) (*http.Response, erro
 }
 
 func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testSharedEntryTwoOrganizationsOneOrigin(t, entryBackendConfig(t, backend)) })
 	}
@@ -259,6 +260,7 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 		{name: "provider failure", wantStatus: http.StatusServiceUnavailable},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			f := newEntryFixture(t)
 			client := newBrowser(t, f.service.Handler())
 			if tt.name == "support" {
@@ -752,6 +754,7 @@ func TestSharedEntryInvitation(t *testing.T) {
 		{name: "unknown", entryCode: 403, message: "unavailable"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			f := newEntryFixture(t)
 			alice := newBrowser(t, f.service.Handler())
 			alice.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
@@ -966,6 +969,7 @@ func TestConfigRequiresLoopbackListener(t *testing.T) {
 }
 
 func TestSharedEntrySupportAccess(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testSharedEntrySupportAccess(t, entryBackendConfig(t, backend)) })
 	}
@@ -1100,8 +1104,10 @@ func TestSharedEntryKeepsTenantStaticCachePolicy(t *testing.T) {
 }
 
 func TestEntryAuthDependencyOutages(t *testing.T) {
+	t.Parallel()
 	for _, table := range []string{"sessions", "authorizations", "platform_members", "transactions", "keyring"} {
 		t.Run(table, func(t *testing.T) {
+			t.Parallel()
 			admin := entryPostgresDatabase(t)
 			f := newEntryFixture(t, entryPostgresConfig(t, admin), func(cfg *Config) { cfg.LookupEnv = entrySecretEnvironment(1, 1) })
 			b := newBrowser(t, f.service.Handler())
@@ -1162,6 +1168,7 @@ func (p entrySessionFailureProvider) Exchange(context.Context, string, string, s
 }
 
 func TestEntryProviderSessionFailures(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	b := newBrowser(t, f.service.Handler())
 	b.Login("/organizations", "user_alice:")
@@ -1191,6 +1198,7 @@ func TestEntryProviderSessionFailures(t *testing.T) {
 }
 
 func TestEntryLoginKeyOutagePreservesAuthorizations(t *testing.T) {
+	t.Parallel()
 	admin := entryPostgresDatabase(t)
 	f := newEntryFixture(t, entryPostgresConfig(t, admin), func(cfg *Config) { cfg.LookupEnv = entrySecretEnvironment(1, 1) })
 	b := newBrowser(t, f.service.Handler())

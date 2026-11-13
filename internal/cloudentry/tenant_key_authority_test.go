@@ -25,6 +25,7 @@ import (
 )
 
 func TestKeyAuthorityOutagesRemainRetryable(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		err    error
@@ -209,6 +210,7 @@ func TestKeyAuthorityOutagesRemainRetryable(t *testing.T) {
 }
 
 func TestTenantKeyAuthorityDenialsAreAudited(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	for _, orgID := range []string{"org_alpha", "org_beta"} {
 		if _, err := f.service.auth.store.db.ExecContext(t.Context(), `UPDATE platform.organizations SET managed=true WHERE id=$1`, orgID); err != nil {
@@ -283,6 +285,7 @@ func TestTenantKeyAuthorityDenialsAreAudited(t *testing.T) {
 }
 
 func TestTenantKeyAuthorityStoreFailure(t *testing.T) {
+	t.Parallel()
 	registry := openTestRegistry(t)
 	s := &Service{registry: registry, auth: &authStore{store: registry.store}, config: Config{Issuer: "entry", Now: time.Now}}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -294,6 +297,7 @@ func TestTenantKeyAuthorityStoreFailure(t *testing.T) {
 }
 
 func TestTenantKeyAuthorityConcurrentClaims(t *testing.T) {
+	t.Parallel()
 	registry := openTestRegistry(t)
 	provider := newFakeProvider()
 	s := &Service{registry: registry, auth: &authStore{store: registry.store}, config: Config{Issuer: "entry", Provider: provider, Now: time.Now}}

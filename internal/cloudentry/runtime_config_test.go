@@ -60,6 +60,7 @@ func entitlementFixture(t *testing.T, f entryFixture, token string) {
 }
 
 func TestCloudReloadSignupAllowlist(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	launcher := &silentLauncher{running: map[string]bool{"org_alpha": true, "org_beta": true}}
 	f.service.config.Allocation = &AllocationConfig{
@@ -172,6 +173,7 @@ func TestCloudReloadSignupAllowlist(t *testing.T) {
 }
 
 func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
+	t.Parallel()
 	f, admin := runtimePublicationFixture(t)
 	const token = "runtime-entitlement-admin-0123456789abcdef"
 	for id, tenant := range f.fixtures {
@@ -623,6 +625,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 }
 
 func TestPlatformEntitlementsRESTAndMCPWithoutRestart(t *testing.T) {
+	t.Parallel()
 	for _, transport := range []string{"REST", "MCP"} {
 		t.Run(transport, func(t *testing.T) {
 			t.Parallel()

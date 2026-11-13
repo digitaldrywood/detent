@@ -22,6 +22,7 @@ func TestProjectIconAttachmentLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, organizationLogo := range []bool{false, true} {
 		t.Run(fmt.Sprintf("organization=%t", organizationLogo), func(t *testing.T) {
+			t.Parallel()
 			store := newSpacesFixture(t, false)
 			storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)
 			if err != nil {

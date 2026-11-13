@@ -310,6 +310,7 @@ func organizationFromLocation(t *testing.T, location string) string {
 }
 
 func TestProvisioningSelfServiceJourney(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testProvisioningSelfServiceJourney(t, entryBackendConfig(t, backend)) })
 	}
@@ -813,6 +814,7 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 }
 
 func TestCanCreateOrganizations(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		allocation bool
@@ -839,6 +841,7 @@ func TestCanCreateOrganizations(t *testing.T) {
 }
 
 func TestOwnerFreeAllowance(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name, subject, base, role, price                             string
 		subscribed, grant, expired, featureOnly, deleted, concurrent bool
@@ -962,6 +965,7 @@ func TestOwnerFreeAllowance(t *testing.T) {
 }
 
 func TestAllocatorShutdownMissingLauncher(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	close(done)

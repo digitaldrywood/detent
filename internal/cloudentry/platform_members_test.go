@@ -119,6 +119,7 @@ func memberRequest(t *testing.T, b *browser, method, email string, body map[stri
 }
 
 func TestPlatformMembersAPI(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testPlatformMembersAPI(t, entryBackendConfig(t, backend)) })
 	}

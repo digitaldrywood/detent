@@ -38,6 +38,7 @@ func (*platformCreditProvider) CreditEvent(context.Context, billing.Binding, str
 }
 
 func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
+	t.Parallel()
 	for _, transport := range []string{"REST", "MCP"} {
 		t.Run(transport, func(t *testing.T) {
 			t.Parallel()

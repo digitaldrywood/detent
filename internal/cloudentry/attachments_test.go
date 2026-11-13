@@ -378,6 +378,7 @@ func TestAttachmentMetadataSettlement(t *testing.T) {
 		status      int
 	}{{name: "lost committed response", status: http.StatusCreated}, {name: "quota race", quota: true, status: http.StatusTooManyRequests}, {name: "keyed lost committed response", keyed: true, status: http.StatusCreated}, {name: "concurrent keyed uploads", keyed: true, concurrent: true, status: http.StatusCreated}, {name: "stored object response loss", keyed: true, storageLoss: true, status: http.StatusCreated}} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newEntryFixture(t)
 			store := newSpacesFixture(t, false)
 			storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)

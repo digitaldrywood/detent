@@ -19,6 +19,7 @@ import (
 )
 
 func TestSharedOriginRunnerConversationBind(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		billing billing.Provider
@@ -28,6 +29,7 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 		{name: "conversations disabled", bind: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			store := newSpacesFixture(t, false)
 			p := newSharedOriginPilotWith(t, 1, 1, fstest.MapFS{}, test.billing, func(cfg *Config) {
 				attachments := store.Config()

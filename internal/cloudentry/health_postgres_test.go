@@ -13,6 +13,7 @@ import (
 )
 
 func TestEntryPostgresHealthPreservesReadinessAndReadScope(t *testing.T) {
+	t.Parallel()
 	admin := entryPostgresDatabase(t)
 	f := newPostgresTenantEntryFixture(t, entryPostgresConfig(t, admin))
 	if err := f.service.closeAllocator(); err != nil {

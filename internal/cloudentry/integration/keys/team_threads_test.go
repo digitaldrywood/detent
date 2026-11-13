@@ -10,8 +10,10 @@ import (
 )
 
 func TestAccessKeyThreadsMCP(t *testing.T) {
+	t.Parallel()
 	for _, protocol := range []string{"2025-11-25", "2026-07-28"} {
 		t.Run(protocol, func(t *testing.T) {
+			t.Parallel()
 			f := entryfixture.New(t)
 			owner := harness.NewBrowser(t, f.Service.Handler())
 			owner.Login("/organizations", "user_alice:")

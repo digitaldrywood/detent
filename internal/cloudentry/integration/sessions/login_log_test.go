@@ -32,7 +32,7 @@ func deniedRecords(t *testing.T, output string) []map[string]any {
 }
 
 func TestSharedEntryDenialLogging(t *testing.T) {
-
+	t.Parallel()
 	var output entrytest.LogBuffer
 	f := entryfixture.NewWithLogger(t, slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	tests := []struct {

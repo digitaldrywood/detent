@@ -29,6 +29,7 @@ func (f runtimeTransport) RoundTrip(request *http.Request) (*http.Response, erro
 }
 
 func TestGitHubRepositoryConnection(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t, func(cfg *Config) {
 		cfg.LookupEnv = entrySecretEnvironment(1, 1)
 	})
@@ -263,6 +264,7 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 }
 
 func TestGitHubSetupReturnPath(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		path  string
 		valid bool

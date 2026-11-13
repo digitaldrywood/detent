@@ -15,6 +15,7 @@ import (
 )
 
 func TestTenantFixtureCallPreservesContextAndAuthorization(t *testing.T) {
+	t.Parallel()
 	for _, canceled := range []bool{false, true} {
 		name := "active"
 		if canceled {

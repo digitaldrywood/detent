@@ -40,6 +40,7 @@ type platformListing struct {
 }
 
 func TestPlatformComplimentaryPlansThroughTenantHub(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, feature, plan string
 	}{
@@ -47,6 +48,7 @@ func TestPlatformComplimentaryPlansThroughTenantHub(t *testing.T) {
 		{"model choice", "model_choice", "pilot_free"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			testPlatformEntitlement(t, test.feature, test.plan)
 		})
 	}

@@ -13,6 +13,7 @@ import (
 )
 
 func TestSharedEntryReadableIssueURLs(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	alice := newBrowser(t, f.service.Handler())
 	alice.Login("/organizations/org_alpha/organization", "user_alice:porg_alpha")

@@ -87,6 +87,7 @@ func signedEvent(body string) (string, string) {
 }
 
 func TestSharedBillingJourney(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) { testSharedBillingJourney(t, entryBackendConfig(t, backend)) })
 	}

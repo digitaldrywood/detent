@@ -55,6 +55,7 @@ func TestArchiveContentSecurityBounds(t *testing.T) {
 		{name: "origin bytes", origins: 15, suffix: strings.Repeat(strings.Repeat("a", 60)+".", 4) + "test:443"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newEntryFixture(t)
 			browser := newBrowser(t, f.service.Handler())
 			for _, organization := range []string{"org_alpha", "org_beta"} {
@@ -143,6 +144,7 @@ func TestArchiveBindingValidationIsolation(t *testing.T) {
 		{name: "binding replaced during discovery", stage: "versioning", mutation: "rebind", status: http.StatusConflict, bindings: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newEntryFixture(t)
 			store := newSpacesFixture(t, false)
 			f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
@@ -209,6 +211,7 @@ func TestArchiveDeletionIsolation(t *testing.T) {
 		{name: "ready organization is fenced", ready: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newEntryFixture(t)
 			store := newSpacesFixture(t, false)
 			f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
@@ -270,6 +273,7 @@ func TestArchiveUploadIsolation(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []string{"initial read", "upload", "verification"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 			f := newEntryFixture(t)
 			store := newSpacesFixture(t, false)
 			f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
@@ -852,6 +856,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 }
 
 func TestTenantArchiveSectionReader(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, false)
 	storage, err := attachment.NewStorage(t.Context(), store.Config(), store.Transport)
@@ -1029,6 +1034,7 @@ func TestHostedArchiveBindingStorage(t *testing.T) {
 		{name: "prefix mismatch", mutate: func(b *attachment.StorageBinding) { b.Prefix = "other/" }, want: artifact.ErrStorage},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newEntryFixture(t)
 			store := newSpacesFixture(t, false)
 			cfg := store.Config()

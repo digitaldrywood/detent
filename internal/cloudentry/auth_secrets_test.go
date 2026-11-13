@@ -70,6 +70,7 @@ func secretEntryConfig(t *testing.T, logs *lockedBuffer) Config {
 }
 
 func TestEntrySecretRestarts(t *testing.T) {
+	t.Parallel()
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
 			t.Parallel()

@@ -106,6 +106,7 @@ func TestEntryHealthCompletesWithoutTenantDatabases(t *testing.T) {
 }
 
 func TestEntryHealthLifecycleApplicability(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		state         string
@@ -120,6 +121,7 @@ func TestEntryHealthLifecycleApplicability(t *testing.T) {
 		{name: "deleted tenant does not require a Hub schema", state: "deleted", factsComplete: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := entryfixture.New(t)
 			if _, err := f.DB.ExecContext(t.Context(), `UPDATE platform.organizations SET state=$1`, test.state); err != nil {
 				t.Fatal(err)

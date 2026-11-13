@@ -39,6 +39,7 @@ func (l *sharedRuntimeLauncher) AdoptRuntime(ctx context.Context, org Organizati
 }
 
 func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
+	t.Parallel()
 	f, _ := runtimePublicationFixture(t)
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true"); err != nil {
 		t.Fatal(err)
@@ -140,6 +141,7 @@ func runtimePublicationFixture(t *testing.T) (entryFixture, *sql.DB) {
 }
 
 func TestRuntimePublicationTenantIsolation(t *testing.T) {
+	t.Parallel()
 	f, admin := runtimePublicationFixture(t)
 	organizations := []tracker.OrganizationID{"org_alpha", "org_beta"}
 	repos := make(map[tracker.OrganizationID]tenantstore.Repository)
@@ -209,8 +211,10 @@ func TestRuntimePublicationTenantIsolation(t *testing.T) {
 }
 
 func TestRuntimePublicationRefreshesAllowanceConsumers(t *testing.T) {
+	t.Parallel()
 	for _, billing := range []bool{false, true} {
 		t.Run(fmt.Sprint(billing), func(t *testing.T) {
+			t.Parallel()
 			f, _ := runtimePublicationFixture(t)
 			const token = "runtime-entitlement-admin-0123456789abcdef"
 			for id, tenant := range f.fixtures {

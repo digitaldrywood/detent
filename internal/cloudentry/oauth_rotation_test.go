@@ -13,6 +13,7 @@ import (
 )
 
 func TestOAuthSigningKeyRotation(t *testing.T) {
+	t.Parallel()
 	f := newEntryFixture(t, entryPostgresRestartConfig(t))
 	s := f.service
 	<-s.oauthBackfillDone
