@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -16,9 +15,6 @@ func (s *Service) hostedPlanUsageTenant(ctx context.Context, unlimited ...string
 	err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
 		var err error
 		result, err = hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, reader, now))
-		if errors.Is(err, hostedplans.ErrEntitlementsDisabled) {
-			result, err = hostedplans.HostedEntitlement{OrganizationID: string(s.database.hostedOrganization), Source: "base", Grants: []hostedplans.HostedGrant{}}, nil
-		}
 		if err != nil {
 			return err
 		}

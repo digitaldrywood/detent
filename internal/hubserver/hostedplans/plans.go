@@ -218,7 +218,7 @@ func CapacityPlans() HostedPlansConfig {
 
 func DefaultPlans(cfg *Hosted) HostedPlansConfig {
 	if cfg.PlanID == "" && cfg.StorageQuotaBytes == 0 && cfg.EventQuota == 0 {
-		return HostedPlansConfig{}
+		return CapacityPlans()
 	}
 	config := PilotPlans()
 	if cfg.PlanID != "" {

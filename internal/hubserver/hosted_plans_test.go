@@ -773,22 +773,21 @@ func TestHostedPlanConfigurationDefaults(t *testing.T) {
 			configured := newHostedSecurityFixture(t, func(config *Config) { config.Hosted.Plans = cfg.Plans })
 			d := configured.service.database
 			if test.zero {
-				if cfg.Plans != nil || d.plansService().Plans() != nil {
-					t.Fatal("hosted configuration without a catalog enabled plan allowances")
+				if plans := d.plansService().Plans(); plans == nil || plans.Base != hostedplans.Tiers()[0].PlanReference {
+					t.Fatalf("hosted configuration without a catalog did not default to the free plan: %+v", plans)
 				}
 				var count int
-				if err := usagePostgresAdmin(t, configured.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_assignments WHERE organization_id=$1", d.hostedOrganization).Scan(&count); err != nil || count != 0 {
-					t.Fatalf("unconfigured catalog assignments = %d: %v", count, err)
+				if err := usagePostgresAdmin(t, configured.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_assignments WHERE organization_id=$1 AND base_id='free' AND base_version=1", d.hostedOrganization).Scan(&count); err != nil || count != 1 {
+					t.Fatalf("unconfigured catalog free assignments = %d: %v", count, err)
 				}
-				exerciseHostedPlanUnrestrictedWork(t, configured.service)
-				return
+				exerciseHostedPlanFreeDefault(t, configured.service)
 			}
 			entitlement, err := hubapi.FeatureResult(d.plansService().PlanUsage(t.Context(), time.Now()))
 			if err != nil {
 				t.Fatal(err)
 			}
 			want := hostedplans.PlanReference{ID: "pilot_free", Version: 1}
-			if test.name == "Cloud catalog" {
+			if test.name == "Cloud catalog" || test.zero {
 				want = hostedplans.PlanReference{ID: "free", Version: 1}
 				if entitlement.Allowances["concurrent_work"] != 2 {
 					t.Fatalf("Free concurrency = %d, want 2", entitlement.Allowances["concurrent_work"])
@@ -2045,6 +2044,42 @@ func exerciseHostedPlanUnrestrictedWork(t *testing.T, service *Service) {
 		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), w, "hosted_artifacts", service.config.Clock()))
 	}); err != nil {
 		t.Fatalf("unlimited growth or feature = %v", err)
+	}
+}
+
+func exerciseHostedPlanFreeDefault(t *testing.T, service *Service) {
+	t.Helper()
+	f := newNativeFixture(t, service, "", "free-default")
+	for i := range 3 {
+		issue := f.create(t, fmt.Sprintf("Free plan work %d", i))
+		token, request := hostedPlanWorkRequest(t, f, issue, fmt.Sprintf("free-default-%d", i))
+		_, err := claimHostedPlanWork(t, f, token, request)
+		if i < 2 {
+			if err != nil {
+				t.Fatalf("claim %d within the free plan = %v", i, err)
+			}
+			continue
+		}
+		var refusal *hubapi.NativeError
+		if !errors.As(err, &refusal) || refusal.Code != "plan_capacity" || refusal.Status != http.StatusConflict {
+			t.Fatalf("claim over the free concurrency allowance = %v", err)
+		}
+	}
+	err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		return service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, "free-default-growth", 1<<30, 1<<30+1, service.config.Clock(), false)
+	})
+	var limit *hostedplans.LimitError
+	if !errors.As(err, &limit) || limit.Resource != "collaboration_bytes" || limit.Allowance != 1<<30 {
+		t.Fatalf("growth over the free storage allowance = %v", err)
+	}
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), r, "hosted_artifacts", service.config.Clock()))
+	}); !errors.As(err, &limit) || limit.Resource != "hosted_artifacts" {
+		t.Fatalf("hosted artifacts outside the free plan = %v", err)
+	}
+	report, err := service.hostedBillingReport(t.Context())
+	if err != nil || report.State.Status != "free" || report.Entitlement.Name != "Free" || report.Entitlement.EffectiveBase != hostedplans.Tiers()[0].PlanReference || report.Entitlement.Allowances["concurrent_work"] != 2 {
+		t.Fatalf("free default billing report = %+v, %v", report, err)
 	}
 }
 

@@ -313,8 +313,25 @@ func TestHostedRuntimeReloadCatalogTransitions(t *testing.T) {
 					s.config.Hosted.SharedEntry = &HostedSharedEntry{}
 					update.StageID = "00000000-0000-4000-8000-000000000002"
 				}
-				if err := s.applyHostedRuntime(t.Context(), &update); err == nil || s.database.plansService().RuntimeState() != before {
-					t.Fatalf("invalid catalog changed runtime: %v", err)
+				err := s.applyHostedRuntime(t.Context(), &update)
+				if test.plans != nil && test.plans.WindowSeconds != 0 {
+					if err == nil || s.database.plansService().RuntimeState() != before {
+						t.Fatalf("invalid catalog changed runtime: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("catalog without plans did not default to the free plan: %v", err)
+				}
+				after := s.database.plansService().RuntimeState()
+				if prepare {
+					if after != before {
+						t.Fatal("prepared default catalog changed the runtime before publication")
+					}
+					return
+				}
+				if after == before || after.Plans.Base != Tiers()[0].PlanReference || len(after.Plans.Plans) != len(CapacityPlans().Plans) {
+					t.Fatalf("catalog without plans runtime=%+v, want the free default catalog", after)
 				}
 			})
 		}

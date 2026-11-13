@@ -157,6 +157,7 @@ func (s *HTTPService) applyRuntime(ctx context.Context, update *HostedRuntimeUpd
 		if err != nil {
 			return err
 		}
+		plans = HostedPlansConfig{}
 		if err := json.Unmarshal(raw, &plans); err != nil {
 			return err
 		}

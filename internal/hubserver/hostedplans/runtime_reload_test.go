@@ -459,13 +459,18 @@ func TestPostgresCatalogRemovalChecksReferences(t *testing.T) {
 					default:
 						err = s.applyHostedRuntime(t.Context(), &update)
 					}
-					wantError := kind == "base" || kind == "subscription" || kind == "grant" || kind == "future grant" || kind == "disable catalog"
+					wantError := kind == "base" || kind == "subscription" || kind == "grant" || kind == "future grant"
 					if wantError {
 						if err == nil || !strings.Contains(err.Error(), "configuration omits referenced plan") || s.database.plansService().RuntimeState() != before {
 							t.Fatalf("%s removal error=%v; snapshot retained=%t", s.database.hostedOrganization, err, s.database.plansService().RuntimeState() == before)
 						}
 					} else if err != nil {
 						t.Fatalf("%s exempt/unreferenced plan blocked: %v", s.database.hostedOrganization, err)
+					}
+					if kind == "disable catalog" && (mode == "startup" || mode == "reload") {
+						if state := s.database.plansService().RuntimeState(); state == nil || state.Plans.Base != Tiers()[0].PlanReference {
+							t.Fatalf("%s catalog without plans did not default to the free plan: %+v", s.database.hostedOrganization, state)
+						}
 					}
 				}
 			})

@@ -1,14 +1,20 @@
 package hostedplans
 
 import (
+	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
@@ -301,5 +307,74 @@ func TestCapacityLegacyMetadataKeepsImmutablePlan(t *testing.T) {
 	}
 	if entitlement.Base.ID != "pilot_free" || entitlement.Allowances["projects"] != 10 || !slices.Contains(entitlement.Features, "native_execution") {
 		t.Fatalf("legacy metadata lost access: %#v", entitlement)
+	}
+}
+
+func TestUnconfiguredHostedPlansResolveToFreeDefault(t *testing.T) {
+	repo, _ := postgresWithAdmin(t, 4)
+	open := func(org tracker.OrganizationID, plans *HostedPlansConfig) *hubService {
+		t.Helper()
+		if err := repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: time.Now()})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		d := &hubDatabase{billingRepository: repo, hostedOrganization: org, billingAuditStore: hubtest.NewDetails(), now: time.Now, logger: discardLogger()}
+		s := &hubService{database: d, config: hubConfig{Hosted: &HostedConfig{OrganizationID: string(org), Plans: plans}, now: time.Now, Logger: discardLogger()}}
+		if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), PlansInput(s.config.Hosted))); err != nil {
+			t.Fatal(err)
+		}
+		if err := hubapi.FromFeatureError(d.plansService().ConfigureBilling(t.Context(), PlansInput(s.config.Hosted))); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	free := Tiers()[0].PlanReference
+	catalog := CapacityPlans()
+	now := time.Now()
+	reference, err := hubapi.FeatureResult(open("org_free_reference", &catalog).database.plansService().PlanUsage(t.Context(), now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name  string
+		plans *HostedPlansConfig
+	}{
+		{name: "absent"},
+		{name: "empty mapping", plans: &HostedPlansConfig{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, suffix := range []string{"first", "second"} {
+				org := tracker.OrganizationID("org_free_" + strings.ReplaceAll(test.name, " ", "_") + "_" + suffix)
+				plans := open(org, test.plans).database.plansService()
+				if plans.Plans() == nil || plans.Plans().Base != free {
+					t.Fatalf("%s runtime catalog=%+v, want base %v", org, plans.Plans(), free)
+				}
+				got, err := hubapi.FeatureResult(plans.PlanUsage(t.Context(), now))
+				if err != nil {
+					t.Fatalf("%s plan usage=%v", org, err)
+				}
+				if got.OrganizationID != string(org) || got.Base != free || got.EffectiveBase != free || got.Name != "Free" || got.MonthlyUSDCents == nil || *got.MonthlyUSDCents != 0 {
+					t.Fatalf("%s entitlement=%+v, want the free plan", org, got)
+				}
+				if !reflect.DeepEqual(got.Allowances, reference.Allowances) || !reflect.DeepEqual(got.Features, reference.Features) || got.Allowances["concurrent_work"] != 2 || got.Allowances["collaboration_bytes"] != 1<<30 {
+					t.Fatalf("%s allowances=%v features=%v, want free plan %v %v", org, got.Allowances, got.Features, reference.Allowances, reference.Features)
+				}
+				if _, shown := got.Allowances["artifact_retained_bytes"]; shown || slices.Contains(got.Features, "hosted_artifacts") {
+					t.Fatalf("%s free plan shows hosted artifact storage: %+v", org, got)
+				}
+				err = hubapi.FromFeatureError(plans.ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+					return plans.RequireFeatureRecord(t.Context(), r, "hosted_artifacts", now)
+				}))
+				var limit *LimitError
+				if !errors.As(err, &limit) || limit.Resource != "hosted_artifacts" {
+					t.Fatalf("%s hosted artifacts outside the free plan=%v", org, err)
+				}
+				billing, err := hubapi.FeatureResult(plans.ReadBilling(t.Context()))
+				if err != nil || billing.Status != "free" {
+					t.Fatalf("%s billing=%+v err=%v", org, billing, err)
+				}
+			}
+		})
 	}
 }
