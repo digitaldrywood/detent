@@ -325,7 +325,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 		if err != nil {
 			return err
 		}
-		secondLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "second-session", LeaseID: "second-lease", TTL: time.Hour})
+		secondLease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: workItem.ID, ExpectedRevision: workItem.Revision, MachineID: string(binding.MachineID), SessionID: "second-session", LeaseID: "second-lease", TTL: time.Hour, LandingCapacity: 3})
 		if err != nil {
 			return err
 		}
