@@ -671,6 +671,7 @@ func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
 		s.IntegrationPageMaintenanceFeature(),
 		s.OnboardingPageMaintenanceFeature(),
 		s.HealthPageMaintenanceFeature(),
+		s.HealthSlackMaintenanceFeature(),
 		s.ProjectPageMaintenanceFeature(),
 		s.UsageMaintenanceFeature(),
 		s.ScheduledSourceMaintenanceFeature(),

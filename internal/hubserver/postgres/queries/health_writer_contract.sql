@@ -43,3 +43,7 @@ SELECT * FROM health_findings WHERE organization_id=$1 AND id>$2 AND resolved_at
 -- name: UnlinkHealthProject :execrows
 DELETE FROM health_finding_projects AS p WHERE p.organization_id=$1 AND p.finding_id=$2 AND p.project_id=$3
 AND NOT EXISTS(SELECT 1 FROM health_finding_issues i WHERE i.organization_id=p.organization_id AND i.finding_id=p.finding_id AND i.project_id=p.project_id);
+
+-- name: RecordHealthSlackStatus :execrows
+UPDATE health_findings SET slack_unavailable_at=CASE WHEN sqlc.arg(failed)::boolean THEN sqlc.arg(at)::timestamptz ELSE NULL END,slack_status_code=CASE WHEN sqlc.arg(failed)::boolean THEN sqlc.arg(status_code)::integer ELSE 0 END
+WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id);

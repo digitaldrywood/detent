@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const slackTestWebhook = "https://hooks.slack.com/services/T123/B456/SLACK_SECRET_SENTINEL"
@@ -477,5 +478,128 @@ func TestSlackSecretRotation(t *testing.T) {
 	}
 	if actor != "system:rewrap" || event != "rotate" || version != 2 {
 		t.Fatal("incorrect rotation audit")
+	}
+}
+
+func TestHealthSlackMaintenanceDeliversOnlyTheTenantQueueOnce(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		respond     func() (*http.Response, error)
+		wantPending int
+		retried     bool
+		wantFailed  bool
+	}{
+		{name: "acknowledged", respond: func() (*http.Response, error) { return spritesTestResponse("ok", http.StatusOK), nil }},
+		{name: "uncertain transport", respond: func() (*http.Response, error) { return nil, errors.New("connection reset") }, wantFailed: true},
+		{name: "definite rejection", respond: func() (*http.Response, error) { return spritesTestResponse("no_service", http.StatusNotFound), nil }, wantPending: 2, retried: true, wantFailed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
+			now := service.config.now().UTC().Truncate(time.Microsecond)
+			clock := now
+			service.config.now = func() time.Time { return clock }
+			primary := tracker.OrganizationID("org_first")
+			organizations := []tracker.OrganizationID{primary, primary + "_second"}
+			for _, org := range organizations {
+				f := newNativeFixture(t, service, org, "Example")
+				envelope, err := service.config.SecretKeys.Seal([]byte(slackTestWebhook), accessstore.SecretAAD(org, "", slackWebhookSecret))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := service.database.postgres.WriteSlack(t.Context(), org, corestore.Serving, func(w postgres.SlackWriter) error {
+					if _, err := w.CreateSlackIntegration(t.Context(), postgres.CreateSlackIntegrationInput{OrganizationID: org, ChannelName: "example", Enabled: true, UpdatedAt: now}); err != nil {
+						return err
+					}
+					return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: slackWebhookSecret, Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: org, Kind: slackWebhookSecret, Actor: "fixture", Event: "create", KeyVersion: envelope.Version, RecordedAt: now})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				findings := []healthFinding{
+					newHealthFinding("example_first", "instance", "organization", string(org), "Example first finding", "Inspect the example", []string{string(f.project.ID)}, healthEvidence{}),
+					newHealthFinding("example_second", "instance", "organization", string(org), "Example second finding", "Inspect the example", []string{string(f.project.ID)}, healthEvidence{}),
+				}
+				if err := service.publishHealthEvaluation(t.Context(), org, now, findings); err != nil {
+					t.Fatal(err)
+				}
+			}
+			service.config.Hosted = &hostedplans.HostedConfig{OrganizationID: string(primary), PublicURL: "https://cloud.detent.test"}
+			var bodies []string
+			service.config.SlackHTTPClient = &http.Client{Transport: spritesTestTransport(func(r *http.Request) (*http.Response, error) {
+				if r.URL.String() != slackTestWebhook {
+					t.Fatalf("Slack POST used another webhook: %s", r.URL.Redacted())
+				}
+				payload, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				bodies = append(bodies, string(payload))
+				return test.respond()
+			})}
+			scheduler, err := service.newReadModelMaintenance()
+			if err != nil {
+				t.Fatal(err)
+			}
+			rotate := func() {
+				t.Helper()
+				for range 32 {
+					_ = scheduler.Tick(t.Context())
+				}
+			}
+			pending := func(org tracker.OrganizationID) []postgres.SlackDelivery {
+				t.Helper()
+				var rows []postgres.SlackDelivery
+				if err := service.database.postgres.ReadSlack(t.Context(), org, corestore.Serving, func(r postgres.SlackReader) error {
+					var err error
+					rows, err = r.PendingSlackDeliveries(t.Context(), postgres.PendingSlackDeliveriesInput{OrganizationID: org, NextAttemptAt: clock.Add(24 * time.Hour), Limit: 10})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return rows
+			}
+			rotate()
+			if len(bodies) != 2 {
+				t.Fatalf("Slack POSTs after first rotation=%d %q", len(bodies), bodies)
+			}
+			for _, body := range bodies {
+				if !strings.Contains(body, "example_") || !strings.Contains(body, "https://cloud.detent.test/diagnostics") || !strings.Contains(body, "Opened") {
+					t.Fatalf("Slack message=%s", body)
+				}
+			}
+			if got := pending(primary); len(got) != test.wantPending {
+				t.Fatalf("primary pending deliveries=%+v", got)
+			}
+			if got := pending(organizations[1]); len(got) != 2 {
+				t.Fatalf("other tenant deliveries were touched: %+v", got)
+			}
+			var records []postgres.HealthRecord
+			if err := service.database.postgres.ReadHealth(t.Context(), primary, corestore.Serving, func(r postgres.HealthReader) error {
+				var err error
+				records, err = r.HealthEvaluationRecords(t.Context(), postgres.HealthEvaluationRecordsInput{OrganizationID: primary, Limit: 10})
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, record := range records {
+				if (record.SlackUnavailableAt != nil) != test.wantFailed {
+					t.Fatalf("finding Slack status=%v want failed=%t", record.SlackUnavailableAt, test.wantFailed)
+				}
+			}
+			rotate()
+			if len(bodies) != 2 {
+				t.Fatalf("second rotation repeated Slack POSTs=%d", len(bodies))
+			}
+			clock = clock.Add(time.Hour)
+			rotate()
+			want := 2
+			if test.retried {
+				want = 4
+			}
+			if len(bodies) != want {
+				t.Fatalf("Slack POSTs after retry window=%d want %d", len(bodies), want)
+			}
+		})
 	}
 }

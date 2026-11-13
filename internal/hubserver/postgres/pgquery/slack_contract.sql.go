@@ -14,7 +14,7 @@ import (
 
 const claimSlackDelivery = `-- name: ClaimSlackDelivery :one
 UPDATE health_slack_deliveries SET attempts=attempts+1,next_attempt_at=$1
-WHERE organization_id=$2 AND id=$3 AND attempts=$4 AND completed_at IS NULL AND next_attempt_at<=$5::timestamptz AND $1>$5 RETURNING organization_id, id, finding_id, event, event_at, queued_at, next_attempt_at, attempts, outcome, external_receipt, completed_at, status_code
+WHERE organization_id=$2 AND id=$3 AND attempts=$4 AND completed_at IS NULL AND outcome<>'uncertain' AND next_attempt_at<=$5::timestamptz AND $1>$5 RETURNING organization_id, id, finding_id, event, event_at, queued_at, next_attempt_at, attempts, outcome, external_receipt, completed_at, status_code
 `
 
 type ClaimSlackDeliveryParams struct {
@@ -171,7 +171,8 @@ func (q *Queries) FinishSlackDelivery(ctx context.Context, arg FinishSlackDelive
 
 const pendingSlackDeliveries = `-- name: PendingSlackDeliveries :many
 SELECT d.organization_id, d.id, d.finding_id, d.event, d.event_at, d.queued_at, d.next_attempt_at, d.attempts, d.outcome, d.external_receipt, d.completed_at, d.status_code FROM health_slack_deliveries d JOIN slack_integrations s ON s.organization_id=d.organization_id AND s.enabled
-WHERE d.organization_id=$1 AND d.completed_at IS NULL AND d.next_attempt_at<=$2 ORDER BY d.next_attempt_at,d.id LIMIT $3
+WHERE d.organization_id=$1 AND d.completed_at IS NULL AND d.outcome<>'uncertain' AND d.next_attempt_at<=$2
+AND (d.event='opened' OR NOT EXISTS (SELECT 1 FROM health_slack_deliveries o WHERE o.organization_id=d.organization_id AND o.finding_id=d.finding_id AND o.event='opened' AND o.completed_at IS NULL AND o.outcome<>'uncertain')) ORDER BY d.next_attempt_at,d.id LIMIT $3
 `
 
 type PendingSlackDeliveriesParams struct {

@@ -27,6 +27,7 @@ type PutHealthBaselineInput = pgquery.PutHealthBaselineParams
 type ClearHealthBaselineInput = pgquery.ClearHealthBaselineParams
 type PutHealthTickInput = pgquery.PutHealthTickParams
 type HealthEvaluationRecordsInput = pgquery.HealthEvaluationRecordsParams
+type RecordHealthSlackStatusInput = pgquery.RecordHealthSlackStatusParams
 type ReplaceHealthProjectLinksInput struct {
 	OrganizationID tracker.OrganizationID
 	FindingID      string
@@ -53,6 +54,7 @@ type HealthWriter interface {
 	PutHealthBaseline(context.Context, PutHealthBaselineInput) error
 	ClearHealthBaseline(context.Context, ClearHealthBaselineInput) error
 	PutHealthTick(context.Context, PutHealthTickInput) error
+	RecordHealthSlackStatus(context.Context, RecordHealthSlackStatusInput) error
 }
 
 func (r *Repository) ReadHealth(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, run func(HealthReader) error) error {
@@ -251,4 +253,14 @@ func (s *session) recordHealthProjectDelta(project tracker.ProjectID, finding He
 		status = "resolved"
 	}
 	return s.recordBoardDelta(project, viewstore.BoardDelta{Topic: "health", EntityID: finding.ID, EntityRevision: new(finding.Revision), Kind: kind, Status: status})
+}
+func (s *session) RecordHealthSlackStatus(ctx context.Context, arg RecordHealthSlackStatusInput) error {
+	if err := s.checkOrganization(arg.OrganizationID); err != nil {
+		return err
+	}
+	if arg.ID == "" || arg.At.IsZero() || arg.StatusCode < 0 || arg.StatusCode > 599 {
+		return corestore.ErrInvalidPage
+	}
+	count, err := s.queries.RecordHealthSlackStatus(ctx, arg)
+	return affected(ctx, count, err)
 }

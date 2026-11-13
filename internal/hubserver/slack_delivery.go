@@ -3,16 +3,21 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -112,9 +117,14 @@ func (s *Service) readSlackWebhook(ctx context.Context, organization tracker.Org
 	return value, nil
 }
 
-func (s *Service) postSlack(ctx context.Context, webhook []byte, text string) (int, bool) {
+type slackSendResult struct {
+	status  int
+	outcome string
+}
+
+func (s *Service) postSlack(ctx context.Context, webhook []byte, text string) slackSendResult {
 	if !validSlackWebhook(string(webhook)) {
-		return 0, false
+		return slackSendResult{outcome: "rejected"}
 	}
 	body, err := json.Marshal(struct {
 		Text        string `json:"text"`
@@ -122,13 +132,13 @@ func (s *Service) postSlack(ctx context.Context, webhook []byte, text string) (i
 		UnfurlMedia bool   `json:"unfurl_media"`
 	}{Text: text})
 	if err != nil {
-		return 0, false
+		return slackSendResult{outcome: "rejected"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, string(webhook), bytes.NewReader(body))
 	if err != nil {
-		return 0, false
+		return slackSendResult{outcome: "rejected"}
 	}
 	request.Header.Set("Content-Type", "application/json")
 	client := http.Client{Timeout: 10 * time.Second}
@@ -138,10 +148,146 @@ func (s *Service) postSlack(ctx context.Context, webhook []byte, text string) (i
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, false
+		var dns *net.DNSError
+		var operation *net.OpError
+		if errors.As(err, &dns) || errors.As(err, &operation) && operation.Op == "dial" {
+			return slackSendResult{outcome: "rejected"}
+		}
+		return slackSendResult{outcome: "uncertain"}
 	}
 	defer response.Body.Close()
 	acknowledgment, err := io.ReadAll(io.LimitReader(response.Body, 4097))
 	defer clear(acknowledgment)
-	return response.StatusCode, err == nil && len(acknowledgment) <= 4096 && response.StatusCode >= 200 && response.StatusCode < 300 && strings.TrimSpace(string(acknowledgment)) == "ok"
+	result := slackSendResult{status: response.StatusCode, outcome: "uncertain"}
+	switch {
+	case err == nil && len(acknowledgment) <= 4096 && response.StatusCode >= 200 && response.StatusCode < 300 && strings.TrimSpace(string(acknowledgment)) == "ok":
+		result.outcome = "committed"
+	case response.StatusCode >= 300 && response.StatusCode < 500 && response.StatusCode != http.StatusRequestTimeout:
+		result.outcome = "rejected"
+	}
+	return result
+}
+
+func (s *Service) HealthSlackMaintenanceFeature() hubmaintenance.Feature {
+	return hubmaintenance.Feature{Name: "health-slack", Bytes: 1 << 20, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+		if err := hubmaintenance.RequireTenant(ctx, tenant); err != nil {
+			return err
+		}
+		_, err := s.processSlackDelivery(ctx, tracker.OrganizationID(tenant.Organization))
+		return err
+	}}
+}
+
+func (s *Service) processSlackDelivery(ctx context.Context, organization tracker.OrganizationID) (bool, error) {
+	if s.config.SecretKeys == nil || s.database == nil || s.database.postgres == nil {
+		return false, nil
+	}
+	now := s.config.now()
+	var settings postgres.SlackIntegration
+	var pending []postgres.SlackDelivery
+	err := s.database.postgres.ReadSlack(ctx, organization, corestore.Background, func(r postgres.SlackReader) error {
+		var err error
+		settings, err = r.SlackIntegration(ctx)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		pending, err = r.PendingSlackDeliveries(ctx, postgres.PendingSlackDeliveriesInput{OrganizationID: organization, NextAttemptAt: now, Limit: 1})
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("read slack delivery: %w", err)
+	}
+	if len(pending) == 0 || !settings.Enabled {
+		return false, nil
+	}
+	delivery := pending[0]
+	var record postgres.HealthRecord
+	err = s.database.postgres.ReadHealth(ctx, organization, corestore.Background, func(r postgres.HealthReader) error {
+		var err error
+		record, err = r.HealthRecord(ctx, postgres.HealthRecordInput{OrganizationID: organization, ID: delivery.FindingID})
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("read slack finding: %w", err)
+	}
+	finding := healthFinding{ID: record.ID, Signal: record.Signal, Subject: healthSubject{Kind: record.SubjectKind, ID: record.SubjectID}, OpenedAt: record.OpenedAt, Summary: record.Summary, NextAction: record.NextAction}
+	issuePath := ""
+	if finding.Subject.Kind == "work_item" {
+		issuePath, err = s.readIssueBrowserPath(ctx, organization, finding.Subject.ID)
+		if errors.Is(err, corestore.ErrNotFound) {
+			issuePath, err = "", nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("read slack issue path: %w", err)
+		}
+	}
+	publicURL := ""
+	if s.config.Hosted != nil {
+		publicURL = s.config.Hosted.PublicURL
+	}
+	text, err := renderSlackFinding(publicURL, s.hostedBase(), finding, delivery.Event, delivery.EventAt, issuePath)
+	if err != nil {
+		return false, fmt.Errorf("render slack finding: %w", err)
+	}
+	webhook, err := s.readSlackWebhook(ctx, organization, "health-slack")
+	if err != nil {
+		return false, fmt.Errorf("read slack webhook: %w", err)
+	}
+	defer clear(webhook)
+	if len(webhook) == 0 {
+		return false, nil
+	}
+	next := now.Add(slackRetryDelay(delivery.Attempts, delivery.ID))
+	err = s.database.postgres.WriteSlack(ctx, organization, corestore.Background, func(w postgres.SlackWriter) error {
+		claimed, err := w.ClaimSlackDelivery(ctx, postgres.ClaimSlackDeliveryInput{OrganizationID: organization, ID: delivery.ID, ExpectedAttempts: delivery.Attempts, Now: now, NextAttemptAt: next})
+		if err != nil {
+			return err
+		}
+		_, err = w.FinishSlackDelivery(ctx, postgres.FinishSlackDeliveryInput{OrganizationID: organization, ID: delivery.ID, ExpectedAttempts: claimed.Attempts, Outcome: "uncertain", At: now, NextAttemptAt: next})
+		return err
+	})
+	if errors.Is(err, corestore.ErrRevisionConflict) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("claim slack delivery: %w", err)
+	}
+	result := s.postSlack(ctx, webhook, text)
+	delivered := result.outcome == "committed"
+	receipt := ""
+	if delivered {
+		receipt = "http:" + strconv.Itoa(result.status)
+	}
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.config.BusyTimeout)
+	defer cancel()
+	at := s.config.now()
+	err = s.database.postgres.WriteSlack(finishCtx, organization, corestore.Background, func(w postgres.SlackWriter) error {
+		if _, err := w.FinishSlackDelivery(finishCtx, postgres.FinishSlackDeliveryInput{OrganizationID: organization, ID: delivery.ID, ExpectedAttempts: delivery.Attempts + 1, Outcome: result.outcome, ExternalReceipt: receipt, StatusCode: int32(result.status), At: at, NextAttemptAt: next}); err != nil {
+			return err
+		}
+		health, ok := w.(postgres.HealthWriter)
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		if err := health.RecordHealthSlackStatus(finishCtx, postgres.RecordHealthSlackStatusInput{OrganizationID: organization, ID: delivery.FindingID, Failed: !delivered, StatusCode: int32(result.status), At: at}); err != nil {
+			return err
+		}
+		if err := w.RecordSlackStatus(finishCtx, postgres.RecordSlackStatusInput{OrganizationID: organization, ExpectedRevision: settings.Revision, StatusCode: int32(result.status), Failed: !delivered, At: at}); err != nil && !errors.Is(err, corestore.ErrRevisionConflict) {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return true, fmt.Errorf("finish slack delivery: %w", err)
+	}
+	return true, nil
+}
+
+func slackRetryDelay(attempts int64, id string) time.Duration {
+	base := time.Minute * time.Duration(1<<min(max(attempts, 0), 5))
+	sum := sha256.Sum256([]byte(id))
+	return base + base*time.Duration(sum[0])/1280
 }

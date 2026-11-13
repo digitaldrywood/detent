@@ -237,7 +237,8 @@ func (s *Service) testSlackIntegration(c echo.Context) error {
 	if len(webhook) == 0 {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Save a Slack webhook before sending a test message")
 	}
-	statusCode, delivered := s.postSlack(ctx, webhook, "*Detent* · Test message")
+	sent := s.postSlack(ctx, webhook, "*Detent* · Test message")
+	statusCode, delivered := sent.status, sent.outcome == "committed"
 	finishCtx, cancelFinish := context.WithTimeout(context.WithoutCancel(ctx), s.config.BusyTimeout)
 	defer cancelFinish()
 	var status slackIntegrationStatus

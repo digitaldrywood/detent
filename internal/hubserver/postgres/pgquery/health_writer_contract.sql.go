@@ -512,6 +512,33 @@ func (q *Queries) RecentHealthFingerprint(ctx context.Context, arg RecentHealthF
 	return i, err
 }
 
+const recordHealthSlackStatus = `-- name: RecordHealthSlackStatus :execrows
+UPDATE health_findings SET slack_unavailable_at=CASE WHEN $1::boolean THEN $2::timestamptz ELSE NULL END,slack_status_code=CASE WHEN $1::boolean THEN $3::integer ELSE 0 END
+WHERE organization_id=$4 AND id=$5
+`
+
+type RecordHealthSlackStatusParams struct {
+	Failed         bool
+	At             time.Time
+	StatusCode     int32
+	OrganizationID tracker.OrganizationID
+	ID             string
+}
+
+func (q *Queries) RecordHealthSlackStatus(ctx context.Context, arg RecordHealthSlackStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordHealthSlackStatus,
+		arg.Failed,
+		arg.At,
+		arg.StatusCode,
+		arg.OrganizationID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const unlinkHealthProject = `-- name: UnlinkHealthProject :execrows
 DELETE FROM health_finding_projects AS p WHERE p.organization_id=$1 AND p.finding_id=$2 AND p.project_id=$3
 AND NOT EXISTS(SELECT 1 FROM health_finding_issues i WHERE i.organization_id=p.organization_id AND i.finding_id=p.finding_id AND i.project_id=p.project_id)

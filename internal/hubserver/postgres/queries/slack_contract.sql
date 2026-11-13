@@ -19,11 +19,12 @@ SELECT * FROM health_slack_deliveries WHERE organization_id=$1 AND id=$2;
 
 -- name: PendingSlackDeliveries :many
 SELECT d.* FROM health_slack_deliveries d JOIN slack_integrations s ON s.organization_id=d.organization_id AND s.enabled
-WHERE d.organization_id=$1 AND d.completed_at IS NULL AND d.next_attempt_at<=$2 ORDER BY d.next_attempt_at,d.id LIMIT $3;
+WHERE d.organization_id=$1 AND d.completed_at IS NULL AND d.outcome<>'uncertain' AND d.next_attempt_at<=$2
+AND (d.event='opened' OR NOT EXISTS (SELECT 1 FROM health_slack_deliveries o WHERE o.organization_id=d.organization_id AND o.finding_id=d.finding_id AND o.event='opened' AND o.completed_at IS NULL AND o.outcome<>'uncertain')) ORDER BY d.next_attempt_at,d.id LIMIT $3;
 
 -- name: ClaimSlackDelivery :one
 UPDATE health_slack_deliveries SET attempts=attempts+1,next_attempt_at=sqlc.arg(next_attempt_at)
-WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND attempts=sqlc.arg(expected_attempts) AND completed_at IS NULL AND next_attempt_at<=sqlc.arg(now)::timestamptz AND sqlc.arg(next_attempt_at)>sqlc.arg(now) RETURNING *;
+WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(id) AND attempts=sqlc.arg(expected_attempts) AND completed_at IS NULL AND outcome<>'uncertain' AND next_attempt_at<=sqlc.arg(now)::timestamptz AND sqlc.arg(next_attempt_at)>sqlc.arg(now) RETURNING *;
 
 -- name: FinishSlackDelivery :one
 UPDATE health_slack_deliveries SET outcome=sqlc.arg(outcome),external_receipt=sqlc.arg(external_receipt),completed_at=CASE WHEN sqlc.arg(outcome)::text='committed' THEN sqlc.arg(at)::timestamptz ELSE NULL END,status_code=sqlc.arg(status_code),next_attempt_at=sqlc.arg(next_attempt_at)
