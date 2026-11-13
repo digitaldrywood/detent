@@ -553,7 +553,7 @@ func TestWorkItemConversationLookup(t *testing.T) {
 							Error         string `json:"error"`
 							ErrorClass    string `json:"error_class"`
 						}
-						if err := json.Unmarshal(logs.Bytes(), &entry); err != nil || entry.Tool != tool || entry.CorrelationID == "" || entry.ErrorClass != "*json.UnmarshalTypeError" || !strings.Contains(entry.Error, "list messages: decode message") || !strings.Contains(entry.Error, "cannot unmarshal array") {
+						if err := json.Unmarshal(logs.Bytes(), &entry); err != nil || entry.Tool != tool || entry.CorrelationID == "" || entry.ErrorClass != "*json.UnmarshalTypeError" || !strings.Contains(entry.Error, "decode conversation message actor") || !strings.Contains(entry.Error, "cannot unmarshal array") {
 							t.Fatalf("lost snapshot cause: logs=%s err=%v", logs.Bytes(), err)
 						}
 						if want := "Operator tool is unavailable (reason_code service_unavailable, correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
