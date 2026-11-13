@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -17,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -68,6 +70,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 		{name: "cloud workflow", tool: "update_project_integration", role: "owner", status: http.StatusOK},
 		{name: "maximum cloud workflow", tool: "update_project_integration", role: "owner", status: http.StatusOK},
 		{name: "escaped cloud workflow", tool: "update_project_integration", role: "owner", status: http.StatusOK},
+		{name: "leased work item refuses cloud workflow", tool: "update_project_integration", role: "owner", status: http.StatusUnprocessableEntity},
 		{name: "oversized cloud workflow", tool: "update_project_integration", role: "owner", refuse: true},
 		{name: "repository workflow refusal", tool: "update_project_integration", role: "owner", refuse: true},
 	} {
@@ -471,6 +474,19 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				}
 			case "stale cloud workflow":
 				coordinatorFixtureProject(t, f.service, "org_security", f.project, func(*projectstore.Record) {})
+			case "leased work item refuses cloud workflow":
+				leasedResponse := f.request(t, owner, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "leased-issue", "title": "Work in progress", "body": nativeContractTestBody, "state": "Todo"})
+				requireNativeStatus(t, leasedResponse, http.StatusOK)
+				var leased tracker.NativeIssue
+				decodeHubResponse(t, leasedResponse, &leased)
+				coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
+					row, err := w.WorkItem(t.Context(), f.project, leased.WorkItemID)
+					if err != nil {
+						return err
+					}
+					_, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: string(r.binding.MachineID), RunnerID: r.binding.RunnerID, SessionID: "session_leased", LeaseID: "lease_leased", TTL: time.Hour})
+					return err
+				})
 			case "stale runner submission":
 				coordinatorFixtureRouting(t, f.service, "org_security", r.binding.RunnerID, func(*runnerstore.Identity) {})
 			case "grant revoked":
@@ -478,6 +494,22 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			}
 			response = f.request(t, user, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
 			requireNativeStatus(t, response, test.status)
+			if test.name == "leased work item refuses cloud workflow" {
+				var refusal hubapi.Error
+				decodeHubResponse(t, response, &refusal)
+				if refusal.Code != "invalid_request" || refusal.Message != "Finish or cancel active work before deleting this project" {
+					t.Fatalf("leased refusal=%s", response.Body.String())
+				}
+				read, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "get_project_integration", Arguments: json.RawMessage(`{}`)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var integration ProjectIntegration
+				decodeToolResult(t, read, &integration)
+				if integration.WorkflowMarkdown == args["workflow_markdown"] {
+					t.Fatal("refused workflow edit was persisted")
+				}
+			}
 			if foreignScope != "" {
 				approval, _, err := readTestTenantProjectPolicy(t.Context(), f.service, foreignScope)
 				if err != nil || !reflect.DeepEqual(approval.Policy, current) {

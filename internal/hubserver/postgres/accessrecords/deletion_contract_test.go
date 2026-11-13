@@ -2,6 +2,7 @@ package accessrecords_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -21,8 +22,6 @@ func TestDeletionContractRefusesEachActiveFamilyIndependently(t *testing.T) {
 	}{
 		{"workspace", []string{`INSERT INTO workspace_sessions(organization_id,project_id,id,subject_work_item_id,ref,state,requires,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at) SELECT org,project,'ws_'||md5(project),item,'refs/heads/example','requested',ARRAY[]::text[],300,at+interval '1 hour',at+interval '1 minute','first',at,at FROM seed`}},
 		{"action", []string{`INSERT INTO workspace_sessions(organization_id,project_id,id,subject_work_item_id,ref,state,requires,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at) SELECT org,project,'ws_'||md5(project),item,'refs/heads/example','closed',ARRAY[]::text[],300,at+interval '1 hour',at+interval '1 minute','first',at,at FROM seed`, `INSERT INTO project_actions(organization_id,project_id,id,slot,name,created_by,revision,created_at,updated_at,command_object_key,command_sha256,command_bytes,command_content_bytes) SELECT org,project,'action',0,'example','first',1,at,at,'example',repeat('a',64),1,1 FROM seed`, `INSERT INTO project_action_runs(organization_id,project_id,id,action_id,workspace_id,command_object_key,command_sha256,command_bytes,command_content_bytes,created_by,created_at,updated_at) SELECT org,project,'run','action','ws_'||md5(project),'example',repeat('a',64),1,1,'first',at,at FROM seed`}},
-		{"conversation", []string{`INSERT INTO conversations(organization_id,id,project_id,owner_principal_id,origin,visibility,status,execution_status,execution_lease_id) SELECT org,project,project,'first','user','private','settled','running','' FROM seed`}},
-		{"message", []string{`INSERT INTO conversations(organization_id,id,project_id,owner_principal_id,origin,visibility,status,execution_status,execution_lease_id) SELECT org,project,project,'first','user','private','settled','idle','' FROM seed`, `INSERT INTO conversation_messages(organization_id,id,conversation_id,seq,role,kind,delivery) SELECT org,project,project,1,'user','text','queued' FROM seed`}},
 		{"github-import", []string{`INSERT INTO github_imports(organization_id,project_id,id,issue_number,stage,status,observed_at) SELECT org,project,'import',1,'discover','pending',at FROM seed`}},
 		{"github-outbound", []string{`INSERT INTO github_outbound(organization_id,project_id,work_item_id,command_key,repository,issue_number,kind,next_attempt_at,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes) SELECT org,project,item,project,'example-org/example-project',1,'comment',at,at,'example',repeat('a',64),1,1 FROM seed`}},
 		{"sprite", []string{`INSERT INTO runner_sprite_memberships(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at,allocation_project_id) SELECT org,project,'example','enrollment_'||replace(project,'prj_',''),'enrolled',at,at,project FROM seed`}},
@@ -110,6 +109,64 @@ func TestDeletionContractRefusesEachActiveFamilyIndependently(t *testing.T) {
 				}
 				if err := repository.Write(t.Context(), org, corestore.Serving, func(w corestore.Writer) error { return w.DeleteProject(t.Context(), "prj_idle") }); err != nil {
 					t.Fatalf("idle delete=%v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectIdleIgnoresConversationsAndRefusesTheirRunLease(t *testing.T) {
+	admin := pgstoretest.Template.Database(t)
+	conversation := func(status, lease string) string {
+		return `INSERT INTO conversations(organization_id,id,project_id,owner_principal_id,origin,visibility,status,execution_status,execution_lease_id) SELECT org,'conv_'||project,project,'first','user','shared','active',` + status + `,` + lease + ` FROM seed`
+	}
+	message := func(seq int, role, delivery string) string {
+		return fmt.Sprintf(`INSERT INTO conversation_messages(organization_id,id,conversation_id,seq,role,kind,delivery) SELECT org,'msg_%d_'||project,'conv_'||project,%d,'%s','text','%s' FROM seed`, seq, seq, role, delivery)
+	}
+	runLease := `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at) SELECT org,'lease_'||project,i.id,'machine_first','session_'||project,i.revision,at,at,clock_timestamp()+interval '1 hour' FROM seed JOIN issues i ON i.organization_id=org AND i.native_id=item`
+	cases := []struct {
+		name    string
+		queries []string
+	}{
+		{"empty chat", []string{conversation("NULL", "NULL")}},
+		{"idle chat with messages", []string{conversation("NULL", "NULL"), message(1, "user", "delivered"), message(2, "assistant", "completed")}},
+		{"chat whose last run finished", []string{conversation("'completed'", "'lease_finished'"), message(1, "user", "completed"), message(2, "assistant", "completed")}},
+		{"chat with unsent messages and no run", []string{conversation("'waiting_for_runner'", "NULL"), message(1, "user", "queued"), message(2, "user", "unknown")}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+			now := pgstoretest.HistoryAt()
+			family := strings.ReplaceAll(test.name, " ", "_")
+			for _, org := range []tracker.OrganizationID{tracker.OrganizationID("org_first_" + family), tracker.OrganizationID("org_second_" + family)} {
+				pgstoretest.SeedRepository(t, repository, org)
+				pgstoretest.SeedRunnerIdentity(t, repository, org, "first", "machine_first", now, true)
+				for _, id := range []string{"first", "second"} {
+					project := tracker.ProjectID("prj_" + id)
+					seed := func(query string) {
+						t.Helper()
+						if _, err := admin.ExecContext(t.Context(), `WITH seed AS (SELECT $1::text org,$2::text project,$3::text item,$4::timestamptz at) `+query, org, project, "wi_"+id+"_1", now); err != nil {
+							t.Fatal(err)
+						}
+					}
+					for _, query := range test.queries {
+						seed(query)
+					}
+					editProject := func() error {
+						return repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error { return w.RequireProjectIdle(t.Context(), project, now) })
+					}
+					if err := editProject(); err != nil {
+						t.Fatalf("tenant=%s project=%s %s blocked a project edit: %v", org, project, test.name, err)
+					}
+					seed(runLease)
+					seed(`UPDATE conversations SET execution_status='running',execution_lease_id='lease_'||project FROM seed WHERE organization_id=org AND id='conv_'||project`)
+					if err := editProject(); !errors.Is(err, projectstore.ErrActiveWork) {
+						t.Fatalf("tenant=%s project=%s run lease did not refuse the edit: %v", org, project, err)
+					}
+					seed(`UPDATE leases SET released_at=clock_timestamp(),release_reason='completed' FROM seed WHERE organization_id=org AND lease_id='lease_'||project`)
+					if err := editProject(); err != nil {
+						t.Fatalf("tenant=%s project=%s chat blocked after its run lease was released: %v", org, project, err)
+					}
 				}
 			}
 		})
