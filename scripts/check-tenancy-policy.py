@@ -34,8 +34,11 @@ def exists(revision, path):
 
 def read_policy(ref, introduced_allowed=False):
     revision = git("rev-parse", "--verify", "--end-of-options", ref + "^{commit}")
-    if introduced_allowed and not exists(revision, POLICY) and not exists(revision, CHECK):
+    has_policy, has_check = exists(revision, POLICY), exists(revision, CHECK)
+    if introduced_allowed and not has_policy and not has_check:
         return revision, None
+    if not has_policy or not has_check:
+        raise ValueError(f"{revision}: {POLICY} and {CHECK} must both be present")
     policy = json.loads(git("show", revision + ":" + POLICY), object_pairs_hook=unique_object)
     if not isinstance(policy, dict) or set(policy) != {"test_support", "exceptions", "debt"}:
         raise ValueError(f"{revision}: policy must contain test_support, exceptions and debt")

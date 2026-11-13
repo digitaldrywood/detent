@@ -102,19 +102,35 @@ os.execv({self.git_path!r}, [{self.git_path!r}] + args)
                 result = self.check(target_ref, self.commit_policy(policy))
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
-    def test_introduction_and_missing_target_policy(self):
-        candidate_ref = self.commit_policy({"test_support": [], "exceptions": {}, "debt": {}})
-        before = self.git("commit-tree", self.git("mktree", input_data=""), "-m", "test(invariants): seed target without the invariant")
-        result = self.check(before, candidate_ref)
+    def commit_partial(self, include_policy, include_check):
+        self.commit_policy({"test_support": [], "exceptions": {}, "debt": {}})
+        for path, include in ((POLICY, include_policy), (CHECK, include_check)):
+            if not include:
+                self.git("rm", "-q", "--cached", path)
+        commit = self.git("commit-tree", self.git("write-tree"), "-m", "test(invariants): seed partial tenancy fixture")
+        self.git("add", POLICY, CHECK)
+        return commit
+
+    def test_policy_and_check_presence(self):
+        complete = self.commit_partial(True, True)
+        absent = self.commit_partial(False, False)
+        result = self.check(absent, complete)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Tenancy policy introduced", result.stdout)
-        check_blob = self.git("hash-object", "-w", str(self.root / CHECK))
-        inner = self.git("mktree", input_data=f"100644 blob {check_blob}\ttenancy_test.go\n")
-        middle = self.git("mktree", input_data=f"040000 tree {inner}\tinvariants\n")
-        top = self.git("mktree", input_data=f"040000 tree {middle}\tinternal\n")
-        dropped = self.git("commit-tree", top, "-m", "test(invariants): seed target that lost its policy")
-        self.assertEqual(self.check(dropped, candidate_ref).returncode, 1)
-        self.assertEqual(self.check("missing-ref", candidate_ref).returncode, 1)
+        cases = [
+            ("candidate deletes policy", complete, self.commit_partial(False, True)),
+            ("candidate deletes check", complete, self.commit_partial(True, False)),
+            ("candidate deletes both", complete, absent),
+            ("target with policy only", self.commit_partial(True, False), complete),
+            ("target with check only", self.commit_partial(False, True), complete),
+            ("missing target ref", "missing-ref", complete),
+        ]
+        for name, target_ref, candidate_ref in cases:
+            with self.subTest(name=name):
+                result = self.check(target_ref, candidate_ref)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                if name != "missing target ref":
+                    self.assertIn("must both be present", result.stderr)
 
     def test_working_policy_is_ignored(self):
         policy = {"test_support": [], "exceptions": {}, "debt": {"a.go": {"timer:time.After": 1}}}
