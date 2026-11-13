@@ -6,7 +6,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
@@ -14,12 +13,6 @@ import (
 )
 
 type cloudModelSelection = projectsettings.ModelSelection
-
-type cloudModelSelectionRequest struct {
-	tracker.Mutation
-	ExpectedRevision tracker.Revision       `json:"expected_revision,string"`
-	Selection        *config.ModelSelection `json:"selection"`
-}
 
 func readCloudModelSelection(ctx context.Context, query nativeQueryer, scope nativeScope) (cloudModelSelection, error) {
 	return projectsettings.ReadModelSelection(ctx, query, scope.organization, scope.project)

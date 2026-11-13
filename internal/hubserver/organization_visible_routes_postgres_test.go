@@ -863,7 +863,7 @@ func TestPostgresOrganizationVisibleRoutes(t *testing.T) {
 	if _, err := service.updateOrganizationRankRecord(t.Context(), ownerScope, projectRankChange{ExpectedRevision: visible.Revision, ProjectIDs: visible.ProjectIDs}); err == nil {
 		t.Fatal("stale owner role authorized rank write")
 	}
-	if _, err := service.renameOrganizationRecord(t.Context(), ownerScope, renameOrganizationRequest{Mutation: tracker.Mutation{IdempotencyKey: "rename"}, organizationNameSettings: organizationNameSettings{Name: "Renamed example"}}); err == nil {
+	if _, err := service.renameOrganizationRecord(t.Context(), ownerScope, renameOrganizationRequest{Mutation: tracker.Mutation{IdempotencyKey: "rename"}, NameSettings: organizationNameSettings{Name: "Renamed example"}}); err == nil {
 		t.Fatal("stale owner role authorized rename replay")
 	}
 

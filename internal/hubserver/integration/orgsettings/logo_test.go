@@ -1,4 +1,4 @@
-package hubserver
+package orgsettings_test
 
 import (
 	"bytes"
@@ -14,8 +14,10 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/orgsettings"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -23,17 +25,13 @@ import (
 func TestOrganizationLogoLifecycle(t *testing.T) {
 	t.Parallel()
 	store := &memoryProjectIcons{objects: map[string][]byte{}}
-	f := newDefaultNativeFixture(t, Config{Icons: store})
-	other, err := f.service.createNativeOrganizationFor(t.Context(), "Another organization")
-	if err != nil {
-		t.Fatal(err)
-	}
-	seedPostgresHubAdmin(t, f.service.config.TenantRepository, f.service, other)
+	f := newSettingsFixture(t, hubserver.Config{Icons: store})
+	other := f.otherOrganization(t, "Another organization")
 	var content bytes.Buffer
 	if err := png.Encode(&content, image.NewNRGBA(image.Rect(0, 0, 64, 64))); err != nil {
 		t.Fatal(err)
 	}
-	organizations := []tracker.OrganizationID{f.project.OrganizationID, other.ID}
+	organizations := []tracker.OrganizationID{f.project.OrganizationID, other}
 	for _, organization := range organizations {
 		t.Run(string(organization), func(t *testing.T) {
 			base := "/api/v2/organizations/" + string(organization)
@@ -45,14 +43,14 @@ func TestOrganizationLogoLifecycle(t *testing.T) {
 				}
 				response := performHubAPIRequest(t, f.service, http.MethodPut, base+"/logo", testHubAdminToken, body)
 				requireNativeStatus(t, response, http.StatusOK)
-				var logo organizationLogo
+				var logo orgsettings.Logo
 				decodeHubResponse(t, response, &logo)
 				if logo.Revision != tracker.Revision(i+2) || (logo.ImageKey == "") != remove {
 					t.Fatalf("saved logo=%+v", logo)
 				}
 				if previous != "" {
 					var deleted bool
-					deleteErr := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+					deleteErr := f.repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 						row, err := r.Attachment(t.Context(), "", previous)
 						deleted = row.Metadata.DeletedAt != nil
 						return err
@@ -70,7 +68,7 @@ func TestOrganizationLogoLifecycle(t *testing.T) {
 					}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/attachment-metadata/"+logo.ImageKey, testHubAdminToken, nil), http.StatusOK)
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, base+"/logo-metadata", testHubAdminToken, nil), http.StatusOK)
-					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
+					if err := f.repository.ReadTenant(t.Context(), organization, corestore.Background, func(r tenantstore.Reader) error {
 						row, err := r.Attachment(t.Context(), "", logo.ImageKey)
 						if err != nil {
 							return err
@@ -132,7 +130,14 @@ func TestOrganizationLogoRefusals(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &memoryProjectIcons{objects: map[string][]byte{}}
-			f := newDefaultNativeFixture(t, Config{Icons: store})
+			var hosted *hostedFixture
+			var f settingsFixture
+			if test.failure == "quota" {
+				hosted = newHostedFixture(t, hubserver.Config{Icons: store}, 0)
+				f = hosted.settingsFixture
+			} else {
+				f = newSettingsFixture(t, hubserver.Config{Icons: store})
+			}
 			token := testHubAdminToken
 			if !test.manager {
 				token = f.token
@@ -142,16 +147,9 @@ func TestOrganizationLogoRefusals(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			switch test.failure {
-			case "quota":
-				plans := pilotHostedPlans()
-				plans.Plans[0].Allowances["collaboration_bytes"] = 0
-				f.service.database.hostedOrganization = f.project.OrganizationID
-				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
-					t.Fatal(err)
-				}
 			case "revision":
 				store.afterPut = func(ctx context.Context) error {
-					return f.service.config.TenantRepository.WriteTenant(ctx, f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					return f.repository.WriteTenant(ctx, f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 						logo, err := w.OrganizationLogo(ctx)
 						if err != nil {
 							return err
@@ -174,7 +172,11 @@ func TestOrganizationLogoRefusals(t *testing.T) {
 				}
 			}
 			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPut, path, token, body).WithContext(ctx))
+			request := newHubAPIRequest(t, http.MethodPut, path, token, body)
+			if hosted != nil {
+				request = hosted.request(t, "owner", http.MethodPut, path, body)
+			}
+			f.service.Handler().ServeHTTP(response, request.WithContext(ctx))
 			requireNativeStatus(t, response, test.status)
 			wantObjects := 0
 			if test.status == 200 {
@@ -184,10 +186,10 @@ func TestOrganizationLogoRefusals(t *testing.T) {
 				t.Fatalf("stored objects=%d, want %d", len(store.objects), wantObjects)
 			}
 			var attachments int
-			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE organization_id=$1", f.project.OrganizationID).Scan(&attachments); err != nil || attachments != wantObjects {
+			if err := f.admin.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE organization_id=$1", f.project.OrganizationID).Scan(&attachments); err != nil || attachments != wantObjects {
 				t.Fatalf("attachment rows=%d, want %d: %v", attachments, wantObjects, err)
 			}
-			logo, err := f.service.readOrganizationLogoRecord(t.Context(), f.project.OrganizationID)
+			logo, err := orgsettings.New(orgsettings.Deps{Repository: f.repository}).ReadLogo(t.Context(), f.project.OrganizationID)
 			if err != nil || (logo.ImageKey == "") != (wantObjects == 0) {
 				t.Fatalf("logo=%+v: %v", logo, err)
 			}
@@ -201,7 +203,7 @@ func TestOrganizationLogoRefusals(t *testing.T) {
 func TestOrganizationLogoMCP(t *testing.T) {
 	t.Parallel()
 	store := &memoryProjectIcons{objects: map[string][]byte{}}
-	f := newDefaultNativeFixture(t, Config{Icons: store})
+	f := newSettingsFixture(t, hubserver.Config{Icons: store})
 	img := image.NewNRGBA(image.Rect(0, 0, 128, 128))
 	state := uint32(1234567)
 	for i := range img.Pix {
@@ -230,7 +232,7 @@ func TestOrganizationLogoMCP(t *testing.T) {
 		if response.Code != 200 || envelope.Result.IsError {
 			t.Fatal(response.Body.String())
 		}
-		logo, err := f.service.readOrganizationLogoRecord(t.Context(), f.project.OrganizationID)
+		logo, err := orgsettings.New(orgsettings.Deps{Repository: f.repository}).ReadLogo(t.Context(), f.project.OrganizationID)
 		if err != nil || logo.Revision != tracker.Revision(i+2) || (logo.ImageKey == "") != remove {
 			t.Fatalf("logo=%+v %v", logo, err)
 		}
@@ -244,12 +246,12 @@ func TestHostedOrganizationLogoPermissions(t *testing.T) {
 		status int
 	}{{"owner", 200}, {"admin", 200}, {"member", 403}, {"reporter", 403}, {"viewer", 403}} {
 		t.Run(test.role, func(t *testing.T) {
-			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
-			if err := f.provider.SetMembershipRole(t.Context(), "membership_user_browser_owner", test.role); err != nil {
+			f := newHostedFixture(t, hubserver.Config{}, 64<<20)
+			if err := f.provider.SetMembershipRole(t.Context(), f.members["owner"].Member.UserID, test.role); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_browser_preview", corestore.Serving, func(w tenantstore.Writer) error {
-				member, err := w.AccessMember(t.Context(), "user_browser_owner")
+			if err := f.repository.WriteTenant(t.Context(), "org_browser_preview", corestore.Serving, func(w tenantstore.Writer) error {
+				member, err := w.AccessMember(t.Context(), f.members["owner"].Member.UserID)
 				if err != nil {
 					return err
 				}
