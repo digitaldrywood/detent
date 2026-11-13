@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -79,7 +81,15 @@ func coordinatorSettingsArguments(t *testing.T, f hostedSecurityFixture, tool, r
 	case operatortool.UpdateProjectModelSelection:
 		value = map[string]any{"input": map[string]any{"expected_revision": "1", "selection": map[string]any{"normal_model": "chat-model"}}}
 	case "bind_native_repository":
-		value = map[string]any{"input": map[string]any{"expected_revision": "1", "repository": "example/repo", "source": "runner_checkout"}}
+		var settingsRevision int64
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
+			project, err := r.ProjectRecord(t.Context(), f.project)
+			settingsRevision = project.Settings.Revision
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		value = map[string]any{"input": map[string]any{"expected_revision": strconv.FormatInt(settingsRevision, 10), "repository": "example/repo", "source": "runner_checkout"}}
 	case "approve_project_policy":
 		value = map[string]any{"input": map[string]any{"expected_policy_id": hubTestPolicy().ID, "policy": hubTestPolicy()}}
 	case "revoke_project_policy":
