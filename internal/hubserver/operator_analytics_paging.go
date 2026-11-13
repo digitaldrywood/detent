@@ -2,10 +2,8 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -80,50 +78,6 @@ func analyticsPopulationOffset(ctx context.Context, name string) int {
 	}
 	return 0
 }
-
-type analyticsRows struct {
-	rows   *sql.Rows
-	err    error
-	count  int
-	name   string
-	page   *analyticsPaging
-	offset int
-}
-
-func queryAnalyticsRows(ctx context.Context, q nativeQueryer, statement string, args ...any) (*analyticsRows, error) {
-	rows, err := querySQL(ctx, q, statement, args...)
-	return &analyticsRows{rows: rows}, err
-}
-
-func queryAnalyticsPopulation(ctx context.Context, q nativeQueryer, name, statement string, args ...any) (*analyticsRows, error) {
-	offset := analyticsPopulationOffset(ctx, name)
-	args = append(args, maxAnalyticsPopulation+1, offset)
-	rows, err := queryAnalyticsRows(ctx, q, statement, args...)
-	if err != nil {
-		return rows, err
-	}
-	rows.name, rows.offset = name, offset
-	rows.page = analyticsPagingFromContext(ctx)
-	return rows, nil
-}
-
-func (r *analyticsRows) Next() bool {
-	if !r.rows.Next() {
-		return false
-	}
-	r.count++
-	if r.count > maxAnalyticsPopulation && r.page != nil && r.name != "" {
-		issues := r.page.issuesOffset
-		if r.page.name == "residence_issues" {
-			issues = r.page.offset
-		}
-		r.page.next[r.name] = fmt.Sprintf("%s:%d:%d", r.name, r.offset+maxAnalyticsPopulation, issues)
-	}
-	return true
-}
-func (r *analyticsRows) Scan(dest ...any) error { return r.rows.Scan(dest...) }
-func (r *analyticsRows) Err() error             { return errors.Join(r.err, r.rows.Err()) }
-func (r *analyticsRows) Close()                 { r.err = errors.Join(r.err, r.rows.Close()) }
 
 func (s *Service) analyticsAttemptCursor(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, runner, population string) (reportstore.AnalyticsAttemptCursor, nativeCursor, []byte, error) {
 	if population != "attempts" && population != "quality_worked" {
