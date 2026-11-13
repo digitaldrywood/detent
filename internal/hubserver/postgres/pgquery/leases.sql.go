@@ -1232,7 +1232,8 @@ WITH lease_locked AS MATERIALIZED (
  ))
  RETURNING l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id, l.isolation_tier
 ), cancelled AS (
- UPDATE native_attempts a SET status='cancelled',sequence=sequence+1,updated_at=c.released_at
+ UPDATE native_attempts a SET status='cancelled',sequence=sequence+1,
+ runtime_summary_sequence=CASE WHEN runtime_summary_sequence=sequence THEN sequence+1 ELSE runtime_summary_sequence END,updated_at=c.released_at
  FROM lease_changed c WHERE a.organization_id=c.organization_id AND a.lease_id=c.lease_id AND a.fencing_token=c.fencing_token
  AND a.status='running' AND $4::text='release'
 ), heartbeat AS (

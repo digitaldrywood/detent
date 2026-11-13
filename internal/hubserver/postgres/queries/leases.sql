@@ -208,7 +208,8 @@ WITH lease_locked AS MATERIALIZED (
  ))
  RETURNING l.*
 ), cancelled AS (
- UPDATE native_attempts a SET status='cancelled',sequence=sequence+1,updated_at=c.released_at
+ UPDATE native_attempts a SET status='cancelled',sequence=sequence+1,
+ runtime_summary_sequence=CASE WHEN runtime_summary_sequence=sequence THEN sequence+1 ELSE runtime_summary_sequence END,updated_at=c.released_at
  FROM lease_changed c WHERE a.organization_id=c.organization_id AND a.lease_id=c.lease_id AND a.fencing_token=c.fencing_token
  AND a.status='running' AND sqlc.arg(operation)::text='release'
 ), heartbeat AS (
