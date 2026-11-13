@@ -296,8 +296,12 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 		if len(measured.Runners) != 2 || measured.Usage.Allowances["concurrent_work"].Used != 2 || measured.Usage.Allowances["registered_runners"].Used != 2 || measured.Usage.Allowances["connected_runners"].Used != 2 || measured.Usage.Allowances["projects"].Used != 2 || measured.Usage.Allowances["unarchived_issues"].Used != 2 || measured.Usage.Allowances["collaboration_bytes"].Used != int64(73+index) || measured.Usage.Allowances["api_mutations"].Used != int64(index+4) {
 			t.Fatalf("configured plan erased actual fleet facts: %+v", measured)
 		}
-		if _, known := measured.Usage.Allowances["history_records"]; known || !slices.Contains(measured.Usage.Unavailable, "history_records") {
-			t.Fatalf("unknown history usage was reported as a measurement: %+v", measured.Usage)
+		var history int64
+		if err := admin.QueryRowContext(t.Context(), `SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='history_records' AND initialized`, org).Scan(&history); err != nil {
+			t.Fatal(err)
+		}
+		if measured.Usage.Allowances["history_records"].Used != history || slices.Contains(measured.Usage.Unavailable, "history_records") {
+			t.Fatalf("initialized history counter was not reported: %d %+v", history, measured.Usage)
 		}
 		plan, err := service.hostedPlanUsageTenant(t.Context())
 		if err != nil {
@@ -306,8 +310,8 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 		if plan.OrganizationID != string(org) || plan.Usage["api_mutations"] != int64(index+4) || plan.Usage["collaboration_bytes"] != int64(73+index) || plan.Allowances["projects"] != 100 || plan.Usage["projects"] != 2 {
 			t.Fatalf("customer plan leaked tenant facts: %+v", plan)
 		}
-		if _, fabricated := plan.Usage["history_records"]; fabricated || !slices.Contains(plan.Unavailable, "history_records") {
-			t.Fatalf("customer plan fabricated unavailable usage: %+v", plan)
+		if used, known := plan.Usage["history_records"]; !known || used != history || slices.Contains(plan.Unavailable, "history_records") {
+			t.Fatalf("customer plan lost initialized history usage: %+v", plan)
 		}
 
 	}
