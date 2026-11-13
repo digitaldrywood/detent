@@ -999,7 +999,9 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			if _, err := w.AppendEvent(ctx, decisionRow); err != nil {
 				return err
 			}
-			if err := w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: scope.Organization, ProjectID: scope.Project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: plan.Policy.PolicyID, BoundAt: authoritativeNow}); err != nil {
+			selector := plan.Descriptor.Requirements
+			selector.RequiredTags = slices.Clone(selector.RequiredTags)
+			if err := w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: scope.Organization, ProjectID: scope.Project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: plan.Policy.PolicyID, BoundAt: authoritativeNow, Selector: &selector}); err != nil {
 				return err
 			}
 			if selectedReservation != nil {

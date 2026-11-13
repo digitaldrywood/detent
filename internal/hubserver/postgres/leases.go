@@ -556,7 +556,7 @@ func (s *session) LeaseMutationIdentity(ctx context.Context, id string) (runners
 	if err != nil {
 		return runnerstore.Identity{}, mapError(ctx, err)
 	}
-	return runnerstore.Identity{OrganizationID: row.OrganizationID, RunnerID: row.RunnerID, MachineID: tracker.MachineID(row.MachineID), TokenID: row.TokenID, State: row.State, ExpiresAt: row.ExpiresAt, RemovedAt: row.RemovedAt, IsolationTier: row.IsolationTier, HostServices: row.HostServices}, nil
+	return runnerstore.Identity{OrganizationID: row.OrganizationID, RunnerID: row.RunnerID, MachineID: tracker.MachineID(row.MachineID), TokenID: row.TokenID, State: row.State, ExpiresAt: row.ExpiresAt, RemovedAt: row.RemovedAt, IsolationTier: row.IsolationTier, HostServices: row.HostServices, Tags: row.Tags}, nil
 }
 
 func (s *session) LeaseMutationReservation(ctx context.Context, id tracker.LeaseID) (claimstore.ProviderReservation, error) {
@@ -615,7 +615,7 @@ func (s *session) LeaseMutationReservation(ctx context.Context, id tracker.Lease
 }
 
 func (s *session) LeaseMutationPolicies(ctx context.Context, project tracker.ProjectID, lease tracker.LeaseID) (policystore.LeasePolicy, []billingstore.MonthlyPolicy, error) {
-	const statement = `SELECT pin.organization_id,pin.project_id,pin.lease_id,pin.policy_id,pin.bound_at,
+	const statement = `SELECT pin.organization_id,pin.project_id,pin.lease_id,pin.policy_id,pin.bound_at,pin.selector_runner_id,pin.selector_machine_id,pin.selector_tags,
  policy.organization_id IS NOT NULL,COALESCE(policy.organization_id,''),COALESCE(policy.project_id,''),
  COALESCE(policy.revision,0),COALESCE(policy.enabled,false),COALESCE(policy.mode,''),
  policy.luna_micros,policy.runner_micros,policy.sprite_micros,policy.total_micros,COALESCE(policy.actor_id,''),COALESCE(policy.updated_at,pin.bound_at)
@@ -634,13 +634,13 @@ func (s *session) LeaseMutationPolicies(ctx context.Context, project tracker.Pro
 		return policystore.LeasePolicy{}, nil, mapError(ctx, err)
 	}
 	defer rows.Close()
-	var pinned policystore.LeasePolicy
+	var pinned leasePolicyRow
 	var policies []billingstore.MonthlyPolicy
 	found := false
 	for rows.Next() {
 		var row billingstore.MonthlyPolicy
 		var present bool
-		if err := rows.Scan(&pinned.OrganizationID, &pinned.ProjectID, &pinned.LeaseID, &pinned.PolicyID, &pinned.BoundAt,
+		if err := rows.Scan(&pinned.OrganizationID, &pinned.ProjectID, &pinned.LeaseID, &pinned.PolicyID, &pinned.BoundAt, &pinned.SelectorRunnerID, &pinned.SelectorMachineID, &pinned.SelectorTags,
 			&present, &row.OrganizationID, &row.ProjectID, &row.Revision, &row.Policy.Enabled, &row.Policy.Mode,
 			&row.Policy.LunaMicros, &row.Policy.RunnerMicros, &row.Policy.SpriteMicros, &row.Policy.TotalMicros, &row.Actor, &row.UpdatedAt); err != nil {
 			return policystore.LeasePolicy{}, nil, mapError(ctx, err)
@@ -656,7 +656,7 @@ func (s *session) LeaseMutationPolicies(ctx context.Context, project tracker.Pro
 	if !found {
 		return policystore.LeasePolicy{}, nil, corestore.ErrNotFound
 	}
-	return pinned, policies, nil
+	return pinned.record(), policies, nil
 }
 
 func (s *session) UpdateMachineSpriteWake(ctx context.Context, wake leasestore.SpriteWake) error {

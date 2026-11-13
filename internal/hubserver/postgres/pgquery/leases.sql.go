@@ -900,7 +900,7 @@ func (q *Queries) LeaseMutationReservation(ctx context.Context, arg LeaseMutatio
 }
 
 const leaseMutationRunner = `-- name: LeaseMutationRunner :one
-SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services
+SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services,r.tags
 FROM runner_identities r JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
 WHERE a.organization_id=$1 AND a.lease_id=$2
 `
@@ -920,6 +920,7 @@ type LeaseMutationRunnerRow struct {
 	RemovedAt      *time.Time
 	IsolationTier  string
 	HostServices   []string
+	Tags           []string
 }
 
 func (q *Queries) LeaseMutationRunner(ctx context.Context, arg LeaseMutationRunnerParams) (LeaseMutationRunnerRow, error) {
@@ -935,6 +936,7 @@ func (q *Queries) LeaseMutationRunner(ctx context.Context, arg LeaseMutationRunn
 		&i.RemovedAt,
 		&i.IsolationTier,
 		&i.HostServices,
+		&i.Tags,
 	)
 	return i, err
 }
@@ -1188,7 +1190,7 @@ func (q *Queries) LockLeaseExpiryScope(ctx context.Context, arg LockLeaseExpiryS
 }
 
 const lockLeaseMutationRunner = `-- name: LockLeaseMutationRunner :one
-SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services
+SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services,r.tags
 FROM runner_identities r JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
 WHERE a.organization_id=$1 AND a.lease_id=$2 FOR UPDATE OF r
 `
@@ -1208,6 +1210,7 @@ type LockLeaseMutationRunnerRow struct {
 	RemovedAt      *time.Time
 	IsolationTier  string
 	HostServices   []string
+	Tags           []string
 }
 
 func (q *Queries) LockLeaseMutationRunner(ctx context.Context, arg LockLeaseMutationRunnerParams) (LockLeaseMutationRunnerRow, error) {
@@ -1223,6 +1226,7 @@ func (q *Queries) LockLeaseMutationRunner(ctx context.Context, arg LockLeaseMuta
 		&i.RemovedAt,
 		&i.IsolationTier,
 		&i.HostServices,
+		&i.Tags,
 	)
 	return i, err
 }

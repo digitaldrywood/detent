@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -73,8 +74,10 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 		if err := p.service.authorizeNativeWorkflowScope(ctx, reader, authority.Scope); err != nil {
 			return err
 		}
-	} else {
-		identity, err := reader.RunnerForLease(ctx, lease.LeaseID)
+	}
+	var identity runnerstore.Identity
+	if !human {
+		identity, err = reader.RunnerForLease(ctx, lease.LeaseID)
 		if err != nil {
 			return err
 		}
@@ -95,6 +98,9 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 	}
 	if pinned.OrganizationID != authority.OrganizationID || pinned.ProjectID != authority.ProjectID || pinned.PolicyID != event.Data.PolicyID {
 		return hubapi.PolicyMismatch("Run event policy must match the policy pinned to its lease")
+	}
+	if !human && authority.RequireSelector && !authority.Termination {
+		return checkLeaseSelector(pinned, identity, authority.LegacySelectorChecked)
 	}
 	return nil
 }
@@ -256,8 +262,9 @@ func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context
 		return err
 	}
 	now := p.service.config.Clock().UTC()
+	var identity runnerstore.Identity
 	if !human {
-		identity, err := reader.RunnerForLease(ctx, lease.LeaseID)
+		identity, err = reader.RunnerForLease(ctx, lease.LeaseID)
 		if err != nil {
 			return err
 		}
@@ -290,7 +297,17 @@ func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context
 		return tracker.ErrInvalidClaimRequest
 	}
 	if authority.Operation == "renew" {
-		return checkMonthlyLeasePG(ctx, reader, authority.Scope.Project, lease.LeaseID, now)
+		if err := checkMonthlyLeasePG(ctx, reader, authority.Scope.Project, lease.LeaseID, now); err != nil {
+			return err
+		}
+		pinned, err := reader.LeasePolicy(ctx, tracker.LeaseID(lease.LeaseID))
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return checkLeaseSelector(pinned, identity, authority.LegacySelectorChecked)
 	}
 	return nil
 }

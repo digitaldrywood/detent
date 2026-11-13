@@ -27,6 +27,7 @@ type LeasePolicy struct {
 	LeaseID        tracker.LeaseID
 	PolicyID       string
 	BoundAt        time.Time
+	Selector       *policy.Requirements
 }
 
 type Observation struct {

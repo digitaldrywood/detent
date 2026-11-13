@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -250,15 +251,50 @@ func (s *session) RecordProjectPolicyObservation(ctx context.Context, observatio
 	return rows == 1, nil
 }
 
+const leasePolicyColumns = `organization_id,project_id,lease_id,policy_id,bound_at,selector_runner_id,selector_machine_id,selector_tags`
+
+type leasePolicyRow struct {
+	OrganizationID    tracker.OrganizationID `db:"organization_id"`
+	ProjectID         tracker.ProjectID      `db:"project_id"`
+	LeaseID           tracker.LeaseID        `db:"lease_id"`
+	PolicyID          string                 `db:"policy_id"`
+	BoundAt           time.Time              `db:"bound_at"`
+	SelectorRunnerID  *string                `db:"selector_runner_id"`
+	SelectorMachineID *string                `db:"selector_machine_id"`
+	SelectorTags      []string               `db:"selector_tags"`
+}
+
+func (r leasePolicyRow) record() policystore.LeasePolicy {
+	row := policystore.LeasePolicy{OrganizationID: r.OrganizationID, ProjectID: r.ProjectID, LeaseID: r.LeaseID, PolicyID: r.PolicyID, BoundAt: r.BoundAt}
+	if r.SelectorRunnerID != nil && r.SelectorMachineID != nil {
+		row.Selector = &policy.Requirements{RunnerID: *r.SelectorRunnerID, MachineID: *r.SelectorMachineID, RequiredTags: slices.Clone(r.SelectorTags)}
+	}
+	return row
+}
+
+func leasePolicySelectorColumns(selector *policy.Requirements) (*string, *string, []string) {
+	if selector == nil {
+		return nil, nil, nil
+	}
+	return &selector.RunnerID, &selector.MachineID, append([]string{}, selector.RequiredTags...)
+}
+
+func sameLeasePolicySelector(a, b *policy.Requirements) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.RunnerID == b.RunnerID && a.MachineID == b.MachineID && slices.Equal(a.RequiredTags, b.RequiredTags)
+}
+
 func (s *session) LeasePolicy(ctx context.Context, lease tracker.LeaseID) (policystore.LeasePolicy, error) {
-	var row policystore.LeasePolicy
-	err := s.db.QueryRow(ctx, `SELECT organization_id,project_id,lease_id,policy_id,bound_at
+	var row leasePolicyRow
+	err := s.db.QueryRow(ctx, `SELECT `+leasePolicyColumns+`
  FROM lease_policy_bindings WHERE organization_id=$1 AND lease_id=$2`, s.organization, lease).
-		Scan(&row.OrganizationID, &row.ProjectID, &row.LeaseID, &row.PolicyID, &row.BoundAt)
+		Scan(&row.OrganizationID, &row.ProjectID, &row.LeaseID, &row.PolicyID, &row.BoundAt, &row.SelectorRunnerID, &row.SelectorMachineID, &row.SelectorTags)
 	if err != nil {
 		return policystore.LeasePolicy{}, mapError(ctx, err)
 	}
-	return row, nil
+	return row.record(), nil
 }
 
 func (s *session) BindLeasePolicy(ctx context.Context, row policystore.LeasePolicy) error {
@@ -268,10 +304,14 @@ func (s *session) BindLeasePolicy(ctx context.Context, row policystore.LeasePoli
 	if row.ProjectID == "" || row.LeaseID == "" || row.PolicyID == "" || row.BoundAt.IsZero() {
 		return eventstore.ErrInvalidRecord
 	}
+	if row.Selector != nil && row.Selector.Validate() != nil {
+		return eventstore.ErrInvalidRecord
+	}
 	row.BoundAt = recordTime(row.BoundAt)
-	_, err := s.db.Exec(ctx, `INSERT INTO lease_policy_bindings (organization_id,project_id,lease_id,policy_id,bound_at)
- VALUES ($1,$2,$3,$4,$5) ON CONFLICT (organization_id,lease_id) DO NOTHING`,
-		row.OrganizationID, row.ProjectID, row.LeaseID, row.PolicyID, row.BoundAt)
+	runner, machine, tags := leasePolicySelectorColumns(row.Selector)
+	_, err := s.db.Exec(ctx, `INSERT INTO lease_policy_bindings (`+leasePolicyColumns+`)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (organization_id,lease_id) DO NOTHING`,
+		row.OrganizationID, row.ProjectID, row.LeaseID, row.PolicyID, row.BoundAt, runner, machine, tags)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -279,7 +319,7 @@ func (s *session) BindLeasePolicy(ctx context.Context, row policystore.LeasePoli
 	if err != nil {
 		return err
 	}
-	if current.OrganizationID != row.OrganizationID || current.ProjectID != row.ProjectID || current.LeaseID != row.LeaseID || current.PolicyID != row.PolicyID || !current.BoundAt.Equal(row.BoundAt) {
+	if current.OrganizationID != row.OrganizationID || current.ProjectID != row.ProjectID || current.LeaseID != row.LeaseID || current.PolicyID != row.PolicyID || !current.BoundAt.Equal(row.BoundAt) || !sameLeasePolicySelector(current.Selector, row.Selector) {
 		return corestore.ErrRevisionConflict
 	}
 	return nil

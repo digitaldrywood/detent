@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -14,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -42,6 +44,7 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.
 	now := s.config.Clock().UTC()
 	var runner runnerauth.Runner
 	var policyRevision policystore.Revision
+	var selector *policy.Requirements
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		credential, err := reader.AccessCredential(ctx, scope.Credential.ID)
 		if err != nil {
@@ -109,6 +112,7 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.
 		if policyRevision.OrganizationID != scope.Organization || policyRevision.ProjectID != scope.Project || policyRevision.PolicyID != pinned.PolicyID {
 			return hubapi.PolicyMismatch("Lease policy is missing or outside the authorized project")
 		}
+		selector = pinned.Selector
 		projects, err := reader.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
 		if err != nil {
 			return err
@@ -152,15 +156,78 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.
 	if err != nil {
 		return runnerauth.Runner{}, err
 	}
-	if s.runDetailStore() == nil {
-		return runnerauth.Runner{}, hubapi.NativeRunEventStorageUnavailable()
+	if selector == nil {
+		requirements, err := s.legacyLeaseRequirements(ctx, policyRevision)
+		if err != nil {
+			return runnerauth.Runner{}, err
+		}
+		selector = &requirements
 	}
-	descriptor, err := eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, policyRevision)
-	if err != nil {
-		return runnerauth.Runner{}, err
-	}
-	if err := runnerExcluded(runner.Exclusions(scope.Project, descriptor.Requirements, true)); err != nil {
+	if err := runnerExcluded(runner.Exclusions(scope.Project, *selector, true)); err != nil {
 		return runnerauth.Runner{}, err
 	}
 	return runner, nil
+}
+
+var errLeaseSelectorUnbound = errors.New("lease selector is not bound")
+
+func (s *Service) legacyLeaseRequirements(ctx context.Context, revision policystore.Revision) (policy.Requirements, error) {
+	if s.runDetailStore() == nil {
+		return policy.Requirements{}, hubapi.NativeRunEventStorageUnavailable()
+	}
+	descriptor, err := eventstore.NewContent(s.runDetailStore()).ProjectPolicy(ctx, revision)
+	if err != nil {
+		return policy.Requirements{}, err
+	}
+	return descriptor.Requirements, nil
+}
+
+func leaseSelectorExcluded(requirements policy.Requirements, identity runnerstore.Identity) error {
+	if err := requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags); err != nil {
+		return runnerExcluded([]runnerauth.Exclusion{{Code: "selector_no_match", Message: strings.TrimPrefix(err.Error(), "selector_no_match: ")}})
+	}
+	return nil
+}
+
+func checkLeaseSelector(pinned policystore.LeasePolicy, identity runnerstore.Identity, legacyChecked bool) error {
+	if pinned.Selector != nil {
+		return leaseSelectorExcluded(*pinned.Selector, identity)
+	}
+	if legacyChecked {
+		return nil
+	}
+	return errLeaseSelectorUnbound
+}
+
+func (s *Service) checkLegacyLeaseSelector(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID) error {
+	var pinned policystore.LeasePolicy
+	var identity runnerstore.Identity
+	var revision policystore.Revision
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		var err error
+		pinned, err = reader.LeasePolicy(ctx, leaseID)
+		if err != nil {
+			return err
+		}
+		if pinned.OrganizationID != scope.Organization || pinned.ProjectID != scope.Project || pinned.LeaseID != leaseID {
+			return hubapi.PolicyMismatch("Lease policy is missing or outside the authorized project")
+		}
+		identity, err = reader.RunnerForLease(ctx, string(leaseID))
+		if err != nil || pinned.Selector != nil {
+			return err
+		}
+		revision, err = reader.ProjectPolicyRevision(ctx, scope.Project, pinned.PolicyID)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("read legacy lease selector: %w", err)
+	}
+	if pinned.Selector != nil {
+		return leaseSelectorExcluded(*pinned.Selector, identity)
+	}
+	requirements, err := s.legacyLeaseRequirements(ctx, revision)
+	if err != nil {
+		return fmt.Errorf("read legacy lease requirements: %w", err)
+	}
+	return leaseSelectorExcluded(requirements, identity)
 }

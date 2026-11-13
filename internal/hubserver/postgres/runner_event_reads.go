@@ -87,7 +87,7 @@ func (f *runnerEventSession) LeasePolicy(ctx context.Context, id tracker.LeaseID
 	if string(id) != f.command.LeaseID {
 		return f.Writer.LeasePolicy(ctx, id)
 	}
-	return f.pinned.value, f.pinned.err
+	return f.pinned.value.record(), f.pinned.err
 }
 func (f *runnerEventSession) ProjectPolicy(ctx context.Context, p tracker.ProjectID) (policystore.Revision, error) {
 	if p != f.command.Project {

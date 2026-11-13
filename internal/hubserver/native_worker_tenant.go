@@ -145,7 +145,7 @@ func (r *nativeLeaseCommandReader) BillingMonthlyPolicy(ctx context.Context, pro
 }
 
 func (r *nativeLeaseCommandReader) LeasePolicy(ctx context.Context, lease tracker.LeaseID) (policystore.LeasePolicy, error) {
-	if !r.policiesLoaded || lease != r.policyLease {
+	if r.lease == nil || lease != tracker.LeaseID(r.lease.LeaseID) || !r.loadPolicies(ctx) || lease != r.policyLease {
 		return r.Reader.LeasePolicy(ctx, lease)
 	}
 	return r.pinnedPolicy, r.policiesErr
@@ -208,56 +208,69 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 	}
 	var lease leasestore.Lease
 	var details NativeLeaseResponseDetails
-	err = s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		reader := s.nativeLeaseReader(w, scope)
-		current, err := reader.Lease(c.Request().Context(), c.Param("lease"))
-		if err != nil {
-			return err
-		}
-		if landing == nil && current.LandingCapacity > 0 {
-			landing = &nativeLandingRenewal{lease: current}
-		}
-		if landing != nil {
-			if err := w.LockWorkItemProject(c.Request().Context(), scope.Project); err != nil {
+	err = s.renewNativeLeaseWrite(c.Request().Context(), scope, tracker.LeaseID(c.Param("lease")), func(legacySelectorChecked bool) error {
+		return s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			reader := s.nativeLeaseReader(w, scope)
+			current, err := reader.Lease(c.Request().Context(), c.Param("lease"))
+			if err != nil {
 				return err
 			}
-			reader = s.nativeLeaseReader(w, scope)
-		}
-		if _, err := reader.RunnerForLease(c.Request().Context(), c.Param("lease")); err != nil {
+			if landing == nil && current.LandingCapacity > 0 {
+				landing = &nativeLandingRenewal{lease: current}
+			}
+			if landing != nil {
+				if err := w.LockWorkItemProject(c.Request().Context(), scope.Project); err != nil {
+					return err
+				}
+				reader = s.nativeLeaseReader(w, scope)
+			}
+			if _, err := reader.RunnerForLease(c.Request().Context(), c.Param("lease")); err != nil {
+				return err
+			}
+			current, err = reader.Lease(c.Request().Context(), c.Param("lease"))
+			if err != nil {
+				return err
+			}
+			authority := NativeLeaseAuthority{Scope: scope, Lease: current, Request: request, Operation: "renew", LegacySelectorChecked: legacySelectorChecked}
+			if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(c.Request().Context(), reader, &authority); err != nil {
+				return err
+			}
+			landingCapacity := int64(request.LandingCapacity)
+			if current.LandingCapacity > 0 && (landingCapacity == 0 || landingCapacity > current.LandingCapacity) {
+				landingCapacity = current.LandingCapacity
+			}
+			landingCapacity, err = s.reserveNativeLandingRenewal(c.Request().Context(), w, scope, landing, current, landingCapacity)
+			if err != nil {
+				return err
+			}
+			lease, err = w.RenewWithLandingCapacity(c.Request().Context(), leasestore.Fence{LeaseID: c.Param("lease"), FencingToken: int64(request.FencingToken)}, ttl, landingCapacity)
+			if err != nil {
+				return err
+			}
+			authority.Lease = lease
+			if err := s.config.NativeRunEvents.ApplyNativeLeaseMutation(c.Request().Context(), w, authority); err != nil {
+				return err
+			}
+			reader.lease = &lease
+			details, err = s.nativeLeaseResponseDetails(c.Request().Context(), reader, scope, lease)
 			return err
-		}
-		current, err = reader.Lease(c.Request().Context(), c.Param("lease"))
-		if err != nil {
-			return err
-		}
-		authority := NativeLeaseAuthority{Scope: scope, Lease: current, Request: request, Operation: "renew"}
-		if err := s.config.NativeRunEvents.ValidateNativeLeaseMutation(c.Request().Context(), reader, &authority); err != nil {
-			return err
-		}
-		landingCapacity := int64(request.LandingCapacity)
-		if current.LandingCapacity > 0 && (landingCapacity == 0 || landingCapacity > current.LandingCapacity) {
-			landingCapacity = current.LandingCapacity
-		}
-		landingCapacity, err = s.reserveNativeLandingRenewal(c.Request().Context(), w, scope, landing, current, landingCapacity)
-		if err != nil {
-			return err
-		}
-		lease, err = w.RenewWithLandingCapacity(c.Request().Context(), leasestore.Fence{LeaseID: c.Param("lease"), FencingToken: int64(request.FencingToken)}, ttl, landingCapacity)
-		if err != nil {
-			return err
-		}
-		authority.Lease = lease
-		if err := s.config.NativeRunEvents.ApplyNativeLeaseMutation(c.Request().Context(), w, authority); err != nil {
-			return err
-		}
-		reader.lease = &lease
-		details, err = s.nativeLeaseResponseDetails(c.Request().Context(), reader, scope, lease)
-		return err
+		})
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return s.writeNativeLeaseResponse(c, lease, details)
+}
+
+func (s *Service) renewNativeLeaseWrite(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID, write func(legacySelectorChecked bool) error) error {
+	err := write(false)
+	if !errors.Is(err, errLeaseSelectorUnbound) {
+		return err
+	}
+	if err := s.checkLegacyLeaseSelector(ctx, scope, leaseID); err != nil {
+		return err
+	}
+	return write(true)
 }
 
 func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {

@@ -35,22 +35,24 @@ import (
 )
 
 type NativeRunEventAuthority struct {
-	BatchThrough       int64
-	Termination        bool
-	Scope              hubscope.NativeScope
-	OrganizationID     tracker.OrganizationID
-	ProjectID          tracker.ProjectID
-	WorkItem           corestore.WorkItem
-	Lease              leasestore.Lease
-	DispatchGeneration int64
-	UsageCorrection    bool
-	ReplayPrefix       bool
-	Publication        *preparedNativePRPublication
-	UsageCosts         []billingstore.CostObservation
-	UsageReport        reportstore.AttemptUsage
-	UsageFacts         *runnerUsageFacts
-	Landing            *nativeLandingAuthority
-	Event              tracker.NativeRunEvent
+	BatchThrough          int64
+	Termination           bool
+	Scope                 hubscope.NativeScope
+	OrganizationID        tracker.OrganizationID
+	ProjectID             tracker.ProjectID
+	WorkItem              corestore.WorkItem
+	Lease                 leasestore.Lease
+	DispatchGeneration    int64
+	UsageCorrection       bool
+	ReplayPrefix          bool
+	Publication           *preparedNativePRPublication
+	UsageCosts            []billingstore.CostObservation
+	UsageReport           reportstore.AttemptUsage
+	UsageFacts            *runnerUsageFacts
+	Landing               *nativeLandingAuthority
+	Event                 tracker.NativeRunEvent
+	RequireSelector       bool
+	LegacySelectorChecked bool
 }
 
 type nativeLandingAuthority struct {
@@ -169,11 +171,12 @@ type NativeRunEventParticipant interface {
 }
 
 type NativeLeaseAuthority struct {
-	Scope     hubscope.NativeScope
-	WorkItem  corestore.WorkItem
-	Lease     leasestore.Lease
-	Request   tracker.NativeLeaseMutation
-	Operation string
+	Scope                 hubscope.NativeScope
+	WorkItem              corestore.WorkItem
+	Lease                 leasestore.Lease
+	Request               tracker.NativeLeaseMutation
+	Operation             string
+	LegacySelectorChecked bool
 }
 
 type NativeLeaseResponseDetails struct {
@@ -269,6 +272,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 	var completionEvidence, completionSnapshot bool
 	var replayed bool
 	var replaySnapshot *nativeRunReplaySnapshot
+	var legacySelector, legacySelectorChecked bool
 	command := eventstore.RunCommand{Project: scope.Project, WorkItem: tracker.NativeWorkItemID(item), LeaseID: string(request.Data.LeaseID), AttemptID: request.Data.AttemptID, ActorID: actorID, Operation: operation, Key: request.IdempotencyKey, Completion: request.Type == "run.finished" && request.Data.CompletionBody != ""}
 	for _, event := range events {
 		command.EventIDs = append(command.EventIDs, nativeAttemptHistoryID(event.Type, event.Data))
@@ -320,6 +324,11 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+		pinned, err := r.LeasePolicy(ctx, tracker.LeaseID(lease.LeaseID))
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		legacySelector = err == nil && pinned.Selector == nil
 		previous, present, err := readTenantRunCleanupPredecessor(ctx, r, scope, request)
 		if err != nil {
 			return err
@@ -411,6 +420,12 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 	termination := (lease.ReleasedAt != nil || !lease.ExpiresAt.After(s.config.Clock().UTC())) && request.Type == "run.finished" && request.Data.Outcome == "cancelled" && request.Data.Sequence > 1 && len(request.PriorEvents) == 0
 	if termination && !nativeTerminationData(request.Data) {
 		return nil, nativeExecutionConflict("Released execution may acknowledge termination only")
+	}
+	if legacySelector && !termination {
+		if err := s.checkLegacyLeaseSelector(ctx, scope, tracker.LeaseID(lease.LeaseID)); err != nil {
+			return nil, err
+		}
+		legacySelectorChecked = true
 	}
 	cleanupData, committedCleanupData, err := readTenantRunCleanupData(ctx, content, cleanupPredecessor)
 	if err != nil {
@@ -723,7 +738,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 			return nil, err
 		}
 		history.HistoryHidden = i == len(events)-1 && usageCorrection || event.Type == "run.observed" && predecessor != nil && !nativeRuntimeHistoryChanged(predecessor.Runtime, event.Data.Runtime)
-		authority := NativeRunEventAuthority{BatchThrough: events[len(events)-1].Data.Sequence, Termination: termination, Scope: scope, OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItem: workItem, Lease: lease, UsageCorrection: attemptEvent.UsageCorrection, Event: event}
+		authority := NativeRunEventAuthority{BatchThrough: events[len(events)-1].Data.Sequence, Termination: termination, Scope: scope, OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItem: workItem, Lease: lease, UsageCorrection: attemptEvent.UsageCorrection, Event: event, RequireSelector: !termination, LegacySelectorChecked: legacySelectorChecked}
 		contentRefs[history.PayloadObjectKey] = eventstore.Reference(history.PayloadObjectKey, history.PayloadSHA256, history.PayloadBytes, history.PayloadContentBytes)
 		authority.Landing = landingProof
 		if !termination && len(event.Data.Usage) > 0 {

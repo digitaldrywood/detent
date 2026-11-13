@@ -243,12 +243,12 @@ JOIN projects p ON p.organization_id=i.organization_id AND p.id=i.project_id AND
 WHERE l.organization_id=$1 AND l.lease_id=$2 AND i.project_id=$3;
 
 -- name: LeaseMutationRunner :one
-SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services
+SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services,r.tags
 FROM runner_identities r JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
 WHERE a.organization_id=$1 AND a.lease_id=$2;
 
 -- name: LockLeaseMutationRunner :one
-SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services
+SELECT r.organization_id,r.runner_id,r.machine_id,r.token_id,r.state,r.expires_at,r.removed_at,r.isolation_tier,r.host_services,r.tags
 FROM runner_identities r JOIN runner_lease_assignments a ON a.organization_id=r.organization_id AND a.runner_id=r.runner_id
 WHERE a.organization_id=$1 AND a.lease_id=$2 FOR UPDATE OF r;
 

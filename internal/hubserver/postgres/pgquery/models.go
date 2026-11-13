@@ -2051,11 +2051,14 @@ type Lease struct {
 }
 
 type LeasePolicyBinding struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	LeaseID        string
-	PolicyID       string
-	BoundAt        time.Time
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	LeaseID           string
+	PolicyID          string
+	BoundAt           time.Time
+	SelectorRunnerID  *string
+	SelectorMachineID *string
+	SelectorTags      []string
 }
 
 type LinkedIssueSource struct {
