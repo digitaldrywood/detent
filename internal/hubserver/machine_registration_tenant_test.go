@@ -120,7 +120,7 @@ func TestTenantMachineRegistrationWithoutLegacyDatabase(t *testing.T) {
 				if len(reports) != 1 {
 					t.Errorf("reports=%+v", reports)
 				}
-				skills, err := r.RunnerProjectSkills(t.Context(), "project", runnerID, now, 100)
+				skills, _, err := r.RunnerProjectSkills(t.Context(), "project", runnerID, now, 100)
 				if err != nil {
 					return err
 				}

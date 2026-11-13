@@ -403,7 +403,7 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 	assertReportedSkill := func() {
 		t.Helper()
 		if err := service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-			reports, err := r.RunnerProjectSkills(t.Context(), f.project.ID, runner.binding.RunnerID, now, 1)
+			reports, _, err := r.RunnerProjectSkills(t.Context(), f.project.ID, runner.binding.RunnerID, now, 1)
 			if err != nil {
 				return err
 			}

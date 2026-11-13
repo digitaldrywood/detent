@@ -495,12 +495,21 @@ func TestRunnerProviderReportsBatchStatementsAndFidelity(t *testing.T) {
 						if step.unchanged && (probe.mutations != 0 || probe.statements > 7) {
 							t.Errorf("unchanged skills statements=%d mutations=%d", probe.statements, probe.mutations)
 						}
-						got, err := s.RunnerProjectSkills(t.Context(), "prj_report", "runner_first", step.at, runnerstore.MaxProjectSkills)
+						got, truncated, err := s.RunnerProjectSkills(t.Context(), "prj_report", "runner_first", step.at, runnerstore.MaxProjectSkills)
 						if err != nil {
 							return err
 						}
-						if len(got) != size || got[0].Skill != report[0] || !got[0].ReportedAt.Equal(step.at) {
-							t.Errorf("skill content/freshness mismatch: count=%d", len(got))
+						if len(got) != size || truncated || got[0].Skill != report[0] || !got[0].ReportedAt.Equal(step.at) {
+							t.Errorf("skill content/freshness mismatch: count=%d truncated=%t", len(got), truncated)
+						}
+						if size > 1 {
+							capped, truncated, err := s.RunnerProjectSkills(t.Context(), "prj_report", "runner_first", step.at, size-1)
+							if err != nil {
+								return err
+							}
+							if len(capped) != size-1 || !truncated || capped[0].Skill != report[0] {
+								t.Errorf("capped skill read count=%d truncated=%t, want %d true", len(capped), truncated, size-1)
+							}
 						}
 						return nil
 					}); err != nil {

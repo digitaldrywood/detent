@@ -15,9 +15,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *session) RunnerProjectSkills(ctx context.Context, project tracker.ProjectID, runnerID string, now time.Time, limit int) ([]runnerstore.ProjectSkill, error) {
+func (s *session) RunnerProjectSkills(ctx context.Context, project tracker.ProjectID, runnerID string, now time.Time, limit int) ([]runnerstore.ProjectSkill, bool, error) {
 	if project == "" || now.IsZero() || limit < 1 || limit > runnerstore.MaxProjectSkills {
-		return nil, corestore.ErrInvalidPage
+		return nil, false, corestore.ErrInvalidPage
 	}
 	rows, err := s.db.Query(ctx, `SELECT s.runner_id,s.position,s.name,s.description,s.path,s.scope,s.enabled,s.user_invocable,s.invocation,s.reported_at
 		FROM runner_project_skills s
@@ -28,7 +28,7 @@ func (s *session) RunnerProjectSkills(ctx context.Context, project tracker.Proje
 		AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.organization_id=s.organization_id AND g.token_id=t.id AND g.project_id=s.project_id))
 		ORDER BY s.reported_at DESC,s.runner_id,s.position LIMIT $5`, s.organization, project, runnerID, now, limit+1)
 	if err != nil {
-		return nil, mapError(ctx, err)
+		return nil, false, mapError(ctx, err)
 	}
 	defer rows.Close()
 	reports := make([]runnerstore.ProjectSkill, 0, min(limit, 64))
@@ -37,17 +37,17 @@ func (s *session) RunnerProjectSkills(ctx context.Context, project tracker.Proje
 		report.OrganizationID = s.organization
 		report.ProjectID = project
 		if err := rows.Scan(&report.RunnerID, &report.Position, &report.Skill.Name, &report.Skill.Description, &report.Skill.Path, &report.Skill.Scope, &report.Skill.Enabled, &report.Skill.UserInvocable, &report.Skill.Invocation, &report.ReportedAt); err != nil {
-			return nil, mapError(ctx, err)
+			return nil, false, mapError(ctx, err)
 		}
 		reports = append(reports, report)
 	}
 	if err := mapError(ctx, rows.Err()); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if len(reports) > limit {
-		return nil, runnerstore.ErrLimitExceeded
+		return reports[:limit], true, nil
 	}
-	return reports, nil
+	return reports, false, nil
 }
 
 func (s *session) RunnerCheckoutReport(ctx context.Context, runner string, project tracker.ProjectID) (runnerstore.CheckoutReport, error) {

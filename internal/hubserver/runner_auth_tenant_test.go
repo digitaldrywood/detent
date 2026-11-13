@@ -525,7 +525,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		storedSkills, err = r.RunnerProjectSkills(t.Context(), project.ID, "runner_0000000000000000000000000000e001", clock.value, runnerstore.MaxProjectSkills)
+		storedSkills, _, err = r.RunnerProjectSkills(t.Context(), project.ID, "runner_0000000000000000000000000000e001", clock.value, runnerstore.MaxProjectSkills)
 		if err != nil {
 			return err
 		}
@@ -621,7 +621,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		reports, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_0000000000000000000000000000e001", clock.value, runnerstore.MaxProjectSkills)
+		reports, _, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_0000000000000000000000000000e001", clock.value, runnerstore.MaxProjectSkills)
 		if err != nil {
 			return err
 		}
@@ -647,7 +647,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	cleared := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"display_name": "Example host", "capacity": 3, "version": "0.174.1", "os": "darwin", "architecture": "arm64", "skills": []skills.ProviderSkill{}, "checkout_repository": ""})
 	requireNativeStatus(t, cleared, http.StatusOK)
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-		reports, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_0000000000000000000000000000e001", clock.value, runnerstore.MaxProjectSkills)
+		reports, _, err := r.RunnerProjectSkills(t.Context(), project.ID, "runner_0000000000000000000000000000e001", clock.value, runnerstore.MaxProjectSkills)
 		if err != nil {
 			return err
 		}

@@ -184,12 +184,13 @@ type conversationListPage struct {
 }
 
 type conversationSnapshot struct {
-	Skills       []skills.ProviderSkill        `json:"skills"`
-	Compaction   *tracker.EventCompaction      `json:"compaction,omitempty"`
-	Conversation conversationResource          `json:"conversation"`
-	Messages     []conversationMessageResource `json:"messages"`
-	Questions    []conversation.Question       `json:"questions"`
-	Cursor       int64                         `json:"cursor"`
+	Skills          []skills.ProviderSkill        `json:"skills"`
+	SkillsTruncated bool                          `json:"skills_truncated,omitempty"`
+	Compaction      *tracker.EventCompaction      `json:"compaction,omitempty"`
+	Conversation    conversationResource          `json:"conversation"`
+	Messages        []conversationMessageResource `json:"messages"`
+	Questions       []conversation.Question       `json:"questions"`
+	Cursor          int64                         `json:"cursor"`
 	// HasMore reports that older messages exist beyond the returned page.
 	HasMore bool `json:"has_more"`
 }
@@ -913,11 +914,11 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 			return nil, err
 		}
 	}
-	questions, skills, err := s.readConversationSnapshotDetails(ctx, scope, page.record)
+	questions, skills, skillsTruncated, err := s.readConversationSnapshotDetails(ctx, scope, page.record)
 	if err != nil {
 		return nil, err
 	}
-	snapshot := conversationSnapshot{Conversation: projectConversation(page.record), Messages: projectMessages(page.messages), Questions: make([]conversation.Question, 0, len(questions)), Skills: skills, Cursor: page.record.EventSeq}
+	snapshot := conversationSnapshot{Conversation: projectConversation(page.record), Messages: projectMessages(page.messages), Questions: make([]conversation.Question, 0, len(questions)), Skills: skills, SkillsTruncated: skillsTruncated, Cursor: page.record.EventSeq}
 	if page.compaction.RemovedEvents > 0 {
 		snapshot.Compaction = &page.compaction
 	}
@@ -936,13 +937,15 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 	return withNativeArchive(raw, nativeArchiveDescriptor(ctx))
 }
 
-func (s *Service) readConversationSnapshotDetails(ctx context.Context, scope nativeScope, record conversationRecord) ([]conversationQuestionRecord, []skills.ProviderSkill, error) {
+func (s *Service) readConversationSnapshotDetails(ctx context.Context, scope nativeScope, record conversationRecord) ([]conversationQuestionRecord, []skills.ProviderSkill, bool, error) {
 
 	var questions []conversationQuestionRecord
 	projectSkills := []skills.ProviderSkill{}
+	skillsTruncated := false
 	contentReferences := map[string]conversationstore.ContentObject{}
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		reports, err := reader.RunnerProjectSkills(ctx, record.ProjectID, record.Execution.Owner.RunnerID, s.config.now().UTC(), runnerstore.MaxProjectSkills)
+		reports, truncated, err := reader.RunnerProjectSkills(ctx, record.ProjectID, record.Execution.Owner.RunnerID, s.config.now().UTC(), runnerstore.MaxProjectSkills)
+		skillsTruncated = truncated
 		if err != nil {
 			return err
 		}
@@ -979,16 +982,16 @@ func (s *Service) readConversationSnapshotDetails(ctx context.Context, scope nat
 			object := contentReferences[question.ContentID]
 			var payload conversationContent
 			if err := s.readConversationObject(ctx, string(scope.organization), object.Reference, &payload); err != nil {
-				return nil, nil, err
+				return nil, nil, false, err
 			}
 			var content conversationQuestionContent
 			if err := json.Unmarshal(payload.Data, &content); err != nil {
-				return nil, nil, fmt.Errorf("decode question content: %w", err)
+				return nil, nil, false, fmt.Errorf("decode question content: %w", err)
 			}
 			question.Prompts, question.Answers = content.Prompts, content.Answers
 		}
 	}
-	return questions, projectSkills, translateConversationError(err)
+	return questions, projectSkills, skillsTruncated, translateConversationError(err)
 }
 
 func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScope, id string, request conversationPatchRequest) (json.RawMessage, error) {

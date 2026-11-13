@@ -363,7 +363,7 @@ type Reader interface {
 	RunnerProblems(context.Context, string) ([]runnerauth.Problem, error)
 	RunnerLocalChecks(context.Context, string, tracker.ProjectID) (runnerauth.LocalChecks, error)
 	RunnerWorkspaceReport(context.Context, string) (workspacesession.Capabilities, string, error)
-	RunnerProjectSkills(context.Context, tracker.ProjectID, string, time.Time, int) ([]ProjectSkill, error)
+	RunnerProjectSkills(context.Context, tracker.ProjectID, string, time.Time, int) ([]ProjectSkill, bool, error)
 	RunnerCheckoutVerified(context.Context, tracker.ProjectID, string, time.Time) (bool, error)
 	RunnerCheckoutReport(context.Context, string, tracker.ProjectID) (CheckoutReport, error)
 	RunnerUpdateState(context.Context, string) (UpdateState, error)
