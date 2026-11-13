@@ -300,7 +300,7 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 						report := capacityReport(f.service.config.now())
 						report.MaxConcurrent, report.Availability = 8, "unknown"
 						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
-							map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "Runner", "capacity": 8, "version": "test", "provider_reports": []providercapacity.Report{report}}), http.StatusOK)
+							map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "Runner", "capacity": 8, "version": "test", "provider_reports": []providercapacity.Report{report}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: f.service.config.now()}}), http.StatusOK)
 						workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
 							WorkflowPath: "WORKFLOW.md",
 							Workflow: []byte(fmt.Sprintf(`---
