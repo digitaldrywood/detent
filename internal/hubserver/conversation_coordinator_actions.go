@@ -176,6 +176,10 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 		if err != nil {
 			return nil, err
 		}
+		current.WorkflowMarkdown, err = s.projectRecordWorkflow(ctx, project)
+		if err != nil {
+			return nil, err
+		}
 		if call.Name == "get_project_integration" {
 			return current, nil
 		}
