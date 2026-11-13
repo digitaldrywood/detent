@@ -297,6 +297,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	if selection.Summary {
 		page.Total = 0
 		windows := []tracker.NativeShippedWindow{{Window: "1h"}, {Window: "24h"}, {Window: "7d"}}
+		filterCompletionStates := !includeBoard && len(selection.States) > 0
 		for _, summary := range snapshot.Summaries {
 			if summary.Kind == "lane" {
 				page.Work.Lanes = append(page.Work.Lanes, tracker.NativeWorkLane{State: summary.State, Total: int(summary.Total), Running: int(summary.Running)})
@@ -304,10 +305,15 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 					page.Total += int(summary.Total)
 				}
 			}
+			if summary.Kind == "total" && !filterCompletionStates || summary.Kind == "lane" && filterCompletionStates && slices.Contains(selection.States, summary.State) {
+				windows[0].Shipped += int(summary.Shipped1h)
+				windows[0].Cancelled += int(summary.Cancelled1h)
+				windows[1].Shipped += int(summary.Shipped24h)
+				windows[1].Cancelled += int(summary.Cancelled24h)
+				windows[2].Shipped += int(summary.Shipped7d)
+				windows[2].Cancelled += int(summary.Cancelled7d)
+			}
 			if summary.Kind == "total" {
-				windows[0].Shipped, windows[0].Cancelled = int(summary.Shipped1h), int(summary.Cancelled1h)
-				windows[1].Shipped, windows[1].Cancelled = int(summary.Shipped24h), int(summary.Cancelled24h)
-				windows[2].Shipped, windows[2].Cancelled = int(summary.Shipped7d), int(summary.Cancelled7d)
 				page.Work.AsOf = summary.ProjectedAt
 			}
 			kind := "total"
