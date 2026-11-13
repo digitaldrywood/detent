@@ -300,6 +300,14 @@ func TestReportsShippedPopulation(t *testing.T) {
 					ids[seed.name] = id
 					created := to.Add(-100 * time.Hour)
 					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: project, WorkItemID: id, Number: index + 1, Revision: 1, Profile: "native"}, Title: seed.name, Body: nativeContractTestBody, State: seed.state, Terminal: seed.state == "Done" || seed.state == "Cancelled", Archived: seed.archived, Actor: tracker.Actor{Kind: "human", PrincipalID: "owner"}, CreatedAt: created, UpdatedAt: seed.steps[len(seed.steps)-1].at}
+					for _, step := range seed.steps {
+						switch terminal := step.to == "Done" || step.to == "Cancelled"; {
+						case !terminal:
+							issue.ClosedAt = nil
+						case issue.ClosedAt == nil:
+							issue.ClosedAt = &step.at
+						}
+					}
 					version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: org, ProjectID: project, WorkItemID: id, RecordID: string(id), Revision: 1}, encode(issue))
 					if err != nil {
 						t.Fatal(err)
