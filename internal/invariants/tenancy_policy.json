@@ -703,9 +703,6 @@
     "internal/hubserver/hosted_fleet_tenant.go": {
       "organization:appOrganizationID": 5
     },
-    "internal/hubserver/hosted_fleet_usage_tenant.go": {
-      "organization:hostedOrganization": 1
-    },
     "internal/hubserver/hosted_github_seam.go": {
       "organization:Hosted.OrganizationID": 1
     },
