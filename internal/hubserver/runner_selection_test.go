@@ -665,6 +665,8 @@ func TestRunnerFutureProjectAdmission(t *testing.T) {
 			item := later.create(t, "future work")
 			if !scenario.approved {
 				clearNativeFixturePolicy(t, later)
+				descriptor.SourceRevision = strings.Repeat("b", 40)
+				descriptor = descriptor.WithID()
 			}
 			if scenario.deleted {
 				if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE projects SET deleted_at=$1 WHERE id=$2", f.service.config.Clock(), later.project.ID); err != nil {

@@ -187,7 +187,7 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	}
 	currentPolicy, err := r.ProjectPolicy(ctx, scope.Project)
 	if errors.Is(err, corestore.ErrNotFound) {
-		return result, hubrecords.ErrNoApprovedRepositoryPolicy
+		return result, missingClaimPolicyRefusal(ctx, r, scope.Project, request.PolicyID)
 	}
 	if err != nil {
 		return result, err
@@ -339,7 +339,7 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.
 		}
 		policy, err := r.ProjectPolicy(ctx, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) {
-			return hubrecords.ErrNoApprovedRepositoryPolicy
+			return missingClaimPolicyRefusal(ctx, r, scope.Project, request.PolicyID)
 		}
 		if err != nil {
 			return err
@@ -1117,7 +1117,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope hubscope.Na
 			}
 			plan.Policy, err = r.ProjectPolicy(ctx, scope.Project)
 			if errors.Is(err, corestore.ErrNotFound) {
-				return hubrecords.ErrNoApprovedRepositoryPolicy
+				return missingClaimPolicyRefusal(ctx, r, scope.Project, request.PolicyID)
 			}
 			if err != nil {
 				return err
@@ -1560,6 +1560,15 @@ func nativeCompatibleClaimSource(project projectstore.Record, issue tracker.Nati
 		_, repository, number, err = tracker.ParseGitHubIssueURL(issue.LinkedSource.URL)
 	}
 	return err == nil && number > 0 && strings.EqualFold(repository, strings.TrimSpace(project.Settings.Repository)) && strings.EqualFold(repository, candidate.Repository)
+}
+
+func missingClaimPolicyRefusal(ctx context.Context, r policystore.Reader, project tracker.ProjectID, policyID string) error {
+	if _, err := r.ProjectPolicyRevision(ctx, project, policyID); errors.Is(err, corestore.ErrNotFound) {
+		return hubapi.NativePublicInvalid("Claim configuration has not been reported for this project")
+	} else if err != nil {
+		return err
+	}
+	return hubrecords.ErrNoApprovedRepositoryPolicy
 }
 
 func claimPolicyRefusal(ctx context.Context, r policystore.Reader, project tracker.ProjectID, policyID string) error {
