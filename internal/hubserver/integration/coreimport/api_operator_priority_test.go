@@ -1,4 +1,4 @@
-package hubserver
+package coreimport_test
 
 import (
 	"encoding/json"
@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -21,12 +23,12 @@ import (
 // still names a level, and the mirrored `priority:` label follows either way.
 func TestChangeWorkItemPriorityClears(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "priority authority")
-	service := f.service
-	organization := f.project.OrganizationID
+	f := hubfixture.NewNative(t, nil, "", "priority authority")
+	service := f.Hub
+	organization := f.Project.OrganizationID
 	project := tracker.ProjectID(hubapi.NewID("prj"))
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		stored, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Compatible project", Profile: "github_compatible", RequireDependencies: true}, States: nativeFixtureStates()})
+	if err := service.Config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		stored, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project, Name: "Compatible project", Profile: "github_compatible", RequireDependencies: true}, States: hubfixture.States()})
 		if err != nil {
 			return err
 		}
@@ -48,18 +50,18 @@ func TestChangeWorkItemPriorityClears(t *testing.T) {
 		source.add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
 		source.add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
 	}
-	count, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()})
+	count, err := hubserver.ImportCoreWorkItems(t.Context(), service.Config.TenantRepository.(*postgres.Repository), hubserver.CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: organization, ProjectID: project, Objects: service.Config.RunDetails})
 	if err != nil || count != 2 {
 		t.Fatalf("retained compatible import=%d error=%v", count, err)
 	}
 	seedHubAPIToken(t, service, "priority-operator", "priority-operator-token", hubapi.APIScopeOperator)
-	admin := nativeAttemptTestDatabase(t, f)
+	admin := f.Hub.Admin
 	path := "/api/v2/organizations/" + string(organization) + "/mcp"
 	readPriority := func(t *testing.T, item tracker.NativeWorkItemID) (int64, bool) {
 		t.Helper()
 		var value int64
 		var valid bool
-		if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := service.Config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 			entry, err := r.QueueEntry(t.Context(), project, item, "fleet")
 			if err == nil && entry.Priority != nil {
 				value, valid = *entry.Priority, true
@@ -70,14 +72,14 @@ func TestChangeWorkItemPriorityClears(t *testing.T) {
 		}
 		return value, valid
 	}
-	readDesired := func(t *testing.T, item tracker.NativeWorkItemID) WorkflowLabelDesired {
+	readDesired := func(t *testing.T, item tracker.NativeWorkItemID) hubserver.WorkflowLabelDesired {
 		t.Helper()
 		var key string
 		if err := admin.QueryRowContext(t.Context(), "SELECT command_key FROM github_outbound WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 ORDER BY id DESC LIMIT 1", organization, project, item).Scan(&key); err != nil {
 			t.Fatalf("read outbox record: %v", err)
 		}
 		var outbound projectstore.GitHubOutbound
-		if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := service.Config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			owner, ok := w.(projectstore.GitHubOutboxWriter)
 			if !ok {
 				return hubapi.NativeWorkItemStorageUnavailable()
@@ -88,14 +90,14 @@ func TestChangeWorkItemPriorityClears(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("read outbox record %q: %v", key, err)
 		}
-		if outbound.WorkItemID != item || outbound.Repository != "example-org/example-project" || outbound.Kind != string(MutationWorkflowLabel) {
+		if outbound.WorkItemID != item || outbound.Repository != "example-org/example-project" || outbound.Kind != string(hubserver.MutationWorkflowLabel) {
 			t.Fatalf("outbox target=%+v", outbound)
 		}
-		encoded, err := eventstore.NewContent(service.runDetailStore()).Receipt(t.Context(), outbound.Payload)
+		encoded, err := eventstore.NewContent(service.Config.RunDetails).Receipt(t.Context(), outbound.Payload)
 		if err != nil {
 			t.Fatalf("read outbox payload %q: %v", key, err)
 		}
-		var desired WorkflowLabelDesired
+		var desired hubserver.WorkflowLabelDesired
 		if err := json.Unmarshal(encoded, &desired); err != nil {
 			t.Fatalf("decode outbox record %q: %v", key, err)
 		}
@@ -122,15 +124,15 @@ func TestChangeWorkItemPriorityClears(t *testing.T) {
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					fields := map[string]any{"project_id": project, "identifier": item, "queue_scope": "fleet", "state": "In Progress", "queue_priority": test.priority, "request_id": string(item) + ":" + test.key}
-					body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.SetQueuePriority, "arguments": fields, "_meta": json.RawMessage(fleetProtocolMeta)}}
-					token := testHubAdminToken
+					body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.SetQueuePriority, "arguments": fields, "_meta": json.RawMessage(hubfixture.MCPProtocolMeta)}}
+					token := hubfixture.AdminToken
 					if test.token != "" {
 						token = test.token
 					}
 					var replay string
 					for attempt := range 2 {
-						response := performHubWorkCall(t, service, path, token, operatortool.SetQueuePriority, body)
-						requireNativeStatus(t, response, http.StatusOK)
+						response := service.WorkCall(t, path, token, operatortool.SetQueuePriority, body)
+						hubfixture.RequireStatus(t, response, http.StatusOK)
 						var envelope struct {
 							Result struct {
 								Failed  bool            `json:"isError"`
@@ -140,7 +142,7 @@ func TestChangeWorkItemPriorityClears(t *testing.T) {
 								} `json:"content"`
 							} `json:"result"`
 						}
-						decodeHubResponse(t, response, &envelope)
+						hubfixture.Decode(t, response, &envelope)
 						if envelope.Result.Failed != test.failed {
 							t.Fatalf("priority refusal=%t want=%t body=%s", envelope.Result.Failed, test.failed, response.Body.String())
 						}
