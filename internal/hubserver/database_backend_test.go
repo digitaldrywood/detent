@@ -692,7 +692,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 				}
 			}
 			requireNativeStatus(t, browserRead("/organizations/org_startup/projects/project_first/events?work_item=wi_missing"), http.StatusNotFound)
-			requireNativeStatus(t, browserRead("/organizations/org_startup/projects/project_first/events?workspace=missing"), http.StatusServiceUnavailable)
+			requireNativeStatus(t, browserRead("/organizations/org_startup/projects/project_first/events?workspace=missing"), http.StatusUnprocessableEntity)
 			server := httptest.NewServer(service.Handler())
 			t.Cleanup(server.Close)
 			transport := &http.Transport{}
