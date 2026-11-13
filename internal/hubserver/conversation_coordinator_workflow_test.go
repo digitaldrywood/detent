@@ -164,16 +164,16 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			holdResponse := f.request(t, owner, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "held-issue", "title": "Keep this issue in review", "body": nativeContractTestBody + "\n<!-- detent:no-dispatch -->", "state": "Human Review"})
+			requireNativeStatus(t, holdResponse, http.StatusOK)
+			var held tracker.NativeIssue
+			decodeHubResponse(t, holdResponse, &held)
 			if test.name == "repository workflow refusal" {
 				coordinatorFixtureProject(t, f.service, "org_security", f.project, func(row *projectstore.Record) {
 					row.Core.WorkflowSource = "detent.yaml"
 					row.Core.WorkflowSourceRevision = current.SourceRevision
 				})
 			}
-			holdResponse := f.request(t, owner, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "held-issue", "title": "Keep this issue in review", "body": nativeContractTestBody + "\n<!-- detent:no-dispatch -->", "state": "Human Review"})
-			requireNativeStatus(t, holdResponse, http.StatusOK)
-			var held tracker.NativeIssue
-			decodeHubResponse(t, holdResponse, &held)
 			foreignScope := ""
 			if test.name == "approval foreign project submission" {
 				response := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{"idempotency_key": "second-project", "name": "Second workflow project", "grant_access": true, "states": HostedProjectStates()})
