@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -33,32 +34,24 @@ type recoveryClaimInterleaveKey struct{}
 type recoveryClaimInterleave struct {
 	*postgres.Repository
 	reached, release chan struct{}
-	abort            atomic.Bool
-}
-type recoveryClaimInterleaveWriter struct {
-	tenantstore.Writer
-	interleave *recoveryClaimInterleave
+	entered, abort   atomic.Bool
 }
 
 func (r *recoveryClaimInterleave) WriteRunnerCommand(ctx context.Context, org tracker.OrganizationID, credential, runner string, write func(context.Context, tenantstore.Writer) error) error {
 	return r.Repository.WriteRunnerCommand(ctx, org, credential, runner, func(ctx context.Context, w tenantstore.Writer) error {
-		if ctx.Value(recoveryClaimInterleaveKey{}) == true {
-			w = recoveryClaimInterleaveWriter{w, r}
+		if ctx.Value(recoveryClaimInterleaveKey{}) == true && r.entered.CompareAndSwap(false, true) {
+			close(r.reached)
+			select {
+			case <-r.release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if r.abort.Load() {
+				return errors.New("release unsafe lock interleave")
+			}
 		}
 		return write(ctx, w)
 	})
-}
-func (w recoveryClaimInterleaveWriter) LockRelationshipGraph(ctx context.Context) error {
-	close(w.interleave.reached)
-	select {
-	case <-w.interleave.release:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	if w.interleave.abort.Load() {
-		return errors.New("release unsafe lock interleave")
-	}
-	return w.Writer.LockRelationshipGraph(ctx)
 }
 
 func TestRecordedRecoveryDoesNotHoldGraphWhileWaitingForClaimRunner(t *testing.T) {
@@ -143,6 +136,9 @@ func TestRecordedRecoveryDoesNotHoldGraphWhileWaitingForClaimRunner(t *testing.T
 			return err
 		}
 		if _, err = w.AppendEvent(t.Context(), event); err != nil {
+			return err
+		}
+		if err := w.ReplaceRunnerBackendIsolation(t.Context(), f.bindings[0].RunnerID, isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}); err != nil {
 			return err
 		}
 		return w.UpdateRunnerCapacityConfig(t.Context(), f.bindings[0].RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: time.Now().UTC()})
