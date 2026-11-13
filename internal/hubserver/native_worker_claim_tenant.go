@@ -180,6 +180,14 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 	plan, err := s.readNativeClaimPlan(ctx, scope, request, now)
 	if err != nil {
 		if errors.Is(err, ErrNoClaimableWork) && explicitItem {
+			if refusal, requirements, selectorErr := s.explicitClaimSelectorRefusal(ctx, scope, request, now); selectorErr != nil {
+				return leasestore.Lease{}, selectorErr
+			} else if refusal != nil {
+				if recordErr := s.recordClaimRoutingRefusal(ctx, scope, request, now, recordableClaimRoutingRefusal(refusal, requirements)); recordErr != nil {
+					return leasestore.Lease{}, recordErr
+				}
+				return leasestore.Lease{}, refusal
+			}
 			if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, errors.Is(err, errNativeClaimPlanRefused), "no_claimable_work", nil); recordErr != nil {
 				return leasestore.Lease{}, recordErr
 			}
@@ -227,6 +235,56 @@ type claimRoutingRefusal struct {
 	code, reason string
 	requirements policy.Requirements
 	sourceFacts  hubrecords.ClaimSourceFacts
+}
+
+func (s *Service) explicitClaimSelectorRefusal(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (*hubapi.NativeError, policy.Requirements, error) {
+	var identity runnerstore.Identity
+	var current policystore.Revision
+	visible := false
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return nil, policy.Requirements{}, hubapi.NativeRunEventStorageUnavailable()
+	}
+	if err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
+			return err
+		}
+		var err error
+		identity, err = r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
+		if err != nil {
+			return err
+		}
+		if err := runnerIdentityClaimRefusal(identity, scope, request.MachineID, now); err != nil {
+			return err
+		}
+		current, err = r.ProjectPolicy(ctx, scope.Project)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		}
+		if err != nil || current.PolicyID != request.PolicyID {
+			return err
+		}
+		if _, err := r.WorkItem(ctx, scope.Project, request.WorkItemID); errors.Is(err, corestore.ErrNotFound) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		visible = true
+		return nil
+	}); err != nil {
+		return nil, policy.Requirements{}, err
+	}
+	if !visible {
+		return nil, policy.Requirements{}, nil
+	}
+	descriptor, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).ProjectPolicy(ctx, current)
+	if err != nil {
+		return nil, policy.Requirements{}, err
+	}
+	if err := descriptor.Requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags); err != nil {
+		return &hubapi.NativeError{Code: "selector_no_match", Message: err.Error(), Status: http.StatusConflict}, descriptor.Requirements, nil
+	}
+	return nil, policy.Requirements{}, nil
 }
 
 func recordableClaimRoutingRefusal(err error, requirements policy.Requirements) *claimRoutingRefusal {
