@@ -37,6 +37,7 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
 			decodeHubResponse(t, response, &issue)
+			issue = updateNativeWorkPageFixtureIssue(t, f, issue.WorkItemID, func(issue *tracker.NativeIssue) { issue.State = "Todo" })
 			credential, _, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(f.token), "", "")
 			if err != nil {
 				t.Fatal(err)
