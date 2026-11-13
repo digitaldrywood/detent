@@ -1012,11 +1012,14 @@ func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore
 			}
 		}
 	}
+	current := !p.initialize
 	if p.settle && !p.view.Applied {
+		current = false
 		if err := owner.RestoreConfiguration(ctx, configurationProjectRow(identity.OrganizationID, identity.RunnerID, p.view, p.payload, now), p.command, authority, row.Revision); err != nil {
 			return err
 		}
 	} else if p.initialize || p.settle {
+		current = false
 		header, err := owner.ConfigurationHeader(ctx, identity.RunnerID)
 		if err != nil {
 			return err
@@ -1026,12 +1029,20 @@ func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore
 			return err
 		}
 	}
+	readCurrent := func() error {
+		if current {
+			return nil
+		}
+		var err error
+		row, err = owner.ConfigurationProject(ctx, identity.RunnerID, projectID)
+		current = err == nil
+		return err
+	}
 	if p.observation.Key != "" {
-		current, err := owner.ConfigurationProject(ctx, identity.RunnerID, projectID)
-		if err != nil {
+		if err := readCurrent(); err != nil {
 			return err
 		}
-		if err := owner.StoreConfigurationObservationPayload(ctx, identity.RunnerID, projectID, p.observation, current.Revision, now); err != nil {
+		if err := owner.StoreConfigurationObservationPayload(ctx, identity.RunnerID, projectID, p.observation, row.Revision, now); err != nil {
 			return err
 		}
 	}
@@ -1039,8 +1050,7 @@ func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore
 		if _, err := w.PutReceipt(ctx, p.completion); err != nil {
 			return err
 		}
-		row, err := owner.ConfigurationProject(ctx, identity.RunnerID, projectID)
-		if err != nil {
+		if err := readCurrent(); err != nil {
 			return err
 		}
 		p.command.Status = "completed"
@@ -1054,12 +1064,11 @@ func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore
 		}
 	}
 	if p.reported != nil {
-		current, err := owner.ConfigurationProject(ctx, identity.RunnerID, projectID)
-		if err != nil {
+		if err := readCurrent(); err != nil {
 			return err
 		}
 		reported := p.reported
-		if reported.ConfigRevision == current.ConfigRevision && reported.EffectivePolicy != nil && reported.EffectivePolicy.ID == current.PolicyID {
+		if reported.ConfigRevision == row.ConfigRevision && reported.EffectivePolicy != nil && reported.EffectivePolicy.ID == row.PolicyID {
 			if _, err := owner.ObserveConfiguration(ctx, postgres.ConfigurationObservation{OrganizationID: identity.OrganizationID, RunnerID: identity.RunnerID, ProjectID: projectID, ConfigRevision: reported.ConfigRevision, PolicyID: reported.EffectivePolicy.ID, Registered: reported.RuntimeRegistered, Paused: reported.Paused, Draining: reported.Draining, ObservedAt: new(now)}, authority); err != nil {
 				return err
 			}

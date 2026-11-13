@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgcore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -196,6 +197,9 @@ type session struct {
 	archiveAccountingLocked bool
 	archiveBillingPresent   bool
 	archiveCounterLocked    bool
+	insertedArchive         *artifactstore.ArchiveObject
+	collaborationLocked     bool
+	collaborationUsed       int64
 
 	leaseClock         func() time.Time
 	searchDeadline     time.Time

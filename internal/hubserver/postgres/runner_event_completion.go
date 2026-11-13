@@ -18,6 +18,7 @@ func (f *runnerEventSession) AdjustCollaborationBytes(_ context.Context, delta, 
 	if delta < 0 || limit != math.MaxInt64 {
 		return billingstore.UsageResult{}, billingstore.ErrInvalidCollaborationBytes
 	}
+	f.session.collaborationLocked = false
 	f.pending.Queue(`UPDATE hosted_usage_counters SET value=value+$2::bigint WHERE organization_id=$1 AND name='collaboration_bytes' AND value>=0 AND value<=$3::bigint-$2::bigint RETURNING value`, f.session.organization, delta, limit).QueryRow(func(row pgx.Row) error {
 		var value int64
 		return row.Scan(&value)

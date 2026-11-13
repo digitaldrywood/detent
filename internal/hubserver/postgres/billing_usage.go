@@ -80,10 +80,13 @@ func (s *session) AdjustCollaborationBytes(ctx context.Context, delta, limit int
 	if limit < 0 {
 		return billingstore.UsageResult{}, billingstore.ErrInvalidCollaborationBytes
 	}
-	var before int64
-	err := s.db.QueryRow(ctx, `SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes' FOR UPDATE`, s.organization).Scan(&before)
-	if err != nil {
-		return billingstore.UsageResult{}, mapError(ctx, err)
+	before := s.collaborationUsed
+	if !s.collaborationLocked {
+		err := s.db.QueryRow(ctx, `SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes' FOR UPDATE`, s.organization).Scan(&before)
+		if err != nil {
+			return billingstore.UsageResult{}, mapError(ctx, err)
+		}
+		s.collaborationLocked, s.collaborationUsed = true, before
 	}
 	if before < 0 || delta > 0 && before > math.MaxInt64-delta || delta < 0 && delta < -before {
 		return billingstore.UsageResult{}, billingstore.ErrInvalidCollaborationBytes
@@ -101,8 +104,10 @@ func (s *session) AdjustCollaborationBytes(ctx context.Context, delta, limit int
 	}
 	rows := result.RowsAffected()
 	if rows != 1 {
+		s.collaborationLocked = false
 		return billingstore.UsageResult{}, corestore.ErrNotFound
 	}
+	s.collaborationUsed = after
 	return billingstore.UsageResult{Applied: true, Allowed: true, Used: after}, nil
 }
 

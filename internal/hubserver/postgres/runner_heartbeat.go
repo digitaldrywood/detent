@@ -190,6 +190,9 @@ func (h *runnerHeartbeatSession) RunnerUrgentUpdate(ctx context.Context) (runner
 	return h.session.RunnerUrgentUpdate(ctx)
 }
 func (h *runnerHeartbeatSession) ReplaceRunnerUpdateObservation(ctx context.Context, id string, report *runnerauth.UpdateObservation) error {
+	if report == nil && h.preloaded && id == h.identity.RunnerID && !h.hasUpdate {
+		return nil
+	}
 	if err := h.session.ReplaceRunnerUpdateObservation(ctx, id, report); err != nil {
 		return err
 	}

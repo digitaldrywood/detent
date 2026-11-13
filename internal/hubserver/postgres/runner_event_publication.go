@@ -260,6 +260,7 @@ func (f *runnerEventSession) ChargeRunEventArchives(ctx context.Context, referen
 	if err := f.LockArchiveAccounting(ctx); err != nil {
 		return billingstore.UsageResult{}, err
 	}
+	f.session.collaborationLocked = false
 	result := billingstore.UsageResult{Allowed: true}
 	denied := errors.New("run event archive allowance refused")
 	for _, ref := range references {

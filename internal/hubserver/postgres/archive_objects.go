@@ -9,6 +9,8 @@ import (
 	"path"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
@@ -102,14 +104,16 @@ func (s *session) RegisterArchiveObject(ctx context.Context, object artifactstor
 		}
 	}
 	ref := object.Reference
-	_, err := s.db.Exec(ctx, `INSERT INTO archive_objects (organization_id,id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (organization_id,object_key,sha256) DO NOTHING`, object.OrganizationID, object.ID, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, ref.Kind, ref.Retention, ref.BindingID, ref.CustomerOwned, object.CreatedAt)
-	if err != nil {
-		return artifactstore.ArchiveObject{}, mapError(ctx, err)
-	}
 	var stored artifactstore.ArchiveObject
 	var storedRef attachment.ArchiveReference
-	err = s.db.QueryRow(ctx, `SELECT organization_id,id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at,collaboration_bytes FROM archive_objects WHERE organization_id=$1 AND object_key=$2 AND sha256=$3`, s.organization, ref.Key, ref.SHA256).Scan(
-		&stored.OrganizationID, &stored.ID, &storedRef.Key, &storedRef.SHA256, &storedRef.CompressedSize, &storedRef.UncompressedSize, &storedRef.Codec, &storedRef.SchemaVersion, &storedRef.Kind, &storedRef.Retention, &storedRef.BindingID, &storedRef.CustomerOwned, &stored.CreatedAt, &stored.CollaborationBytes)
+	scan := func(row pgx.Row) error {
+		return row.Scan(&stored.OrganizationID, &stored.ID, &storedRef.Key, &storedRef.SHA256, &storedRef.CompressedSize, &storedRef.UncompressedSize, &storedRef.Codec, &storedRef.SchemaVersion, &storedRef.Kind, &storedRef.Retention, &storedRef.BindingID, &storedRef.CustomerOwned, &stored.CreatedAt, &stored.CollaborationBytes)
+	}
+	err := scan(s.db.QueryRow(ctx, `INSERT INTO archive_objects (organization_id,id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (organization_id,object_key,sha256) DO NOTHING RETURNING organization_id,id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at,collaboration_bytes`, object.OrganizationID, object.ID, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, ref.Kind, ref.Retention, ref.BindingID, ref.CustomerOwned, object.CreatedAt))
+	inserted := err == nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = scan(s.db.QueryRow(ctx, `SELECT organization_id,id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at,collaboration_bytes FROM archive_objects WHERE organization_id=$1 AND object_key=$2 AND sha256=$3`, s.organization, ref.Key, ref.SHA256))
+	}
 	if err != nil {
 		return artifactstore.ArchiveObject{}, mapError(ctx, err)
 	}
@@ -117,6 +121,10 @@ func (s *session) RegisterArchiveObject(ctx context.Context, object artifactstor
 		return artifactstore.ArchiveObject{}, corestore.ErrUniqueViolation
 	}
 	stored.Reference = storedRef
+	s.insertedArchive = nil
+	if inserted {
+		s.insertedArchive = new(stored)
+	}
 	return stored, nil
 }
 
@@ -238,6 +246,12 @@ func (s *session) LockArchiveAccounting(ctx context.Context) error {
 }
 
 func (s *session) lockArchiveObject(ctx context.Context, id string) (artifactstore.ArchiveObject, error) {
+	if inserted := s.insertedArchive; inserted != nil {
+		s.insertedArchive = nil
+		if inserted.ID == id {
+			return *inserted, nil
+		}
+	}
 	var object artifactstore.ArchiveObject
 	var ref attachment.ArchiveReference
 	err := s.db.QueryRow(ctx, `SELECT organization_id,id,object_key,sha256,compressed_size,uncompressed_size,codec,schema_version,kind,retention,binding_id,customer_owned,created_at,collaboration_bytes FROM archive_objects WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, id).Scan(&object.OrganizationID, &object.ID, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize, &ref.Codec, &ref.SchemaVersion, &ref.Kind, &ref.Retention, &ref.BindingID, &ref.CustomerOwned, &object.CreatedAt, &object.CollaborationBytes)
