@@ -959,33 +959,42 @@ func TestHostedInvitationConcurrentKeyInvitesOnce(t *testing.T) {
 	path := browserHostedOrganizationBase + "/members/invitations"
 	body := `{"email":"race@example.test","role":"member","idempotency_key":"race"}`
 	headers := map[string]string{"X-CSRF-Token": hostedCSRF(owner.Value)}
-	const requests = 8
-	start := make(chan struct{})
-	responses := make(chan *httptest.ResponseRecorder, requests)
-	var group sync.WaitGroup
-	for range requests {
-		group.Go(func() {
-			<-start
-			responses <- f.rawAPI(t, "owner", http.MethodPost, path, body, headers)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var enter, unblock sync.Once
+	f.provider.mu.Lock()
+	f.provider.inviteBarrier = func() {
+		enter.Do(func() {
+			close(entered)
+			<-release
 		})
 	}
-	close(start)
-	group.Wait()
-	close(responses)
-	ids := map[string]bool{}
-	for response := range responses {
-		if response.Code == http.StatusConflict && strings.Contains(response.Body.String(), `"code":"idempotency_in_progress"`) {
-			continue
-		}
-		if response.Code != http.StatusCreated {
-			t.Fatalf("status = %d: %s", response.Code, response.Body.String())
-		}
-		var view hostedInvitationView
-		browserHostedDecode(t, response, &view)
-		ids[view.ID] = true
+	f.provider.mu.Unlock()
+	first := make(chan *httptest.ResponseRecorder, 1)
+	go func() { first <- f.rawAPI(t, "owner", http.MethodPost, path, body, headers) }()
+	t.Cleanup(func() {
+		unblock.Do(func() { close(release) })
+		<-first
+	})
+	select {
+	case <-entered:
+	case response := <-first:
+		first <- response
+		t.Fatalf("first request finished before the provider call: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if len(ids) != 1 || f.providerInvitations() != 1 {
-		t.Fatalf("invitations %v, provider invitations %d", ids, f.providerInvitations())
+	overlap := f.rawAPI(t, "owner", http.MethodPost, path, body, headers)
+	if overlap.Code != http.StatusConflict || !strings.Contains(overlap.Body.String(), `"code":"idempotency_in_progress"`) {
+		t.Fatalf("overlapping duplicate status = %d, want 409 idempotency_in_progress: %s", overlap.Code, overlap.Body.String())
+	}
+	unblock.Do(func() { close(release) })
+	created := <-first
+	first <- created
+	if created.Code != http.StatusCreated {
+		t.Fatalf("first status = %d, want 201: %s", created.Code, created.Body.String())
+	}
+	var invitation hostedInvitationView
+	browserHostedDecode(t, created, &invitation)
+	if invitation.ID == "" || f.providerInvitations() != 1 {
+		t.Fatalf("invitation %q, provider invitations %d", invitation.ID, f.providerInvitations())
 	}
 	retry := f.rawAPI(t, "owner", http.MethodPost, path, body, headers)
 	if retry.Code != http.StatusCreated {
@@ -993,8 +1002,8 @@ func TestHostedInvitationConcurrentKeyInvitesOnce(t *testing.T) {
 	}
 	var replay hostedInvitationView
 	browserHostedDecode(t, retry, &replay)
-	if !ids[replay.ID] || f.providerInvitations() != 1 {
-		t.Fatalf("retry invitation %s, invitations %v, provider invitations %d", replay.ID, ids, f.providerInvitations())
+	if replay.ID != invitation.ID || f.providerInvitations() != 1 {
+		t.Fatalf("retry invitation %s, first %s, provider invitations %d", replay.ID, invitation.ID, f.providerInvitations())
 	}
 }
 

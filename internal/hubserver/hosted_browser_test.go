@@ -46,6 +46,7 @@ type browserHostedProvider struct {
 	users              map[string]auth.HostedUser
 	sequence           int
 	invitationDelivery func(context.Context, string, string) error
+	inviteBarrier      func()
 }
 
 func (p *browserHostedProvider) RevokeInvitation(ctx context.Context, id string) error {
@@ -171,6 +172,12 @@ func (p *browserHostedProvider) RevokeMembership(_ context.Context, id string) e
 }
 
 func (p *browserHostedProvider) Invite(_ context.Context, organization, email, role, _ string) (auth.Invitation, error) {
+	p.mu.Lock()
+	barrier := p.inviteBarrier
+	p.mu.Unlock()
+	if barrier != nil {
+		barrier()
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.sequence++
