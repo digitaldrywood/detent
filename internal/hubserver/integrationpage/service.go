@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -37,4 +38,12 @@ func (s *Service) snapshot(ctx context.Context, scope hubapi.Scope, run func(con
 		return repository.ReadRequest(ctx, scope.Organization, run)
 	}
 	return run(ctx)
+}
+
+func (s *Service) authorizeLive(ctx context.Context, scope hubapi.Scope) error {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
+	defer cancel()
+	return s.deps.RecordError(s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return scope.Authorize(ctx, r, false)
+	}))
 }

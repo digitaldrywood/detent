@@ -62,6 +62,24 @@ func (r *snapshotRepository) ReadRequest(ctx context.Context, org tracker.Organi
 	return r.RequestReader.ReadRequest(ctx, org, read)
 }
 
+type revokingRepository struct {
+	tenantstore.Repository
+	tenantstore.RequestReader
+	depth         atomic.Int32
+	afterSnapshot func(context.Context) error
+}
+
+func (r *revokingRepository) ReadRequest(ctx context.Context, org tracker.OrganizationID, read func(context.Context) error) error {
+	r.depth.Add(1)
+	err := r.RequestReader.ReadRequest(ctx, org, read)
+	if r.depth.Add(-1) == 0 && err == nil && r.afterSnapshot != nil {
+		revoke := r.afterSnapshot
+		r.afterSnapshot = nil
+		err = revoke(ctx)
+	}
+	return err
+}
+
 type selectedTenant struct{ hubmaintenance.Tenant }
 
 func (r selectedTenant) Page(ctx context.Context, after string, limit int) ([]hubmaintenance.Tenant, error) {
@@ -80,6 +98,7 @@ type readFixture struct {
 	repository *repositorySwitch
 	details    *readDetails
 	h          *hubtest.HTTPHarness
+	live       atomic.Int32
 }
 
 func newReadFixture(t *testing.T) *readFixture {
@@ -136,7 +155,7 @@ func (f *readFixture) pageService() *integrationpage.Service {
 		return record, hubauth.RecordError(err)
 	}
 	return integrationpage.New(integrationpage.Deps{Repository: f.repository, Details: hubmaintenance.LimitDetails(f.details), Now: time.Now, RecordError: hubauth.RecordError,
-		ReadProject: readProject, Scope: func(c echo.Context) hubapi.Scope { return c.Get("hub_request_scope").(hubapi.Scope) }, Error: hubtest.HTTPError, Audit: func(echo.Context, hubapi.Scope) error { return nil }, Live: func(echo.Context, *projectstore.Integration) error { return nil },
+		ReadProject: readProject, Scope: func(c echo.Context) hubapi.Scope { return c.Get("hub_request_scope").(hubapi.Scope) }, Error: hubtest.HTTPError, Audit: func(echo.Context, hubapi.Scope) error { return nil }, Live: func(echo.Context, *projectstore.Integration) error { f.live.Add(1); return nil },
 		Workflow: func(ctx context.Context, record projectstore.Record) (string, error) {
 			if record.Settings.WorkflowKey == "" {
 				return "", nil

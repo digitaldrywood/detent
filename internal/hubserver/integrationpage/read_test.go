@@ -121,7 +121,7 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 					t.Errorf("workflow state flags or ordered transitions changed: %+v", result.States)
 				}
 				t.Logf("tenant=%s size=%d statements=%d exchanges=%d objects=%d", organization, size, statements, exchanges, objects)
-				if statements != 15 || exchanges != 10 {
+				if statements != 21 || exchanges != 15 {
 					t.Errorf("wire budget: statements=%d exchanges=%d", statements, exchanges)
 				}
 				if objects != 0 {
@@ -141,5 +141,57 @@ func TestIntegrationPageDoesNotReadObjects(t *testing.T) {
 			}
 
 		}
+	}
+}
+
+func TestIntegrationPageRechecksAuthorityBeforeLiveRead(t *testing.T) {
+	for _, revoked := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+		t.Run(string(revoked), func(t *testing.T) {
+			f := newReadFixture(t)
+			projects := map[tracker.OrganizationID]readProject{}
+			for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
+				projects[organization] = f.project(t, organization)
+			}
+			target := projects[revoked]
+			probe := &revokingRepository{Repository: f.original, RequestReader: f.original}
+			probe.afterSnapshot = func(ctx context.Context) error {
+				return f.original.WriteTenant(context.WithoutCancel(ctx), revoked, corestore.Serving, func(w tenantstore.Writer) error {
+					return w.DeleteAccessTokenGrant(ctx, target.actor.Credential.ID, target.project.ID)
+				})
+			}
+			f.use(probe)
+			t.Cleanup(func() { f.use(f.original) })
+			response := f.request(t, target)
+			requireStatus(t, response, http.StatusNotFound)
+			var refusal struct {
+				Code string `json:"code"`
+			}
+			decodeResponse(t, response, &refusal)
+			if refusal.Code != "not_found" {
+				t.Fatalf("revoked live read code = %q, want not_found: %s", refusal.Code, response.Body.String())
+			}
+			if probe.afterSnapshot != nil {
+				t.Fatal("authority was not revoked between the page snapshot and the live read")
+			}
+			if calls := f.live.Load(); calls != 0 {
+				t.Fatalf("live callback ran %d times for a revoked caller", calls)
+			}
+			fresh := f.request(t, target)
+			if fresh.Code != response.Code || fresh.Body.String() != response.Body.String() {
+				t.Fatalf("revoked live read answer %d %s differs from a fresh hidden-resource answer %d %s", response.Code, response.Body.String(), fresh.Code, fresh.Body.String())
+			}
+			if calls := f.live.Load(); calls != 0 {
+				t.Fatalf("live callback ran %d times for a hidden project", calls)
+			}
+			for organization, project := range projects {
+				if organization == revoked {
+					continue
+				}
+				requireStatus(t, f.request(t, project), http.StatusOK)
+				if calls := f.live.Load(); calls != 1 {
+					t.Fatalf("authorized tenant %s live callback calls = %d, want 1", organization, calls)
+				}
+			}
+		})
 	}
 }

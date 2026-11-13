@@ -131,6 +131,9 @@ func (s *Service) Get(c echo.Context) error {
 		}
 	}
 	if err == nil {
+		err = s.authorizeLive(c.Request().Context(), s.deps.Scope(c))
+	}
+	if err == nil {
 		err = s.deps.Live(c, &value)
 	}
 	if err != nil {
