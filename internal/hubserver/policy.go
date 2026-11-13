@@ -530,6 +530,9 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 		}
 		return nil
 	})
+	if errors.Is(err, projectstore.ErrStateInUse) {
+		return policy.Approval{}, hubapi.ProjectRecordError(err)
+	}
 	if err != nil {
 		return policy.Approval{}, err
 	}
