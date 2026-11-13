@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -28,6 +29,7 @@ type tracedStatement struct {
 }
 
 func TestHotReadQueryPlans(t *testing.T) {
+	t.Parallel()
 	f := newUsageHostedFixture(t)
 	admin := hostedPostgresAdmin(t, f.service)
 	installReportsBudgetTrace(t, f.service)
@@ -115,6 +117,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 }
 
 func TestAnalyticsReportPlans(t *testing.T) {
+	t.Parallel()
 	for _, population := range []struct {
 		name        string
 		shape       productionProjectShape
@@ -124,6 +127,7 @@ func TestAnalyticsReportPlans(t *testing.T) {
 		{"attempt payloads", productionProjectShape{issues: 594, attempts: 469, usage: 262, leases: 1682, comments: 7000}, 0},
 	} {
 		t.Run(population.name, func(t *testing.T) {
+			t.Parallel()
 			f := newUsageHostedFixture(t)
 			installReportsBudgetTrace(t, f.service)
 			scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}
@@ -242,6 +246,7 @@ func seedProductionProject(t *testing.T, s *Service, scope hubscope.NativeScope,
 	}); err != nil {
 		t.Fatal(err)
 	}
+	content := eventstore.NewContent(s.runDetailStore())
 	items := make([]tracker.NativeIssue, shape.issues)
 	worked := []int{}
 	steps := []struct {
@@ -271,6 +276,7 @@ func seedProductionProject(t *testing.T, s *Service, scope hubscope.NativeScope,
 		}
 		id := fmt.Sprintf("wi_shaped_%d", index)
 		items[index] = seedAnalyticsTestWorkItem(t, s, scope.Organization, scope.Project, id, 100000+index, "Example report item", state, created)
+		var events []eventstore.Event
 		for _, step := range steps {
 			if step.state != state {
 				continue
@@ -279,7 +285,23 @@ func seedProductionProject(t *testing.T, s *Service, scope hubscope.NativeScope,
 			if step.kind == "scheduler.decision" {
 				data.Decision = &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", At: created.Add(step.offset)}
 			}
-			appendAnalyticsTestEvent(t, s, scope, items[index].WorkItemID, step.kind, data, created.Add(step.offset))
+			event, err := content.PrepareEvent(t.Context(), scope.Organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: items[index].WorkItemID, Type: step.kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: created.Add(step.offset), Data: data}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, event)
+		}
+		if len(events) > 0 {
+			if err := s.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+				for _, event := range events {
+					if _, err := w.AppendEvent(t.Context(), event); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if state == "Done" || state == "In Progress" {
 			worked = append(worked, index)
@@ -335,22 +357,37 @@ func seedProductionProject(t *testing.T, s *Service, scope hubscope.NativeScope,
 			t.Fatal(err)
 		}
 	}
-	content := eventstore.NewContent(s.runDetailStore())
 	body, err := content.PreparePayload(t.Context(), scope.Organization, []byte(strings.Repeat("x", 200)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index := range shape.comments {
-		item := items[index%len(items)]
-		at := item.CreatedAt.Add(time.Duration(10800+index/len(items)*60) * time.Second)
-		id := fmt.Sprintf("comment_shaped_%d", index)
+	for first := 0; first < shape.comments; first += 100 {
+		comments := make([]corestore.Comment, 0, 100)
+		events := make([]eventstore.Event, 0, 100)
+		for index := first; index < min(first+100, shape.comments); index++ {
+			item := items[index%len(items)]
+			at := item.CreatedAt.Add(time.Duration(10800+index/len(items)*60) * time.Second)
+			id := fmt.Sprintf("comment_shaped_%d", index)
+			comments = append(comments, corestore.Comment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.WorkItemID, ID: id, Sequence: int64(index/len(items) + 1), BodyObjectKey: body.Key, ActorKind: "human", ActorPrincipalID: "example", CreatedAt: at, UpdatedAt: at})
+			event, err := content.PrepareEvent(t.Context(), scope.Organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item.WorkItemID, Type: "comment.created", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: at, Data: tracker.CollaborationData{CommentID: id}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, event)
+		}
 		if err := s.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.CreateComment(t.Context(), corestore.Comment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.WorkItemID, ID: id, Sequence: int64(index/len(items) + 1), BodyObjectKey: body.Key, ActorKind: "human", ActorPrincipalID: "example", CreatedAt: at, UpdatedAt: at})
-			return err
+			for index, comment := range comments {
+				if _, err := w.CreateComment(t.Context(), comment); err != nil {
+					return err
+				}
+				if _, err := w.AppendEvent(t.Context(), events[index]); err != nil {
+					return err
+				}
+			}
+			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		appendAnalyticsTestEvent(t, s, scope, item.WorkItemID, "comment.created", tracker.CollaborationData{CommentID: id}, at)
 	}
 	for _, test := range []struct {
 		relation, predicate string
