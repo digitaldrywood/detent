@@ -76,6 +76,12 @@ func TestSlackContractPersistsSettingsAndRetryReceipts(t *testing.T) {
 		if !errors.Is(err, corestore.ErrRevisionConflict) {
 			t.Fatalf("early retry=%v", err)
 		}
+		err = repository.WriteSlack(t.Context(), org, corestore.Serving, func(w postgres.SlackWriter) error {
+			return w.RecordSlackStatus(t.Context(), postgres.RecordSlackStatusInput{OrganizationID: org, ExpectedRevision: 2, StatusCode: 503, Failed: true, At: now})
+		})
+		if !errors.Is(err, corestore.ErrRevisionConflict) {
+			t.Fatalf("stale settings status=%v", err)
+		}
 		if err := repository.WriteSlack(t.Context(), org, corestore.Background, func(w postgres.SlackWriter) error {
 			if _, err := w.ClaimSlackDelivery(t.Context(), postgres.ClaimSlackDeliveryInput{OrganizationID: org, ID: "first", ExpectedAttempts: 1, Now: now.Add(time.Minute), NextAttemptAt: now.Add(2 * time.Minute)}); err != nil {
 				return err

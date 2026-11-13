@@ -98,6 +98,9 @@ func (s *session) RecordSlackStatus(ctx context.Context, arg RecordSlackStatusIn
 		return corestore.ErrInvalidPage
 	}
 	count, err := s.queries.RecordSlackStatus(ctx, arg)
+	if err == nil && count == 0 {
+		return corestore.ErrRevisionConflict
+	}
 	return affected(ctx, count, err)
 }
 func (s *session) EnqueueSlackDelivery(ctx context.Context, arg EnqueueSlackDeliveryInput) (SlackDelivery, error) {
