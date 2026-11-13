@@ -39,13 +39,13 @@ func (f *runnerEventSession) queueRunnerTokenUsage(attempt leasestore.Attempt, u
 		f.pending.Queue(`WITH old AS MATERIALIZED (
  SELECT input_tokens,cached_input_tokens,output_tokens FROM runner_attempt_token_usage WHERE organization_id=$1 AND attempt_id=$2 AND model=$3 FOR UPDATE
 ), delta AS MATERIALIZED (
- SELECT $8::bigint-coalesce((SELECT input_tokens FROM old),0) AS input,
- $9::bigint-coalesce((SELECT cached_input_tokens FROM old),0) AS cached,
- $10::bigint-coalesce((SELECT output_tokens FROM old),0) AS output,
+ SELECT greatest($8::bigint-coalesce((SELECT input_tokens FROM old),0),0) AS input,
+ greatest($9::bigint-coalesce((SELECT cached_input_tokens FROM old),0),0) AS cached,
+ greatest($10::bigint-coalesce((SELECT output_tokens FROM old),0),0) AS output,
  CASE WHEN EXISTS(SELECT 1 FROM old) THEN 0 ELSE 1 END::bigint AS sessions
 ), written AS (
  INSERT INTO runner_attempt_token_usage(organization_id,attempt_id,model,project_id,issue_id,usage_day,observed_at,input_tokens,cached_input_tokens,output_tokens)
- SELECT $1,$2,$3,$4,$5,$6::date,$7::timestamptz,$8,$9,$10 FROM delta WHERE input>=0 AND cached>=0 AND output>=0
+ SELECT $1,$2,$3,$4,$5,$6::date,$7::timestamptz,coalesce((SELECT input_tokens FROM old),0)+input,coalesce((SELECT cached_input_tokens FROM old),0)+cached,coalesce((SELECT output_tokens FROM old),0)+output FROM delta
  ON CONFLICT(organization_id,attempt_id,model) DO UPDATE SET usage_day=excluded.usage_day,observed_at=excluded.observed_at,input_tokens=excluded.input_tokens,cached_input_tokens=excluded.cached_input_tokens,output_tokens=excluded.output_tokens RETURNING attempt_id
 ), daily AS (
  INSERT INTO runner_project_daily_tokens(organization_id,project_id,usage_day,model,input_tokens,cached_input_tokens,output_tokens,sessions)

@@ -1220,7 +1220,7 @@ func TestRunnerSpendReportBoundAcceptsOtherAttempts(t *testing.T) {
 	}
 }
 
-func TestRunnerSpendRejectsCumulativeDecrease(t *testing.T) {
+func TestRunnerSpendAcceptsCumulativeDecreaseAsZero(t *testing.T) {
 	yesterday := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 	today := yesterday.AddDate(0, 0, 1)
 	for _, test := range []struct {
@@ -1253,15 +1253,9 @@ func TestRunnerSpendRejectsCumulativeDecrease(t *testing.T) {
 				decreased.Sequence, decreased.PayloadObjectKey = 2, "example/decreased"
 				decreased.Usage = []tracker.NativeUsage{test.decrease}
 				decreased.Usage[0].Model, decreased.Usage[0].To = "example-model", today
-				err := r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-					_, err := w.RecordAttempt(t.Context(), decreased)
-					return err
-				})
-				if !errors.Is(err, leasestore.ErrAttemptConflict) {
-					t.Errorf("decreased cumulative usage error = %v, want attempt conflict", err)
-				}
+				pgstoretest.RecordLeaseAttempt(t, r, org, decreased)
 				grown := event
-				grown.Sequence, grown.PayloadObjectKey = 2, "example/grown"
+				grown.Sequence, grown.PayloadObjectKey = 3, "example/grown"
 				grown.Usage = []tracker.NativeUsage{{Model: "example-model", Input: 110, CachedInput: 40, Output: 1_000_020, To: today}}
 				pgstoretest.RecordLeaseAttempt(t, r, org, grown)
 				for _, want := range []struct {

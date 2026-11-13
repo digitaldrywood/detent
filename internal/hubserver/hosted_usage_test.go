@@ -1161,8 +1161,8 @@ func TestRecordAttemptUsageDelta(t *testing.T) {
 		name     string
 		total    tracker.NativeUsage
 		recorded tracker.NativeUsage
+		dipped   tracker.NativeUsage
 		want     tracker.NativeUsage
-		status   int
 	}{
 		{
 			name:  "first report",
@@ -1184,7 +1184,13 @@ func TestRecordAttemptUsageDelta(t *testing.T) {
 			name:     "total that went backwards is not debt",
 			total:    tracker.NativeUsage{Model: "gpt-6-astra", Input: 500, Output: 50},
 			recorded: tracker.NativeUsage{Input: 1000, Output: 100, CostEstimate: 0.25},
-			status:   http.StatusConflict,
+		},
+		{
+			name:     "total that rises again past its old high-water mark",
+			total:    tracker.NativeUsage{Model: "gpt-6-astra", Input: 1300, Output: 130, CostEstimate: 0.325, Currency: "USD"},
+			recorded: tracker.NativeUsage{Input: 1000, Output: 100, CostEstimate: 0.25, Currency: "USD"},
+			dipped:   tracker.NativeUsage{Input: 500, Output: 50},
+			want:     tracker.NativeUsage{Input: 300, Output: 30, CostEstimate: 0.075},
 		},
 		{
 			name:     "unpriced increment priced by the hub",
@@ -1205,18 +1211,20 @@ func TestRecordAttemptUsageDelta(t *testing.T) {
 			f := claimAttemptDiffFixture(t, false, newNativeFixture(t, service, org, fmt.Sprintf("usage-delta-%d", i)))
 			f.start(t)
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 3600}), http.StatusOK)
-			recorded, total := test.recorded, test.total
-			recorded.Provider, recorded.Model, total.Provider = "codex", test.total.Model, "codex"
-			reports := []struct {
+			recorded, dipped, total := test.recorded, test.dipped, test.total
+			recorded.Provider, recorded.Model, dipped.Provider, dipped.Model, total.Provider = "codex", test.total.Model, "codex", test.total.Model, "codex"
+			type report struct {
 				at    time.Time
 				usage tracker.NativeUsage
-			}{{at: totalAt, usage: total}}
-			if test.recorded != (tracker.NativeUsage{}) {
-				reports = append([]struct {
-					at    time.Time
-					usage tracker.NativeUsage
-				}{{at: recordedAt, usage: recorded}}, reports...)
 			}
+			var reports []report
+			if test.recorded != (tracker.NativeUsage{}) {
+				reports = append(reports, report{at: recordedAt, usage: recorded})
+			}
+			if test.dipped != (tracker.NativeUsage{}) {
+				reports = append(reports, report{at: recordedAt.Add(5 * time.Minute), usage: dipped})
+			}
+			reports = append(reports, report{at: totalAt, usage: total})
 			for j, report := range reports {
 				clock.Advance(report.at.Sub(clock.Now()))
 				event := nativeStartedEvent(f.lease)
@@ -1225,11 +1233,7 @@ func TestRecordAttemptUsageDelta(t *testing.T) {
 				event.Data.AttemptID, event.Data.RunID, event.Data.Sequence = f.attempt, f.run, int64(j+2)
 				event.Data.Handoff = nativeTestCheckpoint()
 				event.Data.Usage = []tracker.NativeUsage{report.usage}
-				status := http.StatusOK
-				if j == len(reports)-1 && test.status != 0 {
-					status = test.status
-				}
-				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, pendingEventPath(f), f.worker, event), status)
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, pendingEventPath(f), f.worker, event), http.StatusOK)
 			}
 			rows, err := usagePostgresAdmin(t, service).QueryContext(t.Context(), `SELECT input,cached_input,output,cost_estimate FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2 AND period=$3`, org, f.attempt, totalAt.Truncate(time.Hour))
 			if err != nil {
@@ -1253,6 +1257,20 @@ func TestRecordAttemptUsageDelta(t *testing.T) {
 			got.CostEstimate = test.want.CostEstimate
 			if got != test.want {
 				t.Fatalf("recorded delta = %+v, want %+v", got, test.want)
+			}
+			var highWater tracker.NativeUsage
+			for _, report := range reports {
+				highWater.Input, highWater.CachedInput, highWater.Output = max(highWater.Input, report.usage.Input), max(highWater.CachedInput, report.usage.CachedInput), max(highWater.Output, report.usage.Output)
+			}
+			var billed, counted tracker.NativeUsage
+			if err := usagePostgresAdmin(t, service).QueryRowContext(t.Context(), `SELECT coalesce(sum(input),0),coalesce(sum(cached_input),0),coalesce(sum(output),0) FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2`, org, f.attempt).Scan(&billed.Input, &billed.CachedInput, &billed.Output); err != nil {
+				t.Fatal(err)
+			}
+			if err := usagePostgresAdmin(t, service).QueryRowContext(t.Context(), `SELECT coalesce(sum(t.input_tokens),0),coalesce(sum(t.cached_input_tokens),0),coalesce(sum(t.output_tokens),0) FROM runner_issue_tokens t JOIN native_attempts a ON a.organization_id=t.organization_id AND a.issue_id=t.issue_id WHERE a.organization_id=$1 AND a.id=$2`, org, f.attempt).Scan(&counted.Input, &counted.CachedInput, &counted.Output); err != nil {
+				t.Fatal(err)
+			}
+			if billed != highWater || counted != highWater {
+				t.Fatalf("attempt usage billed=%+v runner tokens=%+v, want high-water %+v", billed, counted, highWater)
 			}
 		})
 	}
