@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -550,4 +551,16 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 		}
 	})
 
+}
+
+type maintenanceTenantRegistry []hubmaintenance.Tenant
+
+func (r maintenanceTenantRegistry) Page(_ context.Context, after string, limit int) ([]hubmaintenance.Tenant, error) {
+	var page []hubmaintenance.Tenant
+	for _, tenant := range r {
+		if tenant.Organization > after && len(page) < limit {
+			page = append(page, tenant)
+		}
+	}
+	return page, nil
 }

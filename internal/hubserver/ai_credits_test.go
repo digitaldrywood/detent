@@ -745,3 +745,15 @@ func TestIncludedAICreditAllowance(t *testing.T) {
 		}
 	}
 }
+
+func seedHostedBillingRecordAccount(t *testing.T, repository tenantstore.Repository, org tracker.OrganizationID, account billingstore.Account) {
+	t.Helper()
+	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(writer tenantstore.Writer) error {
+		if err := writer.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example organization", CreatedAt: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)}); err != nil {
+			return err
+		}
+		return writer.SetBillingAccount(t.Context(), account)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

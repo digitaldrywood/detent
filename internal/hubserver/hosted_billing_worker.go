@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -12,13 +11,11 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/billing"
-	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type hostedBillingWorker struct {
@@ -26,134 +23,6 @@ type hostedBillingWorker struct {
 	mu      sync.Mutex
 	cancel  context.CancelFunc
 	done    chan struct{}
-}
-
-type BillingTenant struct {
-	Tenant   hubmaintenance.Tenant
-	Revision string
-	Plans    hostedplans.HostedPlansConfig
-	Config   *hostedplans.HostedBillingConfig
-}
-
-type maintenanceBillingRepository struct{ tenantstore.Repository }
-
-func (r maintenanceBillingRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, _ corestore.Workload, read func(tenantstore.Reader) error) error {
-	return r.Repository.ReadTenant(ctx, org, corestore.Background, read)
-}
-
-func (r maintenanceBillingRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, _ corestore.Workload, write func(tenantstore.Writer) error) error {
-	return r.Repository.WriteTenant(ctx, org, corestore.Background, write)
-}
-
-func (s *Service) billingMaintenance(ctx context.Context, tenant BillingTenant) (*Service, error) {
-	if err := hubmaintenance.RequireTenant(ctx, tenant.Tenant); err != nil {
-		return nil, err
-	}
-	if tenant.Revision == "" || tenant.Config != nil && tenant.Config.Provider == nil {
-		return nil, errors.New("maintenance requires an applied billing configuration")
-	}
-	if s.database == nil || s.database.billingRepository == nil {
-		return nil, ErrHostedDatabaseBinding
-	}
-	now, leaseID := s.config.now, s.config.newLeaseID
-	if now == nil {
-		now = time.Now
-	}
-	if leaseID == nil {
-		leaseID = func() string { return hubapi.NewID("billing") }
-	}
-	d := &database{billingRepository: maintenanceBillingRepository{s.database.billingRepository}, billingAuditStore: hubmaintenance.LimitDetails(s.database.billingAuditStore), hostedOrganization: tracker.OrganizationID(tenant.Tenant.Organization), now: now, newLeaseID: leaseID}
-	d.hostedRuntime.Store(&hostedplans.RuntimeConfig{Revision: tenant.Revision, Plans: tenant.Plans, Billing: tenant.Config})
-	if tenant.Config != nil {
-		d.aiCreditMode = tenant.Config.CreditMode()
-	}
-	return &Service{database: d, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: tenant.Tenant.Organization, Billing: tenant.Config}, now: now, newLeaseID: leaseID}}, nil
-}
-
-func (s *Service) MaintainBillingCredit(ctx context.Context, tenant BillingTenant, after int64) (int64, bool, error) {
-	view, err := s.billingMaintenance(ctx, tenant)
-	if err != nil {
-		return after, false, err
-	}
-	if tenant.Config == nil {
-		return after, false, nil
-	}
-	return view.maintainBillingCredit(ctx, after)
-}
-
-func (s *Service) maintainBillingCredit(ctx context.Context, after int64) (int64, bool, error) {
-	if after < 0 || s.database == nil || s.database.hostedOrganization == "" || s.database.billingRepository == nil {
-		return after, false, ErrHostedDatabaseBinding
-	}
-	var events []billingstore.Event
-	err := s.database.billingRepository.ReadTenant(ctx, s.database.hostedOrganization, corestore.Background, func(r tenantstore.Reader) error {
-		var err error
-		events, err = r.BillingEvents(ctx, after, math.MaxInt64, 1)
-		return err
-	})
-	if err != nil {
-		return after, false, err
-	}
-	if len(events) == 0 {
-		return 0, false, nil
-	}
-	event := events[0]
-	if event.CreditProcessed {
-		return event.Sequence, true, nil
-	}
-	worker := &hostedBillingWorker{service: s}
-	if err := worker.creditEvent(ctx, event.ID, event.Type); err != nil {
-		return event.Sequence, true, err
-	}
-	err = s.database.billingRepository.WriteTenant(ctx, s.database.hostedOrganization, corestore.Background, func(w tenantstore.Writer) error {
-		return w.SetBillingEventCreditProcessed(ctx, event.ID)
-	})
-	return event.Sequence, true, err
-}
-
-func (s *Service) MaintainBillingFunding(ctx context.Context, tenant BillingTenant) error {
-	view, err := s.billingMaintenance(ctx, tenant)
-	if err != nil {
-		return err
-	}
-	return (&hostedBillingWorker{service: view}).autoFund(ctx)
-}
-
-func (s *Service) MaintainBillingSubscription(ctx context.Context, tenant BillingTenant) error {
-	view, err := s.billingMaintenance(ctx, tenant)
-	if err != nil {
-		return err
-	}
-	return view.maintainBillingSubscription(ctx)
-}
-
-func (s *Service) maintainBillingSubscription(ctx context.Context) error {
-	cfg := s.hostedBillingConfig()
-	if cfg == nil {
-		return nil
-	}
-	var events []billingstore.Event
-	var reconciled *time.Time
-	if err := s.database.billingRepository.ReadTenant(ctx, s.database.hostedOrganization, corestore.Background, func(r tenantstore.Reader) error {
-		account, err := r.BillingAccount(ctx)
-		if err != nil {
-			return err
-		}
-		reconciled = account.ReconciledAt
-		events, err = r.UnprocessedBillingEvents(ctx, 1)
-		return err
-	}); err != nil {
-		return err
-	}
-	if len(events) == 0 && reconciled != nil && s.config.now().Before(reconciled.Add(time.Duration(cfg.ReconcileSeconds)*time.Second)) {
-		return nil
-	}
-	var ids []string
-	var through int64
-	if len(events) > 0 {
-		ids, through = []string{events[0].ID}, events[0].Sequence
-	}
-	return (&hostedBillingWorker{service: s}).reconcileSubscription(ctx, through, ids)
 }
 
 func (s *Service) startHostedBilling() {
