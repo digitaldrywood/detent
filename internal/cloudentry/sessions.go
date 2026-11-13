@@ -167,43 +167,6 @@ func (a *authStore) authorizationByBinding(ctx context.Context, binding string) 
 	return items[0], nil
 }
 
-// refreshLocks serializes provider token refreshes per authorization: a
-// WorkOS refresh token is single use, so two concurrent refreshes of the
-// same session would revoke it.
-type refreshLocks struct {
-	mu    sync.Mutex
-	locks map[string]*refreshLock
-}
-
-type refreshLock struct {
-	sync.Mutex
-	users int
-}
-
-func (r *refreshLocks) lock(key string) func() {
-	r.mu.Lock()
-	if r.locks == nil {
-		r.locks = make(map[string]*refreshLock)
-	}
-	entry := r.locks[key]
-	if entry == nil {
-		entry = &refreshLock{}
-		r.locks[key] = entry
-	}
-	entry.users++
-	r.mu.Unlock()
-	entry.Lock()
-	return func() {
-		entry.Unlock()
-		r.mu.Lock()
-		entry.users--
-		if entry.users == 0 {
-			delete(r.locks, key)
-		}
-		r.mu.Unlock()
-	}
-}
-
 func (a *authStore) createSession(ctx context.Context, hash, csrfSecret string, identity auth.Identity) error {
 	return a.store.db.postgres.CreateSession(ctx, platformstore.Session{Hash: hash, Subject: identity.Subject, Email: identity.Email, CSRFSecret: csrfSecret, Identity: *identity.Hosted})
 }

@@ -189,7 +189,7 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 		s.dropAuthorization(ctx, authorized)
 		return auth.HostedAccess{}, verificationToken, http.StatusUnauthorized, errNoSession
 	}
-	unlock := s.refreshes.lock(authorized.Binding)
+	unlock := s.refreshes.Lock(authorized.Binding)
 	defer unlock()
 	current, err := s.auth.authorizationByBinding(ctx, authorized.Binding)
 	if err != nil {

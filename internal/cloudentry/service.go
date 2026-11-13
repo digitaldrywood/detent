@@ -27,9 +27,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/keylock"
 	"github.com/digitaldrywood/detent/internal/cloudentry/notifications"
 	"github.com/digitaldrywood/detent/internal/cloudentry/origin"
 	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
+	"github.com/digitaldrywood/detent/internal/cloudentry/webhooks"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -136,11 +138,11 @@ type Service struct {
 	transports        sync.Map
 	mutationMu        sync.Mutex
 	verified          sessionVerifications
-	refreshes         refreshLocks
+	refreshes         keylock.Mutex
 	attachments       attachment.Storage
 	attachmentLocks   attachmentLocks
 	attachmentSweepAt time.Time
-	githubRoutes      githubRoutes
+	githubWebhooks    *webhooks.Service
 
 	stopAuthReseal    context.CancelFunc
 	authResealDone    chan struct{}
@@ -219,6 +221,16 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if cfg.transport == nil {
 		service.config.transport = service.tenantTransport
 	}
+	service.githubWebhooks = webhooks.New(webhooks.Deps{
+		Secret: service.config.GitHubWebhookSecret, Logger: service.config.Logger,
+		List: service.registry.List, ReadyOrganization: service.readyOrganization,
+		StartManaged: service.config.Allocation != nil,
+		StartTenant: func(ctx context.Context, organization *Organization) error {
+			return service.runStep(ctx, organization, "tenant_start")
+		},
+		ServiceCall: service.serviceCall, Claims: service.claims, SignedCall: service.signedCall,
+		OrganizationNotFound: ErrOrganizationNotFound,
+	})
 	service.echo = echo.New()
 	service.echo.HideBanner, service.echo.HidePort = true, true
 	service.echo.Server.ReadHeaderTimeout = 5 * time.Second
@@ -394,7 +406,7 @@ func (s *Service) routes() {
 	e.GET("/support", s.supportPage)
 	e.POST("/support/start", s.startSupport)
 	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
-	e.POST("/api/v1/webhooks/github", s.githubWebhook)
+	e.POST("/api/v1/webhooks/github", s.githubWebhooks.Webhook)
 	e.GET("/invite", s.startInvitation)
 	s.registerAttachmentRoutes(e)
 	e.GET("/api/cloud/organizations/:organization/archive-storage", s.archiveStorageBinding)

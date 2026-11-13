@@ -1,11 +1,17 @@
-package cloudentry
+package webhooks
 
 import (
+	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
+	"github.com/labstack/echo/v4"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -13,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
@@ -26,11 +33,13 @@ func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 		{name: "wrong signature", secret: "example-webhook-secret", signature: "sha256=" + strings.Repeat("0", 64), status: http.StatusUnauthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newEntryFixture(t, func(cfg *Config) { cfg.GitHubWebhookSecret = []byte(test.secret) })
+			service := New(Deps{Secret: []byte(test.secret)})
+			entry := echo.New()
+			entry.POST("/api/v1/webhooks/github", service.Webhook)
 			request := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", strings.NewReader(`{}`))
 			request.Header.Set("X-Hub-Signature-256", test.signature)
 			response := httptest.NewRecorder()
-			f.service.Handler().ServeHTTP(response, request)
+			entry.ServeHTTP(response, request)
 			if response.Code != test.status {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body)
 			}
@@ -62,60 +71,61 @@ func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 				workers.Wait()
 			}()
 			var alphaCalls, betaCalls, deliveries atomic.Int64
-			f := newEntryFixture(t, func(cfg *Config) {
-				cfg.GitHubWebhookSecret = secret
-				transport := cfg.transport
-				cfg.transport = func(organization Organization) (http.RoundTripper, error) {
-					next, err := transport(organization)
-					if err != nil {
-						return nil, err
-					}
-					return runtimeTransport(func(request *http.Request) (*http.Response, error) {
-						status, raw := http.StatusOK, `["example-org/beta"]`
-						switch request.URL.Path {
-						case "/internal/v1/github/repositories":
-							if organization.ID == "org_alpha" {
-								raw = `["example-org/alpha-new"]`
-								count := alphaCalls.Add(1)
-								switch {
-								case count == blockedCall:
-									close(blocked)
-									select {
-									case <-release:
-									case <-request.Context().Done():
-										return nil, request.Context().Err()
-									}
-									raw = `["example-org/alpha-old"]`
-								case count == 1:
-									raw = `["example-org/alpha-old"]`
-								case count == blockedCall+2:
-									status = http.StatusServiceUnavailable
-								case count == blockedCall+3:
-									raw = `[`
-								case count == blockedCall+4:
-									return nil, errors.New("example tenant transport failure")
+			transport := func(organization tenant.Organization) (http.RoundTripper, error) {
+				return roundTripper(func(request *http.Request) (*http.Response, error) {
+					status, raw := http.StatusOK, `["example-org/beta"]`
+					switch request.URL.Path {
+					case "/internal/v1/github/repositories":
+						if organization.ID == "org_alpha" {
+							raw = `["example-org/alpha-new"]`
+							count := alphaCalls.Add(1)
+							switch {
+							case count == blockedCall:
+								close(blocked)
+								select {
+								case <-release:
+								case <-request.Context().Done():
+									return nil, request.Context().Err()
 								}
-							} else {
-								betaCalls.Add(1)
+								raw = `["example-org/alpha-old"]`
+							case count == 1:
+								raw = `["example-org/alpha-old"]`
+							case count == blockedCall+2:
+								status = http.StatusServiceUnavailable
+							case count == blockedCall+3:
+								raw = `[`
+							case count == blockedCall+4:
+								return nil, errors.New("example tenant transport failure")
 							}
-						case "/internal/v1/github/webhook":
-							if organization.ID != "org_beta" || request.URL.Query().Get("delivery_id") != "example-delivery" {
-								t.Errorf("webhook target=%s query=%s", organization.ID, request.URL.RawQuery)
-							}
-							deliveries.Add(1)
-							status, raw = http.StatusAccepted, `{"duplicate":false}`
-						default:
-							return next.RoundTrip(request)
+						} else {
+							betaCalls.Add(1)
 						}
-						return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(raw)), Request: request}, nil
-					}), nil
-				}
+					case "/internal/v1/github/webhook":
+						if organization.ID != "org_beta" || request.URL.Query().Get("delivery_id") != "example-delivery" {
+							t.Errorf("webhook target=%s query=%s", organization.ID, request.URL.RawQuery)
+						}
+						deliveries.Add(1)
+						status, raw = http.StatusAccepted, `{"duplicate":false}`
+					default:
+						return nil, errors.New("unexpected tenant request")
+					}
+					return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(raw)), Request: request}, nil
+				}), nil
+			}
+			caller := tenantcall.New(tenantcall.Deps{Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Now: time.Now, Transport: transport})
+			service := New(Deps{Secret: secret, Logger: slog.New(slog.DiscardHandler), OrganizationNotFound: errors.New("organization is not registered"), ServiceCall: caller.ServiceCall, Claims: caller.Claims, SignedCall: caller.SignedCall,
+				ReadyOrganization: func(_ context.Context, id string) (tenant.Organization, error) {
+					return tenant.Organization{ID: id, Generation: 1}, nil
+				},
 			})
-			alpha, err := f.service.readyOrganization(t.Context(), "org_alpha")
+			entry := echo.New()
+			entry.POST("/api/v1/webhooks/github", service.Webhook)
+
+			alpha, err := service.deps.ReadyOrganization(t.Context(), "org_alpha")
 			if err != nil {
 				t.Fatal(err)
 			}
-			beta, err := f.service.readyOrganization(t.Context(), "org_beta")
+			beta, err := service.deps.ReadyOrganization(t.Context(), "org_beta")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -129,33 +139,33 @@ func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 				request.Header.Set("X-GitHub-Delivery", "example-delivery")
 				request.Header.Set("X-GitHub-Event", "issues")
 				response := httptest.NewRecorder()
-				f.service.Handler().ServeHTTP(response, request)
+				entry.ServeHTTP(response, request)
 				return response
 			}
-			refresh := func(organization Organization) <-chan error {
+			refresh := func(organization tenant.Organization) <-chan error {
 				result := make(chan error, 1)
 				workers.Add(1)
 				go func() {
 					defer workers.Done()
-					result <- f.service.refreshGitHubRoutes(t.Context(), organization)
+					result <- service.Refresh(t.Context(), organization)
 				}()
 				return result
 			}
-			if err := f.service.refreshGitHubRoutes(t.Context(), beta); err != nil {
+			if err := service.Refresh(t.Context(), beta); err != nil {
 				t.Fatal(err)
 			}
 			if test.loaded {
-				if err := f.service.refreshGitHubRoutes(t.Context(), alpha); err != nil {
+				if err := service.Refresh(t.Context(), alpha); err != nil {
 					t.Fatal(err)
 				}
 			}
 			first := refresh(alpha)
 			<-blocked
-			if !f.service.githubRoutes.mu.TryLock() {
+			if !service.githubRoutes.mu.TryLock() {
 				t.Fatal("blocked tenant service request holds shared routing lock")
 			}
-			f.service.githubRoutes.mu.Unlock()
-			if err := f.service.refreshGitHubRoutes(t.Context(), beta); err != nil {
+			service.githubRoutes.mu.Unlock()
+			if err := service.Refresh(t.Context(), beta); err != nil {
 				t.Fatal(err)
 			}
 			if betaCalls.Load() != 2 {
@@ -165,9 +175,9 @@ func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 				t.Fatalf("pending routing status=%d deliveries=%d body=%s", response.Code, deliveries.Load(), response.Body.String())
 			}
 			if test.loaded {
-				f.service.githubRoutes.mu.Lock()
-				priorAvailable := slices.Equal(f.service.githubRoutes.byOrganization[alpha.ID], []string{"example-org/alpha-old"}) && !f.service.githubRoutes.unavailable[alpha.ID]
-				f.service.githubRoutes.mu.Unlock()
+				service.githubRoutes.mu.Lock()
+				priorAvailable := slices.Equal(service.githubRoutes.byOrganization[alpha.ID], []string{"example-org/alpha-old"}) && !service.githubRoutes.unavailable[alpha.ID]
+				service.githubRoutes.mu.Unlock()
 				if !priorAvailable {
 					t.Fatal("in-flight refresh changed previously available routing")
 				}
@@ -182,7 +192,7 @@ func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 			}
 			assertRoutes := func(unavailable bool) {
 				t.Helper()
-				routes := &f.service.githubRoutes
+				routes := &service.githubRoutes
 				routes.mu.Lock()
 				defer routes.mu.Unlock()
 				if !slices.Equal(routes.byOrganization[alpha.ID], []string{"example-org/alpha-new"}) || !slices.Equal(routes.byOrganization[beta.ID], []string{"example-org/beta"}) || len(routes.byRepository["example-org/alpha-old"]) != 0 || routes.unavailable[alpha.ID] != unavailable || routes.unavailable[beta.ID] {
@@ -194,7 +204,7 @@ func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 				t.Fatalf("available routing status=%d deliveries=%d body=%s", response.Code, deliveries.Load(), response.Body.String())
 			}
 			for _, failure := range []string{"HTTP refusal", "malformed repositories", "transport failure"} {
-				if err := f.service.refreshGitHubRoutes(t.Context(), alpha); err == nil {
+				if err := service.Refresh(t.Context(), alpha); err == nil {
 					t.Fatalf("%s refresh succeeded", failure)
 				}
 				assertRoutes(true)
@@ -202,7 +212,7 @@ func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 					t.Fatalf("%s routing status=%d deliveries=%d", failure, response.Code, deliveries.Load())
 				}
 			}
-			if err := f.service.refreshGitHubRoutes(t.Context(), alpha); err != nil {
+			if err := service.Refresh(t.Context(), alpha); err != nil {
 				t.Fatal(err)
 			}
 			assertRoutes(false)
@@ -212,3 +222,7 @@ func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 		})
 	}
 }
+
+type roundTripper func(*http.Request) (*http.Response, error)
+
+func (f roundTripper) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
