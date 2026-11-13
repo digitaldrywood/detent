@@ -13,14 +13,18 @@ import (
 )
 
 const monthlyAttemptCoverage = `-- name: MonthlyAttemptCoverage :one
-SELECT count(*) FILTER (WHERE status='running')::bigint AS active,
+SELECT count(*) FILTER (WHERE a.status='running' AND l.released_at IS NULL AND l.expires_at>$1::timestamptz)::bigint AS active,
 count(*) FILTER (WHERE NOT EXISTS(SELECT 1 FROM cost_sources c WHERE c.organization_id=a.organization_id AND c.resource_id=a.id AND c.bucket='runner_api'))::bigint AS unreported
-FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1
-AND a.started_at<$2 AND (a.status='running' OR a.updated_at>$3)
-AND ($4::boolean OR i.project_id=ANY($5::text[]))
+FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id
+WHERE a.organization_id=$2
+AND a.started_at<$3 AND (a.status='running' OR a.updated_at>$4)
+AND (a.status<>'running' OR l.released_at IS NULL AND l.expires_at>$1::timestamptz OR least(coalesce(l.released_at,l.expires_at),l.expires_at)>$4)
+AND ($5::boolean OR i.project_id=ANY($6::text[]))
 `
 
 type MonthlyAttemptCoverageParams struct {
+	Now            time.Time
 	OrganizationID tracker.OrganizationID
 	PeriodEnd      time.Time
 	PeriodStart    time.Time
@@ -35,6 +39,7 @@ type MonthlyAttemptCoverageRow struct {
 
 func (q *Queries) MonthlyAttemptCoverage(ctx context.Context, arg MonthlyAttemptCoverageParams) (MonthlyAttemptCoverageRow, error) {
 	row := q.db.QueryRow(ctx, monthlyAttemptCoverage,
+		arg.Now,
 		arg.OrganizationID,
 		arg.PeriodEnd,
 		arg.PeriodStart,

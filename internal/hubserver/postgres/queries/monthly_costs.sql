@@ -28,8 +28,11 @@ SELECT DISTINCT project_id,provider_account,name FROM (
 ORDER BY project_id,provider_account,name LIMIT 5001;
 
 -- name: MonthlyAttemptCoverage :one
-SELECT count(*) FILTER (WHERE status='running')::bigint AS active,
+SELECT count(*) FILTER (WHERE a.status='running' AND l.released_at IS NULL AND l.expires_at>sqlc.arg(now)::timestamptz)::bigint AS active,
 count(*) FILTER (WHERE NOT EXISTS(SELECT 1 FROM cost_sources c WHERE c.organization_id=a.organization_id AND c.resource_id=a.id AND c.bucket='runner_api'))::bigint AS unreported
-FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=sqlc.arg(organization_id)
+FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id
+JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id
+WHERE a.organization_id=sqlc.arg(organization_id)
 AND a.started_at<sqlc.arg(period_end) AND (a.status='running' OR a.updated_at>sqlc.arg(period_start))
+AND (a.status<>'running' OR l.released_at IS NULL AND l.expires_at>sqlc.arg(now)::timestamptz OR least(coalesce(l.released_at,l.expires_at),l.expires_at)>sqlc.arg(period_start))
 AND (sqlc.arg(all_projects)::boolean OR i.project_id=ANY(sqlc.arg(projects)::text[]));

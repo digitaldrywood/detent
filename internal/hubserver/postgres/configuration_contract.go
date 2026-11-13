@@ -279,8 +279,8 @@ func (s *session) ConfigurationUnsettled(ctx context.Context, runner string, pro
 	var unsettled bool
 	err := s.db.QueryRow(ctx, `SELECT
  EXISTS(SELECT 1 FROM leases l JOIN runner_lease_assignments a ON a.organization_id=l.organization_id AND a.lease_id=l.lease_id JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id WHERE l.organization_id=$1 AND l.released_at IS NULL AND l.expires_at>$4 AND a.runner_id=$2 AND i.project_id=$3)
- OR EXISTS(SELECT 1 FROM native_attempts n JOIN runner_lease_assignments a ON a.organization_id=n.organization_id AND a.lease_id=n.lease_id JOIN issues i ON i.organization_id=n.organization_id AND i.id=n.issue_id WHERE n.organization_id=$1 AND n.status='running' AND a.runner_id=$2 AND i.project_id=$3)
- OR EXISTS(SELECT 1 FROM native_attempts n JOIN runner_lease_assignments a ON a.organization_id=n.organization_id AND a.lease_id=n.lease_id JOIN issues i ON i.organization_id=n.organization_id AND i.id=n.issue_id WHERE n.organization_id=$1 AND n.status='interrupted' AND n.checkpoint_object_key IS NOT NULL AND n.cleanup_acknowledged_at IS NULL AND a.runner_id=$2 AND i.project_id=$3)`, s.organization, runner, project, now).Scan(&unsettled)
+ OR EXISTS(SELECT 1 FROM native_attempts n JOIN runner_lease_assignments a ON a.organization_id=n.organization_id AND a.lease_id=n.lease_id JOIN leases l ON l.organization_id=n.organization_id AND l.lease_id=n.lease_id JOIN issues i ON i.organization_id=n.organization_id AND i.id=n.issue_id WHERE n.organization_id=$1 AND n.status='running' AND l.released_at IS NULL AND l.expires_at>$4 AND a.runner_id=$2 AND i.project_id=$3)
+ OR EXISTS(SELECT 1 FROM native_attempts n JOIN runner_lease_assignments a ON a.organization_id=n.organization_id AND a.lease_id=n.lease_id JOIN issues i ON i.organization_id=n.organization_id AND i.id=n.issue_id WHERE n.organization_id=$1 AND n.status IN ('running','interrupted') AND n.checkpoint_object_key IS NOT NULL AND n.cleanup_acknowledged_at IS NULL AND a.runner_id=$2 AND i.project_id=$3)`, s.organization, runner, project, now).Scan(&unsettled)
 	return unsettled, mapError(ctx, err)
 }
 

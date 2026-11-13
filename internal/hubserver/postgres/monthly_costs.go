@@ -62,7 +62,11 @@ func (s *session) ReadMonthlyCosts(ctx context.Context, q billingstore.MonthlyCo
 	for _, r := range resources {
 		out.Resources = append(out.Resources, billingstore.MonthlyCostResource{ProjectID: r.ProjectID, ProviderAccount: r.ProviderAccount, Name: r.Name})
 	}
-	counts, err := s.queries.MonthlyAttemptCoverage(ctx, pgquery.MonthlyAttemptCoverageParams{OrganizationID: s.organization, PeriodStart: q.From, PeriodEnd: q.To, AllProjects: q.Projects == nil, Projects: q.Projects})
+	now, err := s.leaseTime(ctx)
+	if err != nil {
+		return out, mapError(ctx, err)
+	}
+	counts, err := s.queries.MonthlyAttemptCoverage(ctx, pgquery.MonthlyAttemptCoverageParams{OrganizationID: s.organization, PeriodStart: q.From, PeriodEnd: q.To, AllProjects: q.Projects == nil, Projects: q.Projects, Now: now})
 	out.ActiveAttempts, out.UnreportedAttempts = counts.Active, counts.Unreported
 	return out, mapError(ctx, err)
 }

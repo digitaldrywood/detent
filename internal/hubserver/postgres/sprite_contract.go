@@ -251,7 +251,11 @@ func (s *session) SpriteMemberHoldsWork(ctx context.Context, enrollment string) 
 	if enrollment == "" {
 		return false, corestore.ErrInvalidPage
 	}
-	held, err := s.queries.SpriteMemberHoldsWork(ctx, pgquery.SpriteMemberHoldsWorkParams{OrganizationID: s.organization, EnrollmentID: enrollment})
+	now, err := s.leaseTime(ctx)
+	if err != nil {
+		return false, mapError(ctx, err)
+	}
+	held, err := s.queries.SpriteMemberHoldsWork(ctx, pgquery.SpriteMemberHoldsWorkParams{OrganizationID: s.organization, EnrollmentID: enrollment, Now: now})
 	if err != nil {
 		return false, mapError(ctx, err)
 	}

@@ -82,12 +82,14 @@ SELECT count(*) FROM runner_sprite_memberships WHERE organization_id=$1 AND allo
 SELECT EXISTS (
  SELECT 1 FROM runner_identities r JOIN leases l ON l.organization_id=r.organization_id AND l.machine_id=r.machine_id
  WHERE r.organization_id=sqlc.arg(organization_id) AND r.enrollment_id=sqlc.arg(enrollment_id) AND l.released_at IS NULL
- AND (r.removed_at IS NULL OR EXISTS (SELECT 1 FROM native_attempts n WHERE n.organization_id=l.organization_id AND n.lease_id=l.lease_id AND n.status='interrupted' AND n.checkpoint_object_key IS NOT NULL AND n.cleanup_acknowledged_at IS NULL))
+ AND (r.removed_at IS NULL AND l.expires_at>sqlc.arg(now)::timestamptz OR EXISTS (SELECT 1 FROM native_attempts n WHERE n.organization_id=l.organization_id AND n.lease_id=l.lease_id AND n.status='interrupted' AND n.checkpoint_object_key IS NOT NULL AND n.cleanup_acknowledged_at IS NULL))
 ) OR EXISTS (
  SELECT 1 FROM runner_identities r JOIN runner_lease_assignments assignment ON assignment.organization_id=r.organization_id AND assignment.runner_id=r.runner_id
  JOIN native_attempts n ON n.organization_id=assignment.organization_id AND n.lease_id=assignment.lease_id
+ JOIN leases l ON l.organization_id=n.organization_id AND l.lease_id=n.lease_id
  WHERE r.organization_id=sqlc.arg(organization_id) AND r.enrollment_id=sqlc.arg(enrollment_id)
- AND (n.status='running' OR n.status='interrupted' AND n.checkpoint_object_key IS NOT NULL AND n.cleanup_acknowledged_at IS NULL)
+ AND (n.status='running' AND l.released_at IS NULL AND l.expires_at>sqlc.arg(now)::timestamptz
+ OR n.status IN ('running','interrupted') AND n.checkpoint_object_key IS NOT NULL AND n.cleanup_acknowledged_at IS NULL)
 );
 
 -- name: SpriteAllocationAuthority :one
