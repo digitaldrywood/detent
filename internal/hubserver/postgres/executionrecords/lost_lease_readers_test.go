@@ -41,16 +41,18 @@ func TestLostLeaseAttemptReadersFollowTheLease(t *testing.T) {
 		checkpoint         string
 		release            bool
 		expire             bool
+		retire             bool
 		laterPeriod        bool
-		held               bool
+		held, unsettled    bool
 		active, unreported int64
 	}{
-		{name: "live running attempt holds work and is active", held: true, active: 1, unreported: 1},
-		{name: "expired lease with no later claim releases the sprite and ends activity", expire: true, unreported: 1},
+		{name: "live running attempt holds work and is active", held: true, unsettled: true, active: 1, unreported: 1},
+		{name: "expired lease on a current runner waits for audited retirement but ends activity", expire: true, held: true, unreported: 1},
+		{name: "expired lease after audited retirement releases the sprite", expire: true, retire: true, unreported: 1},
 		{name: "raw release releases the sprite and ends activity", release: true, unreported: 1},
-		{name: "lost attempt leaves later periods", expire: true, laterPeriod: true},
-		{name: "interrupted checkpoint awaiting cleanup still holds the sprite", checkpoint: "interrupted", expire: true, held: true, unreported: 1},
-		{name: "lost running attempt with a checkpoint awaiting cleanup still holds the sprite", checkpoint: "running", expire: true, held: true, unreported: 1},
+		{name: "lost attempt leaves later periods", expire: true, retire: true, laterPeriod: true},
+		{name: "interrupted checkpoint awaiting cleanup still holds the sprite", checkpoint: "interrupted", expire: true, retire: true, held: true, unsettled: true, unreported: 1},
+		{name: "lost running attempt with a checkpoint awaiting cleanup still holds the sprite", checkpoint: "running", expire: true, retire: true, held: true, unsettled: true, unreported: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clock.Store(&start)
@@ -80,6 +82,11 @@ func TestLostLeaseAttemptReadersFollowTheLease(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if tc.retire {
+				if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET removed_at=$3 WHERE organization_id=$1 AND runner_id=$2`, org, "runner_1", lease.ExpiresAt); err != nil {
+					t.Fatal(err)
+				}
+			}
 			now := start.Add(time.Second)
 			if tc.expire {
 				now = lease.ExpiresAt
@@ -104,8 +111,8 @@ func TestLostLeaseAttemptReadersFollowTheLease(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if unsettled != tc.held {
-					t.Errorf("runner project configuration unsettled=%t want %t", unsettled, tc.held)
+				if unsettled != tc.unsettled {
+					t.Errorf("runner project configuration unsettled=%t want %t", unsettled, tc.unsettled)
 				}
 				window := billingstore.MonthlyCostQuery{From: start.Add(-time.Hour), To: start.Add(time.Hour)}
 				if tc.laterPeriod {
