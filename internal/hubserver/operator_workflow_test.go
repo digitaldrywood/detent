@@ -76,9 +76,15 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			issuer, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
-			if err != nil {
-				t.Fatal(err)
+			var issuer apiCredential
+			if scenario.deployment == "shared" {
+				issuer = shared.sessionCredential(t, user)
+			} else {
+				var err error
+				issuer, _, err = f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			expires := time.Now().Add(time.Hour)
 			key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "policy-client", Scope: apiScopeAdmin, KeyScope: apikey.ScopeAdmin, Issuer: &issuer, ProjectAccess: hostedProjectsAll, ExpiresAt: &expires})

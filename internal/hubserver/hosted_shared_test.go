@@ -152,6 +152,21 @@ func (f hostedSharedFixture) serve(t *testing.T, r hostedSharedRequest) *httptes
 	return response
 }
 
+func (f hostedSharedFixture) sessionCredential(t *testing.T, user hostedSecurityUser) apiCredential {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/organizations/org_security/organization", nil)
+	claims := f.claims(&user, cloudassert.KindBrowser, request.Method, request.URL.RequestURI(), nil)
+	session, binding, err := f.service.sharedAccessSession(t.Context(), f.service.echo.NewContext(request, httptest.NewRecorder()), claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, _, err := f.service.hostedSharedCredential(t.Context(), session, binding, claims.Role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return credential
+}
+
 func (f hostedSharedFixture) member(t *testing.T, name, role, grant string, subjects ...string) hostedSecurityUser {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)

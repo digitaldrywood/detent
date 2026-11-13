@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -346,10 +345,7 @@ func TestHostedStopRunAuthority(t *testing.T) {
 				}
 				fence := tracker.FencingToken(readLease().FencingToken)
 				if scenario.scope != "" {
-					issuer, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: f.user.identity.Hosted, Email: f.user.identity.Email}, apikey.HashToken(f.user.token))
-					if err != nil {
-						t.Fatal(err)
-					}
+					issuer := f.issuer(t)
 					expires := time.Now().Add(time.Hour)
 					key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "stop-client", Scope: apiScopeOperator, KeyScope: scenario.scope, Issuer: &issuer, ProjectIDs: []string{string(f.project)}, ProjectAccess: hostedProjectsSelected, ExpiresAt: &expires})
 					if err != nil {

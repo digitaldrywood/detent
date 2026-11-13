@@ -31,6 +31,7 @@ type hostedKeyMCPFixture struct {
 	hostedSecurityFixture
 	user    hostedSecurityUser
 	browser func(string, string, url.Values) *httptest.ResponseRecorder
+	issuer  func(*testing.T) apiCredential
 }
 
 func newHostedKeyMCPFixture(t *testing.T, deployment, role string) (hostedKeyMCPFixture, context.Context) {
@@ -68,7 +69,18 @@ func newHostedKeyMCPFixture(t *testing.T, deployment, role string) (hostedKeyMCP
 		}
 		return f.request(t, user, method, path, form)
 	}
-	return hostedKeyMCPFixture{f, user, browser}, ctx
+	issuer := func(t *testing.T) apiCredential {
+		t.Helper()
+		if deployment == "shared" {
+			return shared.sessionCredential(t, user)
+		}
+		credential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return credential
+	}
+	return hostedKeyMCPFixture{f, user, browser, issuer}, ctx
 }
 
 func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
