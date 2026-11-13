@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -178,17 +179,21 @@ func TestHeartbeatContentAccounting(t *testing.T) {
 
 func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 	t.Parallel()
+	measured := make(map[string]int)
 	for _, test := range []struct {
 		name       string
 		admission  bool
 		renew      bool
 		hosted     bool
 		concurrent bool
+		history    int
 		statements int
 	}{
 		{name: "heartbeat", statements: 12},
 		{name: "heartbeat admission", admission: true, statements: 40},
-		{name: "heartbeat hosted admission", admission: true, hosted: true, statements: 60},
+		{name: "heartbeat admission with decision history", admission: true, history: 200, statements: 40},
+		{name: "heartbeat hosted admission", admission: true, hosted: true, statements: 51},
+		{name: "heartbeat hosted admission with decision history", admission: true, hosted: true, history: 200, statements: 51},
 		{name: "heartbeat concurrent admission", admission: true, concurrent: true, statements: 40},
 		{name: "renew", renew: true, statements: 12},
 		{name: "hosted renew", renew: true, hosted: true, statements: 20},
@@ -202,6 +207,32 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 			runner.enroll(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			item := f.create(t, "Writer budget")
+			if test.history > 0 {
+				content := eventstore.NewContent(details)
+				rows := make([]eventstore.Event, 0, test.history)
+				for index := range test.history {
+					at := now.Add(-time.Hour + time.Duration(index)*time.Second)
+					raw, err := json.Marshal(tracker.CollaborationEvent{ID: fmt.Sprintf("evt_history_%d", index), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: item.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: runner.binding.RunnerID}, RecordedAt: at, Data: tracker.CollaborationData{Revision: item.Revision, Decision: &tracker.NativeSchedulerDecision{RunnerID: runner.binding.RunnerID, Source: "native_runner_admission", Outcome: "skipped", Reason: fmt.Sprintf("historical_%d", index), At: at, WorkItemRevision: item.Revision}}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					row, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					rows = append(rows, row)
+				}
+				if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+					for _, row := range rows {
+						if _, err := w.AppendEvent(t.Context(), row); err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			path := f.base + "/machines/" + string(runner.binding.MachineID) + "/heartbeat"
 			body := map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation}
 			warm := map[string]any{"display_name": "runner", "capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: clock.Now()}}
@@ -275,6 +306,7 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			transactions, statements, queries := probe.snapshot()
 			t.Logf("writer_txs=%d writer_statements=%d", transactions, statements)
+			measured[test.name] = statements
 			wantTransactions := int64(1)
 			if test.admission {
 				wantTransactions++
@@ -328,6 +360,11 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 				}
 			}
 		})
+	}
+	for _, name := range []string{"heartbeat admission", "heartbeat hosted admission"} {
+		if measured[name] == 0 || measured[name] != measured[name+" with decision history"] {
+			t.Fatalf("decision write statements changed with item decision history: %v", measured)
+		}
 	}
 }
 
