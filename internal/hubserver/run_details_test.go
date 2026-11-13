@@ -558,7 +558,7 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 	}{
 		{name: "repeated conflicting finish after ordered start", repeatedFinish: true, sequence: 1, status: http.StatusConflict},
 		{name: "repeated finish with reversed usage interval", reversed: true, sequence: 2, status: http.StatusUnprocessableEntity},
-		{name: "lease expires after commit", duringUpload: true, sequence: 2, status: http.StatusOK},
+		{name: "lease expires during upload", duringUpload: true, sequence: 2, status: http.StatusConflict},
 		{name: "expired durable replay", expired: true, replay: true, status: http.StatusOK},
 		{name: "released durable replay", released: true, replay: true, status: http.StatusOK},
 		{name: "batch sequence gap", batchGap: true, sequence: 4, status: http.StatusConflict},
@@ -681,9 +681,6 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			if test.cancelled && test.status == http.StatusOK {
 				wantReferences = 4
 			}
-			if test.duringUpload {
-				wantReferences = 5
-			}
 			if references-initialReferences != wantReferences {
 				t.Fatalf("event committed %d references, want %d", references-initialReferences, wantReferences)
 			}
@@ -692,10 +689,6 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			if test.cancelled && test.status == http.StatusOK {
 				if sequence != 2 || status != "cancelled" {
 					t.Fatalf("cancellation acknowledgment lost: %d %s", sequence, status)
-				}
-			} else if test.duringUpload {
-				if sequence != 2 || status != "running" {
-					t.Fatalf("committed checkpoint lost: %d %s", sequence, status)
 				}
 			} else if sequence != 1 || status != "running" {
 				t.Fatalf("rejected event changed attempt: %d %s", sequence, status)
