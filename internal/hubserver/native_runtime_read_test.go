@@ -631,6 +631,17 @@ func newRuntimeCapacityFixture(t *testing.T, name string, now *time.Time) (nativ
 	t.Helper()
 	service := newPostgresNativeService(t, Config{Clock: func() time.Time { return *now }})
 	f := newNativeFixture(t, service, "", name)
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), f.project.ID)
+		if err != nil {
+			return err
+		}
+		project.States = append(project.States, tracker.NativeState{Name: "Merging", Dispatchable: true})
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	admin := usagePostgresAdmin(t, service)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	config, err := connection.PoolConfig()
@@ -644,7 +655,7 @@ func newRuntimeCapacityFixture(t *testing.T, name string, now *time.Time) (nativ
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1})
+	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}, func() time.Time { return *now })
 	if err != nil {
 		pool.Close()
 		t.Fatal(err)
