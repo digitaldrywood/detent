@@ -150,19 +150,6 @@ func (l *requestLatency) merge(other requestLatency) {
 	}
 }
 
-func (l *requestLatency) percentiles() {
-	var count int64
-	for i, n := range l.Histogram {
-		count += n
-		if count-n < (l.Count+1)/2 && count >= (l.Count+1)/2 {
-			l.P50 = min(l.Max, float64(uint64(1)<<i)/1000)
-		}
-		if count-n < (l.Count*95+99)/100 && count >= (l.Count*95+99)/100 {
-			l.P95 = min(l.Max, float64(uint64(1)<<i)/1000)
-		}
-	}
-}
-
 type requestMetricTop struct {
 	Kind   string `json:"caller_kind,omitempty"`
 	Caller string `json:"caller_id,omitempty"`
