@@ -17,13 +17,9 @@ import (
 
 func (s *Service) readClaimSourceFacts(ctx context.Context, scope hubscope.NativeScope, item corestore.WorkItem) (hubrecords.ClaimSourceFacts, error) {
 	facts := hubrecords.ClaimSourceFacts{Loaded: true}
-	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
-	if !ok {
-		return facts, hubapi.NativeRunEventStorageUnavailable()
-	}
 	var snapshot hubrecords.TenantAttemptSnapshot
 	var version *eventstore.Version
-	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner := func(leaseID string) (string, string, error) {
 			lease, err := r.Lease(ctx, leaseID)
 			if err != nil {

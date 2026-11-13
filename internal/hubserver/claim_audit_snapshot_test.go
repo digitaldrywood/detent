@@ -883,6 +883,10 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 					}
 					published := changeTestInput()
 					published.PolicyID = descriptor.ID
+					source, err := content.PrepareSourceBundle(t.Context(), org, changeTestSource(t, &published))
+					if err != nil {
+						t.Fatal(err)
+					}
 					version := tracker.ChangeVersion{ID: versionID, ChangeID: changeID, Number: 1, ChangeVersionInput: published, Policy: descriptor, ReviewPolicy: defaultChangeReviewPolicy(descriptor), Actor: issue.Actor, CreatedAt: now}
 					raw, err = json.Marshal(version)
 					if err != nil {
@@ -892,6 +896,7 @@ func TestClaimMergingHydrationHasFixedSnapshotCost(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					versionRow.SourceObjectKey, versionRow.SourceSHA256, versionRow.SourceBytes, versionRow.SourceContentBytes = source.Key, source.SHA256, source.CompressedSize, source.UncompressedSize
 					var evidence eventstore.Evidence
 					if seed.blocked {
 						run := securityaudit.Run{ID: int64(9000 + index), ProjectID: "example", Repository: published.Repository, BaseSHA: published.BaseSHA, HeadSHA: published.HeadSHA, Findings: []securityaudit.Finding{{ID: "finding", Body: "Example", Certainty: securityaudit.CertaintyConfirmed}}}
