@@ -33,7 +33,7 @@ func TestPostgresAttachmentDeletionReleasesQuotaOnce(t *testing.T) {
 		seedPostgresHubAdmin(t, repository, service, org)
 		if err := repository.WriteTenant(t.Context(), org.ID, corestore.Serving, func(w tenantstore.Writer) error {
 			plan := billingstore.PlanReference{ID: "example", Version: 1}
-			if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: org.ID, PlanReference: plan, Name: "Example", Features: []string{"collaboration"}, Allowances: map[string]int64{"collaboration_bytes": 100}}); err != nil {
+			if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: org.ID, PlanReference: plan, Name: "Example", Features: []string{"collaboration"}, Allowances: map[string]int64{"collaboration_bytes": 100, "api_mutations": 1000}}); err != nil {
 				return err
 			}
 			return w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: org.ID, Base: plan}, 0)

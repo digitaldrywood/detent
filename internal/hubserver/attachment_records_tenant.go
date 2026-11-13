@@ -226,6 +226,9 @@ func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.
 					return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
 				}
 			}
+			if err := s.database.chargeAttachmentAPIMutationsPostgres(ctx, w, "attachment/"+scope.credential.ID+"/"+operation+"/"+input.RequestID, s.config.now(), "mutation"); err != nil {
+				return err
+			}
 			_, err := w.PutReceipt(ctx, prepared)
 			return err
 		})
@@ -427,6 +430,9 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 				if !usage.Allowed {
 					return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 				}
+			}
+			if err := s.database.chargeAttachmentAPIMutationsPostgres(ctx, w, "attachment/"+scope.credential.ID+"/"+operation+"/"+key, s.config.now(), "record", "mutation"); err != nil {
+				return err
 			}
 			if input.Evidence != nil {
 				if err := writeWorkItemRecord(ctx, w, publication.plan, publication.fields); err != nil {

@@ -147,3 +147,52 @@ func conversationAllowanceDatabase(organization tracker.OrganizationID, ref bill
 	database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{Base: plan.PlanReference, Plans: []HostedPlan{plan}, WindowSeconds: 60}})
 	return database
 }
+
+func TestAttachmentAPIMutationChargesPostgres(t *testing.T) {
+	repository := projectRecordPostgres(t)
+	ref := billingstore.PlanReference{ID: "example", Version: 1}
+	allowances := map[string]int64{"collaboration_bytes": 10, "api_mutations": 3}
+	now := time.Unix(120, 0).UTC()
+	organizations := []tracker.OrganizationID{"org_attachment_first", "org_attachment_second"}
+	for _, organization := range organizations {
+		seedConversationAllowancePostgres(t, repository, organization, ref, allowances)
+	}
+	charge := func(organization tracker.OrganizationID, receiptID string) error {
+		database := conversationAllowanceDatabase(organization, ref, allowances, repository)
+		return repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			return database.chargeAttachmentAPIMutationsPostgres(t.Context(), writer, receiptID, now, "record", "mutation")
+		})
+	}
+	for _, step := range []struct {
+		organization tracker.OrganizationID
+		receiptID    string
+		wantRefused  int64
+		wantUsage    int64
+	}{
+		{organizations[0], "upload_example", -1, 2},
+		{organizations[0], "upload_example", -1, 2},
+		{organizations[0], "upload_second", 3, 2},
+		{organizations[1], "upload_example", -1, 2},
+	} {
+		err := charge(step.organization, step.receiptID)
+		var limit *hostedLimitError
+		switch {
+		case step.wantRefused < 0 && err != nil:
+			t.Fatalf("%s %s charge=%v", step.organization, step.receiptID, err)
+		case step.wantRefused >= 0 && (!errors.As(err, &limit) || limit.Resource != "api_mutations" || limit.Consumption != step.wantRefused):
+			t.Fatalf("%s %s refusal=%v", step.organization, step.receiptID, err)
+		}
+		if err := repository.ReadTenant(t.Context(), step.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			used, err := conversationAllowanceUsage(t.Context(), reader, now)
+			if err != nil {
+				return err
+			}
+			if used != step.wantUsage {
+				return fmt.Errorf("organization %s usage=%d want=%d", step.organization, used, step.wantUsage)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

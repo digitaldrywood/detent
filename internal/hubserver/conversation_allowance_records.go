@@ -42,3 +42,29 @@ func (d *database) checkConversationCollaborationGrowthPostgres(ctx context.Cont
 	}
 	return nil
 }
+
+func (d *database) chargeAttachmentAPIMutationsPostgres(ctx context.Context, writer tenantstore.Writer, receiptID string, now time.Time, charges ...string) error {
+	if strings.TrimSpace(receiptID) == "" || now.IsZero() {
+		return billingstore.ErrInvalidUsage
+	}
+	plans := d.plans()
+	if plans == nil || ctx.Value(runnerRequestBudgetContext{}) == true {
+		return nil
+	}
+	entitlement, err := d.hostedEntitlementRecord(ctx, writer, now)
+	if err != nil {
+		return err
+	}
+	limit := entitlement.Allowances["api_mutations"]
+	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
+	for _, charge := range charges {
+		result, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: d.hostedOrganization, ID: receiptID + "/" + charge + "/api_mutations", WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
+		if err != nil {
+			return err
+		}
+		if !result.Allowed {
+			return &hostedLimitError{Resource: "api_mutations", Allowance: limit, Consumption: result.Used}
+		}
+	}
+	return nil
+}
