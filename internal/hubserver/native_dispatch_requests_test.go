@@ -136,7 +136,7 @@ func (f dispatchGuardFixture) finish(t *testing.T, disposition ...*tracker.Nativ
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, checkpoint), http.StatusOK)
 	if f.acceptanceRecorded {
-		event.Data.Runtime = &tracker.NativeRuntimeObservation{Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: true}}
+		event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: true, ObservedAt: f.now}}
 	}
 
 	event.Data.Sequence++
@@ -448,6 +448,15 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.worker, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, Title: "Retained source", Body: "Owned source publication"})
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &change)
+				if test.newerChange {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.worker, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "unrelated-draft", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, Title: "Unrelated draft", Body: "No published source"})
+					requireNativeStatus(t, response, http.StatusOK)
+					var draft tracker.ChangeRequest
+					decodeHubResponse(t, response, &draft)
+					if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE change_requests SET created_at=$1 WHERE organization_id=$2 AND project_id=$3 AND id=$4", f.now.Add(time.Hour), f.project.OrganizationID, f.project.ID, draft.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			f.finish(t, test.disposition)
 			if test.aged {
@@ -528,15 +537,6 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 						}
 					}
 				}
-				if test.newerChange {
-					response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.worker, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "unrelated-draft", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, Title: "Unrelated draft", Body: "No published source"})
-					requireNativeStatus(t, response, http.StatusOK)
-					var draft tracker.ChangeRequest
-					decodeHubResponse(t, response, &draft)
-					if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE change_requests SET created_at=$1 WHERE organization_id=$2 AND project_id=$3 AND id=$4", f.now.Add(time.Hour), f.project.OrganizationID, f.project.ID, draft.ID); err != nil {
-						t.Fatal(err)
-					}
-				}
 
 				if test.reviewOutcome != "" {
 					check := changeTestResult(published)
@@ -565,7 +565,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			claim := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
 			if test.expiredLease {
-				if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.now.Add(-time.Minute), f.project.OrganizationID, f.lease.ID); err != nil {
+				if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$1::timestamptz-interval '1 minute'),renewed_at=LEAST(renewed_at,$1::timestamptz-interval '1 minute'),expires_at=$1 WHERE organization_id=$2 AND lease_id=$3", f.now.Add(-time.Minute), f.project.OrganizationID, f.lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			} else {
