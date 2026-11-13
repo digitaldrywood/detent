@@ -255,7 +255,7 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	requireNativeStatus(t, refusedFinish, http.StatusConflict)
 	var finishError apiErrorResponse
 	decodeHubResponse(t, refusedFinish, &finishError)
-	if finishError.Code != "run_sequence_conflict" {
+	if finishError.Code != "stale_fencing_token" {
 		t.Fatalf("late completion refusal=%+v", finishError)
 	}
 	if err := f.service.Close(); err != nil {
@@ -281,7 +281,7 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var history tracker.Page[tracker.CollaborationEvent]
 	decodeHubResponse(t, response, &history)
-	wantHistory := []string{"issue.created", "dependency.changed", "scheduler.decision", "scheduler.decision", "run.started", "scheduler.decision"}
+	wantHistory := []string{"issue.created", "dependency.changed", "scheduler.decision", "scheduler.decision", "run.started", "run.finished", "scheduler.decision"}
 	if len(history.Items) != len(wantHistory) {
 		t.Fatalf("history after restart = %#v", history.Items)
 	}
