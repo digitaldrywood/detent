@@ -83,7 +83,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		return nil, nativePublicInvalid("A current revision and idempotency key are required; workers also require a lease and fencing token")
 	}
 	if human && request.Reason != "user_requested" || !human && !recordedRecovery && request.Reason != "worker_progress" && request.Reason != string(gate.ReasonValidatorRework) {
-		return nil, workItemStorageUnavailable()
+		return nil, nativePublicInvalid("Transition reason is not allowed for this caller")
 	}
 	if len(request.ReasonDetail) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(request.ReasonDetail) {
 		return nil, nativePublicInvalid("Transition reason detail must be bounded UTF-8 text")
