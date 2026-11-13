@@ -362,7 +362,20 @@ type ChangeRecoveryReader interface {
 
 type CurrentChangeEvidenceReader interface {
 	CurrentChangeEvidence(context.Context, string, string, int64, []string) ([]Evidence, error)
-	PriorApprovalCandidate(context.Context, string, string, int64, int64) (Evidence, error)
+	PriorApprovalCandidate(context.Context, string, string, int64, PriorApprovalCursor) (Evidence, error)
+}
+
+type PriorApprovalCursor struct {
+	VersionID   string
+	Sequence    int64
+	Unversioned bool
+}
+
+func PriorApprovalCursorAfter(candidate Evidence) PriorApprovalCursor {
+	if candidate.VersionID == nil {
+		return PriorApprovalCursor{Sequence: candidate.Sequence, Unversioned: true}
+	}
+	return PriorApprovalCursor{VersionID: *candidate.VersionID, Sequence: candidate.Sequence}
 }
 
 type ChangeGateEvidenceReader interface {

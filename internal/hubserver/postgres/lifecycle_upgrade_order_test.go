@@ -175,6 +175,7 @@ var upgradeOrderPending = []int64{
 	20261113170824,
 	20261113174302,
 	20261113175607,
+	20261113205502,
 }
 
 var upgradeOrderTenants = []struct {

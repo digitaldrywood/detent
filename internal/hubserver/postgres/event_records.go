@@ -1039,10 +1039,25 @@ func (s *session) CurrentChangeEvidence(ctx context.Context, change, version str
 	return records, nil
 }
 
-func (s *session) PriorApprovalCandidate(ctx context.Context, change, version string, through, before int64) (eventstore.Evidence, error) {
-	rows, err := s.db.Query(ctx, `SELECT organization_id,change_id,sequence,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,payload_format_version,review_kind,review_landing,review_session_known,review_session_id,review_session_machine,project_id,quality_at
-FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND kind='review' AND decision='approved' AND review_kind IN ('human','')
-AND sequence<=$4 AND sequence<$5 AND version_id IS DISTINCT FROM $3 ORDER BY sequence DESC LIMIT 1`, s.organization, change, version, through, before)
+const priorApprovalColumns = `organization_id,change_id,sequence,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,payload_format_version,review_kind,review_landing,review_session_known,review_session_id,review_session_machine,project_id,quality_at`
+
+const priorApprovalCandidate = `SELECT ` + priorApprovalColumns + ` FROM (
+(SELECT 1 AS probe,` + priorApprovalColumns + ` FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND kind='review' AND decision='approved' AND review_kind IN ('human','')
+ AND version_id<$3 AND (version_id,sequence)>($5::text,$6::bigint) AND sequence<=$4 AND NOT $7::boolean ORDER BY version_id,sequence LIMIT 1)
+UNION ALL
+(SELECT 2,` + priorApprovalColumns + ` FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND kind='review' AND decision='approved' AND review_kind IN ('human','')
+ AND version_id>$3 AND (version_id,sequence)>($5::text,$6::bigint) AND sequence<=$4 AND NOT $7::boolean ORDER BY version_id,sequence LIMIT 1)
+UNION ALL
+(SELECT 3,` + priorApprovalColumns + ` FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND kind='review' AND decision='approved' AND review_kind IN ('human','')
+ AND version_id IS NULL AND sequence>$8::bigint AND sequence<=$4 ORDER BY sequence LIMIT 1)
+) candidates ORDER BY probe LIMIT 1`
+
+func (s *session) PriorApprovalCandidate(ctx context.Context, change, version string, through int64, after eventstore.PriorApprovalCursor) (eventstore.Evidence, error) {
+	unversionedAfter := int64(0)
+	if after.Unversioned {
+		unversionedAfter = after.Sequence
+	}
+	rows, err := s.db.Query(ctx, priorApprovalCandidate, s.organization, change, version, through, after.VersionID, after.Sequence, after.Unversioned, unversionedAfter)
 	if err != nil {
 		return eventstore.Evidence{}, mapError(ctx, err)
 	}

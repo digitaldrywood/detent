@@ -1520,7 +1520,7 @@ func (s *Service) readCurrentChangeEvidence(ctx context.Context, scope hubscope.
 	var evidence []eventstore.Evidence
 	var candidate eventstore.Evidence
 	found := false
-	before := through + 1
+	var after eventstore.PriorApprovalCursor
 	for range corestore.MaxPageSize + 1 {
 		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			reader, ok := r.(eventstore.CurrentChangeEvidenceReader)
@@ -1538,7 +1538,7 @@ func (s *Service) readCurrentChangeEvidence(ctx context.Context, scope hubscope.
 				}
 			}
 			var err error
-			candidate, err = reader.PriorApprovalCandidate(ctx, change, version.ID, through, before)
+			candidate, err = reader.PriorApprovalCandidate(ctx, change, version.ID, through, after)
 			found = err == nil
 			if errors.Is(err, corestore.ErrNotFound) {
 				return nil
@@ -1548,7 +1548,7 @@ func (s *Service) readCurrentChangeEvidence(ctx context.Context, scope hubscope.
 		if err != nil || !found {
 			return evidence, false, err
 		}
-		if candidate.OrganizationID != scope.Organization || candidate.ChangeID != change || candidate.Kind != "review" || candidate.Decision != "approved" || candidate.Sequence >= before {
+		if candidate.OrganizationID != scope.Organization || candidate.ChangeID != change || candidate.Kind != "review" || candidate.Decision != "approved" || candidate.Sequence > through || candidate.VersionID != nil && *candidate.VersionID == version.ID {
 			return nil, false, corestore.ErrTenantMismatch
 		}
 		if candidate.ReviewKind == "human" {
@@ -1568,7 +1568,7 @@ func (s *Service) readCurrentChangeEvidence(ctx context.Context, scope hubscope.
 		if review.SecurityAudit == nil && review.ImplementationReview == nil && review.Validator == nil {
 			return evidence, true, nil
 		}
-		before = candidate.Sequence
+		after = eventstore.PriorApprovalCursorAfter(candidate)
 	}
 	return nil, false, corestore.ErrInvalidPage
 }
