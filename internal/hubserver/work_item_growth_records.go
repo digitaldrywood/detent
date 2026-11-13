@@ -144,6 +144,7 @@ func (s *Service) applyWorkItemGrowth(ctx context.Context, w tenantstore.Writer,
 
 type runEventGrowth struct {
 	enabled      bool
+	completion   bool
 	window       time.Time
 	entitlement  HostedEntitlement
 	history      int64
@@ -152,15 +153,19 @@ type runEventGrowth struct {
 
 func (s *Service) prepareRunEventGrowth(ctx context.Context, w tenantstore.Writer, completion bool) (runEventGrowth, error) {
 	plans := s.database.plans()
-	if plans == nil || completion {
+	if plans == nil {
 		return runEventGrowth{}, nil
 	}
 	now := s.config.now()
+	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
+	if completion {
+		return runEventGrowth{enabled: true, completion: true, window: window}, nil
+	}
 	entitlement, err := s.database.hostedEntitlementRecord(ctx, w, now)
 	if err != nil {
 		return runEventGrowth{}, err
 	}
-	growth := runEventGrowth{enabled: true, window: time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC(), entitlement: entitlement}
+	growth := runEventGrowth{enabled: true, window: window, entitlement: entitlement}
 	if _, limited := entitlement.Allowances["history_records"]; limited {
 		if populations, ok := w.(billingstore.PopulationReader); ok {
 			growth.history, growth.historyKnown, err = populations.BillingPopulation(ctx, "history_records", now, time.Duration(plans.ConnectedSeconds)*time.Second)
@@ -176,10 +181,13 @@ func (g runEventGrowth) apply(ctx context.Context, w tenantstore.Writer, organiz
 	if !g.enabled || events <= 0 {
 		return nil
 	}
-	if limit, limited := g.entitlement.Allowances["history_records"]; limited && g.historyKnown && g.history+2*events > limit {
+	if limit, limited := g.entitlement.Allowances["history_records"]; limited && !g.completion && g.historyKnown && g.history+2*events > limit {
 		return &hostedLimitError{Resource: "history_records", Allowance: limit, Consumption: g.history}
 	}
 	limit := g.entitlement.Allowances["ingested_events"]
+	if g.completion {
+		limit = math.MaxInt64
+	}
 	usage, err := w.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: organization, ID: receiptID + "/ingested_events", WindowStart: g.window, Metric: "ingested_events", Amount: events}, limit)
 	if err != nil {
 		return err
