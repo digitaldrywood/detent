@@ -1,11 +1,12 @@
 package pullrequests
 
 import (
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -131,16 +132,4 @@ func ExternalNumber(reference tracker.ChangeExternalReference) int {
 		return 0
 	}
 	return number
-}
-
-// ConnectorState normalizes GitHub's state onto the pull request contract's vocabulary.
-func ConnectorState(state string) string {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "merged":
-		return "merged"
-	case "closed":
-		return "closed"
-	default:
-		return "open"
-	}
 }

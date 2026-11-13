@@ -150,13 +150,6 @@ func Active(ctx context.Context) bool {
 	return ctx.Value(storageBatchKey{}) != nil
 }
 
-func Limit(ctx context.Context) int {
-	if Active(ctx) {
-		return 1
-	}
-	return storageConversionRows
-}
-
 func Charge(ctx context.Context, size int) error {
 	budget, ok := ctx.Value(storageBatchKey{}).(*storageBatchBudget)
 	if !ok {

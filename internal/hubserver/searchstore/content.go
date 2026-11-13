@@ -24,10 +24,6 @@ type payload struct {
 
 func NewContent(store attachment.DetailStore) *Content { return &Content{store: store} }
 
-func (c *Content) Refresher(repository Repository, organization tracker.OrganizationID) Refresh {
-	return func(ctx context.Context) (bool, error) { return c.RefreshOne(ctx, repository, organization) }
-}
-
 func (c *Content) Prepare(ctx context.Context, document Document, text Text) (Document, error) {
 	if c.store == nil {
 		return Document{}, artifact.ErrStorage
