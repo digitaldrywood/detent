@@ -38,7 +38,7 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.service.database.postgres = repository
-			f.service.requestMetrics.repository = repository
+			f.service.requestMetrics.Repository = repository
 			f.service.config.TenantRepository = repository
 			f.service.config.AccessRepository = repository
 			f.service.config.BillingRepository = repository
@@ -93,12 +93,12 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 				timing := &requestTiming{}
 				probe := &claimPreflightProbe{attempted: make(chan struct{})}
 				last, previousDB := time.Now(), int64(0)
-				timing.trace = func(query string, _ []driver.NamedValue) {
+				timing.Trace = func(query string, _ []driver.NamedValue) {
 					if strings.Contains(strings.ToLower(query), "insert into archive_objects") {
 						registrations++
 					}
 					current := time.Now()
-					db := timing.db.Load()
+					db := timing.DB.Load()
 					key := strings.Join(strings.Fields(query), " ")
 					if len(key) > 100 {
 						key = key[:100]
@@ -113,9 +113,9 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 				f.service.Handler().ServeHTTP(response, request.WithContext(context.WithValue(withRequestTiming(request.Context(), timing), claimPreflightProbeKey{}, probe)))
 				requireNativeStatus(t, response, http.StatusOK)
 				var callback time.Duration
-				for _, span := range timing.namedSpans() {
-					if span.name == "pg_callback" {
-						callback += span.duration
+				for _, span := range timing.NamedSpans() {
+					if span.Name == "pg_callback" {
+						callback += span.Duration
 					}
 				}
 				if callback == 0 || probe.queries.Load() == 0 {
@@ -125,13 +125,13 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 					t.Fatalf("heartbeat writer_txs=%d, want %d", probe.writers.Load(), 1+registrations)
 				}
 				if i > 0 {
-					for _, span := range timing.namedSpans() {
-						if span.name == "pg_commit" {
-							commit += span.duration
+					for _, span := range timing.NamedSpans() {
+						if span.Name == "pg_commit" {
+							commit += span.Duration
 						}
 					}
 					holds = append(holds, int64(callback))
-					dbs = append(dbs, timing.db.Load())
+					dbs = append(dbs, timing.DB.Load())
 					txs += probe.writers.Load()
 				}
 			}
@@ -178,7 +178,7 @@ func TestHeartbeatPreparationBeforeWriter(t *testing.T) {
 	}
 	f.service.database.postgres = repository
 	f.service.config.TenantRepository = repository
-	f.service.requestMetrics.repository = repository
+	f.service.requestMetrics.Repository = repository
 	f.service.config.AccessRepository = repository
 	f.service.config.BillingRepository = repository
 	f.service.database.billingRepository = repository

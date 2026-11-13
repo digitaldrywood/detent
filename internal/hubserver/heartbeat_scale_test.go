@@ -216,16 +216,16 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(request.Context(), timing)))
 			requireNativeStatus(t, response, http.StatusOK)
 			found := false
-			for _, span := range timing.namedSpans() {
-				if span.name == "pg_callback" {
-					callback += span.duration
+			for _, span := range timing.NamedSpans() {
+				if span.Name == "pg_callback" {
+					callback += span.Duration
 					found = true
 				}
 			}
 			if !found {
 				t.Fatal("missing PostgreSQL transaction callback timing")
 			}
-			db += time.Duration(timing.db.Load())
+			db += time.Duration(timing.DB.Load())
 			var snapshot runnerauth.RoutingSnapshot
 			decodeHubResponse(t, response, &snapshot)
 			if snapshot.RunnerID != f.bindings[0].RunnerID {
@@ -353,7 +353,7 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 			}
 			f.service.config.TenantRepository = owner
 			t.Cleanup(func() { f.service.config.TenantRepository = repository })
-			timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+			timing := &requestTiming{Trace: func(query string, _ []driver.NamedValue) {
 				if !reportsBudgetReadStatement(query) {
 					return
 				}
@@ -1017,7 +1017,7 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 			for poll, want := range pages {
 				var mu sync.Mutex
 				var statements []tracedStatement
-				timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
+				timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
 					values := make([]any, len(args))
 					for i, arg := range args {
 						values[i] = arg.Value

@@ -138,7 +138,7 @@ func newPostgresNativeService(t *testing.T, cfg Config) *Service {
 	}
 	service.database.hostedOrganization = primary
 	service.localOrganization = string(primary)
-	service.requestMetrics.organization = primary
+	service.requestMetrics.Organization = primary
 	return service
 }
 

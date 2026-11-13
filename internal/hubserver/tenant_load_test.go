@@ -178,7 +178,7 @@ FROM unnest($5::text[],$6::bigint[],$7::text[],$8::text[],$9::bigint[],$10::bigi
 				} {
 					var mu sync.Mutex
 					var statements []tracedStatement
-					timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
+					timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
 						values := make([]any, 0, len(args))
 						for _, arg := range args {
 							if arg.Name != "" {

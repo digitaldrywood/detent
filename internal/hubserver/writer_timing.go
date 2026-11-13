@@ -1,38 +1,6 @@
 package hubserver
 
-import (
-	"time"
-
-	"github.com/labstack/echo/v4"
-
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-)
-
-const slowRequest = 250 * time.Millisecond
-
-func (s *Service) timeWriterUse(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		start := time.Now()
-		ctx := c.Request().Context()
-		request := requestTimingFrom(ctx)
-		if request == nil {
-			request = &requestTiming{}
-			ctx = withRequestTiming(ctx, request)
-		}
-		ctx = postgres.WithTransactionTiming(ctx, request.span, func(started time.Time, query string) { request.statement(started, query, nil) })
-		c.SetRequest(c.Request().WithContext(ctx))
-		err := next(c)
-		elapsed := time.Since(start)
-		if elapsed >= slowRequest {
-			attrs := []any{"method", c.Request().Method, "route", c.Path(), "status", c.Response().Status,
-				"duration_ms", elapsed.Milliseconds()}
-			attrs = append(attrs, request.logAttrs()...)
-			s.config.Logger.Info("hub request timing", attrs...)
-		}
-		s.logWriterWaits()
-		return err
-	}
-}
+import "time"
 
 func (s *Service) logWriterWaits() {
 	if s.database == nil || s.database.postgres == nil {

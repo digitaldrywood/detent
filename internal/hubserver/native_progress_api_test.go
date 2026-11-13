@@ -291,7 +291,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			execution := scheduler.RunExecution(claim.Issue.ID)
 			var sourceMu sync.Mutex
 			var sourceStatements []tracedStatement
-			sourceTiming := &requestTiming{trace: func(query string, args []driver.NamedValue) {
+			sourceTiming := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
 				values := make([]any, len(args))
 				for i, arg := range args {
 					values[i] = arg.Value

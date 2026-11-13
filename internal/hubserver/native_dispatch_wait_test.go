@@ -254,7 +254,7 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 			seedPostgresHubAdmin(t, repository, service, organization)
 			service.database.hostedOrganization = organization.ID
 			service.localOrganization = string(organization.ID)
-			service.requestMetrics.organization = organization.ID
+			service.requestMetrics.Organization = organization.ID
 			f := newNativeFixture(t, service, organization.ID, "wait")
 			await := func(count int) {
 				testenv.WaitUntil(t, t.Context(), func() error {
@@ -697,7 +697,7 @@ func newDispatchWaitFixture(t *testing.T, name string) (nativeFixture, *dispatch
 	seedPostgresHubAdmin(t, repository, service, organization)
 	service.database.hostedOrganization = organization.ID
 	service.localOrganization = string(organization.ID)
-	service.requestMetrics.organization = organization.ID
+	service.requestMetrics.Organization = organization.ID
 	return newNativeFixture(t, service, organization.ID, name), probe
 }
 

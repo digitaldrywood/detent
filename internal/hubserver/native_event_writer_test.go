@@ -147,7 +147,7 @@ func newNativeEventWriterFixture(t *testing.T, store *memoryRunDetails, now time
 	}
 	service.database.hostedOrganization = primary
 	service.localOrganization = string(primary)
-	service.requestMetrics.organization = primary
+	service.requestMetrics.Organization = primary
 	return newNativeFixture(t, service, primary, "event-writer")
 }
 

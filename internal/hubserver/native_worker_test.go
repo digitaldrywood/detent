@@ -418,7 +418,7 @@ func TestNativeRequestedClaimRefusalsAreTenantScopedAndDeduplicated(t *testing.T
 				service = reopenPostgresNativeService(t, service)
 				service.database.hostedOrganization = organization
 				service.localOrganization = string(organization)
-				service.requestMetrics.organization = organization
+				service.requestMetrics.Organization = organization
 			}
 			f := newNativeFixture(t, service, organization, "refusals")
 			perform := func(method, path, token string, payload any) *httptest.ResponseRecorder {

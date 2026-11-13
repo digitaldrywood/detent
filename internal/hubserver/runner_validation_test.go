@@ -43,12 +43,12 @@ func TestRunnerCredentialExpiryBoundaries(t *testing.T) {
 			service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
 			var renewed []runnerFixture
 			for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
-				if err := service.requestMetrics.drain(t.Context(), now); err != nil {
+				if err := service.requestMetrics.Drain(t.Context(), now); err != nil {
 					t.Fatal(err)
 				}
 				service.database.hostedOrganization = organization
 				service.localOrganization = string(organization)
-				service.requestMetrics.organization = organization
+				service.requestMetrics.Organization = organization
 				now = time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 				f := newNativeFixture(t, service, organization, "Expiry project")
 				for range 2 {

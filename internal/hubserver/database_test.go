@@ -270,7 +270,7 @@ func newClockedPostgresNativeService(t *testing.T, cfg Config) *Service {
 	}
 	service.database.hostedOrganization = primary
 	service.localOrganization = string(primary)
-	service.requestMetrics.organization = primary
+	service.requestMetrics.Organization = primary
 	return service
 }
 
@@ -289,7 +289,7 @@ func reopenPostgresNativeService(t *testing.T, previous *Service) *Service {
 	service := openLocalPostgresHubTestService(t, repository, cfg)
 	service.database.hostedOrganization = previous.database.hostedOrganization
 	service.localOrganization = previous.localOrganization
-	service.requestMetrics.organization = previous.requestMetrics.organization
+	service.requestMetrics.Organization = previous.requestMetrics.Organization
 	return service
 }
 

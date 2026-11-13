@@ -56,7 +56,7 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 	}
 	clock.Store(start.UnixNano())
 	metrics := s.config.TenantRepository.(metricsstore.Repository)
-	s.requestMetrics = &tenantRequestMetrics{repository: metrics, organization: f.project.OrganizationID, pending: make(map[requestMetricKey]requestLatency), runners: make(map[string]*runnerRequestWindow)}
+	s.requestMetrics = newTenantTestMetrics(metrics, f.project.OrganizationID)
 	content := eventstore.NewContent(s.runDetailStore())
 	admin := usagePostgresAdmin(t, s)
 	insertCommand := func(t *testing.T, organization tracker.OrganizationID, key string, at time.Time) {

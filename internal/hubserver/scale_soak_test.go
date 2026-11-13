@@ -180,7 +180,7 @@ func seedScaleSoak(t *testing.T, root string, config scaleSoakConfig) scaleSoakS
 			t.Fatal(err)
 		}
 	}
-	service.database.hostedOrganization, service.localOrganization, service.requestMetrics.organization = primary, string(primary), primary
+	service.database.hostedOrganization, service.localOrganization, service.requestMetrics.Organization = primary, string(primary), primary
 	seed := scaleSoakSeed{service: service, details: details, boardErrors: boardErrors}
 	for i := range config.Projects {
 		f := newNativeFixture(t, service, "", fmt.Sprintf("scale-project-%d", i))

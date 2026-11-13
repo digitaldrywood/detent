@@ -332,7 +332,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 			}
 			service.localOrganization, service.database.hostedOrganization = string(organization.ID), organization.ID
-			service.requestMetrics.organization = organization.ID
+			service.requestMetrics.Organization = organization.ID
 			f := newNativeFixture(t, service, organization.ID, "validator")
 			var sessionCount int
 			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM runner_sessions").Scan(&sessionCount); err != nil || sessionCount != 0 {

@@ -521,7 +521,7 @@ func reopenNativeAttemptService(t *testing.T, previous *Service) *Service {
 	t.Cleanup(func() { projectRecordDatabases.Delete(repository) })
 	config.Hosted = startupConfig(config.Postgres.Connection).Hosted
 	restarted := openLocalPostgresHubTestService(t, repository, config)
-	restarted.database.hostedOrganization, restarted.localOrganization, restarted.requestMetrics.organization = previous.database.hostedOrganization, previous.localOrganization, previous.requestMetrics.organization
+	restarted.database.hostedOrganization, restarted.localOrganization, restarted.requestMetrics.Organization = previous.database.hostedOrganization, previous.localOrganization, previous.requestMetrics.Organization
 	if restarted.config.Postgres.Connection.Database != previous.config.Postgres.Connection.Database || restarted.config.TenantRepository == previous.config.TenantRepository {
 		t.Fatal("attempt restart changed database or retained closed repository")
 	}

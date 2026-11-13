@@ -295,8 +295,8 @@ func TestHostedAnalyticsReads(t *testing.T) {
 	}
 
 	m := f.service.requestMetrics
-	m.record(now.Add(-time.Minute), "GET /items/:item", "runner", "runner_report", 200, 10*time.Millisecond)
-	if err := m.flush(t.Context(), now); err != nil {
+	m.Record(now.Add(-time.Minute), "GET /items/:item", "runner", "runner_report", 200, 10*time.Millisecond)
+	if err := m.Flush(t.Context(), now); err != nil {
 		t.Fatal(err)
 	}
 	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
@@ -342,12 +342,12 @@ func TestHostedAnalyticsReads(t *testing.T) {
 			t.Fatal(err)
 		}
 		oldTenant, oldAccess, oldBilling := f.service.config.TenantRepository, f.service.config.AccessRepository, f.service.config.BillingRepository
-		oldDatabase, oldMetrics, oldDatabaseBilling := f.service.database.postgres, f.service.requestMetrics.repository, f.service.database.billingRepository
+		oldDatabase, oldMetrics, oldDatabaseBilling := f.service.database.postgres, f.service.requestMetrics.Repository, f.service.database.billingRepository
 		f.service.config.TenantRepository, f.service.config.AccessRepository, f.service.config.BillingRepository = guarded, guarded, guarded
-		f.service.database.postgres, f.service.requestMetrics.repository, f.service.database.billingRepository = guarded, guarded, guarded
+		f.service.database.postgres, f.service.requestMetrics.Repository, f.service.database.billingRepository = guarded, guarded, guarded
 		defer func() {
 			f.service.config.TenantRepository, f.service.config.AccessRepository, f.service.config.BillingRepository = oldTenant, oldAccess, oldBilling
-			f.service.database.postgres, f.service.requestMetrics.repository, f.service.database.billingRepository = oldDatabase, oldMetrics, oldDatabaseBilling
+			f.service.database.postgres, f.service.requestMetrics.Repository, f.service.database.billingRepository = oldDatabase, oldMetrics, oldDatabaseBilling
 			_ = guarded.Close()
 		}()
 		request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(t.Context())

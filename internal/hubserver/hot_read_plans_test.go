@@ -72,7 +72,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 		t.Run(read.name, func(t *testing.T) {
 			var mu sync.Mutex
 			statements := []tracedStatement{}
-			timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
+			timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
 				if args == nil {
 					return
 				}
@@ -138,7 +138,7 @@ func TestAnalyticsReportPlans(t *testing.T) {
 				t.Run(window, func(t *testing.T) {
 					var mu sync.Mutex
 					var statements []tracedStatement
-					timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
+					timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
 						if args == nil {
 							return
 						}
@@ -167,8 +167,8 @@ func TestAnalyticsReportPlans(t *testing.T) {
 					if report.Analytics.Window.From.IsZero() || !report.Analytics.Window.From.Before(report.Analytics.Window.To) {
 						t.Fatalf("empty report window: %+v", report.Analytics.Window)
 					}
-					timing.start = started
-					t.Logf("reports %s on %s took %s: %s", window, population.name, elapsed, timing.header(started.Add(elapsed)))
+					timing.Start = started
+					t.Logf("reports %s on %s took %s: %s", window, population.name, elapsed, timing.Header(started.Add(elapsed)))
 					mu.Lock()
 					captured := append([]tracedStatement(nil), statements...)
 					mu.Unlock()

@@ -649,7 +649,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		s.tokenUseWork.Wait()
 		var metricsErr error
 		if s.requestMetrics != nil {
-			metricsErr = errors.Join(s.requestMetrics.drain(ctx, s.config.now()), s.requestMetrics.close())
+			metricsErr = errors.Join(s.requestMetrics.Drain(ctx, s.config.now()), s.requestMetrics.Close())
 		}
 		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, metricsErr, s.database.Close())
 	})
@@ -747,7 +747,7 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 				s.config.Logger.Warn("expire PostgreSQL request metrics", "error", err)
 			}
 			if s.requestMetrics != nil {
-				if err := s.requestMetrics.flush(ctx, s.config.now()); err != nil && !errors.Is(err, context.Canceled) {
+				if err := s.requestMetrics.Flush(ctx, s.config.now()); err != nil && !errors.Is(err, context.Canceled) {
 					s.config.Logger.WarnContext(ctx, "flush tenant request metrics", "error", err)
 				}
 			}

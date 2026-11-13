@@ -407,7 +407,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			})
 			installReportsBudgetTrace(t, f.service)
 			var preflightQueries []string
-			timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) { preflightQueries = append(preflightQueries, query) }}
+			timing := &requestTiming{Trace: func(query string, _ []driver.NamedValue) { preflightQueries = append(preflightQueries, query) }}
 			request := httptest.NewRequest(http.MethodPost, f.base+"/attachment-metadata/check", strings.NewReader(`{"size":100}`))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("X-CSRF-Token", csrf)

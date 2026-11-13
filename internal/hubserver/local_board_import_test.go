@@ -766,7 +766,7 @@ func localBoardReopen(t *testing.T, service *Service) {
 	service.config.TenantRepository = localBoardTestRepository{repository, previous.admin}
 	service.config.AccessRepository = repository
 	service.config.BillingRepository = repository
-	service.requestMetrics.repository = repository
+	service.requestMetrics.Repository = repository
 	t.Cleanup(func() {
 		if err := service.Close(); err != nil {
 			t.Error(err)
@@ -808,7 +808,7 @@ func localBoardHostedFixture(t *testing.T, admin *sql.DB, organization tracker.O
 	service.config.TenantRepository = localBoardTestRepository{repository, admin}
 	service.config.AccessRepository = repository
 	service.config.BillingRepository = repository
-	service.requestMetrics.repository = repository
+	service.requestMetrics.Repository = repository
 	localBoardDatabaseBudget(t, admin)
 	return f
 }

@@ -121,7 +121,7 @@ func openPostgresHubTestService(t *testing.T, repository *postgres.Repository, c
 		t.Fatal(err)
 	}
 	service.database.postgres = repository
-	service.requestMetrics.repository = repository
+	service.requestMetrics.Repository = repository
 	service.config.AccessRepository = repository
 	service.config.TenantRepository = repository
 	service.config.BillingRepository = repository
@@ -214,7 +214,7 @@ func selectPostgresHubTestOrganization(service *Service, organization tracker.Or
 	service.config.Hosted.WorkOSOrganizationID = "provider_" + string(organization)
 	service.database.hostedOrganization = organization
 	if service.requestMetrics != nil {
-		service.requestMetrics.organization = organization
+		service.requestMetrics.Organization = organization
 	}
 }
 

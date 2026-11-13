@@ -372,7 +372,7 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 	for _, read := range reads {
 		var mu sync.Mutex
 		var statements []tracedStatement
-		timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
+		timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
 			values := make([]any, len(args))
 			for i, arg := range args {
 				values[i] = arg.Value

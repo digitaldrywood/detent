@@ -1,4 +1,4 @@
-package hubserver
+package requestmetrics
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -42,7 +43,7 @@ func (w uncertainUsageWriter) ApplyBillingUsage(ctx context.Context, receipt bil
 }
 
 func TestHostedRequestBillingFlushWithoutSQLite(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository := hubtest.Repository(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
@@ -53,27 +54,26 @@ func TestHostedRequestBillingFlushWithoutSQLite(t *testing.T) {
 			}
 			failure := errors.New("commit response lost")
 			wrapper := &uncertainUsageRepository{Repository: repository, uncertain: true, failure: failure}
-			owner := &database{billingRepository: wrapper, hostedOrganization: org}
-			owner.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
-			key := requestMetricKey{Minute: now.Unix(), Route: "GET /example", Kind: "anonymous", Status: 2}
-			usage := requestLatency{http: hostedRequestUsage{requests: 1, duration: 3, responseBytes: 5, requestBytes: 7, knownRequests: 1}}
-			usage.observe(time.Microsecond)
-			m := &tenantRequestMetrics{repository: repository, organization: org, usage: owner, pending: map[requestMetricKey]requestLatency{key: usage}}
-			if err := m.flush(t.Context(), now); !errors.Is(err, failure) {
+			owner := &BillingOwner{Repository: wrapper, Organization: org, Plans: func() *BillingPlan { return &BillingPlan{WindowSeconds: 60, RetentionWindows: 10} }}
+			key := Key{Minute: now.Unix(), Route: "GET /example", Kind: "anonymous", Status: 2}
+			usage := Latency{HTTP: Usage{Requests: 1, Duration: 3, ResponseBytes: 5, RequestBytes: 7, KnownRequests: 1}}
+			usage.Observe(time.Microsecond)
+			m := &Service{Repository: repository, Organization: org, usage: owner, pending: map[Key]Latency{key: usage}}
+			if err := m.Flush(t.Context(), now); !errors.Is(err, failure) {
 				t.Fatalf("uncertain flush=%v", err)
 			}
-			if m.billingPending == nil {
+			if m.BillingPending == nil {
 				t.Fatal("uncertain receipt discarded")
 			}
-			uncertainBatch := m.billingPending
+			uncertainBatch := m.BillingPending
 			m.pending[key] = usage
-			if err := m.flush(t.Context(), now); err != nil {
+			if err := m.Flush(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
-			if err := m.flush(t.Context(), now); err != nil {
+			if err := m.Flush(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
-			if m.billingPending != nil {
+			if m.BillingPending != nil {
 				t.Fatal("committed batch retained")
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
@@ -87,11 +87,11 @@ func TestHostedRequestBillingFlushWithoutSQLite(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := m.flush(t.Context(), now.Add(10*time.Minute)); err != nil {
+			if err := m.Flush(t.Context(), now.Add(10*time.Minute)); err != nil {
 				t.Fatal(err)
 			}
-			m.billingPending = uncertainBatch
-			if err := m.flushHostedBillingBatch(t.Context(), now.Add(10*time.Minute)); err != nil {
+			m.BillingPending = uncertainBatch
+			if err := m.FlushBilling(t.Context(), now.Add(10*time.Minute)); err != nil {
 				t.Fatal(err)
 			}
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {

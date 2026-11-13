@@ -316,7 +316,7 @@ func heartbeatWriterBudgetFixture(t *testing.T, config Config) (nativeFixture, *
 	if err := f.service.database.postgres.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.service.database.postgres, f.service.requestMetrics.repository = repository, repository
+	f.service.database.postgres, f.service.requestMetrics.Repository = repository, repository
 	f.service.config.TenantRepository, f.service.config.AccessRepository, f.service.config.BillingRepository = repository, repository, repository
 	f.service.database.billingRepository = repository
 	return f, repository

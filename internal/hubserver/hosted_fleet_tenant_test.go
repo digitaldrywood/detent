@@ -343,7 +343,7 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 	membership.Role.Slug = "owner"
 	provider.members["user_example"] = membership
 	service.config.Hosted.Provider = provider
-	service.requestMetrics = &tenantRequestMetrics{repository: repository, organization: "org_first"}
+	service.requestMetrics = &tenantRequestMetrics{Repository: repository, Organization: "org_first"}
 	latency := metricsstore.Latency{Count: 3, Sum: 30, Max: 10}
 	latency.Histogram[14] = 3
 	if err := repository.MergeRequestMetrics(t.Context(), "org_first", now, []metricsstore.Metric{{At: now.Truncate(time.Minute).Add(-time.Minute), Route: "GET /example", CallerKind: "runner", CallerID: "runner_1", StatusClass: 2, Latency: latency}}); err != nil {

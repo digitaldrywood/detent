@@ -156,7 +156,7 @@ func (g *writerReadGuard) TraceBatchEnd(_ context.Context, conn *pgx.Conn, _ pgx
 
 func installWriterReadGuard(t *testing.T, s *Service, guard *writerReadGuard) *writerReadGuard {
 	t.Helper()
-	if guard == nil || guard.repository == nil || s.database.postgres != guard.repository || s.config.TenantRepository != guard.repository || s.config.AccessRepository != guard.repository || s.database.billingRepository != guard.repository || s.config.BillingRepository != guard.repository || s.requestMetrics == nil || s.requestMetrics.repository != guard.repository {
+	if guard == nil || guard.repository == nil || s.database.postgres != guard.repository || s.config.TenantRepository != guard.repository || s.config.AccessRepository != guard.repository || s.database.billingRepository != guard.repository || s.config.BillingRepository != guard.repository || s.requestMetrics == nil || s.requestMetrics.Repository != guard.repository {
 		t.Fatal("read guard does not cover every actual PostgreSQL owner")
 	}
 	ctx := context.WithValue(t.Context(), writerReadGuardKey{}, true)
@@ -217,7 +217,7 @@ func newWriterGuardNativeFixture(t *testing.T) (nativeFixture, *writerReadGuard)
 	}
 	service.localOrganization = string(organization.ID)
 	service.database.hostedOrganization = organization.ID
-	service.requestMetrics.organization = organization.ID
+	service.requestMetrics.Organization = organization.ID
 	return newNativeFixture(t, service, organization.ID, "reader-guard"), guard
 }
 
@@ -630,7 +630,7 @@ func TestReadPoolExhaustionReturnsLoggedDeadline(t *testing.T) {
 	seedPostgresHubAdmin(t, repository, service, organization)
 	service.localOrganization = string(organization.ID)
 	service.database.hostedOrganization = organization.ID
-	service.requestMetrics.organization = organization.ID
+	service.requestMetrics.Organization = organization.ID
 	f := newNativeFixture(t, service, organization.ID, "exhausted-readers")
 	pool := probe.pool.Load()
 	if pool == nil || pool.Stat().MaxConns() != 3 {

@@ -50,8 +50,8 @@ type entryKeyBoardTraceContext struct{}
 type entryKeyBoardTrace struct{}
 
 func (entryKeyBoardTrace) record(ctx context.Context, query string) {
-	if timing, ok := ctx.Value(entryKeyBoardTraceContext{}).(*requestTiming); ok && timing.trace != nil {
-		timing.trace(query, nil)
+	if timing, ok := ctx.Value(entryKeyBoardTraceContext{}).(*requestTiming); ok && timing.Trace != nil {
+		timing.Trace(query, nil)
 	}
 }
 
@@ -455,7 +455,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				for sample := range 6 {
 					var mu sync.Mutex
 					statements := []string{}
-					requestTrace = &requestTiming{start: time.Now(), trace: func(query string, _ []driver.NamedValue) {
+					requestTrace = &requestTiming{Start: time.Now(), Trace: func(query string, _ []driver.NamedValue) {
 						mu.Lock()
 						defer mu.Unlock()
 						statements = append(statements, strings.Join(strings.Fields(query), " "))
@@ -465,7 +465,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					response := requestFor(target, "owner", "/internal/v1/keys/call", map[string]any{"name": "work_list", "arguments": map[string]any{"project_id": "project_scale", "limit": 50}, "connection_id": "board_scale"})
 					exchanges, wireStatements := wire.stop()
 					elapsed := time.Since(started)
-					timingHeader := requestTrace.header(time.Now())
+					timingHeader := requestTrace.Header(time.Now())
 					requestTrace = nil
 					requireNativeStatus(t, response, http.StatusOK)
 					var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
@@ -517,7 +517,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				scope := nativeScope{organization: org, project: "project_scale", credential: credential}
 				for sample := range 6 {
 					statements, begins := 0, 0
-					timing := &requestTiming{start: time.Now(), trace: func(query string, _ []driver.NamedValue) {
+					timing := &requestTiming{Start: time.Now(), Trace: func(query string, _ []driver.NamedValue) {
 						statements++
 						if strings.HasPrefix(query, "BEGIN") {
 							begins++
@@ -544,7 +544,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					if _, err := json.Marshal(page); err != nil {
 						t.Fatal(err)
 					}
-					t.Logf("BOARD4 full-board size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d exchanges=%d", size, org, sample, time.Since(timing.start), statements, begins, exchanges)
+					t.Logf("BOARD4 full-board size=%d tenant=%s sample=%d duration=%s queries=%d transactions=%d exchanges=%d", size, org, sample, time.Since(timing.Start), statements, begins, exchanges)
 					if statements > 50 || begins != 1 || wireStatements != statements || details.scalar.Load() != 0 || details.batches.Load() != 0 {
 						t.Fatalf("full board queries=%d wire statements=%d exchanges=%d transactions=%d scalar=%d batches=%d", statements, wireStatements, exchanges, begins, details.scalar.Load(), details.batches.Load())
 					}

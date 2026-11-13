@@ -50,7 +50,7 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		service.localOrganization, service.database.hostedOrganization, service.requestMetrics.organization = "org_first", "org_first", "org_first"
+		service.localOrganization, service.database.hostedOrganization, service.requestMetrics.Organization = "org_first", "org_first", "org_first"
 		f := newNativeFixture(t, service, "org_first", "claim preflight")
 		return f, admin, []tracker.NativeIssue{f.create(t, "first"), f.create(t, "second")}
 	}

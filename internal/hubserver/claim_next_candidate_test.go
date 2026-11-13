@@ -120,7 +120,7 @@ func TestClaimNextCandidateConcurrent(t *testing.T) {
 			for organizationIndex := range test.organizations {
 				organization := nativeOrganization{ID: tracker.OrganizationID(fmt.Sprintf("org_claim_%d", organizationIndex)), Name: fmt.Sprintf("Organization %d", organizationIndex), Slug: fmt.Sprintf("org-claim-%d", organizationIndex)}
 				seedPostgresHubAdmin(t, repository, service, organization)
-				service.localOrganization, service.database.hostedOrganization, service.requestMetrics.organization = string(organization.ID), organization.ID, organization.ID
+				service.localOrganization, service.database.hostedOrganization, service.requestMetrics.Organization = string(organization.ID), organization.ID, organization.ID
 				f := newNativeFixture(t, service, organization.ID, "claim candidates")
 				projects[organizationIndex] = f.project
 				approveHubTestPolicy(t, service, f.base+"/policy", hubTestPolicy())

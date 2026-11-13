@@ -1,0 +1,91 @@
+package hubserver
+
+import (
+	"context"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
+)
+
+type tenantRequestMetrics = requestmetrics.Service
+type requestMetricKey = requestmetrics.Key
+type requestLatency = requestmetrics.Latency
+type requestMetricTop = requestmetrics.Top
+type requestMetricsReport = requestmetrics.Report
+type routeLatencyBucket = requestmetrics.Bucket
+type routeLatencyHistory = requestmetrics.History
+type runnerRequestWindow = requestmetrics.RunnerWindow
+type hostedRequestUsage = requestmetrics.Usage
+type requestMetricsResponse = requestmetrics.Response
+type RequestMetrics = requestmetrics.RequestMetrics
+type runnerRequestBudgetContext = requestmetrics.RunnerBudgetContext
+
+func NewRequestMetrics(repository metricsstore.Repository) (*RequestMetrics, error) {
+	return requestmetrics.NewRequestMetrics(repository)
+}
+func metricCaller(c apiCredential) (string, string) { return requestmetrics.Caller(authCredential(c)) }
+func metricRoute(routes map[string]bool, method, path string) string {
+	return requestmetrics.Route(routes, method, path)
+}
+func runnerRequestExempt(method, path string) bool { return requestmetrics.RunnerExempt(method, path) }
+func hostedRequestUsageFor(c echo.Context, elapsed time.Duration) hostedRequestUsage {
+	return requestmetrics.UsageFor(c, elapsed)
+}
+func hostedRequestUsageWindows(plans *HostedPlansConfig, now time.Time, pending map[requestMetricKey]requestLatency) map[int64]hostedRequestUsage {
+	return requestmetrics.UsageWindows(&requestmetrics.BillingPlan{WindowSeconds: plans.WindowSeconds, RetentionWindows: plans.RetentionWindows}, now, pending)
+}
+func (d *database) metricsBillingOwner() *requestmetrics.BillingOwner {
+	return &requestmetrics.BillingOwner{Repository: d.billingRepository, Organization: d.hostedOrganization, Plans: func() *requestmetrics.BillingPlan {
+		p := d.plans()
+		if p == nil {
+			return nil
+		}
+		return &requestmetrics.BillingPlan{WindowSeconds: p.WindowSeconds, RetentionWindows: p.RetentionWindows}
+	}}
+}
+func (d *database) openRequestMetrics(ctx context.Context, org tracker.OrganizationID) (*tenantRequestMetrics, error) {
+	if d.postgres == nil || org == "" {
+		return nil, ErrHostedDatabaseBinding
+	}
+	return requestmetrics.New(requestmetrics.Deps{Repository: d.postgres, Organization: org})
+}
+func (s *Service) requestMetricsHTTP() *requestmetrics.HTTP {
+	return requestmetrics.NewHTTP(requestmetrics.HTTPDeps{Collector: s.requestMetrics, Repository: s.config.TenantRepository, Now: s.config.now, Logger: s.config.Logger, Echo: s.echo, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, err) }, Refuse: func(c echo.Context, status int, code, reason string, body any) error {
+		return s.refusedAPIError(c, status, code, reason, body)
+	}, JSONError: s.hostedJSONError, Credential: func(c echo.Context) hubauth.Credential {
+		cred, _ := c.Get("hub_api_credential").(apiCredential)
+		return authCredential(cred)
+	}, CurrentOperator: func(ctx context.Context) (hubauth.Credential, error) {
+		c, err := currentHubOperator(ctx)
+		return authCredential(c), err
+	}, ExplanationRead: explanationRead, BillingOwner: s.database.metricsBillingOwner, BindingError: ErrHostedDatabaseBinding})
+}
+func (s *Service) admitRunnerRequest(c echo.Context, cred apiCredential) error {
+	return s.requestMetricsHTTP().AdmitRunnerRequest(c, authCredential(cred))
+}
+func (s *Service) measureRequests(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error { return s.requestMetricsHTTP().Measure(next)(c) }
+}
+func (s *Service) requestMetricsVisible(ctx context.Context) bool {
+	return s.requestMetricsHTTP().Visible(ctx)
+}
+func (s *Service) adminRequestMetrics(ctx context.Context) (requestMetricsReport, bool, error) {
+	return s.requestMetricsHTTP().AdminReport(ctx)
+}
+func (s *Service) adminRouteLatency(ctx context.Context, from, to time.Time, bucket time.Duration) (routeLatencyHistory, bool, error) {
+	return s.requestMetricsHTTP().AdminHistory(ctx, from, to, bucket)
+}
+func (s *Service) hostedRequestMetrics(c echo.Context) error { return s.requestMetricsHTTP().Serve(c) }
+func (s *Service) recordHostedRequest(c echo.Context, started time.Time) {
+	s.requestMetricsHTTP().RecordHosted(c, started)
+}
+func (s *Service) expireRequestMetrics(ctx context.Context, now time.Time) error {
+	if s.requestMetrics == nil {
+		return nil
+	}
+	return s.requestMetrics.Retain(ctx, now)
+}

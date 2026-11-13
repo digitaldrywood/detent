@@ -1140,7 +1140,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 				seedPostgresHubAdmin(t, repository, service, organization)
 				service.localOrganization = string(organization.ID)
 				service.database.hostedOrganization = organization.ID
-				service.requestMetrics.organization = organization.ID
+				service.requestMetrics.Organization = organization.ID
 				f := newNativeFixture(t, service, organization.ID, "checkpoint history")
 				issue := f.create(t, "checkpoint history")
 				registered := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
@@ -1264,7 +1264,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 						clear(store.reads)
 						store.mu.Unlock()
 						var queries, writeTransactions, directWrites atomic.Int64
-						timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+						timing := &requestTiming{Trace: func(query string, _ []driver.NamedValue) {
 							queries.Add(1)
 							query = strings.TrimSpace(query)
 							for strings.HasPrefix(query, "--") {

@@ -122,7 +122,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 	}
 	for index, org := range organizations {
 		t.Run(string(org), func(t *testing.T) {
-			service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}, Logger: discardLogger(), now: func() time.Time { return now }}, database: &database{postgres: repository}, requestMetrics: &tenantRequestMetrics{repository: repository, organization: org}}
+			service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}, Logger: discardLogger(), now: func() time.Time { return now }}, database: &database{postgres: repository}, requestMetrics: &tenantRequestMetrics{Repository: repository, Organization: org}}
 			service.config.RunDetails = objects
 			for pass := range 2 {
 				if err := service.maintainNativeRetention(t.Context(), now); err != nil {
@@ -573,7 +573,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 						<-ctx.Done()
 						return ctx.Err()
 					},
-				}, database: &database{postgres: repository}, workerDone: make(chan struct{}), boardRefresh: make(chan struct{}, 1), requestMetrics: &tenantRequestMetrics{repository: repository, organization: org}}
+				}, database: &database{postgres: repository}, workerDone: make(chan struct{}), boardRefresh: make(chan struct{}, 1), requestMetrics: &tenantRequestMetrics{Repository: repository, Organization: org}}
 				ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 				defer func() { cancel(); <-service.workerDone; <-schedulerDone }()
 				go service.runPostgresMaintenance(ctx)

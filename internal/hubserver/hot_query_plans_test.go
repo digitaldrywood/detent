@@ -93,7 +93,7 @@ func TestHotQueryPlans(t *testing.T) {
 	var statements []hotQueryStatement
 	activePath := "authority"
 	setPath := func(path string) { mu.Lock(); activePath = path; mu.Unlock() }
-	timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
+	timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
 		values := make([]any, len(args))
 		for i, arg := range args {
 			values[i] = arg.Value

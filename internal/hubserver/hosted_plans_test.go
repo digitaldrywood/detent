@@ -696,12 +696,12 @@ func TestHostedPlanConfigurationAndTelemetry(t *testing.T) {
 		request := httptest.NewRequest(http.MethodGet, "/health", nil)
 		c := e.NewContext(request, httptest.NewRecorder())
 		key := requestMetricKey{Minute: at.Unix() / 60 * 60, Route: "GET /health", Kind: "anonymous", Status: 2}
-		pending := map[requestMetricKey]requestLatency{key: {http: hostedRequestUsageFor(c, time.Microsecond)}}
-		if err := metrics.writeHostedRequestUsage(t.Context(), f.service.database, at, pending); err != nil {
+		pending := map[requestMetricKey]requestLatency{key: {HTTP: hostedRequestUsageFor(c, time.Microsecond)}}
+		if err := metrics.WriteUsage(t.Context(), f.service.database.metricsBillingOwner(), at, pending); err != nil {
 			t.Fatal(err)
 		}
-		if len(pending) != 0 || metrics.billingPending != nil {
-			t.Fatalf("recorded telemetry stayed pending: samples=%d billing=%v", len(pending), metrics.billingPending != nil)
+		if len(pending) != 0 || metrics.BillingPending != nil {
+			t.Fatalf("recorded telemetry stayed pending: samples=%d billing=%v", len(pending), metrics.BillingPending != nil)
 		}
 	}
 	var count int
@@ -739,7 +739,7 @@ func TestHostedPlanConfigurationAndTelemetry(t *testing.T) {
 				}
 			}
 			heartbeatHostedPlanWorker(t, work, token, credential.Runner.MachineID, 1)
-			if err := f.service.requestMetrics.flush(t.Context(), clock.Now()); err != nil {
+			if err := f.service.requestMetrics.Flush(t.Context(), clock.Now()); err != nil {
 				t.Fatal(err)
 			}
 		}

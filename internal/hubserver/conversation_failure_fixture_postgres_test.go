@@ -55,7 +55,7 @@ func tfConvReopenConversationService(t *testing.T, original *Service, configure 
 	}
 	service.database.hostedOrganization = organization
 	service.localOrganization = local
-	service.requestMetrics.organization = organization
+	service.requestMetrics.Organization = organization
 	if cfg.Hosted == nil && service.conversations != nil {
 		if err := service.conversations.start(t.Context()); err != nil {
 			t.Fatal(err)

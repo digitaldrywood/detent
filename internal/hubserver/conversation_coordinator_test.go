@@ -2430,7 +2430,7 @@ func reopenCoordinatorService(t *testing.T, original *Service, configure ...func
 	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now), chat.WithSessionStore(operatorChatStore{service.database}, service.resolveOperatorChatAuthority))
 	service.database.hostedOrganization = organization
 	service.localOrganization = local
-	service.requestMetrics.organization = organization
+	service.requestMetrics.Organization = organization
 	if cfg.Hosted == nil && service.conversations != nil {
 		if err := service.conversations.start(t.Context()); err != nil {
 			t.Fatal(err)

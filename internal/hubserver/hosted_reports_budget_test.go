@@ -92,7 +92,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 			f.service.config.now = func() time.Time { return now.Add(time.Duration(test.hour) * time.Hour) }
 			var mu sync.Mutex
 			var statements []tracedStatement
-			timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
+			timing := &requestTiming{Trace: func(query string, args []driver.NamedValue) {
 				if args == nil {
 					return
 				}
@@ -141,12 +141,12 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 type reportsBudgetTrace struct{}
 
 func (reportsBudgetTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if timing := requestTimingFrom(ctx); timing != nil && timing.trace != nil {
+	if timing := requestTimingFrom(ctx); timing != nil && timing.Trace != nil {
 		args := make([]driver.NamedValue, len(data.Args))
 		for i, value := range data.Args {
 			args[i] = driver.NamedValue{Ordinal: i + 1, Value: value}
 		}
-		timing.trace(data.SQL, args)
+		timing.Trace(data.SQL, args)
 	}
 	return ctx
 }
@@ -191,12 +191,12 @@ func installReportsBudgetTrace(t *testing.T, s *Service) {
 	}
 	projectRecordDatabases.Store(repository, admin)
 	oldTenant, oldAccess, oldBilling := s.config.TenantRepository, s.config.AccessRepository, s.config.BillingRepository
-	oldDatabase, oldMetrics, oldDatabaseBilling := s.database.postgres, s.requestMetrics.repository, s.database.billingRepository
+	oldDatabase, oldMetrics, oldDatabaseBilling := s.database.postgres, s.requestMetrics.Repository, s.database.billingRepository
 	s.config.TenantRepository, s.config.AccessRepository, s.config.BillingRepository = repository, repository, repository
-	s.database.postgres, s.requestMetrics.repository, s.database.billingRepository = repository, repository, repository
+	s.database.postgres, s.requestMetrics.Repository, s.database.billingRepository = repository, repository, repository
 	t.Cleanup(func() {
 		s.config.TenantRepository, s.config.AccessRepository, s.config.BillingRepository = oldTenant, oldAccess, oldBilling
-		s.database.postgres, s.requestMetrics.repository, s.database.billingRepository = oldDatabase, oldMetrics, oldDatabaseBilling
+		s.database.postgres, s.requestMetrics.Repository, s.database.billingRepository = oldDatabase, oldMetrics, oldDatabaseBilling
 		projectRecordDatabases.Delete(repository)
 		if err := repository.Close(); err != nil {
 			t.Error(err)

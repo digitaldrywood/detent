@@ -72,7 +72,7 @@ func newWriteLoadFixture(t *testing.T, history, runners, sessions int) *writeLoa
 			t.Fatal(err)
 		}
 	}
-	service.database.hostedOrganization, service.localOrganization, service.requestMetrics.organization = primary, string(primary), primary
+	service.database.hostedOrganization, service.localOrganization, service.requestMetrics.Organization = primary, string(primary), primary
 	f := newNativeFixture(t, service, primary, "write-load")
 	policy := hubTestPolicy()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", policy)
