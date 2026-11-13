@@ -35,7 +35,7 @@ func (d *database) checkConversationCollaborationGrowthPostgres(ctx context.Cont
 		limit = math.MaxInt64
 	}
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
-	result, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: d.hostedOrganization, ID: receiptID + "/api_mutations", WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
+	result, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: writer.BillingOrganization(), ID: receiptID + "/api_mutations", WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
 	if err != nil {
 		return err
 	}
@@ -60,7 +60,7 @@ func (d *database) chargeAttachmentAPIMutationsPostgres(ctx context.Context, wri
 	limit := entitlement.Allowances["api_mutations"]
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 	for _, charge := range charges {
-		result, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: d.hostedOrganization, ID: receiptID + "/" + charge + "/api_mutations", WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
+		result, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: writer.BillingOrganization(), ID: receiptID + "/" + charge + "/api_mutations", WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
 		if err != nil {
 			return err
 		}

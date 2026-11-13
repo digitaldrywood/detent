@@ -291,6 +291,7 @@ func EvaluateMonthlyBudget(input MonthlyBudgetInput) (budget.MonthlyDecision, er
 
 type Reader interface {
 	RuntimeReader
+	BillingOrganization() tracker.OrganizationID
 	ConversationUsageBuckets(context.Context, time.Time, time.Time, []string, bool) ([]ConversationUsageBucket, error)
 	ConversationUsageSummary(context.Context, time.Time, time.Time, []string) (ConversationUsageSummary, error)
 	ConversationPrice(context.Context, string, string, time.Time) (ConversationPrice, error)

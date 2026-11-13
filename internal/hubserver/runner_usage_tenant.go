@@ -17,7 +17,7 @@ func (s *Service) applyRunnerTenantUsage(ctx context.Context, writer billingstor
 	}
 	windowStart := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 	apply := func(id, metric string, limit int64) (billingstore.UsageResult, error) {
-		return writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: s.database.hostedOrganization, ID: id + "/" + metric, WindowStart: windowStart, Metric: metric, Amount: 1}, limit)
+		return writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: writer.BillingOrganization(), ID: id + "/" + metric, WindowStart: windowStart, Metric: metric, Amount: 1}, limit)
 	}
 	if ctx.Value(runnerRequestBudgetContext{}) != true {
 		entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, writer, now))

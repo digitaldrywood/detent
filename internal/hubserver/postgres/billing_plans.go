@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *session) BillingPlan(ctx context.Context, ref billingstore.PlanReference) (billingstore.Plan, error) {
@@ -108,6 +109,10 @@ func (s *session) ReplaceBillingPlan(ctx context.Context, plan billingstore.Plan
 func (s *session) SetBillingPlanRuntime(ctx context.Context, ref billingstore.PlanReference, runtimeID string) error {
 	_, err := s.db.Exec(ctx, `UPDATE hosted_plans SET runtime_id=$1 WHERE organization_id=$2 AND id=$3 AND version=$4`, runtimeID, s.organization, ref.ID, ref.Version)
 	return mapError(ctx, err)
+}
+
+func (s *session) BillingOrganization() tracker.OrganizationID {
+	return s.organization
 }
 
 func (s *session) BillingAssignment(ctx context.Context) (billingstore.Assignment, error) {
