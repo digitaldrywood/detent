@@ -853,7 +853,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 				return err
 			}
 		}
-		return nil
+		return w.ReplaceRunnerProviderReports(t.Context(), binding.RunnerID, nil)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -998,8 +998,10 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 		t.Fatal(err)
 	}
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: unqualified.LeaseID, FencingToken: int64(unqualified.FencingToken)}, "test_release")
-		return err
+		if _, err := w.Release(t.Context(), leasestore.Fence{LeaseID: unqualified.LeaseID, FencingToken: int64(unqualified.FencingToken)}, "test_release"); err != nil {
+			return err
+		}
+		return w.ReplaceRunnerProviderReports(t.Context(), binding.RunnerID, []providercapacity.Report{report})
 	}); err != nil {
 		t.Fatal(err)
 	}
