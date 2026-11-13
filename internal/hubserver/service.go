@@ -67,7 +67,6 @@ type Service struct {
 	administration          *operatoradmin.Executor
 	billing                 *hostedBillingWorker
 	issueMailer             *issueMailer
-	hostedMutationMu        sync.Mutex
 	sourceVerification      chan struct{}
 	runtimeMu               sync.Mutex
 	hostedAuthLogger        *slog.Logger

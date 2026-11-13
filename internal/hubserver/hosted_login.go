@@ -124,8 +124,6 @@ func (s *Service) consumeHostedTransaction(c echo.Context) (hostedTransaction, e
 }
 
 func (s *Service) completeHostedLogin(c echo.Context) error {
-	s.hostedMutationMu.Lock()
-	defer s.hostedMutationMu.Unlock()
 	const invalidLink = "This sign-in link is invalid or has already been used"
 	denial := auth.HostedDenial{Flow: "login_callback", ProviderError: c.QueryParam("error")}
 	transaction, err := s.consumeHostedTransaction(c)

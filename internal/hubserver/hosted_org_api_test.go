@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -624,17 +625,26 @@ func TestListHostedMembersIsOrdered(t *testing.T) {
 
 func (f *browserHostedFixture) api(t *testing.T, account, method, path string, body any, status int) *httptest.ResponseRecorder {
 	t.Helper()
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		reader = strings.NewReader(string(encoded))
-	}
 	cookie := f.cookies[account]
 	if cookie == nil {
 		t.Fatal("account session cookie is missing")
+	}
+	var encoded []byte
+	if body != nil {
+		var err error
+		if encoded, err = json.Marshal(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response := f.serve(cookie, method, path, encoded)
+	browserHostedStatus(t, response, status)
+	return response
+}
+
+func (f *browserHostedFixture) serve(cookie *http.Cookie, method, path string, body []byte) *httptest.ResponseRecorder {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
 	}
 	request := httptest.NewRequest(method, f.server.URL+path, reader)
 	request.Header.Set("Content-Type", "application/json")
@@ -643,7 +653,6 @@ func (f *browserHostedFixture) api(t *testing.T, account, method, path string, b
 	request.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	f.service.Handler().ServeHTTP(response, request)
-	browserHostedStatus(t, response, status)
 	return response
 }
 

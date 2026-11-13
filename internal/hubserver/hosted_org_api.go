@@ -32,8 +32,8 @@ import (
 // organization, member and fleet screens read and write. requireAPIScope cannot carry these routes:
 // in hosted mode it rejects session credentials outside the native project
 // base, so each handler authenticates the hosted session itself. The shared
-// hosted boundary still supplies the CSRF check, the write lock and the
-// organization path check.
+// hosted boundary still supplies the CSRF check and the organization path
+// check.
 
 const hostedOrganizationBase = "/api/v2/organizations/:organization"
 

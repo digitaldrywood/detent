@@ -6,8 +6,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -321,6 +323,89 @@ func TestSlackSettingsPrivacyAndAccess(t *testing.T) {
 		t.Fatal("logs exposed webhook")
 	}
 
+}
+
+func TestSlackTestMessageLeavesHostedWritesUnblocked(t *testing.T) {
+	t.Parallel()
+	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", func(cfg *Config) {
+		cfg.SecretKeys = secretTestKeys(t, "1", "1")
+	})
+	if f.service.outbox != nil {
+		f.service.outbox.stop()
+	}
+	org := f.service.accessOrganization()
+	base := browserHostedOrganizationBase + "/integrations/slack"
+	readSettings := func() postgres.SlackIntegration {
+		t.Helper()
+		var row postgres.SlackIntegration
+		if err := f.service.database.postgres.ReadSlack(t.Context(), org, corestore.Serving, func(r postgres.SlackReader) error {
+			var err error
+			row, err = r.SlackIntegration(t.Context())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return row
+	}
+	f.api(t, "owner", http.MethodPut, base, map[string]any{"webhook": slackTestWebhook, "channel_name": "operations"}, http.StatusOK)
+	before := readSettings()
+	inFlight := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	var requests sync.WaitGroup
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		requests.Wait()
+	})
+	f.service.config.SlackHTTPClient = &http.Client{Transport: spritesTestTransport(func(r *http.Request) (*http.Response, error) {
+		close(inFlight)
+		<-release
+		return &http.Response{StatusCode: http.StatusOK, Status: http.StatusText(http.StatusOK), Body: io.NopCloser(strings.NewReader("ok")), Header: make(http.Header)}, nil
+	})}
+	serve := func(account, method, path string, body string) <-chan *httptest.ResponseRecorder {
+		done := make(chan *httptest.ResponseRecorder, 1)
+		var encoded []byte
+		if body != "" {
+			encoded = []byte(body)
+		}
+		requests.Go(func() { done <- f.serve(f.cookies[account], method, path, encoded) })
+		return done
+	}
+	ctx := testenv.WaitContext(t, t.Context())
+	await := func(name string, done <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+		t.Helper()
+		select {
+		case response := <-done:
+			return response
+		case <-ctx.Done():
+			t.Fatalf("%s did not finish while a Slack test message was in flight", name)
+			return nil
+		}
+	}
+	posted := serve("owner", http.MethodPost, base+"/test", "")
+	select {
+	case <-inFlight:
+	case <-ctx.Done():
+		t.Fatal("Slack test message never reached the webhook")
+	}
+	browserHostedStatus(t, await("another member's preference write", serve("viewer", http.MethodPut, browserHostedOrganizationBase+"/issue-notification-preference", `{"enabled":false}`)), http.StatusOK)
+	browserHostedStatus(t, await("a Slack settings write", serve("owner", http.MethodPut, base, `{"channel_name":"changed"}`)), http.StatusOK)
+	if got := readSettings(); got.ChannelName != "changed" || got.LastStatusCode != before.LastStatusCode {
+		t.Fatalf("settings written during the test message=%+v", got)
+	}
+	releaseOnce.Do(func() { close(release) })
+	browserHostedStatus(t, await("the Slack test message", posted), http.StatusOK)
+	got := readSettings()
+	if got.ChannelName != "changed" || got.LastStatusCode != before.LastStatusCode || got.LastDeliveryFailed != before.LastDeliveryFailed || !reflect.DeepEqual(got.LastSuccessAt, before.LastSuccessAt) || !reflect.DeepEqual(got.LastFailureAt, before.LastFailureAt) {
+		t.Fatalf("stale test status changed current settings: got=%+v before=%+v", got, before)
+	}
+	f.service.config.SlackHTTPClient = &http.Client{Transport: spritesTestTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: http.StatusText(http.StatusOK), Body: io.NopCloser(strings.NewReader("ok")), Header: make(http.Header)}, nil
+	})}
+	browserHostedStatus(t, f.serve(f.cookies["owner"], http.MethodPost, base+"/test", nil), http.StatusOK)
+	if got := readSettings(); got.LastStatusCode != http.StatusOK || got.LastDeliveryFailed || got.LastSuccessAt == nil {
+		t.Fatalf("current test status=%+v", got)
+	}
 }
 
 func TestSlackSecretRotation(t *testing.T) {

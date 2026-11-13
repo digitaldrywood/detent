@@ -83,38 +83,48 @@ type accountReceipt struct {
 	Output  operatoradmin.Output `json:"output"`
 }
 
-// Account setup has no customer token row. Its receipts therefore reuse the
-// existing hosted audit ledger and dashboard mutation serialization.
-func (s *Service) executeHostedAccountFor(ctx context.Context, credential hubapi.APICredential, name string, in operatoradmin.Input, m mutation.Metadata) (operatoradmin.Output, error) {
-	if locked, ok := ctx.Value(hostedMutationContext{}).(bool); !ok || !locked {
-		s.hostedMutationMu.Lock()
-		defer s.hostedMutationMu.Unlock()
-	}
+func (s *Service) replayHostedAccountReceipt(ctx context.Context, credential hubapi.APICredential, m mutation.Metadata) (operatoradmin.Output, bool, error) {
 	raw, err := s.readAccessAccountReceipt(ctx, credential.Hosted.Subject, m.RetryIdentity)
-	if err == nil {
-		var receipt accountReceipt
-		if json.Unmarshal([]byte(raw), &receipt) != nil {
-			return operatoradmin.Output{}, operatoradmin.ErrUnavailable
-		}
-		if receipt.Hash != m.InputHash {
-			return operatoradmin.Output{}, mutation.ErrConflict
-		}
-		if receipt.Outcome != "succeeded" {
+	if errors.Is(err, sql.ErrNoRows) {
+		return operatoradmin.Output{}, false, nil
+	}
+	if err != nil {
+		return operatoradmin.Output{}, true, err
+	}
+	var receipt accountReceipt
+	if json.Unmarshal([]byte(raw), &receipt) != nil {
+		return operatoradmin.Output{}, true, operatoradmin.ErrUnavailable
+	}
+	if receipt.Hash != m.InputHash {
+		return operatoradmin.Output{}, true, mutation.ErrConflict
+	}
+	if receipt.Outcome != "succeeded" {
+		return operatoradmin.Output{}, true, mutation.ErrUncertain
+	}
+	return receipt.Output, true, nil
+}
+
+// Account setup has no customer token row. Its receipts therefore reuse the
+// existing hosted audit ledger; the pending receipt is reserved under the
+// organization row lock before any provider call.
+func (s *Service) executeHostedAccountFor(ctx context.Context, credential hubapi.APICredential, name string, in operatoradmin.Input, m mutation.Metadata) (operatoradmin.Output, error) {
+	if output, replayed, err := s.replayHostedAccountReceipt(ctx, credential, m); replayed {
+		return output, err
+	}
+	record := func(recordCtx context.Context, outcome string, out operatoradmin.Output, reserve bool) error {
+		return s.storeAccessAccountReceipt(recordCtx, credential, accountReceipt{Kind: "account_administration", Retry: m.RetryIdentity, Hash: m.InputHash, Outcome: outcome, Output: out}, m, reserve)
+	}
+	if err := record(ctx, "pending", operatoradmin.Output{}, true); errors.Is(err, errAccountReceiptExists) {
+		output, replayed, err := s.replayHostedAccountReceipt(ctx, credential, m)
+		if !replayed {
 			return operatoradmin.Output{}, mutation.ErrUncertain
 		}
-		return receipt.Output, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return operatoradmin.Output{}, err
-	}
-	record := func(recordCtx context.Context, outcome string, out operatoradmin.Output) error {
-		return s.storeAccessAccountReceipt(recordCtx, credential, accountReceipt{Kind: "account_administration", Retry: m.RetryIdentity, Hash: m.InputHash, Outcome: outcome, Output: out}, m)
-	}
-	if err := record(ctx, "pending", operatoradmin.Output{}); err != nil {
+		return output, err
+	} else if err != nil {
 		return operatoradmin.Output{}, err
 	}
 	output := operatoradmin.Output{Reconnect: true}
-	err = nil
+	var err error
 	switch name {
 	case operatortool.OrganizationCreate:
 		output.ResourceID, err = s.createHostedOrganizationFor(ctx, credential, in.Name)
@@ -139,7 +149,7 @@ func (s *Service) executeHostedAccountFor(ctx context.Context, credential hubapi
 	}
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	if err := record(persist, "succeeded", output); err != nil {
+	if err := record(persist, "succeeded", output, false); err != nil {
 		return operatoradmin.Output{}, mutation.ErrUncertain
 	}
 	return output, nil

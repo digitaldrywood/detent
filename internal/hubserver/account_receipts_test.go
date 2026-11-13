@@ -41,8 +41,11 @@ func TestPostgresAccountReceiptsPreserveReplayAndUncertainty(t *testing.T) {
 		}
 		metadata.RetryIdentity = "pending-retry"
 		receipt := accountReceipt{Kind: "account_administration", Retry: metadata.RetryIdentity, Hash: metadata.InputHash, Outcome: "pending"}
-		if err := service.storeAccessAccountReceipt(t.Context(), credential, receipt, metadata); err != nil {
+		if err := service.storeAccessAccountReceipt(t.Context(), credential, receipt, metadata, false); err != nil {
 			t.Fatal(err)
+		}
+		if err := service.storeAccessAccountReceipt(t.Context(), credential, receipt, metadata, true); !errors.Is(err, errAccountReceiptExists) {
+			t.Fatalf("second reservation error=%v", err)
 		}
 		if _, err := service.executeHostedAccountFor(t.Context(), credential, operatortool.SupportStart, operatoradmin.Input{}, metadata); !errors.Is(err, mutation.ErrUncertain) {
 			t.Fatalf("pending replay error=%v", err)

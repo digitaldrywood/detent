@@ -82,8 +82,6 @@ func (s *Service) hostedCSRFValid(c echo.Context) bool {
 	return subtle.ConstantTimeCompare([]byte(value), []byte(hostedCSRF(cookie.Value))) == 1
 }
 
-type hostedMutationContext struct{}
-
 func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		defer s.recordHostedRequest(c, time.Now())
@@ -114,11 +112,6 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 		if !hubscope.HostedReadRequest(c) && !bearerAPI && !strings.HasSuffix(c.Path(), "/redeem") && !s.hostedCSRFValid(c) {
 			return s.refusedAPIError(c, http.StatusForbidden, "invalid_csrf", "Reload the form and try again", hubapi.APIErrorResponse{Code: "invalid_csrf", Message: "Reload the form and try again"})
-		}
-		if !hubscope.HostedReadRequest(c) && !bearerAPI {
-			s.hostedMutationMu.Lock()
-			defer s.hostedMutationMu.Unlock()
-			c.SetRequest(c.Request().WithContext(context.WithValue(c.Request().Context(), hostedMutationContext{}, true)))
 		}
 		return next(c)
 	}

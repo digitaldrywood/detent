@@ -42,7 +42,9 @@ func (s *Service) readAccessAccountReceipt(ctx context.Context, actor, retry str
 	return string(raw), err
 }
 
-func (s *Service) storeAccessAccountReceipt(ctx context.Context, credential hubapi.APICredential, receipt accountReceipt, metadata mutation.Metadata) error {
+var errAccountReceiptExists = errors.New("account receipt already exists")
+
+func (s *Service) storeAccessAccountReceipt(ctx context.Context, credential hubapi.APICredential, receipt accountReceipt, metadata mutation.Metadata, reserve bool) error {
 	store := s.runDetailStore()
 	if store == nil {
 		return artifact.ErrStorage
@@ -72,6 +74,16 @@ func (s *Service) storeAccessAccountReceipt(ctx context.Context, credential huba
 	}
 	now := s.config.now()
 	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		if reserve {
+			if err := w.LockAccessOrganization(ctx); err != nil {
+				return err
+			}
+			if _, err := w.AccessAccountAudit(ctx, credential.Hosted.Subject, receipt.Retry); err == nil {
+				return errAccountReceiptExists
+			} else if !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+		}
 		_, err := w.RecordAccessAudit(ctx, accessstore.Audit{OrganizationID: s.accessOrganization(), SessionID: credential.Hosted.SessionID, ActualActor: credential.Hosted.Subject, EffectiveUser: credential.Hosted.Subject, Event: "account_administration", Route: "mcp/account", StartedAt: credential.Hosted.CreatedAt, ExpiresAt: credential.Hosted.ExpiresAt, RecordedAt: now, RecordedAtNS: now.UnixNano(), AccountKind: receipt.Kind, AccountRetry: receipt.Retry, Mutation: &ref})
 		return err
 	})
