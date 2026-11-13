@@ -217,3 +217,8 @@ func ConnectionLimit(t *testing.T, admin *sql.DB) int {
 	}
 	return limit
 }
+
+func NativeConfig(t *testing.T, admin *sql.DB, role, password string) *pgxpool.Config {
+	t.Helper()
+	return template.NativeConfig(t, admin, role, password)
+}

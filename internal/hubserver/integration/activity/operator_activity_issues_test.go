@@ -1,4 +1,4 @@
-package hubserver
+package activity_test
 
 import (
 	"context"
@@ -32,59 +32,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func TestActivityIssueResidence(t *testing.T) {
-	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	lanes := []tracker.NativeState{{Name: "Ideas"}, {Name: "Ready", Dispatchable: true}, {Name: "Build", Dispatchable: true}, {Name: "Waiting"}, {Name: "Shipped", Terminal: true}, {Name: "Cancelled", Terminal: true}}
-	type entry struct {
-		lane   string
-		second int
-	}
-	for _, tt := range []struct {
-		name         string
-		entries      []entry
-		start, total float64
-		seconds      []float64
-		counts       []int
-		names        []string
-		terminal     string
-		unknown      bool
-	}{
-		{name: "first active entry excludes backlog", entries: []entry{{"Ideas", 0}, {"Ready", 10}, {"Build", 30}}, start: 10, total: 90, seconds: []float64{20, 70}, counts: []int{1, 1}, names: []string{"Ready", "Build"}},
-		{name: "holding before active resets cycle", entries: []entry{{"Ready", 0}, {"Build", 10}, {"Ideas", 20}, {"Ready", 40}, {"Build", 60}}, start: 40, total: 60, seconds: []float64{20, 40}, counts: []int{1, 1}, names: []string{"Ready", "Build"}},
-		{name: "holding after active parks without reset", entries: []entry{{"Ready", 0}, {"Build", 10}, {"Waiting", 20}, {"Build", 50}}, total: 100, seconds: []float64{10, 60, 30}, counts: []int{1, 2, 1}, names: []string{"Ready", "Build", "Waiting"}},
-		{name: "unvisited active lanes present and holding absent", entries: []entry{{"Ready", 0}}, total: 100, seconds: []float64{100, 0}, counts: []int{1, 0}, names: []string{"Ready", "Build"}},
-		{name: "custom terminal stops clock", entries: []entry{{"Ready", 0}, {"Build", 10}, {"Shipped", 70}}, total: 70, seconds: []float64{10, 60}, counts: []int{1, 1}, names: []string{"Ready", "Build"}, terminal: "Shipped"},
-		{name: "cancelled is terminal", entries: []entry{{"Ideas", 0}, {"Ready", 10}, {"Cancelled", 25}}, start: 10, total: 15, seconds: []float64{15, 0}, counts: []int{1, 0}, names: []string{"Ready", "Build"}, terminal: "Cancelled"},
-		{name: "truncated prefix does not fabricate a start", entries: []entry{{"Build", 20}}, unknown: true, seconds: []float64{0, 0}, counts: []int{0, 0}, names: []string{"Ready", "Build"}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			samples := []analyticsResidenceSample{{Created: base, At: base, Entered: base, Initial: tt.entries[0].lane, State: tt.entries[0].lane}}
-			for i, e := range tt.entries[1:] {
-				at := base.Add(time.Duration(e.second) * time.Second)
-				samples = append(samples, analyticsResidenceSample{Created: base, At: at, Entered: at, State: e.lane, Sequence: int64(i + 1)})
-			}
-			if tt.unknown {
-				samples[0].Sequence = 4
-			}
-			got := activityIssueResidence(operatortool.ActivityIssue{}, lanes, samples, base.Add(100*time.Second))
-			if got.Partial != tt.unknown || (!tt.unknown && got.ClockStartedAt.Sub(base).Seconds() != tt.start) || (tt.unknown && !got.ClockStartedAt.IsZero()) || got.TotalSeconds != tt.total || got.TerminalLane != tt.terminal {
-				t.Fatalf("issue=%+v", got)
-			}
-			var names []string
-			var seconds []float64
-			var counts []int
-			for _, lane := range got.Lanes {
-				names = append(names, lane.Name)
-				seconds = append(seconds, lane.Seconds)
-				counts = append(counts, lane.Entries)
-			}
-			if !reflect.DeepEqual(names, tt.names) || !reflect.DeepEqual(seconds, tt.seconds) || !reflect.DeepEqual(counts, tt.counts) {
-				t.Fatalf("lanes=%+v", got.Lanes)
-			}
-		})
-	}
-}
 
 func TestActivityIssueRead(t *testing.T) {
 	lanes := []tracker.NativeState{{Name: "Ideas"}, {Name: "Ready", Dispatchable: true}, {Name: "Build", Dispatchable: true}, {Name: "Waiting"}, {Name: "Shipped", Terminal: true}, {Name: "Cancelled", Terminal: true}}

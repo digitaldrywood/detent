@@ -1,4 +1,4 @@
-package hubserver
+package activity
 
 import (
 	"cmp"
@@ -8,6 +8,10 @@ import (
 	"fmt"
 	"io/fs"
 	"slices"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportdata"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -19,14 +23,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCredential, request operatortool.ActivityRequest, window operatortool.AnalyticsWindow) (operatortool.ActivityReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Service) Read(ctx context.Context, caller Caller, request operatortool.ActivityRequest, window operatortool.AnalyticsWindow) (operatortool.ActivityReport, error) {
+	credential := caller.Credential
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	now := s.config.now().UTC()
-	out := operatortool.ActivityReport{OrganizationID: s.appOrganizationID(), ObservedAt: now, Window: window, PopulationLimit: activitystore.PopulationLimit, Running: []operatortool.ActivityAttempt{}, Finished: []operatortool.ActivityAttempt{}, RunningIssues: []operatortool.ActivityIssue{}, FinishedIssues: []operatortool.ActivityIssue{}, TypicalDurations: []operatortool.ActivityTypicalDuration{}, IssueTypicalDurations: []operatortool.ActivityIssueTypical{}}
+	now := s.deps.Now().UTC()
+	out := operatortool.ActivityReport{OrganizationID: s.deps.Organization(), ObservedAt: now, Window: window, PopulationLimit: activitystore.PopulationLimit, Running: []operatortool.ActivityAttempt{}, Finished: []operatortool.ActivityAttempt{}, RunningIssues: []operatortool.ActivityIssue{}, FinishedIssues: []operatortool.ActivityIssue{}, TypicalDurations: []operatortool.ActivityTypicalDuration{}, IssueTypicalDurations: []operatortool.ActivityIssueTypical{}}
 	filter := activitystore.Filter{RunnerID: request.RunnerID, From: window.From, To: window.To, Now: now, Limit: activitystore.IssuePopulationLimit}
 	if credential.HostedRole == "reporter" {
-		filter.Principal = (nativeScope{credential: credential}).actor().PrincipalID
+		filter.Principal = caller.Scope.Actor.PrincipalID
 		if filter.Principal == "" {
 			return out, operatortool.ErrAccessDenied
 		}
@@ -35,9 +40,9 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 	read := func(r tenantstore.Reader) error {
 		access, ok := r.(accessstore.ProjectAccessPageReader)
 		if !ok {
-			return ErrProjectParticipants
+			return s.deps.MissingParticipants
 		}
-		projects, err := access.ProjectAccessPage(ctx, projectAccessFilter(credential, tracker.ProjectID(request.ProjectID), "", 100))
+		projects, err := access.ProjectAccessPage(ctx, hubauth.ProjectFilter(credential, tracker.ProjectID(request.ProjectID), "", 100))
 		if err != nil {
 			return err
 		}
@@ -51,8 +56,8 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 				continue
 			}
 			if credential.EntryKey == nil && credential.HostedKeyKind == "service" {
-				err := s.authorizeAccessScope(ctx, r, nativeScope{organization: tracker.OrganizationID(out.OrganizationID), project: project.ProjectID, credential: credential}, false)
-				if errors.Is(err, accessstore.ErrDenied) || isNativeNotFound(err) {
+				err := caller.Scope.ForProject(project.ProjectID).Authorize(ctx, r, false)
+				if errors.Is(err, accessstore.ErrDenied) || caller.IsNotFound != nil && caller.IsNotFound(err) {
 					continue
 				}
 				if err != nil {
@@ -72,10 +77,10 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 		return err
 	}
 	var err error
-	if repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository); ok {
+	if repository, ok := s.deps.Repository.(tenantstore.SnapshotRepository); ok {
 		err = repository.ReadTenantSnapshot(ctx, tracker.OrganizationID(out.OrganizationID), corestore.Serving, read)
 	} else {
-		err = s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(out.OrganizationID), corestore.Serving, read)
+		err = s.deps.Repository.ReadTenant(ctx, tracker.OrganizationID(out.OrganizationID), corestore.Serving, read)
 	}
 	if err != nil {
 		return out, err
@@ -89,8 +94,8 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 			events = append(events, *attempt.Event)
 		}
 	}
-	values, failures := readDiagnosticObjects(events, func(event eventstore.Event) (tracker.CollaborationEvent, error) {
-		return eventstore.NewContent(s.runDetailStore()).Event(ctx, event)
+	values, failures := reportdata.ReadObjects(events, func(event eventstore.Event) (tracker.CollaborationEvent, error) {
+		return eventstore.NewContent(s.deps.Details()).Event(ctx, event)
 	})
 	runs := map[string]tracker.NativeRunData{}
 	for index, value := range values {
@@ -126,7 +131,7 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 		missingAttemptTiming[fact.IssueID] = missingAttemptTiming[fact.IssueID] || !hydrated
 		role := fact.Role
 		if role == "" {
-			role = activityRunRole(run)
+			role = RunRole(run)
 		}
 		runner, session := fact.RunnerID, fact.SessionID
 		if runner == "" {
@@ -195,9 +200,9 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 		if len(history) > 0 {
 			initial = history[0].From
 		}
-		samples := []analyticsResidenceSample{{Sequence: 0, At: fact.CreatedAt, Created: fact.CreatedAt, Initial: initial, State: initial, Entered: fact.CreatedAt, Partial: fact.Partial || !snapshot.Created[fact.ID]}}
+		samples := []reportdata.ResidenceSample{{Sequence: 0, At: fact.CreatedAt, Created: fact.CreatedAt, Initial: initial, State: initial, Entered: fact.CreatedAt, Partial: fact.Partial || !snapshot.Created[fact.ID]}}
 		for _, transition := range history {
-			samples = append(samples, analyticsResidenceSample{Sequence: transition.Sequence, At: transition.At, State: transition.To, Entered: transition.At})
+			samples = append(samples, reportdata.ResidenceSample{Sequence: transition.Sequence, At: transition.At, State: transition.To, Entered: transition.At})
 		}
 		issue := activityIssueResidence(operatortool.ActivityIssue{WorkItemID: string(fact.WorkItemID), Number: fact.Number, Title: fact.Title, ProjectID: string(fact.ProjectID), ProjectName: fact.ProjectName, CurrentLane: fact.State, Partial: fact.Partial, ChangeID: fact.ChangeID, PullRequestURL: fact.PublicationURL}, snapshot.States[fact.ProjectID], samples, now)
 		if issue.CurrentLane != fact.State {
@@ -234,9 +239,9 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 		out.TypicalDurations = append(out.TypicalDurations, activityTypicalDurations(project, samples, snapshot.DurationsPartial || timingPartial[project])...)
 	}
 	for project, values := range totals {
-		item := operatortool.ActivityIssueTypical{ProjectID: project, Total: analyticsDuration(values), Lanes: map[string]operatortool.AnalyticsDuration{}, Partial: out.IssuesPartial || snapshot.Partial}
+		item := operatortool.ActivityIssueTypical{ProjectID: project, Total: reportdata.Duration(values), Lanes: map[string]operatortool.AnalyticsDuration{}, Partial: out.IssuesPartial || snapshot.Partial}
 		for name, seconds := range laneValues[project] {
-			item.Lanes[name] = analyticsDuration(seconds)
+			item.Lanes[name] = reportdata.Duration(seconds)
 		}
 		out.IssueTypicalDurations = append(out.IssueTypicalDurations, item)
 	}
@@ -292,7 +297,7 @@ func (s *Service) readActivityReportTenant(ctx context.Context, credential apiCr
 			out.Partial = true
 			out.TypicalDurations = out.TypicalDurations[:len(out.TypicalDurations)/2]
 		default:
-			return out, errHubOperatorUnavailable
+			return out, s.deps.Unavailable
 		}
 	}
 }

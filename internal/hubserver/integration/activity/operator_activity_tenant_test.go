@@ -1,4 +1,4 @@
-package hubserver
+package activity_test
 
 import (
 	"context"
@@ -42,16 +42,13 @@ func TestPostgresActivityReadsLiveOutcomesAndIssueClocksWithoutSQLite(t *testing
 	member := auth.Membership{ID: "member", UserID: "user", OrganizationID: "provider_org_first", Status: "active"}
 	member.Role.Slug = "owner"
 	provider.members["user"] = member
-	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, now: func() time.Time { return observed }, Hosted: &HostedConfig{OrganizationID: "org_first", Provider: provider}}}
-	service.echo.Pre(service.timeWriterUse)
-	service.echo.Pre(service.serverTiming)
-	service.registerPostgresAppRoutes(service.echo)
+	service := &Service{admin: admin, owner: t, echo: echo.New(), database: &database{postgres: repository}, config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: details, Clock: func() time.Time { return observed }, Hosted: &HostedConfig{OrganizationID: "org_first", Provider: provider, WorkOSOrganizationID: "provider_org_first", BootstrapSubject: "user", PublicURL: "https://example.test"}}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: string(org), Slug: strings.ReplaceAll(string(org), "_", "-"), CreatedAt: now}); err != nil {
 				return err
 			}
-			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org), AllocationGeneration: 1}); err != nil {
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org), BootstrapSubject: "user", Deployment: "origin", PublicURL: "https://example.test"}); err != nil {
 				return err
 			}
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "owner", Hash: apikey.HashToken(string(org) + "_owner"), Name: "Example owner", Scope: "operator", NativeOnly: true, UserID: "user", MembershipID: "member", KeyScope: string(apikey.ScopeRead), ProjectAccess: "all", Kind: "personal", CreatedAt: now, UpdatedAt: now}); err != nil {

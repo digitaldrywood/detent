@@ -1,4 +1,4 @@
-package hubserver
+package activity
 
 type activityDurationSample struct {
 	ID      string

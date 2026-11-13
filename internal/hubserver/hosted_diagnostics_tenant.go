@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
@@ -361,26 +360,6 @@ func projectTenantDiagnostics(snapshot diagnosticstore.Snapshot, w operatortool.
 	}
 	out.Coverage = []diagnosticsCoverage{{Source: "Transitions", Observed: &transitions}, {Source: "Attempts", Observed: &snapshot.Attempts}, {Source: "Usage joins", Total: &snapshot.Attempts}, {Source: "Activity receipts"}, {Source: "Queue intervals"}, {Source: "Skip reasons"}, {Source: "Merge identity", Observed: &receipts, Total: &out.MergeLanded}, {Source: "Landing refusal reason"}, {Source: "Detector tick"}}
 	return out
-}
-
-func readDiagnosticObjects[T, R any](records []T, read func(T) (R, error)) ([]R, []error) {
-	values := make([]R, len(records))
-	errs := make([]error, len(records))
-	jobs := make(chan int, len(records))
-	for index := range records {
-		jobs <- index
-	}
-	close(jobs)
-	var workers sync.WaitGroup
-	for range min(4, len(records)) {
-		workers.Go(func() {
-			for index := range jobs {
-				values[index], errs[index] = read(records[index])
-			}
-		})
-	}
-	workers.Wait()
-	return values, errs
 }
 
 func populateTenantTodo(out *diagnosticsReport, snapshot diagnosticstore.Snapshot) {

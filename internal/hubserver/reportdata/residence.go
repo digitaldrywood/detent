@@ -1,4 +1,4 @@
-package hubserver
+package reportdata
 
 import (
 	"time"
@@ -6,7 +6,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-type analyticsResidenceSample struct {
+type ResidenceSample struct {
 	ID          string
 	Created     time.Time
 	At          time.Time

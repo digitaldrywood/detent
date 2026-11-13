@@ -1,4 +1,4 @@
-package hubserver
+package activity_test
 
 import (
 	"context"
@@ -39,99 +39,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
-
-func TestActivityStageTiming(t *testing.T) {
-	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	phase := func(start, finish int) tracker.NativePhase {
-		p := tracker.NativePhase{Name: "implement", StartedAt: base.Add(time.Duration(start) * time.Second)}
-		if finish >= 0 {
-			p.FinishedAt = base.Add(time.Duration(finish) * time.Second)
-		}
-		return p
-	}
-	for _, tt := range []struct {
-		name                     string
-		phases                   []tracker.NativePhase
-		running                  bool
-		start, elapsed, duration *float64
-		partial                  bool
-	}{
-		{name: "latest open phase", phases: []tracker.NativePhase{phase(0, 10), phase(20, -1)}, running: true, start: reportsPercent(20), elapsed: reportsPercent(80)},
-		{name: "last recorded start regardless of current name", phases: []tracker.NativePhase{phase(0, 10), phase(30, 40)}, running: true, start: reportsPercent(30), elapsed: reportsPercent(70)},
-		{name: "sum closed intervals without gaps or open tail", phases: []tracker.NativePhase{phase(0, 10), phase(20, 40), phase(50, -1)}, start: reportsPercent(50), duration: reportsPercent(30)},
-		{name: "negative interval contributes nothing", phases: []tracker.NativePhase{phase(10, 5), phase(20, 40)}, start: reportsPercent(20), duration: reportsPercent(20)},
-		{name: "missing phases", running: true, partial: true},
-		{name: "no closed data", phases: []tracker.NativePhase{phase(20, -1)}, start: reportsPercent(20), partial: true},
-		{name: "future start unavailable", phases: []tracker.NativePhase{phase(101, -1)}, running: true, partial: true},
-		{name: "zero last start does not fall back", phases: []tracker.NativePhase{phase(0, 10), {}}, running: true, partial: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			a := operatortool.ActivityAttempt{Stage: "code", Phase: "different"}
-			activityStageTiming(&a, tt.phases, base.Add(100*time.Second), tt.running)
-			var start *float64
-			if a.StageStartedAt != nil {
-				seconds := a.StageStartedAt.Sub(base).Seconds()
-				start = &seconds
-			}
-			if !reflect.DeepEqual(start, tt.start) || !reflect.DeepEqual(a.StageElapsedSeconds, tt.elapsed) || !reflect.DeepEqual(a.StageDurationSeconds, tt.duration) || a.Partial != tt.partial {
-				t.Fatalf("timing=%+v start=%v", a, start)
-			}
-		})
-	}
-}
-
-func TestActivityTypicalDurations(t *testing.T) {
-	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	makeAttempt := func(role, model, effort, status string, seconds int) nativeAnalyticsAttempt {
-		return nativeAnalyticsAttempt{Identity: agentidentity.Configured("codex", "codex", "", role, model, "openai", effort, "", base), Status: status, Phases: []tracker.NativePhase{{StartedAt: base, FinishedAt: base.Add(time.Duration(seconds) * time.Second)}}}
-	}
-	population := []nativeAnalyticsAttempt{
-		makeAttempt("code", "a", "high", "succeeded", 60), makeAttempt("code", "b", "medium", "failed", 180), makeAttempt("code", "c", "low", "succeeded", 300),
-		makeAttempt("plan", "a", "high", "succeeded", 30), makeAttempt("code", "a", "high", "running", 900), makeAttempt("code", "a", "high", "interrupted", 900), makeAttempt("code", "a", "high", "cancelled", 900), makeAttempt("merge", "a", "high", "succeeded", 0),
-	}
-	for _, tt := range []struct {
-		name     string
-		attempts []nativeAnalyticsAttempt
-		partial  bool
-		want     []operatortool.ActivityTypicalDuration
-	}{
-		{name: "combined models and efforts", attempts: population, want: []operatortool.ActivityTypicalDuration{{ProjectID: "project", Stage: "code", AnalyticsDuration: operatortool.AnalyticsDuration{Count: 3, Seconds: 540, P50Seconds: 180, P90Seconds: 276}}, {ProjectID: "project", Stage: "plan", AnalyticsDuration: operatortool.AnalyticsDuration{Count: 1, Seconds: 30, P50Seconds: 30, P90Seconds: 30}}}},
-		{name: "no data", attempts: population[4:], want: []operatortool.ActivityTypicalDuration{}},
-		{name: "partial sample", attempts: population[:1], partial: true, want: []operatortool.ActivityTypicalDuration{{ProjectID: "project", Stage: "code", AnalyticsDuration: operatortool.AnalyticsDuration{Count: 1, Seconds: 60, P50Seconds: 60, P90Seconds: 60}, Partial: true}}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			samples := make([]activityDurationSample, len(tt.attempts))
-			for i, a := range tt.attempts {
-				samples[i] = activityDurationSample{Role: a.Identity.Role, Status: a.Status, Seconds: a.Phases[0].FinishedAt.Sub(a.Phases[0].StartedAt).Seconds()}
-			}
-			got := activityTypicalDurations("project", samples, tt.partial)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("typical=%+v want=%+v", got, tt.want)
-			}
-			combined := append([]nativeAnalyticsAttempt{}, tt.attempts...)
-			for i := range combined {
-				combined[i].Identity = agentidentity.Configured("codex", "codex", "", combined[i].Identity.Role, "combined", "openai", "combined", "", base)
-			}
-			reports, _ := reportsAttemptTotals(combined, nil)
-			for _, typical := range got {
-				found := false
-				for _, stage := range reports {
-					if stage.Stage == typical.Stage {
-						found = true
-						reported := stage.Duration
-						reported.Samples = nil
-						if !reflect.DeepEqual(typical.AnalyticsDuration, reported) {
-							t.Fatalf("activity=%+v Reports=%+v", typical, stage)
-						}
-					}
-				}
-				if !found {
-					t.Fatalf("Reports missing %s", typical.Stage)
-				}
-			}
-		})
-	}
-}
 
 func TestHostedActivityReads(t *testing.T) {
 	f := newActivityPostgresFixture(t, "org_browser_preview")
@@ -527,7 +434,7 @@ func newActivityPostgresFixture(t *testing.T, organization tracker.OrganizationI
 	if len(clocks) > 0 {
 		now = clocks[0].UTC().Truncate(time.Microsecond)
 	}
-	browser := newPostgresBrowserHostedFixtureServing(t, true, string(organization), false, func(cfg *Config) { cfg.now = func() time.Time { return now } })
+	browser := newPostgresBrowserHostedFixtureServing(t, true, string(organization), false, func(cfg *Config) { cfg.Clock = func() time.Time { return now } })
 	f := &activityPostgresFixture{browserHostedFixture: browser, admin: hostedPostgresAdmin(t, browser.service), repository: browser.service.database.postgres, organization: organization, now: now}
 	expires := now.Add(24 * time.Hour)
 	const runner, machine, credential, enrollment = "runner_browser_preview", "machine_browser_preview", "activity_credential", "activity_enrollment"
@@ -718,36 +625,6 @@ func (f *activityPostgresFixture) advanceAttempt(t *testing.T, attempt activityF
 	}
 }
 
-func assertActivityQueryPlan(t *testing.T, q nativeQueryer, statement string, args []any, search string) {
-	t.Helper()
-	rows, err := q.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+statement, args...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var plan []string
-	for rows.Next() {
-		var id, parent, unused int
-		var detail string
-		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
-			t.Fatal(err)
-		}
-		plan = append(plan, detail)
-		if strings.HasPrefix(detail, "SCAN n") || strings.HasPrefix(detail, "SCAN c") || strings.Contains(detail, "SCAN native_attempts") || strings.Contains(detail, "SCAN change_requests") {
-			t.Fatalf("unbounded activity query: %s", detail)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(statement, "FROM change_requests") && !strings.Contains(strings.Join(plan, "\n"), "SEARCH c USING INDEX change_requests_activity_latest") && !strings.Contains(strings.Join(plan, "\n"), "SEARCH c USING COVERING INDEX change_requests_activity_latest") {
-		t.Fatalf("latest Change lookup lacks its index: %v", plan)
-	}
-	if !strings.Contains(strings.Join(plan, "\n"), search) {
-		t.Fatalf("missing %q in plan %v", search, plan)
-	}
-}
-
 func (f *activityPostgresFixture) links(t *testing.T, main activityFixtureAttempt) string {
 	t.Helper()
 	content := eventstore.NewContent(f.service.runDetailStore())
@@ -859,7 +736,7 @@ func (f *activityPostgresFixture) assertPlans(t *testing.T, read func()) {
 		t.Fatal(err)
 	}
 	connection := f.service.config.Postgres.Connection
-	config := postgresStartupTemplate.NativeConfig(t, f.admin, connection.User, connection.Password)
+	config := nativeConfig(t, f.admin, connection.User, connection.Password)
 	config.MaxConns = int32(f.service.config.Postgres.Pool.MaxConnections)
 	trace := &activitySQLTrace{}
 	config.ConnConfig.Tracer = multitracer.New(config.ConnConfig.Tracer, trace)

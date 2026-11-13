@@ -1,9 +1,12 @@
-package hubserver
+package activity
 
 import (
 	"cmp"
 	"slices"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/reportdata"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -27,7 +30,7 @@ func activityLaneRole(lane tracker.NativeState) string {
 	return "holding"
 }
 
-func activityIssueResidence(issue operatortool.ActivityIssue, lanes []tracker.NativeState, samples []analyticsResidenceSample, now time.Time) operatortool.ActivityIssue {
+func activityIssueResidence(issue operatortool.ActivityIssue, lanes []tracker.NativeState, samples []reportdata.ResidenceSample, now time.Time) operatortool.ActivityIssue {
 	issue.Lanes = []operatortool.ActivityLane{}
 	issue.RunnerIDs = []string{}
 	issue.WorkedByRole = []operatortool.ActivityRoleWork{}
@@ -40,7 +43,7 @@ func activityIssueResidence(issue operatortool.ActivityIssue, lanes []tracker.Na
 		}
 		return issue
 	}
-	slices.SortFunc(samples, func(a, b analyticsResidenceSample) int {
+	slices.SortFunc(samples, func(a, b reportdata.ResidenceSample) int {
 		return cmp.Or(a.At.Compare(b.At), cmp.Compare(a.Sequence, b.Sequence))
 	})
 	firstActive := slices.IndexFunc(lanes, func(l tracker.NativeState) bool { return l.Dispatchable && !l.Terminal })
@@ -128,11 +131,11 @@ func activityIntervalSeconds(intervals []activityWorkInterval) float64 {
 	var total float64
 	var end time.Time
 	for _, interval := range intervals {
-		from := maxTime(interval.from, end)
+		from := hubapi.MaxTime(interval.from, end)
 		if interval.to.After(from) {
 			total += interval.to.Sub(from).Seconds()
 		}
-		end = maxTime(end, interval.to)
+		end = hubapi.MaxTime(end, interval.to)
 	}
 	return total
 }
@@ -187,8 +190,8 @@ func activityIssueWork(issue *operatortool.ActivityIssue, attempts []activityIss
 				issue.WorkedRunning = issue.WorkedRunning || attempt.live
 				to = attempt.ended
 			}
-			from := maxTime(phase.StartedAt, issue.ClockStartedAt)
-			to = minTime(to, minTime(end, attempt.ended))
+			from := hubapi.MaxTime(phase.StartedAt, issue.ClockStartedAt)
+			to = hubapi.MinTime(to, hubapi.MinTime(end, attempt.ended))
 			if !phase.StartedAt.IsZero() && to.After(from) {
 				interval := activityWorkInterval{from, to}
 				all = append(all, interval)
