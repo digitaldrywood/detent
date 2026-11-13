@@ -2,6 +2,8 @@ package hostedplans
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"strconv"
 	"time"
 
@@ -34,7 +36,17 @@ func (d *Service) ReadPlanUsage(ctx context.Context, query Queryer, now time.Tim
 	}
 	entitlement.Usage, err = d.Consumption(ctx, query, now, metrics...)
 	delete(entitlement.Usage, "events_total")
-	return entitlement, err
+	return UsageView(entitlement), err
+}
+
+func UsageView(entitlement HostedEntitlement) HostedEntitlement {
+	if slices.Contains(entitlement.Features, "hosted_artifacts") {
+		return entitlement
+	}
+	entitlement.Allowances = maps.Clone(entitlement.Allowances)
+	delete(entitlement.Allowances, "artifact_retained_bytes")
+	delete(entitlement.Allowances, "artifact_reserved_bytes")
+	return entitlement
 }
 
 func (d *Service) ReadPlanUsageRecord(ctx context.Context, now time.Time, allowanceNames ...string) (HostedEntitlement, error) {
@@ -62,7 +74,7 @@ func (d *Service) ReadPlanUsageRecord(ctx context.Context, now time.Time, allowa
 		delete(result.Usage, "events_total")
 		return nil
 	})
-	return result, err
+	return UsageView(result), err
 }
 
 func PlanPrice(cents *int64) string {

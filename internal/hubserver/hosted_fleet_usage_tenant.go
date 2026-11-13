@@ -35,7 +35,7 @@ func (s *Service) hostedPlanUsageTenant(ctx context.Context, unlimited ...string
 		result.Usage, result.Unavailable = usage.Usage, usage.Unavailable
 		return nil
 	}))
-	return result, err
+	return hostedplans.UsageView(result), err
 }
 
 func (s *Service) hostedFleetUsageTenant(ctx context.Context) (hostedFleetUsage, error) {
@@ -45,18 +45,14 @@ func (s *Service) hostedFleetUsageTenant(ctx context.Context) (hostedFleetUsage,
 	}
 	out := hostedFleetUsage{WindowEndsAt: plan.WindowEndsAt.Format(time.RFC3339), Allowances: map[string]hostedFleetAllowance{}}
 	for metric, used := range plan.Usage {
-		if limit, limited := plan.Allowances[metric]; limited && !hostedMeasuredOnlyMetric(metric) {
+		if limit, limited := plan.Allowances[metric]; limited {
 			out.Allowances[metric] = hostedFleetAllowance{Used: used, Limit: limit}
 		}
 	}
 	for _, metric := range plan.Unavailable {
-		if _, limited := plan.Allowances[metric]; limited && !hostedMeasuredOnlyMetric(metric) {
+		if _, limited := plan.Allowances[metric]; limited {
 			out.Unavailable = append(out.Unavailable, metric)
 		}
 	}
 	return out, nil
-}
-
-func hostedMeasuredOnlyMetric(metric string) bool {
-	return metric == "artifact_retained_bytes" || metric == "artifact_reserved_bytes"
 }
