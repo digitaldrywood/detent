@@ -1,8 +1,10 @@
 package searchstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -131,7 +133,7 @@ func (p searchPopulation) Search(_ context.Context, query Query) ([]Hit, error) 
 func TestSearchReaches128001WorkItemsWithConstantCursor(t *testing.T) {
 	const count = 128001
 	population := searchPopulation{size: count}
-	content := NewContent(population)
+	content := NewContentWithCursors(population, testCursors())
 	query := Query{Kind: "work", ProjectID: "prj_example", Text: "sentinel", Exact: true, Limit: corestore.MaxPageSize}
 	seen := 0
 	for pageNumber := 0; pageNumber < count; pageNumber++ {
@@ -161,4 +163,36 @@ func TestSearchReaches128001WorkItemsWithConstantCursor(t *testing.T) {
 		query.Cursor = page.NextCursor
 	}
 	t.Fatalf("search did not exhaust after %d matches", seen)
+}
+
+func testCursors() *CursorSealer {
+	return NewCursorSealer(func(context.Context, tracker.OrganizationID) ([]byte, error) {
+		return bytes.Repeat([]byte{0x5c}, 32), nil
+	})
+}
+
+func TestSearchCursorRequiresSealer(t *testing.T) {
+	population := searchPopulation{size: 3}
+	query := Query{Kind: "work", ProjectID: "prj_example", Text: "sentinel", Exact: true, Limit: 1}
+	sealed, err := NewContentWithCursors(population, testCursors()).Find(t.Context(), population, "org_example", query)
+	if err != nil || sealed.NextCursor == "" {
+		t.Fatalf("sealed page=%+v error=%v", sealed, err)
+	}
+	for _, test := range []struct {
+		name   string
+		cursor string
+		sealer *CursorSealer
+	}{
+		{"no sealer issuing", "", nil},
+		{"no sealer reading", sealed.NextCursor, nil},
+		{"sealer without key", "", NewCursorSealer(nil)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query.Cursor = test.cursor
+			page, err := NewContentWithCursors(population, test.sealer).Find(t.Context(), population, "org_example", query)
+			if !errors.Is(err, ErrCursorUnavailable) || page.NextCursor != "" {
+				t.Fatalf("page=%+v error=%v", page, err)
+			}
+		})
+	}
 }

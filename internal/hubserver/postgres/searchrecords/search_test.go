@@ -1,6 +1,7 @@
 package searchrecords_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -38,7 +39,7 @@ func newSearchFixture(t *testing.T) searchFixture {
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	objects := pgstoretest.NewHistoryObjects()
-	f := searchFixture{repository, searchstore.NewContent(objects), objects, admin, pool}
+	f := searchFixture{repository, searchContent(objects), objects, admin, pool}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if _, err := admin.ExecContext(t.Context(), `INSERT INTO organizations(organization_id,name,local,created_at) VALUES($1,$1,false,$2)`, org, pgstoretest.HistoryAt()); err != nil {
 			t.Fatal(err)
@@ -46,6 +47,12 @@ func newSearchFixture(t *testing.T) searchFixture {
 		pgstoretest.SeedRepository(t, repository, org)
 	}
 	return f
+}
+
+func searchContent(objects attachment.DetailStore) *searchstore.Content {
+	return searchstore.NewContentWithCursors(objects, searchstore.NewCursorSealer(func(context.Context, tracker.OrganizationID) ([]byte, error) {
+		return bytes.Repeat([]byte{0x5c}, 32), nil
+	}))
 }
 
 func (f searchFixture) put(t *testing.T, d searchstore.Document, text searchstore.Text, expected int64) searchstore.Document {

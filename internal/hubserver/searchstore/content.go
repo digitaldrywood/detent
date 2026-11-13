@@ -17,13 +17,20 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type Content struct{ store attachment.DetailStore }
+type Content struct {
+	store   attachment.DetailStore
+	cursors *CursorSealer
+}
 type payload struct {
 	Document Document
 	Text     Text
 }
 
 func NewContent(store attachment.DetailStore) *Content { return &Content{store: store} }
+
+func NewContentWithCursors(store attachment.DetailStore, cursors *CursorSealer) *Content {
+	return &Content{store: store, cursors: cursors}
+}
 
 func (c *Content) Prepare(ctx context.Context, document Document, text Text) (Document, error) {
 	if c.store == nil {

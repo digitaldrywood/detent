@@ -1,6 +1,7 @@
 package searchrecords_test
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -274,7 +275,6 @@ func TestSearchVisibilityChangeBetweenPages(t *testing.T) {
 		for _, rebuilding := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/rebuilding=%t", test.name, rebuilding), func(t *testing.T) {
 				results := map[bool][]string{}
-				cursors := map[bool][]string{}
 				for _, refreshed := range []bool{false, true} {
 					f := newSearchFixture(t)
 					seedStaleVisibilityIssues(t, f, rebuilding)
@@ -298,14 +298,10 @@ func TestSearchVisibilityChangeBetweenPages(t *testing.T) {
 							}
 							results[refreshed] = append(results[refreshed], id)
 						}
-						for _, entry := range cursorDocuments(t, next.NextCursor) {
-							id, _, _ := strings.Cut(entry, ":")
-							if id != "" && !strings.HasPrefix(id, "issue/wi_stale_") && !strings.HasPrefix(id, "issue/wi_first_") {
-								t.Fatalf("cursor names a document never visible to the caller: %s", id)
-							}
-						}
-						cursors[refreshed] = append(cursors[refreshed], fmt.Sprint(cursorDocuments(t, next.NextCursor)))
 						query.Cursor = next.NextCursor
+					}
+					if query.Cursor != "" {
+						t.Fatalf("refreshed=%t paging did not exhaust", refreshed)
 					}
 				}
 				slices.Sort(results[false])
@@ -313,8 +309,80 @@ func TestSearchVisibilityChangeBetweenPages(t *testing.T) {
 				if !slices.Equal(results[false], results[true]) {
 					t.Fatalf("stale results=%v refreshed results=%v", results[false], results[true])
 				}
-				t.Logf("stale cursor documents=%v refreshed cursor documents=%v", cursors[false], cursors[true])
 			})
+		}
+	}
+}
+
+func TestSearchCursorRevealsNoDocumentTermOrScore(t *testing.T) {
+	f := newSearchFixture(t)
+	seedStaleVisibilityIssues(t, f, false)
+	secrets := [][]byte{[]byte("staleterm")}
+	for _, item := range []string{"wi_first_1", "wi_first_2", "wi_stale_1", "wi_stale_2", "wi_stale_3", "wi_stale_4"} {
+		secrets = append(secrets, []byte(item))
+	}
+	rows, err := f.admin.QueryContext(t.Context(), `SELECT DISTINCT impact FROM search_postings WHERE organization_id='org_first'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	addNumber := func(value float64) {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) >= 6 {
+			secrets = append(secrets, raw)
+		}
+	}
+	for rows.Next() {
+		var impact float64
+		if err := rows.Scan(&impact); err != nil {
+			t.Fatal(err)
+		}
+		addNumber(impact)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	query := searchstore.Query{Text: "staleterm", Reporter: new("example-principal"), Limit: 2}
+	first, again := f.find(t, "org_first", query), f.find(t, "org_first", query)
+	if first.NextCursor == "" || first.NextCursor == again.NextCursor || !slices.Equal(searchIDs(first), searchIDs(again)) {
+		t.Fatalf("same page cursors=%q %q pages=%v %v", first.NextCursor, again.NextCursor, searchIDs(first), searchIDs(again))
+	}
+	scored := len(secrets)
+	for _, hit := range first.Items {
+		addNumber(hit.Score)
+	}
+	if len(secrets) == scored {
+		t.Fatalf("no distinctive score to search for in %+v", first.Items)
+	}
+	if _, err := f.admin.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id='other-principal' WHERE organization_id='org_first' AND native_id IN ('wi_stale_1','wi_stale_2')`); err != nil {
+		t.Fatal(err)
+	}
+	cursors := []string{first.NextCursor, again.NextCursor}
+	got := searchIDs(first)
+	query.Cursor = first.NextCursor
+	for page := 0; page < 10 && query.Cursor != ""; page++ {
+		next := f.find(t, "org_first", query)
+		got = append(got, searchIDs(next)...)
+		if next.NextCursor != "" {
+			cursors = append(cursors, next.NextCursor)
+		}
+		query.Cursor = next.NextCursor
+	}
+	if query.Cursor != "" || slices.Contains(got, "wi_stale_1") || slices.Contains(got, "wi_stale_2") || len(got) != 4 {
+		t.Fatalf("pages across reassignment=%v exhausted=%t", got, query.Cursor == "")
+	}
+	for _, cursor := range cursors {
+		raw, err := base64.RawURLEncoding.DecodeString(cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range secrets {
+			if bytes.Contains(raw, secret) {
+				t.Fatalf("cursor bytes contain %q", secret)
+			}
 		}
 	}
 }
@@ -333,10 +401,17 @@ func TestSearchCursorRejectedAfterAccessRevocation(t *testing.T) {
 		t.Fatalf("revoked cursor error=%v", err)
 	}
 	query.Cursor = ""
-	page, err := f.content.Find(t.Context(), f.repository, "org_first", query)
-	if err != nil || len(page.Items) != 0 || len(cursorDocuments(t, page.NextCursor)) != 0 {
-		t.Fatalf("revoked project page=%v cursor=%q err=%v", searchIDs(page), page.NextCursor, err)
+	for page := 0; page < 10; page++ {
+		next, err := f.content.Find(t.Context(), f.repository, "org_first", query)
+		if err != nil || len(next.Items) != 0 {
+			t.Fatalf("revoked project page=%v err=%v", searchIDs(next), err)
+		}
+		if next.NextCursor == "" {
+			return
+		}
+		query.Cursor = next.NextCursor
 	}
+	t.Fatal("revoked project paging did not exhaust")
 }
 
 func seedStaleVisibilityIssues(t *testing.T, f searchFixture, rebuilding bool) {
@@ -371,45 +446,13 @@ func searchPages(t *testing.T, f searchFixture, org tracker.OrganizationID, quer
 	var pages []string
 	for page := 0; page < 10; page++ {
 		next := f.find(t, org, query)
-		pages = append(pages, fmt.Sprintf("%v|%v", searchIDs(next), cursorDocuments(t, next.NextCursor)))
+		pages = append(pages, fmt.Sprintf("%v|%t", searchIDs(next), next.NextCursor == ""))
 		if next.NextCursor == "" {
 			break
 		}
 		query.Cursor = next.NextCursor
 	}
 	return pages
-}
-
-func cursorDocuments(t *testing.T, cursor string) []string {
-	t.Helper()
-	if cursor == "" {
-		return nil
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(cursor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var position struct {
-		ID      string
-		BatchID string
-		Streams []struct {
-			ID   string
-			Done bool
-		}
-	}
-	if err := json.Unmarshal(raw, &position); err != nil {
-		t.Fatal(err)
-	}
-	var ids []string
-	for _, id := range []string{position.ID, position.BatchID} {
-		if id != "" {
-			ids = append(ids, id)
-		}
-	}
-	for _, stream := range position.Streams {
-		ids = append(ids, fmt.Sprintf("%s:%t", stream.ID, stream.Done))
-	}
-	return ids
 }
 
 func TestDuplicateSourceReadinessIsProjectWideDegradedSignal(t *testing.T) {
@@ -470,19 +513,15 @@ func TestSearchThreadScopeKeysByProjectAccess(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			query := searchstore.Query{Kind: "thread", Text: "threadscopeterm", ProjectIDs: test.projects, Limit: 1}
 			var got []string
-			for page := 0; page < 10; page++ {
+			exhausted := false
+			for page := 0; page < 10 && !exhausted; page++ {
 				next := f.find(t, "org_first", query)
 				got = append(got, searchIDs(next)...)
-				for _, entry := range cursorDocuments(t, next.NextCursor) {
-					id, _, _ := strings.Cut(entry, ":")
-					if id != "" && !slices.Contains(test.want, id) {
-						t.Fatalf("cursor names thread %s outside access", id)
-					}
-				}
-				if next.NextCursor == "" {
-					break
-				}
+				exhausted = next.NextCursor == ""
 				query.Cursor = next.NextCursor
+			}
+			if !exhausted {
+				t.Fatalf("thread paging did not exhaust: %v", got)
 			}
 			slices.Sort(got)
 			if !slices.Equal(got, test.want) {

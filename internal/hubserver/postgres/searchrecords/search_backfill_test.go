@@ -182,7 +182,7 @@ func TestSearchBackfillResumesBoundedTenantPages(t *testing.T) {
 		repository, pool := pgstoretest.CoreWorkEventRepository(t, db, fixture)
 		orgs := []tracker.OrganizationID{"org_first", "org_second"}
 		objects := pgstoretest.NewHistoryObjects()
-		search := searchFixture{repository: repository, content: searchstore.NewContent(objects), objects: objects, admin: db, pool: pool}
+		search := searchFixture{repository: repository, content: searchContent(objects), objects: objects, admin: db, pool: pool}
 		for _, org := range orgs {
 			document := searchIssue(org, "wi_shared")
 			document.ProjectID = "prj_shared"

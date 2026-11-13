@@ -22,11 +22,15 @@ func searchRefreshOffset(interval time.Duration, jitter float64) time.Duration {
 	return time.Duration(min(max(jitter, 0), 1) * float64(interval-1))
 }
 
+func (s *Service) searchContent() *searchstore.Content {
+	return searchstore.NewContentWithCursors(s.runDetailStore(), searchstore.NewCursorSealer(s.readNativeCursorKey))
+}
+
 func (s *Service) maintainNativeSearch(ctx context.Context) {
 	if _, err := s.refreshNativeIdentity(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "rebuild scoped origin identities", "error", err)
 	}
-	_, err := searchstore.NewContent(s.runDetailStore()).RefreshTick(s.runDetailContext(ctx), tenantstore.SearchRepository{Repository: s.config.TenantRepository}, s.accessOrganization(), context.WithTimeout)
+	_, err := s.searchContent().RefreshTick(s.runDetailContext(ctx), tenantstore.SearchRepository{Repository: s.config.TenantRepository}, s.accessOrganization(), context.WithTimeout)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "rebuild scoped search index", "error", err)
 	}

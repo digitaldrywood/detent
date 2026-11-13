@@ -1,7 +1,9 @@
 package searchrecords_test
 
 import (
+	"cmp"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -525,35 +527,13 @@ func TestSearchExactTermContinuesBeyondCandidateLimit(t *testing.T) {
 	for _, text := range []string{"commonterm", "commonterm otherterm"} {
 		t.Run(text, func(t *testing.T) {
 			query := searchstore.Query{Text: text, Exact: true, Limit: 1}
-			for pageNumber := range 10 {
+			for range 10 {
 				page := f.find(t, "org_first", query)
 				if slices.Contains(searchIDs(page), "wi_first_2") {
 					return
 				}
 				if page.NextCursor == "" || page.NextCursor == query.Cursor {
 					t.Fatalf("exact match beyond candidate limit unreachable: %+v", page)
-				}
-				if pageNumber == 0 {
-					raw, err := base64.RawURLEncoding.DecodeString(page.NextCursor)
-					if err != nil {
-						t.Fatal(err)
-					}
-					var position struct{ Streams []searchstore.StreamPosition }
-					if err := json.Unmarshal(raw, &position); err != nil {
-						t.Fatal(err)
-					}
-					for _, requested := range strings.Fields(text) {
-						index := slices.IndexFunc(position.Streams, func(p searchstore.StreamPosition) bool {
-							return strings.HasSuffix(p.Key, ":"+searchstore.Prefix("org_first", "prj_first")+"w"+requested)
-						})
-						if index < 0 {
-							t.Fatalf("missing %s stream in cursor: %+v", requested, position.Streams)
-						}
-						stream := position.Streams[index]
-						if stream.ID == "" || stream.Done != (requested == "otherterm") || stream.Impact != map[string]float64{"commonterm": 100, "otherterm": 50}[requested] {
-							t.Fatalf("incorrect %s stream position: %+v", requested, stream)
-						}
-					}
 				}
 				query.Cursor = page.NextCursor
 			}
@@ -853,29 +833,67 @@ func TestSearchWorkCursorRejectsLegacyState(t *testing.T) {
 	}
 	query := searchstore.Query{Kind: "work", ProjectID: "prj_first", Text: "sentinel", Limit: 1}
 	first := f.find(t, "org_first", query)
-	raw, err := base64.RawURLEncoding.DecodeString(first.NextCursor)
+	sealed, err := base64.RawURLEncoding.DecodeString(first.NextCursor)
+	if err != nil || len(sealed) < 30 {
+		t.Fatalf("sealed cursor=%q err=%v", first.NextCursor, err)
+	}
+	fingerprintQuery := query
+	fingerprintQuery.Limit = 0
+	encoded, err := json.Marshal(struct {
+		Organization tracker.OrganizationID
+		Query        searchstore.Query
+	}{"org_first", fingerprintQuery})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var position map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &position); err != nil {
-		t.Fatal(err)
+	fingerprint := sha256.Sum256(encoded)
+	plain := func(version int) string {
+		raw, err := json.Marshal(map[string]any{"Version": version, "Fingerprint": fingerprint, "ID": "issue/wi_first_2", "Coverage": 1, "Score": -1.5, "Number": 1, "Streams": []searchstore.StreamPosition{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.RawURLEncoding.EncodeToString(raw)
 	}
-	for _, version := range []int{1, 2, 3} {
-		t.Run(fmt.Sprint(version), func(t *testing.T) {
-			position["Version"], err = json.Marshal(version)
-			if err != nil {
-				t.Fatal(err)
-			}
-			raw, err := json.Marshal(position)
-			if err != nil {
-				t.Fatal(err)
-			}
-			query.Cursor = base64.RawURLEncoding.EncodeToString(raw)
-			if _, err := f.content.Find(t.Context(), f.repository, "org_first", query); !errors.Is(err, corestore.ErrInvalidCursor) {
-				t.Fatalf("legacy cursor error=%v", err)
+	flipped := func(index int) string {
+		raw := slices.Clone(sealed)
+		raw[(index+len(raw))%len(raw)] ^= 1
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	for _, test := range []struct {
+		name, cursor string
+		org          tracker.OrganizationID
+	}{
+		{name: "plain version 1", cursor: plain(1)},
+		{name: "plain version 2", cursor: plain(2)},
+		{name: "plain version 3", cursor: plain(3)},
+		{name: "plain version 4", cursor: plain(4)},
+		{name: "plain version 5", cursor: plain(5)},
+		{name: "version byte", cursor: flipped(0)},
+		{name: "nonce", cursor: flipped(1)},
+		{name: "ciphertext", cursor: flipped(len(sealed) / 2)},
+		{name: "tag", cursor: flipped(-1)},
+		{name: "truncated tag", cursor: base64.RawURLEncoding.EncodeToString(sealed[:len(sealed)-1])},
+		{name: "truncated to nonce", cursor: base64.RawURLEncoding.EncodeToString(sealed[:13])},
+		{name: "version only", cursor: base64.RawURLEncoding.EncodeToString(sealed[:1])},
+		{name: "extended", cursor: base64.RawURLEncoding.EncodeToString(append(slices.Clone(sealed), 0))},
+		{name: "trailing padding", cursor: first.NextCursor + "=="},
+		{name: "not base64", cursor: "!" + first.NextCursor[1:]},
+		{name: "other organization", cursor: first.NextCursor, org: "org_second"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			org := cmp.Or(test.org, "org_first")
+			next := query
+			next.Cursor = test.cursor
+			page, err := f.content.Find(t.Context(), f.repository, org, next)
+			if !errors.Is(err, corestore.ErrInvalidCursor) || err.Error() != corestore.ErrInvalidCursor.Error() || len(page.Items) != 0 || page.NextCursor != "" {
+				t.Fatalf("cursor accepted or detailed: page=%+v error=%v", page, err)
 			}
 		})
+	}
+	next := query
+	next.Cursor = first.NextCursor
+	if page := f.find(t, "org_first", next); len(page.Items) != 1 {
+		t.Fatalf("sealed cursor page=%v", searchIDs(page))
 	}
 }
 

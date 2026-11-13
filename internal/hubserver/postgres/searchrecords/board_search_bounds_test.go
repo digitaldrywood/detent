@@ -55,7 +55,7 @@ func newBoardSearchFixture(t *testing.T) searchFixture {
 	admin := pgstoretest.Template.Database(t)
 	repository, pool := pgstoretest.RepositoryFor(t, admin, postgres.PoolConfig{MaxConnections: 4, ServingConnections: 2, BackgroundConnections: 1})
 	objects := pgstoretest.NewHistoryObjects()
-	f := searchFixture{repository: repository, pool: pool, admin: admin, objects: objects, content: searchstore.NewContent(objects)}
+	f := searchFixture{repository: repository, pool: pool, admin: admin, objects: objects, content: searchContent(objects)}
 
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedTenantAccess(t, repository, org)

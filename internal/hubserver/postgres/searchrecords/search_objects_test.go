@@ -50,7 +50,7 @@ func TestSearchIndexedRankingHydratesOnlySelectedSnippets(t *testing.T) {
 		t.Fatal(err)
 	}
 	objects := &searchObjectReads{DetailStore: f.objects}
-	content := searchstore.NewContent(objects)
+	content := searchContent(objects)
 	query := searchstore.Query{Kind: "work", ProjectID: "prj_first", Text: "sentinel", Limit: 1}
 	for _, missingOther := range []bool{false, true} {
 		t.Run(map[bool]string{false: "healthy objects", true: "nonselected object missing"}[missingOther], func(t *testing.T) {
@@ -102,7 +102,7 @@ func TestSearchRefreshContinuesBoundedSourcesAfterEdit(t *testing.T) {
 		}
 	}
 	objects := &searchObjectReads{DetailStore: f.objects}
-	content := searchstore.NewContent(objects)
+	content := searchContent(objects)
 	if _, err := content.Find(t.Context(), f.repository, "org_first", searchstore.Query{Kind: "work", ProjectID: "prj_first", Text: "oldmarker", Limit: 1}); !errors.Is(err, searchstore.ErrIndexPending) {
 		t.Fatalf("large pending aggregate error=%v", err)
 	}

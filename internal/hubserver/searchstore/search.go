@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"math"
 	"slices"
@@ -53,8 +52,11 @@ func (c *Content) Find(ctx context.Context, repository Repository, organization 
 	}
 	fingerprint := sha256.Sum256(encoded)
 	if query.Cursor != "" {
-		raw, err := base64.RawURLEncoding.DecodeString(query.Cursor)
-		if err != nil || json.Unmarshal(raw, &position) != nil || position.Version != 4 || position.Fingerprint != fingerprint || len(position.Streams) > (TermLimit*2+2)*(len(query.ProjectIDs)+1)*archiveKeys(query)*LexemeLimit {
+		raw, err := c.cursors.open(ctx, organization, fingerprint, query.Cursor)
+		if err != nil {
+			return page, err
+		}
+		if json.Unmarshal(raw, &position) != nil || position.Version != cursorVersion || position.Fingerprint != fingerprint || len(position.Streams) > (TermLimit*2+2)*(len(query.ProjectIDs)+1)*archiveKeys(query)*LexemeLimit {
 			return page, corestore.ErrInvalidCursor
 		}
 		query.Streams = position.Streams
@@ -205,11 +207,11 @@ func (c *Content) Find(ctx context.Context, repository Repository, organization 
 		}
 		if len(page.Items) == query.Limit {
 			last := page.Items[len(page.Items)-1]
-			raw, err := json.Marshal(pagePosition{Version: 4, Fingerprint: fingerprint, NumberDelivered: position.NumberDelivered, ID: last.Document.ID, UpdatedAt: last.Document.UpdatedAt, Coverage: last.Coverage, Score: last.Score, Number: last.Number, Exact: numberMatch(query.Text, last.Number, last.Document.ProjectID, last.ProjectName), BatchID: position.BatchID, BatchAt: position.BatchAt, Streams: position.Streams})
+			next, err := c.cursors.seal(ctx, organization, pagePosition{Version: cursorVersion, Fingerprint: fingerprint, NumberDelivered: position.NumberDelivered, ID: last.Document.ID, UpdatedAt: last.Document.UpdatedAt, Coverage: last.Coverage, Score: last.Score, Number: last.Number, Exact: numberMatch(query.Text, last.Number, last.Document.ProjectID, last.ProjectName), BatchID: position.BatchID, BatchAt: position.BatchAt, Streams: position.Streams})
 			if err != nil {
-				return Page{}, ErrInvalid
+				return Page{}, err
 			}
-			page.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
+			page.NextCursor = next
 			break
 		}
 		if value.text == nil {
@@ -236,15 +238,14 @@ func (c *Content) Find(ctx context.Context, repository Repository, organization 
 		position.NumberDelivered = position.NumberDelivered || value.exact
 	}
 	if page.NextCursor == "" && (boundary != nil || moreStreams) {
-		next := pagePosition{Version: 4, Fingerprint: fingerprint, NumberDelivered: position.NumberDelivered, Scan: true, Streams: streams}
+		next := pagePosition{Version: cursorVersion, Fingerprint: fingerprint, NumberDelivered: position.NumberDelivered, Scan: true, Streams: streams}
 		if boundary != nil {
 			next.BatchID, next.BatchAt = boundary.ID, boundary.UpdatedAt
 		}
-		raw, err := json.Marshal(next)
+		page.NextCursor, err = c.cursors.seal(ctx, organization, next)
 		if err != nil {
-			return Page{}, ErrInvalid
+			return Page{}, err
 		}
-		page.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
 	}
 	return page, nil
 }
