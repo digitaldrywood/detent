@@ -363,7 +363,11 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 		if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: organization, PlanReference: plan, Name: "Artifact usage", Allowances: map[string]int64{"api_mutations": 2}}); err != nil {
 			return err
 		}
-		if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: organization, Base: plan}, 0); err != nil {
+		current, err := w.BillingAssignment(t.Context())
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: organization, Base: plan}, current.Revision); err != nil {
 			return err
 		}
 		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: publisherID, Name: "Example publisher", Hash: apikey.HashToken(publisherToken), Scope: "worker", NativeOnly: true, ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {

@@ -146,7 +146,11 @@ func TestPostgresArtifactCatalogJourney(t *testing.T) {
 			if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: org, PlanReference: plan, Name: "Example", Features: []string{"hosted_artifacts"}, Allowances: map[string]int64{"api_mutations": 100000, "api_requests": 100000, "hosted_artifact_services": 10, "relay_bytes": 1 << 30, "artifact_retained_bytes": 64 << 20, "artifact_reserved_bytes": 32 << 20, "artifact_bytes": 8 << 20, "artifact_upload_bytes": artifact.MaxChunkBytes, "artifact_retention_seconds": 3600}}); err != nil {
 				return err
 			}
-			if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: org, Base: plan}, 0); err != nil {
+			current, err := w.BillingAssignment(t.Context())
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			if err := w.SetBillingAssignment(t.Context(), billingstore.Assignment{OrganizationID: org, Base: plan}, current.Revision); err != nil {
 				return err
 			}
 			for _, project := range projects {
