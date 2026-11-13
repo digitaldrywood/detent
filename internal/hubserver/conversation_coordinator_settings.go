@@ -170,7 +170,7 @@ func (t *coordinatorToolset) settingsTool(ctx context.Context, record conversati
 		}
 		action.IssueID, action.Identifier, action.CurrentState, action.MaterialChange = proposal.IssueID, proposal.Identifier, proposal.CurrentState, proposal.MaterialChange
 	} else if _, err := (hubProjectExecutor{s}).command(ctx, operatortool.Call{Name: call.Name, Arguments: raw}, projectCommandPreview); err != nil {
-		if errors.Is(err, operatortool.ErrAccessDenied) {
+		if errors.Is(projectToolError(err), operatortool.ErrAccessDenied) {
 			return nil, coordinatorSettingsRefusal(call.Name)
 		}
 		return nil, err
