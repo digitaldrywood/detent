@@ -6,18 +6,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
-const githubWebhookMaxBodyBytes = 2 << 20
-
-type webhookResponse struct {
-	DeliveryID string `json:"delivery_id"`
-	Duplicate  bool   `json:"duplicate"`
-}
-
-type webhookErrorResponse struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
 func (s *Service) githubWebhook(c echo.Context) error {
 	return s.receiveGitHubWebhook(c, false)
 }

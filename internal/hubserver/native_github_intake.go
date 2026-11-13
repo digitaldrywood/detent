@@ -34,15 +34,6 @@ func (s *Service) linkedSourceContext(ctx context.Context) context.Context {
 	return context.WithValue(ctx, linkedSourceURLKey{}, base)
 }
 
-func linkedSnapshotFromSource(source IssueSource, now time.Time) tracker.GitHubIssueSnapshot {
-	author := source.AuthorID
-	if author == "" {
-		author = "unavailable"
-	}
-	return tracker.GitHubIssueSnapshot{URL: source.URL, Title: source.Title, Body: source.Body,
-		Provenance: tracker.Provenance{Provider: "github", ExternalID: source.NodeID, AuthorID: author, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ObservedAt: now}}
-}
-
 type linkedSnapshotSourceError struct {
 	err     error
 	retryAt time.Time

@@ -1,4 +1,4 @@
-package hubserver
+package githubwebhook
 
 import (
 	"context"
@@ -13,6 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
+	"github.com/digitaldrywood/detent/internal/hubserver/githuboutbound"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -22,21 +25,21 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verifiedByEntry bool) error {
-	if s.config.TenantRepository == nil || !verifiedByEntry && len(s.config.GitHubWebhookSecret) == 0 {
+func (s *Service) Receive(c echo.Context, verifiedByEntry bool) error {
+	if s.deps.Repository == nil || !verifiedByEntry && len(s.deps.Secret) == 0 {
 		return c.JSON(http.StatusServiceUnavailable, webhookErrorResponse{Code: "webhook_unavailable", Message: "GitHub webhook is not configured"})
 	}
-	ctx := s.runDetailContext(c.Request().Context())
-	raw, err := io.ReadAll(io.LimitReader(c.Request().Body, githubWebhookMaxBodyBytes+1))
+	ctx := s.deps.Context(c.Request().Context())
+	raw, err := io.ReadAll(io.LimitReader(c.Request().Body, maxBodyBytes+1))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, webhookErrorResponse{Code: "invalid_payload", Message: "Cannot read webhook payload"})
 	}
-	if len(raw) > githubWebhookMaxBodyBytes {
+	if len(raw) > maxBodyBytes {
 		return c.NoContent(http.StatusRequestEntityTooLarge)
 	}
 	if !verifiedByEntry {
 		signature, err := hex.DecodeString(strings.TrimPrefix(c.Request().Header.Get("X-Hub-Signature-256"), "sha256="))
-		mac := hmac.New(sha256.New, s.config.GitHubWebhookSecret)
+		mac := hmac.New(sha256.New, s.deps.Secret)
 		if _, err := mac.Write(raw); err != nil {
 			return c.NoContent(http.StatusInternalServerError)
 		}
@@ -48,7 +51,7 @@ func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verifiedByEntry boo
 	if strings.TrimSpace(id) == "" || len(id) > 256 || strings.TrimSpace(event) == "" || len(event) > 100 {
 		return c.NoContent(http.StatusBadRequest)
 	}
-	var payload githubWebhookPayload
+	var payload Payload
 	var envelope struct {
 		Action string `json:"action"`
 	}
@@ -59,19 +62,19 @@ func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verifiedByEntry boo
 	if repository == "" && event != "ping" {
 		return c.NoContent(http.StatusBadRequest)
 	}
-	organization := s.database.hostedOrganization
+	organization := s.deps.Organization
 	digest := sha256.Sum256(raw)
-	ref, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: organization}, raw)
+	ref, err := eventstore.NewContent(s.deps.Details).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: organization}, raw)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.Error(c, err)
 	}
-	now := s.config.now().UTC().Truncate(time.Microsecond)
-	row := projectstore.GitHubWebhook{DeliveryID: id, Repository: strings.ToLower(repository), EventType: event, Action: envelope.Action, Digest: hex.EncodeToString(digest[:]), Payload: ref, ReceivedAt: now, ExpiresAt: now.Add(s.config.WebhookPayloadRetention), NextAttemptAt: now, Status: "pending"}
+	now := s.deps.Now().UTC().Truncate(time.Microsecond)
+	row := projectstore.GitHubWebhook{DeliveryID: id, Repository: strings.ToLower(repository), EventType: event, Action: envelope.Action, Digest: hex.EncodeToString(digest[:]), Payload: ref, ReceivedAt: now, ExpiresAt: now.Add(s.deps.Retention), NextAttemptAt: now, Status: "pending"}
 	created := false
-	err = s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.deps.Repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 		owner, ok := w.(projectstore.GitHubIntakeWriter)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return s.deps.Unavailable
 		}
 		var err error
 		created, err = owner.CreateGitHubWebhook(ctx, row)
@@ -86,7 +89,7 @@ func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verifiedByEntry boo
 			return err
 		}
 		if prior.Digest != row.Digest || prior.EventType != event || prior.Repository != row.Repository {
-			return ErrWebhookDeliveryConflict
+			return s.deps.DeliveryConflict
 		}
 		if err := owner.ObserveGitHubWebhookReceipt(ctx, row); err != nil {
 			return err
@@ -94,67 +97,67 @@ func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verifiedByEntry boo
 		row = prior
 		return nil
 	})
-	if errors.Is(err, ErrWebhookDeliveryConflict) {
+	if errors.Is(err, s.deps.DeliveryConflict) {
 		return c.NoContent(http.StatusConflict)
 	}
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.deps.Error(c, err)
 	}
 	if row.Status == "pending" && !row.NextAttemptAt.After(now) {
-		if err := s.processGitHubWebhookRecord(ctx, row); err != nil {
-			s.config.Logger.WarnContext(ctx, "process GitHub webhook", "error", err)
+		if err := s.Process(ctx, row); err != nil {
+			s.deps.Logger.WarnContext(ctx, "process GitHub webhook", "error", err)
 		}
 	}
 	return c.JSON(http.StatusAccepted, webhookResponse{DeliveryID: id, Duplicate: !created})
 }
 
-func (s *Service) maintainGitHubWebhookRecords(ctx context.Context) error {
-	if s.config.TenantRepository == nil {
+func (s *Service) Maintain(ctx context.Context) error {
+	if s.deps.Repository == nil {
 		return nil
 	}
-	organization := s.database.hostedOrganization
+	organization := s.deps.Organization
 	var row projectstore.GitHubWebhook
-	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+	err := s.deps.Repository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
 		gitHubIntakeReader, ok := r.(projectstore.GitHubIntakeReader)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return s.deps.Unavailable
 		}
-		row, err = gitHubIntakeReader.NextGitHubWebhook(ctx, s.config.now())
+		row, err = gitHubIntakeReader.NextGitHubWebhook(ctx, s.deps.Now())
 		return err
 	})
 	if err == nil {
-		err = s.processGitHubWebhookRecord(ctx, row)
+		err = s.Process(ctx, row)
 	} else if errors.Is(err, corestore.ErrNotFound) {
 		err = nil
 	}
-	pruneErr := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+	pruneErr := s.deps.Repository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		gitHubIntakeWriter, ok := w.(projectstore.GitHubIntakeWriter)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return s.deps.Unavailable
 		}
-		return gitHubIntakeWriter.PurgeGitHubWebhookPayloads(ctx, s.config.now(), 64)
+		return gitHubIntakeWriter.PurgeGitHubWebhookPayloads(ctx, s.deps.Now(), 64)
 	})
 	return errors.Join(err, pruneErr)
 }
 
-func (s *Service) processGitHubWebhookRecord(ctx context.Context, row projectstore.GitHubWebhook) error {
+func (s *Service) Process(ctx context.Context, row projectstore.GitHubWebhook) error {
 	organization := row.Payload.OrganizationID
-	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, row.Payload)
+	raw, err := eventstore.NewContent(s.deps.Details).Receipt(ctx, row.Payload)
 	if err != nil {
 		return err
 	}
-	var payload githubWebhookPayload
+	var payload Payload
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
 	}
 	previous, attempts := row.AfterProject, row.Attempts
 	var projects []tracker.ProjectID
-	err = s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
+	err = s.deps.Repository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
 		gitHubIntakeReader, ok := r.(projectstore.GitHubIntakeReader)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return s.deps.Unavailable
 		}
 		projects, err = gitHubIntakeReader.GitHubWebhookProjects(ctx, row.Repository, row.AfterProject, 2)
 		return err
@@ -163,11 +166,11 @@ func (s *Service) processGitHubWebhookRecord(ctx context.Context, row projectsto
 		return err
 	}
 	if len(projects) > 0 {
-		scope, scopeErr := s.gitHubIntegrationScope(ctx, organization, projects[0])
+		scope, scopeErr := s.deps.Integration(ctx, organization, projects[0])
 		err = scopeErr
 		if err == nil {
-			scope.integrationRepository = row.Repository
-			err = s.applyGitHubWebhookRecord(ctx, scope, row, payload)
+			scope.Repository = row.Repository
+			err = s.Apply(ctx, scope, row, payload)
 		}
 		if err == nil {
 			row.AfterProject = projects[0]
@@ -176,26 +179,26 @@ func (s *Service) processGitHubWebhookRecord(ctx context.Context, row projectsto
 	if err == nil && len(projects) < 2 {
 		row.Status = "completed"
 	}
-	row.NextAttemptAt = s.config.now()
+	row.NextAttemptAt = s.deps.Now()
 	if err != nil {
 		row.Attempts++
-		row.NextAttemptAt = row.NextAttemptAt.Add(gitHubRetryDelay(row.Attempts, 2*time.Second, 64*time.Second, s.config.jitter()))
+		row.NextAttemptAt = row.NextAttemptAt.Add(githuboutbound.RetryDelay(row.Attempts, 2*time.Second, 64*time.Second, s.deps.Jitter()))
 	} else {
 		row.Attempts = 0
 	}
-	writeErr := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+	writeErr := s.deps.Repository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 		gitHubIntakeWriter, ok := w.(projectstore.GitHubIntakeWriter)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return s.deps.Unavailable
 		}
 		return gitHubIntakeWriter.UpdateGitHubWebhook(ctx, row, previous, attempts)
 	})
 	return errors.Join(err, writeErr)
 }
 
-func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScope, row projectstore.GitHubWebhook, payload githubWebhookPayload) error {
+func (s *Service) Apply(ctx context.Context, scope Integration, row projectstore.GitHubWebhook, payload Payload) error {
 	if row.EventType == "pull_request" {
-		return s.applyGitHubPullRequestWebhookRecord(ctx, scope, row, payload)
+		return s.applyPullRequest(ctx, scope, row, payload)
 	}
 	if row.EventType != "issues" && row.EventType != "issue_comment" {
 		return nil
@@ -212,9 +215,9 @@ func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScop
 		return errors.New("GitHub webhook issue does not match repository")
 	}
 	var linked eventstore.LinkedSource
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Background, func(r tenantstore.Reader) error {
+	err = s.deps.Repository.ReadTenant(ctx, scope.Scope.Organization, corestore.Background, func(r tenantstore.Reader) error {
 		var err error
-		linked, err = r.LinkedSourceByURL(ctx, scope.project, canonical)
+		linked, err = r.LinkedSourceByURL(ctx, scope.Scope.Project, canonical)
 		return err
 	})
 	missing := errors.Is(err, corestore.ErrNotFound)
@@ -224,7 +227,7 @@ func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScop
 	if missing && (row.EventType != "issues" || row.Action != "opened") {
 		return nil
 	}
-	snapshot := linkedSnapshotFromSource(IssueSource{URL: canonical, NodeID: source.NodeID, Number: source.Number, Title: source.Title, Body: source.Body, AuthorID: source.AuthorID, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt}, row.ReceivedAt)
+	snapshot := SnapshotFromSource(githubcontract.IssueSource{URL: canonical, NodeID: source.NodeID, Number: source.Number, Title: source.Title, Body: source.Body, AuthorID: source.AuthorID, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt}, row.ReceivedAt)
 	if row.EventType == "issue_comment" {
 		if row.Action != "created" || payload.Comment == nil || strings.Contains(payload.Comment.Body, "<!-- detent-summary:") {
 			return nil
@@ -240,16 +243,16 @@ func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScop
 		}
 		snapshot.Comments = []tracker.GitHubIssueComment{{Body: c.Body, Provenance: tracker.Provenance{Provider: "github", ExternalID: c.NodeID, AuthorID: author, CreatedAt: c.CreatedAt, UpdatedAt: updated, ObservedAt: row.ReceivedAt}}}
 	}
-	identity, err := nativeCommandHash(struct {
+	identity, err := hubapi.CommandHash(struct {
 		Project  tracker.ProjectID
 		Delivery string
-	}{scope.project, row.DeliveryID})
+	}{scope.Scope.Project, row.DeliveryID})
 	if err != nil {
 		return err
 	}
 	key := "webhook:" + identity
 	if missing {
-		_, err = s.importGitHubSnapshotRecord(ctx, scope, key, tracker.GitHubIssuePreview{Number: number, ID: source.NodeID, URL: canonical}, snapshot, "Triage", nil)
+		err = scope.Import(ctx, scope.Repository, key, tracker.GitHubIssuePreview{Number: number, ID: source.NodeID, URL: canonical}, snapshot)
 		return err
 	}
 	if row.EventType == "issues" && (row.Action == "closed" || row.Action == "reopened") {
@@ -260,18 +263,17 @@ func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScop
 		}
 		snapshot.Comments = append(snapshot.Comments, tracker.GitHubIssueComment{Body: "GitHub issue " + row.Action + ": " + canonical, Provenance: provenance})
 	}
-	scope.scheduledRepair = s.observeImportedScheduledRepair(ctx, scope, snapshot)
-	_, err = s.applyLinkedIssueRecord(ctx, scope, linked.WorkItemID, "github.webhook", tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: key}, Snapshot: snapshot})
+	err = scope.Apply(ctx, scope.Repository, linked.WorkItemID, key, snapshot)
 	return err
 }
 
-func (s *Service) applyGitHubPullRequestWebhookRecord(ctx context.Context, scope nativeScope, row projectstore.GitHubWebhook, payload githubWebhookPayload) error {
+func (s *Service) applyPullRequest(ctx context.Context, scope Integration, row projectstore.GitHubWebhook, payload Payload) error {
 	source, _, complete := normalizeWebhookPullRequest(payload.PullRequest)
 	if !complete {
 		return errors.New("GitHub pull request webhook is incomplete")
 	}
 	canonical := "https://github.com/" + strings.ToLower(row.Repository) + "/pull/" + strconv.Itoa(source.Number)
-	if payload.Repository == nil || payload.Repository.FullName == nil || !strings.EqualFold(*payload.Repository.FullName, row.Repository) || !strings.EqualFold(source.URL, canonical) || !validCommitID(source.HeadSHA) || source.MergedAt.IsZero() && source.State != "open" && source.State != "closed" || !source.MergedAt.IsZero() && (source.State != "closed" || !validCommitID(source.MergeSHA)) {
+	if payload.Repository == nil || payload.Repository.FullName == nil || !strings.EqualFold(*payload.Repository.FullName, row.Repository) || !strings.EqualFold(source.URL, canonical) || !s.deps.ValidCommit(source.HeadSHA) || source.MergedAt.IsZero() && source.State != "open" && source.State != "closed" || !source.MergedAt.IsZero() && (source.State != "closed" || !s.deps.ValidCommit(source.MergeSHA)) {
 		return errors.New("GitHub pull request webhook identity is invalid")
 	}
 	observation := projectstore.GitHubPullRequestObservation{Repository: strings.ToLower(row.Repository), Number: source.Number, HeadSHA: source.HeadSHA, SourceUpdatedAt: source.UpdatedAt, ObservedAt: row.ReceivedAt, State: source.State, Draft: source.Draft, MergeSHA: &source.MergeSHA, BaseRef: &source.BaseRef, MergedBy: &source.MergedBy}
@@ -282,11 +284,11 @@ func (s *Service) applyGitHubPullRequestWebhookRecord(ctx context.Context, scope
 		observation.State = "merged"
 		observation.MergedAt = new(source.MergedAt)
 	}
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Background, func(w tenantstore.Writer) error {
-		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
+	return s.deps.Repository.WriteTenant(ctx, scope.Scope.Organization, corestore.Background, func(w tenantstore.Writer) error {
+		if err := scope.Scope.Authorize(ctx, w, true); err != nil {
 			return err
 		}
-		project, err := w.ProjectRecord(ctx, scope.project)
+		project, err := w.ProjectRecord(ctx, scope.Scope.Project)
 		if err != nil {
 			return err
 		}
@@ -295,8 +297,8 @@ func (s *Service) applyGitHubPullRequestWebhookRecord(ctx context.Context, scope
 		}
 		writer, ok := w.(projectstore.GitHubIntakeWriter)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return s.deps.Unavailable
 		}
-		return writer.RecordGitHubPullRequestSource(ctx, scope.project, row, observation)
+		return writer.RecordGitHubPullRequestSource(ctx, scope.Scope.Project, row, observation)
 	})
 }

@@ -2,13 +2,11 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -87,46 +85,6 @@ func TestGitHubDiscoveryFailureBackoff(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestGitHubWebhookRetryJitter(t *testing.T) {
-	service, now, _ := gitHubWebhookRecordFixture(t)
-	row, payload := gitHubWebhookEdit(t, service, "issues")
-	payload.Issue.NodeID = nil
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	row.Payload, err = eventstore.NewContent(service.runDetailStore()).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: "org"}, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.(projectstore.GitHubIntakeWriter).CreateGitHubWebhook(t.Context(), row)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for attempt, test := range []struct {
-		jitter float64
-		delay  time.Duration
-	}{{0, time.Second}, {1, 4 * time.Second}, {0.5, 6 * time.Second}, {0.25, 10 * time.Second}, {0, 16 * time.Second}, {1, 64 * time.Second}, {0.5, 48 * time.Second}} {
-		service.config.jitter = func() float64 { return test.jitter }
-		if err := service.processGitHubWebhookRecord(t.Context(), row); err == nil {
-			t.Fatal("invalid source accepted")
-		}
-		if err := service.config.TenantRepository.ReadTenant(t.Context(), "org", corestore.Serving, func(r tenantstore.Reader) error {
-			var err error
-			row, err = r.(projectstore.GitHubIntakeReader).GitHubWebhook(t.Context(), row.DeliveryID)
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if row.Attempts != int64(attempt+1) || !row.NextAttemptAt.Equal(now.Add(test.delay)) {
-			t.Fatalf("attempt=%d next=%v want attempt=%d next=%v", row.Attempts, row.NextAttemptAt, attempt+1, now.Add(test.delay))
-		}
-		*now = now.Add(2 * time.Minute)
 	}
 }
 

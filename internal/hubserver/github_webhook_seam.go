@@ -1,0 +1,83 @@
+package hubserver
+
+import (
+	"context"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/githubwebhook"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/labstack/echo/v4"
+)
+
+func (s *Service) gitHubWebhookIntegration(scope nativeScope) githubwebhook.Integration {
+	return githubwebhook.Integration{Scope: s.featureScope(scope), Repository: scope.integrationRepository,
+		Import: func(ctx context.Context, repository, key string, preview tracker.GitHubIssuePreview, snapshot tracker.GitHubIssueSnapshot) error {
+			scope := scope
+			scope.integrationRepository = repository
+			_, err := s.importGitHubSnapshotRecord(ctx, scope, key, preview, snapshot, "Triage", nil)
+			return err
+		},
+		Apply: func(ctx context.Context, repository string, item tracker.NativeWorkItemID, key string, snapshot tracker.GitHubIssueSnapshot) error {
+			scope := scope
+			scope.integrationRepository = repository
+			scope.scheduledRepair = s.observeImportedScheduledRepair(ctx, scope, snapshot)
+			_, err := s.applyLinkedIssueRecord(ctx, scope, item, "github.webhook", tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: key}, Snapshot: snapshot})
+			return err
+		},
+	}
+}
+func (s *Service) githubWebhookService() *githubwebhook.Service {
+	organization := tracker.OrganizationID("")
+	if s.database != nil {
+		organization = s.database.hostedOrganization
+	}
+	return githubwebhook.New(githubwebhook.Deps{
+		Repository:       s.config.TenantRepository,
+		Organization:     organization,
+		Details:          s.runDetailStore(),
+		Now:              s.config.now,
+		Jitter:           s.config.jitter,
+		Logger:           s.config.Logger,
+		Secret:           s.config.GitHubWebhookSecret,
+		Retention:        s.config.WebhookPayloadRetention,
+		Unavailable:      ErrPostgresFeatureUnavailable,
+		DeliveryConflict: ErrWebhookDeliveryConflict,
+		Context:          s.runDetailContext,
+		Error:            s.nativeAPIError,
+		ValidCommit:      validCommitID,
+		Integration: func(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID) (githubwebhook.Integration, error) {
+			scope, err := s.gitHubIntegrationScope(ctx, organization, project)
+			return s.gitHubWebhookIntegration(scope), err
+		},
+	})
+}
+func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verified bool) error {
+	return s.githubWebhookService().Receive(c, verified)
+}
+func (s *Service) maintainGitHubWebhookRecords(ctx context.Context) error {
+	return s.githubWebhookService().Maintain(ctx)
+}
+func (s *Service) processGitHubWebhookRecord(ctx context.Context, row projectstore.GitHubWebhook) error {
+	return s.githubWebhookService().Process(ctx, row)
+}
+func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScope, row projectstore.GitHubWebhook, payload githubWebhookPayload) error {
+	return s.githubWebhookService().Apply(ctx, s.gitHubWebhookIntegration(scope), row, payload)
+}
+func splitRepositoryFullName(value string) (string, string, bool) {
+	return githubwebhook.SplitRepositoryFullName(value)
+}
+
+type githubWebhookPayload = githubwebhook.Payload
+type githubWebhookRepository = githubwebhook.Repository
+type githubWebhookActor = githubwebhook.Actor
+type githubWebhookComment = githubwebhook.Comment
+type githubWebhookIssue = githubwebhook.Issue
+type githubWebhookPullRequest = githubwebhook.PullRequest
+type githubWebhookRef = githubwebhook.Ref
+type githubWebhookReview = githubwebhook.Review
+type githubWebhookCheck = githubwebhook.Check
+
+func linkedSnapshotFromSource(source IssueSource, now time.Time) tracker.GitHubIssueSnapshot {
+	return githubwebhook.SnapshotFromSource(source, now)
+}
