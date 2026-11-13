@@ -316,7 +316,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		{name: "human approval records each apply", initial: true, replay: true, active: true, fleet: true, status: http.StatusNoContent, applied: true, humanApproval: true},
 		{name: "feature branch pending", initial: true, status: http.StatusNoContent},
 		{name: "uncommitted definition pending", initial: true, local: true, reachable: true, status: http.StatusNoContent},
-		{name: "occupied lane stays pending", initial: true, reachable: true, occupied: true, status: http.StatusUnprocessableEntity},
+		{name: "occupied lane stays pending", initial: true, reachable: true, occupied: true, status: http.StatusConflict},
 		{name: "different repository pending", initial: true, reachable: true, wrongRepository: true, status: http.StatusNoContent},
 		{name: "unenrolled reporter pending", initial: true, reachable: true, legacy: true, status: http.StatusNoContent},
 		{name: "missing commit pending", initial: true, reachable: true, missingRevision: true, status: http.StatusNoContent},
@@ -639,7 +639,15 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, response, test.status)
 				requireNativeStatus(t, otherResponse, http.StatusNoContent)
 			} else {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), test.status)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report)
+				requireNativeStatus(t, response, test.status)
+				if test.occupied {
+					var refused hubapi.NativeError
+					decodeHubResponse(t, response, &refused)
+					if refused.Code != "workflow_conflict" {
+						t.Fatalf("occupied lane refusal = %+v", refused)
+					}
+				}
 			}
 			if test.lateLanding {
 				seedLanding()
