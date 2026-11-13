@@ -77,7 +77,7 @@ type Config struct {
 	GitHubUserClientSecret    string
 
 	Now                 func() time.Time
-	generateToken       func() (string, error)
+	GenerateToken       func() (string, error)
 	Transport           func(Organization) (http.RoundTripper, error)
 	ClientFS            fs.FS
 	AttachmentTransport http.RoundTripper
@@ -179,8 +179,8 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if cfg.tenantStartTimeout == 0 {
 		cfg.tenantStartTimeout = 30 * time.Second
 	}
-	if cfg.generateToken == nil {
-		cfg.generateToken = apikey.GenerateToken
+	if cfg.GenerateToken == nil {
+		cfg.GenerateToken = apikey.GenerateToken
 	}
 	var attachments attachment.Storage
 	if cfg.Attachments != nil {
@@ -439,7 +439,7 @@ func (s *Service) setCookie(c echo.Context, name, value string, expires time.Tim
 func (s *Service) storedSession(c echo.Context) (accountSession, error) {
 	cookie, err := c.Cookie(s.cookieName("session"))
 	if err != nil || cookie.Value == "" || len(cookie.Value) > 256 {
-		return accountSession{}, errNoSession
+		return accountSession{}, ErrNoSession
 	}
 	return s.auth.session(c.Request().Context(), apikey.HashToken(cookie.Value))
 }
@@ -472,7 +472,7 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 		if err != nil && entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
 			return accountSession{}, err
 		}
-		return accountSession{}, errNoSession
+		return accountSession{}, ErrNoSession
 	}
 	s.verified.record(session.Hash, now)
 	return session, nil
@@ -574,4 +574,12 @@ func (s *Service) contentSecurity() string {
 		return contentSecurity
 	}
 	return strings.Replace(contentSecurity, "connect-src 'self'", "connect-src 'self' "+strings.TrimRight(s.config.Attachments.Endpoint, "/"), 1)
+}
+
+func (s *Service) ForgetSessionVerifications() {
+	s.verified.reset()
+}
+
+func (s *Service) OAuthBackfillDone() <-chan struct{} {
+	return s.oauthBackfillDone
 }

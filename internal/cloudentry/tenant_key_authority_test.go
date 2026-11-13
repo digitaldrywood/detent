@@ -31,7 +31,7 @@ func TestKeyAuthorityOutagesRemainRetryable(t *testing.T) {
 		status int
 	}{
 		{"missing key", sql.ErrNoRows, http.StatusUnauthorized},
-		{"missing session", errNoSession, http.StatusUnauthorized},
+		{"missing session", ErrNoSession, http.StatusUnauthorized},
 		{"typed denial", tenantauth.ErrDenied, http.StatusForbidden},
 		{"corrupt key", errors.Join(tenantauth.ErrDenied, &apikey.Refusal{Code: "key_context_invalid"}), http.StatusForbidden},
 		{"cancelled query", context.Canceled, http.StatusServiceUnavailable},
@@ -346,4 +346,13 @@ func TestTenantKeyAuthorityConcurrentClaims(t *testing.T) {
 	}
 	group.Wait()
 	t.Logf("64 full authority resolutions / 2 tenants / service and personal keys: %s", time.Since(started))
+}
+
+type oauthMembershipProvider struct {
+	auth.HostedProvider
+	memberships func(context.Context, string, string) ([]auth.Membership, error)
+}
+
+func (p oauthMembershipProvider) Memberships(ctx context.Context, user, organization string) ([]auth.Membership, error) {
+	return p.memberships(ctx, user, organization)
 }

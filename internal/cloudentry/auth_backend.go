@@ -22,7 +22,7 @@ func entryAuthStatus(err error, denied int) int {
 		return http.StatusServiceUnavailable
 	}
 	var refusal *apikey.Refusal
-	if err == nil || errors.Is(err, errNoSession) || errors.Is(err, platformstore.ErrNoSession) || errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrOrganizationNotFound) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrAccessExpired) || errors.Is(err, tenantauth.ErrDenied) || errors.Is(err, cloudassert.ErrInvalid) || errors.Is(err, operatortool.ErrAccessDenied) || errors.As(err, &refusal) {
+	if err == nil || errors.Is(err, ErrNoSession) || errors.Is(err, platformstore.ErrNoSession) || errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrOrganizationNotFound) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrAccessExpired) || errors.Is(err, tenantauth.ErrDenied) || errors.Is(err, cloudassert.ErrInvalid) || errors.Is(err, operatortool.ErrAccessDenied) || errors.As(err, &refusal) {
 		return denied
 	}
 	return http.StatusServiceUnavailable
@@ -33,7 +33,7 @@ func entryAuthError(err error) error {
 		return err
 	}
 	if errors.Is(err, platformstore.ErrNoSession) || errors.Is(err, sql.ErrNoRows) {
-		return errNoSession
+		return ErrNoSession
 	}
 	return err
 }

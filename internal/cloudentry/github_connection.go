@@ -102,7 +102,7 @@ func (s *Service) connectGitHub(c echo.Context) error {
 	if err := s.githubUserGET(ctx, token, "/app", &app); err != nil || !safeID(app.Slug) {
 		return oauthError(c, http.StatusServiceUnavailable, "github_unavailable")
 	}
-	nonce, err := s.config.generateToken()
+	nonce, err := s.config.GenerateToken()
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
@@ -152,7 +152,7 @@ func (s *Service) completeGitHubConnection(c echo.Context) error {
 			return c.Redirect(http.StatusSeeOther, state.ReturnTo)
 		}
 		state.Phase, state.Verifier = "authorize", oauth2.GenerateVerifier()
-		state.Nonce, err = s.config.generateToken()
+		state.Nonce, err = s.config.GenerateToken()
 		if err != nil {
 			return oauthError(c, 503, "server_error")
 		}
@@ -183,7 +183,7 @@ func (s *Service) saveGitHubConnection(ctx context.Context, owner string, token 
 	if err != nil {
 		return err
 	}
-	id, err := s.config.generateToken()
+	id, err := s.config.GenerateToken()
 	if err != nil {
 		return err
 	}

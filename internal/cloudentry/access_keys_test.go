@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/harness"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -24,30 +25,8 @@ import (
 
 func createTestAccessKey(t *testing.T, b *browser, context string, organizations []keyOrganization, serviceOrg string, permissions ...string) accessKey {
 	t.Helper()
-	path := "/api/cloud/account/api-keys"
-	if serviceOrg != "" {
-		path = "/api/cloud/organizations/" + serviceOrg + "/service-keys"
-	}
-	permission := "write"
-	if len(permissions) > 0 {
-		permission = permissions[0]
-	}
-	input := map[string]any{"name": "Multi-org test", "permission": permission, "access_context": context, "organizations": organizations, "expires_days": 7}
-	raw, err := json.Marshal(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := attachmentRequest(t, b, http.MethodPost, path, bytes.NewReader(raw), map[string]string{"Content-Type": "application/json", "Origin": testPublicURL})
-	if response.Code != http.StatusCreated {
-		t.Fatalf("create key=%d %s", response.Code, response.Body.String())
-	}
 	var key accessKey
-	if err := json.Unmarshal(response.Body.Bytes(), &key); err != nil {
-		t.Fatal(err)
-	}
-	if key.Token == "" {
-		t.Fatal("created key has no token")
-	}
+	harness.CreateAccessKey(t, b, context, organizations, serviceOrg, &key, permissions...)
 	return key
 }
 

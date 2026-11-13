@@ -256,12 +256,6 @@ func (l *pilotTenantLauncher) Close() error {
 	return nil
 }
 
-type swappableHandler struct{ handler atomic.Pointer[http.Handler] }
-
-func (h *swappableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	(*h.handler.Load()).ServeHTTP(w, r)
-}
-
 type sharedOriginPilot struct {
 	service   *Service
 	provider  *fakeProvider
@@ -533,7 +527,7 @@ func (p *sharedOriginPilot) open(t *testing.T, maxTenants, retryLimit int) {
 	}
 	p.service = service
 	handler := service.Handler()
-	p.handler.handler.Store(&handler)
+	p.handler.Handler.Store(&handler)
 	t.Cleanup(func() { _ = service.Close() })
 }
 

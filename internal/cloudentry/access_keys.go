@@ -208,7 +208,7 @@ func keyError(c echo.Context, err error) error {
 	if errors.As(err, &refusal) {
 		return c.JSON(http.StatusForbidden, refusal)
 	}
-	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession) {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNoSession) {
 		return c.JSON(http.StatusUnauthorized, apikey.Refusal{Code: "key_required", Message: "A valid key is required"})
 	}
 	if errors.Is(err, tenantauth.ErrDenied) || errors.Is(err, cloudassert.ErrInvalid) {
@@ -219,17 +219,17 @@ func keyError(c echo.Context, err error) error {
 
 func (s *Service) accountKeySession(c echo.Context) (accountSession, error) {
 	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
-		return accountSession{}, errNoSession
+		return accountSession{}, ErrNoSession
 	}
 	if c.Request().Method != http.MethodGet && !s.sameOrigin(c) {
-		return accountSession{}, errNoSession
+		return accountSession{}, ErrNoSession
 	}
 	session, err := s.session(c)
 	if err != nil {
 		return accountSession{}, err
 	}
 	if session.Identity.SupportActor != "" {
-		return accountSession{}, errNoSession
+		return accountSession{}, ErrNoSession
 	}
 	return session, nil
 }
@@ -295,7 +295,7 @@ func (s *Service) createAccountKey(c echo.Context) error {
 		return keyError(c, err)
 	}
 	k.ID = "key_" + k.ID
-	k.Token, err = s.config.generateToken()
+	k.Token, err = s.config.GenerateToken()
 	if err != nil {
 		return keyError(c, err)
 	}

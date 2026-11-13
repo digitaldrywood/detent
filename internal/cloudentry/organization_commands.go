@@ -52,17 +52,17 @@ func (s *Service) ownerOrganizationFor(ctx context.Context, session accountSessi
 		return Organization{}, err
 	}
 	if authorized.Support {
-		return Organization{}, errNoSession
+		return Organization{}, ErrNoSession
 	}
 	current, err := s.config.Provider.CurrentSession(ctx, authorized.Identity)
 	if err != nil {
 		if entryAuthStatus(err, http.StatusUnauthorized) != http.StatusServiceUnavailable {
-			return Organization{}, errNoSession
+			return Organization{}, ErrNoSession
 		}
 		return Organization{}, err
 	}
 	if current.Subject != session.Subject || current.OrganizationID != organization.ProviderID || !current.ExpiresAt.After(s.config.Now()) {
-		return Organization{}, errNoSession
+		return Organization{}, ErrNoSession
 	}
 	memberships, err := s.config.Provider.Memberships(ctx, session.Subject, organization.ProviderID)
 	if err != nil {
@@ -73,7 +73,7 @@ func (s *Service) ownerOrganizationFor(ctx context.Context, session accountSessi
 			return organization, nil
 		}
 	}
-	return Organization{}, errNoSession
+	return Organization{}, ErrNoSession
 }
 
 func (s *Service) deleteOrganizationFor(ctx context.Context, session accountSession, organization Organization, confirm string) error {
@@ -85,7 +85,7 @@ func (s *Service) deleteOrganizationFor(ctx context.Context, session accountSess
 		return err
 	}
 	if billingBlocksDeletion(state, s.config.Now()) {
-		return errNoSession
+		return ErrNoSession
 	}
 	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state='deleting',updated_at=$1 WHERE id=$2 AND state='ready'", formatTime(s.config.Now()), organization.ID); err != nil {
 		return err

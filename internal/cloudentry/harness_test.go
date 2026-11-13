@@ -3,6 +3,7 @@ package cloudentry
 import "github.com/digitaldrywood/detent/internal/cloudentry/internal/harness"
 
 type (
+	swappableHandler           = harness.SwappableHandler
 	fakeProvider               = harness.FakeProvider
 	browser                    = harness.Browser
 	page                       = harness.Page
@@ -14,12 +15,23 @@ type (
 )
 
 const (
+	testOAuthVerifier         = harness.OAuthVerifier
+	testOAuthChallenge        = harness.OAuthChallenge
 	testPublicURL             = harness.PublicURL
 	testAdminKey              = harness.AdminKey
 	issueContractTestSections = harness.IssueContractSections
 )
 
 var (
+	registerTestOAuth       = harness.RegisterOAuth
+	testOAuthQuery          = harness.OAuthQuery
+	approveTestOAuth        = harness.ApproveOAuth
+	exchangeTestOAuth       = harness.ExchangeOAuth
+	entryTenantTransport    = harness.TenantTransport
+	attachmentProject       = harness.Project
+	attachmentRequest       = harness.Request
+	entryMCPClient          = harness.MCPClient
+	attachmentMCPClient     = harness.AttachmentMCPClient
 	entryPostgresTemplate   = harness.Postgres
 	newFakeProvider         = harness.NewFakeProvider
 	newBrowser              = harness.NewBrowser

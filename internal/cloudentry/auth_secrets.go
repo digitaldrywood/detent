@@ -98,7 +98,7 @@ func (s *Service) resealAuthorizations(ctx context.Context) error {
 		after = item.Binding
 		if err := s.auth.resealAuthorization(ctx, item); err != nil && ctx.Err() == nil {
 			hash := sha256.Sum256([]byte(item.Binding))
-			s.config.Logger.ErrorContext(ctx, "reseal authorization failed", "error", errNoSession, "binding_hash", hex.EncodeToString(hash[:6]))
+			s.config.Logger.ErrorContext(ctx, "reseal authorization failed", "error", ErrNoSession, "binding_hash", hex.EncodeToString(hash[:6]))
 		}
 	}
 }
@@ -133,7 +133,7 @@ func (s *Service) resealGitHubConnections(ctx context.Context) error {
 		after = owner
 		resealed, err := s.auth.resealToken("github-user-access", owner, sealed)
 		if err != nil {
-			return errNoSession
+			return ErrNoSession
 		}
 		if sealed != resealed {
 			if _, err := s.auth.store.db.ExecContext(ctx, `UPDATE platform.github_user_connections SET access_token=$1 WHERE owner_subject=$2 AND access_token=$3 AND revoked_at IS NULL`, resealed, owner, sealed); err != nil {

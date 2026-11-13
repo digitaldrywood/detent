@@ -20,15 +20,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/oauth"
 	"github.com/digitaldrywood/detent/internal/httpratelimit"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
-
-const oauthScope = "detent:mcp"
-const oauthAccessPrefix = "oauth_access_"
-const oauthAccessLifetime = time.Hour
-const oauthRefreshLifetime = 30 * 24 * time.Hour
 
 func (s *Service) registerOAuth() {
 	limiter := httpratelimit.New(120, 30)
@@ -58,13 +54,13 @@ func (s *Service) registerOAuth() {
 }
 
 func (s *Service) oauthResourceMetadata(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]any{"resource": s.config.PublicURL + "/mcp", "authorization_servers": []string{s.config.PublicURL}, "scopes_supported": []string{oauthScope}, "bearer_methods_supported": []string{"header"}})
+	return c.JSON(http.StatusOK, map[string]any{"resource": s.config.PublicURL + "/mcp", "authorization_servers": []string{s.config.PublicURL}, "scopes_supported": []string{oauth.Scope}, "bearer_methods_supported": []string{"header"}})
 }
 
 func (s *Service) oauthServerMetadata(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{
 		"issuer": s.config.PublicURL, "authorization_endpoint": s.config.PublicURL + "/oauth/authorize", "token_endpoint": s.config.PublicURL + "/oauth/token", "registration_endpoint": s.config.PublicURL + "/oauth/register",
-		"response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"}, "scopes_supported": []string{oauthScope}, "authorization_response_iss_parameter_supported": true,
+		"response_types_supported": []string{"code"}, "grant_types_supported": []string{"authorization_code", "refresh_token"}, "code_challenge_methods_supported": []string{"S256"}, "token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"}, "scopes_supported": []string{oauth.Scope}, "authorization_response_iss_parameter_supported": true,
 	})
 }
 
@@ -80,26 +76,8 @@ func oauthAuthorityError(c echo.Context, err error, status int, code string) err
 }
 
 func (s *Service) oauthChallenge(c echo.Context) error {
-	c.Response().Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+s.config.PublicURL+`/.well-known/oauth-protected-resource", scope="`+oauthScope+`"`)
+	c.Response().Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+s.config.PublicURL+`/.well-known/oauth-protected-resource", scope="`+oauth.Scope+`"`)
 	return oauthError(c, http.StatusUnauthorized, "invalid_token")
-}
-
-type oauthClient struct {
-	ID              string   `json:"client_id"`
-	Name            string   `json:"client_name"`
-	RedirectURIs    []string `json:"redirect_uris"`
-	AuthMethod      string   `json:"token_endpoint_auth_method"`
-	Secret          string   `json:"client_secret,omitempty"`
-	SecretExpiresAt *int64   `json:"client_secret_expires_at,omitempty"`
-	GrantTypes      []string `json:"grant_types"`
-	ResponseTypes   []string `json:"response_types"`
-}
-
-type oauthRegistration struct {
-	Name         string   `json:"n"`
-	RedirectURIs []string `json:"r"`
-	AuthMethod   string   `json:"a"`
-	SecretHash   string   `json:"s"`
 }
 
 func (s *Service) sealOAuth(purpose string, value any) (string, error) {
@@ -116,7 +94,7 @@ func (s *Service) sealOAuth(purpose string, value any) (string, error) {
 
 func (s *Service) openOAuth(purpose, value string, target any) error {
 	if value == "" || len(value) > 3800 {
-		return errNoSession
+		return ErrNoSession
 	}
 	sealed := value
 	if !strings.HasPrefix(value, "hk1.") {
@@ -127,7 +105,7 @@ func (s *Service) openOAuth(purpose, value string, target any) error {
 		return err
 	}
 	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return errNoSession
+		return ErrNoSession
 	}
 	return nil
 }
@@ -141,7 +119,7 @@ func validOAuthRedirect(raw string) bool {
 }
 
 func (s *Service) oauthRegister(c echo.Context) error {
-	var client oauthClient
+	var client oauth.Client
 	decoder := json.NewDecoder(http.MaxBytesReader(c.Response(), c.Request().Body, 64<<10))
 	if err := decoder.Decode(&client); err != nil {
 		return oauthError(c, http.StatusBadRequest, "invalid_client_metadata")
@@ -180,12 +158,12 @@ func (s *Service) oauthRegister(c echo.Context) error {
 	client.SecretExpiresAt = nil
 	if client.AuthMethod != "none" {
 		client.SecretExpiresAt = new(int64)
-		client.Secret, err = s.config.generateToken()
+		client.Secret, err = s.config.GenerateToken()
 		if err != nil {
 			return oauthError(c, 503, "server_error")
 		}
 	}
-	sealed, err := s.sealOAuth("oauth-client", oauthRegistration{Name: client.Name, RedirectURIs: client.RedirectURIs, AuthMethod: client.AuthMethod, SecretHash: apikey.HashToken(client.Secret)})
+	sealed, err := s.sealOAuth("oauth-client", oauth.Registration{Name: client.Name, RedirectURIs: client.RedirectURIs, AuthMethod: client.AuthMethod, SecretHash: apikey.HashToken(client.Secret)})
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
@@ -219,10 +197,10 @@ func (s *Service) oauthAuthorize(c echo.Context) error {
 	if err != nil || len(challenge) != sha256.Size || len(q.Get("code_challenge")) != 43 {
 		return oauthError(c, 400, "invalid_request")
 	}
-	if q.Get("scope") != "" && q.Get("scope") != oauthScope {
+	if q.Get("scope") != "" && q.Get("scope") != oauth.Scope {
 		return oauthError(c, 400, "invalid_scope")
 	}
-	id, err := s.config.generateToken()
+	id, err := s.config.GenerateToken()
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
@@ -240,27 +218,27 @@ func (s *Service) oauthAuthorize(c echo.Context) error {
 }
 
 type oauthRequest struct {
-	ID           string            `json:"i"`
-	Client       string            `json:"c"`
-	Redirect     string            `json:"r"`
-	State        string            `json:"s"`
-	Challenge    string            `json:"p"`
-	Resource     string            `json:"u"`
-	ExpiresAt    time.Time         `json:"e"`
-	Registration oauthRegistration `json:"-"`
+	ID           string             `json:"i"`
+	Client       string             `json:"c"`
+	Redirect     string             `json:"r"`
+	State        string             `json:"s"`
+	Challenge    string             `json:"p"`
+	Resource     string             `json:"u"`
+	ExpiresAt    time.Time          `json:"e"`
+	Registration oauth.Registration `json:"-"`
 }
 
 func (s *Service) oauthBrowserRequest(c echo.Context) (oauthRequest, error) {
 	var r oauthRequest
 	cookie, err := c.Cookie(s.cookieName("oauth"))
 	if err != nil {
-		return r, errNoSession
+		return r, ErrNoSession
 	}
 	if err := s.openOAuth("oauth-consent", cookie.Value, &r); err != nil {
 		return r, err
 	}
 	if r.ID != c.Param("request") || !r.ExpiresAt.After(s.config.Now()) {
-		return r, errNoSession
+		return r, ErrNoSession
 	}
 	r.Registration, err = s.oauthRegistration(c.Request().Context(), r.Client)
 	if err != nil {
@@ -272,7 +250,7 @@ func (s *Service) oauthBrowserRequest(c echo.Context) (oauthRequest, error) {
 		return r, err
 	}
 	if approved {
-		return r, errNoSession
+		return r, ErrNoSession
 	}
 	return r, nil
 }
@@ -350,12 +328,12 @@ func (s *Service) oauthApprove(c echo.Context) (resultErr error) {
 	case "owner", "admin":
 		permission = apikey.ScopeAdmin
 	}
-	id, err := s.config.generateToken()
+	id, err := s.config.GenerateToken()
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
 	id = "oauth_grant_" + id
-	code, err := s.config.generateToken()
+	code, err := s.config.GenerateToken()
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
@@ -422,19 +400,19 @@ func (s *Service) oauthClientAuthentication(c echo.Context, form url.Values) (st
 	if c.Request().Header.Get("Authorization") != "" {
 		user, password, ok := c.Request().BasicAuth()
 		if !ok || secret != "" {
-			return "", errNoSession
+			return "", ErrNoSession
 		}
 		var err error
 		user, err = url.QueryUnescape(user)
 		if err != nil {
-			return "", errNoSession
+			return "", ErrNoSession
 		}
 		password, err = url.QueryUnescape(password)
 		if err != nil {
-			return "", errNoSession
+			return "", ErrNoSession
 		}
 		if id != "" && id != user {
-			return "", errNoSession
+			return "", ErrNoSession
 		}
 		id, secret, method = user, password, "client_secret_basic"
 	}
@@ -443,7 +421,7 @@ func (s *Service) oauthClientAuthentication(c echo.Context, form url.Values) (st
 		return "", err
 	}
 	if registration.AuthMethod != method || method != "none" && subtle.ConstantTimeCompare([]byte(registration.SecretHash), []byte(apikey.HashToken(secret))) != 1 {
-		return "", errNoSession
+		return "", ErrNoSession
 	}
 	return id, nil
 }
@@ -474,7 +452,7 @@ func (s *Service) oauthToken(c echo.Context) error {
 	if form.Get("resource") != s.config.PublicURL+"/mcp" {
 		return oauthError(c, 400, "invalid_target")
 	}
-	if form.Get("scope") != "" && form.Get("scope") != oauthScope {
+	if form.Get("scope") != "" && form.Get("scope") != oauth.Scope {
 		return oauthError(c, 400, "invalid_scope")
 	}
 	if form.Get("grant_type") != "authorization_code" && form.Get("grant_type") != "refresh_token" {
@@ -482,7 +460,7 @@ func (s *Service) oauthToken(c echo.Context) error {
 	}
 	response, err := s.exchangeOAuthToken(c.Request().Context(), client, form)
 	if err != nil {
-		if !errors.Is(err, tenantauth.ErrUnavailable) && (errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession)) {
+		if !errors.Is(err, tenantauth.ErrUnavailable) && (errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNoSession)) {
 			return oauthError(c, 400, "invalid_grant")
 		}
 		return oauthError(c, 503, "server_error")

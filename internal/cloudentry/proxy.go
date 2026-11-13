@@ -21,6 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/oauth"
 	"github.com/digitaldrywood/detent/internal/cloudentry/socket"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
@@ -135,7 +136,7 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	if authorized.Support {
 		if (role != "admin" && role != "support") || authorized.EffectiveEmail == "" {
 			s.dropAuthorization(ctx, authorized)
-			return http.StatusForbidden, "", errNoSession
+			return http.StatusForbidden, "", ErrNoSession
 		}
 		subject, email = authorized.Identity.Subject, authorized.EffectiveEmail
 	}
@@ -146,10 +147,10 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	switch {
 	case access.Subject != subject || access.SessionID != authorized.Identity.SessionID || !strings.EqualFold(access.SupportActor, authorized.Identity.SupportActor):
 		s.dropAuthorization(ctx, authorized)
-		return http.StatusUnauthorized, verification, errNoSession
+		return http.StatusUnauthorized, verification, ErrNoSession
 	case access.OrganizationID != organization.ProviderID || !auth.ValidOrganizationRole(access.Role):
 		s.dropAuthorization(ctx, authorized)
-		return http.StatusForbidden, verification, errNoSession
+		return http.StatusForbidden, verification, ErrNoSession
 	}
 	identity := authorized.Identity
 	claims.Kind = cloudassert.KindBrowser
@@ -176,7 +177,7 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 	}
 	if err != nil || tokens.AccessToken == "" || tokens.RefreshToken == "" {
 		s.dropAuthorization(ctx, authorized)
-		return auth.HostedAccess{}, verificationToken, http.StatusUnauthorized, errNoSession
+		return auth.HostedAccess{}, verificationToken, http.StatusUnauthorized, ErrNoSession
 	}
 	access, err := s.config.Provider.VerifyAccess(ctx, tokens.AccessToken)
 	if err == nil {
@@ -187,7 +188,7 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 	}
 	if !errors.Is(err, auth.ErrAccessExpired) {
 		s.dropAuthorization(ctx, authorized)
-		return auth.HostedAccess{}, verificationToken, http.StatusUnauthorized, errNoSession
+		return auth.HostedAccess{}, verificationToken, http.StatusUnauthorized, ErrNoSession
 	}
 	unlock := s.refreshes.Lock(authorized.Binding)
 	defer unlock()
@@ -200,7 +201,7 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 			return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, err
 		}
 		s.dropAuthorization(ctx, authorized)
-		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
+		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, ErrNoSession
 	}
 	if access, err := s.config.Provider.VerifyAccess(ctx, tokens.AccessToken); err == nil {
 		return access, verificationRefreshed, http.StatusOK, nil
@@ -208,7 +209,7 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 		return auth.HostedAccess{}, verificationRefreshed, http.StatusServiceUnavailable, err
 	} else if !errors.Is(err, auth.ErrAccessExpired) {
 		s.dropAuthorization(ctx, authorized)
-		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
+		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, ErrNoSession
 	}
 	// The redeemed refresh token is spent, so the rotated pair is persisted
 	// even if the browser gives up on this request.
@@ -241,7 +242,7 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 		}
 		s.config.Logger.InfoContext(ctx, "shared entry token refresh rejected", "organization", authorized.Organization, "reason", auth.HostedIdentityReason(err))
 		s.dropAuthorization(detached, authorized)
-		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, errNoSession
+		return auth.HostedAccess{}, verificationRefreshed, http.StatusUnauthorized, ErrNoSession
 	}
 	if err := s.auth.storeTokens(detached, authorized.Binding, rotated, tokens); err != nil {
 		return auth.HostedAccess{}, verificationRefreshed, entryAuthStatus(err, http.StatusUnauthorized), err
@@ -308,9 +309,9 @@ func (s *Service) proxy(c echo.Context) error {
 		}
 		var key accessKey
 		if strings.HasSuffix(request.URL.Path, "/mcp") {
-			key, err = s.activeMCPKey(ctx, hash)
+			key, err = s.ActiveMCPKey(ctx, hash)
 			_, token, _ := strings.Cut(request.Header.Get(echo.HeaderAuthorization), " ")
-			if entryAuthStatus(err, http.StatusUnauthorized) != http.StatusServiceUnavailable && (errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession)) && strings.HasPrefix(token, oauthAccessPrefix) {
+			if entryAuthStatus(err, http.StatusUnauthorized) != http.StatusServiceUnavailable && (errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNoSession)) && strings.HasPrefix(token, oauth.AccessPrefix) {
 				return s.oauthChallenge(c)
 			}
 		} else {

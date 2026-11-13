@@ -7,7 +7,6 @@ import (
 	"image"
 	"image/png"
 	"net/http"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -19,86 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func attachmentMCPClient(t *testing.T, browser *browser, token, protocol string) func(string, any) (json.RawMessage, bool) {
-	t.Helper()
-	return entryMCPClient(t, browser, token, protocol, "/organizations/org_alpha/mcp")
-}
-
-func entryMCPClient(t *testing.T, browser *browser, token, protocol, path string) func(string, any) (json.RawMessage, bool) {
-	t.Helper()
-	headers := map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token, "Mcp-Protocol-Version": protocol}
-	if protocol != "2026-07-28" {
-		initialized := attachmentRequest(t, browser, http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"`+protocol+`","capabilities":{},"clientInfo":{"name":"attachment-operations","version":"1"}}}`), headers)
-		if initialized.Code != http.StatusOK {
-			t.Fatalf("initialize=%d %s", initialized.Code, initialized.Body.String())
-		}
-		headers["Mcp-Session-Id"] = initialized.Header().Get("Mcp-Session-Id")
-		attachmentRequest(t, browser, http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), headers)
-	}
-
-	return func(name string, arguments any) (json.RawMessage, bool) {
-		t.Helper()
-		method, params := "tools/call", map[string]any{"name": name, "arguments": arguments}
-		if name == "tools/list" {
-			method, params = name, map[string]any{}
-		}
-		if protocol == "2026-07-28" {
-			params["_meta"] = map[string]any{"io.modelcontextprotocol/protocolVersion": protocol, "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]string{"name": "attachment-operations", "version": "1"}}
-			headers["Mcp-Method"] = method
-			headers["Mcp-Name"] = name
-		}
-		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": method, "params": params})
-		if err != nil {
-			t.Fatal(err)
-		}
-		response := attachmentRequest(t, browser, http.MethodPost, path, bytes.NewReader(raw), headers)
-		var frame struct {
-			Error  json.RawMessage `json:"error"`
-			Result json.RawMessage `json:"result"`
-		}
-		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &frame) != nil || len(frame.Error) != 0 {
-			return response.Body.Bytes(), true
-		}
-		if method == "tools/list" {
-			return frame.Result, false
-		}
-		var result struct {
-			ResultType string                     `json:"resultType"`
-			Meta       map[string]json.RawMessage `json:"_meta"`
-			IsError    bool                       `json:"isError"`
-			Content    []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-			Structured json.RawMessage `json:"structuredContent"`
-		}
-		if json.Unmarshal(frame.Result, &result) != nil || len(result.Content) != 1 {
-			t.Fatalf("tool response=%s", response.Body.String())
-		}
-		if protocol == mcp.ProtocolVersion && (result.ResultType != "complete" || len(result.Meta["io.modelcontextprotocol/serverInfo"]) == 0) {
-			t.Fatalf("modern tool result missing protocol envelope=%s", frame.Result)
-		}
-		if protocol != mcp.ProtocolVersion && (result.ResultType != "" || len(result.Meta) != 0) {
-			t.Fatalf("legacy tool result returned modern protocol envelope=%s", frame.Result)
-		}
-		if protocol == "2024-11-05" && len(result.Structured) != 0 {
-			t.Fatal("legacy MCP returned structured content")
-		}
-		if len(result.Content[0].Text) > operatortool.MaxResultBytes {
-			t.Fatal("tool result exceeded its bound")
-		}
-		if strings.Contains(result.Content[0].Text, "authorized_principal") || strings.Contains(result.Content[0].Text, "spaces.test") || strings.Contains(result.Content[0].Text, "private/") {
-			t.Fatal("tool result exposed internal attachment authority or storage")
-		}
-		if len(result.Structured) != 0 {
-			var structured, textual any
-			if json.Unmarshal(result.Structured, &structured) != nil || json.Unmarshal([]byte(result.Content[0].Text), &textual) != nil || !reflect.DeepEqual(structured, textual) {
-				t.Fatal("structured result differs from text")
-			}
-		}
-		return json.RawMessage(result.Content[0].Text), result.IsError
-	}
-}
 
 func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spacesFixture, browser, anonymous *browser, project, otherProject, writeToken, readToken, foreignToken string, record attachment.Metadata, content string) {
 	t.Helper()

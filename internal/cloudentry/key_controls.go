@@ -193,7 +193,7 @@ func (s *Service) rotateAccountKey(c echo.Context) error {
 	if key.RevokedAt != nil || key.ExpiresAt != nil && !key.ExpiresAt.After(s.config.Now()) {
 		return c.NoContent(http.StatusConflict)
 	}
-	key.Token, err = s.config.generateToken()
+	key.Token, err = s.config.GenerateToken()
 	if err != nil {
 		return keyError(c, err)
 	}

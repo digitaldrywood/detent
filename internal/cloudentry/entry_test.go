@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -283,7 +282,7 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.sessions SET expires_at = $1 WHERE token_hash = $2", formatTime(time.Now().Add(-time.Minute)), hash); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.auth.session(t.Context(), hash); !errors.Is(err, errNoSession) {
+				if _, err := f.service.auth.session(t.Context(), hash); !errors.Is(err, ErrNoSession) {
 					t.Fatalf("expired session authenticated before logout: %v", err)
 				}
 			}
@@ -327,7 +326,7 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT revoked_at IS NOT NULL FROM platform.sessions WHERE token_hash = $1", hash).Scan(&revoked); err != nil || !revoked {
 				t.Fatalf("local session not revoked: %v", err)
 			}
-			if _, err := f.service.auth.authorization(t.Context(), session, "org_alpha"); !errors.Is(err, errNoSession) {
+			if _, err := f.service.auth.authorization(t.Context(), session, "org_alpha"); !errors.Is(err, ErrNoSession) {
 				t.Fatalf("logged-out organization authorization remains active: %v", err)
 			}
 			for _, id := range []string{session.Identity.SessionID, authorization.Identity.SessionID} {
@@ -470,19 +469,6 @@ func TestSharedEntryBoundaries(t *testing.T) {
 			}
 		})
 	}
-}
-
-func entryTenantTransport(t *testing.T, handler http.Handler) (http.RoundTripper, func()) {
-	t.Helper()
-	server := httptest.NewServer(handler)
-	address := server.Listener.Addr().String()
-	transport := &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-		var dialer net.Dialer
-		return dialer.DialContext(ctx, network, address)
-	}}
-	t.Cleanup(transport.CloseIdleConnections)
-	t.Cleanup(server.Close)
-	return transport, server.Close
 }
 
 func TestSharedEntryLoginTransactions(t *testing.T) {
@@ -1052,7 +1038,7 @@ func testSharedEntrySupportAccess(t *testing.T, configureStorage func(*Config)) 
 	if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.authorizations SET expires_at=$1 WHERE binding=$2 AND organization_id=$3", time.Now().UTC(), stored.Binding, "org_alpha"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.auth.authorization(t.Context(), staff, "org_alpha"); !errors.Is(err, errNoSession) {
+	if _, err := f.service.auth.authorization(t.Context(), staff, "org_alpha"); !errors.Is(err, ErrNoSession) {
 		t.Fatalf("expired support authorization remains usable: %v", err)
 	}
 	if expired, _ := support.Get("/organizations/org_alpha/app/bootstrap"); expired.StatusCode == http.StatusOK {

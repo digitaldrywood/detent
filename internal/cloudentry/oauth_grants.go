@@ -9,46 +9,32 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/cloudentry/oauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-type oauthGrant struct {
-	ID             string  `json:"id"`
-	ClientID       string  `json:"client_id"`
-	ClientName     string  `json:"client_name"`
-	OrganizationID string  `json:"organization_id"`
-	ConnectedAt    string  `json:"connected_at"`
-	LastUsedAt     *string `json:"last_used_at"`
-	RevokedAt      *string `json:"revoked_at"`
-}
-
-type oauthGrantPage struct {
-	Grants     []oauthGrant `json:"grants"`
-	NextCursor string       `json:"next_cursor,omitempty"`
-}
-
-func (s *Service) oauthGrants(ctx context.Context, owner, cursor string) (_ oauthGrantPage, resultErr error) {
+func (s *Service) oauthGrants(ctx context.Context, owner, cursor string) (_ oauth.GrantPage, resultErr error) {
 	rows, err := s.auth.store.reader.QueryContext(ctx, `SELECT g.id,g.client_id,c.name,g.organization_id,g.created_at,g.last_used_at,g.revoked_at FROM platform.oauth_grants g JOIN platform.oauth_clients c ON c.id=g.client_id WHERE g.owner_subject=$1 AND g.id>$2
 UNION ALL SELECT id,'github-app','Detent Cloud GitHub App','',created_at,NULL,revoked_at FROM platform.github_user_connections WHERE owner_subject=$3 AND id>$4 ORDER BY id LIMIT 201`, owner, cursor, owner, cursor)
 	if err != nil {
-		return oauthGrantPage{}, err
+		return oauth.GrantPage{}, err
 	}
 	defer closeEntryRows(rows, &resultErr)
-	grants := []oauthGrant{}
+	grants := []oauth.Grant{}
 	for rows.Next() {
-		var g oauthGrant
+		var g oauth.Grant
 		if err := rows.Scan(&g.ID, &g.ClientID, &g.ClientName, &g.OrganizationID, &g.ConnectedAt, &g.LastUsedAt, &g.RevokedAt); err != nil {
-			return oauthGrantPage{}, err
+			return oauth.GrantPage{}, err
 		}
 		grants = append(grants, g)
 	}
 	if err := rows.Err(); err != nil {
-		return oauthGrantPage{}, err
+		return oauth.GrantPage{}, err
 	}
-	page := oauthGrantPage{Grants: grants}
+	page := oauth.GrantPage{Grants: grants}
 	if len(grants) > 200 {
 		page.Grants = grants[:200]
 		page.NextCursor = page.Grants[199].ID

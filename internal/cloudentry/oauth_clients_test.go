@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/cloudentry/oauth"
 )
 
 func TestOAuthClientMigrationAndBackfill(t *testing.T) {
@@ -37,7 +38,7 @@ func TestOAuthClientMigrationAndBackfill(t *testing.T) {
 	}
 	s := &Service{auth: &authStore{store: storage, seal: seal}, config: cfg}
 	db := storage.db
-	registration := oauthRegistration{Name: "Assistant", AuthMethod: "client_secret_post", SecretHash: apikey.HashToken("client-secret"), RedirectURIs: []string{"https://assistant.example.test/callback", "http://localhost:12345/callback"}}
+	registration := oauth.Registration{Name: "Assistant", AuthMethod: "client_secret_post", SecretHash: apikey.HashToken("client-secret"), RedirectURIs: []string{"https://assistant.example.test/callback", "http://localhost:12345/callback"}}
 	ids := make([]string, 3)
 	for i := range ids {
 		sealed, err := s.sealOAuth("oauth-client", registration)

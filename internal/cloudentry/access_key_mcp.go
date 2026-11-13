@@ -52,12 +52,12 @@ func (s *Service) accessKeyAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 		var key accessKey
 		if c.Path() == "/mcp" {
-			key, err = s.activeMCPKey(c.Request().Context(), hash)
+			key, err = s.ActiveMCPKey(c.Request().Context(), hash)
 		} else {
 			key, err = s.activeAccessKey(c.Request().Context(), hash)
 		}
 		if err != nil {
-			if c.Path() == "/mcp" && !errors.Is(err, tenantauth.ErrUnavailable) && (errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession)) {
+			if c.Path() == "/mcp" && !errors.Is(err, tenantauth.ErrUnavailable) && (errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNoSession)) {
 				return s.oauthChallenge(c)
 			}
 			return keyError(c, err)
@@ -78,7 +78,7 @@ func (e accessKeyExecutor) current(ctx context.Context) (accessKey, error) {
 	if !ok {
 		return accessKey{}, operatortool.ErrAccessDenied
 	}
-	return e.service.activeMCPKey(ctx, connection.hash)
+	return e.service.ActiveMCPKey(ctx, connection.hash)
 }
 
 func (s *Service) keyOrganizations(ctx context.Context, key accessKey) ([]Organization, error) {

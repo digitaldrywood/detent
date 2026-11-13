@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/digitaldrywood/detent/internal/cloudentry/oauth"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 )
 
@@ -211,7 +212,7 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 		t.Fatal("second user connection unusable")
 	}
 	grants := b.Do(http.MethodGet, "/api/cloud/account/oauth-grants", nil, nil)
-	var page oauthGrantPage
+	var page oauth.GrantPage
 	if err := json.Unmarshal([]byte(grants.Body), &page); err != nil || len(page.Grants) != 1 || page.Grants[0].ClientName != "Detent Cloud GitHub App" {
 		t.Fatalf("grants=%+v %v", grants, err)
 	}

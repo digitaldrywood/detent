@@ -321,7 +321,7 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.auth.tokens(broken); !errors.Is(err, errNoSession) {
+	if _, err := s.auth.tokens(broken); !errors.Is(err, ErrNoSession) {
 		t.Fatal("unreadable row did not sign out", err)
 	}
 	healthy, err := s.auth.authorizationByBinding(t.Context(), items["healthy"].Binding)
@@ -383,7 +383,7 @@ func TestEntryOAuthKeyringState(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var target oauthRequest
-			if err := s.openOAuth(test.purpose, test.value, &target); !errors.Is(err, errNoSession) {
+			if err := s.openOAuth(test.purpose, test.value, &target); !errors.Is(err, ErrNoSession) {
 				t.Fatalf("bad state accepted: %v", err)
 			}
 		})
@@ -398,7 +398,7 @@ func TestEntryOAuthKeyringState(t *testing.T) {
 	}
 	other := &Service{auth: s.auth, config: s.config}
 	other.config.PublicURL = "https://other.example.test"
-	if err := other.openOAuth("oauth-consent", cookie.Value, &oauthRequest{}); !errors.Is(err, errNoSession) {
+	if err := other.openOAuth("oauth-consent", cookie.Value, &oauthRequest{}); !errors.Is(err, ErrNoSession) {
 		t.Fatal("origin AAD not enforced")
 	}
 	consent.ExpiresAt = s.config.Now().Add(-time.Second)
@@ -419,7 +419,7 @@ func TestEntryOAuthKeyringState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.auth.openToken("provider-refresh", "binding", access); !errors.Is(err, errNoSession) {
+	if _, err := s.auth.openToken("provider-refresh", "binding", access); !errors.Is(err, ErrNoSession) {
 		t.Fatal("provider purpose AAD not enforced")
 	}
 	if err := s.Close(); err != nil {

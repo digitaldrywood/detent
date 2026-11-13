@@ -8,10 +8,8 @@ import (
 	"errors"
 	"image"
 	"image/png"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -60,36 +58,6 @@ func TestAttachmentArchiveConfigurationRefusalKeepsEntryRunning(t *testing.T) {
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func attachmentProject(t *testing.T, browser *browser, org string) string {
-	t.Helper()
-	response, body := browser.Get("/api/v2/organizations/" + org + "/projects")
-	var result []struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(body), &result); err != nil || response.StatusCode != http.StatusOK || len(result) == 0 {
-		t.Fatalf("projects=%d %s", response.StatusCode, body)
-	}
-	return result[0].ID
-}
-
-func attachmentRequest(t *testing.T, b *browser, method, target string, body io.Reader, headers map[string]string) *httptest.ResponseRecorder {
-	t.Helper()
-	r := httptest.NewRequest(method, testPublicURL+target, body)
-	if method != http.MethodGet {
-		r.Header.Set("Origin", testPublicURL)
-	}
-	for key, value := range headers {
-		r.Header.Set(key, value)
-	}
-	base, _ := url.Parse(testPublicURL)
-	for _, cookie := range b.Jar.Cookies(base) {
-		r.AddCookie(cookie)
-	}
-	recorder := httptest.NewRecorder()
-	b.Entry.ServeHTTP(recorder, r)
-	return recorder
 }
 
 func TestAttachmentRoutesIsolation(t *testing.T) {

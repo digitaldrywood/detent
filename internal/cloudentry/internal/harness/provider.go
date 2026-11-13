@@ -330,3 +330,42 @@ func (p *FakeProvider) AcceptInvitationByID(ctx context.Context, id, user string
 	}
 	return p.AcceptInvitation(ctx, reference, user)
 }
+
+type SwappableProvider struct {
+	*FakeProvider
+	hooks          sync.Mutex
+	memberships    func(context.Context, string, string) ([]auth.Membership, error)
+	currentSession func(context.Context, auth.HostedIdentity) (auth.HostedIdentity, error)
+}
+
+func (p *SwappableProvider) SetMemberships(memberships func(context.Context, string, string) ([]auth.Membership, error)) {
+	p.hooks.Lock()
+	defer p.hooks.Unlock()
+	p.memberships = memberships
+}
+
+func (p *SwappableProvider) SetCurrentSession(currentSession func(context.Context, auth.HostedIdentity) (auth.HostedIdentity, error)) {
+	p.hooks.Lock()
+	defer p.hooks.Unlock()
+	p.currentSession = currentSession
+}
+
+func (p *SwappableProvider) Memberships(ctx context.Context, user, organization string) ([]auth.Membership, error) {
+	p.hooks.Lock()
+	memberships := p.memberships
+	p.hooks.Unlock()
+	if memberships != nil {
+		return memberships(ctx, user, organization)
+	}
+	return p.FakeProvider.Memberships(ctx, user, organization)
+}
+
+func (p *SwappableProvider) CurrentSession(ctx context.Context, identity auth.HostedIdentity) (auth.HostedIdentity, error) {
+	p.hooks.Lock()
+	currentSession := p.currentSession
+	p.hooks.Unlock()
+	if currentSession != nil {
+		return currentSession(ctx, identity)
+	}
+	return p.FakeProvider.CurrentSession(ctx, identity)
+}

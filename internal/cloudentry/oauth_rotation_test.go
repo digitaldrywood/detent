@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/cloudentry/oauth"
 )
 
 func TestOAuthSigningKeyRotation(t *testing.T) {
@@ -19,10 +20,10 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 	b.Login("/organizations", "user_alice:")
 	unconsented := registerTestOAuth(t, b, "Pending assistant", "none")
 	type issued struct {
-		client  oauthClient
-		token   oauthTokenResponse
+		client  oauth.Client
+		token   oauth.TokenResponse
 		code    url.Values
-		rotated oauthTokenResponse
+		rotated oauth.TokenResponse
 	}
 	var clients []issued
 	for _, format := range []string{"legacy", "opaque"} {
@@ -39,7 +40,7 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 			legacy, err := s.sealOAuth("oauth-refresh", struct {
 				Grant     string    `json:"g"`
 				ExpiresAt time.Time `json:"e"`
-			}{grant, s.config.Now().Add(oauthRefreshLifetime)})
+			}{grant, s.config.Now().Add(oauth.RefreshLifetime)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -87,7 +88,7 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 			if response := b.Do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(item.client).Encode(), nil, nil); response.StatusCode != http.StatusSeeOther {
 				t.Fatalf("authorized client after key rotation=%d", response.StatusCode)
 			}
-			if _, err := underB.activeMCPKey(t.Context(), apikey.HashToken(item.token.AccessToken)); err != nil {
+			if _, err := underB.ActiveMCPKey(t.Context(), apikey.HashToken(item.token.AccessToken)); err != nil {
 				t.Fatalf("existing access token after key rotation: %v", err)
 			}
 			refresh := url.Values{"client_id": {item.client.ID}, "client_secret": {item.client.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {item.token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
@@ -133,14 +134,14 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 	b = newBrowser(t, underC.Handler())
 	for _, item := range clients {
 		t.Run(item.client.Name+" replay after restart", func(t *testing.T) {
-			if _, err := underC.activeMCPKey(t.Context(), apikey.HashToken(item.rotated.AccessToken)); err != nil {
+			if _, err := underC.ActiveMCPKey(t.Context(), apikey.HashToken(item.rotated.AccessToken)); err != nil {
 				t.Fatalf("current access token after restart: %v", err)
 			}
 			refresh := url.Values{"client_id": {item.client.ID}, "client_secret": {item.client.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {item.token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
 			if response := b.Do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode != http.StatusBadRequest || !strings.Contains(response.Body, "invalid_grant") {
 				t.Fatalf("spent refresh replay=%d", response.StatusCode)
 			}
-			if _, err := underC.activeMCPKey(t.Context(), apikey.HashToken(item.rotated.AccessToken)); err == nil {
+			if _, err := underC.ActiveMCPKey(t.Context(), apikey.HashToken(item.rotated.AccessToken)); err == nil {
 				t.Fatal("spent refresh replay did not revoke current access token")
 			}
 			refresh.Set("refresh_token", item.rotated.RefreshToken)

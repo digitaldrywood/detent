@@ -254,7 +254,7 @@ func TestEntryBackendPlatformOwners(t *testing.T) {
 				if _, err := reopened.auth.store.db.ExecContext(t.Context(), "UPDATE platform.sessions SET expires_at=$1 WHERE token_hash=$2", formatTime(reopened.config.Now().Add(-time.Hour)), session.Hash); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := reopened.auth.authorizationByBinding(t.Context(), item.Binding); backend == "postgres" && !errors.Is(err, errNoSession) {
+				if _, err := reopened.auth.authorizationByBinding(t.Context(), item.Binding); backend == "postgres" && !errors.Is(err, ErrNoSession) {
 					t.Fatalf("expired account session retained authorization: %v", err)
 				}
 
@@ -343,7 +343,7 @@ func TestEntryAuthStoreFailures(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name+" missing", func(t *testing.T) {
-			if err := test.read("missing_session", "missing_binding"); !errors.Is(err, errNoSession) {
+			if err := test.read("missing_session", "missing_binding"); !errors.Is(err, ErrNoSession) {
 				t.Fatalf("missing credential = %v, want no session", err)
 			}
 		})
@@ -367,7 +367,7 @@ func TestEntryAuthStoreFailures(t *testing.T) {
 	f.service.config.Storage.PostgresPool.Close()
 	for _, test := range cases {
 		t.Run(test.name+" outage", func(t *testing.T) {
-			if err := test.read(hash, binding); err == nil || errors.Is(err, errNoSession) {
+			if err := test.read(hash, binding); err == nil || errors.Is(err, ErrNoSession) {
 				t.Fatalf("storage outage = %v, want operational error", err)
 			}
 		})

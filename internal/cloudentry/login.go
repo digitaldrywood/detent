@@ -55,7 +55,7 @@ func (s *Service) readyOrganization(ctx context.Context, id string) (Organizatio
 }
 
 func (s *Service) beginLogin(c echo.Context, transaction loginTransaction, providerOrganization, screenHint string) error {
-	token, err := s.config.generateToken()
+	token, err := s.config.GenerateToken()
 	if err != nil {
 		return err
 	}
@@ -63,11 +63,11 @@ func (s *Service) beginLogin(c echo.Context, transaction loginTransaction, provi
 	if err != nil {
 		return err
 	}
-	random, err := s.config.generateToken()
+	random, err := s.config.GenerateToken()
 	if err != nil {
 		return err
 	}
-	verifier, err := s.config.generateToken()
+	verifier, err := s.config.GenerateToken()
 	if err != nil {
 		return err
 	}
@@ -318,13 +318,13 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 			return accountSession{}, err
 		}
 	}
-	token, err := s.config.generateToken()
+	token, err := s.config.GenerateToken()
 	if err != nil {
 		return accountSession{}, err
 	}
 	hash := apikey.HashToken(token)
 	if csrfSecret == "" {
-		secret, err := s.config.generateToken()
+		secret, err := s.config.GenerateToken()
 		if err != nil {
 			return accountSession{}, err
 		}

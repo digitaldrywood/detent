@@ -91,7 +91,7 @@ func (s *Service) startSupport(c echo.Context) error {
 		requested += " · " + note
 	}
 	denial.Reason = "transaction_failed"
-	token, err := s.config.generateToken()
+	token, err := s.config.GenerateToken()
 	if err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}

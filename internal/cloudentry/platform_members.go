@@ -304,7 +304,7 @@ func (s *Service) platformMembersAuthority(c echo.Context, name string) (context
 func (s *Service) platformMemberFailure(c echo.Context, err error) error {
 	status, code, message := http.StatusServiceUnavailable, "unavailable", "Platform membership is temporarily unavailable"
 	switch {
-	case errors.Is(err, errNoSession):
+	case errors.Is(err, ErrNoSession):
 		status, code, message = http.StatusUnauthorized, "unauthenticated", "Sign in to continue"
 	case errors.Is(err, operatortool.ErrAccessDenied):
 		status, code, message = http.StatusForbidden, "forbidden", "This platform membership operation is not allowed"

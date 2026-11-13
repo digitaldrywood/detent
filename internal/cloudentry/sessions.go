@@ -19,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 )
 
-var errNoSession = errors.New("shared session is missing, expired or revoked")
+var ErrNoSession = errors.New("shared session is missing, expired or revoked")
 
 // providerSessionRecheck bounds how long a read-only request trusts the last
 // successful provider verification of a stored session, so polling screens do
@@ -116,24 +116,24 @@ func (a *authStore) openToken(purpose, binding, sealed string) (string, error) {
 	if strings.HasPrefix(sealed, "hk1.") {
 		envelope, err := decodeEntrySecret(sealed)
 		if err != nil {
-			return "", errNoSession
+			return "", ErrNoSession
 		}
 		plain, err := a.keys.Open(envelope, entrySecretAAD(purpose, binding))
 		if errors.Is(err, hubsecrets.ErrUnavailable) {
 			return "", err
 		}
 		if err != nil {
-			return "", errNoSession
+			return "", ErrNoSession
 		}
 		return string(plain), nil
 	}
 	raw, err := base64.RawStdEncoding.DecodeString(sealed)
 	if err != nil || len(raw) <= a.seal.NonceSize() {
-		return "", errNoSession
+		return "", ErrNoSession
 	}
 	plain, err := a.seal.Open(nil, raw[:a.seal.NonceSize()], raw[a.seal.NonceSize():], []byte(binding))
 	if err != nil {
-		return "", errNoSession
+		return "", ErrNoSession
 	}
 	return string(plain), nil
 }
@@ -162,7 +162,7 @@ func (a *authStore) authorizationByBinding(ctx context.Context, binding string) 
 		return authorization{}, err
 	}
 	if len(items) != 1 {
-		return authorization{}, errNoSession
+		return authorization{}, ErrNoSession
 	}
 	return items[0], nil
 }
@@ -177,7 +177,7 @@ func (a *authStore) session(ctx context.Context, hash string) (accountSession, e
 		return accountSession{}, err
 	}
 	if !expiry.After(a.now()) {
-		return accountSession{}, errNoSession
+		return accountSession{}, ErrNoSession
 	}
 	return session, nil
 }
@@ -200,11 +200,11 @@ func (a *authStore) authorization(ctx context.Context, session accountSession, o
 		return authorization{}, err
 	}
 	if len(items) != 1 || !items[0].Identity.ExpiresAt.After(a.now()) {
-		return authorization{}, errNoSession
+		return authorization{}, ErrNoSession
 	}
 	item := items[0]
 	if item.Support != (item.Identity.SupportActor != "") || item.Support && !strings.EqualFold(item.Identity.SupportActor, session.Email) || !item.Support && item.Identity.Subject != session.Subject {
-		return authorization{}, errNoSession
+		return authorization{}, ErrNoSession
 	}
 	return items[0], nil
 }
@@ -245,4 +245,10 @@ func (a *authStore) audit(ctx context.Context, subject, organization, event stri
 	}
 	_, err := a.store.db.ExecContext(ctx, "INSERT INTO platform.audit(subject,organization_id,event,recorded_at) VALUES ($1,$2,$3,$4)", subject, organization, event, formatTime(a.now()))
 	return err
+}
+
+func (v *sessionVerifications) reset() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.verified = make(map[string]time.Time)
 }

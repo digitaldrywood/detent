@@ -209,7 +209,7 @@ func testEntrySessionLogout(t *testing.T, f entryFixture, b *browser, ctx contex
 			t.Fatalf("access after logout=%v", err)
 		}
 	}
-	if _, err := f.service.auth.authorization(ctx, session, "org_alpha"); !errors.Is(err, errNoSession) {
+	if _, err := f.service.auth.authorization(ctx, session, "org_alpha"); !errors.Is(err, ErrNoSession) {
 		t.Fatalf("tenant authorization survived=%v", err)
 	}
 	if scenario != "logout provider failure" {

@@ -6,14 +6,15 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/cloudentry/oauth"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
 
-func (s *Service) oauthRegistration(ctx context.Context, id string) (_ oauthRegistration, resultErr error) {
-	var registration oauthRegistration
+func (s *Service) oauthRegistration(ctx context.Context, id string) (_ oauth.Registration, resultErr error) {
+	var registration oauth.Registration
 	sealed, ok := strings.CutPrefix(id, "oauth_client_")
 	if !ok || len(id) > 2048 {
-		return registration, errNoSession
+		return registration, ErrNoSession
 	}
 	rows, err := s.auth.store.reader.QueryContext(ctx, `SELECT c.name,c.auth_method,c.secret_hash,u.uri FROM platform.oauth_clients c JOIN platform.oauth_client_redirect_uris u ON u.client_id=c.id WHERE c.id=$1 ORDER BY u.position`, id)
 	if err != nil {
@@ -75,10 +76,10 @@ func (s *Service) backfillOAuthClients(ctx context.Context) error {
 			return err
 		}
 		after = id
-		var registration oauthRegistration
+		var registration oauth.Registration
 		sealed, ok := strings.CutPrefix(id, "oauth_client_")
 		if !ok || s.openOAuth("oauth-client", sealed, &registration) != nil || len(registration.RedirectURIs) == 0 {
-			s.config.Logger.ErrorContext(ctx, "backfill OAuth client unavailable", "error", errNoSession, "created_at", created)
+			s.config.Logger.ErrorContext(ctx, "backfill OAuth client unavailable", "error", ErrNoSession, "created_at", created)
 			continue
 		}
 		if err := s.backfillOAuthClient(ctx, id, registration.RedirectURIs); err != nil {
