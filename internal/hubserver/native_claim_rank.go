@@ -27,10 +27,6 @@ const (
 	nativeClaimRankBudget   = claimPreparationLimit
 )
 
-type runnerOutrankingProjectReader interface {
-	RunnerOutrankingProjects(context.Context, string, tracker.ProjectID, int) ([]runnerstore.ProjectRank, int, error)
-}
-
 type nativeClaimRankPosition struct {
 	rank      int
 	candidate claimstore.Candidate
@@ -59,8 +55,22 @@ type nativeClaimRankCompetitor struct {
 	incomplete bool
 }
 
+func readNativeClaimRanking(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) (*hubrecords.ClaimRanking, error) {
+	if scope.Credential.Runner.RunnerID == "" {
+		return &hubrecords.ClaimRanking{}, nil
+	}
+	projects, own, err := r.RunnerOutrankingProjects(ctx, scope.Credential.Runner.RunnerID, scope.Project, nativeClaimRankProjects)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return &hubrecords.ClaimRanking{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &hubrecords.ClaimRanking{Own: own, Projects: projects}, nil
+}
+
 func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, plan hubrecords.NativeClaimPlan, now time.Time) (bool, error) {
-	if plan.Replay != nil || slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) {
+	if plan.Replay != nil || slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) || plan.Ranking != nil && len(plan.Ranking.Projects) == 0 {
 		return false, nil
 	}
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
@@ -71,10 +81,6 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 	var reports []providercapacity.Report
 	var competitors []nativeClaimRankCompetitor
 	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		owner, ok := r.(runnerOutrankingProjectReader)
-		if !ok {
-			return hubapi.NativeRunEventStorageUnavailable()
-		}
 		batch, ok := r.(tenantstore.ClaimPreviewPlanRowsReader)
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
@@ -84,12 +90,15 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 		if err != nil {
 			return err
 		}
-		projects, own, err := owner.RunnerOutrankingProjects(ctx, identity.RunnerID, scope.Project, nativeClaimRankProjects)
-		if errors.Is(err, corestore.ErrNotFound) || err == nil && len(projects) == 0 {
-			return nil
+		ranking := plan.Ranking
+		if ranking == nil {
+			if ranking, err = readNativeClaimRanking(ctx, r, scope); err != nil {
+				return err
+			}
 		}
-		if err != nil {
-			return err
+		projects, own := ranking.Projects, ranking.Own
+		if len(projects) == 0 {
+			return nil
 		}
 		reports, err = r.RunnerProviderReports(ctx, identity.RunnerID)
 		if err != nil {

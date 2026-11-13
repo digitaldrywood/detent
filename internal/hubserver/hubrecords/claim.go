@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -15,8 +16,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type ClaimRanking struct {
+	Own      int
+	Projects []runnerstore.ProjectRank
+}
+
 type NativeClaimPlan struct {
 	SnapshotLoaded       bool                            `json:"-"`
+	Ranking              *ClaimRanking                   `json:"-"`
 	ReleaseDelivery      ReleaseDeliveryContractFacts    `json:"-"`
 	Observations         *tenantstore.ChangeVersionRows  `json:"-"`
 	Approval             *ChangeVersionApproval          `json:"-"`

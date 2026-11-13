@@ -445,7 +445,11 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.
 		if policy.PolicyID != request.PolicyID {
 			return claimPolicyRefusal(ctx, r, scope.Project, request.PolicyID)
 		}
-		shared := hubrecords.NativeClaimPlan{Project: project, Policy: policy}
+		ranking, err := readNativeClaimRanking(ctx, r, scope)
+		if err != nil {
+			return err
+		}
+		shared := hubrecords.NativeClaimPlan{Project: project, Policy: policy, Ranking: ranking}
 		if request.SessionID != "" {
 			lease, err := r.LeaseBySession(ctx, request.SessionID)
 			if err == nil {
@@ -1317,7 +1321,13 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope hubscope.Na
 			if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 				return err
 			}
-			return readRows(r)
+			if err := readRows(r); err != nil {
+				return err
+			}
+			if plan.Replay == nil {
+				plan.Ranking, err = readNativeClaimRanking(ctx, r, scope)
+			}
+			return err
 		})
 	}
 	return plan, err

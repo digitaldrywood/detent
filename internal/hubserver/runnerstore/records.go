@@ -353,6 +353,7 @@ type Reader interface {
 	RunnerForLease(context.Context, string) (Identity, error)
 	RunnerProjects(context.Context, string, int) ([]tracker.ProjectID, error)
 	RunnerProjectAuthorized(context.Context, string, tracker.ProjectID, time.Time) (bool, error)
+	RunnerOutrankingProjects(context.Context, string, tracker.ProjectID, int) ([]ProjectRank, int, error)
 	RunnerActiveLeaseIDs(context.Context, string, time.Time, int) ([]string, error)
 	RunnerHasActiveLease(context.Context, string, time.Time) (bool, error)
 	RunnerProjectUsage(context.Context, string, tracker.ProjectID, time.Time) (runnerUsed, runnerProjectUsed int64, err error)
