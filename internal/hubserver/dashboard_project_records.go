@@ -78,6 +78,9 @@ func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDe
 			return err
 		}
 		head = watermark.Sequence
+		if sub.initial && sequence < watermark.ReplayFloor {
+			sequence = watermark.ReplayFloor
+		}
 		gap = sequence < watermark.ReplayFloor || sequence > head || sub.grantVersion != "" && sub.grantVersion != grants
 		if gap || sequence == head {
 			return nil
