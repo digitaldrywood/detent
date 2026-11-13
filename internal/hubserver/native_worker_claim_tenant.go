@@ -845,12 +845,22 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			}
 		}
 		var selectedReservation *providercapacity.Reservation
-		if !workspaceItem && replay == nil && len(request.ProviderCandidates) > 0 {
-			reservation, err := selectTenantProviderReservation(ctx, w, identity, request, item.NativeID, authoritativeNow)
-			if err != nil {
-				return err
+		if !workspaceItem && replay == nil {
+			if len(request.ProviderCandidates) == 0 {
+				reports, err := w.RunnerProviderReports(ctx, identity.RunnerID)
+				if err != nil {
+					return err
+				}
+				if len(reports) > 0 {
+					return providerWait("provider_incompatible", "Work item needs local model selection before a provider reservation can be claimed")
+				}
+			} else {
+				reservation, err := selectTenantProviderReservation(ctx, w, identity, request, item.NativeID, authoritativeNow)
+				if err != nil {
+					return err
+				}
+				selectedReservation = &reservation
 			}
-			selectedReservation = &reservation
 		}
 		leaseID := newNativeID("lease")
 		lease, err = w.Claim(ctx, leasestore.Claim{IssueID: item.ID, ExpectedRevision: item.Revision, MachineID: string(identity.MachineID),

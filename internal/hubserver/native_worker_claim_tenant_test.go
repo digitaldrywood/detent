@@ -110,6 +110,59 @@ func (r nativePreviewCountingReader) ClaimPreviewPlanRows(ctx context.Context, p
 	return reader.ClaimPreviewPlanRows(ctx, project, candidates)
 }
 
+func TestNativeClaimRequiresReportedProviderSelection(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	for _, selected := range []bool{false, true} {
+		t.Run(fmt.Sprintf("selected_%t", selected), func(t *testing.T) {
+			issue := f.create(t, fmt.Sprintf("Provider selection %t", selected))
+			worker := f.worker(t, fmt.Sprintf("Example runner %t", selected))
+			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(worker), "", "")
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("runner authentication=%d %v", status, err)
+			}
+			reportRunnerCapacity(t, f.service, f.base, worker, credential.Runner.MachineID, "Example runner", isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}, 1)
+			report := providercapacity.Report{Provider: "example-provider", Backend: "codex", AccountAlias: credential.Runner.RunnerID, Billing: "subscription", Models: []string{"example-model"}, MaxConcurrent: 1, Availability: "exhausted", ObservedAt: f.service.config.now()}
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.ReplaceRunnerProviderReports(t.Context(), credential.Runner.RunnerID, []providercapacity.Report{report})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: credential.Runner.MachineID, SessionID: fmt.Sprintf("provider-selection-%t", selected), TTLSeconds: 90, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
+			want := http.StatusConflict
+			if selected {
+				want = http.StatusOK
+				claim.Capabilities = append(claim.Capabilities, tracker.NativeProviderCapacityCapability)
+				claim.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: providercapacity.Requirement{Role: "code", Backend: report.Backend, Model: report.Models[0]}}}
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim)
+			requireNativeStatus(t, response, want)
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+				item, err := r.WorkItem(t.Context(), f.project.ID, issue.WorkItemID)
+				if err != nil {
+					return err
+				}
+				lease, err := r.ActiveLeaseForIssue(t.Context(), item.ID)
+				if !selected {
+					if !errors.Is(err, corestore.ErrNotFound) {
+						t.Fatalf("unselected provider acquired lease=%+v error=%v", lease, err)
+					}
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				reservation, err := r.ProviderReservation(t.Context(), tracker.LeaseID(lease.LeaseID))
+				if err == nil && reservation.Reservation.Report.AccountAlias != report.AccountAlias {
+					t.Fatalf("selected provider reservation=%+v", reservation)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
