@@ -942,7 +942,8 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 	})
 
 	now := time.Date(2026, time.October, 25, 12, 0, 0, 0, time.UTC)
-	service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }})
+	details := &memoryRunDetails{}
+	service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }, RunDetails: details})
 	f := newChangeFixture(t, service)
 	descriptor := hubTestPolicy()
 	descriptor.Gates.GitHubPullRequest = true
@@ -1357,10 +1358,6 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 						}
 						switch payloadCase {
 						case "missing attempt payload":
-							details, ok := service.runDetailStore().(*memoryRunDetails)
-							if !ok {
-								t.Fatal("payload refusal fixture requires its existing object store")
-							}
 							t.Cleanup(func() {
 								cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubReadTimeout)
 								defer cancel()
