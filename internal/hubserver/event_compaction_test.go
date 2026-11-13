@@ -63,7 +63,11 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 						event.Data.Runtime = a.runtime("implementation")
 						a.post(t, event)
 					}
+					if test.extraActivity > 0 {
+						requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodPost, a.base+"/leases/"+string(a.lease.ID)+"/renew", a.worker, tracker.NativeLeaseMutation{FencingToken: a.lease.FencingToken, TTLSeconds: 3600}), http.StatusOK)
+					}
 					for range test.extraActivity {
+						a.advance(time.Second)
 						event := a.start
 						event.Type = "run.checkpointed"
 						event.Data.Handoff = nativeTestCheckpoint()
