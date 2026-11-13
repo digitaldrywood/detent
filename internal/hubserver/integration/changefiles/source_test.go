@@ -13,7 +13,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/changefiles/sourcetest"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -22,7 +24,7 @@ import (
 func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 	t.Parallel()
 	objects := &changeObjectFixture{}
-	f := newChangeFixtureOn(t, openHubWith(t, func(config *hubserver.Config) { config.Content = objects.call }))
+	f := hubfixture.NewChangeInOrganization(t, hubfixture.OpenWith(t, func(config *hubserver.Config) { config.Content = objects.call }))
 	input := hubtest.ChangeInput(hubtest.PolicyDescriptor().ID)
 	bundle := sourcetest.Source(t, &input, bytes.Repeat([]byte("retained source\n"), 100000))
 	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source"}, ChangeVersionInput: input, SourceBundle: bundle}
@@ -54,55 +56,55 @@ func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 			if strings.Contains(invalid.name, "budget") && !strings.Contains(err.Error(), "verification budget") {
 				t.Fatalf("pack reached Git before the verification budget refused it: %v", err)
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, refused)
-			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			response := hubfixture.Request(t, f.Hub.Service.Handler(), http.MethodPost, f.Path+"/versions", f.Token, refused)
+			hubfixture.RequireStatus(t, response, http.StatusUnprocessableEntity)
 			var failure struct {
 				Code    string `json:"code"`
 				Details struct {
 					Rejection runnerauth.PublicationRejection `json:"rejection"`
 				} `json:"details"`
 			}
-			decodeHubResponse(t, response, &failure)
+			hubfixture.Decode(t, response, &failure)
 			if failure.Code != "invalid_request" || failure.Details.Rejection != (runnerauth.PublicationRejection{Category: "source_verification", Field: "source"}) {
 				t.Fatalf("unusable source lacks typed refusal details: %s", response.Body.Bytes())
 			}
-			if len(f.detail(t).Versions) != 0 {
+			if len(f.Detail(t).Versions) != 0 {
 				t.Fatal("unusable source was retained")
 			}
 		})
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request)
-	requireNativeStatus(t, response, http.StatusOK)
+	response := hubfixture.Request(t, f.Hub.Service.Handler(), http.MethodPost, f.Path+"/versions", f.Token, request)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
 	var version tracker.ChangeVersion
-	decodeHubResponse(t, response, &version)
-	response = performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request)
-	requireNativeStatus(t, response, http.StatusOK)
+	hubfixture.Decode(t, response, &version)
+	response = hubfixture.Request(t, f.Hub.Service.Handler(), http.MethodPost, f.Path+"/versions", f.Token, request)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
 	var replay tracker.ChangeVersion
-	decodeHubResponse(t, response, &replay)
+	hubfixture.Decode(t, response, &replay)
 	if replay.ID != version.ID {
 		t.Fatal("source replay changed the immutable version")
 	}
-	admin := f.admin
+	admin := f.Hub.Admin
 	for _, statement := range []string{"UPDATE change_versions SET source_content_bytes=source_content_bytes+1 WHERE id=$1", "DELETE FROM change_versions WHERE id=$1"} {
 		if _, err := admin.ExecContext(t.Context(), statement, version.ID); err == nil {
 			t.Fatal("source bytes lost version immutability")
 		}
 	}
-	if err := f.service.Close(); err != nil {
+	if err := f.Hub.Service.Close(); err != nil {
 		t.Fatal(err)
 	}
-	f.service = f.hub.reopen(t)
-	path := f.path + "/versions/" + version.ID + "/source"
-	response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
-	requireNativeStatus(t, response, http.StatusOK)
+	f.Hub.Service = f.Hub.Reopen(t).Service
+	path := f.Path + "/versions/" + version.ID + "/source"
+	response = hubfixture.Request(t, f.Hub.Service.Handler(), http.MethodGet, path, f.Token, nil)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
 	if !bytes.Equal(response.Body.Bytes(), bundle) || response.Header().Get("Content-Type") != "application/x-git-bundle" {
 		t.Fatal("source bytes were lost across Hub restart")
 	}
-	other := f.hub.fixture(t, f.hub.organization(t))
-	foreignItem := other.create(t, "foreign")
-	foreign := other.base + "/work-items/" + string(foreignItem.WorkItemID) + "/changes/" + f.change.ID + "/versions/" + version.ID + "/source"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, foreign, other.token, nil), http.StatusNotFound)
-	if detail := f.detail(t); detail.Versions[0].Source == nil || detail.Versions[0].Source.BundleSHA256 != input.Source.BundleSHA256 {
+	other := hubfixture.NewNativeWith(t, f.Hub, f.Hub.CreateOrganization(t, "Example organization"), hubtest.ProjectOptions{Name: "Example project " + hubapi.NewID("fixture")})
+	foreignItem := other.Create(t, "foreign")
+	foreign := other.Base + "/work-items/" + string(foreignItem.WorkItemID) + "/changes/" + f.Change.ID + "/versions/" + version.ID + "/source"
+	hubfixture.RequireStatus(t, hubfixture.Request(t, f.Hub.Service.Handler(), http.MethodGet, foreign, other.Token, nil), http.StatusNotFound)
+	if detail := f.Detail(t); detail.Versions[0].Source == nil || detail.Versions[0].Source.BundleSHA256 != input.Source.BundleSHA256 {
 		t.Fatal("metadata read lost the stored source identity")
 	}
 }

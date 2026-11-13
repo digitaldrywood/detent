@@ -48,6 +48,8 @@ func (h *Hub) Handler() http.Handler { return h.Service.Handler() }
 
 func (h *Hub) Now() time.Time { return h.Config.Clock() }
 
+func (h *Hub) AdminToken() string { return string(h.Config.InitialAdminToken) }
+
 func (h *Hub) Request(t *testing.T, method, path, token string, payload any) *httptest.ResponseRecorder {
 	t.Helper()
 	return Request(t, h.Handler(), method, path, token, payload)
@@ -112,6 +114,13 @@ func Open(t *testing.T, cfg hubserver.Config) *Hub {
 		t.Fatal(err)
 	}
 	return open(t, &Hub{Admin: admin, Primary: Primary, owner: t}, cfg, repository)
+}
+
+func OpenWith(t *testing.T, configure func(*Config)) *Hub {
+	t.Helper()
+	var cfg Config
+	configure(&cfg)
+	return Open(t, cfg)
 }
 
 func SeedOrganization(t *testing.T, repository tenantstore.Repository, organization tracker.OrganizationID, adminToken string, now time.Time) {

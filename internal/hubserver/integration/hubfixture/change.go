@@ -52,6 +52,11 @@ func NewChangeIn(t *testing.T, p Native) Change {
 	return Change{Native: p, Issue: issue, Change: change, Path: path + "/" + change.ID, Rules: rules}
 }
 
+func NewChangeInOrganization(t *testing.T, h *Hub) Change {
+	t.Helper()
+	return NewChangeIn(t, NewNativeInOrganization(t, h))
+}
+
 func ChangeInput() tracker.ChangeVersionInput {
 	return tracker.ChangeVersionInput{BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), MergeBaseSHA: strings.Repeat("a", 40), Repository: "https://github.com/example/repo", Code: ChangeArtifact("code"), Artifacts: []tracker.ChangeArtifact{ChangeArtifact("manifest")}, PolicyID: Policy().ID}
 }

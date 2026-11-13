@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -18,6 +19,7 @@ type Native struct {
 	Project tracker.NativeProject
 	Base    string
 	Token   string
+	Runners map[string]hubtest.SeededRunner
 }
 
 func NewDefaultNative(t *testing.T, cfg Config) Native {
@@ -27,6 +29,11 @@ func NewDefaultNative(t *testing.T, cfg Config) Native {
 
 func NewNative(t *testing.T, h *Hub, organization tracker.OrganizationID, name string) Native {
 	t.Helper()
+	return NewNativeWith(t, h, organization, hubtest.ProjectOptions{Name: name, RequireDependencies: true})
+}
+
+func NewNativeWith(t *testing.T, h *Hub, organization tracker.OrganizationID, options hubtest.ProjectOptions) Native {
+	t.Helper()
 	if h == nil {
 		h = Open(t, Config{})
 	}
@@ -35,10 +42,19 @@ func NewNative(t *testing.T, h *Hub, organization tracker.OrganizationID, name s
 	}
 	h.EnsureOrganization(t, organization)
 	now := h.Now().UTC().Truncate(time.Microsecond)
-	project := hubtest.Project(t, h.Repository, organization, hubtest.ProjectOptions{Name: name, RequireDependencies: true})
+	project := hubtest.Project(t, h.Repository, organization, options)
 	credential := hubtest.Credential(t, h.Repository, organization, hubtest.CredentialOptions{Projects: []tracker.ProjectID{project.ID}, Now: now})
 	hubtest.Policy(t, h.Repository, h.Config.RunDetails, project, hubtest.PolicyOptions{Now: now})
-	return Native{Hub: h, Project: project, Base: ProjectBase(organization, project.ID), Token: credential.Token}
+	return Native{Hub: h, Project: project, Base: ProjectBase(organization, project.ID), Token: credential.Token, Runners: map[string]hubtest.SeededRunner{}}
+}
+
+func NewNativeInOrganization(t *testing.T, h *Hub) Native {
+	t.Helper()
+	if h == nil {
+		h = Open(t, Config{})
+	}
+	organization := h.CreateOrganization(t, "Example organization")
+	return NewNativeWith(t, h, organization, hubtest.ProjectOptions{Name: "Example project " + hubapi.NewID("fixture")})
 }
 
 func ProjectBase(organization tracker.OrganizationID, project tracker.ProjectID) string {
@@ -75,6 +91,9 @@ func (p Native) Credential(t *testing.T, token string) (accessstore.Credential, 
 func (p Native) Worker(t *testing.T, name string) string {
 	t.Helper()
 	runner := hubtest.Runner(t, p.Hub.Repository, p.Project.OrganizationID, hubtest.RunnerOptions{Projects: []tracker.ProjectID{p.Project.ID}, DisplayName: name, Now: p.Hub.Now()})
+	if p.Runners != nil {
+		p.Runners[runner.Credential.Token] = runner
+	}
 	return runner.Credential.Token
 }
 
