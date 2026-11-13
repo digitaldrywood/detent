@@ -1,30 +1,12 @@
 package hubserver
 
 import (
-	"time"
-
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
 const githubWebhookMaxBodyBytes = 2 << 20
-
-type webhookReceipt struct {
-	DeliveryID       string
-	EventType        string
-	Action           string
-	HeadersJSON      string
-	Payload          []byte
-	PayloadSHA256    string
-	ReceivedAt       time.Time
-	PayloadExpiresAt time.Time
-}
-
-type webhookReceiptResult struct {
-	InboxID   int64
-	Duplicate bool
-}
 
 type webhookResponse struct {
 	DeliveryID string `json:"delivery_id"`
