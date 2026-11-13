@@ -1529,8 +1529,13 @@ func runnerIdentityClaimRefusal(identity runnerstore.Identity, scope hubscope.Na
 	if runnerIdentityCanClaim(identity, scope, machine, now) {
 		return nil
 	}
-	if identity.State == "disabled" && identity.OrganizationID == scope.Organization && identity.TokenID == scope.Credential.ID && identity.RunnerID == scope.Credential.Runner.RunnerID && identity.RemovedAt == nil {
-		return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_disabled", Message: "Runner is disabled"}})
+	if identity.OrganizationID == scope.Organization && identity.TokenID == scope.Credential.ID && identity.RunnerID == scope.Credential.Runner.RunnerID && identity.RemovedAt == nil {
+		switch identity.State {
+		case "disabled":
+			return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_disabled", Message: "Runner is disabled"}})
+		case "draining":
+			return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_draining", Message: "Runner is draining; active leases may finish"}})
+		}
 	}
 	return tracker.ErrMachineNotFound
 }

@@ -280,6 +280,8 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 	disabled.State = "disabled"
 	otherCredential := disabled
 	otherCredential.TokenID = "credential_other"
+	draining := identity
+	draining.State = "draining"
 	for _, test := range []struct {
 		name     string
 		identity runnerstore.Identity
@@ -288,6 +290,7 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 		{"active", identity, ""},
 		{"disabled", disabled, "runner_disabled"},
 		{"disabled other credential", otherCredential, "machine_not_found"},
+		{"draining", draining, "runner_draining"},
 		{"expired heartbeat", expired, "machine_not_found"},
 	} {
 		err := runnerIdentityClaimRefusal(test.identity, scope, machineID, clock.Now())
@@ -297,7 +300,7 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 			t.Fatalf("%s refusal = %v, want none", test.name, err)
 		case test.code == "machine_not_found" && !errors.Is(err, tracker.ErrMachineNotFound):
 			t.Fatalf("%s refusal = %v, want machine not found", test.name, err)
-		case test.code == "runner_disabled" && (!errors.As(err, &refusal) || refusal.Code != test.code || refusal.Status != http.StatusConflict):
+		case (test.code == "runner_disabled" || test.code == "runner_draining") && (!errors.As(err, &refusal) || refusal.Code != test.code || refusal.Status != http.StatusConflict):
 			t.Fatalf("%s refusal = %v, want 409 %s", test.name, err, test.code)
 		}
 	}
