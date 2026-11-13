@@ -60,6 +60,7 @@ type Reader interface {
 	ProjectAllowanceUsage(context.Context, int64) (int64, error)
 	ProjectRecord(context.Context, tracker.ProjectID) (Record, error)
 	ProjectBySlug(context.Context, string) (Record, error)
+	ProjectIDByName(context.Context, string) (tracker.ProjectID, error)
 	ProjectSlugOwner(context.Context, string) (tracker.ProjectID, error)
 }
 

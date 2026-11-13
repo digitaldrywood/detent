@@ -103,6 +103,11 @@ func (s *session) ProjectBySlug(ctx context.Context, slug string) (projectstore.
 	return s.ProjectRecord(ctx, id)
 }
 
+func (s *session) ProjectIDByName(ctx context.Context, name string) (tracker.ProjectID, error) {
+	id, err := s.queries.ResolveProjectName(ctx, pgquery.ResolveProjectNameParams{OrganizationID: s.organization, Name: name})
+	return id, mapError(ctx, err)
+}
+
 func (s *session) reserveProjectSlug(ctx context.Context, id tracker.ProjectID, slug string) error {
 	rows, err := s.queries.ReserveProjectSlug(ctx, pgquery.ReserveProjectSlugParams{OrganizationID: s.organization, Slug: slug, ProjectID: id})
 	if err != nil {

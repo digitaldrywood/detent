@@ -285,6 +285,22 @@ func (q *Queries) ReserveProjectSlug(ctx context.Context, arg ReserveProjectSlug
 	return result.RowsAffected(), nil
 }
 
+const resolveProjectName = `-- name: ResolveProjectName :one
+SELECT id FROM projects WHERE organization_id=$1 AND lower(name)=lower($2::text) AND deleted_at IS NULL ORDER BY id LIMIT 1
+`
+
+type ResolveProjectNameParams struct {
+	OrganizationID tracker.OrganizationID
+	Name           string
+}
+
+func (q *Queries) ResolveProjectName(ctx context.Context, arg ResolveProjectNameParams) (tracker.ProjectID, error) {
+	row := q.db.QueryRow(ctx, resolveProjectName, arg.OrganizationID, arg.Name)
+	var id tracker.ProjectID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const resolveProjectSlug = `-- name: ResolveProjectSlug :one
 SELECT project_id FROM project_slugs WHERE organization_id=$1 AND slug=$2
 `

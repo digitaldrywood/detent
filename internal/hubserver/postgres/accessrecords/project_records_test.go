@@ -578,3 +578,63 @@ func TestProjectRecordMigrationKeepsExistingTenants(t *testing.T) {
 		t.Fatalf("forced tenant policies=%d, want 5", forced)
 	}
 }
+
+func TestProjectIDByNameStaysInsideTheOrganization(t *testing.T) {
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	ctx := t.Context()
+	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := pgstoretest.SeedCoreOrganization(ctx, w, org); err != nil {
+				return err
+			}
+			for _, project := range []corestore.Project{{ID: tracker.ProjectID("shared_" + org), Name: "Example Project"}, {ID: tracker.ProjectID("own_" + org), Name: "Only " + string(org)}, {ID: tracker.ProjectID("retired_" + org), Name: "Retired Project"}} {
+				project.OrganizationID, project.Profile = org, "native"
+				if _, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: project, States: states}); err != nil {
+					return err
+				}
+			}
+			record, err := w.ProjectRecord(ctx, tracker.ProjectID("retired_"+org))
+			if err != nil {
+				return err
+			}
+			return w.RetireProject(ctx, record.Core.ID, record.Settings.Revision, time.Now().UTC())
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		other := tracker.OrganizationID("org_second")
+		if org == other {
+			other = "org_first"
+		}
+		for _, test := range []struct {
+			name string
+			want tracker.ProjectID
+		}{
+			{"example project", tracker.ProjectID("shared_" + org)},
+			{"EXAMPLE PROJECT", tracker.ProjectID("shared_" + org)},
+			{"Only " + string(org), tracker.ProjectID("own_" + org)},
+			{"Only " + string(other), ""},
+			{"Retired Project", ""},
+			{"Example", ""},
+		} {
+			if err := repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+				got, err := r.ProjectIDByName(ctx, test.name)
+				if test.want == "" {
+					if !errors.Is(err, corestore.ErrNotFound) {
+						t.Errorf("%s ProjectIDByName(%q) = %q, %v; want not found", org, test.name, got, err)
+					}
+					return nil
+				}
+				if err != nil || got != test.want {
+					t.Errorf("%s ProjectIDByName(%q) = %q, %v; want %q", org, test.name, got, err, test.want)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}

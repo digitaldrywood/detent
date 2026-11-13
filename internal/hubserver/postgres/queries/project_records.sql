@@ -9,6 +9,9 @@ ORDER BY w.board_rank,t.transition_rank;
 -- name: ResolveProjectSlug :one
 SELECT project_id FROM project_slugs WHERE organization_id=$1 AND slug=$2;
 
+-- name: ResolveProjectName :one
+SELECT id FROM projects WHERE organization_id=sqlc.arg(organization_id) AND lower(name)=lower(sqlc.arg(name)::text) AND deleted_at IS NULL ORDER BY id LIMIT 1;
+
 -- name: ReserveProjectSlug :execrows
 INSERT INTO project_slugs(organization_id,slug,project_id) VALUES($1,$2,$3)
 ON CONFLICT(organization_id,slug) DO UPDATE SET project_id=EXCLUDED.project_id WHERE project_slugs.project_id=EXCLUDED.project_id;
