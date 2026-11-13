@@ -161,13 +161,13 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 					}
 				})
 				service.Handler().ServeHTTP(response, request.WithContext(traced))
-				expectedHeartbeat := http.StatusOK
 				if test.name == "wrong project" {
-					expectedHeartbeat = http.StatusNotFound
-				}
-				requireNativeStatus(t, response, expectedHeartbeat)
-				if statements == 0 {
-					t.Fatal("heartbeat did not capture actual PostgreSQL statements")
+					requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
+				} else {
+					requireNativeStatus(t, response, http.StatusOK)
+					if statements == 0 {
+						t.Fatal("heartbeat did not capture actual PostgreSQL statements")
+					}
 				}
 				if test.name == "wrong project" {
 					if err := service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
