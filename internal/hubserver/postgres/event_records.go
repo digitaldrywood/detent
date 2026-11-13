@@ -445,6 +445,21 @@ func (s *session) Evidence(ctx context.Context, change string, after int64, limi
 	}
 	return records, nil
 }
+func (s *session) EvidenceOfKind(ctx context.Context, change, kind, version string, includeUnversioned bool, after int64, limit int) ([]eventstore.Evidence, error) {
+	if err := checkPage(limit); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.RecordListEvidenceOfKind(ctx, pgquery.RecordListEvidenceOfKindParams{OrganizationID: s.organization, ChangeID: change, Kind: kind, VersionID: version, IncludeUnversioned: includeUnversioned, After: after, PageLimit: int32(limit)})
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	records := make([]eventstore.Evidence, len(rows))
+	for i, row := range rows {
+		records[i] = evidenceRecord(row)
+	}
+	return records, nil
+}
+
 func (s *session) CurrentVersionGateEvidence(ctx context.Context, change, version string, through int64) ([]eventstore.Evidence, error) {
 	rows, err := s.db.Query(ctx, `SELECT * FROM (
 (SELECT organization_id,change_id,sequence,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,payload_format_version,review_kind,review_landing,review_session_known,review_session_id,review_session_machine,project_id,quality_at

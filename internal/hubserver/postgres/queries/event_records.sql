@@ -250,6 +250,9 @@ VALUES (sqlc.arg(organization_id), sqlc.arg(change_id), sqlc.arg(sequence), sqlc
 -- name: RecordListEvidence :many
 SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND sequence>sqlc.arg(after) ORDER BY sequence LIMIT sqlc.arg(page_limit);
 
+-- name: RecordListEvidenceOfKind :many
+SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND kind=sqlc.arg(kind) AND (coalesce(version_id,'')=sqlc.arg(version_id)::text OR sqlc.arg(include_unversioned)::boolean AND coalesce(version_id,'')='') AND sequence>sqlc.arg(after) ORDER BY sequence LIMIT sqlc.arg(page_limit);
+
 -- name: RecordLockIssue :one
 SELECT event_sequence FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR NO KEY UPDATE;
 

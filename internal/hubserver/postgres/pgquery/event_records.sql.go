@@ -3037,6 +3037,71 @@ func (q *Queries) RecordListEvidence(ctx context.Context, arg RecordListEvidence
 	return items, nil
 }
 
+const recordListEvidenceOfKind = `-- name: RecordListEvidenceOfKind :many
+SELECT organization_id, change_id, sequence, version_id, kind, source_key, actor_kind, actor_principal_id, decision, created_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, review_kind, review_landing, review_session_known, review_session_id, review_session_machine, project_id, quality_at FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND kind=$3 AND (coalesce(version_id,'')=$4::text OR $5::boolean AND coalesce(version_id,'')='') AND sequence>$6 ORDER BY sequence LIMIT $7
+`
+
+type RecordListEvidenceOfKindParams struct {
+	OrganizationID     tracker.OrganizationID
+	ChangeID           string
+	Kind               string
+	VersionID          string
+	IncludeUnversioned bool
+	After              int64
+	PageLimit          int32
+}
+
+func (q *Queries) RecordListEvidenceOfKind(ctx context.Context, arg RecordListEvidenceOfKindParams) ([]ChangeEvidence, error) {
+	rows, err := q.db.Query(ctx, recordListEvidenceOfKind,
+		arg.OrganizationID,
+		arg.ChangeID,
+		arg.Kind,
+		arg.VersionID,
+		arg.IncludeUnversioned,
+		arg.After,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChangeEvidence{}
+	for rows.Next() {
+		var i ChangeEvidence
+		if err := rows.Scan(
+			&i.OrganizationID,
+			&i.ChangeID,
+			&i.Sequence,
+			&i.VersionID,
+			&i.Kind,
+			&i.SourceKey,
+			&i.ActorKind,
+			&i.ActorPrincipalID,
+			&i.Decision,
+			&i.CreatedAt,
+			&i.PayloadObjectKey,
+			&i.PayloadSHA256,
+			&i.PayloadBytes,
+			&i.PayloadContentBytes,
+			&i.PayloadFormatVersion,
+			&i.ReviewKind,
+			&i.ReviewLanding,
+			&i.ReviewSessionKnown,
+			&i.ReviewSessionID,
+			&i.ReviewSessionMachine,
+			&i.ProjectID,
+			&i.QualityAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recordListHistoryEvent = `-- name: RecordListHistoryEvent :many
 SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, history_hidden, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND NOT history_hidden AND sequence>$4 ORDER BY sequence LIMIT $5
 `

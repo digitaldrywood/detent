@@ -308,6 +308,7 @@ type Reader interface {
 	Versions(context.Context, string, int64, int) ([]Version, error)
 	Version(context.Context, string, string) (Version, error)
 	Evidence(context.Context, string, int64, int) ([]Evidence, error)
+	EvidenceOfKind(context.Context, string, string, string, bool, int64, int) ([]Evidence, error)
 	EvidenceBySource(context.Context, string, string, string) (Evidence, error)
 	LinkedSource(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (LinkedSource, error)
 	LinkedSourceByURL(context.Context, tracker.ProjectID, string) (LinkedSource, error)

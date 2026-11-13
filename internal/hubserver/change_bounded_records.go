@@ -251,7 +251,7 @@ func (s *Service) readChangeRecordSection(ctx context.Context, scope hubscope.Na
 		if cursor.Section == "versions" {
 			versions, err = r.Versions(ctx, cursor.Change, cursor.After, changeLimit(args)+1)
 		} else {
-			evidence, err = r.Evidence(ctx, cursor.Change, cursor.After, changeLimit(args)+1)
+			evidence, err = r.EvidenceOfKind(ctx, cursor.Change, strings.TrimSuffix(cursor.Section, "s"), cursor.Version, cursor.Section == "discussion", cursor.After, changeLimit(args)+1)
 		}
 		return err
 	})
