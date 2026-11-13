@@ -344,7 +344,7 @@ WITH scoped AS NOT MATERIALIZED (
  SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id)
  AND version_id=sqlc.arg(version_id) AND sequence<=sqlc.arg(through) AND kind IN ('review','check')
 ), human_latest AS (
- SELECT DISTINCT ON (actor_principal_id) * FROM scoped WHERE review_kind='human' AND decision<>'commented'
+ SELECT DISTINCT ON (actor_principal_id) * FROM scoped WHERE kind='review' AND review_kind='human' AND decision<>'commented'
  ORDER BY actor_principal_id,sequence DESC
 ), human_decisions AS (
  SELECT DISTINCT ON (decision) * FROM human_latest WHERE decision IN ('approved','changes_requested') ORDER BY decision,sequence DESC
@@ -353,10 +353,10 @@ WITH scoped AS NOT MATERIALIZED (
 ), recovery_humans AS (
  SELECT * FROM human_latest WHERE actor_principal_id IN (SELECT actor_principal_id FROM recovery_actors)
 ), machine_latest AS (
- SELECT DISTINCT ON (review_kind) * FROM scoped WHERE review_kind IN ('validator','implementation','security_audit') AND NOT review_landing
+ SELECT DISTINCT ON (review_kind) * FROM scoped WHERE kind='review' AND review_kind IN ('validator','implementation','security_audit') AND NOT review_landing
  ORDER BY review_kind,sequence DESC
 ), audit_block AS (
- SELECT * FROM scoped WHERE review_kind='security_audit' AND decision='changes_requested' ORDER BY sequence DESC LIMIT 1
+ SELECT * FROM scoped WHERE kind='review' AND review_kind='security_audit' AND decision='changes_requested' ORDER BY sequence DESC LIMIT 1
 ), other AS (
  SELECT * FROM scoped WHERE kind='review' AND review_kind='' ORDER BY sequence LIMIT 201
 ), checks AS (

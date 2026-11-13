@@ -1217,23 +1217,7 @@ func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope
 			return err
 		})
 	} else {
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-			var err error
-			evidence, err = r.Evidence(ctx, changeRecord.ID, 0, corestore.MaxPageSize)
-			if err != nil {
-				return err
-			}
-			if len(evidence) == corestore.MaxPageSize {
-				more, err := r.Evidence(ctx, changeRecord.ID, evidence[len(evidence)-1].Sequence, 1)
-				if err != nil {
-					return err
-				}
-				if len(more) != 0 {
-					return corestore.ErrInvalidPage
-				}
-			}
-			return nil
-		})
+		evidence, priorApproval, err = s.readCurrentChangeEvidence(ctx, scope, content, change.ID, version, changeRecord.EvidenceSequence)
 	}
 	if err != nil {
 		return tracker.ChangeDetail{}, hubapi.ProjectRecordError(err)
@@ -1526,4 +1510,65 @@ func (s *Service) loadChangeExternalRecord(ctx context.Context, scope hubscope.N
 		detail.Summary.ExternalReview = "snapshot: " + observed.Reviews.Decision
 	}
 	return nil
+}
+
+func (s *Service) readCurrentChangeEvidence(ctx context.Context, scope hubscope.NativeScope, content *eventstore.Content, change string, version tracker.ChangeVersion, through int64) ([]eventstore.Evidence, bool, error) {
+	checks := make([]string, 0, len(version.Checks))
+	for _, check := range version.Checks {
+		checks = append(checks, check.CheckRunID)
+	}
+	var evidence []eventstore.Evidence
+	var candidate eventstore.Evidence
+	found := false
+	before := through + 1
+	for range corestore.MaxPageSize + 1 {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			reader, ok := r.(eventstore.CurrentChangeEvidenceReader)
+			if !ok {
+				return corestore.ErrInvalidPage
+			}
+			if evidence == nil {
+				var err error
+				evidence, err = reader.CurrentChangeEvidence(ctx, change, version.ID, through, checks)
+				if err != nil {
+					return err
+				}
+				if evidence == nil {
+					evidence = []eventstore.Evidence{}
+				}
+			}
+			var err error
+			candidate, err = reader.PriorApprovalCandidate(ctx, change, version.ID, through, before)
+			found = err == nil
+			if errors.Is(err, corestore.ErrNotFound) {
+				return nil
+			}
+			return err
+		})
+		if err != nil || !found {
+			return evidence, false, err
+		}
+		if candidate.OrganizationID != scope.Organization || candidate.ChangeID != change || candidate.Kind != "review" || candidate.Decision != "approved" || candidate.Sequence >= before {
+			return nil, false, corestore.ErrTenantMismatch
+		}
+		if candidate.ReviewKind == "human" {
+			return evidence, true, nil
+		}
+		raw, err := content.Evidence(ctx, candidate)
+		if err != nil {
+			return nil, false, err
+		}
+		var review tracker.ChangeReview
+		if err := json.Unmarshal(raw, &review); err != nil {
+			return nil, false, err
+		}
+		if review.VersionID != hubapi.ValueOrEmpty(candidate.VersionID) || review.Decision != candidate.Decision || review.Actor.Kind != candidate.ActorKind || review.Actor.PrincipalID != candidate.ActorPrincipalID || !sameTypedEvidenceTime(review.CreatedAt, candidate.CreatedAt) {
+			return nil, false, eventstore.ErrInvalidRecord
+		}
+		if review.SecurityAudit == nil && review.ImplementationReview == nil && review.Validator == nil {
+			return evidence, true, nil
+		}
+		before = candidate.Sequence
+	}
+	return nil, false, corestore.ErrInvalidPage
 }

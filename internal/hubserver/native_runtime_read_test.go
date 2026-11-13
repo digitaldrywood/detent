@@ -314,7 +314,46 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 			}
 			previous = history
 			evidence, statements := readRuntime(t, t.Context())
-			full := f.detail(t)
+			var full tracker.ChangeDetail
+			if history+1 <= corestore.MaxPageSize {
+				full = f.detail(t)
+			} else {
+				summary, err := f.service.selectedCurrentChangeSummary(t.Context(), scope, f.issue.WorkItemID, f.change.ID, f.service.config.Clock())
+				if err != nil {
+					t.Fatal(err)
+				}
+				full.Summary = summary
+				if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+					for after := int64(0); ; {
+						page, err := r.Versions(t.Context(), f.change.ID, after, corestore.MaxPageSize)
+						if err != nil || len(page) == 0 {
+							return err
+						}
+						for _, row := range page {
+							full.Versions = append(full.Versions, tracker.ChangeVersion{ID: row.ID})
+						}
+						after = page[len(page)-1].Number
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+					for after := int64(0); ; {
+						page, err := r.Evidence(t.Context(), f.change.ID, after, corestore.MaxPageSize)
+						if err != nil || len(page) == 0 {
+							return err
+						}
+						for _, row := range page {
+							if row.Kind == "discussion" {
+								full.Discussion = append(full.Discussion, tracker.ChangeDiscussion{VersionID: hubapi.ValueOrEmpty(row.VersionID)})
+							}
+						}
+						after = page[len(page)-1].Sequence
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			want := full.Summary
 			want.Messages = nil
 			if !reflect.DeepEqual(evidence.Change.Summary, want) || evidence.Change.Change.CurrentVersion != version.ID || len(full.Versions) != history+1 || len(full.Discussion) != history || evidence.Change.Versions != nil || evidence.Change.Reviews != nil || evidence.Change.Checks != nil || evidence.Change.Discussion != nil {
@@ -343,6 +382,9 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 				}
 				var raw []byte
 				_, err = tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(scope.Organization))
+				if err == nil {
+					_, err = tx.Exec(t.Context(), "SET LOCAL enable_seqscan = off")
+				}
 				if err == nil {
 					err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement.query, statement.args...).Scan(&raw)
 				}

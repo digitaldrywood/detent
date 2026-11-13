@@ -360,6 +360,11 @@ type ChangeRecoveryReader interface {
 	ChangePublicationProvenance(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, tracker.NativeRunData) (bool, error)
 }
 
+type CurrentChangeEvidenceReader interface {
+	CurrentChangeEvidence(context.Context, string, string, int64, []string) ([]Evidence, error)
+	PriorApprovalCandidate(context.Context, string, string, int64, int64) (Evidence, error)
+}
+
 type ChangeGateEvidenceReader interface {
 	CurrentVersionGateEvidence(context.Context, string, string, int64) ([]Evidence, error)
 }

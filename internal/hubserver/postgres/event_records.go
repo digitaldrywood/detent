@@ -1004,12 +1004,24 @@ func (s *session) RecoveryChangeEvidence(ctx context.Context, change, version st
 }
 
 func (s *session) changeSummaryEvidence(ctx context.Context, change, version string, through int64, checks []string) ([]eventstore.Evidence, pgquery.RecordChangePriorApprovalRow, error) {
+	records, err := s.CurrentChangeEvidence(ctx, change, version, through, checks)
+	if err != nil {
+		return nil, pgquery.RecordChangePriorApprovalRow{}, err
+	}
+	prior, err := s.queries.RecordChangePriorApproval(ctx, pgquery.RecordChangePriorApprovalParams{OrganizationID: s.organization, ChangeID: change, VersionID: new(version), Through: through})
+	if err != nil {
+		return nil, pgquery.RecordChangePriorApprovalRow{}, mapError(ctx, err)
+	}
+	return records, prior, nil
+}
+
+func (s *session) CurrentChangeEvidence(ctx context.Context, change, version string, through int64, checks []string) ([]eventstore.Evidence, error) {
 	if len(checks) > corestore.MaxPageSize {
-		return nil, pgquery.RecordChangePriorApprovalRow{}, corestore.ErrInvalidPage
+		return nil, corestore.ErrInvalidPage
 	}
 	rows, err := s.queries.RecordChangeSummaryEvidence(ctx, pgquery.RecordChangeSummaryEvidenceParams{OrganizationID: s.organization, ChangeID: change, VersionID: new(version), Through: through, CheckIds: checks})
 	if err != nil {
-		return nil, pgquery.RecordChangePriorApprovalRow{}, mapError(ctx, err)
+		return nil, mapError(ctx, err)
 	}
 	unknown := 0
 	for _, row := range rows {
@@ -1018,17 +1030,27 @@ func (s *session) changeSummaryEvidence(ctx context.Context, change, version str
 		}
 	}
 	if unknown > corestore.MaxPageSize {
-		return nil, pgquery.RecordChangePriorApprovalRow{}, corestore.ErrInvalidPage
-	}
-	prior, err := s.queries.RecordChangePriorApproval(ctx, pgquery.RecordChangePriorApprovalParams{OrganizationID: s.organization, ChangeID: change, VersionID: new(version), Through: through})
-	if err != nil {
-		return nil, pgquery.RecordChangePriorApprovalRow{}, mapError(ctx, err)
+		return nil, corestore.ErrInvalidPage
 	}
 	records := make([]eventstore.Evidence, len(rows))
 	for i, row := range rows {
 		records[i] = evidenceRecord(pgquery.ChangeEvidence(row))
 	}
-	return records, prior, nil
+	return records, nil
+}
+
+func (s *session) PriorApprovalCandidate(ctx context.Context, change, version string, through, before int64) (eventstore.Evidence, error) {
+	rows, err := s.db.Query(ctx, `SELECT organization_id,change_id,sequence,version_id,kind,source_key,actor_kind,actor_principal_id,decision,created_at,payload_object_key,payload_sha256,payload_bytes,payload_content_bytes,payload_format_version,review_kind,review_landing,review_session_known,review_session_id,review_session_machine,project_id,quality_at
+FROM change_evidence WHERE organization_id=$1 AND change_id=$2 AND kind='review' AND decision='approved' AND review_kind IN ('human','')
+AND sequence<=$4 AND sequence<$5 AND version_id IS DISTINCT FROM $3 ORDER BY sequence DESC LIMIT 1`, s.organization, change, version, through, before)
+	if err != nil {
+		return eventstore.Evidence{}, mapError(ctx, err)
+	}
+	row, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[pgquery.ChangeEvidence])
+	if err != nil {
+		return eventstore.Evidence{}, mapError(ctx, err)
+	}
+	return evidenceRecord(row), nil
 }
 
 func (s *session) ChangePublicationCheckpoints(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, reference tracker.NativeChangeReference) ([]eventstore.Event, error) {
