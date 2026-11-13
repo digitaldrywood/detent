@@ -6,10 +6,12 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	hubapi "github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -25,6 +27,12 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 	t.Helper()
 	organization := f.service.config.Hosted.OrganizationID
 	runner := pilotHostedRunner(t, f, 3)
+	server := httptest.NewServer(f.service.Handler())
+	t.Cleanup(server.Close)
+	client, err := hubapi.New(hubapi.Config{URL: server.URL, TokenSource: func() string { return runner.Credential }, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
 	versions := make([]pilotReviewVersion, 0, 2)
 	for _, project := range []string{f.project, f.privateProject} {
 		base := "/api/v2/organizations/" + organization + "/projects/" + project
@@ -57,10 +65,35 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 		requireNativeStatus(t, response, http.StatusOK)
 		var lease tracker.NativeLease
 		decodeHubResponse(t, response, &lease)
+		native, err := client.Native(tracker.OrganizationID(organization), tracker.ProjectID(project))
+		if err != nil {
+			t.Fatal(err)
+		}
+		recordSession := func(role string) int64 {
+			t.Helper()
+			ctx := hubapi.WithMutationAuthority(t.Context(), native.Scope(), lease, nil)
+			sessions := hubapi.NewRunnerSessions(native)
+			now := f.service.config.now()
+			id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(issue.WorkItemID), StartedAt: now, AgentRole: role, Model: "example-model"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: now, FinalState: "completed"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessions.RecordUsageEvent(ctx, store.UsageEvent{IssueID: string(issue.WorkItemID), SessionID: id, StartedAt: now, FinishedAt: now, Outcome: "completed"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sessions.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{IssueID: string(issue.WorkItemID), SessionID: id, StartedAt: now, FinishedAt: now, PhaseType: store.WorkflowPhaseTypeAgentSession, PhaseName: "agent_active", Status: "completed"}); err != nil {
+				t.Fatal(err)
+			}
+			return id
+		}
 		start := nativeStartedEvent(lease)
 		start.Data.Identity.Role = "code"
 		start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 41}}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", runner.Credential, start), http.StatusOK)
+		start.Data.Runtime.Activity.SessionID = recordSession("code")
 		response = f.setupRequest(t, "owner", http.MethodPost, path+"/changes", tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "pilot-review-change"}, Title: "Pilot policy Change Request"})
 		requireNativeStatus(t, response, http.StatusOK)
 		var change tracker.ChangeRequest
@@ -85,7 +118,7 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 		if got := pilotChangeSummary(t, f, path); got.Status != "needs_evidence" || got.Checks != "success" {
 			t.Fatalf("missing validator marked ready: %+v", got)
 		}
-		validator := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "pilot-validator", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff")), CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "pilot_review_test.go:TestPilotHostedTwoRepositoryReadiness", Behavior: "A separate validator session reviews each repository version"}}}}
+		validator := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "pilot-validator", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: recordSession("validator"), VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: version.Source.DiffSHA256, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "pilot_review_test.go:TestPilotHostedTwoRepositoryReadiness", Behavior: "A separate validator session reviews each repository version"}}}}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", runner.Credential, validator), http.StatusOK)
 		finish := start
 		finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 2, "succeeded"
