@@ -141,6 +141,10 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		s.config.Logger.Warn("project configuration payload unavailable", "runner_id", credential.Runner.RunnerID, "error", err)
 		configuration = nil
 	}
+	admissionDecisions, err := s.prepareRunnerAdmissionDecisions(ctx, credential, request.ProjectConfiguration)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	var snapshot runnerauth.RoutingSnapshot
 	var acknowledgments []hostmetrics.Acknowledgment
 	dispatchChanged := false
@@ -163,6 +167,9 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		receivedAt := s.config.Clock().UTC()
 		if identity.OrganizationID != credential.Runner.OrganizationID || identity.RunnerID != credential.Runner.RunnerID || identity.MachineID != credential.Runner.MachineID || identity.RemovedAt != nil || identity.TokenID != credential.ID || !identity.ExpiresAt.After(receivedAt) || current.OrganizationID != identity.OrganizationID || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, receivedAt) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
 			return hubscope.RunnerUnauthorized()
+		}
+		if err := appendRunnerAdmissionDecisions(ctx, w, identity, admissionDecisions, receivedAt); err != nil {
+			return err
 		}
 		if request.Skills != nil || request.CheckoutRepository != nil {
 			if projectID == "" {
