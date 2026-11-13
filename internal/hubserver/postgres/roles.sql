@@ -4,19 +4,39 @@ CREATE EXTENSION IF NOT EXISTS btree_gin;
 DO $roles$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_migration_v2') THEN
-        CREATE ROLE detent_migration_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        BEGIN
+            CREATE ROLE detent_migration_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        EXCEPTION WHEN duplicate_object OR unique_violation THEN
+            NULL;
+        END;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_runtime_v2') THEN
-        CREATE ROLE detent_runtime_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        BEGIN
+            CREATE ROLE detent_runtime_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        EXCEPTION WHEN duplicate_object OR unique_violation THEN
+            NULL;
+        END;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_platform_v2') THEN
-        CREATE ROLE detent_platform_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        BEGIN
+            CREATE ROLE detent_platform_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        EXCEPTION WHEN duplicate_object OR unique_violation THEN
+            NULL;
+        END;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_search_reader_v2') THEN
-        CREATE ROLE detent_search_reader_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        BEGIN
+            CREATE ROLE detent_search_reader_v2 NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        EXCEPTION WHEN duplicate_object OR unique_violation THEN
+            NULL;
+        END;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'detent_local_bootstrap_reader_v2') THEN
-        CREATE ROLE detent_local_bootstrap_reader_v2 NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        BEGIN
+            CREATE ROLE detent_local_bootstrap_reader_v2 NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+        EXCEPTION WHEN duplicate_object OR unique_violation THEN
+            NULL;
+        END;
     END IF;
     IF EXISTS (
         SELECT 1 FROM pg_roles

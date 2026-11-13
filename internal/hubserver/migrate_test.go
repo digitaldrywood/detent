@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io/fs"
 	"os"
 	"reflect"
 	"slices"
@@ -17,7 +18,6 @@ import (
 
 func TestHubMigrationVerificationScope(t *testing.T) {
 	t.Parallel()
-	fixture := hubPostgresMigrationFixture(t)
 	for _, test := range []struct {
 		name                                           string
 		valid, missingHistory, outOfOrder, newerSchema bool
@@ -30,13 +30,14 @@ func TestHubMigrationVerificationScope(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			admin := fixture.Database(t)
+			admin := postgresStartupTemplate.Database(t)
 			migrationConnection := startupConnection(t, admin, "detent_migration_v2", "")
 			runtimeConnection := startupConnection(t, admin, "detent_runtime_v2", "")
 			const seedVersion int64 = 20261005115959
 			const firstVersion int64 = 20261005120000
 			const secondVersion int64 = 20261005120001
-			files := fstest.MapFS{"20261005115959_seed.sql": {Data: []byte("-- +goose Up\nCREATE TABLE migration_seed(id integer PRIMARY KEY);\nINSERT INTO migration_seed VALUES(1),(2);\nGRANT SELECT ON goose_db_version TO detent_runtime_v2;\n")}}
+			files := hubMigrationFiles(t)
+			files["20261005115959_seed.sql"] = &fstest.MapFile{Data: []byte("-- +goose Up\nCREATE TABLE migration_seed(id integer PRIMARY KEY);\nINSERT INTO migration_seed VALUES(1),(2);\n")}
 			if err := postgres.Migrate(t.Context(), migrationConnection, files); err != nil {
 				t.Fatal(err)
 			}
@@ -63,9 +64,8 @@ func TestHubMigrationVerificationScope(t *testing.T) {
 				if err := admin.QueryRowContext(t.Context(), "SELECT to_regclass('public.migration_child') IS NULL").Scan(&absent); err != nil || !absent {
 					t.Fatalf("failed migration retained its table: absent=%t error=%v", absent, err)
 				}
-				var version int64
-				if err := admin.QueryRowContext(t.Context(), "SELECT max(version_id) FROM goose_db_version WHERE is_applied").Scan(&version); err != nil || version != previousVersion {
-					t.Fatalf("failed migration advanced schema: version=%d error=%v", version, err)
+				if version := hubSyntheticMigrationVersion(t, admin); version != previousVersion {
+					t.Fatalf("failed migration advanced schema: version=%d", version)
 				}
 				migration.Data = append(migration.Data, []byte("INSERT INTO migration_parent VALUES(1),(2);\n")...)
 				err = postgres.Migrate(t.Context(), migrationConnection, files)
@@ -73,9 +73,8 @@ func TestHubMigrationVerificationScope(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var current int64
-			if err := admin.QueryRowContext(t.Context(), "SELECT max(version_id) FROM goose_db_version WHERE is_applied").Scan(&current); err != nil || current != wantVersion {
-				t.Fatalf("migration version=%d error=%v", current, err)
+			if current := hubSyntheticMigrationVersion(t, admin); current != wantVersion {
+				t.Fatalf("migration version=%d", current)
 			}
 			if _, err := admin.ExecContext(t.Context(), "INSERT INTO migration_child VALUES(999)"); err == nil {
 				t.Fatal("migration disabled foreign key enforcement")
@@ -269,6 +268,36 @@ func TestHubTimestampMigrations(t *testing.T) {
 			}
 		})
 	}
+}
+
+func hubMigrationFiles(t *testing.T) fstest.MapFS {
+	t.Helper()
+	migrations, err := fs.Sub(migrationFiles, "postgres/migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := fstest.MapFS{}
+	entries, err := fs.ReadDir(migrations, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		data, err := fs.ReadFile(migrations, entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[entry.Name()] = &fstest.MapFile{Data: data}
+	}
+	return files
+}
+
+func hubSyntheticMigrationVersion(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+	var version int64
+	if err := db.QueryRowContext(t.Context(), "SELECT coalesce(max(version_id),0) FROM goose_db_version WHERE is_applied AND version_id BETWEEN 20261005000000 AND 20261005235959").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	return version
 }
 
 func hubPostgresMigrationFixture(t *testing.T) *pgtest.Template {
