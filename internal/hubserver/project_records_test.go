@@ -217,7 +217,7 @@ func selectPostgresHubTestOrganization(service *Service, organization tracker.Or
 
 func TestPostgresProjectRecords(t *testing.T) {
 	repository := projectRecordPostgres(t)
-	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
+	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	for _, orgName := range []string{"First organization", "Second organization"} {
 		t.Run(orgName, func(t *testing.T) {
 			org, err := service.createNativeOrganizationFor(t.Context(), orgName)
