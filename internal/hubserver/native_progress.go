@@ -41,6 +41,13 @@ func nativeProgressActor(scope nativeScope) bool {
 	return scope.sourceActor != nil && scope.sourceActor.Kind == "machine" && scope.sourceActor.Agent == "progress-check"
 }
 
+func (o *nativeProgressOwner) AuthorizeProgressDefect(ctx context.Context, w tenantstore.Writer, owner any, scope nativeScope, leaseID tracker.LeaseID, fencingToken tracker.FencingToken) error {
+	if owner != any(o.service) || o.scope.organization != scope.organization || o.scope.project != scope.project || o.scope.credential.ID != scope.credential.ID || o.leaseID != leaseID || o.fencingToken != fencingToken {
+		return runnerUnauthorized()
+	}
+	return o.validateProgressLeaseWriter(ctx, w)
+}
+
 func (o nativeProgressOwner) validateProgressLeaseWriter(ctx context.Context, writer tenantstore.Writer) error {
 	if o.scope.credential.Scope != apiScopeWorker {
 		return nil

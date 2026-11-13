@@ -229,8 +229,7 @@ func postgresStartupHealthFixture(t *testing.T, configure ...func(*Config)) (*sq
 func openPostgresStartupHealth(t *testing.T, cfg Config) *startupHealth {
 	t.Helper()
 	progress := &startupHealth{config: cfg}
-	cfg.startup = progress
-	service, err := Open(t.Context(), cfg)
+	service, err := openService(t.Context(), cfg, progress)
 	if err != nil {
 		t.Fatal(err)
 	}

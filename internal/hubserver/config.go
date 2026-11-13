@@ -52,7 +52,6 @@ var (
 
 type Config struct {
 	runMaintenance                 func(context.Context, *hubmaintenance.Scheduler, func(error)) error
-	startup                        *startupHealth
 	migrate                        func(context.Context, *sql.DB, *slog.Logger) (int64, error)
 	TenantRepository               tenantstore.Repository
 	ChangeVersionAuthority         ChangeVersionAuthority

@@ -1337,11 +1337,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope nativeSco
 			}
 			if request, defect := input.(tracker.CreateIssue); defect && scope.credential.Scope == apiScopeWorker {
 				if nativeProgressActor(scope) && scope.progressOrigin != nil {
-					origin := scope.progressOrigin
-					if origin.service != s || origin.scope.organization != scope.organization || origin.scope.project != scope.project || origin.scope.credential.ID != scope.credential.ID || origin.leaseID != command.LeaseID || origin.fencingToken != command.FencingToken {
-						return runnerUnauthorized()
-					}
-					if err := origin.validateProgressLeaseWriter(ctx, w); err != nil {
+					if err := scope.progressOrigin.AuthorizeProgressDefect(ctx, w, s, scope, command.LeaseID, command.FencingToken); err != nil {
 						return err
 					}
 				} else {

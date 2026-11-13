@@ -63,7 +63,7 @@ type nativeScope struct {
 	actionComment         string
 	scheduledRepair       *nativeScheduledRepair
 	sourceActor           *tracker.Actor
-	progressOrigin        *nativeProgressOwner
+	progressOrigin        progressDefectOrigin
 	organization          tracker.OrganizationID
 	project               tracker.ProjectID
 	credential            apiCredential
@@ -72,6 +72,10 @@ type nativeScope struct {
 	managedRunner         string
 	managedRunnerScope    string
 	managedRunnerProjects []tracker.ProjectID
+}
+
+type progressDefectOrigin interface {
+	AuthorizeProgressDefect(ctx context.Context, w tenantstore.Writer, owner any, scope nativeScope, leaseID tracker.LeaseID, fencingToken tracker.FencingToken) error
 }
 
 type nativeError struct {

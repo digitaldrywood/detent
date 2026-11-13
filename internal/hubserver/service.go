@@ -186,6 +186,10 @@ func bootstrapLocalOrganization(ctx context.Context, repository *postgres.Reposi
 }
 
 func Open(ctx context.Context, cfg Config) (*Service, error) {
+	return openService(ctx, cfg, nil)
+}
+
+func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Service, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -208,8 +212,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.startup != nil {
-		cfg.startup.schema.Store(&MigrationHealth{SchemaVersion: database.schemaVersion, SchemaFingerprint: database.schemaFingerprint})
+	if startup != nil {
+		startup.schema.Store(&MigrationHealth{SchemaVersion: database.schemaVersion, SchemaFingerprint: database.schemaFingerprint})
 	}
 	database.now = cfg.now
 	database.newLeaseID = cfg.newLeaseID
@@ -368,8 +372,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		workerCancel()
 		close(service.workerDone)
 		service.ready.Store(true)
-		if cfg.startup != nil {
-			cfg.startup.auth.Store(service)
+		if startup != nil {
+			startup.auth.Store(service)
 		}
 		return service, nil
 	}
@@ -382,8 +386,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.startIssueMailer()
 	service.dashboard = newDashboardDelivery(service)
 	service.dashboard.start()
-	if cfg.startup != nil {
-		cfg.startup.auth.Store(service)
+	if startup != nil {
+		startup.auth.Store(service)
 	}
 	return service, nil
 }
@@ -431,7 +435,6 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		postgresConfig.ObserveSchemaValidation = progress.running.Store
 		cfg.Postgres = &postgresConfig
 	}
-	cfg.startup = progress
 	var service *Service
 	server := &http.Server{Handler: progress, ReadHeaderTimeout: defaultHTTPReadHeaderTimeout, IdleTimeout: defaultHTTPIdleTimeout}
 	serveDone := make(chan struct{})
@@ -464,7 +467,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 			resultErr = errors.Join(resultErr, service.CloseContext(cleanup))
 		}
 	}()
-	service, err = Open(ctx, cfg)
+	service, err = openService(ctx, cfg, progress)
 	if err != nil {
 		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 			return nil
