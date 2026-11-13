@@ -72,6 +72,7 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 	}
 	pgtransport.Configure(config)
 	config.MaxConns = 3
+	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return false }
 	var exchanges atomic.Int64
 	dial := config.ConnConfig.DialFunc
 	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
