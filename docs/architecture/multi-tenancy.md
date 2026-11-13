@@ -14,7 +14,7 @@ A tenant is one customer organization. Detent is one program that serves all of 
 
 - One Hub process serves many organizations. Later, a small fleet of identical Hub processes (shards) each serves the organizations the registry assigns to it, the way a deployment stamp serves a set of tenants.
 - The tenant is an attribute of a request, a job and a row. It is never an attribute of a process, binary, configuration file, connection pool, timer or directory.
-- A verified scope is built once at the edge and passed explicitly. Authority is rechecked where it matters: at writes, at publication and at lifecycle changes.
+- A verified scope is built once, at the request edge or by the shared scheduler, and passed explicitly. Current state, generation and membership are checked before reads and again where writes commit.
 - PostgreSQL row security separates tenants' rows. It cannot tell whether application code bound the right organization; the verified scope does that.
 - Background work runs through one shared scheduler per process with a fixed per-tick budget.
 - Fairness and failure handling are bounded and tested, not assumed.
@@ -27,7 +27,7 @@ A tenant is one customer organization. Detent is one program that serves all of 
 1. No per-tenant process. Nothing starts, supervises or keeps an operating-system process, binary or container per organization. The only dedicated placement is the rule 20 exception, which uses the same shard machinery. Ratcheted by `TestRepositoryTenancy`; the check sees direct launch syntax only, so review is the boundary.
 2. Physical pools do not grow with tenants. Count distinct physical pools: one runtime reader and writer pair per Hub process (they may be one pool), the entry pool, and a migration pool that runs outside serving. A wrapper around an existing pool is not a new pool. `MaxConns` is a ceiling, not a count of open connections; the server-side ceiling is the sum of `MaxConns` over physical pools. The process host owns pool lifecycle: adding or removing an organization never constructs or closes a physical pool, wherever the factory lives.
 3. No per-tenant timer or idle goroutine. An idle tenant costs no wakeups. A goroutine works for one tenant only while it serves a request, runs a scheduler step, runs an admitted asynchronous job that has a deadline, is cancelled with its owner and is joined before shutdown, or serves an admitted stream with a memory bound.
-4. One verified scope. A single constructor at the edge builds the tenant scope from the authenticated principal: the verified entry assertion (audience and allocation generation) or a verified credential. A path organization must equal the audience. The scope is immutable and passed explicitly; nothing reads a process-wide "current organization", and a bare organization ID string is not proof of authority. Membership, grants and generation are checked again where a write commits and where a result is published. During migration, one process may hold several tenant-bound services, each built for one organization and never re-pointed per request.
+4. One verified scope. Scopes are built only in one narrow authority package: its request constructor works from the authenticated principal (the verified entry assertion's audience and allocation generation, or a verified credential), and its scheduler constructor works from the registry page the shared scheduler selected. A path organization must equal the audience. The scope is immutable and passed explicitly, and every tenant store entry point rejects a zero or invalid scope; nothing reads a process-wide "current organization", and a bare organization ID string is not proof of authority. Current registry state, generation and membership are checked when the scope is built, before any read, and again inside the transaction where a write commits. An external publication is authorized and reserved by a transaction; the external call runs after it, outside any transaction, under the existing publication owner (rule 15). During migration, one process may hold several tenant-bound services, each built for one organization and never re-pointed per request.
 5. Database isolation. Tenant tables lead their primary key with `organization_id`, use foreign keys that include `organization_id`, enable and force row security, and use a policy with both `USING` and `WITH CHECK` on the transaction-local organization. The runtime login is `NOSUPERUSER` and `NOBYPASSRLS`, owns no tables, and is not a member of the migration or platform roles. A missing binding fails closed. The only paths outside tenant policies are named: the `platform` schema used by the entry, migration administration, and `SECURITY DEFINER` functions with a fixed `search_path` and narrow grants (search reader, operator metadata page, designated local organization lookup). A new exception needs review. Effective policies, grants, views, partitions and function owners are audited against migrated PostgreSQL, not inferred from migration text.
 6. Pooled connection reuse. A pooled runtime connection carries no session-level tenant state: no `SET` or `set_config(..., false)` of tenant settings, no session advisory locks, temporary tables, `LISTEN` or per-tenant prepared statements. The organization is bound with `set_config(..., true)` inside the transaction. Tests prove a connection reused after commit, rollback and cancellation sees no earlier binding.
 7. Configuration. Process configuration holds infrastructure defaults shared by every organization. Organization-specific settings (plan, billing binding, identity-provider organization, workspace policy, overrides) live in typed rows keyed by organization and revised by revision or generation. No file or directory owns an organization's configuration or lifecycle. Temporary work files for a job are allowed under [INV-17](../invariants.md#inv-17--runners-are-stateless-like-github-actions-runners) and never act as authority.
@@ -38,7 +38,7 @@ A tenant is one customer organization. Detent is one program that serves all of 
 12. Shared resources. No shared lock, connection or transaction is held across a network call or a walk over many objects, and no long object or network work hides inside a shared transaction ([INV-21](../invariants.md#inv-21--designs-hold-at-ten-thousand-tenants-and-runners)).
 13. Bounded work. Cross-tenant work selects a bounded page (and rejects a page longer than requested), keeps no unbounded queue, gives each step a deadline and runs at most a fixed number of steps at once. Slot acquisition honors cancellation. A semaphore alone bounds concurrency, not total work.
 14. Startup and readiness. Process startup and readiness are bounded independently of the number of organizations and of any one unavailable organization. Nothing enumerates or contacts every organization before serving, and health reports bounded aggregates.
-15. Lifecycle fencing. Organization state and generation are checked where a mutation commits and where a result is published externally, through the existing owners. Deleting or reassigning an organization cancels and drains its jobs and streams, rejects late results, and refuses cache entries or runtime revisions from an older generation. A check only at request verification races deletion; cancellation alone cannot fence a late write.
+15. Lifecycle fencing. Organization state and generation are checked inside the transaction where a mutation commits. External publication has no shared transaction with PostgreSQL: a transaction authorizes and reserves it, the call runs outside the transaction, and the existing publication owner handles generation changes and uncertain outcomes through its receipt and reconciliation protocol. A database check cannot atomically fence an external system that has no fencing facility. Deleting or reassigning an organization cancels and drains its jobs and streams, rejects late results, and refuses cache entries or runtime revisions from an older generation. A check only at request verification races deletion; cancellation alone cannot fence a late write.
 16. Export and deletion. Export and deletion authorize the scope, page their work, fence writers and jobs, cover object storage and caches, and honor retention and backup obligations.
 17. Schema migration. Migration credentials stay outside serving processes. Per-tenant backfills are bounded, resumable and run under their existing owners. Each change states how old and new processes behave against the same schema during rollout.
 18. Observability. Logs and traces carry the organization ID as a protected attribute and never carry customer content or secrets. Metric labels have bounded cardinality: no issue, user or request IDs as labels.
@@ -49,7 +49,7 @@ A tenant is one customer organization. Detent is one program that serves all of 
 
 Standard library first. `golang.org/x/sync` and `golang.org/x/time` are already direct dependencies; nothing below needs another package. Names are generic.
 
-The scope type is built by one constructor and passed as a value. Context values are only for request-scoped data with an unexported key type; a context is never stored in a struct, and the scope is never a package variable.
+The scope type lives in a narrow authority package that holds only its constructors and accessors, and it is passed as a value. Context values are only for request-scoped data with an unexported key type; a context is never stored in a struct, and the scope is never a package variable.
 
 ```go
 type Scope struct {
@@ -58,7 +58,7 @@ type Scope struct {
 	principal    string
 }
 
-func (e *Edge) Verify(r *http.Request) (Scope, error) {
+func (e *Edge) Verify(ctx context.Context, r *http.Request) (Scope, error) {
 	claims, err := e.assertions.Verify(r)
 	if err != nil {
 		return Scope{}, err
@@ -66,11 +66,22 @@ func (e *Edge) Verify(r *http.Request) (Scope, error) {
 	if r.PathValue("organization") != claims.Audience {
 		return Scope{}, errScopeMismatch
 	}
-	return Scope{organization: tracker.OrganizationID(claims.Audience), generation: claims.Generation, principal: claims.Subject}, nil
+	current, err := e.registry.Organization(ctx, claims.Audience)
+	if err != nil || current.State != "ready" || current.Generation != claims.Generation {
+		return Scope{}, errScopeStale
+	}
+	if err := e.members.Require(ctx, current.ID, claims.Subject); err != nil {
+		return Scope{}, err
+	}
+	return Scope{organization: current.ID, generation: current.Generation, principal: claims.Subject}, nil
+}
+
+func (s Scope) Valid() bool {
+	return s.organization != "" && s.generation > 0
 }
 ```
 
-Fields are unexported so only the constructor can make a scope. Store calls receive `scope.organization` through the tenant store; writes and publication recheck generation and membership inside the committing transaction.
+Unexported fields stop code outside the authority package from filling in a scope; code inside that package can still build one, and any caller can declare a zero value. So the package stays small, and every tenant store entry point rejects a zero or invalid scope before it opens a transaction. Registry state, generation and membership are checked in `Verify` before any read, because a recheck at write time does not protect a stale read. The scheduler's constructor in the same package builds job scopes from the registry page it selected; today `hubmaintenance` binds the selected tenant and generation into each step through `Budget.Context` and checks them with `RequireTenant`.
 
 Cross-tenant background work is one loop per process. `hubmaintenance.Scheduler` (`internal/hubmaintenance`) already has the shape: a cursor over a registry page, a per-tick tenant limit, a fixed worker count, per-tenant byte and item budgets, generation checks and jittered sleep. New periodic work becomes a feature of that scheduler, not a new ticker. A tick looks like this:
 
@@ -89,6 +100,7 @@ func (s *Sweeper) Tick(ctx context.Context) error {
 		failures []error
 		slots    = make(chan struct{}, workers)
 	)
+	dispatched := 0
 dispatch:
 	for _, tenant := range page {
 		select {
@@ -96,6 +108,7 @@ dispatch:
 		case <-ctx.Done():
 			break dispatch
 		}
+		dispatched++
 		wg.Go(func() {
 			defer func() { <-slots }()
 			stepCtx, cancel := context.WithTimeout(ctx, s.stepDeadline)
@@ -108,12 +121,18 @@ dispatch:
 		})
 	}
 	wg.Wait()
-	s.cursor = nextCursor(page, tenantsPerTick)
+	if dispatched > 0 {
+		s.cursor = page[dispatched-1].Organization
+	}
+	if dispatched == len(page) && len(page) < tenantsPerTick {
+		s.cursor = ""
+		s.nextFeature()
+	}
 	return errors.Join(append(failures, ctx.Err())...)
 }
 ```
 
-`errgroup.Group.SetLimit` bounds concurrency the same way. Do not use `errgroup.WithContext` across tenants: its first error cancels the others.
+The cursor advances only through tenants that were dispatched, and it wraps to the start (and the next feature) only after a short page was dispatched completely, so a cancelled tick never skips a tenant's turn. `hubmaintenance.Scheduler.Tick` follows the same rule. `errgroup.Group.SetLimit` bounds concurrency too, but a `Go` call blocked on the limit does not observe cancellation; take a cancellation-aware slot first, as above, or use `TryGo`. Do not use `errgroup.WithContext` across tenants: its first error cancels the others.
 
 Each step and each started goroutine recovers its own panic and returns an error; it does not log. The caller that handles the error logs once.
 
@@ -211,8 +230,8 @@ Each fails at 10,000 tenants. The named code is a stable example; the current de
 
 A change that touches hosted serving, tenancy, scheduling, connection pools or background work answers each question in its Change description. "Not applicable, because ..." is an acceptable answer when the reason names why the change cannot affect that question; it never waives an applicable rule. A "no" to an applicable question, or a "yes" to question 12, needs an owner decision quoted in the description.
 
-1. Does every new path get its tenant from the verified scope constructor or the scheduler's selected tenant, passed explicitly?
-2. Are membership, grants and generation rechecked where writes commit and results are published?
+1. Does every new path get its scope from the authority package's request or scheduler constructor, passed explicitly, and do store entry points reject a zero scope?
+2. Are state, generation and membership checked before reads and inside the committing transaction, and does external publication go through its owner's reservation, receipt and reconciliation?
 3. Does every query run in a tenant transaction for exactly that organization, with no session-level tenant state?
 4. Does every new tenant table lead its primary key and foreign keys with `organization_id`, with forced row security and `USING` plus `WITH CHECK`?
 5. Is new periodic work a scheduler feature, and does every new goroutine have a deadline, cancellation, its own `recover` and a join?
@@ -229,7 +248,7 @@ A change that touches hosted serving, tenancy, scheduling, connection pools or b
 
 ## What the check does not prove
 
-`TestRepositoryTenancy` is a syntactic ratchet. It pins process and pool construction to named sites across the repository, counts hosted-path timers and process-wide organization reads as debt that only shrinks, and fails when a new site appears. It does not follow call graphs, types or runtime multiplicity: a factory called once per tenant, a renamed accessor, a goroutine per tenant or a launch behind an existing wrapper passes it. An empty debt list does not prove the migration is complete; the required tests above and review do.
+`TestRepositoryTenancy` is a syntactic ratchet. It pins process and pool construction to named sites across the repository (skipping only named scratch paths, the directories the Go toolchain ignores and named test-support packages), counts hosted-path timers and process-wide organization reads as debt, and fails when a new site appears. Landing keeps the policy from growing: `scripts/check-tenancy-policy.py`, run by `make check-land` and the landing gate, compares the candidate's committed policy with the target revision's and rejects raised counts, new exceptions and new test-support entries. It does not follow call graphs, types or runtime multiplicity: a factory called once per tenant, a renamed accessor, a goroutine per tenant or a launch behind an existing wrapper passes it. An empty debt list does not prove the migration is complete; the required tests above and review do.
 
 ## Sources
 

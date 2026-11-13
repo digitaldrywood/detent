@@ -742,10 +742,15 @@ factories, are pinned to named sites in
 `internal/invariants/tenancy_policy.json`; occurrences in the hosted serving
 tree, pool constructors outside `internal/pgtransport`, hosted-path timer
 constructors and process-wide organization reads are debt that only shrinks.
-Test-support packages are exempt only by name. Counts must equal the policy;
-`-tenancy-baseline` rewrites it and refuses growth over the committed policy.
-`TestTenancyPolicyViolations` and `TestTenancyBaselineRefusesGrowth` test the
-scanner. The ratchet does not follow call graphs, types or runtime
+Test-support packages are exempt only by name, and only the named scratch
+paths and directories the Go toolchain ignores are skipped. Counts must equal
+the policy. Landing refuses growth: `scripts/check-tenancy-policy.py`, run by
+`make check-land` and the landing gate against the target revision, rejects
+any raised debt or exception count and any test-support entry not already in
+the target set. `-tenancy-baseline` is a local rewrite convenience, not
+protection. `TestTenancyPolicyViolations`, `TestTenancyBaselineRefusesGrowth`
+and `scripts/check_tenancy_policy_test.py` test the scanner and the landing
+comparison. The ratchet does not follow call graphs, types or runtime
 multiplicity, and an empty debt list is not proof the migration is complete;
 review applies the remaining rules and the
 [review checklist](architecture/multi-tenancy.md#review-checklist).

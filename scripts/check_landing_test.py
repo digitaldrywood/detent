@@ -72,7 +72,7 @@ class ShortLandingGateTest(unittest.TestCase):
         self.git("config", "user.email", "fixture@example.test")
         self.git("config", "commit.gpgsign", "false")
         (self.root / "scripts").mkdir()
-        for name in ("check-landing.sh", "check-evidence.sh", "check-sqlite-policy.py", "check-landing.py"):
+        for name in ("check-landing.sh", "check-evidence.sh", "check-sqlite-policy.py", "check-tenancy-policy.py", "check-landing.py"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
         (self.root / "go.mod").write_text("module example.test\n\ngo 1.26\n")
         for directory in ("lib", "app", "integration", "unrelated", "removed"):
@@ -84,6 +84,8 @@ class ShortLandingGateTest(unittest.TestCase):
         policy = self.root / "internal/invariants/sqlite_policy.json"
         policy.parent.mkdir(parents=True)
         policy.write_text('{"files":{},"modules":{}}\n')
+        (policy.parent / "tenancy_policy.json").write_text('{"test_support":[],"exceptions":{},"debt":{}}\n')
+        (policy.parent / "tenancy_test.go").write_text("package invariants\n")
         self.commit()
         self.base = self.git("rev-parse", "HEAD").strip()
         self.git("update-ref", "refs/remotes/origin/develop", self.base)
@@ -371,6 +373,15 @@ func TestGateLifetime(t *testing.T) {
         result = self.run_gate(self.base)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("new.go: SQLite driver_import count 1 exceeds target baseline 0", result.stderr)
+        self.assertEqual(self.trace(), [])
+
+    def test_tenancy_policy_growth_stops_before_build(self):
+        policy = self.root / "internal/invariants/tenancy_policy.json"
+        policy.write_text('{"test_support":[],"exceptions":{},"debt":{"internal/hubserver/new.go":{"timer:time.NewTicker":1}}}\n')
+        self.commit()
+        result = self.run_gate(self.base)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("internal/hubserver/new.go: debt timer:time.NewTicker count 1 exceeds target baseline 0", result.stderr)
         self.assertEqual(self.trace(), [])
 
     def test_shallow_candidate_uses_explicit_target_without_origin(self):

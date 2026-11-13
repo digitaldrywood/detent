@@ -19,7 +19,9 @@ import (
 	"testing/fstest"
 )
 
-var tenancyBaseline = flag.Bool("tenancy-baseline", false, "rewrite the tenancy policy from the scan, refusing growth over the committed policy")
+var tenancyBaseline = flag.Bool("tenancy-baseline", false, "local convenience: rewrite the tenancy policy from the scan; landing protection is scripts/check-tenancy-policy.py")
+
+var tenancyScratchPaths = []string{"tmp", "node_modules", "web/conversation/node_modules"}
 
 const tenancyPolicyFile = "internal/invariants/tenancy_policy.json"
 
@@ -97,7 +99,15 @@ func checkTenancyPolicy(root fs.FS, policy tenancyPolicy) []string {
 		return []string{fmt.Sprintf("tenancy policy: %v", err)}
 	}
 	var problems []string
+	seen := map[string]bool{}
 	for _, directory := range policy.TestSupport {
+		if seen[directory] {
+			problems = append(problems, directory+": duplicate test-support entry")
+		}
+		seen[directory] = true
+		if directory == "" || path.Clean(directory) != directory || strings.HasPrefix(directory, "/") || strings.HasPrefix(directory, "..") {
+			problems = append(problems, directory+": test-support entry must be a clean relative directory")
+		}
 		if info, err := fs.Stat(root, directory); err != nil || !info.IsDir() {
 			problems = append(problems, directory+": remove stale test-support entry")
 		}
@@ -158,8 +168,12 @@ func rewriteTenancyPolicy(root string) error {
 }
 
 func tenancyBaselineData(root fs.FS, committed tenancyPolicy, testSupport []string) ([]byte, error) {
-	if len(testSupport) > len(committed.TestSupport) {
-		return nil, fmt.Errorf("refuse tenancy test-support growth; add entries by hand in a reviewed change")
+	seen := map[string]bool{}
+	for _, directory := range testSupport {
+		if seen[directory] || !slices.Contains(committed.TestSupport, directory) {
+			return nil, fmt.Errorf("refuse tenancy test-support entry %q: every exemption must be a distinct member of the committed set", directory)
+		}
+		seen[directory] = true
 	}
 	exceptions, debt, err := scanTenancy(root, testSupport)
 	if err != nil {
@@ -190,7 +204,7 @@ func scanTenancy(root fs.FS, testSupport []string) (tenancyCounts, tenancyCounts
 		}
 		if entry.IsDir() {
 			name := entry.Name()
-			if file != "." && (name == "testdata" || name == "vendor" || name == "node_modules" || name == "tmp" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || slices.Contains(testSupport, file)) {
+			if file != "." && (name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || slices.Contains(tenancyScratchPaths, file) || slices.Contains(testSupport, file)) {
 				return fs.SkipDir
 			}
 			return nil
@@ -444,6 +458,24 @@ func TestTenancyPolicyViolations(t *testing.T) {
 			want:   []string{"internal/hubserver/removedtest: remove stale test-support entry"},
 		},
 		{
+			name:   "duplicate and widened test support entries",
+			files:  map[string]string{"internal/hubserver/hubtest/db.go": "package hubtest\n"},
+			policy: tenancyPolicy{TestSupport: []string{"internal/hubserver/hubtest", "internal/hubserver/hubtest", "internal/hubserver/../hubserver"}},
+			want: []string{
+				"internal/hubserver/../hubserver: remove stale test-support entry",
+				"internal/hubserver/../hubserver: test-support entry must be a clean relative directory",
+				"internal/hubserver/hubtest: duplicate test-support entry",
+			},
+		},
+		{
+			name:  "only named scratch paths are skipped",
+			files: map[string]string{"tmp/scratch.go": launch, "internal/hubserver/tmp/spawn.go": launch},
+			want: []string{
+				"internal/hubserver/tmp/spawn.go: import:os/exec count 1 exceeds debt baseline 0",
+				"internal/hubserver/tmp/spawn.go: process:exec.CommandContext count 1 exceeds debt baseline 0",
+			},
+		},
+		{
 			name:  "hosted timers are debt; timers elsewhere are not counted",
 			files: map[string]string{"internal/hubserver/loop.go": "package hub\nimport \"time\"\nvar tick = time.NewTicker\n", "internal/runner/loop.go": "package runner\nimport \"time\"\nvar tick = time.NewTicker\n"},
 			want:  []string{"internal/hubserver/loop.go: timer:time.NewTicker count 1 exceeds debt baseline 0"},
@@ -499,7 +531,9 @@ func TestTenancyBaselineRefusesGrowth(t *testing.T) {
 	}{
 		{name: "new debt", files: map[string]string{"internal/cloudentry/spawn.go": launch}, want: "exceeds debt baseline 0"},
 		{name: "new exception", files: map[string]string{"internal/runner/run.go": launch}, want: "exceeds exception baseline 0"},
-		{name: "new test support", testSupport: []string{"internal/hubserver"}, want: "refuse tenancy test-support growth"},
+		{name: "new test support", testSupport: []string{"internal/hubserver"}, want: "every exemption must be a distinct member"},
+		{name: "equal-count substitution", committed: tenancyPolicy{TestSupport: []string{"internal/hubserver/hubtest"}}, testSupport: []string{"internal/hubserver"}, want: "every exemption must be a distinct member"},
+		{name: "duplicate test support", committed: tenancyPolicy{TestSupport: []string{"internal/hubserver/hubtest", "internal/hubserver/other"}}, testSupport: []string{"internal/hubserver/hubtest", "internal/hubserver/hubtest"}, want: "every exemption must be a distinct member"},
 		{
 			name:      "shrinking rewrites",
 			files:     map[string]string{"internal/cloudentry/tenant/launcher.go": "package tenant\n"},
