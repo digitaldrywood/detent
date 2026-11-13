@@ -30,6 +30,7 @@ type ReconcileRequest struct {
 	Since                *time.Time
 	Through              time.Time
 	TargetedPullRequests bool
+	PullRequestPage      int
 	Hydrations           []HydrationRequest
 }
 
@@ -99,6 +100,7 @@ type ReconcileSnapshot struct {
 	Issues             []IssueSource
 	PullRequests       []PullRequestSource
 	PullRequestDetails []PullRequestDetailSource
+	PullRequestsMore   bool
 }
 
 type ReconcileBackend interface {

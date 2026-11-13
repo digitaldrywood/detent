@@ -8,6 +8,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"net/http"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -150,7 +152,7 @@ func TestPostgresLinkedChanges(t *testing.T) {
 				var duringFetch func()
 				backend := pullRequestRefreshBackend(func(ctx context.Context, request ReconcileRequest) (ReconcileSnapshot, error) {
 					if !request.TargetedPullRequests {
-						if !request.SkipIssues || len(request.Hydrations) != 0 || !allowLinked && request.SkipRepository {
+						if !request.SkipIssues || len(request.Hydrations) != 0 || !allowLinked && request.SkipRepository || request.SkipRepository != (request.PullRequestPage == 0) {
 							t.Fatalf("unexpected repository reconciliation=%+v", request)
 						}
 						if allowLinked {
@@ -168,7 +170,7 @@ func TestPostgresLinkedChanges(t *testing.T) {
 					if targetedFailure != nil {
 						return ReconcileSnapshot{}, targetedFailure
 					}
-					if !request.TargetedPullRequests || len(request.Hydrations) != 1 || request.Hydrations[0].ObjectKind != "pull_request" || request.Repository.Owner != "example-org" || request.Repository.Name != "example-project" {
+					if !request.TargetedPullRequests || request.PullRequestPage != 0 || len(request.Hydrations) != 1 || request.Hydrations[0].ObjectKind != "pull_request" || request.Repository.Owner != "example-org" || request.Repository.Name != "example-project" {
 						t.Fatalf("refresh enumerated repository or wrong request: %+v", request)
 					}
 					target := request.Hydrations[0]
@@ -640,4 +642,128 @@ type pullRequestRefreshBackend func(context.Context, ReconcileRequest) (Reconcil
 
 func (f pullRequestRefreshBackend) Reconcile(ctx context.Context, request ReconcileRequest) (ReconcileSnapshot, error) {
 	return f(ctx, request)
+}
+
+func TestRepositoryReconciliationBudgetAndFairness(t *testing.T) {
+	admin := postgresStartupTemplate.Database(t)
+	for _, org := range []tracker.OrganizationID{"org_budget_first", "org_budget_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			var clock atomic.Int64
+			clock.Store(time.Now().UTC().Truncate(time.Microsecond).UnixNano())
+			now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+			advance := func(d time.Duration) { clock.Add(int64(d)) }
+			var calls []string
+			hotPages, hotFailure, hotNode := 4, error(nil), "R_hot"
+			backend := pullRequestRefreshBackend(func(ctx context.Context, request ReconcileRequest) (ReconcileSnapshot, error) {
+				if request.TargetedPullRequests || !request.SkipIssues || request.SkipRepository || request.PullRequestPage < 1 {
+					t.Fatalf("repository pass without an enabled paged binding: %+v", request)
+				}
+				calls = append(calls, fmt.Sprintf("%s:%d", request.Repository.Name, request.PullRequestPage))
+				snapshot := ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_" + request.Repository.Name, Owner: request.Repository.Owner, Name: request.Repository.Name, UpdatedAt: now()}}
+				if request.Repository.Name != "hot" {
+					return snapshot, nil
+				}
+				snapshot.Repository.NodeID = hotNode
+				for number := range corestore.MaxPageSize {
+					snapshot.PullRequests = append(snapshot.PullRequests, PullRequestSource{Number: request.PullRequestPage*1000 + number + 1, UpdatedAt: now()})
+				}
+				snapshot.PullRequestsMore = request.PullRequestPage < hotPages
+				return snapshot, hotFailure
+			})
+			repository, f, _, _ := newExportPostgresFixtureInOrganization(t, admin, org, func(cfg *Config) {
+				cfg.now, cfg.ReconcileBackend, cfg.jitter = now, backend, func() float64 { return 0.5 }
+			})
+			setRepository := func(project tracker.ProjectID, enabled bool) {
+				t.Helper()
+				if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					record, err := w.ProjectRecord(t.Context(), project)
+					if errors.Is(err, corestore.ErrNotFound) {
+						record, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: string(project), Slug: strings.ReplaceAll(string(project), "_", "-"), Profile: "native"}, States: nativeFixtureStates()})
+					}
+					if err != nil {
+						return err
+					}
+					record.Settings.CheckoutRepository, record.Settings.RepositoryEnabled = "example-org/"+strings.TrimPrefix(string(project), "project_"), enabled
+					_, err = w.UpdateProjectRecord(t.Context(), record)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			binding := func(project tracker.ProjectID) projectstore.GitHubReconciliation {
+				t.Helper()
+				var row projectstore.GitHubReconciliation
+				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					row, err = r.(projectstore.GitHubReconciliationReader).GitHubReconciliation(t.Context(), project)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				return row
+			}
+			tick := func() error {
+				advance(time.Second)
+				before := len(calls)
+				err := f.service.maintainGitHubReconciliationRecords(t.Context())
+				if len(calls)-before > 1 {
+					t.Fatalf("one tick made %d repository listings: %v", len(calls)-before, calls[before:])
+				}
+				return err
+			}
+			setRepository("project_cold", true)
+			setRepository("project_hot", true)
+			for range 2 {
+				if err := tick(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			started := binding("project_hot").SweepStartedAt
+			if got := binding("project_hot"); started == nil || got.RepositoryPage != 2 || got.LastSuccessfulSweepAt != nil {
+				t.Fatalf("hot binding did not persist its continuation: %+v", got)
+			}
+			for range 3 {
+				if err := tick(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if want := []string{"cold:1", "hot:1", "hot:2", "hot:3", "hot:4"}; !reflect.DeepEqual(calls, want) {
+				t.Fatalf("paged sweep order=%v, want %v", calls, want)
+			}
+			if got := binding("project_hot"); got.RepositoryPage != 0 || got.SweepStartedAt != nil || got.LastSuccessfulSweepAt == nil || !got.LastSuccessfulSweepAt.Equal(*started) {
+				t.Fatalf("watermark did not follow the finished sweep start: %+v", got)
+			}
+
+			advance(2 * time.Minute)
+			calls, hotFailure = nil, errors.New("hot repository unavailable")
+			for range 3 {
+				_ = tick()
+			}
+			if !slices.Contains(calls, "cold:1") || binding("project_hot").Attempts == 0 || binding("project_hot").LastSuccessfulSweepAt.After(*started) {
+				t.Fatalf("failing binding starved its neighbor or advanced its watermark: calls=%v hot=%+v", calls, binding("project_hot"))
+			}
+
+			advance(time.Hour)
+			calls, hotFailure, hotNode = nil, nil, "R_hot_replaced"
+			failed := binding("project_hot")
+			if err := tick(); err == nil || len(calls) != 1 || calls[0] != "hot:"+strconv.FormatInt(max(failed.RepositoryPage, 1), 10) {
+				t.Fatalf("identity change was not refused: err=%v calls=%v", err, calls)
+			}
+			if got := binding("project_hot"); got.Attempts != failed.Attempts+1 || got.NodeID != "R_hot" || got.LastSuccessfulSweepAt.After(*started) {
+				t.Fatalf("identity refusal changed the binding: %+v", got)
+			}
+
+			setRepository("project_hot", false)
+			advance(time.Hour)
+			calls = nil
+			for range 2 {
+				if err := tick(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if slices.ContainsFunc(calls, func(call string) bool { return strings.HasPrefix(call, "hot:") }) {
+				t.Fatalf("disabled repository binding was listed: %v", calls)
+			}
+		})
+	}
 }

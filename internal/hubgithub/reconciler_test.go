@@ -330,3 +330,30 @@ func TestReconcilerHydratesRequestedPullRequestDetails(t *testing.T) {
 	})
 
 }
+
+func TestReconcilerPagedPullRequestsStayBounded(t *testing.T) {
+	t.Parallel()
+	updatedAt := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	repository := reconcileRepository{ID: 100, NodeID: "R_repo", Name: "example-project", Owner: restActor{Login: "example-org"}, DefaultBranch: "main", UpdatedAt: updatedAt}
+	merged := reconcilePullRequest{ID: 201, NodeID: "PR_merged", Number: 18, Title: "Merged without merged_by", HTMLURL: "https://github.test/example-org/example-project/pull/18", State: "closed", MergeSHA: "merged-commit", MergedAt: updatedAt,
+		Head: restRef{Ref: "feature", SHA: "head"}, Base: restRef{Ref: "main", SHA: "base"}, CreatedAt: updatedAt.Add(-time.Hour), UpdatedAt: updatedAt}
+	for _, test := range []struct {
+		name string
+		next string
+		more bool
+	}{{"page with a successor", "/repos/example-org/example-project/pulls?page=3", true}, {"last page", "", false}} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &scriptedRESTClient{t: t, steps: []restStep{
+				{method: http.MethodGet, path: "/repos/example-org/example-project", response: repository},
+				{method: http.MethodGet, path: "/repos/example-org/example-project/pulls?direction=desc&per_page=100&sort=updated&state=all&page=2", response: []reconcilePullRequest{merged}, next: test.next},
+			}}
+			snapshot, err := NewReconciler(client).Reconcile(t.Context(), githubcontract.ReconcileRequest{Profile: "native", Repository: githubcontract.RepositoryTarget{Owner: "example-org", Name: "example-project"}, PullRequestPage: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(client.steps) != 0 || len(snapshot.PullRequests) != 1 || len(snapshot.PullRequestDetails) != 0 || snapshot.PullRequestsMore != test.more {
+				t.Fatalf("paged snapshot=%+v remaining calls=%d", snapshot, len(client.steps))
+			}
+		})
+	}
+}

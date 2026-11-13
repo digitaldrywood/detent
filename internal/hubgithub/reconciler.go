@@ -60,7 +60,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, request githubcontract.Recon
 	}
 	pullsPath := repositoryRESTPath(repository.Owner.Login, repository.Name) + "/pulls?direction=asc&per_page=100&sort=updated&state=all"
 	var remotePulls []reconcilePullRequest
-	if !request.SkipRepository {
+	morePulls := false
+	switch {
+	case request.SkipRepository:
+	case request.PullRequestPage > 0:
+		next, err := r.client.RESTPage(ctx, repositoryRESTPath(repository.Owner.Login, repository.Name)+"/pulls?direction=desc&per_page=100&sort=updated&state=all&page="+strconv.Itoa(request.PullRequestPage), &remotePulls)
+		if err != nil {
+			return githubcontract.ReconcileSnapshot{}, fmt.Errorf("list github repository pull request page: %w", err)
+		}
+		morePulls = next != ""
+	default:
 		remotePulls, err = fetchRESTList[reconcilePullRequest](ctx, r.client, pullsPath)
 		if err != nil {
 			return githubcontract.ReconcileSnapshot{}, fmt.Errorf("list github repository pull requests: %w", err)
@@ -71,8 +80,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, request githubcontract.Recon
 			NodeID: repository.NodeID, DatabaseID: positiveID(repository.ID),
 			Owner: repository.Owner.Login, Name: repository.Name, DefaultBranch: repository.DefaultBranch, UpdatedAt: repository.UpdatedAt,
 		},
-		Issues:       make([]githubcontract.IssueSource, 0, len(remoteIssues)),
-		PullRequests: make([]githubcontract.PullRequestSource, 0, len(remotePulls)),
+		Issues:           make([]githubcontract.IssueSource, 0, len(remoteIssues)),
+		PullRequests:     make([]githubcontract.PullRequestSource, 0, len(remotePulls)),
+		PullRequestsMore: morePulls,
 	}
 	if err := validateRepositorySource(snapshot.Repository); err != nil {
 		return githubcontract.ReconcileSnapshot{}, err
@@ -94,7 +104,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request githubcontract.Recon
 		}
 		snapshot.PullRequests = append(snapshot.PullRequests, source)
 	}
-	if !request.SkipRepository {
+	if !request.SkipRepository && request.PullRequestPage == 0 {
 		if err := r.hydratePullRequestDetails(ctx, repositoryRESTPath(repository.Owner.Login, repository.Name), request.Mode, request.Since, request.Hydrations, &snapshot); err != nil {
 			return githubcontract.ReconcileSnapshot{}, err
 		}

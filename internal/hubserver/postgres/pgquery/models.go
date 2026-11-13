@@ -1299,6 +1299,8 @@ type GithubReconciliation struct {
 	NextAttemptAt         time.Time
 	LastSuccessfulSweepAt *time.Time
 	LastFailureAt         *time.Time
+	RepositoryPage        int64
+	SweepStartedAt        *time.Time
 }
 
 type GithubWebhookReceipt struct {
@@ -1860,6 +1862,16 @@ type HostedWorkViewValue struct {
 	Kind           string
 	Position       int32
 	Value          string
+}
+
+type HubDetailObject struct {
+	OrganizationID  tracker.OrganizationID
+	ObjectKey       string
+	Sha256          string
+	CompressedBytes int64
+	ContentBytes    int64
+	Content         []byte
+	CreatedAt       time.Time
 }
 
 type HubServerIdentity struct {

@@ -17,20 +17,22 @@ UPDATE github_reconciliation r SET
  repository=$1,
  node_id=$2,
  after_work_item=$3,
+ repository_page=$4,
+ sweep_started_at=$5,
  revision=r.revision+1,
- attempts=$4,
- next_attempt_at=$5,
+ attempts=$6,
+ next_attempt_at=$7,
  last_successful_sweep_at=CASE WHEN lower(r.repository)=$1
-  THEN GREATEST(r.last_successful_sweep_at,$6::timestamptz)
-  ELSE $6::timestamptz END,
+  THEN GREATEST(r.last_successful_sweep_at,$8::timestamptz)
+  ELSE $8::timestamptz END,
  last_failure_at=CASE WHEN lower(r.repository)=$1
-  THEN GREATEST(r.last_failure_at,$7::timestamptz)
-  ELSE $7::timestamptz END
+  THEN GREATEST(r.last_failure_at,$9::timestamptz)
+  ELSE $9::timestamptz END
 FROM project_settings ps
 JOIN projects p ON p.organization_id=ps.organization_id AND p.id=ps.project_id
-WHERE r.organization_id=$8 AND r.project_id=$9
+WHERE r.organization_id=$10 AND r.project_id=$11
   AND ps.organization_id=r.organization_id AND ps.project_id=r.project_id
-  AND p.deleted_at IS NULL AND p.profile='native' AND r.revision=$10
+  AND p.deleted_at IS NULL AND p.profile='native' AND r.revision=$12
   AND $1<>'' AND $1=lower(COALESCE(NULLIF(ps.checkout_repository,''),ps.repository))
   AND (lower(r.repository)<>$1 OR r.node_id=$2 OR r.node_id='')
 `
@@ -39,6 +41,8 @@ type AdvanceGitHubReconciliationParams struct {
 	Repository            string
 	NodeID                string
 	AfterWorkItem         string
+	RepositoryPage        int64
+	SweepStartedAt        *time.Time
 	Attempts              int64
 	NextAttemptAt         time.Time
 	LastSuccessfulSweepAt *time.Time
@@ -53,6 +57,8 @@ func (q *Queries) AdvanceGitHubReconciliation(ctx context.Context, arg AdvanceGi
 		arg.Repository,
 		arg.NodeID,
 		arg.AfterWorkItem,
+		arg.RepositoryPage,
+		arg.SweepStartedAt,
 		arg.Attempts,
 		arg.NextAttemptAt,
 		arg.LastSuccessfulSweepAt,
@@ -73,7 +79,7 @@ WITH ready AS (
         lower(COALESCE(NULLIF(ps.checkout_repository,''),ps.repository))::text AS repository,
         ps.repository_enabled,
         r.node_id, r.after_work_item, r.revision, r.attempts, r.next_attempt_at,
-        r.last_successful_sweep_at, r.last_failure_at
+        r.last_successful_sweep_at, r.last_failure_at, r.repository_page, r.sweep_started_at
  FROM github_reconciliation r
  JOIN projects p ON p.organization_id=r.organization_id AND p.id=r.project_id
  JOIN project_settings ps ON ps.organization_id=r.organization_id AND ps.project_id=r.project_id
@@ -92,13 +98,13 @@ WITH ready AS (
    AND (ps.repository_enabled OR $4::boolean)
  ORDER BY ps.project_id LIMIT $2
 )
-SELECT project_id,stored_repository,repository,repository_enabled,node_id,after_work_item,revision,attempts,next_attempt_at,last_successful_sweep_at,last_failure_at
+SELECT project_id,stored_repository,repository,repository_enabled,node_id,after_work_item,revision,attempts,next_attempt_at,last_successful_sweep_at,last_failure_at,repository_page,sweep_started_at
 FROM (
- SELECT project_id, stored_repository, repository, repository_enabled, node_id, after_work_item, revision, attempts, next_attempt_at, last_successful_sweep_at, last_failure_at FROM ready
+ SELECT project_id, stored_repository, repository, repository_enabled, node_id, after_work_item, revision, attempts, next_attempt_at, last_successful_sweep_at, last_failure_at, repository_page, sweep_started_at FROM ready
  UNION ALL
- SELECT project_id,repository,repository,repository_enabled,''::text,''::text,0::bigint,0::bigint,$1::timestamptz,NULL::timestamptz,NULL::timestamptz
+ SELECT project_id,repository,repository,repository_enabled,''::text,''::text,0::bigint,0::bigint,$1::timestamptz,NULL::timestamptz,NULL::timestamptz,0::bigint,NULL::timestamptz
  FROM initializing
-) candidates ORDER BY next_attempt_at,project_id LIMIT $2
+) candidates ORDER BY revision=0 DESC,next_attempt_at,project_id LIMIT $2
 `
 
 type DueGitHubReconciliationsParams struct {
@@ -120,6 +126,8 @@ type DueGitHubReconciliationsRow struct {
 	NextAttemptAt         time.Time
 	LastSuccessfulSweepAt *time.Time
 	LastFailureAt         *time.Time
+	RepositoryPage        int64
+	SweepStartedAt        *time.Time
 }
 
 func (q *Queries) DueGitHubReconciliations(ctx context.Context, arg DueGitHubReconciliationsParams) ([]DueGitHubReconciliationsRow, error) {
@@ -148,6 +156,8 @@ func (q *Queries) DueGitHubReconciliations(ctx context.Context, arg DueGitHubRec
 			&i.NextAttemptAt,
 			&i.LastSuccessfulSweepAt,
 			&i.LastFailureAt,
+			&i.RepositoryPage,
+			&i.SweepStartedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -161,12 +171,13 @@ func (q *Queries) DueGitHubReconciliations(ctx context.Context, arg DueGitHubRec
 
 const initializeGitHubReconciliation = `-- name: InitializeGitHubReconciliation :execrows
 INSERT INTO github_reconciliation
- (organization_id,project_id,repository,node_id,after_work_item,revision,attempts,next_attempt_at,last_successful_sweep_at,last_failure_at)
+ (organization_id,project_id,repository,node_id,after_work_item,revision,attempts,next_attempt_at,last_successful_sweep_at,last_failure_at,repository_page,sweep_started_at)
 SELECT ps.organization_id,ps.project_id,$1,$2,$3,1,
-       $4,$5,$6,$7
+       $4,$5,$6,$7,
+       $8,$9
 FROM project_settings ps
 JOIN projects p ON p.organization_id=ps.organization_id AND p.id=ps.project_id
-WHERE ps.organization_id=$8 AND ps.project_id=$9
+WHERE ps.organization_id=$10 AND ps.project_id=$11
   AND p.deleted_at IS NULL AND p.profile='native'
   AND $1<>'' AND $1=lower(COALESCE(NULLIF(ps.checkout_repository,''),ps.repository))
 ON CONFLICT (organization_id,project_id) DO NOTHING
@@ -180,6 +191,8 @@ type InitializeGitHubReconciliationParams struct {
 	NextAttemptAt         time.Time
 	LastSuccessfulSweepAt *time.Time
 	LastFailureAt         *time.Time
+	RepositoryPage        int64
+	SweepStartedAt        *time.Time
 	OrganizationID        tracker.OrganizationID
 	ProjectID             tracker.ProjectID
 }
@@ -193,6 +206,8 @@ func (q *Queries) InitializeGitHubReconciliation(ctx context.Context, arg Initia
 		arg.NextAttemptAt,
 		arg.LastSuccessfulSweepAt,
 		arg.LastFailureAt,
+		arg.RepositoryPage,
+		arg.SweepStartedAt,
 		arg.OrganizationID,
 		arg.ProjectID,
 	)
@@ -217,7 +232,7 @@ func (q *Queries) MarkGitHubReconciliationInitialized(ctx context.Context, arg M
 }
 
 const readGitHubReconciliation = `-- name: ReadGitHubReconciliation :one
-SELECT r.organization_id, r.project_id, r.repository, r.node_id, r.after_work_item, r.revision, r.attempts, r.next_attempt_at, r.last_successful_sweep_at, r.last_failure_at
+SELECT r.organization_id, r.project_id, r.repository, r.node_id, r.after_work_item, r.revision, r.attempts, r.next_attempt_at, r.last_successful_sweep_at, r.last_failure_at, r.repository_page, r.sweep_started_at
 FROM github_reconciliation r
 JOIN projects p ON p.organization_id=r.organization_id AND p.id=r.project_id
 JOIN project_settings ps ON ps.organization_id=r.organization_id AND ps.project_id=r.project_id
@@ -244,6 +259,8 @@ func (q *Queries) ReadGitHubReconciliation(ctx context.Context, arg ReadGitHubRe
 		&i.NextAttemptAt,
 		&i.LastSuccessfulSweepAt,
 		&i.LastFailureAt,
+		&i.RepositoryPage,
+		&i.SweepStartedAt,
 	)
 	return i, err
 }

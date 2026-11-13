@@ -87,13 +87,22 @@ func (s *Service) maintainRepositories(ctx context.Context) error {
 
 func (s *Service) reconcileRepository(ctx context.Context, row projectstore.GitHubReconciliation) error {
 	organization := s.deps.Organization
+	now := s.deps.Now().UTC()
+	if row.SweepStartedAt == nil {
+		row.SweepStartedAt, row.AfterWorkItem, row.RepositoryPage = &now, "", 0
+		if row.RepositoryEnabled {
+			row.RepositoryPage = 1
+		}
+	}
+	if !row.RepositoryEnabled {
+		row.RepositoryPage = 0
+	}
 	scope, err := s.deps.Integration(ctx, organization, row.ProjectID)
 	if err == nil && !strings.EqualFold(scope.Repository, row.Repository) {
 		err = errors.New("GitHub reconciliation repository changed")
 	}
 	owner, name, _ := githubwebhook.SplitRepositoryFullName(row.Repository)
-	repositoryPass := row.RepositoryEnabled && row.AfterWorkItem == ""
-	request := githubcontract.ReconcileRequest{Profile: "native", Repository: githubcontract.RepositoryTarget{Owner: owner, Name: name, NodeID: row.NodeID}, SkipIssues: true, SkipRepository: !repositoryPass, Mode: githubcontract.ReconcileIncremental, Since: row.LastSuccessfulSweepAt, Through: s.deps.Now().UTC()}
+	request := githubcontract.ReconcileRequest{Profile: "native", Repository: githubcontract.RepositoryTarget{Owner: owner, Name: name, NodeID: row.NodeID}, SkipIssues: true, SkipRepository: row.RepositoryPage == 0, PullRequestPage: int(row.RepositoryPage), Mode: githubcontract.ReconcileIncremental, Since: row.LastSuccessfulSweepAt, Through: now}
 	var snapshot githubcontract.ReconcileSnapshot
 	if err == nil {
 		snapshot, err = s.deps.Backend.Reconcile(ctx, request)
@@ -104,18 +113,23 @@ func (s *Service) reconcileRepository(ctx context.Context, row projectstore.GitH
 	if err == nil {
 		row.NodeID = snapshot.Repository.NodeID
 	}
-	if err == nil && repositoryPass {
-		err = s.requestDriftedPullRequests(ctx, row, snapshot.PullRequests)
-	}
 	sweepComplete := false
-	if err == nil && s.deps.Importer == nil {
-		row.AfterWorkItem = ""
+	switch {
+	case err != nil:
+	case row.RepositoryPage > 0:
+		var finished bool
+		if finished, err = s.requestDriftedPullRequests(ctx, row, snapshot); err == nil && finished {
+			row.RepositoryPage, sweepComplete = 0, s.deps.Importer == nil
+		} else if err == nil {
+			row.RepositoryPage++
+		}
+	case s.deps.Importer == nil:
 		sweepComplete = true
-	} else if err == nil {
+	default:
 		sweepComplete, err = s.reconcileLinkedSource(ctx, &row, scope)
 	}
 	observedAt := s.deps.Now().UTC()
-	row.NextAttemptAt = observedAt.Add(time.Second)
+	row.NextAttemptAt = observedAt.Add(s.jittered(time.Second))
 	if err != nil {
 		row.LastFailureAt = &observedAt
 		row.Attempts++
@@ -123,8 +137,8 @@ func (s *Service) reconcileRepository(ctx context.Context, row projectstore.GitH
 	} else {
 		row.Attempts = 0
 		if sweepComplete {
-			row.LastSuccessfulSweepAt = &request.Through
-			row.NextAttemptAt = observedAt.Add(time.Duration(float64(s.deps.Interval) * (0.5 + s.deps.Jitter())))
+			row.LastSuccessfulSweepAt, row.SweepStartedAt, row.AfterWorkItem = row.SweepStartedAt, nil, ""
+			row.NextAttemptAt = observedAt.Add(s.jittered(s.deps.Interval))
 		}
 	}
 	writeErr := s.deps.Repository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
@@ -137,35 +151,37 @@ func (s *Service) reconcileRepository(ctx context.Context, row projectstore.GitH
 	return errors.Join(err, writeErr)
 }
 
-func (s *Service) requestDriftedPullRequests(ctx context.Context, row projectstore.GitHubReconciliation, sources []githubcontract.PullRequestSource) error {
-	var since *time.Time
-	if s.deps.Importer == nil {
-		since = row.LastSuccessfulSweepAt
+func (s *Service) jittered(base time.Duration) time.Duration {
+	return time.Duration(float64(base) * (0.5 + s.deps.Jitter()))
+}
+
+func (s *Service) requestDriftedPullRequests(ctx context.Context, row projectstore.GitHubReconciliation, snapshot githubcontract.ReconcileSnapshot) (bool, error) {
+	if len(snapshot.PullRequests) > corestore.MaxPageSize {
+		return false, errors.New("GitHub reconciliation page exceeds its budget")
 	}
-	drift := make([]projectstore.GitHubPullRequestDrift, 0, len(sources))
-	for _, source := range sources {
-		if source.Number <= 0 || source.UpdatedAt.IsZero() || since != nil && !source.UpdatedAt.After(*since) {
+	finished := !snapshot.PullRequestsMore
+	drift := make([]projectstore.GitHubPullRequestDrift, 0, len(snapshot.PullRequests))
+	for _, source := range snapshot.PullRequests {
+		if source.Number <= 0 || source.UpdatedAt.IsZero() {
+			continue
+		}
+		if row.LastSuccessfulSweepAt != nil && !source.UpdatedAt.After(*row.LastSuccessfulSweepAt) {
+			finished = true
 			continue
 		}
 		drift = append(drift, projectstore.GitHubPullRequestDrift{Number: source.Number, SourceUpdatedAt: source.UpdatedAt})
 	}
-	repository := strings.ToLower(row.Repository)
-	now := s.deps.Now().UTC()
-	for len(drift) > 0 {
-		page := drift[:min(len(drift), corestore.MaxPageSize)]
-		drift = drift[len(page):]
-		if err := s.deps.Repository.WriteTenant(ctx, s.deps.Organization, corestore.Background, func(w tenantstore.Writer) error {
-			writer, ok := w.(projectstore.GitHubReconciliationWriter)
-			if !ok {
-				return s.deps.Unavailable
-			}
-			_, err := writer.RequestDriftedGitHubPullRequests(ctx, row.ProjectID, repository, page, now)
-			return err
-		}); err != nil {
-			return err
-		}
+	if len(drift) == 0 {
+		return finished, nil
 	}
-	return nil
+	return finished, s.deps.Repository.WriteTenant(ctx, s.deps.Organization, corestore.Background, func(w tenantstore.Writer) error {
+		writer, ok := w.(projectstore.GitHubReconciliationWriter)
+		if !ok {
+			return s.deps.Unavailable
+		}
+		_, err := writer.RequestDriftedGitHubPullRequests(ctx, row.ProjectID, strings.ToLower(row.Repository), drift, s.deps.Now().UTC())
+		return err
+	})
 }
 
 func (s *Service) reconcileLinkedSource(ctx context.Context, row *projectstore.GitHubReconciliation, scope Integration) (bool, error) {

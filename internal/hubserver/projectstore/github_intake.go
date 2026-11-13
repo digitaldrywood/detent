@@ -131,6 +131,8 @@ type GitHubReconciliation struct {
 	NextAttemptAt         time.Time
 	LastSuccessfulSweepAt *time.Time
 	LastFailureAt         *time.Time
+	RepositoryPage        int64
+	SweepStartedAt        *time.Time
 }
 
 type GitHubReconciliationReader interface {

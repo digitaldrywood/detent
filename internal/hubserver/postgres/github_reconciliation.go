@@ -19,7 +19,7 @@ func (s *session) GitHubReconciliation(ctx context.Context, project tracker.Proj
 	return projectstore.GitHubReconciliation{
 		ProjectID: row.ProjectID, Repository: row.Repository, NodeID: row.NodeID,
 		AfterWorkItem: tracker.NativeWorkItemID(row.AfterWorkItem), Revision: row.Revision, Attempts: row.Attempts, NextAttemptAt: row.NextAttemptAt,
-		LastSuccessfulSweepAt: row.LastSuccessfulSweepAt, LastFailureAt: row.LastFailureAt,
+		LastSuccessfulSweepAt: row.LastSuccessfulSweepAt, LastFailureAt: row.LastFailureAt, RepositoryPage: row.RepositoryPage, SweepStartedAt: row.SweepStartedAt,
 	}, mapError(ctx, err)
 }
 
@@ -39,6 +39,7 @@ func (s *session) DueGitHubReconciliations(ctx context.Context, now time.Time, l
 			item.AfterWorkItem = tracker.NativeWorkItemID(row.AfterWorkItem)
 			item.Attempts = row.Attempts
 			item.LastSuccessfulSweepAt, item.LastFailureAt = row.LastSuccessfulSweepAt, row.LastFailureAt
+			item.RepositoryPage, item.SweepStartedAt = row.RepositoryPage, row.SweepStartedAt
 		}
 		result = append(result, item)
 	}
@@ -104,7 +105,7 @@ func (s *session) SaveGitHubReconciliation(ctx context.Context, row projectstore
 		count, err := s.queries.InitializeGitHubReconciliation(ctx, pgquery.InitializeGitHubReconciliationParams{
 			OrganizationID: s.organization, ProjectID: row.ProjectID, Repository: repository, NodeID: row.NodeID,
 			AfterWorkItem: string(row.AfterWorkItem), Attempts: row.Attempts, NextAttemptAt: row.NextAttemptAt,
-			LastSuccessfulSweepAt: row.LastSuccessfulSweepAt, LastFailureAt: row.LastFailureAt,
+			LastSuccessfulSweepAt: row.LastSuccessfulSweepAt, LastFailureAt: row.LastFailureAt, RepositoryPage: row.RepositoryPage, SweepStartedAt: row.SweepStartedAt,
 		})
 		if err != nil {
 			return mapError(ctx, err)
@@ -117,7 +118,7 @@ func (s *session) SaveGitHubReconciliation(ctx context.Context, row projectstore
 	count, err := s.queries.AdvanceGitHubReconciliation(ctx, pgquery.AdvanceGitHubReconciliationParams{
 		OrganizationID: s.organization, ProjectID: row.ProjectID, Repository: repository, NodeID: row.NodeID,
 		AfterWorkItem: string(row.AfterWorkItem), ExpectedRevision: row.Revision, Attempts: row.Attempts, NextAttemptAt: row.NextAttemptAt,
-		LastSuccessfulSweepAt: row.LastSuccessfulSweepAt, LastFailureAt: row.LastFailureAt,
+		LastSuccessfulSweepAt: row.LastSuccessfulSweepAt, LastFailureAt: row.LastFailureAt, RepositoryPage: row.RepositoryPage, SweepStartedAt: row.SweepStartedAt,
 	})
 	if err != nil {
 		return mapError(ctx, err)
