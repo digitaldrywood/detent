@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -640,6 +641,12 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		return w.RequireProjectIdle(ctx, "prj_first", time.Now())
 	}
 	noop := func(context.Context, tenantstore.Writer) error { return nil }
+	snapshot := func(ctx context.Context, w tenantstore.Writer) error {
+		facts := w.(interface {
+			WithRunnerEventFacts(context.Context, eventstore.RunCommand, func(tenantstore.Writer) error) error
+		})
+		return facts.WithRunnerEventFacts(ctx, eventstore.RunCommand{Project: "prj_first", WorkItem: "wi_first_1", Operation: "append-event"}, func(tenantstore.Writer) error { return nil })
+	}
 	for _, test := range []struct {
 		name                                         string
 		holdFirst, finishFirst, holdNext, finishNext step
@@ -649,6 +656,7 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		{"population trigger while archive holder checks keys", lock("prj_first", "wi_first_1"), archiveItem("prj_first", "wi_first_1"), archive, converse, false, 3},
 		{"receipt while archive holder checks keys", lock("prj_first", "wi_first_1"), receipt, archive, converse, false, 4},
 		{"receipt after population write", archiveItem("prj_first", "wi_first_1"), receipt, archive, archiveItem("prj_second", "wi_second_1"), false, 2},
+		{"optimized runner snapshot while archive holder checks keys", snapshot, receipt, archive, converse, false, 4},
 		{"idle project check excludes conversation insert", idle, receipt, archive, converse, true, 4},
 		{"idle project check waits for work item writer", lock("prj_first", "wi_first_1"), receipt, noop, idle, true, 4},
 	} {
