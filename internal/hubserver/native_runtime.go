@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -286,89 +285,6 @@ func readRuntimeObject[T any](ctx context.Context, key nativeRuntimeObjectKey, r
 		value, err := read()
 		prepared.objects[key] = nativeRuntimeObjectResult{value: value, err: err}
 	}}
-}
-
-func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope nativeScope, item, kind, outcome string) (tracker.CollaborationEvent, error) {
-	e := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: tracker.NativeWorkItemID(item), AggregateType: "work_item"}
-	var actor, data, at string
-	statement := "SELECT id, sequence, type, schema_version, actor_json, " + collaborationPayloadColumn("") + ", recorded_at,payload_version,scheduler_present,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,scheduler_at,scheduler_revision,scheduler_change_id,scheduler_version_id,scheduler_head_sha,scheduler_change_present,event_revision FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type=?"
-	args := []any{scope.organization, scope.project, item, kind}
-	if outcome != "" {
-		base := statement
-		statement = "SELECT * FROM (" + base + " AND scheduler_outcome=? ORDER BY sequence DESC LIMIT 1) UNION ALL SELECT * FROM (" + base + " AND scheduler_outcome IS NULL ORDER BY sequence DESC LIMIT 65) ORDER BY sequence DESC"
-		args = append(args, outcome, scope.organization, scope.project, item, kind)
-	} else {
-		statement += " ORDER BY sequence DESC"
-		statement += " LIMIT 1"
-	}
-	rows, err := q.QueryContext(ctx, statement, args...)
-	if err != nil {
-		return tracker.CollaborationEvent{}, err
-	}
-	defer rows.Close()
-	found := false
-	legacy := 0
-	for rows.Next() {
-		var version int
-		var present, changePresent sql.NullBool
-		var source, reason, decisionOutcome, runner, decisionAt sql.NullString
-		var revision, eventRevision sql.NullInt64
-		var change tracker.NativeChangeReference
-		if err := rows.Scan(&e.ID, &e.AggregateSequence, &e.Type, &e.SchemaVersion, &actor, &data, &at, &version, &present, &decisionOutcome, &reason, &source, &runner, &decisionAt, &revision, &change.ChangeID, &change.VersionID, &change.HeadSHA, &changePresent, &eventRevision); err != nil {
-			return tracker.CollaborationEvent{}, err
-		}
-		if version == 1 && e.Type == "scheduler.decision" && explanationRead(ctx) {
-			projected := tracker.CollaborationData{Revision: tracker.Revision(eventRevision.Int64)}
-			if present.Bool {
-				decision := tracker.NativeSchedulerDecision{Outcome: decisionOutcome.String, Reason: reason.String, Source: source.String, RunnerID: runner.String, WorkItemRevision: tracker.Revision(revision.Int64)}
-				if decisionAt.String != "" {
-					decision.At, err = parseTimeValue(decisionAt.String)
-					if err != nil {
-						return tracker.CollaborationEvent{}, err
-					}
-				}
-				projected.Decision = &decision
-			}
-			if changePresent.Bool {
-				projected.Change = &change
-			}
-			data, err = marshalNative(projected)
-			if err != nil {
-				return tracker.CollaborationEvent{}, err
-			}
-		}
-		if outcome != "" {
-			if !decisionOutcome.Valid {
-				legacy++
-				if legacy > 64 {
-					return tracker.CollaborationEvent{}, &nativeError{Code: "scheduler_history_projection_pending", Message: "Scheduler history projection is incomplete", status: http.StatusServiceUnavailable, publicMessage: true}
-				}
-			}
-			var projection tracker.CollaborationData
-			if err := decodeRunHistory(ctx, q, data, &projection); err != nil {
-				return tracker.CollaborationEvent{}, err
-			}
-			if projection.Decision == nil || projection.Decision.Outcome != outcome {
-				continue
-			}
-		}
-		found = true
-		break
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return tracker.CollaborationEvent{}, err
-	}
-	if !found {
-		return tracker.CollaborationEvent{}, nil
-	}
-	if err := json.Unmarshal([]byte(actor), &e.Actor); err != nil {
-		return tracker.CollaborationEvent{}, err
-	}
-	if err := decodeRunHistory(ctx, q, data, &e.Data); err != nil {
-		return tracker.CollaborationEvent{}, err
-	}
-	e.RecordedAt, err = parseTimeValue(at)
-	return e, err
 }
 
 func validNativeRESTCredential(identity string) bool {

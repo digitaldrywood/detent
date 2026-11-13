@@ -17,8 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
-
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -982,55 +980,6 @@ func TestHostedInvitationConcurrentKeyInvitesOnce(t *testing.T) {
 	}
 	if len(ids) != 1 || f.providerInvitations() != 1 {
 		t.Fatalf("invitations %v, provider invitations %d", ids, f.providerInvitations())
-	}
-}
-
-func TestClaimHostedCommandIsExclusive(t *testing.T) {
-	t.Parallel()
-	f := newBrowserHostedFixture(t, true)
-	var actor string
-	if err := f.service.accessRead(t.Context(), f.service.accessOrganization(), func(r tenantstore.Reader) error {
-		member, err := r.AccessMember(t.Context(), "user_browser_owner")
-		actor = member.PrincipalID
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	command := hostedCommand{actor: actor, operation: "POST /claim", key: "exclusive", input: "same"}
-	const callers = 8
-	results := make(chan bool, callers)
-	codes := make(chan int, callers)
-	var group sync.WaitGroup
-	for range callers {
-		group.Go(func() {
-			recorder := httptest.NewRecorder()
-			c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/claim", nil), recorder)
-			claimed, err := f.service.claimHostedCommand(c, command, http.StatusCreated)
-			if err != nil {
-				t.Error(err)
-			}
-			results <- claimed
-			if !claimed {
-				codes <- recorder.Code
-			}
-		})
-	}
-	group.Wait()
-	close(results)
-	close(codes)
-	owners := 0
-	for claimed := range results {
-		if claimed {
-			owners++
-		}
-	}
-	for code := range codes {
-		if code != http.StatusConflict {
-			t.Fatalf("losing claim answered %d, want a retryable conflict", code)
-		}
-	}
-	if owners != 1 {
-		t.Fatalf("%d callers claimed the key, want exactly one", owners)
 	}
 }
 

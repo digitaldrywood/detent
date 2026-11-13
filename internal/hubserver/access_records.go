@@ -41,16 +41,8 @@ func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader
 	return fromFeatureError(s.requestAuth().Authorize(ctx, r, s.authInput(scope), write))
 }
 
-func (s *Service) hiddenAccessDenial(ctx context.Context, r accessstore.Reader, scope nativeScope, write bool, denial error) error {
-	return fromFeatureError(s.requestAuth().HiddenDenial(ctx, r, s.authInput(scope), write, denial))
-}
-
 func (s *Service) accessWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
 	return s.requestAuth().StoredSession(ctx, hash, now)
-}
-
-func (s *Service) accessMemberCredential(ctx context.Context, session auth.Session, hash string, membership auth.Membership) (apiCredential, int, error) {
-	return nativeCredentialResult(s.requestAuth().MemberCredential(ctx, session, hash, membership))
 }
 
 func (s *Service) authenticateAccessHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {

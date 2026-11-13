@@ -259,15 +259,6 @@ func (s *Service) GetWorkItemReferences(c echo.Context) error {
 	return c.JSON(http.StatusOK, references)
 }
 
-func WorkItemPageOrganizationRoute(path string) bool {
-	switch path {
-	case nativeOrganizationIssuePath, nativeOrganizationIssuePath + "/comments", nativeOrganizationIssuePath + "/relationships", nativeOrganizationIssuePath + "/references":
-		return true
-	default:
-		return false
-	}
-}
-
 func (s *Service) readCommentSourceRecords(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
 	page := tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{}}
 	if err := validateNativeQuery(params, "direction"); err != nil {

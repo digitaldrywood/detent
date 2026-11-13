@@ -17,28 +17,6 @@ import (
 
 var errContentStorageUnconfigured = fmt.Errorf("immutable content storage is not configured: %w", artifact.ErrStorage)
 
-func storedPayloadKey(ctx context.Context, organization string, raw []byte) (string, error) {
-	return storedMeteredPayloadKey(ctx, organization, raw, true)
-}
-
-func storedMeteredPayloadKey(ctx context.Context, organization string, raw []byte, billable bool) (string, error) {
-	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
-	if !ok {
-		return "", errContentStorageUnconfigured
-	}
-	content.mu.Lock()
-	content.organization = organization
-	ref, found := content.prepared[contentPreparationKey(organization, raw, billable)]
-	content.mu.Unlock()
-	if found {
-		return ref.Key, nil
-	}
-	return "", &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
-		_, err := prepareMeteredContent(ctx, organization, raw, billable)
-		return err
-	}}
-}
-
 func readStoredPayload(ctx context.Context, key string) ([]byte, error) {
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
 	if !ok || content.readOrganization == "" {
@@ -113,14 +91,6 @@ func payloadNativeID(ctx context.Context, prefix string) string {
 	return id
 }
 
-func contentCommitted(ctx context.Context) {
-	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-		content.mu.Lock()
-		clear(content.ids)
-		content.mu.Unlock()
-	}
-}
-
 func contentWriting(ctx context.Context, writing bool) {
 	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 		content.mu.Lock()
@@ -166,73 +136,6 @@ func (content *changeContent) rememberPayload(ref attachment.ArchiveReference, r
 	content.references[key] = ref
 	content.payloadBytes += int64(len(raw))
 	return nil
-}
-
-func contentMutation(ctx context.Context, active bool) {
-	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-		content.mu.Lock()
-		defer content.mu.Unlock()
-		if active {
-			if content.mutationDepth == 0 {
-				clear(content.ids)
-				clear(content.idPositions)
-				content.generatedAt = time.Time{}
-				if len(content.prepared) >= claimEvidenceLimit {
-					clear(content.prepared)
-				}
-			}
-			content.mutationDepth++
-		} else {
-			content.mutationDepth--
-		}
-	}
-}
-
-func readPayloadReference(ctx context.Context, q nativeQueryer, organization, key string) (attachment.ArchiveReference, error) {
-	ref := contentReference()
-	err := q.QueryRowContext(ctx, `SELECT object_key,object_sha256,object_bytes,content_bytes FROM change_content_objects WHERE organization_id=? AND object_key=?
- UNION ALL SELECT object_key,sha256,size,uncompressed_size FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND customer_owned=0 AND storage_binding_id='' LIMIT 1`, organization, key, organization, key).Scan(&ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize)
-	return ref, err
-}
-
-func prepareContentMutation[T any](ctx context.Context, q nativeQueryer, operation func() (T, error)) (T, error) {
-	contentMutation(ctx, true)
-	defer contentMutation(ctx, false)
-	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
-	if !ok {
-		content = nil
-	}
-	previousWriting := false
-	var previousPositions map[string]int
-	if content != nil {
-		content.mu.Lock()
-		previousWriting = content.writing
-		previousPositions = maps.Clone(content.idPositions)
-		content.mu.Unlock()
-	}
-	defer func() {
-		if content != nil {
-			content.mu.Lock()
-			content.writing = previousWriting
-			if previousWriting {
-				content.idPositions = previousPositions
-			}
-			content.mu.Unlock()
-		}
-	}()
-	for {
-		contentWriting(ctx, true)
-		result, err := operation()
-		contentWriting(ctx, false)
-		var hydration *claimHydration
-		if !errors.As(err, &hydration) {
-			return result, err
-		}
-		if err := hydration.run(ctx, q); err != nil {
-			var zero T
-			return zero, err
-		}
-	}
 }
 
 func isolateContentContext(ctx context.Context) context.Context {

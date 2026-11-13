@@ -3,11 +3,8 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"reflect"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -172,117 +169,6 @@ type nativeQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeScope) (tracker.NativeProject, error) {
-	var project tracker.NativeProject
-	var states string
-	if err := query.QueryRowContext(ctx, "SELECT id, organization_id, name, slug, profile, states_json, require_dependencies, workflow_markdown FROM projects WHERE deleted_at IS NULL AND organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&project.ID, &project.OrganizationID, &project.Name, &project.Slug, &project.Profile, &states, &project.RequireDependencies, &project.WorkflowMarkdown); err != nil {
-		return project, err
-	}
-	if err := json.Unmarshal([]byte(states), &project.States); err != nil {
-		return project, err
-	}
-	integration, err := readProjectIntegration(ctx, query, scope)
-	if err != nil {
-		return project, err
-	}
-	project.Icon = integration.Icon
-	project.Repository = integration.Repository
-	if project.Repository == "" {
-		project.Repository = integration.CheckoutRepository
-	}
-	selection, err := readCloudModelSelection(ctx, query, scope)
-	if err != nil {
-		return project, err
-	}
-	repository := integration.Repository
-	if repository == "" {
-		repository = integration.CheckoutRepository
-	}
-	if repository != "" {
-		project.CloneURL = "https://github.com/" + repository + ".git"
-	}
-	project.ModelSelection, err = json.Marshal(selection.Effective)
-	return project, err
-}
-
 func (s *Service) getNativeProject(c echo.Context) error {
 	return s.getProjectRecord(c)
-}
-
-func updateNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope, states []tracker.NativeState, now time.Time) error {
-	var source string
-	if err := tx.QueryRowContext(ctx, "SELECT workflow_source FROM projects WHERE organization_id=? AND id=?", scope.organization, scope.project).Scan(&source); err != nil {
-		return err
-	}
-	if source != "" {
-		return nativeWorkflowInvalid("Workflow is controlled by the repository; edit its definition and approve the new repository policy")
-	}
-	return applyNativeProjectStates(ctx, tx, scope, states, now)
-}
-
-func applyNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope, states []tracker.NativeState, now time.Time) error {
-	project, err := readNativeProject(ctx, tx, scope)
-	if err != nil {
-		return err
-	}
-	if project.Profile != "native" {
-		return nativePublicInvalid("Compatibility project workflow is externally owned")
-	}
-	states = nativeTriageStates(states)
-	if err := validateNativeStates(states); err != nil {
-		return err
-	}
-	encoded, err := marshalNative(states)
-	if err != nil {
-		return err
-	}
-	if reflect.DeepEqual(project.States, states) {
-		return nil
-	}
-	removals, err := nativeWorkflowRemovals(ctx, tx, scope.project, states)
-	if err != nil {
-		return err
-	}
-	for rank, state := range states {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at,board_rank)
-VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,source_name) DO UPDATE SET terminal=excluded.terminal,dispatchable=excluded.dispatchable,updated_at=excluded.updated_at,board_rank=excluded.board_rank
-WHERE workflow_states.terminal IS NOT excluded.terminal OR workflow_states.dispatchable IS NOT excluded.dispatchable OR workflow_states.board_rank IS NOT excluded.board_rank`, scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now), rank); err != nil {
-			return err
-		}
-	}
-	for _, id := range removals {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM workflow_states WHERE project_id=? AND id=?", scope.project, id); err != nil {
-			return err
-		}
-	}
-	_, err = tx.ExecContext(ctx, "UPDATE projects SET states_json=? WHERE organization_id=? AND id=?", encoded, scope.organization, scope.project)
-	return err
-}
-
-func nativeWorkflowRemovals(ctx context.Context, q nativeQueryer, project tracker.ProjectID, states []tracker.NativeState) ([]int64, error) {
-	names := make(map[string]bool, len(states))
-	for _, state := range states {
-		names[state.Name] = true
-	}
-	rows, err := q.QueryContext(ctx, `SELECT w.id,w.detent_state,EXISTS(SELECT 1 FROM issues i WHERE i.workflow_state_id=w.id) FROM workflow_states w WHERE w.project_id=?`, project)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var removals []int64
-	for rows.Next() {
-		var id int64
-		var name string
-		var occupied bool
-		if err := rows.Scan(&id, &name, &occupied); err != nil {
-			return nil, err
-		}
-		if !names[name] {
-			if occupied {
-				return nil, nativeWorkflowInvalid("Workflow states used by work items cannot be removed")
-			}
-			removals = append(removals, id)
-		}
-	}
-	return removals, rows.Err()
 }

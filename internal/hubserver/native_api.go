@@ -479,7 +479,7 @@ func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
 }
 
 func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
- return s.requireHubauthNative(roles...)
+	return s.requireHubauthNative(roles...)
 }
 
 func (s *Service) resolveNativeRequestScope(readCtx context.Context, c echo.Context) error {
@@ -661,15 +661,6 @@ func nativeCommandHash(input any) (string, error) {
 	}
 	hash := sha256.Sum256(encoded)
 	return hex.EncodeToString(hash[:]), nil
-}
-
-func nativeCommandReceipt(ctx context.Context, query nativeQueryer, scope nativeScope, operation, key, hash string) (string, bool, error) {
-	response, found, err := nativeCommandReceiptReference(ctx, query, scope, operation, key, hash)
-	if !found || err != nil {
-		return "", found, err
-	}
-	resolved, err := resolveStorageJSON(ctx, []byte(response))
-	return string(resolved), true, err
 }
 
 func nativeCommandReceiptReference(ctx context.Context, query nativeQueryer, scope nativeScope, operation, key, hash string) (string, bool, error) {

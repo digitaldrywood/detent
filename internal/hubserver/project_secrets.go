@@ -2,11 +2,8 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"net/http"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -37,23 +34,6 @@ func secretAAD(organization, project, kind string) []byte {
 	// the value and the wrapped data key to their original row.
 	encoded, _ := json.Marshal([3]string{organization, project, kind}) //nolint:errcheck // A fixed array of strings cannot fail JSON encoding.
 	return encoded
-}
-
-func readSecretRows(ctx context.Context, db nativeQueryer) ([]projectSecretRow, error) {
-	rows, err := db.QueryContext(ctx, `SELECT organization_id, project_id, kind, ciphertext, nonce, wrapped_data_key, master_key_version, 'project_secrets', updated_at FROM project_secrets UNION ALL SELECT organization_id, '', kind, ciphertext, nonce, wrapped_data_key, master_key_version, 'organization_secrets', updated_at FROM organization_secrets ORDER BY organization_id, project_id, kind`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var result []projectSecretRow
-	for rows.Next() {
-		var r projectSecretRow
-		if err := rows.Scan(&r.organization, &r.project, &r.kind, &r.envelope.Ciphertext, &r.envelope.Nonce, &r.envelope.WrappedKey, &r.envelope.Version, &r.table, &r.updatedAt); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
 }
 
 func (s *Service) registerProjectSecretRoutes(e *echo.Echo) {
@@ -95,24 +75,6 @@ func (s *Service) projectSecretMetadata(c echo.Context) error {
 	return c.JSON(http.StatusOK, status)
 }
 
-func readSecretStatus(ctx context.Context, db nativeQueryer, scope nativeScope) (projectSecretStatus, error) {
-	result := projectSecretStatus{Kind: flySpritesToken}
-	if scope.project == "" {
-		err := db.QueryRowContext(ctx, `SELECT organization_slug,master_key_version FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, flySpritesToken).Scan(&result.OrganizationSlug, &result.KeyVersion)
-		if errors.Is(err, sql.ErrNoRows) {
-			return result, nil
-		}
-		result.Present = err == nil
-		return result, err
-	}
-	err := db.QueryRowContext(ctx, `SELECT organization_slug, master_key_version FROM project_secrets WHERE organization_id = ? AND project_id = ? AND kind = ?`, scope.organization, scope.project, flySpritesToken).Scan(&result.OrganizationSlug, &result.KeyVersion)
-	if errors.Is(err, sql.ErrNoRows) {
-		return result, nil
-	}
-	result.Present = err == nil
-	return result, err
-}
-
 func secretActor(scope nativeScope) string {
 	if scope.credential.Hosted != nil {
 		if scope.credential.Hosted.SupportActor != "" {
@@ -121,15 +83,6 @@ func secretActor(scope nativeScope) string {
 		return scope.credential.Hosted.Subject
 	}
 	return scope.credential.ID
-}
-
-func secretAudit(ctx context.Context, exec hostedExecer, organization, project, actor, kind, event string, version int, at string) error {
-	if project == "" {
-		_, err := exec.ExecContext(ctx, `INSERT INTO organization_secret_audit(organization_id,actor,kind,key_version,event,recorded_at) VALUES(?,?,?,?,?,?)`, organization, actor, kind, version, event, at)
-		return err
-	}
-	_, err := exec.ExecContext(ctx, `INSERT INTO project_secret_audit(organization_id, project_id, actor, kind, key_version, event, recorded_at) VALUES(?,?,?,?,?,?,?)`, organization, project, actor, kind, version, event, at)
-	return err
 }
 
 func (s *Service) auditSecretUse(ctx context.Context, scope nativeScope, version int) error {
@@ -171,22 +124,6 @@ func (s *Service) removeProjectSecret(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, projectSecretStatus{Kind: flySpritesToken})
-}
-
-func removeProjectSecretInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
-	old, err := readSecretStatus(ctx, tx, scope)
-	if err != nil || !old.Present {
-		return err
-	}
-	if scope.project == "" {
-		_, err = tx.ExecContext(ctx, `DELETE FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, flySpritesToken)
-		if err != nil {
-			return err
-		}
-	} else if _, err := tx.ExecContext(ctx, `DELETE FROM project_secrets WHERE organization_id=? AND project_id=? AND kind=?`, scope.organization, scope.project, flySpritesToken); err != nil {
-		return err
-	}
-	return secretAudit(ctx, tx, string(scope.organization), string(scope.project), secretActor(scope), flySpritesToken, "remove", old.KeyVersion, formatHubTime(now))
 }
 
 func resolveSpritesSecret(ctx context.Context, db nativeQueryer, scope nativeScope) (nativeScope, string, hubsecrets.Envelope, error) {

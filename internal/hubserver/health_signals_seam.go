@@ -1,9 +1,10 @@
 package hubserver
 
 import (
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"time"
 )
 
 type healthSubject = healthsignals.Subject
@@ -75,9 +76,6 @@ func healthBaselineGaps(p healthRateProject, b healthRateBaseline) []healthBasel
 }
 func evaluateHealthRates(now time.Time, p []healthRateProject) []healthFinding {
 	return healthsignals.EvaluateRates(now, p)
-}
-func healthRunnerSetupFindings(now time.Time, p []healthRateProject) []healthFinding {
-	return healthsignals.RunnerSetupFindings(now, p)
 }
 func healthRecoveryReason(text string) string {
 	return healthsignals.New(healthsignals.Deps{NormalizeFailureSignature: normalizeFailureSignature}).RecoveryReason(text)

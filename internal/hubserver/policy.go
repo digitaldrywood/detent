@@ -1073,29 +1073,6 @@ func (s *Service) createTenantWorkflowApply(ctx context.Context, writer tenantst
 	return err
 }
 
-func storeObservedPolicy(ctx context.Context, exec hostedExecer, scope, reporter string, observation policy.Observation, now time.Time) error {
-	encoded, err := json.Marshal(observation.Descriptor)
-	if err != nil {
-		return err
-	}
-	source, err := json.Marshal(observation.Source)
-	if err != nil {
-		return err
-	}
-	return storeEncodedObservedPolicy(ctx, exec, scope, reporter, observation.Descriptor, string(encoded), string(source), now)
-}
-
-func storeEncodedObservedPolicy(ctx context.Context, exec hostedExecer, scope, reporter string, descriptor policy.Descriptor, encoded, source string, now time.Time) error {
-	_, err := exec.ExecContext(ctx, `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at, source_json) VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at,
-source_json = CASE WHEN excluded.source_json = 'null' AND project_observed_policies.policy_id = excluded.policy_id THEN project_observed_policies.source_json ELSE excluded.source_json END`, scope, descriptor.ID, encoded, reporter, formatHubTime(now), source)
-	if err != nil {
-		return err
-	}
-	_, err = exec.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at, source_digest, workflow_revision,gate_github_pull_request) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", scope, descriptor.ID, encoded, "runner-report", formatHubTime(now), descriptor.SourceDigest, policyWorkflowRevision(descriptor), descriptor.Gates.GitHubPullRequest)
-	return err
-}
-
 func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	var request struct {
 		ExpectedID string `json:"expected_policy_id"`
@@ -1207,32 +1184,6 @@ func followsRepositoryGate(rules tracker.ChangeReviewPolicy) bool {
 
 type policyQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
-
-func readProjectPolicy(ctx context.Context, db policyQuerier, scope string) (policy.Approval, bool, error) {
-	var result policy.Approval
-	var id, raw string
-	err := db.QueryRowContext(ctx, `SELECT r.policy_id, r.metadata_json, r.approved_by, r.approved_at
-FROM project_policies p JOIN policy_revisions r ON r.scope = p.scope AND r.policy_id = p.policy_id WHERE p.scope = ?`, scope).Scan(&id, &raw, &result.ApprovedBy, &result.ApprovedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return result, false, nil
-	}
-	if err != nil {
-		return result, false, err
-	}
-	result, err = decodeProjectPolicy(ctx, scope, id, raw, result)
-	return result, err == nil, err
-}
-
-func requireProjectPolicy(ctx context.Context, db policyQuerier, scope string) (policy.Approval, error) {
-	approval, found, err := readProjectPolicy(ctx, db, scope)
-	if err != nil {
-		return approval, err
-	}
-	if !found {
-		return approval, errNoApprovedRepositoryPolicy
-	}
-	return approval, nil
 }
 
 type projectPolicyRead struct {
@@ -1377,16 +1328,6 @@ func projectPolicyWorkflow(ctx context.Context, scope string, descriptor policy.
 	return workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, descriptor)
 }
 
-func claimPolicyScope(query claimCandidateQuery) (string, error) {
-	if query.NativeScope != nil {
-		return string(query.NativeScope.organization) + "/" + string(query.NativeScope.project), nil
-	}
-	if len(query.Repositories) != 1 {
-		return "", policyMismatch("A repository policy claim requires exactly one repository")
-	}
-	return "repository:" + strings.ToLower(strings.TrimSpace(query.Repositories[0])), nil
-}
-
 func validateCloudWorkflowPolicy(markdown string, descriptor policy.Descriptor) error {
 	if markdown == "" {
 		return nil
@@ -1408,114 +1349,6 @@ func validateCloudWorkflowPolicy(markdown string, descriptor policy.Descriptor) 
 		return nil
 	}
 	return policyMismatch("Cloud workflow changed; load its current Markdown definition and approve the resolved policy before claiming work")
-}
-
-func validateWorkflowPolicy(ctx context.Context, db policyQuerier, scope string, descriptor policy.Descriptor) error {
-	organization, project, native := strings.Cut(scope, "/")
-	if !native || strings.HasPrefix(scope, "repository:") || descriptor.Workflow != nil {
-		return nil
-	}
-	var profile, markdown string
-	if err := db.QueryRowContext(ctx, "SELECT profile, workflow_markdown FROM projects WHERE organization_id=? AND id=?", organization, project).Scan(&profile, &markdown); err != nil {
-		return err
-	}
-	if profile != "native" || markdown == "" {
-		return nil
-	}
-	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(markdown)})
-	if err != nil {
-		return policyMismatch("Saved Cloud workflow is invalid; correct its Markdown definition before approving execution")
-	}
-	if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
-		workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
-		expected, err := workflowconfig.ResolvePolicy(workflow)
-		if err != nil {
-			return err
-		}
-		if descriptor.Authored.Files["WORKFLOW.md"] != expected.Authored.Files["WORKFLOW.md"] {
-			return policyMismatch("Cloud workflow changed; load its current Markdown definition and approve the resolved policy before claiming work")
-		}
-	} else if descriptor.Configuration == nil || descriptor.Configuration.DefinitionDigest != workflow.SourceHash {
-		return policyMismatch("Cloud workflow changed; load its current Markdown definition and approve the resolved policy before claiming work")
-	}
-	return nil
-}
-
-func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, machine tracker.MachineID) (string, error) {
-	scope, err := claimPolicyScope(query)
-	if err != nil {
-		return "", err
-	}
-	var raw string
-	if err := tx.QueryRowContext(ctx, "SELECT metadata_json FROM policy_revisions WHERE scope = ? AND policy_id = ?", scope, query.PolicyID).Scan(&raw); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", nativePublicInvalid("Claim configuration has not been reported for this project")
-		}
-		return "", err
-	}
-	approval, err := decodeProjectPolicy(ctx, scope, query.PolicyID, raw, policy.Approval{})
-	if err != nil {
-		return "", err
-	}
-	var runnerID string
-	if query.NativeScope != nil {
-		runnerID = query.NativeScope.credential.Runner.RunnerID
-	}
-	var tags []string
-	if runnerID == "" && (approval.Policy.Requirements.RunnerID != "" || approval.Policy.Requirements.MachineID != "" || len(approval.Policy.Requirements.RequiredTags) != 0) {
-		return "", &nativeError{Code: "selector_no_match", Message: "Constrained routing requires an administrator-enrolled runner; legacy registration cannot assert trusted host identity or tags", status: http.StatusConflict, publicMessage: true}
-	}
-	if runnerID != "" {
-		var raw string
-		if err := tx.QueryRowContext(ctx, "SELECT tags_json FROM runner_identities WHERE id = ? AND machine_id = ? AND organization_id = ?", runnerID, machine, query.NativeScope.organization).Scan(&raw); err != nil {
-			return "", err
-		}
-		if err := json.Unmarshal([]byte(raw), &tags); err != nil {
-			return "", err
-		}
-	}
-	if err := approval.Policy.Requirements.Match(runnerID, string(machine), tags); err != nil {
-		return "", &nativeError{Code: "selector_no_match", Message: err.Error(), status: http.StatusConflict}
-	}
-	return scope, nil
-}
-
-func requireLeaseRouting(ctx context.Context, tx nativeQueryer, lease tracker.LeaseID) error {
-	var runner, machine, tags, state, raw string
-	var access bool
-	err := tx.QueryRowContext(ctx, `SELECT r.id, r.machine_id, r.tags_json, r.state, p.metadata_json,
-`+runnerProjectAccessSQL("i.organization_id", "i.project_id")+`
-FROM lease_runners lr JOIN runner_identities r ON r.id = lr.runner_id JOIN leases l ON l.lease_id = lr.lease_id
-JOIN issues i ON i.id = l.issue_id JOIN lease_policies lp ON lp.lease_id = l.lease_id
-JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id WHERE lr.lease_id = ?`, lease).Scan(&runner, &machine, &tags, &state, &raw, &access)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !access {
-		return nativeNotFoundAt("lease_routing_grant")
-	}
-	if state == "disabled" {
-		return &nativeError{Code: "runner_disabled", Message: "Runner is disabled", status: http.StatusConflict, publicMessage: true}
-	}
-	var descriptor policy.Descriptor
-	var authorizedTags []string
-	if err := json.Unmarshal([]byte(raw), &descriptor); err != nil {
-		return err
-	}
-	if err := json.Unmarshal([]byte(tags), &authorizedTags); err != nil {
-		return err
-	}
-	if err := descriptor.Requirements.Match(runner, machine, authorizedTags); err != nil {
-		return &nativeError{Code: "selector_no_match", Message: err.Error(), status: http.StatusConflict}
-	}
-	return nil
-}
-
-func revokeProjectPolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor, expectedID string, now time.Time) (any, error) {
-	return nil, &nativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", status: http.StatusGone, publicMessage: true}
 }
 
 func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (string, error) {

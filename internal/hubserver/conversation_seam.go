@@ -314,10 +314,6 @@ func conversationContentUnavailable() error {
 	return fromFeatureError(conversations.ConversationContentUnavailable())
 }
 
-func conversationDeliveryForExecution(p0 conversation.ExecutionStatus) conversation.Delivery {
-	return conversations.ConversationDeliveryForExecution(p0)
-}
-
 func conversationDispatchUnavailable() error {
 	return fromFeatureError(conversations.ConversationDispatchUnavailable())
 }
@@ -525,11 +521,6 @@ func (s *Service) conversationModelChoices(ctx context.Context, reader tenantsto
 func (s *Service) hasLunaCoordinator() bool {
 	r0 := s.conversationServer().HasLunaCoordinator()
 	return r0
-}
-
-func (s *Service) hydratePGConversationQuestion(ctx context.Context, organization tracker.OrganizationID, question conversationstore.Question) (conversationstore.Question, error) {
-	r0, r1 := s.conversationServer().HydratePGConversationQuestion(ctx, organization, question)
-	return r0, fromFeatureError(r1)
 }
 
 func (s *Service) readAttachmentPG(ctx context.Context, scope nativeScope, conversationID string, id string) (conversations.ConversationAttachmentRecord, []byte, error) {

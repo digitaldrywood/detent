@@ -172,18 +172,3 @@ type sqlParameterRow struct {
 	row *sql.Row
 	err error
 }
-
-func (r sqlParameterRow) Scan(values ...any) error {
-	if r.err != nil {
-		return r.err
-	}
-	return r.row.Scan(values...)
-}
-
-func queryRowSQL(ctx context.Context, query nativeQueryer, statement string, args ...any) sqlParameterRow {
-	statement, args, err := bindSQLParameters(statement, args)
-	if err != nil {
-		return sqlParameterRow{err: fmt.Errorf("bind SQL parameters: %w", err)}
-	}
-	return sqlParameterRow{row: query.QueryRowContext(ctx, statement, args...)}
-}

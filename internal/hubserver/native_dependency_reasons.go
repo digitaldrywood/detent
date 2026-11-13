@@ -208,26 +208,3 @@ func (s *Service) updateNativeDependencyReason(c echo.Context) error {
 	}
 	return c.JSONBlob(http.StatusOK, result)
 }
-
-func readNativeDependencyReference(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.NativeWorkItemID) (*tracker.NativeDependency, error) {
-	if scope.credential.HostedRole == "reporter" {
-		pageQuery, pageErr := prepareNativePageQuery(ctx, q, nativeScope{organization: scope.organization}, "", "native_issue_actors")
-		if pageErr != nil {
-			return nil, pageErr
-		}
-		q = pageQuery
-	}
-	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
-	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
-	condition = "(" + condition + ") AND (" + visibility + ")"
-	grantArgs = append(grantArgs, visibilityArgs...)
-	args := append([]any{scope.organization, id}, grantArgs...)
-	var link tracker.NativeDependency
-	var organizationSlug, projectSlug string
-	err := q.QueryRowContext(ctx, `SELECT i.native_id,i.project_id,i.number,i.title,COALESCE(ws.detent_state,''),COALESCE(ws.terminal,0),o.slug,p.slug FROM issues i JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id=i.project_id LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.native_id=? AND (`+condition+`)`, args...).Scan(&link.ID, &link.ProjectID, &link.Number, &link.Title, &link.State, &link.Terminal, &organizationSlug, &projectSlug)
-	if err != nil {
-		return nil, err
-	}
-	link.WebURL = issueBrowserPath(organizationSlug, projectSlug, link.Number)
-	return &link, nil
-}

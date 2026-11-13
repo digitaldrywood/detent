@@ -155,23 +155,6 @@ func (s *Service) readIssueLanes(ctx context.Context, scope nativeScope, params 
 	return s.readBoardProjection(ctx, scope, params, false, false, true)
 }
 
-func nativePageIDs(ctx context.Context, query nativeQueryer, statement string, args ...any) ([]string, error) {
-	rows, err := query.QueryContext(ctx, statement, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
 func (s *Service) listNativeComments(c echo.Context) error {
 	ctx := c.Request().Context()
 	scope := nativeRequestScope(c)

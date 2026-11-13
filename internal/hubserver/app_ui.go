@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"html"
 	"io/fs"
@@ -450,13 +449,6 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 	return s.postgresAppBootstrapPayload(c)
 }
 
-func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential, session auth.Session) (appBootstrap, error) {
-	if s.config.Hosted == nil || s.config.TenantRepository == nil || s.config.AccessRepository == nil {
-		return appBootstrap{}, workItemStorageUnavailable()
-	}
-	return s.readPostgresAppBootstrap(ctx, credential, session)
-}
-
 // appBootstrapPreferences publishes the turn preference choices: every model
 // the organization's enrolled runners report for the projects the actor can
 // read, and the fixed effort and access vocabularies. A hub whose runners
@@ -553,25 +545,6 @@ func conversationChoiceLabel(value string) string {
 	return strings.Join(words, " ")
 }
 
-// appBootstrapPlan summarizes the effective entitlement. A hub without hosted
-// plans reports no plan rather than failing the bootstrap.
-func (s *Service) appBootstrapPlan(ctx context.Context) *appBootstrapPlan {
-	if s.database.plans() == nil {
-		return nil
-	}
-	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now())
-	if err != nil {
-		s.config.Logger.Warn("hosted plan summary is unavailable", "error", err)
-		return nil
-	}
-	return &appBootstrapPlan{
-		ID:           entitlement.EffectiveBase.ID,
-		Name:         entitlement.Name,
-		Source:       entitlement.Source,
-		WindowEndsAt: entitlement.WindowEndsAt.UTC().Format(time.RFC3339),
-	}
-}
-
 // hostedReadableProjects lists the projects the credential may read with the
 // capabilities the client needs to render them.
 func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
@@ -638,48 +611,6 @@ func (s *Service) hostedReadableProjectsPostgres(ctx context.Context, credential
 		}
 		after = rows[count-1].ProjectID
 	}
-}
-
-func (s *Service) hostedWorkspaceCapabilities(ctx context.Context, credential apiCredential, project appBootstrapProject) (workspacesession.Capabilities, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	result := workspacesession.Capabilities{}
-	if s.workspaces == nil || !project.CanWrite || credential.Hosted == nil || credential.HostedRole == "viewer" {
-		return result, nil
-	}
-	if s.config.Hosted == nil || s.config.TenantRepository == nil {
-		return result, workItemStorageUnavailable()
-	}
-	var rows []runnerstore.ProjectWorkspaceAvailability
-	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
-		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project.ID), credential: credential}
-		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
-			return err
-		}
-		workspaceReader, ok := reader.(runnerstore.ProjectWorkspaceReader)
-		if !ok {
-			return errors.New("project workspace reader is unavailable")
-		}
-		var err error
-		rows, err = workspaceReader.ProjectWorkspaceAvailability(ctx, []tracker.ProjectID{scope.project}, s.config.now())
-		return err
-	})
-	if err != nil {
-		return result, fmt.Errorf("list workspace runners: %w", err)
-	}
-	for _, row := range rows {
-		if string(row.ProjectID) != project.ID {
-			continue
-		}
-		result.Files, result.Exec = true, true
-		terminal := row.Terminal && project.CanManageRunners && s.workspaces.config.Terminal.Enabled &&
-			terminalIsolationAllowed([]string{workspacesession.CapabilityTerminal}, s.workspaces.config.Terminal.Isolation, row.Isolation)
-		if s.workspaces.config.Terminal.Isolation == workspacesession.IsolationUser && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
-			terminal = false
-		}
-		result.Terminal = result.Terminal || terminal
-	}
-	return result, nil
 }
 
 // hostedOrganizationChoices lists the directory destinations the signed-in

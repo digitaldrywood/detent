@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"slices"
 	"strings"
@@ -20,49 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
-
-func authorizeClaimScope(ctx context.Context, tx *sql.Tx, request tracker.ClaimRequest, scope *nativeScope) error {
-	if scope != nil && scope.credential.Runner.RunnerID != "" && scope.credential.Runner.MachineID != request.MachineID {
-		return tracker.ErrMachineNotFound
-	}
-	var count int
-	query := "SELECT count(*) FROM machines WHERE id = ? AND organization_id IS NULL"
-	args := []any{request.MachineID}
-	if scope != nil {
-		query = "SELECT count(*) FROM machines WHERE id = ? AND organization_id = ? AND token_id = ?"
-		args = append(args, scope.organization, scope.credential.ID)
-		if scope.credential.Runner.RunnerID != "" {
-			query = "SELECT count(*) FROM runner_identities WHERE machine_id = ? AND organization_id = ? AND token_id = ?"
-		}
-	}
-	if err := tx.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
-		return err
-	}
-	if count != 1 {
-		return tracker.ErrMachineNotFound
-	}
-	if request.WorkItemID != 0 {
-		return authorizeClaimItem(ctx, tx, request.WorkItemID, scope)
-	}
-	return nil
-}
-
-func authorizeClaimItem(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, scope *nativeScope) error {
-	var count int
-	query := "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ? AND p.profile = 'github_compatible'"
-	args := []any{id}
-	if scope != nil {
-		query = "SELECT count(*) FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?"
-		args = append(args, scope.organization, scope.project)
-	}
-	if err := tx.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
-		return err
-	}
-	if count != 1 {
-		return tracker.ErrWorkItemNotFound
-	}
-	return nil
-}
 
 func (s *Service) claimNativeIssue(c echo.Context) error {
 	ctx := c.Request().Context()
@@ -100,10 +56,6 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return s.respondNativeLeaseTenant(c, scope, lease.LeaseID)
-}
-
-func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tracker.Lease) error {
-	return s.respondNativeLeaseTenant(c, scope, string(lease.ID))
 }
 
 func (s *Service) renewNativeLease(c echo.Context) error {

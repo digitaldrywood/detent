@@ -398,26 +398,6 @@ func (s *Service) claimHostedOperation(ctx context.Context, command hostedComman
 	return s.claimHostedOperationRecord(ctx, command.forContext(ctx))
 }
 
-func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
-	claimed, response, err := s.claimHostedOperation(c.Request().Context(), command)
-	if errors.Is(err, tenantauth.ErrUnavailable) {
-		return false, s.nativeAPIError(c, err)
-	}
-	if errors.Is(err, mutation.ErrConflict) {
-		return false, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
-	}
-	if errors.Is(err, mutation.ErrUncertain) {
-		return false, s.refusedAPIError(c, http.StatusConflict, "idempotency_in_progress", mutation.ErrUncertain.Error(), apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
-	}
-	if err != nil {
-		return false, s.nativeAPIError(c, err)
-	}
-	if !claimed {
-		return false, c.JSONBlob(status, response)
-	}
-	return true, nil
-}
-
 func (s *Service) completeHostedOperation(ctx context.Context, command hostedCommand, value any) (json.RawMessage, error) {
 	return s.completeHostedOperationRecord(ctx, command.forContext(ctx), value)
 }

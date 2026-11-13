@@ -54,17 +54,11 @@ func hostedPlanPrice(p0 *int64) string {
 func hostedAllowanceNames() []string {
 	return hostedplans.AllowanceNames()
 }
-func hostedFeatureNames() []string {
-	return hostedplans.FeatureNames()
-}
 func pilotHostedPlans() hostedplans.HostedPlansConfig {
 	return hostedplans.PilotPlans()
 }
 func hostedTiers() []hostedplans.Tier {
 	return hostedplans.Tiers()
-}
-func hostedTierFor(p0 hostedplans.PlanReference) (hostedplans.Tier, bool) {
-	return hostedplans.TierFor(p0)
 }
 func capacityHostedPlans() hostedplans.HostedPlansConfig {
 	return hostedplans.CapacityPlans()
@@ -75,10 +69,6 @@ func defaultHostedPlans(p0 *HostedConfig) hostedplans.HostedPlansConfig {
 func requireHostedFeatureInEntitlement(p0 hostedplans.HostedEntitlement, p1 string) error {
 	r0 := hostedplans.RequireFeatureInEntitlement(p0, p1)
 	return fromFeatureError(r0)
-}
-func validateHostedGrantCommand(p0 hostedplans.PlanCommand, p1 time.Time) (time.Time, error) {
-	r0, r1 := hostedplans.ValidateGrantCommand(p0, p1)
-	return r0, fromFeatureError(r1)
 }
 
 var errHostedBillingUnbound = hostedplans.ErrBillingUnbound
@@ -146,20 +136,12 @@ func (d *database) configureHostedBilling(p0 context.Context, p1 *HostedConfig) 
 	r0 := d.plansService().ConfigureBilling(p0, hostedPlansConfig(p1))
 	return fromFeatureError(r0)
 }
-func (d *database) configureHostedBillingRecords(p0 context.Context, p1 *hostedplans.HostedBillingConfig) error {
-	r0 := d.plansService().ConfigureBillingRecords(p0, p1)
-	return fromFeatureError(r0)
-}
 func (d *database) hostedEntitlementReport(p0 context.Context, p1 int64, p2 int) (hostedplans.EntitlementReport, error) {
 	r0, r1 := d.plansService().Entitlements(p0, p1, p2)
 	return r0, fromFeatureError(r1)
 }
 func (d *database) applyHostedPlanCommand(p0 context.Context, p1 string, p2 hostedplans.PlanCommand) error {
 	r0 := d.plansService().ApplyPlanCommand(p0, p1, p2)
-	return fromFeatureError(r0)
-}
-func (d *database) applyHostedPlanCommandRecord(p0 context.Context, p1 string, p2 hostedplans.PlanCommand, p3 string, p4 []byte, p5 time.Time) error {
-	r0 := d.plansService().ApplyPlanCommandRecord(p0, p1, p2, p3, p4, p5)
 	return fromFeatureError(r0)
 }
 func (d *database) hostedPlanUsage(p0 context.Context, p1 time.Time, p2 ...string) (hostedplans.HostedEntitlement, error) {
@@ -170,24 +152,12 @@ func (d *database) readHostedPlanUsage(p0 context.Context, p1 hostedplans.Querye
 	r0, r1 := d.plansService().ReadPlanUsage(p0, p1, p2, p3...)
 	return r0, fromFeatureError(r1)
 }
-func (d *database) readHostedPlanUsageRecord(p0 context.Context, p1 time.Time, p2 ...string) (hostedplans.HostedEntitlement, error) {
-	r0, r1 := d.plansService().ReadPlanUsageRecord(p0, p1, p2...)
-	return r0, fromFeatureError(r1)
-}
 func (d *database) readHostedPlan(p0 context.Context, p1 hostedplans.Queryer, p2 hostedplans.PlanReference) (hostedplans.HostedPlan, error) {
 	r0, r1 := d.plansService().ReadPlan(p0, p1, p2)
 	return r0, fromFeatureError(r1)
 }
-func (d *database) readHostedPlans(p0 context.Context, p1 hostedplans.Queryer) ([]hostedplans.HostedPlan, error) {
-	r0, r1 := d.plansService().ReadPlans(p0, p1)
-	return r0, fromFeatureError(r1)
-}
 func (d *database) hostedEntitlement(p0 context.Context, p1 hostedplans.Queryer, p2 time.Time) (hostedplans.HostedEntitlement, error) {
 	r0, r1 := d.plansService().Entitlement(p0, p1, p2)
-	return r0, fromFeatureError(r1)
-}
-func (d *database) resolveHostedEntitlement(p0 context.Context, p1 time.Time, p2 hostedplans.HostedEntitlement, p3 func(context.Context, hostedplans.PlanReference) (hostedplans.HostedPlan, error)) (hostedplans.HostedEntitlement, error) {
-	r0, r1 := d.plansService().ResolveEntitlement(p0, p1, p2, p3)
 	return r0, fromFeatureError(r1)
 }
 func (d *database) requireHostedFeatureRecord(p0 context.Context, p1 billingstore.Reader, p2 string, p3 time.Time) error {
@@ -203,26 +173,6 @@ func (d *database) runtimeState() *hostedplans.RuntimeConfig {
 }
 func (d *database) plans() *hostedplans.HostedPlansConfig {
 	return d.plansService().Plans()
-}
-func (d *database) loadHostedPlan(p0 context.Context, p1 hostedplans.PlanReference, p2 func(context.Context, hostedplans.PlanReference) (hostedplans.HostedPlan, string, error)) (hostedplans.HostedPlan, error) {
-	r0, r1 := d.plansService().LoadPlan(p0, p1, p2)
-	return r0, fromFeatureError(r1)
-}
-func (d *database) readHostedGrant(p0 context.Context, p1 string) (hostedplans.HostedGrant, error) {
-	r0, r1 := d.plansService().ReadGrant(p0, p1)
-	return r0, fromFeatureError(r1)
-}
-func (d *database) readHostedGrantAudits(p0 context.Context, p1 int64, p2 int) ([]hostedplans.GrantRecord, int64, error) {
-	r0, r1, r2 := d.plansService().ReadGrantAudits(p0, p1, p2)
-	return r0, r1, fromFeatureError(r2)
-}
-func (d *database) archiveRuntime(p0 context.Context, p1 hostedplans.HostedPlansConfig, p2 []hostedplans.HostedBillingPrice, p3 string, p4 bool) (billingstore.RuntimeRevision, error) {
-	r0, r1 := d.plansService().ArchiveRuntime(p0, p1, p2, p3, p4)
-	return r0, fromFeatureError(r1)
-}
-func (d *database) applyPublishedPlans(p0 context.Context, p1 billingstore.RuntimeRevision, p2 hostedplans.HostedPlansConfig) error {
-	r0 := d.plansService().ApplyPublishedPlans(p0, p1, p2)
-	return fromFeatureError(r0)
 }
 
 type PlanReference = hostedplans.PlanReference

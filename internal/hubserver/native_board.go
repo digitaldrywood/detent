@@ -2,9 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"slices"
 	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -61,39 +59,6 @@ func (s *Service) maintainNativeBoard(ctx context.Context) {
 			s.config.Logger.ErrorContext(ctx, "refresh native board card", attributes...)
 		}
 	}
-}
-
-func (d *database) commit(_ context.Context, tx *sql.Tx) error {
-	return tx.Commit()
-}
-
-func resetNativeBoardPolicy(ctx context.Context, tx *sql.Tx, scope string) error {
-	var organization, project string
-	var sequence int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO native_board_deltas(organization_id,project_id,previous_json,current_json)
-SELECT organization_id,id,NULL,NULL FROM projects WHERE organization_id||'/'||id=? AND profile='native'
-RETURNING organization_id,project_id,sequence`, scope).Scan(&organization, &project, &sequence)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES(?,?,?,?)
-ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=excluded.sequence,replay_floor=excluded.replay_floor`, organization, project, sequence, sequence)
-	return err
-}
-
-func redactNativeBoardCard(card *tracker.NativeBoardCard, grants map[tracker.ProjectID]bool) {
-	if card == nil {
-		return
-	}
-	card.Issue.Dependencies = []tracker.NativeWorkItemID{}
-	card.Issue.Blockers = slices.DeleteFunc(card.Issue.Blockers, func(blocker tracker.NativeDependency) bool { return !grants[blocker.ProjectID] })
-	for _, blocker := range card.Issue.Blockers {
-		card.Issue.Dependencies = append(card.Issue.Dependencies, blocker.ID)
-	}
-	card.StatusLine = nativeBoardStatusLine(*card)
 }
 
 func nativeBoardStatusLine(card tracker.NativeBoardCard) string {

@@ -14,33 +14,6 @@ type organizationProjectRank = projectsettings.Rank
 
 type projectRankChange = projectsettings.RankChange
 
-func readOrganizationProjectRank(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID) (organizationProjectRank, error) {
-	return projectsettings.ReadActiveRank(ctx, db, organization)
-}
-
-func (s *Service) readReadableOrganizationProjectRank(ctx context.Context, db nativeQueryer, credential apiCredential) (organizationProjectRank, error) {
-	organization := tracker.OrganizationID(s.appOrganizationID())
-	value := organizationProjectRank{ProjectIDs: []tracker.ProjectID{}}
-	if err := db.QueryRowContext(ctx, "SELECT scheduling_revision FROM organizations WHERE id = ?", organization).Scan(&value.Revision); err != nil {
-		return value, err
-	}
-	condition, args := credential.projectGrantSQL("p.organization_id", "p.id")
-	args = append([]any{organization}, args...)
-	rows, err := db.QueryContext(ctx, "SELECT p.id FROM projects p WHERE p.organization_id = ? AND p.deleted_at IS NULL AND ("+condition+") ORDER BY p.scheduling_rank, p.created_at, p.id", args...)
-	if err != nil {
-		return value, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id tracker.ProjectID
-		if err := rows.Scan(&id); err != nil {
-			return value, err
-		}
-		value.ProjectIDs = append(value.ProjectIDs, id)
-	}
-	return value, rows.Err()
-}
-
 func (s *Service) hostedProjectRank(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()

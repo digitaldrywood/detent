@@ -1,9 +1,5 @@
 package hubserver
 
-import (
-	"github.com/digitaldrywood/detent/internal/tracker"
-)
-
 type dashboardChange struct {
 	Sequence       int64  `json:"sequence"`
 	Topic          string `json:"topic"`
@@ -20,11 +16,4 @@ type dashboardChangePage struct {
 	Floor        int64             `json:"floor"`
 	Gap          bool              `json:"gap"`
 	Changes      []dashboardChange `json:"changes"`
-}
-
-func nativeBoardChangeKind(current *tracker.NativeBoardCard) string {
-	if current == nil {
-		return "delete"
-	}
-	return "upsert"
 }

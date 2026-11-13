@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"strings"
 	"time"
@@ -109,21 +108,6 @@ func (s *Service) authenticateAPIToken(ctx context.Context, token, renewalRunner
 
 func (s *Service) authenticateAPIHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
 	return s.authenticateAccessHash(ctx, hash, renewalRunner, renewalOrganization)
-}
-
-func (credential apiCredential) timeValid(now time.Time, created string, expires sql.NullString) bool {
-	if !expires.Valid {
-		return !credential.runnerRenewal
-	}
-	if !credential.runnerRenewal {
-		return runnerTimeValid(now, created, expires.String)
-	}
-	start, err := parseTimeValue(created)
-	if err != nil {
-		return false
-	}
-	end, err := parseTimeValue(expires.String)
-	return err == nil && start.Before(end) && !now.Before(start)
 }
 
 func apiBearerToken(c echo.Context) (string, error) {

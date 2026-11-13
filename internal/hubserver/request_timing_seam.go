@@ -18,7 +18,6 @@ func withRequestTiming(ctx context.Context, timing *requestTiming) context.Conte
 }
 func requestTimingFrom(ctx context.Context) *requestTiming { return requesttiming.From(ctx) }
 func timeSpan(ctx context.Context, name string) func()     { return requesttiming.TimeSpan(ctx, name) }
-func milliseconds(d time.Duration) float64                 { return float64(d) / float64(time.Millisecond) }
 func (s *Service) serverTiming(next echo.HandlerFunc) echo.HandlerFunc {
 	return requesttiming.Server(func(c echo.Context) bool { _, ok := c.Get("hub_api_credential").(apiCredential); return ok })(next)
 }

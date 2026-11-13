@@ -12,10 +12,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -144,10 +142,6 @@ func (s *Service) requireHostedProject(ctx context.Context, query nativeQueryer,
 func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCredential) (auth.HostedIdentity, auth.Membership, error) {
 	identity, membership, err := s.requestAuth().MutationIdentity(ctx, authCredential(credential))
 	return identity, membership, fromFeatureError(err)
-}
-
-func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope *nativeScope, required apikey.Scope) error {
-	return accessstore.ErrTransactionRequired
 }
 
 type hostedExecer interface {

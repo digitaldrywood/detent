@@ -278,9 +278,6 @@ type reportsScopeKey = reports.ReportsScopeKey
 func reportsScopeFrom(p0 context.Context) (reports.ReportsScope, bool) {
 	return reports.ReportsScopeFrom(p0)
 }
-func reportsIssueClause(p0 context.Context, p1 string) (string, []any) {
-	return reports.ReportsIssueClause(p0, p1)
-}
 
 type reportsFacet = reports.ReportsFacet
 type reportsFacets = reports.ReportsFacets

@@ -29,14 +29,6 @@ func placeholders(count int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
 }
 
-func parsedTime(value string) (*time.Time, error) {
-	parsed, err := parseTimeValue(value)
-	if err != nil {
-		return nil, err
-	}
-	return &parsed, nil
-}
-
 func parseTimeValue(value string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
 }

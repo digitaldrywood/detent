@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -13,10 +12,6 @@ import (
 )
 
 type cloudModelSelection = projectsettings.ModelSelection
-
-func readCloudModelSelection(ctx context.Context, query nativeQueryer, scope nativeScope) (cloudModelSelection, error) {
-	return projectsettings.ReadModelSelection(ctx, query, scope.organization, scope.project)
-}
 
 func (s *Service) getCloudModelSelection(c echo.Context) error {
 	scope := nativeRequestScope(c)

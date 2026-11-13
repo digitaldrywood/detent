@@ -3,10 +3,8 @@ package hubserver
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"net/url"
 	"slices"
 	"strings"
@@ -333,34 +331,4 @@ func boundedRecoveryReviews(reviews []tracker.ChangeReview, budget int) ([]track
 		}
 	}
 	return result, len(result) != len(reviews), nil
-}
-
-// readLatestLandingExit returns the item's latest move out of Merging. Its
-// reason records why landing stopped, which the next attempt acts on.
-func readLatestLandingExit(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (tracker.CollaborationEvent, bool, error) {
-	event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: tracker.NativeWorkItemID(item)}
-	before := int64(1<<63 - 1)
-	for {
-		var actor, data, at string
-		var from sql.NullString
-		err := tx.QueryRowContext(ctx, `SELECT id,sequence,type,actor_json,data_json,recorded_at,from_state FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' AND sequence<? AND (lower(from_state)='merging' OR from_state IS NULL) ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, item, before).Scan(&event.ID, &event.AggregateSequence, &event.Type, &actor, &data, &at, &from)
-		if errors.Is(err, sql.ErrNoRows) {
-			return event, false, nil
-		}
-		if err != nil {
-			return event, false, err
-		}
-		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
-			return event, false, err
-		}
-		if err := decodeChangeColumnsJSON(ctx, []byte(data), &event.Data); err != nil {
-			return event, false, err
-		}
-		if !from.Valid && !strings.EqualFold(event.Data.FromState, "merging") {
-			before = event.AggregateSequence
-			continue
-		}
-		event.RecordedAt, err = parseTimeValue(at)
-		return event, err == nil, err
-	}
 }

@@ -391,10 +391,6 @@ func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential ap
 	return created, err
 }
 
-func (s *Service) releaseAccessInvitation(ctx context.Context, email string) error {
-	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.DeleteAccessMemberReservation(ctx, strings.ToLower(email)) })
-}
-
 func nativeUnavailable(message string) error {
 	return &nativeError{Code: "unavailable", Message: message, status: 503}
 }

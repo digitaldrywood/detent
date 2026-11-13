@@ -4,22 +4,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func eventClaimFacts(run *tracker.NativeRunData) []any {
-	var data tracker.NativeRunData
-	if run != nil {
-		data = *run
-	}
-	var checkpoint tracker.NativeCheckpoint
-	if data.Handoff != nil {
-		checkpoint = *data.Handoff
-	}
-	var change tracker.NativeChangeReference
-	if checkpoint.Change != nil {
-		change = *checkpoint.Change
-	}
-	return []any{data.AttemptID, data.RunID, data.LeaseID, data.FencingToken, data.Sequence, data.PolicyID, change.ChangeID, change.VersionID, change.HeadSHA, checkpoint.ExternalEffect, checkpoint.EffectState}
-}
-
 func answeredClaimKind(data tracker.NativeRunData, checkpoint *tracker.NativeCheckpoint) string {
 	disposition := data.Disposition
 	publication := checkpoint != nil && (checkpoint.ExternalEffect == "git_push" || checkpoint.ExternalEffect == "pr_create")

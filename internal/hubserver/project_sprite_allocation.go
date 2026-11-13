@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -17,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -199,15 +197,6 @@ func (s *Service) spriteAllocationRunnerAllowed(ctx context.Context, scope nativ
 		return err
 	})
 	return allowed, err
-}
-
-func decodeSpriteMemberChecks(raw sql.NullString) (runnerauth.LocalChecks, bool, error) {
-	var checks runnerauth.LocalChecks
-	if !raw.Valid || raw.String == "" {
-		return checks, false, nil
-	}
-	err := json.Unmarshal([]byte(raw.String), &checks)
-	return checks, err == nil, err
 }
 
 func spritePoolProviderFree(ctx context.Context, r tenantstore.Reader, scope nativeScope, count int, now time.Time) (int, bool, error) {

@@ -1,9 +1,6 @@
 package hubserver
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -26,55 +23,6 @@ type nativeClosedPopulation struct {
 	CancelledAt []time.Time
 }
 
-func nativeBoardTime(at time.Time) string {
-	return at.UTC().Format(nativeBoardTimeLayout)
-}
-
-// readNativeClosedPopulation is the one definition of shipped work: issues
-// whose current state is Done and whose closed_at falls in [from, to),
-// archived or not. Cancelled closes in the same window are counted apart.
-// Callers choose the window: the board counter rolls back from now, while
-// Reports ends at the last complete hour. A zero from reads all history.
-// filter narrows the population with a predicate over native_board_items b.
-func readNativeClosedPopulation(ctx context.Context, q nativeQueryer, scope nativeScope, filter string, filterArgs []any, from, to time.Time) (nativeClosedPopulation, error) {
-	out := nativeClosedPopulation{Shipped: []nativeShippedIssue{}}
-	statement := `SELECT b.work_item_id,b.state,b.closed_at FROM native_board_items b
-WHERE b.organization_id=? AND b.project_id=? AND b.archived IN (0,1) AND b.terminal=1 AND b.closed_at<>'' AND b.closed_at>=? AND b.closed_at<? AND b.state IN (?,?)`
-	args := []any{scope.organization, scope.project, nativeBoardTime(from), nativeBoardTime(to), nativeShippedState, nativeCancelledState}
-	if filter != "" {
-		statement += " AND " + filter
-		args = append(args, filterArgs...)
-	}
-	issues, issueArgs := reportsIssueClause(ctx, "b.work_item_id")
-	statement += issues
-	args = append(args, issueArgs...)
-	rows, err := q.QueryContext(ctx, statement, args...)
-	if err != nil {
-		return out, fmt.Errorf("read closed population: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id, state, closed string
-		if err := rows.Scan(&id, &state, &closed); err != nil {
-			return out, fmt.Errorf("read closed population: %w", err)
-		}
-		at, err := time.Parse(nativeBoardTimeLayout, closed)
-		if err != nil {
-			return out, fmt.Errorf("decode closed population time: %w", err)
-		}
-		if state == nativeCancelledState {
-			out.Cancelled++
-			out.CancelledAt = append(out.CancelledAt, at)
-			continue
-		}
-		out.Shipped = append(out.Shipped, nativeShippedIssue{ID: id, ClosedAt: at})
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return out, fmt.Errorf("read closed population: %w", err)
-	}
-	return out, nil
-}
-
 var nativeShippedWindowSpans = []struct {
 	name string
 	span time.Duration
@@ -93,33 +41,6 @@ func nativeShippedWindow(value string) (string, error) {
 	default:
 		return "", nativePublicInvalid("completed_window supports 1h,24h,7d")
 	}
-}
-
-// readNativeShippedWindows counts shipped and cancelled work for every board
-// counter window ending at now, from one read of the widest window.
-func readNativeShippedWindows(ctx context.Context, q nativeQueryer, scope nativeScope, filter string, filterArgs []any, now time.Time) ([]tracker.NativeShippedWindow, error) {
-	widest := nativeShippedWindowSpans[len(nativeShippedWindowSpans)-1].span
-	population, err := readNativeClosedPopulation(ctx, q, scope, filter, filterArgs, now.Add(-widest), now)
-	if err != nil {
-		return nil, err
-	}
-	windows := make([]tracker.NativeShippedWindow, 0, len(nativeShippedWindowSpans))
-	for _, span := range nativeShippedWindowSpans {
-		from := now.Add(-span.span)
-		window := tracker.NativeShippedWindow{Window: span.name}
-		for _, issue := range population.Shipped {
-			if !issue.ClosedAt.Before(from) {
-				window.Shipped++
-			}
-		}
-		for _, at := range population.CancelledAt {
-			if !at.Before(from) {
-				window.Cancelled++
-			}
-		}
-		windows = append(windows, window)
-	}
-	return windows, nil
 }
 
 func applyNativeShippedWindows(summary *tracker.NativeWorkSummary, windows []tracker.NativeShippedWindow, selected string) {

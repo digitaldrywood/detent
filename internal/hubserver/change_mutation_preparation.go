@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -34,12 +33,4 @@ type changeMutationPreparation struct {
 type changeMutationSnapshot struct {
 	change, policy, rules, sourceRun, currentRun     string
 	issueRevision, contentRevision, evidenceSequence int64
-}
-
-func preparedChangeMutation(ctx context.Context) *changeMutationPreparation {
-	prepared, ok := ctx.Value(changeMutationPreparationKey{}).(*changeMutationPreparation)
-	if !ok {
-		return nil
-	}
-	return prepared
 }

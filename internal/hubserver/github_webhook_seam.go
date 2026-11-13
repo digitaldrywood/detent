@@ -58,9 +58,6 @@ func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verified bool) erro
 func (s *Service) maintainGitHubWebhookRecords(ctx context.Context) error {
 	return s.githubWebhookService().Maintain(ctx)
 }
-func (s *Service) processGitHubWebhookRecord(ctx context.Context, row projectstore.GitHubWebhook) error {
-	return s.githubWebhookService().Process(ctx, row)
-}
 func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScope, row projectstore.GitHubWebhook, payload githubWebhookPayload) error {
 	return s.githubWebhookService().Apply(ctx, s.gitHubWebhookIntegration(scope), row, payload)
 }

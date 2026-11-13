@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"net/http"
 
 	"github.com/labstack/echo/v4"
 
@@ -30,14 +29,6 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		return onboarding.Project{Progress: progress}, err
 	}
 	return s.projectOnboardingRecord(ctx, scope)
-}
-
-func (s *Service) getOnboarding(c echo.Context) error {
-	result, err := s.projectOnboarding(c.Request().Context(), nativeRequestScope(c))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, result)
 }
 
 type saveOnboardingRequest struct {

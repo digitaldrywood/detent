@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -252,49 +251,6 @@ func readPublishedContent(ctx context.Context, content *changeContent, organizat
 
 func contentReference() attachment.ArchiveReference {
 	return attachment.ArchiveReference{Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
-}
-
-func compactChangeVersion(version tracker.ChangeVersion) (string, error) {
-	raw, err := json.Marshal(version)
-	if err != nil {
-		return "", err
-	}
-	var record map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &record); err != nil {
-		return "", err
-	}
-	if record == nil {
-		return "", errors.New("version snapshot must contain an object")
-	}
-	delete(record, "policy")
-	var review map[string]json.RawMessage
-	if err := json.Unmarshal(record["review_policy"], &review); err != nil {
-		return "", err
-	}
-	delete(review, "policy_id")
-	if len(version.Checks) > 0 {
-		delete(review, "required_checks")
-	}
-	record["review_policy"], err = json.Marshal(review)
-	if err != nil {
-		return "", err
-	}
-	data, err := json.Marshal(record)
-	return string(data), err
-}
-
-func preparedChangeContent(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
-	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
-	if !ok {
-		return attachment.ArchiveReference{}, errContentStorageUnconfigured
-	}
-	content.mu.Lock()
-	defer content.mu.Unlock()
-	ref, found := content.prepared[organization+"/"+artifact.Digest(data)]
-	if !found {
-		return ref, errors.New("immutable content was not prepared before mutation")
-	}
-	return ref, nil
 }
 
 func (s *Service) registerChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference, billable bool) error {

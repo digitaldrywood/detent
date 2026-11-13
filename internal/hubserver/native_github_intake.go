@@ -25,15 +25,6 @@ func linkedSourceNumber(source string) int {
 	return number
 }
 
-func (s *Service) linkedSourceContext(ctx context.Context) context.Context {
-	ctx = s.runDetailContext(ctx)
-	base := ""
-	if s.config.Hosted != nil {
-		base = s.config.Hosted.PublicURL
-	}
-	return context.WithValue(ctx, linkedSourceURLKey{}, base)
-}
-
 type linkedSnapshotSourceError struct {
 	err     error
 	retryAt time.Time

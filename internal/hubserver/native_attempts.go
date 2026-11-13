@@ -44,50 +44,6 @@ func nativeStaleLease(err error, message string) error {
 	return err
 }
 
-func requireNativeMutationLease(ctx context.Context, tx nativeQueryer, scope nativeScope, item string, mutation tracker.Mutation, now time.Time) error {
-	var ordered int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", scope.organization, scope.project, item).Scan(&ordered); err != nil {
-		return err
-	}
-	if ordered == 0 && mutation.LeaseID == "" {
-		return nil
-	}
-	if mutation.LeaseID == "" || mutation.FencingToken <= 0 {
-		return tracker.ErrStaleFencingToken
-	}
-	if err := requireLeaseRunner(ctx, tx, mutation.LeaseID, scope); err != nil {
-		return err
-	}
-	lease, found, err := readLeaseByID(ctx, tx, mutation.LeaseID)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return nativeNotFoundAt("mutation_lease_missing")
-	}
-	id, err := nativeIssueRowID(ctx, tx, scope, item)
-	if err != nil {
-		return err
-	}
-	if lease.issueID != id {
-		return nativeNotFoundAt("mutation_lease_other_item")
-	}
-	if err := requireCurrentLease(lease, mutation.FencingToken, now); err != nil {
-		return err
-	}
-	return requireLeaseRouting(ctx, tx, mutation.LeaseID)
-}
-
-// nativeIssueRowID resolves a work item to its internal row ID with the same
-// scope join as readNativeIssue, without hydrating the issue. Fencing checks
-// only compare row identity.
-func nativeIssueRowID(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (tracker.WorkItemID, error) {
-	var id tracker.WorkItemID
-	err := query.QueryRowContext(ctx, `SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
-WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, item).Scan(&id)
-	return id, err
-}
-
 func validExecutionName(value string) bool {
 	return value != "" && len(value) <= 128 && strings.IndexFunc(value, func(r rune) bool {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {

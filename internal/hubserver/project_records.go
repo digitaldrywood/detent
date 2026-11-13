@@ -581,14 +581,6 @@ func isProjectCreation(input any) bool {
 	return false
 }
 
-func projectRecordRoute(path string) bool {
-	switch path {
-	case nativeBase, nativeBase + "/integration", nativeBase + "/model-selection", nativeBase + "/content-settings", nativeBase + "/usage/sprites", nativeBase + "/claims", nativeBase + "/claims/preview", nativeBase + "/claims/wait", nativeBase + "/policy", nativeBase + "/policy/observed", nativeBase + "/onboarding":
-		return true
-	}
-	return false
-}
-
 func (s *Service) releaseProjectRecordAuthority(ctx context.Context, authority interface{ Rollback() error }) {
 	if err := authority.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
 		s.config.Logger.ErrorContext(ctx, "release project authority", "error", err)

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
-	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
@@ -24,19 +23,8 @@ type requestMetricsResponse = requestmetrics.Response
 type RequestMetrics = requestmetrics.RequestMetrics
 type runnerRequestBudgetContext = requestmetrics.RunnerBudgetContext
 
-func NewRequestMetrics(repository metricsstore.Repository) (*RequestMetrics, error) {
-	return requestmetrics.NewRequestMetrics(repository)
-}
-func metricCaller(c apiCredential) (string, string) { return requestmetrics.Caller(authCredential(c)) }
-func metricRoute(routes map[string]bool, method, path string) string {
-	return requestmetrics.Route(routes, method, path)
-}
-func runnerRequestExempt(method, path string) bool { return requestmetrics.RunnerExempt(method, path) }
 func hostedRequestUsageFor(c echo.Context, elapsed time.Duration) hostedRequestUsage {
 	return requestmetrics.UsageFor(c, elapsed)
-}
-func hostedRequestUsageWindows(plans *HostedPlansConfig, now time.Time, pending map[requestMetricKey]requestLatency) map[int64]hostedRequestUsage {
-	return requestmetrics.UsageWindows(&requestmetrics.BillingPlan{WindowSeconds: plans.WindowSeconds, RetentionWindows: plans.RetentionWindows}, now, pending)
 }
 func (d *database) metricsBillingOwner() *requestmetrics.BillingOwner {
 	return &requestmetrics.BillingOwner{Repository: d.billingRepository, Organization: d.hostedOrganization, Plans: func() *requestmetrics.BillingPlan {
@@ -69,9 +57,6 @@ func (s *Service) admitRunnerRequest(c echo.Context, cred apiCredential) error {
 }
 func (s *Service) measureRequests(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error { return s.requestMetricsHTTP().Measure(next)(c) }
-}
-func (s *Service) requestMetricsVisible(ctx context.Context) bool {
-	return s.requestMetricsHTTP().Visible(ctx)
 }
 func (s *Service) adminRequestMetrics(ctx context.Context) (requestMetricsReport, bool, error) {
 	return s.requestMetricsHTTP().AdminReport(ctx)

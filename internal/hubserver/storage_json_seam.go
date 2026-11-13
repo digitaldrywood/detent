@@ -37,9 +37,3 @@ func decodeStorageJSON(ctx context.Context, raw []byte, result any) error {
 func resolveStorageJSONWith(ctx context.Context, raw []byte, read func(context.Context, string, attachment.ArchiveReference) ([]byte, error)) ([]byte, error) {
 	return storageconversion.ResolveJSONWith(ctx, raw, read)
 }
-func compactStorageJSON(raw []byte, ref storageJSONReference) ([]byte, error) {
-	return storageconversion.CompactJSON(raw, ref)
-}
-func mergeStorageJSON(original, expected, current json.RawMessage) (json.RawMessage, bool, error) {
-	return storageconversion.MergeJSON(original, expected, current)
-}

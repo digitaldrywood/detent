@@ -16,10 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/usagereport"
 	"github.com/digitaldrywood/detent/internal/mutation"
 
-	"encoding/csv"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/credits"
-	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -109,11 +106,6 @@ type preparedConversationUsage = credits.PreparedUsage
 type chatUsageSummary = usagereport.ChatSummary
 
 func (c includedAICredits) remaining() int64 { return credits.Included(c).Remaining() }
-func (p creditPageRequest) bounds() (int64, int64, error) {
-	from, to, err := credits.Page(p).Bounds()
-	return from, to, fromFeatureError(err)
-}
-
 func (d *database) creditDeps(deps credits.Deps) credits.Deps {
 	deps.Repository = d.billingRepository
 	deps.Organization = d.hostedOrganization
@@ -162,22 +154,6 @@ func (s *Service) readAICredits(ctx context.Context, pages ...creditPageRequest)
 	return value, fromFeatureError(err)
 }
 
-func (s *Service) readCreditHistory(ctx context.Context, view *aiCreditView, page creditPageRequest) error {
-	return fromFeatureError(s.creditsService().History(ctx, view, credits.Page(page)))
-}
-
-func (d *database) includedAICredits(ctx context.Context, _ nativeQueryer, organization tracker.OrganizationID, at time.Time) (includedAICredits, error) {
-	if d.plans() == nil {
-		return includedAICredits{}, nil
-	}
-	return d.includedAICreditsRecord(ctx, organization, at)
-}
-
-func (d *database) includedAICreditsRecord(ctx context.Context, organization tracker.OrganizationID, at time.Time) (includedAICredits, error) {
-	value, err := d.creditsService().Included(ctx, organization, at)
-	return includedAICredits(value), fromFeatureError(err)
-}
-
 func (d *database) includedAICreditsFromReader(ctx context.Context, r billingstore.Reader, at time.Time) (includedAICredits, error) {
 	value, err := d.creditsService().IncludedFromReader(ctx, r, at)
 	return includedAICredits(value), fromFeatureError(err)
@@ -212,17 +188,6 @@ func (d *database) writeConversationUsagePostgres(ctx context.Context, w tenants
 	return fromFeatureError(d.creditsService().WriteUsage(ctx, w, prepared))
 }
 
-func (d *database) conversationUsageRecord(ctx context.Context, r billingstore.Reader, usage ConversationUsage) (billingstore.ConversationUsage, error) {
-	value, err := d.creditsService().UsageRecord(ctx, r, credits.Usage(usage))
-	return value, fromFeatureError(err)
-}
-
-func conversationUsageCostObservation(row billingstore.ConversationUsage) (costObservation, error) {
-	return credits.UsageCostObservation(row)
-}
-func chatUsageCost(price UsagePrice, tokens runner.AgentTokenCounts) float64 {
-	return credits.UsageCost(billingstore.ConversationPrice{Input: price.Input, CachedInput: price.CachedInput, Output: price.Output}, tokens)
-}
 func chatBillingWindow(now time.Time, subscription billing.Snapshot) usageWindow {
 	return usageWindow(credits.BillingWindow(now, subscription))
 }
@@ -230,11 +195,6 @@ func (d *database) chatUsageSummary(ctx context.Context, organization tracker.Or
 	value, err := d.creditsService().UsageSummary(ctx, organization, credits.Window(window), projects)
 	return chatUsageSummary{Range: usageWindow(value.Range), Input: value.Input, CachedInput: value.CachedInput, Output: value.Output, ReasoningOutput: value.ReasoningOutput, Tokens: value.Tokens, Turns: value.Turns, UnpricedTurns: value.UnpricedTurns, CostUSD: value.CostUSD}, fromFeatureError(err)
 }
-func creditCSVCell(value string) string { return credits.CSVCell(value) }
-func writeCreditCSVEntry(writer *csv.Writer, row billingstore.CreditExportEntry) error {
-	return credits.WriteCSVEntry(writer, row)
-}
-
 func (s *Service) creditPack(id string) (HostedCreditPack, bool) {
 	value, ok := s.creditWorkerService().CreditPack(id)
 	return HostedCreditPack(value), ok

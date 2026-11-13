@@ -1,8 +1,6 @@
 package hubserver
 
 import (
-	"encoding/json"
-	"reflect"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -68,46 +66,5 @@ func TestPreparedConfigurationPreservesOtherProjects(t *testing.T) {
 		if got.ProjectID != want.ProjectID || got.Paused != want.Paused || got.Draining != want.Draining || !got.ObservedAt.Equal(want.ObservedAt) {
 			t.Fatalf("concurrent project configuration lost: got=%+v want=%+v", got, want)
 		}
-	}
-}
-
-func TestProjectConfigurationMapReplacement(t *testing.T) {
-	for _, test := range []struct {
-		name, document, project, want string
-	}{
-		{"replace first", `{"first":{"marker":"old"},"second":{"marker":"keep"}}`, "first", `{"first":{"marker":"new"},"second":{"marker":"keep"}}`},
-		{"replace last", `{"first":{"marker":"keep"},"second":{"marker":"old"}}`, "second", `{"first":{"marker":"keep"},"second":{"marker":"new"}}`},
-		{"escaped key", `{"first\"key":{"marker":"old"},"second":{"marker":"keep"}}`, `first"key`, `{"first\"key":{"marker":"new"},"second":{"marker":"keep"}}`},
-		{"append", `{"first":{"marker":"keep"}}`, "second", `{"first":{"marker":"keep"},"second":{"marker":"new"}}`},
-		{"empty", ` { } `, "first", `{"first":{"marker":"new"}}`},
-		{"null", `null`, "first", `{"first":{"marker":"new"}}`},
-		{"duplicate key", `{"first":{"marker":"old"},"first":{"marker":"last"}}`, "first", `{"first":{"marker":"new"}}`},
-		{"array", `[]`, "first", ""},
-		{"invalid sibling", `{"first":{},"second":!}`, "first", ""},
-		{"invalid suffix", `{} {}`, "first", ""},
-		{"null suffix", `null {}`, "first", ""},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			got, err := replaceProjectConfigurationEntry(test.document, test.project, `{"marker":"new"}`)
-			if test.want == "" {
-				if err == nil {
-					t.Fatalf("accepted malformed map: %s", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			var actual, expected map[string]map[string]string
-			if err := json.Unmarshal([]byte(got), &actual); err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal([]byte(test.want), &expected); err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(actual, expected) {
-				t.Fatalf("configuration map=%s want=%s", got, test.want)
-			}
-		})
 	}
 }

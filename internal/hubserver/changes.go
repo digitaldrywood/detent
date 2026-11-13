@@ -6,11 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -267,20 +265,4 @@ func changeVersionResponse(version tracker.ChangeVersion) tracker.ChangeVersion 
 type changeSummaryPolicy struct {
 	approval policy.Approval
 	rules    tracker.ChangeReviewPolicy
-}
-
-func (p changeSummaryPolicy) identities(version *tracker.ChangeVersion) (string, string) {
-	return changerequest.CurrentPolicyIdentities(version, p.approval.Policy, p.rules)
-}
-
-func (p changeSummaryPolicy) summarize(detail tracker.ChangeDetail, now time.Time, priorApproval bool) tracker.ChangeSummary {
-	var current *tracker.ChangeVersion
-	for i := range detail.Versions {
-		if detail.Versions[i].ID == detail.Change.CurrentVersion {
-			current = &detail.Versions[i]
-			break
-		}
-	}
-	policyID, reviewID := p.identities(current)
-	return changerequest.SummarizeCurrentVersion(detail, policyID, reviewID, now, priorApproval)
 }

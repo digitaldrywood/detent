@@ -28,25 +28,6 @@ type setProjectIconRequest struct {
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 }
 
-func readProjectIcon(ctx context.Context, query nativeQueryer, scope nativeScope) (projecticon.Icon, error) {
-	var icon projecticon.Icon
-	err := query.QueryRowContext(ctx, `SELECT coalesce(icon_kind,'automatic'),coalesce(icon_name,''),coalesce(icon_color,''),coalesce(icon_emoji,''),coalesce(icon_image_key,''),coalesce(icon_image_sha256,'') FROM projects WHERE organization_id=? AND id=? AND deleted_at IS NULL`, scope.organization, scope.project).Scan(&icon.Kind, &icon.Name, &icon.Color, &icon.Emoji, &icon.ImageKey, &icon.ImageSHA256)
-	if err != nil {
-		return icon, err
-	}
-	if icon.Kind == "image" {
-		icon.URL = "/organizations/" + string(scope.organization) + "/api/v2/projects/" + string(scope.project) + "/attachments/" + icon.ImageKey
-	}
-	return icon, nil
-}
-
-func projectIconOverride(icon projecticon.Icon) *projecticon.Icon {
-	if icon.Kind == "" || icon.Kind == "automatic" {
-		return nil
-	}
-	return &icon
-}
-
 func (s *Service) setProjectIcon(c echo.Context) error {
 	var request setProjectIconRequest
 	if err := decodeAPIJSON(c, &request); err != nil {

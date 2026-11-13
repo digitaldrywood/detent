@@ -20,14 +20,6 @@ type nativeCandidateSnapshot struct {
 	Unavailable            []string
 }
 
-func nativeCandidateValues[T ~string | ~int64](values []T) []any {
-	args := make([]any, len(values))
-	for index, value := range values {
-		args[index] = value
-	}
-	return args
-}
-
 func (s *Service) nativeClaimAnsweredExclusion(ctx context.Context, scope nativeScope, plan nativeClaimPlan, now time.Time) (*tracker.NativeAnsweredExclusion, error) {
 	if !nativeClaimAnswerRequired(plan) || plan.latestAttempt.ClaimDisposition == nil {
 		return nil, nil

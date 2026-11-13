@@ -1,10 +1,8 @@
 package hubserver
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -147,57 +145,3 @@ func (s *Service) trackerAPIError(c echo.Context, err error) error {
 // claimMode selects how one claim pass runs: a preflight on the reader that
 // stops at the first claimable candidate, a write pass restricted to that
 // candidate, or the full write pass.
-
-// claimWorkspaceExclusionArg binds the candidate query's workspace exclusion.
-// A workspace session's dispatch issue is not project work and never becomes
-// project work: closing the workspace closes the association, it does not hand
-// the issue to the issue lane. Only a claim that
-// declared the workspace capability is offered one, and the exclusion lives in
-// the candidate query rather than in a skip set so that the provider candidate
-// preview, which shares this query, does not offer one either.
-//
-// It is a bound argument over a constant clause rather than a clause spliced
-// into the statement, so the query the driver prepares stays one constant
-// string.
-func claimWorkspaceExclusionArg(query claimCandidateQuery) int {
-	if query.WorkspaceLane {
-		return 1
-	}
-	return 0
-}
-
-func stringSet(values []string) map[string]struct{} {
-	result := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
-			result[value] = struct{}{}
-		}
-	}
-	return result
-}
-
-func normalizedJSONStringSet(value string) (map[string]struct{}, error) {
-	var values []string
-	if err := json.Unmarshal([]byte(value), &values); err != nil {
-		return nil, err
-	}
-	return stringSet(values), nil
-}
-
-func setsIntersect(left map[string]struct{}, right map[string]struct{}) bool {
-	for value := range left {
-		if _, ok := right[value]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func setContainsAll(haystack map[string]struct{}, needles map[string]struct{}) bool {
-	for value := range needles {
-		if _, ok := haystack[value]; !ok {
-			return false
-		}
-	}
-	return true
-}

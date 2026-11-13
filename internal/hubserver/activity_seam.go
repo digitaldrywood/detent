@@ -35,15 +35,9 @@ func (s *Service) readActivityReport(ctx context.Context, credential apiCredenti
 	out, err := s.activityService().Read(ctx, s.activityCaller(credential), r, w)
 	return out, fromFeatureError(err)
 }
-func closedAttemptSeconds(phases []tracker.NativePhase) float64 {
-	return reportdata.ClosedAttemptSeconds(phases)
-}
 
 type analyticsResidenceSample = reportdata.ResidenceSample
 
-func analyticsDuration(values []float64) operatortool.AnalyticsDuration {
-	return reportdata.Duration(values)
-}
 func readDiagnosticObjects[T, R any](records []T, read func(T) (R, error)) ([]R, []error) {
 	return reportdata.ReadObjects(records, read)
 }
@@ -54,4 +48,3 @@ type reportsSpend = reportdata.Spend
 func sampledDuration(values []float64) operatortool.AnalyticsDuration {
 	return reportdata.SampledDuration(values)
 }
-func activityRunRole(data tracker.NativeRunData) string { return activity.RunRole(data) }

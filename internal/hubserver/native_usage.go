@@ -79,28 +79,6 @@ func validateNativeRunUsage(request tracker.NativeRunEvent) error {
 	return nil
 }
 
-// usageDelta is the part of a reported running total the hub has not yet
-// recorded. A count that went backwards contributes nothing rather than
-// debt. Cost is the runner's own estimate when it priced the usage in the
-// hub's currency; otherwise the hub prices the new tokens from its table, so
-// every stored row is denominated in the hub's one currency.
-func usageDelta(total, recorded tracker.NativeUsage, prices UsageConfig) tracker.NativeUsage {
-	delta := tracker.NativeUsage{
-		Input:       max(total.Input-recorded.Input, 0),
-		CachedInput: max(total.CachedInput-recorded.CachedInput, 0),
-		Output:      max(total.Output-recorded.Output, 0),
-	}
-	runnerCurrency := strings.ToUpper(strings.TrimSpace(total.Currency))
-	if total.CostEstimate > 0 && (runnerCurrency == "" || runnerCurrency == prices.currency()) {
-		delta.CostEstimate = max(total.CostEstimate-recorded.CostEstimate, 0)
-		return delta
-	}
-	if estimated, _, found := prices.estimate(strings.TrimSpace(total.Model), delta.Input, delta.CachedInput, delta.Output); found {
-		delta.CostEstimate = estimated
-	}
-	return delta
-}
-
 // usagePeriod is the hour bucket a moment is filed under.
 func usagePeriod(at time.Time) string {
 	return at.UTC().Truncate(time.Hour).Format(usagePeriodLayout)

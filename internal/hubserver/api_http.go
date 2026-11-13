@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -238,22 +236,6 @@ func (s *Service) refusedAPIError(c echo.Context, status int, code, reason strin
 		return c.NoContent(status)
 	}
 	return c.JSON(status, response)
-}
-
-func apiWorkItemID(c echo.Context) (tracker.WorkItemID, error) {
-	value, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
-	if err != nil || value <= 0 {
-		return 0, fmt.Errorf("%w: %q", tracker.ErrInvalidWorkItemID, c.Param("id"))
-	}
-	return tracker.WorkItemID(value), nil
-}
-
-func apiLeaseID(c echo.Context) (tracker.LeaseID, error) {
-	value := strings.TrimSpace(c.Param("id"))
-	if value == "" {
-		return "", tracker.ErrLeaseNotFound
-	}
-	return tracker.LeaseID(value), nil
 }
 
 func apiTTL(seconds int64) (time.Duration, error) {

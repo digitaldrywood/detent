@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net/http"
 	"slices"
@@ -311,21 +310,6 @@ func (s *Service) artifactReadGrantCommand(ctx context.Context, scope nativeScop
 		return artifact.Grant{}, workItemStorageUnavailable()
 	}
 	return s.artifactReadGrantTenant(ctx, scope, item, artifactID, revision, now)
-}
-
-func (s *Service) recheckHostedArtifactReader(ctx context.Context, _ *sql.Tx, scope nativeScope) error {
-	if scope.credential.Hosted == nil {
-		return nil
-	}
-	if s.config.TenantRepository == nil {
-		return workItemStorageUnavailable()
-	}
-	if _, _, err := s.hostedMutationIdentity(ctx, scope.credential); err != nil {
-		return err
-	}
-	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		return s.authorizeAccessScope(ctx, r, scope, false)
-	})
 }
 
 func (s *Service) getArtifactReference(c echo.Context) error {

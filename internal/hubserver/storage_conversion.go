@@ -30,14 +30,6 @@ func (s *Service) convertPostgresStorage(ctx context.Context, tenant hubmaintena
 	return usage.Rows, err
 }
 
-func chargeStorageConversion(ctx context.Context, size int) error {
-	return storageconversion.Charge(ctx, size)
-}
-
 func expandStorageConversion(ctx context.Context, size int) error {
 	return storageconversion.Expand(ctx, size)
-}
-
-func storageConversionLimit(ctx context.Context) int {
-	return storageconversion.Limit(ctx)
 }

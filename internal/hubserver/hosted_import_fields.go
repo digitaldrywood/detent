@@ -4,13 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
-	"slices"
 	"strconv"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/artifact"
-	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -40,29 +36,9 @@ var hostedImportProjections = []hostedImportProjection{
 	{"runner_identities", "operations_json", []string{"operations_known"}, `UPDATE runner_identities SET operations_known=COALESCE(operations_known,?) WHERE rowid=? AND COALESCE(operations_json,'null')=? AND (operations_known IS NULL)`},
 }
 
-func provenanceProvider(value *tracker.Provenance) string {
-	if value == nil {
-		return ""
-	}
-	return value.Provider
-}
-
-func provenanceExternalID(value *tracker.Provenance) string {
-	if value == nil {
-		return ""
-	}
-	return value.ExternalID
-}
-
 type outboxFields struct {
 	IssueNumber int  `json:"issue_number"`
 	Summary     bool `json:"summary"`
-}
-
-func decodeOutboxFields(raw []byte) (outboxFields, error) {
-	var value outboxFields
-	err := json.Unmarshal(raw, &value)
-	return value, err
 }
 
 func decodeAccountFields(event string) accountReceipt {
@@ -82,91 +58,6 @@ type hostedImportFieldValues struct {
 	outbox       outboxFields
 	voided       bool
 	operations   []string
-}
-
-func hostedImportFields(table, raw string) (hostedImportFieldValues, error) {
-	decode := func(value any) error { return json.Unmarshal([]byte(raw), value) }
-	switch table {
-	case "hosted_plans":
-		var value HostedPlan
-		if err := decode(&value); err != nil {
-			return hostedImportFieldValues{}, err
-		}
-		return hostedImportFieldValues{columns: []any{value.Allowances["collaboration_bytes"]}}, nil
-	case "hosted_artifact_usage":
-		var value artifact.Usage
-		if err := decode(&value); err != nil {
-			return hostedImportFieldValues{}, err
-		}
-		return hostedImportFieldValues{columns: []any{value.RetainedBytes, value.ReservedBytes}}, nil
-	case "hosted_sessions":
-		var value auth.HostedIdentity
-		if err := decode(&value); err != nil {
-			return hostedImportFieldValues{}, err
-		}
-		return hostedImportFieldValues{columns: []any{value.Subject}}, nil
-	case "artifact_services":
-		var value artifact.Binding
-		if err := decode(&value); err != nil {
-			return hostedImportFieldValues{}, err
-		}
-		return hostedImportFieldValues{columns: []any{value.Mode, value.HostedOptIn}}, nil
-	case "usage_cost_observations":
-		var value costObservation
-		if err := decode(&value); err != nil {
-			return hostedImportFieldValues{}, err
-		}
-		return hostedImportFieldValues{columns: []any{value.Voided}, voided: value.Voided}, nil
-	case "hosted_audit":
-		value := decodeAccountFields(raw)
-		return hostedImportFieldValues{columns: []any{value.Kind, value.Retry}}, nil
-	case "github_import_records":
-		var value GitHubImportRecord
-		if err := decode(&value); err != nil {
-			return hostedImportFieldValues{}, err
-		}
-		return hostedImportFieldValues{columns: []any{value.DependencyID, value.Provenance.ExternalID}, dependencyID: value.DependencyID, provenance: value.Provenance}, nil
-	case "issues":
-		var value *tracker.Provenance
-		if err := decode(&value); err != nil {
-			return hostedImportFieldValues{}, err
-		}
-		fields := hostedImportFieldValues{columns: []any{provenanceProvider(value), provenanceExternalID(value)}}
-		if value != nil {
-			fields.provenance = *value
-		}
-		return fields, nil
-	case "onboarding_issue_intake":
-		var value tracker.GitHubBatch
-		if err := decode(&value); err != nil {
-			return hostedImportFieldValues{}, err
-		}
-		return hostedImportFieldValues{columns: []any{value.HubOwned, value.Status}}, nil
-	case "github_outbox":
-		value, err := decodeOutboxFields([]byte(raw))
-		return hostedImportFieldValues{columns: []any{value.IssueNumber, value.Summary}, outbox: value}, err
-	case "runner_identities":
-		return decodeRunnerFields(raw)
-	default:
-		return hostedImportFieldValues{}, errors.New("unknown hosted import projection")
-	}
-}
-
-func writeRunnerOperations(ctx context.Context, tx *sql.Tx, runner, raw string) error {
-	var operations []string
-	if err := json.Unmarshal([]byte(raw), &operations); err != nil {
-		return err
-	}
-	return insertRunnerOperations(ctx, tx, runner, operations)
-}
-
-func insertRunnerOperations(ctx context.Context, tx *sql.Tx, runner string, operations []string) error {
-	for _, operation := range slices.Compact(slices.Sorted(slices.Values(operations))) {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO runner_operations(runner_id,operation) VALUES(?,?) ON CONFLICT DO NOTHING`, runner, operation); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 type coreGitHubOutboxImportValue struct {

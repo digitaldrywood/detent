@@ -32,12 +32,6 @@ var ErrOutboxUncertain = githubcontract.ErrOutboxUncertain
 
 func Permanent(err error) error { return githubcontract.Permanent(err) }
 
-func IsPermanent(err error) bool { return githubcontract.IsPermanent(err) }
-
-func RejectedOutboxWrite(err error) error { return githubcontract.RejectedOutboxWrite(err) }
-
-func isRejectedOutboxWrite(err error) bool { return githubcontract.IsRejectedOutboxWrite(err) }
-
 type ReconcileMode = githubcontract.ReconcileMode
 
 type RepositoryTarget = githubcontract.RepositoryTarget

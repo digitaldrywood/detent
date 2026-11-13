@@ -1017,66 +1017,6 @@ func (f usageHostedFixture) observeUsageRefusal(t *testing.T, attempt string, at
 	}
 }
 
-// compareUsageShape asserts that the Go payload carries exactly the golden's
-// key set at every level and agrees on whether a value is null. Values are
-// not compared: the golden is an example, the shape is the contract.
-func TestUsageDelta(t *testing.T) {
-	t.Parallel()
-	prices := usageTestPrices()
-	cases := []struct {
-		name     string
-		total    tracker.NativeUsage
-		recorded tracker.NativeUsage
-		want     tracker.NativeUsage
-	}{
-		{
-			name:  "first report",
-			total: tracker.NativeUsage{Model: "gpt-6-astra", Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25, Currency: "USD"},
-			want:  tracker.NativeUsage{Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25},
-		},
-		{
-			name:     "increment over recorded",
-			total:    tracker.NativeUsage{Model: "gpt-6-astra", Input: 3000, CachedInput: 1200, Output: 300, CostEstimate: 0.75, Currency: "USD"},
-			recorded: tracker.NativeUsage{Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25},
-			want:     tracker.NativeUsage{Input: 2000, CachedInput: 800, Output: 200, CostEstimate: 0.5},
-		},
-		{
-			name:     "redelivered total adds nothing",
-			total:    tracker.NativeUsage{Model: "gpt-6-astra", Input: 1000, Output: 100, CostEstimate: 0.25, Currency: "USD"},
-			recorded: tracker.NativeUsage{Input: 1000, Output: 100, CostEstimate: 0.25},
-		},
-		{
-			name:     "total that went backwards is not debt",
-			total:    tracker.NativeUsage{Model: "gpt-6-astra", Input: 500, Output: 50},
-			recorded: tracker.NativeUsage{Input: 1000, Output: 100, CostEstimate: 0.25},
-		},
-		{
-			name:     "unpriced increment priced by the hub",
-			total:    tracker.NativeUsage{Model: "claude-opus-5", Input: 3_000_000, Output: 1_000_000},
-			recorded: tracker.NativeUsage{Input: 2_000_000},
-			want:     tracker.NativeUsage{Input: 1_000_000, Output: 1_000_000, CostEstimate: 20 + 100},
-		},
-		{
-			name:  "foreign currency repriced by the hub",
-			total: tracker.NativeUsage{Model: "gpt-6-astra", Input: 1_000_000, CostEstimate: 99, Currency: "EUR"},
-			want:  tracker.NativeUsage{Input: 1_000_000, CostEstimate: 10},
-		},
-	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			got := usageDelta(test.total, test.recorded, prices)
-			if diff := got.CostEstimate - test.want.CostEstimate; diff > 1e-9 || diff < -1e-9 {
-				t.Fatalf("usageDelta() cost = %v, want %v", got.CostEstimate, test.want.CostEstimate)
-			}
-			got.CostEstimate = test.want.CostEstimate
-			if got != test.want {
-				t.Fatalf("usageDelta() = %+v, want %+v", got, test.want)
-			}
-		})
-	}
-}
-
 // Spend reported after midnight on an attempt that started the day before is
 // filed under the hour it arrived, not the attempt's start.
 func TestRecordAttemptUsageAttributesIncrementsToTheirHour(t *testing.T) {

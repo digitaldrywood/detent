@@ -2,15 +2,11 @@ package hubserver
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"slices"
 	"strings"
 )
 
@@ -227,60 +223,4 @@ func applyNativeVersionPatch(previous, patch []byte) ([]byte, error) {
 		return nil, errors.New("history patch digest mismatch")
 	}
 	return nativeVersionObjectBytes(keys, fields)
-}
-
-func reconstructNativeVersion(ctx context.Context, query nativeQueryer, organization, project, item, record string, revision int64) ([]byte, error) {
-	var start int64
-	var raw []byte
-	err := query.QueryRowContext(ctx, `SELECT v.revision, v.record_json FROM collaboration_versions v
-JOIN collaboration_versions target ON target.organization_id=v.organization_id AND target.project_id=v.project_id
-AND target.work_item_id=v.work_item_id AND target.record_id=v.record_id
-WHERE target.organization_id=? AND target.project_id=? AND target.work_item_id=? AND target.record_id=? AND target.revision=?
-AND v.revision<=target.revision AND v.encoding='snapshot'
-ORDER BY v.revision DESC LIMIT 1`, organization, project, item, record, revision).Scan(&start, &raw)
-	if err != nil {
-		return nil, err
-	}
-	if start == revision {
-		return raw, nil
-	}
-	if revision-start >= nativeVersionSnapshotInterval {
-		return nil, errors.New("history checkpoint interval exceeded")
-	}
-	rows, err := query.QueryContext(ctx, `SELECT revision, encoding, record_json FROM collaboration_versions
-WHERE organization_id=? AND project_id=? AND work_item_id=? AND record_id=? AND revision>? AND revision<=? ORDER BY revision`, organization, project, item, record, start, revision)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var next int64
-		var encoding string
-		var encoded []byte
-		if err := rows.Scan(&next, &encoding, &encoded); err != nil {
-			return nil, err
-		}
-		if next != start+1 {
-			return nil, sql.ErrNoRows
-		}
-		switch encoding {
-		case "snapshot":
-			raw = slices.Clone(encoded)
-		case "patch":
-			raw, err = applyNativeVersionPatch(raw, encoded)
-			if err != nil {
-				return nil, fmt.Errorf("apply history revision %d: %w", next, err)
-			}
-		default:
-			return nil, errors.New("unknown history encoding")
-		}
-		start = next
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if start != revision {
-		return nil, sql.ErrNoRows
-	}
-	return raw, nil
 }

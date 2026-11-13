@@ -6,28 +6,9 @@ import (
 	"errors"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func changeRelatedIssuesTx(ctx context.Context, tx *sql.Tx, first, second tracker.WorkItemID, operation string, now time.Time) error {
-	if first > second {
-		first, second = second, first
-	}
-	if operation == "remove" {
-		_, err := tx.ExecContext(ctx, "DELETE FROM issue_relationships WHERE first_issue_id = ? AND second_issue_id = ? AND relationship_type = 'related'", first, second)
-		return err
-	}
-	_, err := tx.ExecContext(ctx, "INSERT INTO issue_relationships (first_issue_id, second_issue_id, relationship_type, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", first, second, "related", formatHubTime(now))
-	return err
-}
-
-func readNativeRelated(ctx context.Context, query nativeQueryer, scope nativeScope, item tracker.NativeWorkItemID) ([]tracker.NativeDependency, error) {
-	issue := &tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: item}}
-	err := readNativeRelatedBatch(ctx, query, scope, map[tracker.NativeWorkItemID]*tracker.NativeIssue{item: issue})
-	return issue.Related, err
-}
 
 func readNativeRelatedBatch(ctx context.Context, query nativeQueryer, scope nativeScope, items map[tracker.NativeWorkItemID]*tracker.NativeIssue) error {
 	if len(items) == 0 {

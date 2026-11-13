@@ -239,42 +239,6 @@ func TestChangeTypedColumnsOwnEvidenceFilters(t *testing.T) {
 	}
 }
 
-func TestChangeColumnProjectionValues(t *testing.T) {
-	t.Parallel()
-	at := "2026-10-25T12:00:00.000000000Z"
-	for _, test := range []struct {
-		family, raw string
-		want        map[string]any
-	}{
-		{"change_requests", `{"landed":{"version_id":"version","head_sha":"head","merge_sha":"merge","base_ref":"develop","landed_at":"` + at + `"},"created_at":"` + at + `","updated_at":"` + at + `"}`, map[string]any{"landed_version_id": "version", "landed_head_sha": "head", "landed_merge_sha": "merge", "landed_base_ref": "develop", "landed_at": at, "created_at": at, "updated_at": at}},
-		{"change_versions", `{"attempt_id":"attempt","head_sha":"head","policy_id":"policy","repository":"owner/repository","external":{"provider":"github","id":"42","url":"https://example.test/pull/42"},"created_at":"` + at + `"}`, map[string]any{"attempt_id": "attempt", "head_sha": "head", "policy_revision_id": "policy", "repository": "owner/repository", "external_provider": "github", "external_id": "42", "external_url": "https://example.test/pull/42", "created_at": at}},
-		{"change_evidence", `{"decision":"approved","actor":{"principal_id":"reviewer"},"implementation_review":{},"validator":{},"security_audit":{"landing":true},"check_run_id":"check","created_at":"` + at + `","received_at":"` + at + `","escape":{"occurrence_id":"occurrence","observed_at":"` + at + `"}}`, map[string]any{"claim_review_decision": "approved", "claim_review_actor": "reviewer", "has_implementation_review": true, "has_validator": true, "has_security_audit": true, "security_audit_landing": true, "check_run_id": "check", "created_at": at, "received_at": at, "escape_occurrence_id": "occurrence", "escape_observed_at": at}},
-		{"change_evidence", `{}`, map[string]any{"has_validator": false, "has_implementation_review": false, "has_security_audit": false, "security_audit_landing": false, "received_at": nil}},
-		{"quality_landings", `{"landed_at":"` + at + `"}`, map[string]any{"landed_at": at}},
-		{"change_landing_receipts", `{"merge_sha":"merge"}`, map[string]any{"merge_sha": "merge"}},
-		{"native_attempts", `{"policy_id":"policy","runtime":{"landing":{}},"finalization":{"change_id":"final-change","publication":{"external":{"url":"https://example.test/pull/42"}}},"handoff":{"change":{"change_id":"checkpoint-change"}}}`, map[string]any{"has_landing_receipt": true, "policy_id": "policy", "finalization_change_id": "final-change", "finalization_external_url": "https://example.test/pull/42", "checkpoint_change_id": "checkpoint-change"}},
-		{"collaboration_events", `{"from_state":"Done","to_state":"Rework","run":{"attempt_id":"attempt","run_id":"run","lease_id":"lease","fencing_token":"7","policy_id":"policy","sequence":"9","handoff":{"external_effect":"git_push","effect_state":"confirmed","change":{"change_id":"change","version_id":"version","head_sha":"head"}}}}`, map[string]any{"from_state": "Done", "to_state": "Rework", "push_external_effect": "git_push", "push_effect_state": "confirmed", "push_change_id": "change", "push_version_id": "version", "push_head_sha": "head", "claim_attempt_id": "attempt", "run_id": "run", "run_lease_id": tracker.LeaseID("lease"), "run_policy_id": "policy", "run_fencing_token": tracker.FencingToken(7), "run_sequence": int64(9)}},
-		{"issues", `{"principal_id":"author"}`, map[string]any{"actor_principal_id": "author"}},
-		{"native_comments", `{"kind":"human"}`, map[string]any{"change_actor_kind": "human"}},
-	} {
-		t.Run(test.family+strconv.Itoa(len(test.raw)), func(t *testing.T) {
-			columns, err := changeRecordColumns(t.Context(), nil, test.family, test.raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := map[string]any{}
-			for i, column := range columns.columns {
-				got[column] = columns.values[i]
-			}
-			for column, want := range test.want {
-				if !reflect.DeepEqual(got[column], want) {
-					t.Errorf("%s=%#v, want %#v", column, got[column], want)
-				}
-			}
-		})
-	}
-}
-
 func (f changeFixture) anotherChange(t *testing.T) changeFixture {
 	t.Helper()
 	issue := f.create(t, newNativeID("other-work"))

@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,29 +55,6 @@ type storedRun struct {
 
 func runDetailEntry(data tracker.NativeRunData) string {
 	return data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)
-}
-
-func nativeHistoryID(ctx context.Context, kind string, data tracker.CollaborationData) string {
-	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
-	if !ok || data.Run == nil || data.Run.Sequence <= 0 {
-		return payloadNativeID(ctx, "evt")
-	}
-	key := kind + ":" + runDetailEntry(*data.Run)
-	content.mu.Lock()
-	if !content.stableHistory {
-		content.mu.Unlock()
-		return payloadNativeID(ctx, "evt")
-	}
-	defer content.mu.Unlock()
-	if content.ids == nil {
-		content.ids = make(map[string]string)
-	}
-	if id := content.ids[key]; id != "" {
-		return id
-	}
-	id := newNativeID("evt")
-	content.ids[key] = id
-	return id
 }
 
 func (s *Service) runDetailStore() attachment.DetailStore {
@@ -243,57 +219,6 @@ func compactRun(data tracker.NativeRunData) tracker.NativeRunData {
 	return result
 }
 
-func recordPayloadAttachment(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, ref attachment.ArchiveReference, now string) (string, error) {
-	var foreign bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND (customer_owned=1 OR storage_binding_id<>''))`, scope.organization, ref.Key).Scan(&foreign); err != nil {
-		return "", err
-	}
-	if foreign {
-		return "", nil
-	}
-	id := newRunDetailReference(ref, string(scope.organization), "").AttachmentID
-	_, err := tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version,pending_content)
-VALUES(?,?,?,?,'archive.gz','application/gzip',?,?,?,'archive',?,?,?,?,?,(SELECT pending_content FROM change_content_objects WHERE organization_id=? AND object_key=?)) ON CONFLICT DO NOTHING`, id, scope.organization, scope.project, scope.credential.ID, ref.CompressedSize, ref.SHA256, now, ref.Retention, ref.Key, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, scope.organization, ref.Key)
-	if err != nil {
-		return "", err
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM change_content_objects WHERE organization_id=? AND object_key=?", scope.organization, ref.Key); err != nil {
-		return "", err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO attachment_archive_references(organization_id,project_id,work_item_id,attachment_id) VALUES(?,?,?,?) ON CONFLICT DO NOTHING`, scope.organization, scope.project, item, id)
-	return id, err
-}
-
-func runProvider(data tracker.NativeRunData) string {
-	if data.Runtime != nil && data.Runtime.Identity.Provider.Value != "" {
-		return data.Runtime.Identity.Provider.Value
-	}
-	if data.Identity != nil {
-		return data.Identity.Backend
-	}
-	return ""
-}
-func runModel(data tracker.NativeRunData) string {
-	if data.Runtime != nil {
-		if data.Runtime.Identity.ResolvedModel.Value != "" {
-			return data.Runtime.Identity.ResolvedModel.Value
-		}
-		if data.Runtime.Identity.RequestedModel.Value != "" {
-			return data.Runtime.Identity.RequestedModel.Value
-		}
-	}
-	if data.Identity != nil {
-		return data.Identity.Model
-	}
-	return ""
-}
-func runEffort(data tracker.NativeRunData) string {
-	if data.Runtime != nil {
-		return data.Runtime.Identity.ReasoningEffort.Value
-	}
-	return ""
-}
-
 type storedRunCheckpoint struct {
 	*tracker.NativeCheckpoint
 	Detail *runDetailReference `json:"detail,omitempty"`
@@ -302,50 +227,6 @@ type storedRunCheckpoint struct {
 type checkpointPayload struct {
 	Checkpoint  *tracker.NativeCheckpoint `json:"checkpoint"`
 	ArtifactIDs []string                  `json:"artifact_ids"`
-}
-
-func encodeRunCheckpoint(ctx context.Context, data tracker.NativeRunData) (string, error) {
-	owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext)
-	if !ok || owner.reference == nil {
-		return marshalNative(data.Handoff)
-	}
-	return marshalNative(storedRunCheckpoint{NativeCheckpoint: data.Handoff, Detail: newRunDetailReference(*owner.reference, owner.organization, runDetailEntry(data))})
-}
-
-func decodeRunCheckpoint(ctx context.Context, q nativeQueryer, raw string) (*tracker.NativeCheckpoint, error) {
-	checkpoint, _, err := decodeCheckpointPayload(ctx, q, raw)
-	return checkpoint, err
-}
-
-func decodeCheckpointPayload(ctx context.Context, q nativeQueryer, raw string) (*tracker.NativeCheckpoint, []string, error) {
-	ctx = payloadQueryContext(ctx, q)
-	resolved, err := resolveStorageJSON(ctx, []byte(raw))
-	if err != nil {
-		return nil, nil, err
-	}
-	var payload checkpointPayload
-	if err := json.Unmarshal(resolved, &payload); err != nil {
-		return nil, nil, err
-	}
-	if payload.Checkpoint != nil {
-		return payload.Checkpoint, payload.ArtifactIDs, nil
-	}
-	var stored storedRunCheckpoint
-	if err := json.Unmarshal(resolved, &stored); err != nil {
-		return nil, nil, err
-	}
-	if stored.Detail == nil || explanationRead(ctx) {
-		return stored.NativeCheckpoint, nil, nil
-	}
-	runs, err := readRunDetailSegment(ctx, q, stored.Detail)
-	if err != nil {
-		return nil, nil, err
-	}
-	run, ok := runs[stored.Detail.Entry]
-	if !ok || runDetailEntry(run) != stored.Detail.Entry || run.Handoff == nil {
-		return nil, nil, fmt.Errorf("match run checkpoint detail entry: %w", artifact.ErrIntegrity)
-	}
-	return run.Handoff, run.ArtifactIDs, nil
 }
 
 var errRunDetailStoreUnavailable = fmt.Errorf("run detail store unavailable in this context: %w", errContentStorageUnconfigured)

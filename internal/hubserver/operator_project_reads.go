@@ -6,7 +6,6 @@ import (
 	"errors"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -517,23 +516,4 @@ func (s *Service) projectRepositoryFreshness(ctx context.Context, scope nativeSc
 		return repositoryFreshnessResponse{Repositories: []RepositoryFreshness{}}, nil
 	}
 	return repositoryFreshnessResponse{}, operatortool.ErrServiceUnavailable
-}
-
-// Resolve legacy policy ownership through the authorized project binding, never
-// through a caller-selected owner/repository pair in the compatibility API.
-func operatorPolicyScope(ctx context.Context, query nativeQueryer, scope nativeScope, repository bool) (string, error) {
-	if !repository {
-		return string(scope.organization) + "/" + string(scope.project), nil
-	}
-	integration, err := readProjectIntegration(ctx, query, scope)
-	if err != nil {
-		return "", err
-	}
-	if integration.Profile == "native" && integration.RepositoryID == 0 && integration.CheckoutRepository != "" {
-		return string(scope.organization) + "/" + string(scope.project), nil
-	}
-	if integration.RepositoryID == 0 || integration.Repository == "" {
-		return "", &operatortool.RequestError{Code: "invalid_request", Message: "Project has no linked repository policy; use repository_policy:false for its project policy"}
-	}
-	return "repository:" + strings.ToLower(integration.Repository), nil
 }

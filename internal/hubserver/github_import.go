@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,29 +30,6 @@ type GitHubImport struct {
 	RetryAfter      *time.Time       `json:"retry_after,omitempty"`
 	SourceUpdatedAt string           `json:"source_updated_at,omitempty"`
 	ObservedAt      string           `json:"observed_at"`
-}
-
-func readGitHubImport(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (GitHubImport, error) {
-	var result GitHubImport
-	var gaps string
-	var retry sql.NullString
-	err := query.QueryRowContext(ctx, `SELECT g.id, g.issue_number, COALESCE(g.work_item_id, ''), g.stage, g.cursor, g.revision, g.pages, g.status, g.gaps_json, g.last_error, g.retry_after, g.source_updated_at, g.observed_at, g.intake_pending, g.edit_sequence
-FROM github_imports g JOIN projects p ON p.id = g.project_id WHERE p.organization_id = ? AND p.id = ? AND g.id = ?`, scope.organization, scope.project, id).Scan(
-		&result.ID, &result.IssueNumber, &result.WorkItemID, &result.Stage, &result.Cursor, &result.Revision, &result.Pages, &result.Status, &gaps, &result.LastError, &retry, &result.SourceUpdatedAt, &result.ObservedAt, &result.IntakePending, &result.EditSequence)
-	if err != nil {
-		return result, err
-	}
-	if err := json.Unmarshal([]byte(gaps), &result.Gaps); err != nil {
-		return result, err
-	}
-	if retry.Valid {
-		value, err := parseTimeValue(retry.String)
-		if err != nil {
-			return result, err
-		}
-		result.RetryAfter = &value
-	}
-	return result, nil
 }
 
 type startGitHubImportRequest struct {

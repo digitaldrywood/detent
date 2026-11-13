@@ -26,24 +26,6 @@ func replaceIssuePageFilterValues(ctx context.Context, q nativeExecer, id int64,
 	return err
 }
 
-func replaceBoardPageFilterValues(ctx context.Context, q nativeExecer, card tracker.NativeBoardCard) error {
-	if _, err := q.ExecContext(ctx, "DELETE FROM native_board_filter_values WHERE work_item_id=?", card.Issue.WorkItemID); err != nil {
-		return err
-	}
-	for _, group := range []struct {
-		kind   string
-		values []string
-	}{{"label", card.Issue.Labels}, {"assignee", card.Issue.Assignees}} {
-		for _, value := range group.values {
-			if _, err := q.ExecContext(ctx, "INSERT INTO native_board_filter_values(work_item_id,kind,value) VALUES(?,?,?) ON CONFLICT DO NOTHING", card.Issue.WorkItemID, group.kind, value); err != nil {
-				return err
-			}
-		}
-	}
-	_, err := q.ExecContext(ctx, "UPDATE native_board_items SET page_filters_ready=1 WHERE work_item_id=?", card.Issue.WorkItemID)
-	return err
-}
-
 func readLegacyPageFilterValues(ctx context.Context, q nativeQueryer, scope nativeScope, item, family string) (_ nativePageFact, resultErr error) {
 	board := family == "native_board_filter_values"
 	f := nativePageFact{name: family, columns: "issue_id,kind,value", known: "SELECT v.issue_id,v.kind,v.value FROM main.native_issue_page_filter_values v JOIN main.issues i ON i.id=v.issue_id WHERE i.page_filters_ready=1"}

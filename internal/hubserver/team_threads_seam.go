@@ -5,7 +5,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
@@ -16,14 +15,6 @@ import (
 )
 
 type teamUnreadSummary = threads.UnreadSummary
-
-func threadInvalid() error {
-	return fromFeatureError(threads.Invalid())
-}
-
-func threadRecordError(err error) error {
-	return fromFeatureError(threads.RecordError(err, projectRecordError))
-}
 
 func (s *Service) threadsService() *threads.Service {
 	return threads.New(threads.Deps{
@@ -57,11 +48,6 @@ func (s *Service) threadCaller(scope nativeScope) threads.Caller {
 	})
 }
 
-func (s *Service) teamThreadRecordOperation(ctx context.Context, scope nativeScope, name string, in teamThreadInput) (any, error) {
-	value, err := s.threadsService().Operation(ctx, s.threadCaller(scope), name, in)
-	return value, fromFeatureError(err)
-}
-
 func (s *Service) listThreadRecords(ctx context.Context, scope nativeScope, in teamThreadInput) (teamThreadPage, error) {
 	page, err := s.threadsService().List(ctx, s.threadCaller(scope), in)
 	return page, fromFeatureError(err)
@@ -74,10 +60,6 @@ func (s *Service) requestTeamUnread(ctx context.Context, scope nativeScope, proj
 
 func (s *Service) maintainTeamUnread(ctx context.Context) error {
 	return s.threadsService().MaintainUnread(ctx)
-}
-
-func (s *Service) advanceTeamUnread(ctx context.Context) (bool, int, error) {
-	return s.threadsService().AdvanceUnread(ctx)
 }
 
 func (s *Service) advanceTeamUnreadRecord(ctx context.Context) (bool, int, error) {
@@ -103,8 +85,4 @@ func (s *Service) threadHTTPDeps() threads.HTTPDeps {
 			}
 		},
 	}
-}
-func (s *Service) resolveThreadAuthority(ctx context.Context, name string, required apikey.Scope) (context.Context, nativeScope, error) {
-	ctx, input, err := threads.NewHTTP(s.threadHTTPDeps()).Authority(ctx, name, required)
-	return ctx, nativeAuthInput(input), fromFeatureError(err)
 }

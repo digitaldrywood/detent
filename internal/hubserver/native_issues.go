@@ -81,13 +81,6 @@ func nativeActorDisplayName(principal, organization string) string {
  FROM api_tokens t WHERE t.id = ` + principal + `), '')`
 }
 
-func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (tracker.NativeIssue, tracker.WorkItemID, error) {
-	if explanationRead(ctx) {
-		return readExplanationIssue(ctx, query, scope, id)
-	}
-	return readNativeIssueProjection(ctx, query, scope, id, false)
-}
-
 func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	var issue tracker.NativeIssue
 	var internalID tracker.WorkItemID

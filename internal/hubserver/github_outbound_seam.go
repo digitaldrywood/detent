@@ -2,9 +2,10 @@ package hubserver
 
 import (
 	"context"
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/githuboutbound"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"time"
 )
 
 func (s *Service) githubOutboundService() *githuboutbound.Service {
@@ -28,9 +29,6 @@ func (s *Service) githubOutboundService() *githuboutbound.Service {
 }
 func (s *Service) processGitHubOutboundRecord(ctx context.Context) (bool, error) {
 	return s.githubOutboundService().Process(ctx)
-}
-func gitHubRetryDelay(attempt int64, base, maximum time.Duration, jitter float64) time.Duration {
-	return githuboutbound.RetryDelay(attempt, base, maximum, jitter)
 }
 
 type outboxTimer struct {

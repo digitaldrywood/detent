@@ -7,8 +7,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
 )
 
@@ -104,111 +102,6 @@ type outboxRecord struct {
 	coalesceKey    string
 }
 
-func (m WorkflowLabelMutation) outboxRecord() (outboxRecord, error) {
-	prefix := strings.TrimSpace(m.ManagedPrefix)
-	if prefix == "" {
-		prefix = defaultLabelPrefix
-	}
-	if strings.TrimSpace(m.Label) == "" && !m.Clear {
-		return outboxRecord{}, errors.New("workflow label is required")
-	}
-	desired, err := json.Marshal(WorkflowLabelDesired{
-		Label:         strings.TrimSpace(m.Label),
-		ManagedPrefix: prefix,
-		Clear:         m.Clear,
-	})
-	if err != nil {
-		return outboxRecord{}, err
-	}
-	record := outboxRecord{
-		idempotencyKey: strings.TrimSpace(m.IdempotencyKey),
-		repositoryID:   m.RepositoryID,
-		issueID:        m.IssueID,
-		kind:           MutationWorkflowLabel,
-		desired:        desired,
-		coalesceKey:    fmt.Sprintf("managed-label:%d:%d:%s", m.RepositoryID, m.IssueID, strings.ToLower(prefix)),
-	}
-	return record, record.validate()
-}
-
-func (m WorkpadMutation) outboxRecord() (outboxRecord, error) {
-	phase := strings.ToLower(strings.TrimSpace(m.Phase))
-	desired, err := json.Marshal(WorkpadDesired{
-		Phase:  phase,
-		Body:   strings.TrimSpace(m.Body),
-		Marker: workpadMarker,
-	})
-	if err != nil {
-		return outboxRecord{}, err
-	}
-	record := outboxRecord{
-		idempotencyKey: strings.TrimSpace(m.IdempotencyKey),
-		repositoryID:   m.RepositoryID,
-		issueID:        m.IssueID,
-		kind:           MutationWorkpad,
-		desired:        desired,
-		coalesceKey:    fmt.Sprintf("workpad:%d:%d", m.RepositoryID, m.IssueID),
-	}
-	if phase == "" {
-		return outboxRecord{}, errors.New("workpad phase is required")
-	}
-	if strings.TrimSpace(m.Body) == "" {
-		return outboxRecord{}, errors.New("workpad body is required")
-	}
-	return record, record.validate()
-}
-
-func (m MergePullRequestMutation) outboxRecord() (outboxRecord, error) {
-	method := strings.ToLower(strings.TrimSpace(m.MergeMethod))
-	if method == "" {
-		method = "squash"
-	}
-	switch method {
-	case "merge", "rebase", "squash":
-	default:
-		return outboxRecord{}, errors.New("merge method must be merge, rebase, or squash")
-	}
-	if m.PullRequestNumber <= 0 {
-		return outboxRecord{}, errors.New("pull request number must be positive")
-	}
-	if strings.TrimSpace(m.HeadSHA) == "" {
-		return outboxRecord{}, errors.New("pull request head SHA is required")
-	}
-	desired, err := json.Marshal(MergePullRequestDesired{
-		PullRequestNumber: m.PullRequestNumber,
-		HeadSHA:           strings.TrimSpace(m.HeadSHA),
-		MergeMethod:       method,
-	})
-	if err != nil {
-		return outboxRecord{}, err
-	}
-	record := outboxRecord{
-		idempotencyKey: strings.TrimSpace(m.IdempotencyKey),
-		repositoryID:   m.RepositoryID,
-		issueID:        m.IssueID,
-		kind:           MutationMergePullRequest,
-		targetNodeID:   fmt.Sprintf("pull-request:%d", m.PullRequestNumber),
-		desired:        desired,
-	}
-	return record, record.validate()
-}
-
-func (r outboxRecord) validate() error {
-	if r.idempotencyKey == "" {
-		return errors.New("github mutation idempotency key is required")
-	}
-	if r.repositoryID <= 0 {
-		return errors.New("github mutation repository id must be positive")
-	}
-	if r.issueID <= 0 {
-		return errors.New("github mutation issue id must be positive")
-	}
-	if !json.Valid(r.desired) {
-		return errors.New("github mutation desired state must be valid JSON")
-	}
-	return nil
-}
-
 func (s *Service) ChangeWorkflowState(ctx context.Context, change WorkflowStateChange) (OutboxItem, error) {
 	return OutboxItem{}, ErrOutboxDisabled
 }
@@ -219,23 +112,6 @@ func (s *Service) AppendWorkEvent(ctx context.Context, change WorkEventChange) (
 
 func (s *Service) commitOutbox(ctx context.Context, record outboxRecord, apply func(*sql.Tx, string) error) (result OutboxItem, resultErr error) {
 	return OutboxItem{}, ErrOutboxDisabled
-}
-
-func jsonEqual(left, right json.RawMessage) bool {
-	var leftValue any
-	var rightValue any
-	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
-		return false
-	}
-	leftJSON, err := json.Marshal(leftValue)
-	if err != nil {
-		return false
-	}
-	rightJSON, err := json.Marshal(rightValue)
-	if err != nil {
-		return false
-	}
-	return string(leftJSON) == string(rightJSON)
 }
 
 func (s *Service) ProcessOutbox(ctx context.Context) (bool, error) {
@@ -256,20 +132,4 @@ func randomJitter() float64 {
 
 func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
 	return OutboxHealth{}, ErrOutboxDisabled
-}
-
-func formatOutboxTime(value time.Time) string {
-	return value.UTC().Format("2006-01-02T15:04:05.000000000Z")
-}
-
-func parseOutboxTime(value string) (time.Time, error) {
-	return time.Parse(time.RFC3339Nano, value)
-}
-
-func truncateOutboxError(message string) string {
-	message = strings.TrimSpace(message)
-	if len(message) <= maxOutboxErrorLen {
-		return message
-	}
-	return message[:maxOutboxErrorLen]
 }
