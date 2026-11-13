@@ -113,14 +113,17 @@ func Project(t *testing.T, browser *Browser, org string) string {
 
 func Request(t *testing.T, b *Browser, method, target string, body io.Reader, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
-	r := httptest.NewRequest(method, PublicURL+target, body)
+	r := httptest.NewRequestWithContext(context.Background(), method, PublicURL+target, body)
 	if method != http.MethodGet {
 		r.Header.Set("Origin", PublicURL)
 	}
 	for key, value := range headers {
 		r.Header.Set(key, value)
 	}
-	base, _ := url.Parse(PublicURL)
+	base, err := url.Parse(PublicURL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, cookie := range b.Jar.Cookies(base) {
 		r.AddCookie(cookie)
 	}

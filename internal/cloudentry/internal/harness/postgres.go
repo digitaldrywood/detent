@@ -12,6 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pressly/goose/v3"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -22,10 +27,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pressly/goose/v3"
 )
 
 func SecretEnvironment(active int, versions ...int) func(string) string {
@@ -33,7 +34,10 @@ func SecretEnvironment(active int, versions ...int) func(string) string {
 	for _, version := range versions {
 		values[strconv.Itoa(version)] = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{byte(version)}, 32))
 	}
-	raw, _ := json.Marshal(values)
+	raw, err := json.Marshal(values)
+	if err != nil {
+		panic(err)
+	}
 	return func(name string) string {
 		if len(versions) == 0 {
 			return ""

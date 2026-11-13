@@ -2,6 +2,7 @@ package harness
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -53,7 +54,7 @@ func (b *Browser) Do(method, target string, form url.Values, headers map[string]
 	if form != nil {
 		body = strings.NewReader(form.Encode())
 	}
-	request := httptest.NewRequest(method, b.Origin+target, body)
+	request := httptest.NewRequestWithContext(context.Background(), method, b.Origin+target, body)
 	if method == http.MethodGet || method == http.MethodHead {
 		request.Header.Set("Sec-Fetch-Mode", "navigate")
 		request.Header.Set("Sec-Fetch-Dest", "document")
@@ -71,7 +72,10 @@ func (b *Browser) Do(method, target string, form url.Values, headers map[string]
 			request.Header.Set(key, value)
 		}
 	}
-	base, _ := url.Parse(b.Origin)
+	base, err := url.Parse(b.Origin)
+	if err != nil {
+		b.T.Fatal(err)
+	}
 	for _, cookie := range b.Jar.Cookies(base) {
 		request.AddCookie(cookie)
 	}

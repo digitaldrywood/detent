@@ -41,6 +41,10 @@ type Tenant struct {
 
 func NewTenant(t *testing.T, provider *FakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string, configure ...func(*hubserver.Config)) (Tenant, http.Handler) {
 	t.Helper()
+	publicKey, ok := key.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatal("tenant fixture key has no Ed25519 public key")
+	}
 	plans := PilotPlans()
 	plans.Plans[0].Allowances["projects"] = 10
 	var logs entrytest.LockedBuffer
@@ -54,7 +58,7 @@ func NewTenant(t *testing.T, provider *FakeProvider, key ed25519.PrivateKey, id,
 	fixture := Tenant{ID: id, Provider: providerID, Config: hubserver.Config{InitialAdminToken: []byte(AdminKey), Logger: logger, Content: content.HandleContent, Conversation: &hubserver.ConversationConfig{Enabled: true},
 		Hosted: &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: PublicURL, Provider: provider,
 			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
-			SharedEntry: &hubserver.HostedSharedEntry{ArchiveContents: &ConversationArchive{}, Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}},
+			SharedEntry: &hubserver.HostedSharedEntry{ArchiveContents: &ConversationArchive{}, Issuer: "entry", PublicKeys: []ed25519.PublicKey{publicKey}, Generation: 1}},
 	}}
 	for _, apply := range configure {
 		apply(&fixture.Config)
@@ -66,7 +70,11 @@ func NewTenant(t *testing.T, provider *FakeProvider, key ed25519.PrivateKey, id,
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = shared.Close() })
+	t.Cleanup(func() {
+		if err := shared.Close(); err != nil {
+			t.Log(err)
+		}
+	})
 	setup := tenantcall.New(tenantcall.Deps{Issuer: "entry", SigningKey: key, Now: time.Now})
 	organization := tenant.Organization{ID: id, ProviderID: providerID, Name: providerID, Generation: 1}
 	bootstrapJSON, err := json.Marshal(map[string]string{"organization_name": providerID})

@@ -147,9 +147,13 @@ func NewWithConfig(t *testing.T, logger *slog.Logger, configureEntry []func(*clo
 		admin = harness.PostgresDatabase(t)
 		PostgresConfig(t, admin)(&cfg)
 	} else if stored, ok := admins.Load(cfg.Storage.PostgresPool); ok && cfg.Storage.PostgresPool != nil {
-		admin = stored.(*sql.DB)
+		if db, ok := stored.(*sql.DB); ok {
+			admin = db
+		}
 	} else if stored, ok := admins.Load(cfg.Storage.PostgresDSN); ok {
-		admin = stored.(*sql.DB)
+		if db, ok := stored.(*sql.DB); ok {
+			admin = db
+		}
 	}
 	seams := &Seams{now: cfg.Now, transport: cfg.Transport, generateToken: cfg.GenerateToken}
 	if seams.now == nil {
@@ -163,7 +167,11 @@ func NewWithConfig(t *testing.T, logger *slog.Logger, configureEntry []func(*clo
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = service.Close() })
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Log(err)
+		}
+	})
 	for _, tenant := range []struct {
 		fixture  harness.Tenant
 		endpoint string
@@ -249,7 +257,10 @@ func PostgresStorageConfig(t *testing.T, restart bool, databases ...*sql.DB) fun
 
 func Main(m *testing.M) {
 	for _, key := range []string{"RESEND_API_KEY", "DETENT_HUB_SECRET_KEYS", "DETENT_HUB_SECRET_KEY_VERSION"} {
-		os.Unsetenv(key)
+		if err := os.Unsetenv(key); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
