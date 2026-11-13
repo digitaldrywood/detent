@@ -233,6 +233,11 @@ func (s *Service) boardProjectionSnapshot(ctx context.Context, organization trac
 					if err := readTenantAttemptPayload(ctx, r, &value); err != nil {
 						return err
 					}
+				} else if value.event.ID != "" {
+					step = "attempt_checkpoint"
+					if err := readTenantAttemptCheckpointPayload(ctx, r, &value); err != nil {
+						return err
+					}
 				}
 			}
 			snapshot.attempt = &value
