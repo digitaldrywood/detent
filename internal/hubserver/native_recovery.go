@@ -314,7 +314,7 @@ func boundedRecoveryReviews(reviews []tracker.ChangeReview, budget int) ([]track
 		}
 	}
 	for i := len(reviews) - 1; i >= 0; i-- {
-		if keep[i] {
+		if keep[i] || reviews[i].ImplementationReview != nil || reviews[i].Validator != nil {
 			continue
 		}
 		encoded, err := json.Marshal(reviews[i])
