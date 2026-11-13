@@ -269,18 +269,19 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 			found = found && observation.RunnerRevision == runner.Revision && !now.Before(observation.ReceivedAt) && now.Before(observation.ReceivedAt.Add(runnerauth.HeartbeatTimeout))
 			entry.SelectorSource = "registered_runner_heartbeat"
 		}
-		found = found && selected.Validate() == nil && selected.PolicyID == descriptor.ID && !now.Before(selected.ObservedAt) && now.Before(selected.ObservedAt.Add(runnerauth.HeartbeatTimeout))
-		if found {
-			entry.SelectorObservedAt = &selected.ObservedAt
-		}
+		found = found && selected.Validate() == nil && !now.Before(selected.ObservedAt) && now.Before(selected.ObservedAt.Add(runnerauth.HeartbeatTimeout))
 		exclusions := runner.Exclusions(scope.project, descriptor.Requirements, false)
+		var versionRefusal *nativeError
+		if err := runnerVersionError(minimumRunnerVersion(s.config.Version), record.MachineVersion); err != nil && !errors.As(err, &versionRefusal) {
+			return err
+		}
 		switch {
 		case nonExecutable != "":
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "inactive_state", nonExecutable
 		case len(exclusions) > 0:
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", exclusions[0].Code, exclusions[0].Message
-		case runnerVersionError(minimumRunnerVersion(s.config.Version), record.MachineVersion) != nil:
-			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "runner_version_unsupported", "Runner update is required"
+		case versionRefusal != nil:
+			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", versionRefusal.Code, versionRefusal.Message
 		case truncated:
 			entry.Unavailable = append(entry.Unavailable, "capacity_projection_truncated")
 		case !contract.Allowed:
@@ -308,12 +309,19 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		case !found:
 			entry.Unavailable = append(entry.Unavailable, "runner_specific_candidate_selection")
 		case !runtimeAdmissionSelects(selected, candidates.Items[0]):
+			entry.SelectorObservedAt = &selected.ObservedAt
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", "Current claim selectors do not select this item"
 		case workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered:
+			entry.SelectorObservedAt = &selected.ObservedAt
 			entry.Unavailable = append(entry.Unavailable, "monthly_budget_admission")
 		case landingRequired && !landingReady:
+			entry.SelectorObservedAt = &selected.ObservedAt
 			entry.Unavailable = append(entry.Unavailable, "project_landing_capacity")
+		case len(runner.ProviderCapacity) > 0:
+			entry.SelectorObservedAt = &selected.ObservedAt
+			entry.Unavailable = append(entry.Unavailable, "provider_candidate_requirement")
 		default:
+			entry.SelectorObservedAt = &selected.ObservedAt
 			entry.Outcome, entry.Reason = "ready", "Current runner admission facts select this item"
 		}
 		evidence.Admission = append(evidence.Admission, entry)
