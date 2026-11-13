@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,7 +28,7 @@ func TestPublishedReviewCheckpoint(t *testing.T) {
 			finish := tracker.NativeRunEvent{
 				Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
 				Data: tracker.NativeRunData{
-					Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
+					Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "gpt-6-astra"},
 					LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded",
 					Disposition: &tracker.NativeDisposition{Status: "complete"},
 				},
@@ -44,13 +43,13 @@ func TestPublishedReviewCheckpoint(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/events", f.worker, checkpoint), http.StatusOK)
 				finish.Data.Sequence++
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/events", f.worker, finish), http.StatusOK)
-
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: tracker.ChangeReviewPolicy{PolicyID: f.policy, RequireReview: true}}), http.StatusOK)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, item+"/changes", f.worker, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, Title: "Published source", Body: "Owned source publication"})
 			requireNativeStatus(t, response, http.StatusOK)
 			var change tracker.ChangeRequest
 			decodeHubResponse(t, response, &change)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/events", f.worker, finish), http.StatusOK)
+
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: tracker.ChangeReviewPolicy{PolicyID: f.policy, RequireReview: true}}), http.StatusOK)
 			response = performHubAPIRequest(t, f.service, http.MethodPost, item+"/changes/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ChangeVersionInput: input})
 			requireNativeStatus(t, response, http.StatusOK)
 			var version tracker.ChangeVersion
@@ -60,8 +59,7 @@ func TestPublishedReviewCheckpoint(t *testing.T) {
 			})
 			f.release(t)
 
-			runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-			runner.enroll(t)
+			runner := f.runner
 			admission := map[string]any{"context": tracker.NativeAdmissionContext{ObservedAt: f.now, PolicyID: f.policy, WorkflowStates: []string{"Fixing"}}, "runner_revision": 1}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": runner.redemption.BackendIsolation, "admission": admission}), http.StatusOK)
 			response = performHubAPIRequest(t, f.service, http.MethodGet, item+"/runtime", f.token, nil)

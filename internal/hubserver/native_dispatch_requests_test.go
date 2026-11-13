@@ -23,7 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -114,10 +113,11 @@ func (f dispatchGuardFixture) succeed(t *testing.T, disposition ...*tracker.Nati
 
 func (f dispatchGuardFixture) finish(t *testing.T, disposition ...*tracker.NativeDisposition) {
 	t.Helper()
+	identity := f.started
 	event := tracker.NativeRunEvent{
 		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
 		Data: tracker.NativeRunData{
-			Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
+			Sequence: 2, Identity: &identity,
 			LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded",
 		},
 	}
@@ -217,7 +217,7 @@ func moveDispatchGuardFixture(t *testing.T, f dispatchGuardFixture, state string
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/workflow", f.worker, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "fixture-dispatch-lane", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ExpectedRevision: current.Revision, State: state, Reason: "worker_progress"})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &f.issue)
-	f.startAttempt(t, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"})
+	f.startAttempt(t, tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "gpt-6-astra"})
 }
 
 func rewriteDispatchAttemptFixture(t *testing.T, f dispatchGuardFixture, mutate func(*tracker.NativeRunData)) {
@@ -442,6 +442,13 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			moveDispatchGuardFixture(t, f, "Fixing")
 			revision := f.reload(t).Revision
 			f.acceptanceRecorded = test.accepted
+			path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes"
+			var change tracker.ChangeRequest
+			if test.publication != "" {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.worker, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, Title: "Retained source", Body: "Owned source publication"})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &change)
+			}
 			f.finish(t, test.disposition)
 			if test.aged {
 				if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE native_attempts SET updated_at=$1 WHERE organization_id=$2 AND id=$3", f.now.Add(-2*time.Hour), f.project.OrganizationID, f.attempt); err != nil {
@@ -465,11 +472,6 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					rules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal.ID, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
-				path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes"
-				response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.worker, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, Title: "Retained source", Body: "Owned source publication"})
-				requireNativeStatus(t, response, http.StatusOK)
-				var change tracker.ChangeRequest
-				decodeHubResponse(t, response, &change)
 				input := changeTestInput()
 				if test.machineVerdict != "" {
 					input.Validation = &gate.CommandResult{Command: "make check-landing", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1}
@@ -480,7 +482,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				if test.publication == "unrelated" || test.publication == "earlier" {
 					input.HeadSHA = strings.Repeat("c", 40)
 				}
-				response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ChangeVersionInput: input})
+				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ChangeVersionInput: input})
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &published)
 				if test.historicalReview {
@@ -609,8 +611,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				t.Fatalf("candidate=%t, want %t", got, test.wantCandidate)
 			}
 			if test.readAdmission {
-				r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-				r.enroll(t)
+				r := f.runner
 				context := tracker.NativeAdmissionContext{ObservedAt: f.now, PolicyID: f.policy, WorkflowStates: []string{"Fixing"}}
 				payload := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "admission": map[string]any{"context": context, "runner_revision": 1}}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, payload), http.StatusOK)

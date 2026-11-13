@@ -46,6 +46,7 @@ type conversationWorkerFixture struct {
 	lease     tracker.NativeLease
 	attempt   string
 	run       string
+	started   tracker.NativeExecutionIdentity
 	record    conversationRecord
 }
 
@@ -132,6 +133,7 @@ func (f *conversationWorkerFixture) claim(t *testing.T, start ...bool) {
 
 func (f *conversationWorkerFixture) startAttempt(t *testing.T, identity tracker.NativeExecutionIdentity) {
 	t.Helper()
+	f.started = identity
 	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &identity, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 }
