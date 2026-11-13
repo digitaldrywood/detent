@@ -2146,7 +2146,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 		} {
 			t.Run(fmt.Sprintf("%d retained/local %s", retained, test.name), func(t *testing.T) {
 				localWorker := f.worker(t, fmt.Sprintf("local-%d-%s", retained, test.name))
-				issue := f.create(t, "local accounting")
+				issue := f.create(t, fmt.Sprintf("local accounting %d %s", retained, test.name))
 				lease := claimNativeAttempt(t, f, localWorker, newNativeID("machine"), newNativeID("session"), issue.WorkItemID)
 				event := nativeStartedEvent(lease)
 				event.IdempotencyKey = "local-accounting"
@@ -2191,6 +2191,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 				}
 				if test.legacy {
 					event.Data.AttemptID, event.Data.Sequence = newNativeID("attempt"), 0
+					event.IdempotencyKey = fmt.Sprintf("local-accounting-%d", retained)
 				}
 				metrics := hostedNativeMutationMetrics(event, false)
 				before := readConsumption(t, now, metrics...).usage
