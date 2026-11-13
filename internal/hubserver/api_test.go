@@ -682,23 +682,33 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 		t.Fatalf("workflow state = %s revision=%d", moved.State, moved.Revision)
 	}
 	for _, request := range []struct {
-		name, key, token string
-		fields           map[string]any
+		name, key, token, refusal string
+		fields                    map[string]any
 	}{
-		{operatortool.MoveItem, "workflow-api", "operator-secret-token", map[string]any{"target_state": "In Progress", "expected_revision": "1", "workflow_label": "detent:in-progress"}},
-		{operatortool.SetDependency, "dependency-api", "operator-secret-token", map[string]any{"operation": "add", "related": blocker, "expected_revision": "2"}},
-		{operatortool.OrderItem, "order-api", testHubAdminToken, map[string]any{"queue_scope": "fleet", "state": "In Progress", "rank": "rank-a"}},
-		{operatortool.SetQueuePriority, "priority-api", testHubAdminToken, map[string]any{"queue_scope": "fleet", "state": "In Progress", "queue_priority": "high"}},
+		{operatortool.MoveItem, "workflow-api", "operator-secret-token", "move_item cannot resume an item already in the requested state", map[string]any{"target_state": "In Progress", "expected_revision": "1", "workflow_label": "detent:in-progress"}},
+		{operatortool.SetDependency, "dependency-api", "operator-secret-token", "", map[string]any{"operation": "add", "related": blocker, "expected_revision": "2"}},
+		{operatortool.OrderItem, "order-api", testHubAdminToken, "", map[string]any{"queue_scope": "fleet", "state": "In Progress", "rank": "rank-a"}},
+		{operatortool.SetQueuePriority, "priority-api", testHubAdminToken, "", map[string]any{"queue_scope": "fleet", "state": "In Progress", "queue_priority": "high"}},
 	} {
 		for range 2 {
 			response := call(t, request.token, request.name, request.key, request.fields)
 			requireNativeStatus(t, response, http.StatusOK)
 			var envelope struct {
 				Result struct {
-					Failed bool `json:"isError"`
+					Failed  bool `json:"isError"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
 				} `json:"result"`
 			}
 			decodeHubResponse(t, response, &envelope)
+			if request.refusal != "" {
+				var refusal nativeError
+				if !envelope.Result.Failed || len(envelope.Result.Content) != 1 || json.Unmarshal([]byte(envelope.Result.Content[0].Text), &refusal) != nil || refusal.Code != "invalid_request" || !strings.HasPrefix(refusal.Message, request.refusal) {
+					t.Fatalf("operator mutation %s with an HTTP idempotency key = %s, want a distinct MCP retry identity refused as %q", request.name, response.Body.String(), request.refusal)
+				}
+				continue
+			}
 			if envelope.Result.Failed {
 				t.Fatalf("operator mutation %s refused: %s", request.name, response.Body.String())
 			}
@@ -875,12 +885,16 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		var envelope struct {
 			Result struct {
-				Failed bool `json:"isError"`
+				Failed  bool `json:"isError"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
 			} `json:"result"`
 		}
 		decodeHubResponse(t, response, &envelope)
-		if envelope.Result.Failed {
-			t.Fatalf("second workflow replay=%s", response.Body.String())
+		var refusal nativeError
+		if !envelope.Result.Failed || len(envelope.Result.Content) != 1 || json.Unmarshal([]byte(envelope.Result.Content[0].Text), &refusal) != nil || refusal.Code != "invalid_request" || !strings.HasPrefix(refusal.Message, "move_item cannot resume an item already in the requested state") {
+			t.Fatalf("second workflow with an HTTP idempotency key=%s, want a distinct MCP retry identity refused", response.Body.String())
 		}
 		var count, issueNumber int
 		if err := admin.QueryRowContext(t.Context(), "SELECT count(*),min(issue_number) FROM github_outbound WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", organization, project, blocker).Scan(&count, &issueNumber); err != nil || count != 1 || issueNumber != 2 {
