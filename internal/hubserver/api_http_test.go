@@ -290,6 +290,8 @@ func TestAPIRefusals(t *testing.T) {
 			}
 		})
 	}
+	native.service.echo = echo.New()
+	native.service.registerRoutes(native.service.echo)
 	for _, test := range []struct{ name, method, path string }{
 		{"retired backup", http.MethodPost, "/api/v1/backup"},
 		{"retired ordering", http.MethodPost, "/api/v1/work-items/1/order"},
