@@ -115,7 +115,14 @@ func (s *Details) ReadDetail(ctx context.Context, organization string, ref attac
 	if err == nil && int64(len(raw)) != ref.UncompressedSize {
 		return nil, artifact.ErrIntegrity
 	}
-	return raw, err
+	return raw, storeError(err)
+}
+
+func storeError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, artifact.ErrStorage) || errors.Is(err, artifact.ErrIntegrity) || errors.Is(err, artifact.ErrMissing) || errors.Is(err, attachment.ErrInvalid) {
+		return err
+	}
+	return errors.Join(artifact.ErrStorage, err)
 }
 
 func (s *Details) ReadCanonicalDetail(ctx context.Context, organization, project, key string) ([]byte, error) {
@@ -148,5 +155,5 @@ func (s *Details) StoreDetail(ctx context.Context, organization string, raw []by
 	if err == nil && (ref.UncompressedSize != size || ref.CompressedSize <= 0 || ref.CompressedSize > compressedLimit) {
 		return attachment.ArchiveReference{}, artifact.ErrIntegrity
 	}
-	return ref, err
+	return ref, storeError(err)
 }

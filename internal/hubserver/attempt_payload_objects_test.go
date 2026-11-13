@@ -790,15 +790,13 @@ func TestAttemptPayloadStorageUnavailableAPI(t *testing.T) {
 		t.Run(storage, func(t *testing.T) {
 			f := claimedAttemptDiffFixture(t, false, Config{})
 			f.start(t)
-			if storage == "unconfigured" {
-				f.service.config.Content = nil
-			} else {
-				f.service.config.Content = func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
-					if storage == "untyped outage" {
-						return nil, errors.New("private-storage-endpoint")
-					}
-					return nil, fmt.Errorf("private-storage-endpoint: %w", artifact.ErrStorage)
+			f.service.config.Content, f.service.config.RunDetails = nil, nil
+			if storage != "unconfigured" {
+				outage := fmt.Errorf("private-storage-endpoint: %w", artifact.ErrStorage)
+				if storage == "untyped outage" {
+					outage = errors.New("private-storage-endpoint")
 				}
+				f.service.config.RunDetails = outageRunDetails{err: outage}
 			}
 			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "storage-failure"}, Type: "run.finished", SchemaVersion: 1,
 				Data: tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded"}}
@@ -823,6 +821,16 @@ func TestAttemptPayloadStorageUnavailableAPI(t *testing.T) {
 			}
 		})
 	}
+}
+
+type outageRunDetails struct{ err error }
+
+func (o outageRunDetails) StoreDetail(context.Context, string, []byte) (attachment.ArchiveReference, error) {
+	return attachment.ArchiveReference{}, o.err
+}
+
+func (o outageRunDetails) ReadDetail(context.Context, string, attachment.ArchiveReference) ([]byte, error) {
+	return nil, o.err
 }
 
 func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {

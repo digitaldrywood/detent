@@ -496,10 +496,11 @@ func (s *Service) prepareLeaseCancellationContent(ctx context.Context, organizat
 	if s.runDetailStore() == nil {
 		return nil, nativeRunEventStorageUnavailable()
 	}
+	store := runEventDetailStore{DetailStore: s.runDetailStore()}
 	if event.AttemptID != attempt.ID || event.RunID != attempt.RunID {
 		return nil, artifact.ErrIntegrity
 	}
-	stored, err := eventstore.NewContent(s.runDetailStore()).Event(ctx, event)
+	stored, err := eventstore.NewContent(store).Event(ctx, event)
 	if err != nil {
 		return nil, err
 	}
@@ -526,11 +527,11 @@ func (s *Service) prepareLeaseCancellationContent(ctx context.Context, organizat
 	if err != nil {
 		return nil, err
 	}
-	ref, err := s.runDetailStore().StoreDetail(ctx, string(organization), encoded)
+	ref, err := store.StoreDetail(ctx, string(organization), encoded)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateNativeDetailReference(ctx, s.runDetailStore(), organization, ref, encoded); err != nil {
+	if err := validateNativeDetailReference(ctx, store, organization, ref, encoded); err != nil {
 		return nil, err
 	}
 	eventValue := tracker.CollaborationEvent{ID: newNativeID("evt"), OrganizationID: organization, ProjectID: project, AggregateType: "issue", AggregateID: stored.AggregateID, Type: "run.finished", SchemaVersion: 1, RecordedAt: now,
@@ -539,7 +540,7 @@ func (s *Service) prepareLeaseCancellationContent(ctx context.Context, organizat
 	if err != nil {
 		return nil, err
 	}
-	history, err := eventstore.NewContent(s.runDetailStore()).PrepareEvent(ctx, organization, raw)
+	history, err := eventstore.NewContent(store).PrepareEvent(ctx, organization, raw)
 	if err != nil {
 		return nil, err
 	}

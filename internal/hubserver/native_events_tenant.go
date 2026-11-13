@@ -184,7 +184,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 	}
 	store := s.runDetailStore()
 	if store == nil {
-		return nil, nativeRunEventStorageUnavailable()
+		return nil, errContentStorageUnconfigured
 	}
 	store = runEventDetailStore{DetailStore: store}
 	requestHash, err := nativeCommandHash(request)

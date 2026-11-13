@@ -27,12 +27,20 @@ func (store runEventDetailStore) StoreDetail(ctx context.Context, organization s
 	}
 	published, readErr := store.DetailStore.ReadDetail(ctx, organization, expected)
 	if readErr != nil {
-		return attachment.ArchiveReference{}, fmt.Errorf("reconcile run content upload: %w", errors.Join(writeErr, readErr))
+		return attachment.ArchiveReference{}, immutableContentStorageError(fmt.Errorf("reconcile run content upload: %w", errors.Join(writeErr, readErr)))
 	}
 	if !bytes.Equal(published, raw) {
 		return attachment.ArchiveReference{}, artifact.ErrIntegrity
 	}
 	return expected, nil
+}
+
+func (store runEventDetailStore) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	raw, err := store.DetailStore.ReadDetail(ctx, organization, ref)
+	if err != nil {
+		return nil, immutableContentStorageError(err)
+	}
+	return raw, nil
 }
 
 func (store runEventDetailStore) restore(ctx context.Context, organization string, raw []byte) (attachment.ArchiveReference, error) {
