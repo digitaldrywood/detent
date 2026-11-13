@@ -1086,6 +1086,7 @@ type conversationBindOrderRepository struct {
 
 type conversationBindOrderWriter struct {
 	tenantstore.Writer
+	conversationstore.AttachmentReader
 	order *conversationBindOrderRepository
 }
 
@@ -1094,7 +1095,10 @@ func (r *conversationBindOrderRepository) ReadTenantSnapshot(ctx context.Context
 }
 
 func (r *conversationBindOrderRepository) WriteTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
-	return r.Repository.WriteTenant(ctx, org, workload, func(w tenantstore.Writer) error { return write(conversationBindOrderWriter{Writer: w, order: r}) })
+	return r.Repository.WriteTenant(ctx, org, workload, func(w tenantstore.Writer) error {
+		attachments, _ := w.(conversationstore.AttachmentReader)
+		return write(conversationBindOrderWriter{Writer: w, AttachmentReader: attachments, order: r})
+	})
 }
 
 func (w conversationBindOrderWriter) RunnerIdentityByCredential(ctx context.Context, id string) (runnerstore.Identity, error) {
