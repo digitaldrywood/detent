@@ -12,7 +12,8 @@ import (
 
 func TestProjectContentSettings(t *testing.T) {
 	t.Parallel()
-	var first, second nativeFixture
+	first := newDefaultNativeFixture(t, Config{})
+	second := newNativeFixture(t, first.service, first.project.OrganizationID, "other-project")
 	read := func(t *testing.T, f nativeFixture) projectsettings.Content {
 		t.Helper()
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/content-settings", f.token, nil)
@@ -22,8 +23,6 @@ func TestProjectContentSettings(t *testing.T) {
 		return value
 	}
 	t.Run("updates without workflow or runner", func(t *testing.T) {
-		first = newDefaultNativeFixture(t, Config{})
-		second = newNativeFixture(t, first.service, first.project.OrganizationID, "other-project")
 		clearNativeFixturePolicy(t, first)
 		clearNativeFixturePolicy(t, second)
 		for _, f := range []nativeFixture{first, second} {
