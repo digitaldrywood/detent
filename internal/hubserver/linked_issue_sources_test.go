@@ -425,6 +425,16 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 					}
 				}
 				assertOwnership()
+				if titleOwned && projection == "typed" {
+					current := readWorkItem(t, f, issue.WorkItemID, "")
+					same := current.Title
+					response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "resave-owned-title"}, ExpectedRevision: current.Revision, Title: &same})
+					requireNativeStatus(t, response, http.StatusOK)
+					if after := readWorkItem(t, f, issue.WorkItemID, ""); after.Revision != current.Revision || after.Title != same {
+						t.Fatalf("no-op edit of an owned linked title changed the issue: revision %d -> %d", current.Revision, after.Revision)
+					}
+					assertOwnership()
+				}
 				commentCount := func() int {
 					t.Helper()
 					count := 0

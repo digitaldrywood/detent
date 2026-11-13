@@ -130,6 +130,14 @@ func (s *Service) loadWorkItemPlan(ctx context.Context, scope hubscope.NativeSco
 					return err
 				}
 			}
+			if _, ok := input.(tracker.UpdateIssue); ok {
+				source, err := r.LinkedSource(ctx, scope.Project, plan.Current.NativeID)
+				if err == nil {
+					plan.LinkedSource = &source
+				} else if !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+			}
 			version, err = r.CollaborationVersion(ctx, item, plan.Current.Revision)
 		} else {
 			plan.CommentRow, err = r.Comment(ctx, scope.Project, tracker.NativeWorkItemID(item), comment)
@@ -365,11 +373,11 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope hubscope.NativeS
 				plan.Fields = append(plan.Fields, "type")
 			}
 		}
-		if request.Title != nil && plan.Issue.Title != *request.Title {
+		if request.Title != nil && (plan.Issue.Title != *request.Title || plan.LinkedSource != nil && !plan.LinkedSource.TitleOwned) {
 			plan.Issue.Title = *request.Title
 			plan.Fields = append(plan.Fields, "title")
 		}
-		if request.Body != nil && plan.Issue.Body != *request.Body {
+		if request.Body != nil && (plan.Issue.Body != *request.Body || plan.LinkedSource != nil && !plan.LinkedSource.BodyOwned) {
 			bodyChanged := plan.Issue.Body != *request.Body
 			plan.Issue.Body = *request.Body
 			contractChanged := false
