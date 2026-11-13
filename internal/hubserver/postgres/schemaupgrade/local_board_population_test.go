@@ -814,6 +814,7 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 					`INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,board_rank) SELECT organization_id,id,'Todo',false,true,1 FROM projects WHERE organization_id=$1`,
 					`INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,board_rank) SELECT organization_id,id,'Done',true,false,2 FROM projects WHERE organization_id=$1`,
 					`INSERT INTO token_grants(organization_id,token_id,project_id) SELECT organization_id,'owner',id FROM projects WHERE organization_id=$1`,
+					`INSERT INTO hosted_usage_counters(organization_id,name,value) VALUES($1,'collaboration_bytes',0) ON CONFLICT(organization_id,name) DO NOTHING`,
 				} {
 					if _, err := admin.ExecContext(t.Context(), statement, organization); err != nil {
 						t.Fatal(err)
