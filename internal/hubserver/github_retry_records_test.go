@@ -39,7 +39,7 @@ func TestGitHubDiscoveryFailureBackoff(t *testing.T) {
 			*now = time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
 			backend := &gitHubDiscoveryFailure{}
 			service.config.ImportBackend = backend
-			service.config.jitter = func() float64 { return test.jitter }
+			service.config.deps.Jitter = func() float64 { return test.jitter }
 			for _, project := range []tracker.ProjectID{"first", "second"} {
 				row, err := service.prepareGitHubBatchRecord(t.Context(), testGitHubBatchIssuer(t, service, "org", project), &tracker.GitHubBatch{ID: "batch_" + string(project), Revision: 1, Status: "discovering", HubOwned: true, RequestedBy: new(testGitHubBatchIssuer(t, service, "org", project).Actor()), Automatic: true, Limit: 1000, Discovery: tracker.GitHubDiscovery{Repository: "example-org/example-project"}})
 				if err != nil {

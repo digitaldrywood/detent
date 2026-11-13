@@ -326,7 +326,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	delivery := newDashboardDelivery(f.service)
-	delivery.config.pageSize = 1
+	delivery.config.PageSize = 1
 	subscription := &dashboardSubscription{request: streamRequest, scope: streamScope, board: true, initial: true, params: url.Values{}, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
 	readFrame := func() tracker.NativeBoardFrame {
 		t.Helper()

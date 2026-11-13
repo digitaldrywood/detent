@@ -618,7 +618,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 				}
 				sub := &dashboardSubscription{request: request, claims: claims, scope: hubscope.NativeScope{Organization: "org_startup", Project: "project_first", Credential: credential}, initial: true, params: url.Values{}, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
 				delivery := newDashboardDelivery(service)
-				delivery.config.pageSize = 1
+				delivery.config.PageSize = 1
 				firstPage := 0
 				if role == "reporter" {
 					if more, err := service.dashboardPage(t.Context(), delivery, sub); err != nil || more {

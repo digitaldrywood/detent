@@ -1118,7 +1118,7 @@ func (w browserShutdownFrameWriter) Flush() {
 
 func TestHostedBrowserPreviewRestartDrainsStreams(t *testing.T) {
 	t.Parallel()
-	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig, func(cfg *Config) { cfg.conversationStreamHeartbeat = time.Millisecond })
+	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig, func(cfg *Config) { cfg.deps.ConversationStreamHeartbeat = time.Millisecond })
 	f.seedConversation(t)
 	draining := make(chan struct{})
 	f.server.Config.RegisterOnShutdown(func() { close(draining) })

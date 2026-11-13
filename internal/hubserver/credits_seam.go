@@ -50,7 +50,7 @@ func (s *Service) creditHTTPDeps() credits.HTTPDeps {
 		ConfigureFunding: func(ctx context.Context, authorize func(context.Context) (hubauth.Credential, error), request credits.FundingInput, key string) (credits.FundingInput, error) {
 			return s.configureCreditFunding(ctx, func(ctx context.Context) (hubapi.APICredential, error) { return creditCredential(authorize(ctx)) }, request, key)
 		},
-		NewID: s.config.newLeaseID,
+		NewID: s.config.deps.NewLeaseID,
 		Audit: func(ctx context.Context, credential hubauth.Credential, c echo.Context) error {
 			return s.hostedAudit(ctx, credential.Hosted, "billing_exported", c.Path(), "", http.StatusOK)
 		},
@@ -196,7 +196,7 @@ func (s *Service) creditWorkerService() *credits.Service {
 			funding.CreditPacks = append(funding.CreditPacks, credits.Pack(pack))
 		}
 	}
-	return credits.New(s.database.creditDeps(credits.Deps{Now: s.config.now, Funding: funding, NewID: s.config.newLeaseID, Binding: func(ctx context.Context) (billing.Binding, error) {
+	return credits.New(s.database.creditDeps(credits.Deps{Now: s.config.now, Funding: funding, NewID: s.config.deps.NewLeaseID, Binding: func(ctx context.Context) (billing.Binding, error) {
 		return hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg))
 	}, Unbound: hostedplans.ErrBillingUnbound}))
 }

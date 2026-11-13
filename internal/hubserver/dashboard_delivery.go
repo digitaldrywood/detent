@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -27,27 +28,8 @@ func (w *dashboardCredentialWriter) Header() http.Header         { return w.head
 func (w *dashboardCredentialWriter) Write(p []byte) (int, error) { return len(p), nil }
 func (w *dashboardCredentialWriter) WriteHeader(int)             {}
 
-type dashboardTimer struct {
-	channel <-chan time.Time
-	reset   func(time.Duration)
-	stop    func()
-}
-
-type dashboardDeliveryConfig struct {
-	newTimer    func(time.Duration) dashboardTimer
-	pageSize    int
-	queueSize   int
-	tenantLimit int
-	budget      int
-}
-
-func defaultDashboardTimer(d time.Duration) dashboardTimer {
-	t := time.NewTimer(d)
-	return dashboardTimer{channel: t.C, reset: func(d time.Duration) { t.Reset(d) }, stop: func() { t.Stop() }}
-}
-
 func dashboardJitter(d time.Duration) time.Duration {
-	return d - d/10 + time.Duration(float64(d/5)*randomJitter())
+	return d - d/10 + time.Duration(float64(d/5)*hubdeps.RandomJitter())
 }
 
 type dashboardFrame struct {
@@ -134,7 +116,7 @@ type dashboardProjectState struct {
 
 type dashboardDelivery struct {
 	service   *Service
-	config    dashboardDeliveryConfig
+	config    hubdeps.DashboardDelivery
 	mu        sync.Mutex
 	subs      list.List
 	tenants   map[tracker.OrganizationID]int
@@ -149,22 +131,22 @@ type dashboardDelivery struct {
 }
 
 func newDashboardDelivery(s *Service) *dashboardDelivery {
-	cfg := dashboardDeliveryConfig{newTimer: defaultDashboardTimer, pageSize: 64, queueSize: 128, tenantLimit: 128, budget: 32}
-	if override := s.config.dashboardDelivery; override != nil {
-		if override.newTimer != nil {
-			cfg.newTimer = override.newTimer
+	cfg := hubdeps.DashboardDelivery{NewTimer: hubdeps.NewTimer, PageSize: 64, QueueSize: 128, TenantLimit: 128, Budget: 32}
+	if override := s.config.deps.DashboardDelivery; override != nil {
+		if override.NewTimer != nil {
+			cfg.NewTimer = override.NewTimer
 		}
-		if override.pageSize > 0 {
-			cfg.pageSize = override.pageSize
+		if override.PageSize > 0 {
+			cfg.PageSize = override.PageSize
 		}
-		if override.queueSize > 0 {
-			cfg.queueSize = override.queueSize
+		if override.QueueSize > 0 {
+			cfg.QueueSize = override.QueueSize
 		}
-		if override.tenantLimit > 0 {
-			cfg.tenantLimit = override.tenantLimit
+		if override.TenantLimit > 0 {
+			cfg.TenantLimit = override.TenantLimit
 		}
-		if override.budget > 0 {
-			cfg.budget = override.budget
+		if override.Budget > 0 {
+			cfg.Budget = override.Budget
 		}
 	}
 	return &dashboardDelivery{
@@ -196,10 +178,10 @@ func (d *dashboardDelivery) stop() {
 func (d *dashboardDelivery) add(sub *dashboardSubscription) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.closed || d.tenants[sub.scope.Organization] >= d.config.tenantLimit {
+	if d.closed || d.tenants[sub.scope.Organization] >= d.config.TenantLimit {
 		return false
 	}
-	sub.frames = make(chan dashboardFrame, d.config.queueSize)
+	sub.frames = make(chan dashboardFrame, d.config.QueueSize)
 	sub.done = make(chan struct{})
 	sub.more = true
 	sub.element = d.subs.PushBack(sub)
@@ -316,14 +298,14 @@ func (d *dashboardDelivery) run(ctx context.Context) {
 			d.remove(sub)
 		}
 	}()
-	timer := d.config.newTimer(dashboardJitter(time.Second))
-	timer.stop()
+	timer := d.config.NewTimer(dashboardJitter(time.Second))
+	timer.Stop()
 	var recoveryTicks <-chan time.Time
-	defer timer.stop()
-	continuation := d.config.newTimer(dashboardJitter(10 * time.Millisecond))
-	continuation.stop()
+	defer timer.Stop()
+	continuation := d.config.NewTimer(dashboardJitter(10 * time.Millisecond))
+	continuation.Stop()
 	var continuationTicks <-chan time.Time
-	defer continuation.stop()
+	defer continuation.Stop()
 	for {
 		recoverTick := false
 		select {
@@ -338,20 +320,20 @@ func (d *dashboardDelivery) run(ctx context.Context) {
 		case <-continuationTicks:
 		case <-recoveryTicks:
 			recoverTick = true
-			timer.reset(dashboardJitter(time.Second))
+			timer.Reset(dashboardJitter(time.Second))
 		}
 		d.mu.Lock()
 		active := d.subs.Len() > 0
 		d.mu.Unlock()
 		if !active {
-			timer.stop()
-			continuation.stop()
+			timer.Stop()
+			continuation.Stop()
 			recoveryTicks, continuationTicks = nil, nil
 			continue
 		}
 		if recoveryTicks == nil {
-			recoveryTicks = timer.channel
-			timer.reset(dashboardJitter(time.Second))
+			recoveryTicks = timer.C
+			timer.Reset(dashboardJitter(time.Second))
 			recoverTick = true
 		}
 		if recoverTick {
@@ -360,17 +342,17 @@ func (d *dashboardDelivery) run(ctx context.Context) {
 
 		d.deliver(ctx)
 		if d.remaining > 0 {
-			continuation.reset(dashboardJitter(10 * time.Millisecond))
-			continuationTicks = continuation.channel
+			continuation.Reset(dashboardJitter(10 * time.Millisecond))
+			continuationTicks = continuation.C
 		} else {
-			continuation.stop()
+			continuation.Stop()
 			continuationTicks = nil
 		}
 	}
 }
 
 func (d *dashboardDelivery) deliver(ctx context.Context) {
-	for range d.config.budget {
+	for range d.config.Budget {
 		if d.remaining <= 0 || ctx.Err() != nil {
 			return
 		}
@@ -458,8 +440,8 @@ func (s *Service) serveDashboardEvents(c echo.Context, scope hubscope.NativeScop
 	c.Response().Header().Set(echo.HeaderContentType, "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("X-Accel-Buffering", "no")
-	timer := d.config.newTimer(dashboardJitter(20 * time.Second))
-	defer timer.stop()
+	timer := d.config.NewTimer(dashboardJitter(20 * time.Second))
+	defer timer.Stop()
 	c.Response().WriteHeader(http.StatusOK)
 	c.Response().Flush()
 	for {
@@ -482,7 +464,7 @@ func (s *Service) serveDashboardEvents(c echo.Context, scope hubscope.NativeScop
 			if frame.terminal {
 				return nil
 			}
-		case <-timer.channel:
+		case <-timer.C:
 			if !setDeadline(time.Now().Add(5 * time.Second)) {
 				return nil
 			}
@@ -490,7 +472,7 @@ func (s *Service) serveDashboardEvents(c echo.Context, scope hubscope.NativeScop
 				return nil
 			}
 			c.Response().Flush()
-			timer.reset(dashboardJitter(20 * time.Second))
+			timer.Reset(dashboardJitter(20 * time.Second))
 		}
 	}
 }

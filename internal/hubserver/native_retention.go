@@ -64,7 +64,7 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 }
 
 func (s *Service) runNativeRetentionStages(ctx context.Context, stages []nativeRetentionStage) error {
-	withTimeout := s.config.retentionTimeout
+	withTimeout := s.config.deps.RetentionTimeout
 	if withTimeout == nil {
 		withTimeout = context.WithTimeout
 	}

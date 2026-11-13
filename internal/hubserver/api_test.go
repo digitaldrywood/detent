@@ -58,8 +58,8 @@ func TestAPITokensAreHashedScopedRotatableAndRedacted(t *testing.T) {
 	config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	config.Content = (&changeObjectFixture{}).call
 	config.SecretKeys = secretTestKeys(t, "1", "1")
-	config.newTokenID = func() string { return "worker-token-id" }
-	config.generateToken = func() (string, error) {
+	config.deps.NewTokenID = func() string { return "worker-token-id" }
+	config.deps.GenerateToken = func() (string, error) {
 		token := generated[generatedIndex]
 		generatedIndex++
 		return token, nil

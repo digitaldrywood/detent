@@ -14,7 +14,7 @@ func (s *Service) githubReconcileService() *githubreconcile.Service {
 	if s.database != nil {
 		organization = s.database.hostedOrganization
 	}
-	return githubreconcile.New(githubreconcile.Deps{Repository: s.config.TenantRepository, Organization: organization, Backend: s.config.ReconcileBackend, Importer: s.config.ImportBackend, Ready: s.database != nil, Unavailable: hubapi.ErrPostgresFeatureUnavailable, Now: s.config.now, Jitter: s.config.jitter, Interval: s.config.ReconcileInterval,
+	return githubreconcile.New(githubreconcile.Deps{Repository: s.config.TenantRepository, Organization: organization, Backend: s.config.ReconcileBackend, Importer: s.config.ImportBackend, Ready: s.database != nil, Unavailable: hubapi.ErrPostgresFeatureUnavailable, Now: s.config.now, Jitter: s.config.deps.Jitter, Interval: s.config.ReconcileInterval,
 		Integration: func(ctx context.Context, org tracker.OrganizationID, project tracker.ProjectID) (githubreconcile.Integration, error) {
 			scope, err := s.gitHubIntegrationScope(ctx, org, project)
 			return githubreconcile.Integration{Repository: scope.IntegrationRepository, Apply: func(ctx context.Context, item tracker.NativeWorkItemID, operation string, request tracker.GitHubIntake) error {

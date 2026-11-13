@@ -208,7 +208,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope hubscope.Nati
 	if scope.Project == "" && !allowOrganization {
 		return false, nil
 	}
-	token, err := s.config.generateToken()
+	token, err := s.config.deps.GenerateToken()
 	if err != nil {
 		return false, err
 	}

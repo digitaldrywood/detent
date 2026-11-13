@@ -2,9 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"time"
@@ -120,14 +118,6 @@ func (s *Service) ProcessOutbox(ctx context.Context) (bool, error) {
 
 func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found bool, resultErr error) {
 	return OutboxItem{}, false, ErrOutboxDisabled
-}
-
-func randomJitter() float64 {
-	var value [8]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return 0.5
-	}
-	return float64(binary.LittleEndian.Uint64(value[:])>>11) / (1 << 53)
 }
 
 func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {

@@ -34,7 +34,7 @@ func TestRunReportsSchemaValidation(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	listening := make(chan struct{})
-	cfg.listen = func(context.Context, string, string) (net.Listener, error) { close(listening); return listener, nil }
+	cfg.deps.Listen = func(context.Context, string, string) (net.Listener, error) { close(listening); return listener, nil }
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, cfg) }()
@@ -160,7 +160,7 @@ func TestRunCancelsSchemaValidationWhenListenerFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.listen = func(context.Context, string, string) (net.Listener, error) { return listener, nil }
+	cfg.deps.Listen = func(context.Context, string, string) (net.Listener, error) { return listener, nil }
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, cfg) }()

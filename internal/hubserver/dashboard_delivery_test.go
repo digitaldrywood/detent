@@ -22,18 +22,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func controlledHostedDelivery(t *testing.T, cfg dashboardDeliveryConfig, configure ...func(*Config)) (hostedSecurityFixture, hostedSecurityUser, *dashboardDelivery) {
+func controlledHostedDelivery(t *testing.T, cfg hubdeps.DashboardDelivery, configure ...func(*Config)) (hostedSecurityFixture, hostedSecurityUser, *dashboardDelivery) {
 	t.Helper()
-	cfg.newTimer = func(time.Duration) dashboardTimer {
-		return dashboardTimer{channel: make(chan time.Time), reset: func(time.Duration) {}, stop: func() {}}
+	cfg.NewTimer = func(time.Duration) hubdeps.Timer {
+		return hubdeps.Timer{C: make(chan time.Time), Reset: func(time.Duration) {}, Stop: func() {}}
 	}
-	configure = append([]func(*Config){func(c *Config) { c.dashboardDelivery = &cfg; c.Workspace = &WorkspaceConfig{Enabled: true} }}, configure...)
+	configure = append([]func(*Config){func(c *Config) { c.deps.DashboardDelivery = &cfg; c.Workspace = &WorkspaceConfig{Enabled: true} }}, configure...)
 	f := newHostedSecurityFixture(t, configure...)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
@@ -82,7 +83,7 @@ func TestHostedEventsReplay(t *testing.T) {
 	t.Parallel()
 	for _, header := range []bool{false, true} {
 		t.Run(fmt.Sprintf("last-event-id=%t", header), func(t *testing.T) {
-			f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{pageSize: 1})
+			f, user, d := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{PageSize: 1})
 			other := dashboardPostgresProject(t, f, user)
 			before := dashboardPostgresHead(t, f)
 			first := dashboardPostgresAppend(t, f, "first")
@@ -124,7 +125,7 @@ func TestHostedEventsReset(t *testing.T) {
 	t.Parallel()
 	for _, test := range []string{"below floor", "ahead", "trim between pages"} {
 		t.Run(test, func(t *testing.T) {
-			f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{pageSize: 1, budget: 1})
+			f, user, d := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{PageSize: 1, Budget: 1})
 			before := dashboardPostgresHead(t, f)
 			first := dashboardPostgresAppend(t, f, "first")
 			head := dashboardPostgresAppend(t, f, "second")
@@ -162,7 +163,7 @@ func TestHostedEventsReset(t *testing.T) {
 
 func TestHostedEventsAuthorizationCheckpointAndIdleRevocation(t *testing.T) {
 	t.Parallel()
-	f, _, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{pageSize: 1})
+	f, _, d := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{PageSize: 1})
 	hidden := dashboardPostgresIssue(t, f, 1)
 	reporter := f.user(t, "stream-reporter", "reporter", "reporter@example.test", "", "")
 	dashboardPostgresGrant(t, f, reporter)
@@ -209,7 +210,7 @@ func TestHostedEventsAuthorizationCheckpointAndIdleRevocation(t *testing.T) {
 
 func TestHostedEventsRecoveryAndAdmissionBudget(t *testing.T) {
 	t.Parallel()
-	f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{budget: 1, tenantLimit: 2})
+	f, user, d := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{Budget: 1, TenantLimit: 2})
 	other := dashboardPostgresProject(t, f, user)
 	before := dashboardPostgresHead(t, f)
 	stream := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
@@ -239,7 +240,7 @@ func TestHostedEventsRecoveryAndAdmissionBudget(t *testing.T) {
 
 func TestHostedEventsReplayLiveHandoff(t *testing.T) {
 	t.Parallel()
-	f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{pageSize: 1, budget: 1})
+	f, user, d := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{PageSize: 1, Budget: 1})
 	before := dashboardPostgresHead(t, f)
 	first := appendDashboardPostgresLane(t, f)
 	stream := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
@@ -307,7 +308,7 @@ func TestHostedEventsReplayLiveHandoff(t *testing.T) {
 func TestHostedEventsIdleHeartbeatReads(t *testing.T) {
 	t.Parallel()
 	trace := &dispatchWaitPostgresTrace{}
-	f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{}, func(c *pgxpool.Config) {
+	f, user, d := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{}, func(c *pgxpool.Config) {
 		c.ConnConfig.Tracer = trace
 	})
 	other := dashboardPostgresProject(t, f, user)
@@ -346,8 +347,8 @@ func TestHostedEventsIdleHeartbeatReads(t *testing.T) {
 	recover(1)
 
 	heartbeat := make(chan time.Time, 1)
-	d.config.newTimer = func(time.Duration) dashboardTimer {
-		return dashboardTimer{channel: heartbeat, reset: func(time.Duration) {}, stop: func() {}}
+	d.config.NewTimer = func(time.Duration) hubdeps.Timer {
+		return hubdeps.Timer{C: heartbeat, Reset: func(time.Duration) {}, Stop: func() {}}
 	}
 	heartbeatStream := openHostedTestStream(t, f, user, query)
 	before := trace.queries.Load()
@@ -363,7 +364,7 @@ func TestHostedEventsIdleHeartbeatReads(t *testing.T) {
 
 func TestHostedEventsSlowConsumerResumes(t *testing.T) {
 	t.Parallel()
-	f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{queueSize: 2, pageSize: 1, budget: 1})
+	f, user, d := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{QueueSize: 2, PageSize: 1, Budget: 1})
 	before := dashboardPostgresHead(t, f)
 	slow := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
 	d.mu.Lock()
@@ -382,7 +383,7 @@ func TestHostedEventsSlowConsumerResumes(t *testing.T) {
 	if len(sub.frames) > 2 {
 		t.Fatalf("queue exceeded bound: %d", len(sub.frames))
 	}
-	d.config.queueSize = 16
+	d.config.QueueSize = 16
 	replay := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(before, 10))
 	pumpHostedDelivery(t, d)
 	for _, seq := range sequences {
@@ -393,7 +394,7 @@ func TestHostedEventsSlowConsumerResumes(t *testing.T) {
 
 func TestHostedEventsTwoHubOwnersRecoverOtherWriter(t *testing.T) {
 	t.Parallel()
-	f, user, first := controlledPostgresDelivery(t, dashboardDeliveryConfig{})
+	f, user, first := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{})
 	secondService := &Service{config: f.service.config, echo: echo.New(), hostedSessions: f.service.hostedSessions, database: &database{postgres: f.service.database.postgres, billingRepository: f.service.database.billingRepository, now: f.service.config.now}, secretRewrapReady: make(chan struct{})}
 	secondService.ready.Store(true)
 	second := newDashboardDelivery(secondService)
@@ -422,7 +423,7 @@ func TestHostedEventsTwoHubOwnersRecoverOtherWriter(t *testing.T) {
 
 func TestHostedEventsActionRunDelivery(t *testing.T) {
 	t.Parallel()
-	f, user, d := controlledHostedDelivery(t, dashboardDeliveryConfig{})
+	f, user, d := controlledHostedDelivery(t, hubdeps.DashboardDelivery{})
 	item := f.seedIssue(t, 1)
 	var workspace workspacesession.Session
 	response := f.request(t, user, http.MethodPost, f.base+"/workspaces", workspaceRequest{Mutation: tracker.Mutation{IdempotencyKey: "event-action-workspace"}, WorkItemID: string(item), Requires: []string{"files"}})
@@ -488,12 +489,12 @@ func TestHostedEventsActionRunDelivery(t *testing.T) {
 func TestHostedEventsCommitWakeAndRecoveryTimer(t *testing.T) {
 	t.Parallel()
 	recovery := make(chan time.Time, 1)
-	cfg := dashboardDeliveryConfig{newTimer: func(d time.Duration) dashboardTimer {
+	cfg := hubdeps.DashboardDelivery{NewTimer: func(d time.Duration) hubdeps.Timer {
 		var ch <-chan time.Time
 		if d > 100*time.Millisecond && d < 2*time.Second {
 			ch = recovery
 		}
-		return dashboardTimer{channel: ch, reset: func(time.Duration) {}, stop: func() {}}
+		return hubdeps.Timer{C: ch, Reset: func(time.Duration) {}, Stop: func() {}}
 	}}
 	f, _, d := controlledPostgresDelivery(t, cfg)
 	user := f.user(t, "timer-viewer", "viewer", "timer@example.test", "", "")
@@ -525,7 +526,7 @@ func TestHostedEventsCommitWakeAndRecoveryTimer(t *testing.T) {
 
 func TestHostedEventsLegacyBoardFiltersAndGap(t *testing.T) {
 	t.Parallel()
-	f, user, d := controlledHostedDelivery(t, dashboardDeliveryConfig{})
+	f, user, d := controlledHostedDelivery(t, hubdeps.DashboardDelivery{})
 	f.seedIssue(t, 1)
 	f.seedIssue(t, 2)
 	drainTestNativeBoard(t, f.service)
@@ -564,7 +565,7 @@ func TestHostedEventsLegacyBoardFiltersAndGap(t *testing.T) {
 
 func TestHostedEventsNotifyOnlyAfterCommit(t *testing.T) {
 	t.Parallel()
-	f, _, _ := controlledPostgresDelivery(t, dashboardDeliveryConfig{})
+	f, _, _ := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{})
 	committed := f.service.database.dashboardCommitted
 	repository := f.service.config.TenantRepository
 	before := dashboardPostgresHead(t, f)
@@ -630,7 +631,7 @@ func TestHostedEventsNotifyOnlyAfterCommit(t *testing.T) {
 
 func TestHostedEventsLegacyBoardPagesShareSummary(t *testing.T) {
 	t.Parallel()
-	f, user, d := controlledHostedDelivery(t, dashboardDeliveryConfig{pageSize: 1})
+	f, user, d := controlledHostedDelivery(t, hubdeps.DashboardDelivery{PageSize: 1})
 	f.seedIssue(t, 1)
 	f.seedIssue(t, 2)
 	before := hostedDeliveryHead(t, f)
@@ -688,7 +689,7 @@ func TestHostedEventsDeletedEntityVisibility(t *testing.T) {
 	t.Parallel()
 	for _, entity := range []string{"item", "project"} {
 		t.Run(entity, func(t *testing.T) {
-			f, user, d := controlledPostgresDelivery(t, dashboardDeliveryConfig{})
+			f, user, d := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{})
 			item := dashboardPostgresIssue(t, f, 1)
 			before := dashboardPostgresHead(t, f)
 			query := "?since=" + strconv.FormatInt(before, 10)
@@ -770,11 +771,11 @@ func TestHostedEventsWriteDeadlineFailureClosesBeforeWrite(t *testing.T) {
 		t.Run(fmt.Sprintf("heartbeat=%t", heartbeat), func(t *testing.T) {
 			ready := make(chan struct{})
 			tick := make(chan time.Time, 1)
-			cfg := dashboardDeliveryConfig{newTimer: func(time.Duration) dashboardTimer {
+			cfg := hubdeps.DashboardDelivery{NewTimer: func(time.Duration) hubdeps.Timer {
 				close(ready)
-				return dashboardTimer{channel: tick, reset: func(time.Duration) {}, stop: func() {}}
+				return hubdeps.Timer{C: tick, Reset: func(time.Duration) {}, Stop: func() {}}
 			}}
-			s := &Service{config: Config{Logger: discardLogger(), dashboardDelivery: &cfg}}
+			s := &Service{config: Config{Logger: discardLogger(), deps: hubdeps.Deps{DashboardDelivery: &cfg}}}
 			s.dashboard = newDashboardDelivery(s)
 			ctx, cancel := context.WithCancel(t.Context())
 			writer := failedDashboardDeadlineWriter{ResponseRecorder: httptest.NewRecorder(), written: make(chan struct{}, 1)}

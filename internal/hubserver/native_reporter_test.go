@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -278,7 +279,7 @@ func TestReporterLinksAttachmentsAndBoardStream(t *testing.T) {
 	}
 	drainTestNativeBoard(t, v.service)
 	subscription := &dashboardSubscription{initial: true, sequence: sequence, params: url.Values{}, frames: make(chan dashboardFrame, 1), done: make(chan struct{})}
-	delivery := &dashboardDelivery{config: dashboardDeliveryConfig{pageSize: 100}}
+	delivery := &dashboardDelivery{config: hubdeps.DashboardDelivery{PageSize: 100}}
 	if _, err := v.service.dashboardBoardRecordPage(t.Context(), delivery, subscription, scope); err != nil {
 		t.Fatal(err)
 	}

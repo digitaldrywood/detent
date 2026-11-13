@@ -32,7 +32,7 @@ func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDe
 	if !ok {
 		return false, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	frames := make([]dashboardFrame, 0, min(d.config.pageSize, corestore.MaxPageSize))
+	frames := make([]dashboardFrame, 0, min(d.config.PageSize, corestore.MaxPageSize))
 	type actionFrame struct {
 		run      postgres.ActionRun
 		status   string
@@ -87,7 +87,7 @@ func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDe
 		if gap || sequence == head {
 			return nil
 		}
-		rows, err := r.BoardDeltas(ctx, scope.Project, sequence, min(d.config.pageSize, corestore.MaxPageSize))
+		rows, err := r.BoardDeltas(ctx, scope.Project, sequence, min(d.config.PageSize, corestore.MaxPageSize))
 		if err != nil {
 			return err
 		}

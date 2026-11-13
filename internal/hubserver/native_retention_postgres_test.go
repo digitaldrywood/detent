@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -308,7 +309,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 				if _, err := blocker.ExecContext(ctx, "LOCK TABLE native_duplicate_challenges IN SHARE MODE"); err != nil {
 					t.Fatal(err)
 				}
-				service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, retentionTimeout: frozenRetentionTimeout}}
+				service := &Service{config: Config{TenantRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}}}
 				retained := make(chan error, 1)
 				workers.Go(func() { retained <- service.expireNativeRecords(ctx, now.Add(2*time.Hour)) })
 				testenv.WaitUntil(t, testenv.WaitContext(t, ctx), func() error {
@@ -561,7 +562,7 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 				schedulerDone := make(chan struct{})
 				service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, RunDetails: objects, Logger: discardLogger(), WebhookMaintenanceInterval: time.Millisecond,
 					now: func() time.Time { return time.Unix(0, clock.Load()).UTC() },
-					retentionTimeout: func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+					deps: hubdeps.Deps{RetentionTimeout: func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
 						if budget != backgroundStorageBudget {
 							wrongBudget.Store(true)
 						}
@@ -569,12 +570,11 @@ func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testin
 							return context.WithDeadline(ctx, time.Now().Add(-time.Second))
 						}
 						return context.WithTimeout(ctx, budget)
-					},
-					runMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+					}, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 						defer close(schedulerDone)
 						<-ctx.Done()
 						return ctx.Err()
-					},
+					}},
 				}, database: &database{postgres: repository}, workerDone: make(chan struct{}), boardRefresh: make(chan struct{}, 1), requestMetrics: &tenantRequestMetrics{Repository: repository, Organization: org}}
 				ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 				defer func() { cancel(); <-service.workerDone; <-schedulerDone }()

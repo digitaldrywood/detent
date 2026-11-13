@@ -51,7 +51,7 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 			if !ok {
 				return hubapi.ErrPostgresFeatureUnavailable
 			}
-			return gitHubIntakeWriter.DeferGitHubIntake(cleanup, project, s.config.now(), s.config.jitter())
+			return gitHubIntakeWriter.DeferGitHubIntake(cleanup, project, s.config.now(), s.config.deps.Jitter())
 		})
 		if errors.Is(err, corestore.ErrNotFound) {
 			return retryErr

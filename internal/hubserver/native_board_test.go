@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -1228,7 +1229,7 @@ func nativeBoardFixtureScope(t *testing.T, f nativeFixture) hubscope.NativeScope
 func readTestBoardRecordFrame(t *testing.T, service *Service, scope hubscope.NativeScope, since int64) tracker.NativeBoardFrame {
 	t.Helper()
 	sub := &dashboardSubscription{initial: true, sequence: since, frames: make(chan dashboardFrame, 1), done: make(chan struct{})}
-	delivery := &dashboardDelivery{config: dashboardDeliveryConfig{pageSize: corestore.MaxPageSize}}
+	delivery := &dashboardDelivery{config: hubdeps.DashboardDelivery{PageSize: corestore.MaxPageSize}}
 	more, err := service.dashboardBoardRecordPage(t.Context(), delivery, sub, scope)
 	if err != nil {
 		t.Fatal(err)

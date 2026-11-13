@@ -6,18 +6,15 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
-
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/update"
@@ -51,32 +48,29 @@ var (
 )
 
 type Config struct {
-	runMaintenance                 func(context.Context, *hubmaintenance.Scheduler, func(error)) error
-	migrate                        func(context.Context, *sql.DB, *slog.Logger) (int64, error)
-	TenantRepository               tenantstore.Repository
-	ChangeVersionAuthority         ChangeVersionAuthority
-	BillingRepository              tenantstore.Repository
-	AccessRepository               tenantstore.Repository
-	ProjectParticipants            tenantstore.ProjectParticipants
-	ConversationDispatch           tenantstore.DispatchRequests
-	ConversationWorkerAuthority    ConversationWorkerAuthority
-	NativeRunEvents                NativeRunEventParticipant
-	Clock                          func() time.Time
-	dashboardDelivery              *dashboardDeliveryConfig
-	ArchiveReader                  entryauthority.ArchiveReader
-	StaticFS                       fs.FS
-	Content                        entryauthority.ContentHandler
-	RunDetails                     attachment.DetailStore
-	Icons                          attachment.IconStore
-	RunnerReleaseClient            update.ReleaseClient
-	runnerReleaseSignatureVerifier update.ChecksumSignatureVerifier
-	SecretKeys                     *hubsecrets.Keyring
-	SpritesHTTPClient              *http.Client
-	SlackHTTPClient                *http.Client
-	CredentialMaintenance          bool
-	Hosted                         *hostedplans.HostedConfig
-	Conversation                   *ConversationConfig
-	Usage                          *UsageConfig
+	migrate                     func(context.Context, *sql.DB, *slog.Logger) (int64, error)
+	TenantRepository            tenantstore.Repository
+	ChangeVersionAuthority      ChangeVersionAuthority
+	BillingRepository           tenantstore.Repository
+	AccessRepository            tenantstore.Repository
+	ProjectParticipants         tenantstore.ProjectParticipants
+	ConversationDispatch        tenantstore.DispatchRequests
+	ConversationWorkerAuthority ConversationWorkerAuthority
+	NativeRunEvents             NativeRunEventParticipant
+	Clock                       func() time.Time
+	ArchiveReader               entryauthority.ArchiveReader
+	StaticFS                    fs.FS
+	Content                     entryauthority.ContentHandler
+	RunDetails                  attachment.DetailStore
+	Icons                       attachment.IconStore
+	RunnerReleaseClient         update.ReleaseClient
+	SecretKeys                  *hubsecrets.Keyring
+	SpritesHTTPClient           *http.Client
+	SlackHTTPClient             *http.Client
+	CredentialMaintenance       bool
+	Hosted                      *hostedplans.HostedConfig
+	Conversation                *ConversationConfig
+	Usage                       *UsageConfig
 	// Workspace enables workspace sessions and the relay.
 	// Nil means the surfaces stay disabled with their reason.
 	Workspace             *WorkspaceConfig
@@ -109,34 +103,24 @@ type Config struct {
 	ReconcileInterval          time.Duration
 	FullRepairInterval         time.Duration
 
-	hostedBindingMigration      bool
-	conversationStreamHeartbeat time.Duration
-	conversationStreamAuthorize time.Duration
-	validateDatabaseFilesystem  func(string) error
-	listen                      func(context.Context, string, string) (net.Listener, error)
-	now                         func() time.Time
-	retentionTimeout            func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	jitter                      func() float64
-	newLeaseID                  func() string
-	newOutboxTimer              func(time.Duration) outboxTimer
-	newTokenID                  func() string
-	generateToken               func() (string, error)
+	hostedBindingMigration     bool
+	validateDatabaseFilesystem func(string) error
+	now                        func() time.Time
+	deps                       hubdeps.Deps
+}
+
+func WithDeps(cfg Config, deps hubdeps.Deps) Config {
+	cfg.deps = deps
+	return cfg
 }
 
 func (c Config) normalized() Config {
-	if c.runMaintenance == nil {
-		c.runMaintenance = func(ctx context.Context, scheduler *hubmaintenance.Scheduler, report func(error)) error {
-			return scheduler.Run(ctx, report)
-		}
-	}
+	c.deps = c.deps.WithDefaults()
 	if c.RunDetails == nil && c.Hosted != nil && c.Hosted.SharedEntry != nil {
 		c.RunDetails = c.Hosted.SharedEntry.RunDetails
 	}
 	if c.DatabaseBackend == DatabasePostgres && c.RunDetails != nil {
 		c.RunDetails = hubmaintenance.LimitDetails(c.RunDetails)
-	}
-	if c.runnerReleaseSignatureVerifier == nil {
-		c.runnerReleaseSignatureVerifier = update.VerifyChecksumSignature
 	}
 	if c.RunnerReleaseClient == nil {
 		c.RunnerReleaseClient = update.NewGitHubClient(update.GitHubClientConfig{})
@@ -199,10 +183,6 @@ func (c Config) normalized() Config {
 	if c.validateDatabaseFilesystem == nil {
 		c.validateDatabaseFilesystem = validateLocalDatabaseFilesystem
 	}
-	if c.listen == nil {
-		listenConfig := &net.ListenConfig{}
-		c.listen = listenConfig.Listen
-	}
 	if c.now == nil {
 		c.now = c.Clock
 		if c.now == nil {
@@ -211,24 +191,6 @@ func (c Config) normalized() Config {
 	}
 	if c.TenantRepository != nil && c.ConversationWorkerAuthority == nil {
 		c.ConversationWorkerAuthority = tenantRunnerAuthority{now: c.now}
-	}
-	if c.jitter == nil {
-		c.jitter = randomJitter
-	}
-	if c.newLeaseID == nil {
-		c.newLeaseID = uuid.NewString
-	}
-	if c.newOutboxTimer == nil {
-		c.newOutboxTimer = func(duration time.Duration) outboxTimer {
-			timer := time.NewTimer(duration)
-			return outboxTimer{ticks: timer.C, reset: func(next time.Duration) { timer.Reset(next) }, stop: func() { timer.Stop() }}
-		}
-	}
-	if c.newTokenID == nil {
-		c.newTokenID = uuid.NewString
-	}
-	if c.generateToken == nil {
-		c.generateToken = apikey.GenerateToken
 	}
 	c.GitHubWebhookSecret = append([]byte(nil), c.GitHubWebhookSecret...)
 	c.InitialAdminToken = append([]byte(nil), c.InitialAdminToken...)

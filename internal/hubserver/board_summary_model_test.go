@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -351,7 +352,7 @@ func TestBoardCountsFenceOwnershipUntilProjection(t *testing.T) {
 			}
 			publish(true)
 			sub := &dashboardSubscription{initial: true, sequence: 1, params: map[string][]string{}, frames: make(chan dashboardFrame, 1), done: make(chan struct{})}
-			delivery := &dashboardDelivery{config: dashboardDeliveryConfig{pageSize: 10}}
+			delivery := &dashboardDelivery{config: hubdeps.DashboardDelivery{PageSize: 10}}
 			if _, err := service.dashboardBoardRecordPage(t.Context(), delivery, sub, scope); err != nil {
 				t.Fatal(err)
 			}

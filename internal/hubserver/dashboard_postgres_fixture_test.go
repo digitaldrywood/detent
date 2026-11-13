@@ -10,12 +10,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func controlledPostgresDelivery(t *testing.T, cfg dashboardDeliveryConfig, configure ...func(*pgxpool.Config)) (hostedSecurityFixture, hostedSecurityUser, *dashboardDelivery) {
+func controlledPostgresDelivery(t *testing.T, cfg hubdeps.DashboardDelivery, configure ...func(*pgxpool.Config)) (hostedSecurityFixture, hostedSecurityUser, *dashboardDelivery) {
 	t.Helper()
 	repository, _ := projectRecordPostgresWithAdmin(t, 3, configure...)
 	f := accountPreferencesPostgresFixture(t, repository)
@@ -38,12 +39,12 @@ func controlledPostgresDelivery(t *testing.T, cfg dashboardDeliveryConfig, confi
 	}
 	user := f.user(t, "stream-member", "member", "stream@example.test", "", "")
 	dashboardPostgresGrant(t, f, user)
-	if cfg.newTimer == nil {
-		cfg.newTimer = func(time.Duration) dashboardTimer {
-			return dashboardTimer{channel: make(chan time.Time), reset: func(time.Duration) {}, stop: func() {}}
+	if cfg.NewTimer == nil {
+		cfg.NewTimer = func(time.Duration) hubdeps.Timer {
+			return hubdeps.Timer{C: make(chan time.Time), Reset: func(time.Duration) {}, Stop: func() {}}
 		}
 	}
-	f.service.config.dashboardDelivery = &cfg
+	f.service.config.deps.DashboardDelivery = &cfg
 	f.service.database.dashboardCommitted = boardCommitChannel(repository)
 	d := newDashboardDelivery(f.service)
 	f.service.dashboard = d

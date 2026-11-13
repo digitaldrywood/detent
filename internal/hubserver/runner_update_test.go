@@ -39,7 +39,7 @@ func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
 				f = newHostedSecurityFixture(t)
 			}
 			owner := f.user(t, "reader", test.role, "reader@example.test", "write", "")
-			f.service.config.generateToken = apikey.GenerateToken
+			f.service.config.deps.GenerateToken = apikey.GenerateToken
 			f.grant(t, owner, true, true)
 			credential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: owner.identity.Hosted, Email: owner.identity.Email}, apikey.HashToken(owner.token))
 			if err != nil {

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -32,10 +33,10 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(start.Add(-31 * 24 * time.Hour).UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
-	f := newDefaultNativeFixture(t, Config{now: now, retentionTimeout: frozenRetentionTimeout, WebhookMaintenanceInterval: 10 * time.Millisecond, runMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+	f := newDefaultNativeFixture(t, Config{now: now, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 		<-ctx.Done()
 		return ctx.Err()
-	}})
+	}}, WebhookMaintenanceInterval: 10 * time.Millisecond})
 	s := f.service
 	issue := f.create(t, "closed issue")
 	response := performHubAPIRequest(t, s, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", testHubAdminToken, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "close-cadence-issue"}, ExpectedRevision: issue.Revision, State: "Done", Reason: "user_requested"})
@@ -307,7 +308,7 @@ func TestNativeRetentionStageBudgets(t *testing.T) {
 				budget := 2 * time.Second
 				if test.injected {
 					budget = -time.Second
-					s.config.retentionTimeout = func(ctx context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
+					s.config.deps.RetentionTimeout = func(ctx context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
 						if duration != 2*time.Second {
 							t.Fatalf("stage budget=%v", duration)
 						}

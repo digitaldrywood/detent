@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -22,7 +23,7 @@ func TestUrgentRunnerUpdateHeartbeatSurvivesReplayExpiry(t *testing.T) {
 			start := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 			var clock atomic.Int64
 			clock.Store(start.UnixNano())
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, retentionTimeout: frozenRetentionTimeout})
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, deps: hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout}})
 			s := f.service
 
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)

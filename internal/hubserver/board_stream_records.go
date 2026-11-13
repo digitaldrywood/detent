@@ -62,7 +62,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 		if frame.Gap {
 			return nil
 		}
-		rows, err = r.BoardDeltas(ctx, scope.Project, sub.sequence, min(d.config.pageSize, corestore.MaxPageSize))
+		rows, err = r.BoardDeltas(ctx, scope.Project, sub.sequence, min(d.config.PageSize, corestore.MaxPageSize))
 		return err
 	})
 	if err != nil {

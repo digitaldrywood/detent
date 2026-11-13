@@ -12,7 +12,7 @@ import (
 type accessMemberPreparation = accessmembers.Preparation
 
 func (s *Service) accessMembersService() *accessmembers.Service {
-	return accessmembers.New(accessmembers.Deps{Repository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.now, GenerateToken: s.config.generateToken})
+	return accessmembers.New(accessmembers.Deps{Repository: s.config.AccessRepository, Organization: s.accessOrganization(), Now: s.config.now, GenerateToken: s.config.deps.GenerateToken})
 }
 
 func (s *Service) prepareAccessMember(ctx context.Context, identity auth.Identity) (accessMemberPreparation, error) {

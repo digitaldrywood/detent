@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -1043,7 +1044,7 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 		t.Run(revocation, func(t *testing.T) {
 			t.Parallel()
 			clock := &leaseTestClock{value: time.Now().UTC()}
-			f, _, delivery := controlledHostedDelivery(t, dashboardDeliveryConfig{}, func(cfg *Config) {
+			f, _, delivery := controlledHostedDelivery(t, hubdeps.DashboardDelivery{}, func(cfg *Config) {
 				cfg.now = clock.Now
 			})
 			owner := f.user(t, "member", "member", "member@example.test", "write", "")

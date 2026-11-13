@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -295,7 +296,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 		echo: echo.New(), database: &database{now: time.Now, billingRepository: repository, billingAuditStore: details}, secretRewrapReady: make(chan struct{}),
 		notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1),
 		config: Config{
-			Logger: discardLogger(), now: time.Now, generateToken: apikey.GenerateToken,
+			Logger: discardLogger(), now: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
 			TenantRepository: repository, AccessRepository: repository, RunDetails: details,
 			NativeRunEvents: participant, SecretKeys: keys,
 		},
@@ -570,7 +571,7 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 		echo: echo.New(), database: &database{now: time.Now, billingRepository: repository, billingAuditStore: details}, secretRewrapReady: make(chan struct{}),
 		notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1),
 		config: Config{
-			Logger: discardLogger(), now: time.Now, generateToken: apikey.GenerateToken,
+			Logger: discardLogger(), now: time.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken},
 			TenantRepository: repository, AccessRepository: repository, RunDetails: details,
 			NativeRunEvents: participant, SecretKeys: keys,
 		},

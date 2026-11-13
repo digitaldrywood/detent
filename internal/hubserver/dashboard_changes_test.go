@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -908,7 +909,7 @@ func testDashboardChangeLog(t *testing.T) {
 			}
 			for _, since := range []int64{floor - 1, floor} {
 				sub := &dashboardSubscription{sequence: since, frames: make(chan dashboardFrame, 2), done: make(chan struct{})}
-				delivery := &dashboardDelivery{config: dashboardDeliveryConfig{pageSize: 1}}
+				delivery := &dashboardDelivery{config: hubdeps.DashboardDelivery{PageSize: 1}}
 				more, err := f.service.dashboardProjectRecordPage(ctx, delivery, sub, scope)
 				if err != nil {
 					t.Fatal(err)

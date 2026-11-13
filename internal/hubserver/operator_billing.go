@@ -497,7 +497,7 @@ func (e hostedOperatorExecutor) submitBilling(ctx context.Context, call operator
 		return operatortool.Result{}, err
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
-	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, Action: call.Name, Source: "mcp", CorrelationID: s.config.newLeaseID()}
+	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, Action: call.Name, Source: "mcp", CorrelationID: s.config.deps.NewLeaseID()}
 	m, err = m.Bind(request.RequestID, json.RawMessage(arguments))
 	if err != nil {
 		return operatortool.Result{}, err

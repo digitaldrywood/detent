@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -28,10 +29,10 @@ func TestHealthScheduledReporterHistory(t *testing.T) {
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	var clock atomic.Int64
 	clock.Store(base.UnixNano())
-	service := newPostgresNativeService(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, runMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+	service := newPostgresNativeService(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, deps: hubdeps.Deps{RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 		<-ctx.Done()
 		return ctx.Err()
-	}})
+	}}})
 	f := newNativeFixture(t, service, "", "scheduled-history")
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), f.project.ID)
@@ -125,10 +126,10 @@ func runScheduledValidationRecordCases(t *testing.T) {
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	var clock atomic.Int64
 	clock.Store(base.UnixNano())
-	service := newPostgresNativeService(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, runMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+	service := newPostgresNativeService(t, Config{now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, deps: hubdeps.Deps{RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 		<-ctx.Done()
 		return ctx.Err()
-	}})
+	}}})
 	foreignToken := ""
 	for index, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 		orgBase := base.Add(time.Duration(index) * 4 * time.Minute)

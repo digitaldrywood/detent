@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -117,7 +118,7 @@ func TestHostedImportTypedReads(t *testing.T) {
 	for _, organization := range organizations {
 		t.Run(string(organization), func(t *testing.T) {
 			clock := &leaseTestClock{value: now}
-			service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, RunDetails: objects, now: clock.Now, generateToken: apikey.GenerateToken, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}}}
+			service := &Service{config: Config{AccessRepository: repository, TenantRepository: repository, RunDetails: objects, now: clock.Now, deps: hubdeps.Deps{GenerateToken: apikey.GenerateToken}, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization)}}}
 			authorize := func(org tracker.OrganizationID, entry string, subject string) error {
 				return repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 					_, err := r.AuthorizeAccess(t.Context(), accessstore.Authority{CredentialID: "hosted_" + apikey.HashToken(subject)[:32], Hash: apikey.HashToken(string(org) + subject), UserID: subject, MembershipID: "membership_" + subject, SessionHash: entry}, clock.Now())

@@ -218,7 +218,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		startup.schema.Store(&MigrationHealth{SchemaVersion: database.schemaVersion, SchemaFingerprint: database.schemaFingerprint})
 	}
 	database.now = cfg.now
-	database.newLeaseID = cfg.newLeaseID
+	database.newLeaseID = cfg.deps.NewLeaseID
 	var localOrganization tracker.OrganizationID
 	if database.postgres != nil {
 		database.logger = cfg.Logger
@@ -413,7 +413,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 		}
 		network, address = "unix", path
 	}
-	listener, err := activation.Listen(ctx, network, address, cfg.listen)
+	listener, err := activation.Listen(ctx, network, address, cfg.deps.Listen)
 	if err != nil {
 		return fmt.Errorf("listen for hub requests: %w", err)
 	}
@@ -703,7 +703,7 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 	defer close(s.workerDone)
 	var maintenance sync.WaitGroup
 	maintenance.Go(func() {
-		if err := s.config.runMaintenance(ctx, s.maintenance, func(err error) {
+		if err := s.config.deps.RunMaintenance(ctx, s.maintenance, func(err error) {
 			s.config.Logger.WarnContext(ctx, "maintain hosted read models", "error", err)
 		}); err != nil && !errors.Is(err, context.Canceled) {
 			s.config.Logger.WarnContext(ctx, "stop hosted read-model maintenance", "error", err)

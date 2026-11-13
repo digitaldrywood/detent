@@ -17,14 +17,14 @@ func (s *Service) githubOutboundService() *githuboutbound.Service {
 	return githuboutbound.New(githuboutbound.Deps{
 		Repository: s.config.TenantRepository, Organization: organization,
 		Details: s.runDetailStore(), Backend: s.config.OutboxBackend, Now: s.config.now,
-		Jitter: s.config.jitter, NewLeaseID: s.config.newLeaseID, Logger: s.config.Logger,
+		Jitter: s.config.deps.Jitter, NewLeaseID: s.config.deps.NewLeaseID, Logger: s.config.Logger,
 		OutboxPollInterval: s.config.OutboxPollInterval, OutboxProcessingTimeout: s.config.OutboxProcessingTimeout,
 		OutboxBaseBackoff: s.config.OutboxBaseBackoff, OutboxMaxBackoff: s.config.OutboxMaxBackoff,
 		Disabled: ErrOutboxDisabled, Unavailable: hubapi.ErrPostgresFeatureUnavailable,
 		SplitRepository: splitRepositoryFullName, Process: s.ProcessOutbox,
 		NewTimer: func(delay time.Duration) githuboutbound.Timer {
-			timer := s.config.newOutboxTimer(delay)
-			return githuboutbound.Timer{Ticks: timer.ticks, Reset: timer.reset, Stop: timer.stop}
+			timer := s.config.deps.NewOutboxTimer(delay)
+			return githuboutbound.Timer{Ticks: timer.C, Reset: timer.Reset, Stop: timer.Stop}
 		},
 	})
 }
@@ -32,11 +32,6 @@ func (s *Service) processGitHubOutboundRecord(ctx context.Context) (bool, error)
 	return s.githubOutboundService().Process(ctx)
 }
 
-type outboxTimer struct {
-	ticks <-chan time.Time
-	reset func(time.Duration)
-	stop  func()
-}
 type outboxWorker struct{ worker *githuboutbound.Worker }
 
 func newOutboxWorker(s *Service) *outboxWorker {

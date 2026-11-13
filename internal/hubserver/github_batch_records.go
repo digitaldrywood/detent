@@ -1084,7 +1084,7 @@ func (s *Service) reconcileRunnerGitHubBatch(ctx context.Context, scope hubscope
 		return s.saveGitHubBatchRecord(ctx, scope, batch)
 	}
 	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Background, func(writer tenantstore.Writer) error {
-		return writer.(projectstore.GitHubIntakeWriter).DeferGitHubIntake(ctx, scope.Project, s.config.now(), s.config.jitter())
+		return writer.(projectstore.GitHubIntakeWriter).DeferGitHubIntake(ctx, scope.Project, s.config.now(), s.config.deps.Jitter())
 	})
 }
 
