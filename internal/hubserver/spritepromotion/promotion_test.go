@@ -1,4 +1,4 @@
-package hubserver
+package spritepromotion
 
 import (
 	"context"
@@ -9,13 +9,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/chat"
+	"bytes"
+	"encoding/base64"
+	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -32,51 +36,65 @@ func TestPromoteSpritesToken(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			keys := secretTestKeys(t, "1", "1")
-			service := newPostgresNativeService(t, Config{SecretKeys: keys})
-			repository := service.config.TenantRepository
+			repository := hubtest.Repository(t, hubtest.WithMaxConnections(4))
+			service := New(Deps{Keys: keys, Now: time.Now, Decode: operatortool.DecodeArguments})
 			for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {
 				t.Run(string(organization), func(t *testing.T) {
-					f := newNativeFixture(t, service, organization, "Example source")
+					hubtest.Organization(t, repository, hubtest.OrganizationOptions{ID: organization, Name: "Example source"})
+					project := hubtest.Project(t, repository, organization, hubtest.ProjectOptions{})
+					credential := hubtest.Credential(t, repository, organization, hubtest.CredentialOptions{Scope: "admin", AllProject: true})
+					scope := hubtest.Scope(t, hubtest.ScopeFacts{Credential: credential, Admin: true})
+					service.deps.Organization = organization
+					service.deps.Write = func(ctx context.Context, write func(tenantstore.Writer) error) error {
+						return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+							if err := scope.Authorize(ctx, w, true); err != nil {
+								return err
+							}
+							return write(w)
+						})
+					}
+					service.deps.Audit = func(event string, version int) accessstore.SecretAudit {
+						return accessstore.SecretAudit{OrganizationID: organization, Actor: credential.ID, Kind: secretKind, Event: event, KeyVersion: version, RecordedAt: service.deps.Now()}
+					}
 					storeSecret := func(ctx context.Context, project tracker.ProjectID, token string) {
 						t.Helper()
-						envelope, err := keys.Seal([]byte(token), accessstore.SecretAAD(organization, project, flySpritesToken))
+						envelope, err := keys.Seal([]byte(token), accessstore.SecretAAD(organization, project, secretKind))
 						if err != nil {
 							t.Fatal(err)
 						}
 						if err := repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
-							return w.StoreAccessSecret(ctx, accessstore.Secret{OrganizationID: organization, ProjectID: project, Kind: flySpritesToken, OrganizationSlug: "example-org", Envelope: envelope, UpdatedAt: service.config.now()}, accessstore.SecretAudit{OrganizationID: organization, ProjectID: project, Kind: flySpritesToken, Actor: "fixture", Event: "set", KeyVersion: envelope.Version, RecordedAt: service.config.now()})
+							return w.StoreAccessSecret(ctx, accessstore.Secret{OrganizationID: organization, ProjectID: project, Kind: secretKind, OrganizationSlug: "example-org", Envelope: envelope, UpdatedAt: service.deps.Now()}, accessstore.SecretAudit{OrganizationID: organization, ProjectID: project, Kind: secretKind, Actor: "fixture", Event: "set", KeyVersion: envelope.Version, RecordedAt: service.deps.Now()})
 						}); err != nil {
 							t.Fatal(err)
 						}
 					}
-					storeSecret(t.Context(), f.project.ID, spritesSecretSentinel)
+					storeSecret(t.Context(), project.ID, spritesSecretSentinel)
 					promotedToken := spritesSecretSentinel
-					sourceProject := f.project.ID
+					sourceProject := project.ID
 					if test.ranked {
-						second := newNativeFixture(t, service, organization, "Example ranked source")
-						storeSecret(t.Context(), second.project.ID, "ranked-token")
-						promotedToken, sourceProject = "ranked-token", second.project.ID
+						second := hubtest.Project(t, repository, organization, hubtest.ProjectOptions{Name: "Example ranked source"})
+						storeSecret(t.Context(), second.ID, "ranked-token")
+						promotedToken, sourceProject = "ranked-token", second.ID
 						if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 							ranks := w.(projectstore.OrganizationWriter)
 							revision, err := ranks.OrganizationSchedulingRevision(t.Context())
 							if err != nil {
 								return err
 							}
-							return ranks.SetOrganizationProjectRanks(t.Context(), revision, []tracker.ProjectID{sourceProject, f.project.ID})
+							return ranks.SetOrganizationProjectRanks(t.Context(), revision, []tracker.ProjectID{sourceProject, project.ID})
 						}); err != nil {
 							t.Fatal(err)
 						}
 					}
-					scope := nativeScope{organization: organization, credential: apiCredential{Scope: apiScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
-					var change spriteTokenPromotion
+					var change Change
 					var source accessstore.Secret
 					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
-						credential, err := r.CredentialByHash(t.Context(), scope.credential.Hash)
+						credential, err := r.CredentialByHash(t.Context(), credential.Hash)
 						if err != nil {
 							return err
 						}
-						scope.credential.ID = credential.ID
-						change, source, err = firstProjectSpritesToken(t.Context(), r)
+						scope.CredentialID = credential.ID
+						change, source, err = firstProjectToken(t.Context(), r)
 						return err
 					}); err != nil {
 						t.Fatal(err)
@@ -92,18 +110,18 @@ func TestPromoteSpritesToken(t *testing.T) {
 						t.Fatal("preview exposed token")
 					}
 					if test.rewrap {
-						service.config.SecretKeys = secretTestKeys(t, "2", "1", "2")
-						envelope, err := service.config.SecretKeys.Rewrap(source.Envelope, accessstore.SecretAAD(organization, source.ProjectID, flySpritesToken))
+						service.deps.Keys = secretTestKeys(t, "2", "1", "2")
+						envelope, err := service.deps.Keys.Rewrap(source.Envelope, accessstore.SecretAAD(organization, source.ProjectID, secretKind))
 						if err != nil {
 							t.Fatal(err)
 						}
 						if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-							return w.RewrapAccessSecret(t.Context(), source, envelope, accessstore.SecretAudit{OrganizationID: organization, ProjectID: source.ProjectID, Kind: flySpritesToken, Actor: "fixture", Event: "rotate", KeyVersion: envelope.Version, RecordedAt: service.config.now()})
+							return w.RewrapAccessSecret(t.Context(), source, envelope, accessstore.SecretAudit{OrganizationID: organization, ProjectID: source.ProjectID, Kind: secretKind, Actor: "fixture", Event: "rotate", KeyVersion: envelope.Version, RecordedAt: service.deps.Now()})
 						}); err != nil {
 							t.Fatal(err)
 						}
 						if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
-							current, secret, err := firstProjectSpritesToken(t.Context(), r)
+							current, secret, err := firstProjectToken(t.Context(), r)
 							if err != nil || current.Fingerprint != change.Fingerprint || secret.Envelope.Version != 2 {
 								t.Fatalf("preview changed after rewrap: %v", err)
 							}
@@ -113,19 +131,19 @@ func TestPromoteSpritesToken(t *testing.T) {
 						}
 					}
 					if test.changed {
-						storeSecret(t.Context(), f.project.ID, "replacement")
+						storeSecret(t.Context(), project.ID, "replacement")
 					}
 					if test.existing {
 						storeSecret(t.Context(), "", "existing")
 					}
 					if test.revoked {
 						if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-							return w.RevokeAccessCredential(t.Context(), scope.credential.ID, service.config.now())
+							return w.RevokeAccessCredential(t.Context(), scope.CredentialID, service.deps.Now())
 						}); err != nil {
 							t.Fatal(err)
 						}
 					}
-					ctx := context.WithValue(t.Context(), nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
+					ctx := t.Context()
 					interleaved := false
 					if test.raced {
 						ctx = postgres.WithTransactionTiming(ctx, nil, func(_ time.Time, query string) {
@@ -137,7 +155,7 @@ func TestPromoteSpritesToken(t *testing.T) {
 							}
 						})
 					}
-					result, err := service.executePromoteSpritesToken(ctx, chat.Action{Kind: "promote_sprites_token", ProjectID: string(f.project.ID), Arguments: raw})
+					result, err := service.Execute(ctx, raw)
 					if test.changed || test.existing || test.revoked || test.raced {
 						if err == nil {
 							t.Fatal("stale or overwriting promotion accepted")
@@ -150,8 +168,8 @@ func TestPromoteSpritesToken(t *testing.T) {
 							if test.raced {
 								message = "An organization Sprites token is already configured"
 							}
-							var refusal *nativeError
-							if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || refusal.status != http.StatusUnprocessableEntity || !refusal.publicMessage || refusal.Message != message {
+							var refusal *hubapi.Error
+							if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || refusal.Status != http.StatusUnprocessableEntity || !refusal.Public || refusal.Message != message {
 								t.Fatalf("promotion refusal=%v want invalid_request: %s", err, message)
 							}
 						}
@@ -164,7 +182,7 @@ func TestPromoteSpritesToken(t *testing.T) {
 						}
 					}
 					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
-						secret, err := r.AccessSecret(t.Context(), "", flySpritesToken)
+						secret, err := r.AccessSecret(t.Context(), "", secretKind)
 						if test.changed || test.revoked {
 							if !errors.Is(err, corestore.ErrNotFound) {
 								t.Fatalf("refused promotion wrote organization secret: %v", err)
@@ -174,7 +192,7 @@ func TestPromoteSpritesToken(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						token, err := service.config.SecretKeys.Open(secret.Envelope, accessstore.SecretAAD(organization, "", flySpritesToken))
+						token, err := service.deps.Keys.Open(secret.Envelope, accessstore.SecretAAD(organization, "", secretKind))
 						if err != nil {
 							return err
 						}
@@ -191,11 +209,11 @@ func TestPromoteSpritesToken(t *testing.T) {
 						t.Fatal(err)
 					}
 					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
-						secret, err := r.AccessSecret(t.Context(), f.project.ID, flySpritesToken)
+						secret, err := r.AccessSecret(t.Context(), project.ID, secretKind)
 						if err != nil {
 							return err
 						}
-						token, err := service.config.SecretKeys.Open(secret.Envelope, accessstore.SecretAAD(organization, f.project.ID, flySpritesToken))
+						token, err := service.deps.Keys.Open(secret.Envelope, accessstore.SecretAAD(organization, project.ID, secretKind))
 						if err != nil {
 							return err
 						}
@@ -215,4 +233,30 @@ func TestPromoteSpritesToken(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMain(m *testing.M) { hubtest.Main(m) }
+
+const spritesSecretSentinel = "detent-test/org-id/token-id/SPRITES-VALUE-SENTINEL"
+
+func secretTestKeys(t *testing.T, active string, versions ...string) *hubsecrets.Keyring {
+	t.Helper()
+	encoded := map[string]string{}
+	for _, v := range versions {
+		encoded[v] = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte(v), 32))
+	}
+	raw, err := json.Marshal(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := hubsecrets.FromEnvironment(func(name string) string {
+		if name == "DETENT_HUB_SECRET_KEYS" {
+			return string(raw)
+		}
+		return active
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keys
 }
