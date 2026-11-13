@@ -76,7 +76,26 @@ func (p Native) Request(t *testing.T, method, path string, payload any) *httptes
 
 func (p Native) Create(t *testing.T, title string) tracker.NativeIssue {
 	t.Helper()
-	response := p.Hub.Request(t, http.MethodPost, p.Base+"/work-items", p.Token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + title}, Title: title, Body: IssueBody(), State: "Todo"})
+	draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + title}, Title: title, Body: IssueBody(), State: "Todo"}
+	response := p.Hub.Request(t, http.MethodPost, p.Base+"/work-items", p.Token, draft)
+	if response.Code == http.StatusConflict {
+		var challenge struct {
+			Code    string `json:"code"`
+			Token   string `json:"challenge_token"`
+			Matches []struct {
+				Number int `json:"number"`
+			} `json:"possible_duplicates"`
+		}
+		Decode(t, response, &challenge)
+		if challenge.Code != "possible_duplicates" || challenge.Token == "" || len(challenge.Matches) == 0 {
+			t.Fatalf("create %q: %s", title, response.Body.Bytes())
+		}
+		draft.ChallengeToken = challenge.Token
+		for _, match := range challenge.Matches {
+			draft.NotDuplicateOf = append(draft.NotDuplicateOf, match.Number)
+		}
+		response = p.Hub.Request(t, http.MethodPost, p.Base+"/work-items", p.Token, draft)
+	}
 	RequireStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
 	Decode(t, response, &issue)
