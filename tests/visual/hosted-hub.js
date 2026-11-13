@@ -1,6 +1,7 @@
 // Starts a real hosted hub for the browser, by running the Go preview test.
 //
-// `TestHostedBrowserPreview` in `internal/hubserver/hosted_browser_test.go`
+// `TestHostedBrowserPreview` in `internal/hubserver/hosted_browser_preview_test.go`
+// (build tag `detent_hostedpreview`, so plain `go test` never runs it)
 // opens a hosted hub with the conversation product enabled and a fake WorkOS
 // provider on an ephemeral port, writes a JSON fixture describing it, and then
 // holds the process open for five minutes or until `POST <stop>`. That test is
@@ -61,6 +62,7 @@ async function startHostedHub(name = "conversation", options = {}) {
     process.env.DETENT_HOSTED_PREVIEW_BINARY || "go",
     process.env.DETENT_HOSTED_PREVIEW_BINARY ? ["-test.run=^TestHostedBrowserPreview$", "-test.v", "-test.timeout=25m"] : [
       "test",
+      "-tags=detent_hostedpreview",
       "-p",
       "4",
       "./internal/hubserver",
@@ -73,7 +75,7 @@ async function startHostedHub(name = "conversation", options = {}) {
     ],
     {
       cwd: process.cwd(),
-      env: { ...process.env, DETENT_HOSTED_BROWSER_PREVIEW: "1", NO_COLOR: "1", ...options.env },
+      env: { ...process.env, NO_COLOR: "1", ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
     },
   );

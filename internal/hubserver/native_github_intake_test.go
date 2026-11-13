@@ -446,23 +446,3 @@ func TestNativeGitHubTriageMigration(t *testing.T) {
 		})
 	}
 }
-
-func (f *browserHostedFixture) seedGitHubTriage(t *testing.T) {
-	t.Helper()
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
-		project, err := w.ProjectRecord(t.Context(), tracker.ProjectID(f.project))
-		if err != nil {
-			return err
-		}
-		project.Settings.CheckoutRepository = "acme/orders"
-		_, err = w.UpdateProjectRecord(t.Context(), project)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	snapshot := linkedSnapshot()
-	snapshot.Title = "Public GitHub report awaiting triage"
-	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), Project: tracker.ProjectID(f.project)}
-	applyLinkedWebhook(t, nativeFixture{service: f.service, project: tracker.NativeProject{ID: scope.Project, OrganizationID: scope.Organization}}, "opened", "issues", snapshot, nil)
-	drainTestNativeBoard(t, f.service)
-}

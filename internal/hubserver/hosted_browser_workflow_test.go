@@ -1,22 +1,13 @@
 package hubserver
 
 import (
-	"net/http"
 	"slices"
-	"strings"
 	"testing"
-	"time"
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
-	"github.com/digitaldrywood/detent/internal/hubclient"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
-	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func resolvedWorkflowPolicy(t *testing.T, states []policy.State, revision string, promotion bool) policy.Descriptor {
@@ -63,75 +54,4 @@ func resolvedWorkflowPolicy(t *testing.T, states []policy.State, revision string
 		t.Fatal(err)
 	}
 	return descriptor
-}
-
-func (f *browserHostedFixture) seedWorkflowRevisions(t *testing.T, project string) {
-	t.Helper()
-	base := browserHostedOrganizationBase + "/projects/" + project
-	coordinatorFixtureProject(t, f.service, tracker.OrganizationID(strings.TrimPrefix(browserHostedOrganizationBase, "/api/v2/organizations/")), tracker.ProjectID(project), func(row *projectstore.Record) {
-		row.Settings.CheckoutRepository = "example-org/example-project"
-	})
-	binding := runnerauth.NewBinding()
-	request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(project)}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 900}
-	var enrollment runnerauth.Enrollment
-	decodeHubResponse(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/runner-enrollments", request, http.StatusCreated), &enrollment)
-	credential, err := apikey.GenerateToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "test-host", DisplayName: "Workflow runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "arm64"}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, browserHostedOrganizationBase+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
-	original := resolvedWorkflowPolicy(t, append(nativeFixtureStates(), policy.State{Name: "Archive", Terminal: true}), strings.Repeat("a", 40), false)
-	clearNativeFixturePolicy(t, nativeFixture{
-		service: f.service,
-		project: tracker.NativeProject{
-			OrganizationID: tracker.OrganizationID(strings.TrimPrefix(browserHostedOrganizationBase, "/api/v2/organizations/")),
-			ID:             tracker.ProjectID(project),
-		},
-	})
-	f.api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: original}, http.StatusOK)
-	applied := resolvedWorkflowPolicy(t, []policy.State{
-		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Review"}},
-		{Name: "Review", Transitions: []string{"Done"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Review"}},
-		{Name: "Done", Terminal: true},
-	}, strings.Repeat("b", 40), true)
-	source := &policy.RepositorySource{Repository: "example-org/example-project", Commit: applied.Workflow.Revision, DefaultBranch: "develop", DefaultBranchHead: original.Workflow.Revision, DefaultBranchReachable: false}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/policy/observed", credential, policy.Observation{Descriptor: applied, Source: source}), http.StatusNoContent)
-	f.api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: original.ID, Policy: applied}, http.StatusOK)
-	pending := resolvedWorkflowPolicy(t, []policy.State{
-		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Review"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
-		{Name: "Review", Dispatchable: true, Transitions: []string{"Done"}},
-		{Name: "Done", Terminal: true},
-	}, strings.Repeat("c", 40), false)
-	pendingSource := *source
-	pendingSource.DefaultBranchHead = applied.Workflow.Revision
-	pendingSource.Commit, pendingSource.DefaultBranchReachable = pending.Workflow.Revision, project == f.privateProject
-	client, err := hubclient.New(hubclient.Config{URL: "https://workflow-browser.example.test", TokenSource: func() string { return credential }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{
-		OrganizationID: tracker.OrganizationID(strings.TrimPrefix(browserHostedOrganizationBase, "/api/v2/organizations/")), NativeProjects: map[string]tracker.ProjectID{"workflow": tracker.ProjectID(project)},
-		Machine: hubclient.Machine{ID: binding.MachineID, Hostname: "workflow-host", Capacity: 2, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	local, err := workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, pending)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "workflow", local, &pendingSource)
-	if err != nil {
-		t.Fatal(err)
-	}
-	descriptor, err := workflowconfig.ResolvePolicy(resolved)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := scheduler.CheckProjectPolicyWithSource(t.Context(), "workflow", "example-org/example-project", descriptor, &pendingSource); err != nil {
-		t.Fatal(err)
-	}
 }

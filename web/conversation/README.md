@@ -406,7 +406,7 @@ is the seam the jsdom tests type through.
 `tests/visual/conversation.spec.js` (in the repository root, run by
 `make visual-e2e`) drives this client in Chromium against a **real hosted hub**,
 not the mock: `tests/visual/hosted-hub.js` starts the Go preview test
-`TestHostedBrowserPreview` with `DETENT_HOSTED_BROWSER_PREVIEW=1`, waits for the
+`TestHostedBrowserPreview` with `-tags=detent_hostedpreview`, waits for the
 `Hosted browser fixture: <path>` line, reads the JSON it writes (hub URL, the
 `/chat` URL, one per-account login URL, and the id of a conversation already
 linked to an issue), signs in as the owner and stops the fixture through its

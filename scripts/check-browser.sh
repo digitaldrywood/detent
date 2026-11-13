@@ -18,7 +18,7 @@ fi
 if [ -n "${DETENT_RELEASE_ASSETS_READY_FD:-}" ]; then
     printf 'ready\n' >&"$DETENT_RELEASE_ASSETS_READY_FD"
 fi
-go test -p "$procs" -c -o tmp/hubserver-preview.test ./internal/hubserver
+go test -p "$procs" -tags=detent_hostedpreview -c -o tmp/hubserver-preview.test ./internal/hubserver
 go test -p "$procs" -c -o tmp/entry-preview.test ./internal/cloudentry
 node_modules/.bin/playwright install chromium
 DETENT_HOSTED_PREVIEW_BINARY="$PWD/tmp/hubserver-preview.test" \
