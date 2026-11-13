@@ -88,7 +88,11 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 						response = performHubAPIRequest(t, a.service, http.MethodGet, path, a.token, nil)
 						requireNativeStatus(t, response, http.StatusOK)
 						decodeHubResponse(t, response, &current)
-						requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodPost, path+"/archive", a.token, archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive"}, ExpectedRevision: current.Revision}), http.StatusOK)
+						archiveStatus := http.StatusOK
+						if test.leased {
+							archiveStatus = http.StatusConflict
+						}
+						requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodPost, path+"/archive", a.token, archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive"}, ExpectedRevision: current.Revision}), archiveStatus)
 					}
 					beforeRows, beforePayloads := a.canonicalEvents(t)
 					response = performHubAPIRequest(t, a.service, http.MethodGet, path+"/history?limit=1", a.token, nil)
