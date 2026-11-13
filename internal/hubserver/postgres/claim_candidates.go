@@ -242,6 +242,7 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 	if !query.AvailableAt.IsZero() && !query.IncludeLeasedAnchor {
 		statement += ` AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.organization_id=i.organization_id AND l.issue_id=i.id AND l.released_at IS NULL AND l.expires_at>$5)`
 	}
+	statement += ` AND NOT EXISTS(SELECT 1 FROM (SELECT a.checkpoint_preserves_source FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id AND a.checkpoint_object_key IS NOT NULL AND a.checkpoint_preserves_source IS DISTINCT FROM FALSE ORDER BY a.fencing_token DESC LIMIT 1) source WHERE source.checkpoint_preserves_source IS NULL)`
 	filters := []struct {
 		values []string
 		expr   string

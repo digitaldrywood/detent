@@ -2,9 +2,11 @@ package postgres_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -555,4 +557,86 @@ type queueListPlan struct {
 	Rechecked float64 `json:"Rows Removed by Index Recheck"`
 	Loops     float64 `json:"Actual Loops"`
 	Plans     []queueListPlan
+}
+
+func TestClaimCandidatePageSkipsUnclassifiedSourceCheckpoint(t *testing.T) {
+	admin := template.Database(t)
+	repository, _ := repositoryFor(t, admin, smallPool())
+	tenantRepository := tenantstore.Repository(repository)
+	now := time.Date(2026, time.November, 1, 21, 0, 0, 0, time.UTC)
+	items := []tracker.NativeWorkItemID{"wi_unknown", "wi_clean", "wi_dirty"}
+	if err := tenantRepository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := seedCoreOrganization(t.Context(), w, "org_first"); err != nil {
+			return err
+		}
+		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{
+			Core:   corestore.Project{OrganizationID: "org_first", ID: "prj_claim", Name: "Claim example", Profile: "native"},
+			States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Done", Terminal: true}},
+		}); err != nil {
+			return err
+		}
+		for i, id := range items {
+			state := "Todo"
+			item := corestore.WorkItem{OrganizationID: "org_first", ProjectID: "prj_claim", NativeID: id, Number: int64(i + 1), Title: string(id), WorkflowStateName: &state, CreatedAt: now, NativeCreatedAt: now}
+			facts := claimstore.WorkItemFacts{OrganizationID: "org_first", ProjectID: "prj_claim", WorkItemID: id, Author: "author", Repository: "example/repository"}
+			queue := claimstore.QueueEntry{OrganizationID: "org_first", ProjectID: "prj_claim", WorkItemID: id, Scope: "prj_claim", State: "Todo", Rank: string(id), CreatedAt: now, UpdatedAt: now}
+			if _, err := w.CreateWorkItemWithClaimFacts(t.Context(), item, nil, facts, queue); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO machines(organization_id,id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES('org_first','machine_claim','example',1,'example',$1,$1,$1)`, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, seed := range []struct {
+		item      tracker.NativeWorkItemID
+		attempts  int
+		preserves sql.NullBool
+	}{{"wi_unknown", 3, sql.NullBool{}}, {"wi_clean", 1, sql.NullBool{Valid: true}}, {"wi_dirty", 1, sql.NullBool{Valid: true, Bool: true}}} {
+		for n := range seed.attempts {
+			id := fmt.Sprintf("%s_%d", seed.item, n)
+			for _, statement := range []string{
+				`INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,released_at) SELECT organization_id,$2,id,'machine_claim',$2,1,$3,$3,$3::timestamptz+interval '1 hour',$3 FROM issues WHERE organization_id='org_first' AND native_id=$1`,
+				`INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) SELECT organization_id,$2,id FROM issues WHERE organization_id='org_first' AND native_id=$1`,
+				`INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,checkpoint_object_key,checkpoint_preserves_source,started_at,updated_at) SELECT organization_id,'prj_claim',lease_id,issue_id,lease_id,fencing_token,lease_id,1,'interrupted',1,0,'org_first/payload','org_first/checkpoint',$4::boolean,$3::timestamptz,$3::timestamptz FROM leases WHERE organization_id='org_first' AND lease_id=$2 AND issue_id=(SELECT id FROM issues WHERE organization_id='org_first' AND native_id=$1)`,
+			} {
+				args := []any{seed.item, id}
+				if strings.Contains(statement, "$3") {
+					args = append(args, now)
+				}
+				if strings.Contains(statement, "$4") {
+					args = append(args, seed.preserves)
+				}
+				if _, err := admin.ExecContext(t.Context(), statement, args...); err != nil {
+					t.Fatalf("seed %s: %v", id, err)
+				}
+			}
+		}
+	}
+	page := func() []tracker.NativeWorkItemID {
+		t.Helper()
+		var ids []tracker.NativeWorkItemID
+		if err := tenantRepository.ReadTenant(t.Context(), "org_first", corestore.Serving, func(r tenantstore.Reader) error {
+			page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: "prj_claim", Scope: "prj_claim", AvailableAt: now, Limit: 10})
+			for _, item := range page.Items {
+				ids = append(ids, item.WorkItemID)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return ids
+	}
+	if got := page(); len(got) != 2 || slices.Contains(got, "wi_unknown") {
+		t.Fatalf("unclassified source candidates=%v, want clean and dirty only", got)
+	}
+	if _, err := admin.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_preserves_source=true WHERE organization_id='org_first' AND id='wi_unknown_2'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := page(); len(got) != 3 {
+		t.Fatalf("classified source candidates=%v, want all three", got)
+	}
 }
