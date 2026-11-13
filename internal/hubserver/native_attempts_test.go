@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -816,9 +817,14 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 		if attempts.Items[0].Runtime != nil || attempts.Items[0].RuntimeFreshness != "unavailable" {
 			t.Fatalf("view=%q fabricated runtime evidence: %+v", view, attempts.Items[0])
 		}
+		want := full
+		if view == "recorded_blockers" {
+			want.Items = slices.Clone(full.Items)
+			want.Items[0].Evidence, want.Items[0].Unavailable = nil, []string{"evidence"}
+		}
 		if view == "" {
 			full = attempts
-		} else if !reflect.DeepEqual(attempts, full) {
+		} else if !reflect.DeepEqual(attempts, want) {
 			t.Fatalf("view=%q changed attempt without runtime", view)
 		}
 	}
