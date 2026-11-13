@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -43,6 +44,9 @@ func TestRunnerClaimFactsRecoverOnlyVerifiedCurrentSource(t *testing.T) {
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Example", CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: "example", Name: "Example uploader", Hash: apikey.HashToken("uploader-" + string(organization)), Scope: "operator", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
 			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_shared", Name: "Example", Slug: "example", Profile: "native"}, States: nativeFixtureStates()})
@@ -348,7 +352,11 @@ func TestRunnerClaimFactsRecoverOnlyVerifiedCurrentSource(t *testing.T) {
 								details.mu.Unlock()
 								t.Cleanup(func() { details.mu.Lock(); details.data[ref.Key] = raw; details.mu.Unlock() })
 							}
-							next, err := service.populateCheckpointSource(t.Context(), organization, "")
+							var preceding sql.NullString
+							if err := admin.QueryRowContext(t.Context(), `SELECT max(id) FROM native_attempts WHERE organization_id=$1 AND id<$2`, organization, attempt.ID).Scan(&preceding); err != nil {
+								t.Fatal(err)
+							}
+							next, err := service.populateCheckpointSource(t.Context(), organization, preceding.String)
 							if next != attempt.ID {
 								t.Fatalf("classifier did not advance past examined attempt: %q want %q", next, attempt.ID)
 							}
