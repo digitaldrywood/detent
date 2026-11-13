@@ -148,6 +148,7 @@ func TestAttemptPayloadObjectsAndTypedReads(t *testing.T) {
 			started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "payload-start"}, Type: "run.started", SchemaVersion: 1, Data: data}
 			started.Data.Handoff = nil
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, started), http.StatusOK)
+			now = now.Add(time.Minute)
 			data.Sequence++
 			for range 1 + size/2048 {
 				data.ArtifactIDs = append(data.ArtifactIDs, newNativeID("artifact"))
