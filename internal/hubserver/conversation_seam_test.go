@@ -128,8 +128,6 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *hubscope.
 
 func conversationStreamCloseReason(err error) string { return conversations.StreamCloseReason(err) }
 
-func conversationAttachmentBodyError(err error) error { return conversations.AttachmentBodyError(err) }
-
 func (s *Service) conversationHTTP() *conversations.HTTP {
 	return conversations.NewHTTP(s.conversationHTTPDeps())
 }
