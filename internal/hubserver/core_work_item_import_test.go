@@ -51,6 +51,7 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 			t.Fatal(err)
 		}
 		fixture := coreWorkItemNeutralFixture(t, org, project, false)
+		fixture.set("issues", map[string]string{"native_id": "wi_core_import_second"}, map[string]any{"issue_contract_json": "{}"})
 		fixture.set("repositories", map[string]string{"id": "1"}, map[string]any{"github_node_id": "R_original"})
 		fixture.set("issues", map[string]string{"id": "41"}, map[string]any{"github_node_id": "I_original"})
 		event := fixture.records["collaboration_events"][1]
