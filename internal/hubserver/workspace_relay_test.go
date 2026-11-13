@@ -2406,8 +2406,8 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 			queries := slices.Clone(capture.statements)
 			capture.mu.Unlock()
 			_, data := runtimeCapacityStatements(queries)
-			if len(data) != 11 || len(queries) != 17 {
-				t.Fatalf("runtime claim owner statements=%d full statements=%d want11/17", len(data), len(queries))
+			if len(data) != 14 || len(queries) != 20 {
+				t.Fatalf("runtime claim owner statements=%d full statements=%d want14/20", len(data), len(queries))
 			}
 			if code := fixture.service.startExecRun(t.Context(), person, v.runner, v.record, stream, frame); code != workspacesession.CodeAlreadyRunning {
 				t.Fatalf("duplicate refusal=%s", code)
