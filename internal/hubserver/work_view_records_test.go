@@ -210,8 +210,8 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 				}
 				ids = append(ids, card.Issue.WorkItemID)
 			}
-			if result.Total != len(test.want) {
-				t.Fatalf("search %q total=%d want=%d", test.query, result.Total, len(test.want))
+			if result.Total != -1 {
+				t.Fatalf("search %q total=%d want the unknown-total sentinel -1", test.query, result.Total)
 			}
 			if result.NextCursor == "" {
 				break
@@ -221,6 +221,19 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 		if !slices.Equal(ids, test.want) {
 			t.Fatalf("search %q items=%v want=%v", test.query, ids, test.want)
 		}
+	}
+	countsResponse := f.request(t, other, http.MethodGet, f.base+"/board/counts", nil)
+	requireNativeStatus(t, countsResponse, http.StatusOK)
+	var counts viewstore.BoardSummaryPage
+	decodeHubResponse(t, countsResponse, &counts)
+	visible := 0
+	for _, row := range counts.Rows {
+		if row.Kind == "lane" {
+			visible += int(row.Total)
+		}
+	}
+	if visible != 2 {
+		t.Fatalf("board counts for the granted member=%+v, want 2 visible items", counts.Rows)
 	}
 	longQuery := strings.Repeat("x", searchstore.MaxQueryTextBytes+1)
 	for _, path := range []string{
