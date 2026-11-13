@@ -325,7 +325,7 @@ func TestNativeModelSelectionTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/missing-organization/model-tool-test", operator.Token, nil), http.StatusForbidden)
+	requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/missing-organization/model-tool-test", operator.Token, nil), http.StatusUnauthorized, "access_denied")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, operator.Token, nil), http.StatusOK)
 	ctx = <-contexts
 	if err := executor.OpenConnection(ctx); err != nil {
