@@ -250,13 +250,13 @@ func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*Al
 		mutate(allocation)
 	}
 	config := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: f.key, Provider: f.provider,
-		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing, tenantStartTimeout: f.timeout, now: f.now}
+		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), ClientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing, tenantStartTimeout: f.timeout, Now: f.now}
 	if !f.launcher.useUnix {
-		config.transport = f.launcher.transport
+		config.Transport = f.launcher.transport
 	}
 	storage := f.objects.Config()
 	storage.Endpoint = "https://storage.example.test"
-	config.Attachments, config.attachmentTransport = &storage, f.objects.Transport
+	config.Attachments, config.AttachmentTransport = &storage, f.objects.Transport
 	for _, configure := range f.configureEntry {
 		configure(&config)
 	}
@@ -445,8 +445,8 @@ func TestProvisioningTenantStartKeepsSlowChild(t *testing.T) {
 				launcher := &silentLauncher{running: map[string]bool{}}
 				service := &Service{config: Config{
 					Allocation: &AllocationConfig{Launcher: launcher}, tenantStartTimeout: 30 * time.Second,
-					SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), now: time.Now,
-					transport: func(Organization) (http.RoundTripper, error) {
+					SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Now: time.Now,
+					Transport: func(Organization) (http.RoundTripper, error) {
 						return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 							if time.Since(started) < readyAfter {
 								w.WriteHeader(http.StatusServiceUnavailable)
@@ -731,7 +731,7 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 		a.Prices = []hubserver.HostedBillingPrice{{PriceID: "price_starter", Label: "Starter", Plan: hubserver.PlanReference{ID: "starter", Version: 1}}}
 	})
 	f.service.config.Billing = &BillingConfig{}
-	f.service.config.clientFS = fstest.MapFS{"app/conversation/index.html": {Data: []byte(`<html><head><script src="/static/app/conversation/app.js"></script></head><body><div id="root"></div></body></html>`)}}
+	f.service.config.ClientFS = fstest.MapFS{"app/conversation/index.html": {Data: []byte(`<html><head><script src="/static/app/conversation/app.js"></script></head><body><div id="root"></div></body></html>`)}}
 	stranger := newBrowser(t, f.service.Handler())
 	if response, body := stranger.Get("/"); response.StatusCode != http.StatusOK || !strings.Contains(body, `<meta name="detent-surface" content="entry">`) || !strings.Contains(body, `content=""`) {
 		t.Fatalf("sign-in shell = %d %s", response.StatusCode, body)

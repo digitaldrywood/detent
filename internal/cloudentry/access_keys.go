@@ -91,7 +91,7 @@ func (s *Service) activeAccessKey(ctx context.Context, hash string) (accessKey, 
 	if err != nil {
 		return k, err
 	}
-	if !k.active(s.config.now()) {
+	if !k.active(s.config.Now()) {
 		return k, &apikey.Refusal{Code: "key_inactive", Message: "The key is expired or revoked"}
 	}
 	return k, nil
@@ -179,7 +179,7 @@ func (s *Service) auditKeyRefusal(ctx context.Context, organization Organization
 }
 
 func (s *Service) recordKeyUse(ctx context.Context, key, organization string) error {
-	now := formatTime(s.config.now())
+	now := formatTime(s.config.Now())
 	_, err := s.auth.store.db.ExecContext(ctx, `INSERT INTO platform.access_key_organizations(key_id,organization_id,reached_at,last_used_at) VALUES($1,$2,$3,$4) ON CONFLICT(key_id,organization_id) DO UPDATE SET reached_at=COALESCE(platform.access_key_organizations.reached_at,excluded.reached_at),last_used_at=excluded.last_used_at`, key, organization, now, now)
 	return err
 }
@@ -267,7 +267,7 @@ func (s *Service) createAccountKey(c echo.Context) error {
 	if err := decodeKeyJSON(c, &input); err != nil {
 		return err
 	}
-	k := accessKey{Name: strings.TrimSpace(input.Name), Kind: "personal", Owner: session.Subject, OwnerEmail: session.Email, Permission: input.Permission, AccessContext: input.AccessContext, Organizations: input.Organizations, CreatedAt: s.config.now()}
+	k := accessKey{Name: strings.TrimSpace(input.Name), Kind: "personal", Owner: session.Subject, OwnerEmail: session.Email, Permission: input.Permission, AccessContext: input.AccessContext, Organizations: input.Organizations, CreatedAt: s.config.Now()}
 	if c.Param("organization") != "" {
 		k.Kind, k.ServiceOrganization = "service", c.Param("organization")
 		if _, err := s.keyAdmin(c, session); err != nil {
@@ -278,7 +278,7 @@ func (s *Service) createAccountKey(c echo.Context) error {
 		return c.JSON(http.StatusUnprocessableEntity, apikey.Refusal{Code: "invalid_key_context", Message: "Choose a valid key context, permission and Never or 1–90 days"})
 	}
 	if !input.NeverExpires {
-		expiry := s.config.now().Add(time.Duration(input.ExpiresDays) * 24 * time.Hour)
+		expiry := s.config.Now().Add(time.Duration(input.ExpiresDays) * 24 * time.Hour)
 		k.ExpiresAt = &expiry
 	}
 	for _, item := range k.Organizations {
@@ -389,7 +389,7 @@ func (s *Service) revokeAccountKey(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "UPDATE platform.access_keys SET revoked_at=COALESCE(revoked_at,$1) WHERE id=$2 AND owner_subject=$3 AND kind='personal'", formatTime(s.config.now()), c.Param("key"), session.Subject)
+	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "UPDATE platform.access_keys SET revoked_at=COALESCE(revoked_at,$1) WHERE id=$2 AND owner_subject=$3 AND kind='personal'", formatTime(s.config.Now()), c.Param("key"), session.Subject)
 	if err != nil {
 		return keyError(c, err)
 	}
@@ -473,7 +473,7 @@ func (s *Service) revokeServiceKey(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "UPDATE platform.access_keys SET revoked_at=COALESCE(revoked_at,$1) WHERE id=$2 AND kind='service' AND service_organization_id=$3", formatTime(s.config.now()), c.Param("key"), org.ID)
+	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "UPDATE platform.access_keys SET revoked_at=COALESCE(revoked_at,$1) WHERE id=$2 AND kind='service' AND service_organization_id=$3", formatTime(s.config.Now()), c.Param("key"), org.ID)
 	if err != nil {
 		return keyError(c, err)
 	}
@@ -552,7 +552,7 @@ func (s *Service) organizationKeys(c echo.Context) error {
 			owners = append(owners, member.UserID)
 		}
 	}
-	keys, err := s.listAccessKeys(ctx, `SELECT id FROM platform.access_keys WHERE owner_subject = ANY($1) AND kind='personal' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>$2) AND id>$3 AND (access_context='global' OR EXISTS(SELECT 1 FROM platform.access_key_organizations o WHERE o.key_id=platform.access_keys.id AND o.organization_id=$4 AND o.selected)) ORDER BY id LIMIT 51`, owners, formatTime(s.config.now()), cursor, org.ID)
+	keys, err := s.listAccessKeys(ctx, `SELECT id FROM platform.access_keys WHERE owner_subject = ANY($1) AND kind='personal' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>$2) AND id>$3 AND (access_context='global' OR EXISTS(SELECT 1 FROM platform.access_key_organizations o WHERE o.key_id=platform.access_keys.id AND o.organization_id=$4 AND o.selected)) ORDER BY id LIMIT 51`, owners, formatTime(s.config.Now()), cursor, org.ID)
 	if err != nil {
 		return keyError(c, err)
 	}

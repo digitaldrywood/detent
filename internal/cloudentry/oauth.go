@@ -35,7 +35,7 @@ func (s *Service) registerOAuth() {
 	clientIP := echo.ExtractIPFromXFFHeader(echo.TrustLoopback(true), echo.TrustPrivateNet(false), echo.TrustLinkLocal(false))
 	throttle := func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			allowed, remaining := limiter.Allow(clientIP(c.Request()), s.config.now())
+			allowed, remaining := limiter.Allow(clientIP(c.Request()), s.config.Now())
 			c.Response().Header().Set("X-RateLimit-Limit", strconv.Itoa(limiter.Limit()))
 			c.Response().Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
 			if !allowed {
@@ -226,7 +226,7 @@ func (s *Service) oauthAuthorize(c echo.Context) error {
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	expires := s.config.now().Add(10 * time.Minute)
+	expires := s.config.Now().Add(10 * time.Minute)
 	request := oauthRequest{ID: id, Client: q.Get("client_id"), Redirect: q.Get("redirect_uri"), State: q.Get("state"), Challenge: q.Get("code_challenge"), Resource: q.Get("resource"), ExpiresAt: expires}
 	browser, err := s.sealOAuth("oauth-consent", request)
 	if err != nil {
@@ -259,7 +259,7 @@ func (s *Service) oauthBrowserRequest(c echo.Context) (oauthRequest, error) {
 	if err := s.openOAuth("oauth-consent", cookie.Value, &r); err != nil {
 		return r, err
 	}
-	if r.ID != c.Param("request") || !r.ExpiresAt.After(s.config.now()) {
+	if r.ID != c.Param("request") || !r.ExpiresAt.After(s.config.Now()) {
 		return r, errNoSession
 	}
 	r.Registration, err = s.oauthRegistration(c.Request().Context(), r.Client)
@@ -365,18 +365,18 @@ func (s *Service) oauthApprove(c echo.Context) (resultErr error) {
 		return oauthError(c, 503, "server_error")
 	}
 	defer tx.cleanup(ctx, &resultErr)
-	_, err = tx.ExecContext(ctx, "INSERT INTO platform.oauth_clients(id,name,auth_method,secret_hash,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING", r.Client, r.Registration.Name, r.Registration.AuthMethod, r.Registration.SecretHash, formatTime(s.config.now()))
+	_, err = tx.ExecContext(ctx, "INSERT INTO platform.oauth_clients(id,name,auth_method,secret_hash,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING", r.Client, r.Registration.Name, r.Registration.AuthMethod, r.Registration.SecretHash, formatTime(s.config.Now()))
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
 	if err := insertOAuthRedirectURIs(ctx, tx, r.Client, r.Registration.RedirectURIs); err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO platform.oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, r.Client, session.Subject, session.Email, org.ID, permission, r.Resource, formatTime(s.config.now()))
+	_, err = tx.ExecContext(ctx, `INSERT INTO platform.oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, r.Client, session.Subject, session.Email, org.ID, permission, r.Resource, formatTime(s.config.Now()))
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO platform.oauth_requests(id,client_id,redirect_uri,challenge,resource,code_hash,code_expires_at,grant_id,organization_id) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9 WHERE $10::timestamptz>$11::timestamptz ON CONFLICT(id) DO NOTHING`, r.ID, r.Client, r.Redirect, r.Challenge, r.Resource, apikey.HashToken(code), formatTime(s.config.now().Add(5*time.Minute)), id, org.ID, formatTime(r.ExpiresAt), formatTime(s.config.now()))
+	result, err := tx.ExecContext(ctx, `INSERT INTO platform.oauth_requests(id,client_id,redirect_uri,challenge,resource,code_hash,code_expires_at,grant_id,organization_id) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9 WHERE $10::timestamptz>$11::timestamptz ON CONFLICT(id) DO NOTHING`, r.ID, r.Client, r.Redirect, r.Challenge, r.Resource, apikey.HashToken(code), formatTime(s.config.Now().Add(5*time.Minute)), id, org.ID, formatTime(r.ExpiresAt), formatTime(s.config.Now()))
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}

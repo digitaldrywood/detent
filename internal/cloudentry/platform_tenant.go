@@ -106,7 +106,7 @@ func (s *Service) platformTenantSections(ctx context.Context, organization Organ
 				return
 			}
 			if result, err := s.tenantEntitlements(call, organization); err == nil {
-				result.Grants = activeGrants(result.Grants, s.config.now())
+				result.Grants = activeGrants(result.Grants, s.config.Now())
 				sections.Entitlements = &result
 			}
 		},

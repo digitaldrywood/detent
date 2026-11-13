@@ -222,7 +222,7 @@ func (s *Service) platformEntitlementsJSON(c echo.Context) error {
 	if err != nil {
 		return s.tenantEntitlementFailure(c, err)
 	}
-	result.Grants = activeGrants(result.Grants, s.config.now())
+	result.Grants = activeGrants(result.Grants, s.config.Now())
 	return c.JSON(http.StatusOK, result)
 }
 
@@ -281,7 +281,7 @@ func (s *Service) applyPlatformEntitlement(ctx context.Context, session accountS
 		return tenantPlanCommand{}, &entitlementInputError{status: http.StatusUnprocessableEntity, message: "Reload the organization's plan and try again"}
 	case change.Reason == "" || len(change.Reason) > 500:
 		return tenantPlanCommand{}, &entitlementInputError{status: http.StatusUnprocessableEntity, message: "Give a reason of at most 500 characters"}
-	case change.Action == "grant" && change.ExpiresAt != nil && !change.ExpiresAt.After(s.config.now()):
+	case change.Action == "grant" && change.ExpiresAt != nil && !change.ExpiresAt.After(s.config.Now()):
 		return tenantPlanCommand{}, &entitlementInputError{status: http.StatusUnprocessableEntity, message: "The expiry must be in the future"}
 	}
 	current, err := s.tenantEntitlements(ctx, organization)
@@ -339,7 +339,7 @@ func (s *Service) applyPlatformEntitlement(ctx context.Context, session accountS
 	// if the browser has gone; a retry with the same key replays it.
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	if err := s.registry.recordEntitlementChange(recordCtx, organization.ID, session, command, s.config.now()); err != nil {
+	if err := s.registry.recordEntitlementChange(recordCtx, organization.ID, session, command, s.config.Now()); err != nil {
 		s.config.Logger.Error("entitlement change applied but not recorded in the entry audit log", "organization", organization.ID, "idempotency_key", command.ID)
 		return tenantPlanCommand{}, &entitlementInputError{status: http.StatusServiceUnavailable, message: "The change was applied but could not be recorded; retry to record it"}
 	}

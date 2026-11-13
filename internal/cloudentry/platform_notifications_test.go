@@ -41,9 +41,9 @@ func platformMailConfig(t *testing.T, sender auth.EmailSender, output *logBuffer
 		Platform:  PlatformConfig{BootstrapAdminEmail: "admin-a@example.test"},
 		PublicURL: "https://cloud.example.test", ListenAddress: "127.0.0.1:0", Issuer: "entry",
 		SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: newFakeProvider(),
-		StateDir: t.TempDir(), clientFS: fstest.MapFS{}, platformEmailSender: sender,
+		StateDir: t.TempDir(), ClientFS: fstest.MapFS{}, platformEmailSender: sender,
 		Logger: slog.New(slog.NewJSONHandler(output, nil)),
-		now: func() time.Time {
+		Now: func() time.Time {
 			return time.Date(2026, 10, 19, 18, 0, 0, 759375872, time.FixedZone("fixture", 2*60*60))
 		},
 	}
@@ -122,7 +122,7 @@ func TestPlatformNotifications(t *testing.T) {
 				t.Helper()
 				email := subject + "@example.test"
 				if test.event == "signup" {
-					identity := auth.Identity{Subject: subject, Email: email, Hosted: &auth.HostedIdentity{Subject: subject, SessionID: "session_" + subject, CreatedAt: cfg.now(), ExpiresAt: cfg.now().Add(time.Hour)}}
+					identity := auth.Identity{Subject: subject, Email: email, Hosted: &auth.HostedIdentity{Subject: subject, SessionID: "session_" + subject, CreatedAt: cfg.Now(), ExpiresAt: cfg.Now().Add(time.Hour)}}
 					recorder := httptest.NewRecorder()
 					c := s.echo.NewContext(httptest.NewRequest(http.MethodGet, "/auth/oidc/callback", nil), recorder)
 					if _, err := s.establishSession(c, identity); err != nil {

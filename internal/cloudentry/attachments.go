@@ -548,10 +548,10 @@ func (s *Service) removeAttachment(ctx context.Context, organization Organizatio
 }
 
 func (s *Service) sweepAttachments(ctx context.Context) {
-	if s.attachments == nil || s.config.now().Before(s.attachmentSweepAt) {
+	if s.attachments == nil || s.config.Now().Before(s.attachmentSweepAt) {
 		return
 	}
-	s.attachmentSweepAt = s.config.now().Add(time.Hour)
+	s.attachmentSweepAt = s.config.Now().Add(time.Hour)
 	organizations, err := s.registry.List(ctx)
 	if err != nil {
 		s.config.Logger.Warn("attachment retention registry unavailable")
@@ -606,7 +606,7 @@ func (s *Service) sweepAttachmentOrphans(ctx context.Context, organization Organ
 	}
 	prefix += namespace
 	return s.attachments.Walk(ctx, prefix, func(object attachment.Object) error {
-		if object.CreatedAt.After(s.config.now().Add(-attachment.OrphanTTL)) {
+		if object.CreatedAt.After(s.config.Now().Add(-attachment.OrphanTTL)) {
 			return nil
 		}
 		input := map[string]string{"key": object.Key}
@@ -631,7 +631,7 @@ func (s *Service) sweepAttachmentOrphans(ctx context.Context, organization Organ
 		if err != nil {
 			return err
 		}
-		if !found || current.CreatedAt.After(s.config.now().Add(-attachment.OrphanTTL)) {
+		if !found || current.CreatedAt.After(s.config.Now().Add(-attachment.OrphanTTL)) {
 			return nil
 		}
 		exists, err := s.attachmentObjectExists(ctx, organization, endpoint, input)

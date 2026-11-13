@@ -33,7 +33,7 @@ func TestAttachmentStorageProbe(t *testing.T) {
 	cfg.StateDir = t.TempDir()
 	settings := store.Config()
 	cfg.Attachments = &settings
-	cfg.attachmentTransport = store.Transport
+	cfg.AttachmentTransport = store.Transport
 	if service, err := Open(t.Context(), cfg); err == nil {
 		if err := service.Close(); err != nil {
 			t.Fatal(err)
@@ -52,7 +52,7 @@ func TestAttachmentArchiveConfigurationRefusalKeepsEntryRunning(t *testing.T) {
 	cfg.StateDir = t.TempDir()
 	settings := store.Config()
 	cfg.Attachments = &settings
-	cfg.attachmentTransport = store.Transport
+	cfg.AttachmentTransport = store.Transport
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatalf("entry refused to start when archive configuration was denied: %v", err)
@@ -418,8 +418,8 @@ func TestAttachmentMetadataSettlement(t *testing.T) {
 			}
 			store.FailPutResponse = test.storageLoss
 			f.service.attachments = storage
-			baseTransport := f.service.config.transport
-			f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+			baseTransport := f.service.config.Transport
+			f.service.config.Transport = func(org Organization) (http.RoundTripper, error) {
 				base, err := baseTransport(org)
 				if err != nil {
 					return nil, err

@@ -37,7 +37,7 @@ var platformEvents = map[string]string{
 }
 
 func withClientShell(s *Service) {
-	s.config.clientFS = fstest.MapFS{entryClientShell: {Data: []byte(`<html><head></head><body><div id="root"></div></body></html>`)}}
+	s.config.ClientFS = fstest.MapFS{entryClientShell: {Data: []byte(`<html><head></head><body><div id="root"></div></body></html>`)}}
 }
 
 func supportIdentityBrowser(t *testing.T, f entryFixture) *browser {
@@ -216,7 +216,7 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed = true WHERE id = 'org_alpha'"); err != nil {
 		t.Fatal(err)
 	}
-	now := f.service.config.now()
+	now := f.service.config.Now()
 	f.service.config.Allocation = &AllocationConfig{TenantRoot: root, MaxTenants: 20, MaxConcurrent: 2,
 		MinFreeDiskBytes: 4096, MinAvailableMemoryBytes: 8192,
 		Launcher: &platformHealthLauncher{Launcher: &silentLauncher{}, started: now.Add(-time.Hour), restarts: 1},
@@ -231,8 +231,8 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 			t.Fatalf("managed tenant health = %+v", hub)
 		}
 	}
-	original := f.service.config.transport
-	f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+	original := f.service.config.Transport
+	f.service.config.Transport = func(org Organization) (http.RoundTripper, error) {
 		if org.ID == "org_beta" {
 			return timedOutPlatformTransport{}, nil
 		}
@@ -554,8 +554,8 @@ func TestPlatformTenantFanOutIsBounded(t *testing.T) {
 			provider := newFakeProvider()
 			provider.Users["user_support"] = "support@example.test"
 			cfg := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
-				StaffEmails: []string{"support@example.test"}, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
-				transport: func(Organization) (http.RoundTripper, error) { return transport, nil }, platformDeadline: test.deadline}
+				StaffEmails: []string{"support@example.test"}, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), ClientFS: fstest.MapFS{},
+				Transport: func(Organization) (http.RoundTripper, error) { return transport, nil }, platformDeadline: test.deadline}
 			entryPostgresConfig(t)(&cfg)
 			service, err := Open(t.Context(), cfg)
 			if err != nil {
@@ -639,8 +639,8 @@ func TestStaffSessionsReverifyEveryRead(t *testing.T) {
 				staff = append(staff, test.email)
 			}
 			cfg := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
-				StaffEmails: staff, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
-				transport: func(Organization) (http.RoundTripper, error) { return &fanOutTransport{}, nil }}
+				StaffEmails: staff, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), ClientFS: fstest.MapFS{},
+				Transport: func(Organization) (http.RoundTripper, error) { return &fanOutTransport{}, nil }}
 			entryPostgresConfig(t)(&cfg)
 			service, err := Open(t.Context(), cfg)
 			if err != nil {
@@ -1033,8 +1033,8 @@ func TestPlatformUsersSearch(t *testing.T) {
 			}
 		})
 	}
-	original := f.service.config.transport
-	f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+	original := f.service.config.Transport
+	f.service.config.Transport = func(org Organization) (http.RoundTripper, error) {
 		if org.ID == "org_beta" {
 			return timedOutPlatformTransport{}, nil
 		}

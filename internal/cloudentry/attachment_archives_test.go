@@ -109,7 +109,7 @@ func TestArchiveContentSecurityBounds(t *testing.T) {
 				f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
 					return attachment.Credentials{AccessKeyID: "fixture-access", SecretAccessKey: "fixture-secret"}, nil
 				}
-				f.service.config.attachmentTransport = newSpacesFixture(t, false).Transport
+				f.service.config.AttachmentTransport = newSpacesFixture(t, false).Transport
 				storage, err := f.service.archiveStorageForReference(t.Context(), organization, ref)
 				if err != nil {
 					t.Fatal(err)
@@ -156,7 +156,7 @@ func TestArchiveBindingValidationIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			checks := 0
-			f.service.config.attachmentTransport = archiveValidationTransport{next: store.Transport, check: func(r *http.Request) error {
+			f.service.config.AttachmentTransport = archiveValidationTransport{next: store.Transport, check: func(r *http.Request) error {
 				if !r.URL.Query().Has(test.stage) {
 					return nil
 				}
@@ -226,7 +226,7 @@ func TestArchiveDeletionIsolation(t *testing.T) {
 				}
 			}
 			checks := 0
-			f.service.config.attachmentTransport = archiveValidationTransport{next: store.Transport, check: func(r *http.Request) error {
+			f.service.config.AttachmentTransport = archiveValidationTransport{next: store.Transport, check: func(r *http.Request) error {
 				if test.ready {
 					t.Error("ready organization contacted object storage")
 					return errors.New("organization still ready")
@@ -297,7 +297,7 @@ func TestArchiveUploadIsolation(t *testing.T) {
 			entered, release := make(chan struct{}), make(chan struct{})
 			releaseUpload := sync.OnceFunc(func() { close(release) })
 			reads := 0
-			f.service.config.attachmentTransport = archiveValidationTransport{next: store.Transport, check: func(r *http.Request) error {
+			f.service.config.AttachmentTransport = archiveValidationTransport{next: store.Transport, check: func(r *http.Request) error {
 				if !strings.Contains(r.URL.Path, "/orgs/org_alpha/blobs/") {
 					return nil
 				}
@@ -375,7 +375,7 @@ func TestArchiveLegacyBindingSnapshot(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, false)
-	f.service.config.attachmentTransport = store.Transport
+	f.service.config.AttachmentTransport = store.Transport
 	for _, organization := range []string{"org_alpha", "org_beta"} {
 		cfg := store.Config()
 		cfg.Endpoint = "https://1.1.1.1"
@@ -437,7 +437,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 	if policy := f.service.contentSecurity(); !strings.Contains(policy, "connect-src 'self' "+storageConfig.Endpoint+" ") || strings.Contains(policy, "connect-src *") {
 		t.Fatal("archive CSP does not restrict storage to its configured endpoint")
 	}
-	f.service.config.attachmentTransport = store.Transport
+	f.service.config.AttachmentTransport = store.Transport
 	revoked := false
 	f.service.config.ArchiveCredentials = func(_ context.Context, org, reference string) (attachment.Credentials, error) {
 		if revoked && org == "org_alpha" {
@@ -523,9 +523,9 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			store.Mu.Lock()
 			store.FailPutResponse = false
 			store.Mu.Unlock()
-			original := f.service.config.transport
+			original := f.service.config.Transport
 			metadataPath := base + "/attachment-metadata/archives/" + string(items[0].WorkItemID)
-			f.service.config.transport = func(o Organization) (http.RoundTripper, error) {
+			f.service.config.Transport = func(o Organization) (http.RoundTripper, error) {
 				next, err := original(o)
 				return archiveFailureTransport{next: next, path: metadataPath}, err
 			}
@@ -533,7 +533,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			if response.Code != http.StatusBadGateway || count("SELECT count(*) FROM attachment_archive_references") != 0 || usage()-before != storedBytes() {
 				t.Fatalf("precommit interruption lost accounting or published a reference: %d %s", response.Code, response.Body.String())
 			}
-			f.service.config.transport = original
+			f.service.config.Transport = original
 			storage, err = attachment.NewStorage(t.Context(), store.Config(), store.Transport)
 			if err != nil {
 				t.Fatal(err)
@@ -859,7 +859,7 @@ func TestTenantArchiveSectionReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.service.attachments = storage
-	f.service.config.attachmentTransport = store.Transport
+	f.service.config.AttachmentTransport = store.Transport
 	f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
 		return attachment.Credentials{AccessKeyID: store.Config().AccessKeyID, SecretAccessKey: store.Config().SecretAccessKey}, nil
 	}
@@ -937,14 +937,14 @@ func TestTenantContentStorage(t *testing.T) {
 	spaces := newSpacesFixture(t, false)
 	cfg := spaces.Config()
 	cfg.Endpoint = "https://10.136.255.254"
-	f.service.config.attachmentTransport = nil
+	f.service.config.AttachmentTransport = nil
 	f.service.config.Attachments = &cfg
 	storage, err := attachment.NewStorage(t.Context(), cfg, spaces.Transport)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.service.attachments = storage
-	f.service.config.attachmentTransport = spaces.Transport
+	f.service.config.AttachmentTransport = spaces.Transport
 	f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
 		return attachment.Credentials{AccessKeyID: spaces.Config().AccessKeyID, SecretAccessKey: spaces.Config().SecretAccessKey}, nil
 	}
@@ -969,9 +969,9 @@ func TestTenantContentStorage(t *testing.T) {
 			references = append(references, bound)
 		}
 		for index, ref := range references {
-			f.service.config.attachmentTransport = nil
+			f.service.config.AttachmentTransport = nil
 			if index > 0 {
-				f.service.config.attachmentTransport = spaces.Transport
+				f.service.config.AttachmentTransport = spaces.Transport
 			}
 			request := entryauthority.ContentRequest{Organization: org, Reference: ref, Write: true, Data: data}
 			for range 2 {
@@ -1033,7 +1033,7 @@ func TestHostedArchiveBindingStorage(t *testing.T) {
 			store := newSpacesFixture(t, false)
 			cfg := store.Config()
 			cfg.Endpoint = "https://10.136.255.254"
-			f.service.config.attachmentTransport = nil
+			f.service.config.AttachmentTransport = nil
 			f.service.config.Attachments = &cfg
 			storage, err := attachment.NewStorage(t.Context(), cfg, store.Transport)
 			if err != nil {

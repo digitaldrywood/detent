@@ -62,8 +62,8 @@ func newEntryFixtureWithConfig(t *testing.T, logger *slog.Logger, configureEntry
 	cfg := Config{
 		Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
 		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
-		LookupEnv: func(string) string { return "" }, Logger: logger, clientFS: fstest.MapFS{},
-		transport: func(organization Organization) (http.RoundTripper, error) {
+		LookupEnv: func(string) string { return "" }, Logger: logger, ClientFS: fstest.MapFS{},
+		Transport: func(organization Organization) (http.RoundTripper, error) {
 			return handlerTransport{tenants[organization.Endpoint]}, nil
 		},
 	}
@@ -416,7 +416,7 @@ func TestSharedEntryBoundaries(t *testing.T) {
 		{name: "stopped tenant"},
 	} {
 		t.Run(failure.name, func(t *testing.T) {
-			f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+			f.service.config.Transport = func(Organization) (http.RoundTripper, error) {
 				if failure.setup {
 					return nil, errors.New("tenant transport unavailable")
 				}
@@ -529,9 +529,9 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 				f.provider.Member("user_alice", tt.selected, "owner")
 				t.Cleanup(func() { f.provider.RemoveMember("user_alice", tt.selected) })
 			}
-			f.service.config.clientFS = fstest.MapFS{}
+			f.service.config.ClientFS = fstest.MapFS{}
 			if !tt.fallback {
-				f.service.config.clientFS = fstest.MapFS{entryClientShell: {Data: []byte(`<html><head></head><body><div id="root"></div></body></html>`)}}
+				f.service.config.ClientFS = fstest.MapFS{entryClientShell: {Data: []byte(`<html><head></head><body><div id="root"></div></body></html>`)}}
 			}
 			b := newBrowser(t, f.service.Handler())
 			start, _ := b.Get("/auth/oidc/start?" + tt.query)
@@ -555,7 +555,7 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 			}
 		})
 	}
-	f.service.config.clientFS = fstest.MapFS{}
+	f.service.config.ClientFS = fstest.MapFS{}
 	for _, tt := range []struct {
 		name, query, organization, screenHint string
 		status                                int
@@ -774,7 +774,7 @@ func TestSharedEntryInvitation(t *testing.T) {
 				t.Fatalf("invite = %d: %s", invite.StatusCode, invite.Body)
 			}
 			if role == "reporter" {
-				f.service.config.clientFS = fstest.MapFS{entryClientShell: {Data: []byte("<html><head></head><body></body></html>")}}
+				f.service.config.ClientFS = fstest.MapFS{entryClientShell: {Data: []byte("<html><head></head><body></body></html>")}}
 			}
 			invitation := f.provider.Invitations["inv_carol"]
 			switch tt.name {

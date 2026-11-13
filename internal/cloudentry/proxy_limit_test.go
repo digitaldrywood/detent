@@ -192,8 +192,8 @@ func TestSharedEntryChangeSourcePublication(t *testing.T) {
 		t.Fatal("publication at JSON limit changed immutable receipt")
 	}
 	require(t, attachmentRequest(t, client, http.MethodPost, path, bytes.NewReader(append(bounded, ' ')), headers), http.StatusRequestEntityTooLarge)
-	transport := f.service.config.transport
-	f.service.config.transport = func(organization Organization) (http.RoundTripper, error) {
+	transport := f.service.config.Transport
+	f.service.config.Transport = func(organization Organization) (http.RoundTripper, error) {
 		return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -206,6 +206,6 @@ func TestSharedEntryChangeSourcePublication(t *testing.T) {
 		})}, nil
 	}
 	require(t, request(t, http.MethodPost, path, publication, key.Token), http.StatusUnauthorized)
-	f.service.config.transport = transport
+	f.service.config.Transport = transport
 
 }

@@ -77,10 +77,10 @@ func TestSharedEntryGitHubStartupReplay(t *testing.T) {
 				Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
 				PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry",
 				SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)), Provider: newFakeProvider(),
-				StateDir: t.TempDir(), clientFS: fstest.MapFS{},
+				StateDir: t.TempDir(), ClientFS: fstest.MapFS{},
 				Logger:              slog.New(replayTestHandler{Handler: slog.DiscardHandler, done: done}),
-				GitHubWebhookSecret: []byte("secret"), now: func() time.Time { return before },
-				transport: func(organization Organization) (http.RoundTripper, error) {
+				GitHubWebhookSecret: []byte("secret"), Now: func() time.Time { return before },
+				Transport: func(organization Organization) (http.RoundTripper, error) {
 					return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						if strings.HasPrefix(r.URL.Path, "/internal/v1/attachments/") {
 							w.WriteHeader(http.StatusServiceUnavailable)

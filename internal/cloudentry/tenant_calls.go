@@ -8,7 +8,7 @@ import (
 )
 
 func (s *Service) tenantCaller() *tenantcall.Client {
-	return tenantcall.New(tenantcall.Deps{Issuer: s.config.Issuer, SigningKey: s.config.SigningKey, Now: s.config.now, Transport: s.config.transport})
+	return tenantcall.New(tenantcall.Deps{Issuer: s.config.Issuer, SigningKey: s.config.SigningKey, Now: s.config.Now, Transport: s.config.Transport})
 }
 
 func (s *Service) claims(organization Organization, kind, method, path string, body []byte) (cloudassert.Claims, error) {

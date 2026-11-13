@@ -167,7 +167,7 @@ func (s *Service) organizationSlug(c echo.Context) (resultErr error) {
 	if _, err := tx.ExecContext(ctx, "INSERT INTO platform.organization_slugs(slug,organization_id) VALUES($1,$2) ON CONFLICT DO NOTHING", input.Slug, organization.ID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE platform.organizations SET slug=$1,updated_at=$2 WHERE id=$3", input.Slug, formatTime(s.config.now()), organization.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE platform.organizations SET slug=$1,updated_at=$2 WHERE id=$3", input.Slug, formatTime(s.config.Now()), organization.ID); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -1,4 +1,4 @@
-package entrytest
+package harness
 
 import (
 	"bytes"

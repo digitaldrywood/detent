@@ -167,15 +167,15 @@ func openEntryStores(ctx context.Context, cfg Config, keys *hubsecrets.Keyring) 
 	if err != nil {
 		return nil, nil, errors.New("open PostgreSQL entry pool")
 	}
-	r, err := platformstore.New(ctx, pool, platformstore.Config{Pool: cfg.Storage.Pool, SigningKey: cfg.SigningKey, Keys: keys, Now: cfg.now})
+	r, err := platformstore.New(ctx, pool, platformstore.Config{Pool: cfg.Storage.Pool, SigningKey: cfg.SigningKey, Keys: keys, Now: cfg.Now})
 	if err != nil {
 		pool.Close()
 		return nil, nil, err
 	}
 	closePool := sync.OnceValue(r.Close)
-	registryDB := &entryDatabase{postgres: r, clock: cfg.now}
-	authDB := &entryDatabase{postgres: r, auth: true, clock: cfg.now}
-	return &Registry{store: &store{db: registryDB, reader: registryDB, close: closePool}, now: cfg.now}, &store{db: authDB, reader: authDB, close: closePool}, nil
+	registryDB := &entryDatabase{postgres: r, clock: cfg.Now}
+	authDB := &entryDatabase{postgres: r, auth: true, clock: cfg.Now}
+	return &Registry{store: &store{db: registryDB, reader: registryDB, close: closePool}, now: cfg.Now}, &store{db: authDB, reader: authDB, close: closePool}, nil
 }
 
 func (d *entryDatabase) PingContext(ctx context.Context) error {

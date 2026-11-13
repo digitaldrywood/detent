@@ -520,9 +520,9 @@ func (p *sharedOriginPilot) open(t *testing.T, maxTenants, retryLimit int) {
 	t.Helper()
 	allocation := &AllocationConfig{TenantRoot: p.roots[0], SocketRoot: p.roots[1], MaxTenants: maxTenants, MaxConcurrent: 2, RetryLimit: retryLimit, Launcher: p.launcher, EntitlementAdminToken: []byte(pilotOperatorToken)}
 	config := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: p.base, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: p.key, Provider: p.provider,
-		StaffEmails: []string{"staff@example.test", "ops@example.test"}, EntitlementAdministrators: []string{"staff@example.test"}, StateDir: p.state, Logger: slog.New(slog.DiscardHandler), clientFS: p.client, Allocation: allocation}
+		StaffEmails: []string{"staff@example.test", "ops@example.test"}, EntitlementAdministrators: []string{"staff@example.test"}, StateDir: p.state, Logger: slog.New(slog.DiscardHandler), ClientFS: p.client, Allocation: allocation}
 	if !p.launcher.useUnix || len(filepath.Join(p.roots[1], "org_"+strings.Repeat("f", 20)+".sock")) >= len(syscall.RawSockaddrUnix{}.Path) {
-		config.transport = p.launcher.transport
+		config.Transport = p.launcher.transport
 	}
 	for _, configure := range p.configure {
 		configure(&config)

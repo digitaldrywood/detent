@@ -44,7 +44,7 @@ func addSecretAuthorization(t *testing.T, s *Service, name string, tokens auth.H
 	if _, err := s.registry.Register(t.Context(), Organization{ID: "org_" + name, ProviderID: "provider_" + name, Name: name, Endpoint: "unix:" + filepath.Join(t.TempDir(), "tenant.sock"), Generation: 1}); err != nil {
 		t.Fatal(err)
 	}
-	identity := auth.HostedIdentity{Subject: "user_" + name, OrganizationID: "provider_" + name, SessionID: "session_" + name, ExpiresAt: s.config.now().Add(time.Hour)}
+	identity := auth.HostedIdentity{Subject: "user_" + name, OrganizationID: "provider_" + name, SessionID: "session_" + name, ExpiresAt: s.config.Now().Add(time.Hour)}
 	if err := s.auth.createSession(t.Context(), "hash_"+name, "csrf_"+name, auth.Identity{Subject: identity.Subject, Email: name + "@example.test", Hosted: &identity}); err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestEntrySecretResealCASAndSkips(t *testing.T) {
 		query string
 		args  []any
 	}{
-		{"UPDATE platform.authorizations SET revoked_at=$1 WHERE binding=$2", []any{formatTime(s.config.now()), items["revoked"].Binding}},
+		{"UPDATE platform.authorizations SET revoked_at=$1 WHERE binding=$2", []any{formatTime(s.config.Now()), items["revoked"].Binding}},
 		{"UPDATE platform.authorizations SET access_token='',refresh_token='' WHERE binding=$1", []any{items["empty"].Binding}},
 		{"UPDATE platform.authorizations SET refresh_token='' WHERE binding=$1", []any{items["partial"].Binding}},
 		{"UPDATE platform.authorizations SET access_token=$1 WHERE binding=$2", []any{"broken-secret-material", items["broken"].Binding}},
@@ -401,7 +401,7 @@ func TestEntryOAuthKeyringState(t *testing.T) {
 	if err := other.openOAuth("oauth-consent", cookie.Value, &oauthRequest{}); !errors.Is(err, errNoSession) {
 		t.Fatal("origin AAD not enforced")
 	}
-	consent.ExpiresAt = s.config.now().Add(-time.Second)
+	consent.ExpiresAt = s.config.Now().Add(-time.Second)
 	expired, err := s.sealOAuth("oauth-consent", consent)
 	if err != nil {
 		t.Fatal(err)

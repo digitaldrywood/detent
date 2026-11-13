@@ -76,11 +76,11 @@ type Config struct {
 	GitHubUserClientID        string
 	GitHubUserClientSecret    string
 
-	now                 func() time.Time
+	Now                 func() time.Time
 	generateToken       func() (string, error)
-	transport           func(Organization) (http.RoundTripper, error)
-	clientFS            fs.FS
-	attachmentTransport http.RoundTripper
+	Transport           func(Organization) (http.RoundTripper, error)
+	ClientFS            fs.FS
+	AttachmentTransport http.RoundTripper
 	platformEmailSender auth.EmailSender
 
 	tenantStartTimeout time.Duration
@@ -173,8 +173,8 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if keys == nil {
 		cfg.Logger.Warn("Cloud entry uses legacy sealing: DETENT_HUB_SECRET_KEYS and DETENT_HUB_SECRET_KEY_VERSION are not configured")
 	}
-	if cfg.now == nil {
-		cfg.now = time.Now
+	if cfg.Now == nil {
+		cfg.Now = time.Now
 	}
 	if cfg.tenantStartTimeout == 0 {
 		cfg.tenantStartTimeout = 30 * time.Second
@@ -185,7 +185,7 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	var attachments attachment.Storage
 	if cfg.Attachments != nil {
 		var err error
-		attachments, err = attachment.NewStorage(ctx, *cfg.Attachments, cfg.attachmentTransport)
+		attachments, err = attachment.NewStorage(ctx, *cfg.Attachments, cfg.AttachmentTransport)
 		if err != nil {
 			return nil, fmt.Errorf("configure attachments: %w", err)
 		}
@@ -201,7 +201,7 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if err != nil {
 		return nil, err
 	}
-	registry.now = cfg.now
+	registry.now = cfg.Now
 	if err := registry.seedPlatformMembers(ctx, cfg); err != nil {
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
@@ -212,14 +212,14 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 	if err != nil {
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
-	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal, keys: keys}, secure: strings.HasPrefix(cfg.PublicURL, "https://")}
+	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.Now, seal: seal, keys: keys}, secure: strings.HasPrefix(cfg.PublicURL, "https://")}
 	service.attachments = attachments
 	if _, err := service.loadRuntime(ctx); err != nil {
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
 	service.configureRuntimeLauncher(ctx)
-	if cfg.transport == nil {
-		service.config.transport = service.tenantTransport
+	if cfg.Transport == nil {
+		service.config.Transport = service.tenantTransport
 	}
 	service.githubWebhooks = webhooks.New(webhooks.Deps{
 		Secret: service.config.GitHubWebhookSecret, Logger: service.config.Logger,
@@ -449,7 +449,7 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	if err != nil {
 		return accountSession{}, err
 	}
-	now := s.config.now()
+	now := s.config.Now()
 	method := c.Request().Method
 	// Staff and support sessions reach across organizations, so they are
 	// re-verified on every request rather than trusted for the recheck window.

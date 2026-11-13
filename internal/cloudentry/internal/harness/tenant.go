@@ -1,4 +1,4 @@
-package entrytest
+package harness
 
 import (
 	"bytes"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
 	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
 	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -42,7 +43,7 @@ func NewTenant(t *testing.T, provider *FakeProvider, key ed25519.PrivateKey, id,
 	t.Helper()
 	plans := PilotPlans()
 	plans.Plans[0].Allowances["projects"] = 10
-	var logs LockedBuffer
+	var logs entrytest.LockedBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	t.Cleanup(func() {
 		if t.Failed() {

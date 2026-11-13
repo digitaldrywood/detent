@@ -83,7 +83,7 @@ func (s *Service) recordSignIn(ctx context.Context, identity auth.Identity) (res
 		return err
 	}
 	defer tx.cleanup(ctx, &resultErr)
-	at := formatTime(s.config.now())
+	at := formatTime(s.config.Now())
 	if s.notifications != nil && identity.Hosted.SupportActor == "" {
 		var earlier bool
 		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM platform.audit WHERE subject=$1 AND event='session_started')", identity.Subject).Scan(&earlier); err != nil {
@@ -108,7 +108,7 @@ func (s *Service) recordSignIn(ctx context.Context, identity auth.Identity) (res
 func (s *Service) deliverPlatformNotifications(ctx context.Context) {
 	for _, source := range []*store{s.auth.store, s.registry.store} {
 		for ctx.Err() == nil {
-			value, err := source.db.postgres.ClaimNotification(ctx, entryWorkload(ctx), source.db.auth, formatTime(s.config.now()))
+			value, err := source.db.postgres.ClaimNotification(ctx, entryWorkload(ctx), source.db.auth, formatTime(s.config.Now()))
 			event, id, email, name, plan, at := value.Event, value.ID, value.Email, value.Name, value.Plan, value.OccurredAt
 			if errors.Is(err, sql.ErrNoRows) {
 				break

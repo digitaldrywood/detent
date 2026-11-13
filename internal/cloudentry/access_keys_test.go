@@ -256,9 +256,9 @@ func TestOrganizationKeyDiscoveryPagination(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	transport := f.service.config.transport
+	transport := f.service.config.Transport
 	serviceCalls := 0
-	f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+	f.service.config.Transport = func(org Organization) (http.RoundTripper, error) {
 		serviceCalls++
 		return transport(org)
 	}
@@ -539,7 +539,7 @@ func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
 	start := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	var clock atomic.Int64
 	f := newEntryFixture(t, func(cfg *Config) {
-		cfg.now = func() time.Time {
+		cfg.Now = func() time.Time {
 			if stamp := clock.Load(); stamp != 0 {
 				return time.Unix(0, stamp).UTC()
 			}
@@ -579,7 +579,7 @@ func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
 				t.Fatal(err)
 			}
 			service := &Service{config: f.service.config, auth: f.service.auth}
-			service.config.now = func() time.Time {
+			service.config.Now = func() time.Time {
 				var used sql.NullString
 				if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT last_used_at FROM platform.access_key_organizations WHERE key_id=$1 AND organization_id=$2", key.ID, organization.ID).Scan(&used); err != nil && !errors.Is(err, sql.ErrNoRows) {
 					t.Fatal(err)
@@ -604,14 +604,14 @@ func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
 			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE platform.access_keys SET expires_at=$1 WHERE id=$2", storedExpiry, key.ID); err != nil {
 				t.Fatal(err)
 			}
-			service.config.transport = func(Organization) (http.RoundTripper, error) {
+			service.config.Transport = func(Organization) (http.RoundTripper, error) {
 				return runtimeTransport(func(request *http.Request) (*http.Response, error) {
 					sent++
 					body, err := io.ReadAll(request.Body)
 					if err != nil {
 						return nil, err
 					}
-					verifier := &cloudassert.Verifier{PublicKeys: f.fixtures["org_alpha"].Config.Hosted.SharedEntry.PublicKeys, Issuer: "entry", Audience: "org_alpha", Generation: 1, Now: service.config.now}
+					verifier := &cloudassert.Verifier{PublicKeys: f.fixtures["org_alpha"].Config.Hosted.SharedEntry.PublicKeys, Issuer: "entry", Audience: "org_alpha", Generation: 1, Now: service.config.Now}
 					claims, err := verifier.Verify(request.Header.Get(cloudassert.Header), request.Method, request.URL.RequestURI(), body)
 					if err != nil {
 						return nil, err
@@ -989,7 +989,7 @@ func TestAccessKeyMutationAuditResponses(t *testing.T) {
 				case "pre-handler audit":
 					_, err = db.ExecContext(t.Context(), `CREATE FUNCTION public.reject_key_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$; CREATE TRIGGER reject_key_audit BEFORE INSERT ON public.hosted_audit FOR EACH ROW WHEN (NEW.event='key_call') EXECUTE FUNCTION public.reject_key_audit()`)
 				case "service":
-					f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+					f.service.config.Transport = func(Organization) (http.RoundTripper, error) {
 						return nil, errors.New("backend failure secret sentinel")
 					}
 				}

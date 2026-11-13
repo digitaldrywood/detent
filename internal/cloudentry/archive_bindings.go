@@ -206,7 +206,7 @@ func (s *Service) bindingStorage(ctx context.Context, b attachment.StorageBindin
 	if err != nil {
 		return nil, fmt.Errorf("archive credentials: %w: %w", artifact.ErrStorage, err)
 	}
-	storage, err := attachment.NewBindingStorage(ctx, b, secret, s.config.attachmentTransport)
+	storage, err := attachment.NewBindingStorage(ctx, b, secret, s.config.AttachmentTransport)
 	if err != nil {
 		return nil, fmt.Errorf("archive binding storage: %w: %w", artifact.ErrStorage, err)
 	}

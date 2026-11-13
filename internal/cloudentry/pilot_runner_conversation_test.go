@@ -32,7 +32,7 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 			p := newSharedOriginPilotWith(t, 1, 1, fstest.MapFS{}, test.billing, func(cfg *Config) {
 				attachments := store.Config()
 				cfg.Attachments = &attachments
-				cfg.attachmentTransport = store.Transport
+				cfg.AttachmentTransport = store.Transport
 			})
 			owner := p.browser(t)
 			pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_member:"), http.StatusSeeOther)

@@ -58,7 +58,7 @@ UNION ALL SELECT id,'github-app','Detent Cloud GitHub App','',created_at,NULL,re
 
 func (s *Service) revokeOAuthGrant(ctx context.Context, owner, id string) error {
 	if strings.HasPrefix(id, "github_") {
-		result, err := s.auth.store.db.ExecContext(ctx, `UPDATE platform.github_user_connections SET revoked_at=COALESCE(revoked_at,$1),access_token='' WHERE id=$2 AND owner_subject=$3`, formatTime(s.config.now()), id, owner)
+		result, err := s.auth.store.db.ExecContext(ctx, `UPDATE platform.github_user_connections SET revoked_at=COALESCE(revoked_at,$1),access_token='' WHERE id=$2 AND owner_subject=$3`, formatTime(s.config.Now()), id, owner)
 		if err != nil {
 			return err
 		}

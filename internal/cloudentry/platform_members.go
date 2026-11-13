@@ -130,7 +130,7 @@ func (r *Registry) seedPlatformMembers(ctx context.Context, cfg Config) (resultE
 		emails = append(emails, email)
 	}
 	sort.Strings(emails)
-	now := formatTime(cfg.now())
+	now := formatTime(cfg.Now())
 	for _, email := range emails {
 		if !validPlatformEmail(email) {
 			return fmt.Errorf("invalid platform seed email %q", email)
@@ -254,7 +254,7 @@ func (a entryAdministration) executePlatformMember(ctx context.Context, name str
 		return operatoradmin.Output{}, err
 	}
 
-	now := formatTime(s.config.now())
+	now := formatTime(s.config.Now())
 	action, role := "added", in.Role
 	switch name {
 	case platformMemberAdd:

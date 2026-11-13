@@ -33,7 +33,7 @@ func TestEntryHealthRequiresServingTenants(t *testing.T) {
 		{name: "recovered", tenantStatus: http.StatusNoContent, want: http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f.service.config.transport = func(organization Organization) (http.RoundTripper, error) {
+			f.service.config.Transport = func(organization Organization) (http.RoundTripper, error) {
 				if test.factsComplete {
 					return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						w.WriteHeader(test.tenantStatus)

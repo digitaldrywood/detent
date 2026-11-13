@@ -120,7 +120,7 @@ type entryExecutor interface {
 }
 
 func (s *Service) writePostgresAdministrationReceipt(ctx context.Context, target entryExecutor, session accountSession, m mutation.Metadata, outcome string, out operatoradmin.Output, key string, signOut operatortool.SignOutResult) error {
-	result, err := target.ExecContext(ctx, `INSERT INTO platform.administration_receipts(subject,organization_id,retry_identity,input_hash,outcome,resource_id,url,reconnect,sign_out,signed_out,provider_confirmed,audit_recorded,output_object_key,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(subject,organization_id,retry_identity) DO UPDATE SET outcome=excluded.outcome,resource_id=excluded.resource_id,url=excluded.url,reconnect=excluded.reconnect,sign_out=excluded.sign_out,signed_out=excluded.signed_out,provider_confirmed=excluded.provider_confirmed,audit_recorded=excluded.audit_recorded,output_object_key=excluded.output_object_key,recorded_at=excluded.recorded_at WHERE platform.administration_receipts.input_hash=excluded.input_hash`, session.Subject, m.OrganizationID, m.RetryIdentity, m.InputHash, outcome, out.ResourceID, out.URL, out.Reconnect, out.SignOut != nil, signOut.SignedOut, signOut.ProviderConfirmed, signOut.AuditRecorded, key, s.config.now())
+	result, err := target.ExecContext(ctx, `INSERT INTO platform.administration_receipts(subject,organization_id,retry_identity,input_hash,outcome,resource_id,url,reconnect,sign_out,signed_out,provider_confirmed,audit_recorded,output_object_key,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(subject,organization_id,retry_identity) DO UPDATE SET outcome=excluded.outcome,resource_id=excluded.resource_id,url=excluded.url,reconnect=excluded.reconnect,sign_out=excluded.sign_out,signed_out=excluded.signed_out,provider_confirmed=excluded.provider_confirmed,audit_recorded=excluded.audit_recorded,output_object_key=excluded.output_object_key,recorded_at=excluded.recorded_at WHERE platform.administration_receipts.input_hash=excluded.input_hash`, session.Subject, m.OrganizationID, m.RetryIdentity, m.InputHash, outcome, out.ResourceID, out.URL, out.Reconnect, out.SignOut != nil, signOut.SignedOut, signOut.ProviderConfirmed, signOut.AuditRecorded, key, s.config.Now())
 	if err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func (s *Service) postgresCreditAudit(ctx context.Context, actor, organization, 
 	if err != nil {
 		return err
 	}
-	_, err = s.auth.store.db.ExecContext(ctx, `INSERT INTO platform.audit(subject,organization_id,event,event_object_key,retry_identity,amount_usd,reason,recorded_at) VALUES($1,$2,'ai_credits_adjusted',$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`, actor, organization, key, retry, amount, reason, s.config.now())
+	_, err = s.auth.store.db.ExecContext(ctx, `INSERT INTO platform.audit(subject,organization_id,event,event_object_key,retry_identity,amount_usd,reason,recorded_at) VALUES($1,$2,'ai_credits_adjusted',$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`, actor, organization, key, retry, amount, reason, s.config.Now())
 	return err
 }
 
@@ -152,6 +152,6 @@ func (s *Service) postgresSupportRequest(ctx context.Context, session accountSes
 	if err != nil {
 		return err
 	}
-	_, err = s.auth.store.db.ExecContext(ctx, "INSERT INTO platform.audit(subject,organization_id,event,event_object_key,reason,recorded_at) VALUES($1,$2,'support_requested',$3,$4,$5)", session.Subject, organization, key, reason, s.config.now())
+	_, err = s.auth.store.db.ExecContext(ctx, "INSERT INTO platform.audit(subject,organization_id,event,event_object_key,reason,recorded_at) VALUES($1,$2,'support_requested',$3,$4,$5)", session.Subject, organization, key, reason, s.config.Now())
 	return err
 }

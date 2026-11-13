@@ -87,7 +87,7 @@ func entryPostgresStorageConfig(t *testing.T, restart bool, databases ...*sql.DB
 		if cfg.Attachments == nil {
 			config := objects.Config()
 			config.Endpoint = "https://storage.example.test"
-			cfg.Attachments, cfg.attachmentTransport = &config, objects.Transport
+			cfg.Attachments, cfg.AttachmentTransport = &config, objects.Transport
 		}
 	}
 }
@@ -96,7 +96,7 @@ func openTestRegistry(t *testing.T) *Registry {
 	t.Helper()
 	var logs lockedBuffer
 	cfg := secretEntryConfig(t, &logs)
-	cfg.now = time.Now
+	cfg.Now = time.Now
 	entryPostgresConfig(t)(&cfg)
 	keys, err := hubsecrets.FromEnvironment(cfg.LookupEnv)
 	if err != nil {
@@ -167,7 +167,7 @@ func TestEntryBackendPlatformOwners(t *testing.T) {
 				cfg.LookupEnv = entrySecretEnvironment(1, 1)
 				storage := objects.Config()
 				storage.Endpoint = "https://storage.example.test"
-				cfg.Attachments, cfg.attachmentTransport = &storage, objects.Transport
+				cfg.Attachments, cfg.AttachmentTransport = &storage, objects.Transport
 			})
 			s := f.service
 			for _, id := range []string{"org_alpha", "org_beta"} {
@@ -175,7 +175,7 @@ func TestEntryBackendPlatformOwners(t *testing.T) {
 				if err != nil || organization.Slug == "" {
 					t.Fatalf("registered organization %s: %+v %v", id, organization, err)
 				}
-				identity := auth.HostedIdentity{Subject: "user_alice", OrganizationID: organization.ProviderID, SessionID: "session_" + id, CreatedAt: s.config.now(), ExpiresAt: s.config.now().Add(time.Hour)}
+				identity := auth.HostedIdentity{Subject: "user_alice", OrganizationID: organization.ProviderID, SessionID: "session_" + id, CreatedAt: s.config.Now(), ExpiresAt: s.config.Now().Add(time.Hour)}
 				if err := s.auth.createSession(t.Context(), "hash_"+id, "csrf_"+id, auth.Identity{Subject: identity.Subject, Email: "alice@example.test", Hosted: &identity}); err != nil {
 					t.Fatal(err)
 				}
@@ -192,7 +192,7 @@ func TestEntryBackendPlatformOwners(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if err := enqueuePlatformNotification(t.Context(), tx, "organization", id, session.Email, organization.Name, "Free", formatTime(s.config.now())); err != nil {
+					if err := enqueuePlatformNotification(t.Context(), tx, "organization", id, session.Email, organization.Name, "Free", formatTime(s.config.Now())); err != nil {
 						tx.Rollback(t.Context())
 						t.Fatal(err)
 					}
@@ -251,7 +251,7 @@ func TestEntryBackendPlatformOwners(t *testing.T) {
 				if err != nil || tokens.AccessToken != "access_"+id || tokens.RefreshToken != "refresh_"+id {
 					t.Fatalf("restarted tokens: %+v %v", tokens, err)
 				}
-				if _, err := reopened.auth.store.db.ExecContext(t.Context(), "UPDATE platform.sessions SET expires_at=$1 WHERE token_hash=$2", formatTime(reopened.config.now().Add(-time.Hour)), session.Hash); err != nil {
+				if _, err := reopened.auth.store.db.ExecContext(t.Context(), "UPDATE platform.sessions SET expires_at=$1 WHERE token_hash=$2", formatTime(reopened.config.Now().Add(-time.Hour)), session.Hash); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := reopened.auth.authorizationByBinding(t.Context(), item.Binding); backend == "postgres" && !errors.Is(err, errNoSession) {

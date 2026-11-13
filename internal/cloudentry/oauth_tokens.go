@@ -26,7 +26,7 @@ func (s *Service) exchangeOAuthToken(ctx context.Context, client string, form ur
 	if form.Get("grant_type") != "authorization_code" && form.Get("grant_type") != "refresh_token" {
 		return oauthTokenResponse{}, errNoSession
 	}
-	now := s.config.now()
+	now := s.config.Now()
 	var grant, challenge, redirect, resource, codeExpires string
 	var consumed sql.NullString
 	hash := apikey.HashToken(form.Get("code"))
@@ -119,7 +119,7 @@ func (s *Service) oauthKey(ctx context.Context, column, value string, requireAcc
 			return k, errNoSession
 		}
 		at, err := parseTime(expires.String)
-		if err != nil || !at.After(s.config.now()) {
+		if err != nil || !at.After(s.config.Now()) {
 			return k, errNoSession
 		}
 		k.ExpiresAt = &at
@@ -162,7 +162,7 @@ func (s *Service) recordCredentialUse(ctx context.Context, key accessKey, organi
 	if !key.OAuth {
 		return s.recordKeyUse(ctx, key.ID, organization)
 	}
-	_, err := s.auth.store.db.ExecContext(ctx, "UPDATE platform.oauth_grants SET last_used_at=$1 WHERE id=$2 AND revoked_at IS NULL", formatTime(s.config.now()), key.ID)
+	_, err := s.auth.store.db.ExecContext(ctx, "UPDATE platform.oauth_grants SET last_used_at=$1 WHERE id=$2 AND revoked_at IS NULL", formatTime(s.config.Now()), key.ID)
 	return err
 }
 

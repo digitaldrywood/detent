@@ -157,7 +157,7 @@ func (s *Service) describeKeyWithReachCache(ctx context.Context, key accessKey, 
 			return view, err
 		}
 		switch {
-		case key.RevokedAt != nil || key.ExpiresAt != nil && !key.ExpiresAt.After(s.config.now()):
+		case key.RevokedAt != nil || key.ExpiresAt != nil && !key.ExpiresAt.After(s.config.Now()):
 			reach.Status = "inactive"
 		case blocked || policy == "blocked":
 			reach.Status = "blocked"
@@ -190,7 +190,7 @@ func (s *Service) rotateAccountKey(c echo.Context) error {
 	if key.Owner != session.Subject || key.Kind != "personal" {
 		return c.NoContent(http.StatusNotFound)
 	}
-	if key.RevokedAt != nil || key.ExpiresAt != nil && !key.ExpiresAt.After(s.config.now()) {
+	if key.RevokedAt != nil || key.ExpiresAt != nil && !key.ExpiresAt.After(s.config.Now()) {
 		return c.NoContent(http.StatusConflict)
 	}
 	key.Token, err = s.config.generateToken()
@@ -224,13 +224,13 @@ func (s *Service) approveOrganizationKey(c echo.Context) error {
 	if err != nil {
 		return keyError(c, err)
 	}
-	if _, reaches := key.projectContext(org.ID); !reaches || key.Kind != "personal" || key.RevokedAt != nil || key.ExpiresAt != nil && !key.ExpiresAt.After(s.config.now()) {
+	if _, reaches := key.projectContext(org.ID); !reaches || key.Kind != "personal" || key.RevokedAt != nil || key.ExpiresAt != nil && !key.ExpiresAt.After(s.config.Now()) {
 		return c.NoContent(http.StatusNotFound)
 	}
 	if _, err := s.ownerKeyReach(c.Request().Context(), key.Owner, key.OwnerEmail, org); err != nil {
 		return keyError(c, err)
 	}
-	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "INSERT INTO platform.access_key_organizations(key_id,organization_id,approved_at) VALUES($1,$2,$3) ON CONFLICT(key_id,organization_id) DO UPDATE SET approved_at=excluded.approved_at WHERE platform.access_key_organizations.blocked = false", key.ID, org.ID, formatTime(s.config.now()))
+	result, err := s.auth.store.db.ExecContext(c.Request().Context(), "INSERT INTO platform.access_key_organizations(key_id,organization_id,approved_at) VALUES($1,$2,$3) ON CONFLICT(key_id,organization_id) DO UPDATE SET approved_at=excluded.approved_at WHERE platform.access_key_organizations.blocked = false", key.ID, org.ID, formatTime(s.config.Now()))
 	if err != nil {
 		return keyError(c, err)
 	}

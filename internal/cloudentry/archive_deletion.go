@@ -17,7 +17,7 @@ func (s *Service) recordArchiveDeletion(ctx context.Context, organization, bindi
 	}
 	defer tx.cleanup(ctx, &resultErr)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO platform.archive_deletion_receipts(organization_id,binding_id,complete,truncated,attempts,updated_at) VALUES($1,$2,$3,$4,1,$5)
-ON CONFLICT(organization_id,binding_id) DO UPDATE SET complete=excluded.complete,truncated=excluded.truncated,attempts=platform.archive_deletion_receipts.attempts+CASE WHEN $6 THEN 1 ELSE 0 END,updated_at=excluded.updated_at`, organization, binding, receipt.Complete, receipt.Truncated, formatTime(s.config.now()), started); err != nil {
+ON CONFLICT(organization_id,binding_id) DO UPDATE SET complete=excluded.complete,truncated=excluded.truncated,attempts=platform.archive_deletion_receipts.attempts+CASE WHEN $6 THEN 1 ELSE 0 END,updated_at=excluded.updated_at`, organization, binding, receipt.Complete, receipt.Truncated, formatTime(s.config.Now()), started); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM platform.archive_deletion_failures WHERE organization_id=$1 AND binding_id=$2`, organization, binding); err != nil {

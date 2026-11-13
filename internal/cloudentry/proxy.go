@@ -356,7 +356,7 @@ func (s *Service) proxy(c echo.Context) error {
 		}
 		body = replacement
 		claims.BodyDigest = cloudassert.BodyDigest(body)
-		claims.IssuedAt = s.config.now()
+		claims.IssuedAt = s.config.Now()
 		claims.ExpiresAt = claims.IssuedAt.Add(assertionLifetime)
 	}
 	authorized := time.Since(started)
@@ -372,7 +372,7 @@ func (s *Service) proxy(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})
 	}
-	transport, err := s.config.transport(organization)
+	transport, err := s.config.Transport(organization)
 	if err != nil {
 		s.config.Logger.WarnContext(ctx, "shared entry tenant transport unavailable", "organization", organization.ID, "error", err)
 		if wantsHTMLNavigation(c) {

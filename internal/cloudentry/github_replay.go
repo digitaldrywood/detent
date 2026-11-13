@@ -21,7 +21,7 @@ type githubDelivery struct {
 }
 
 func (s *Service) githubReplayWindow(ctx context.Context) (time.Time, time.Time) {
-	before := s.config.now()
+	before := s.config.Now()
 	if s.config.GitHubApp == nil || len(s.config.GitHubWebhookSecret) == 0 {
 		return time.Time{}, before
 	}

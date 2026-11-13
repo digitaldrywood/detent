@@ -65,7 +65,7 @@ func (s *Service) stripeWebhook(c echo.Context) error {
 	if err != nil {
 		return c.NoContent(http.StatusBadRequest)
 	}
-	event, err := billing.VerifyModeEvent(body, c.Request().Header.Get("Stripe-Signature"), config.WebhookSecret, s.config.now(), config.Mode == billing.ModeLive)
+	event, err := billing.VerifyModeEvent(body, c.Request().Header.Get("Stripe-Signature"), config.WebhookSecret, s.config.Now(), config.Mode == billing.ModeLive)
 	if err != nil {
 		return c.NoContent(http.StatusBadRequest)
 	}
@@ -73,7 +73,7 @@ func (s *Service) stripeWebhook(c echo.Context) error {
 	if !event.Relevant() || event.Customer == "" && event.Charge == "" {
 		status = "ignored"
 	}
-	now := formatTime(s.config.now())
+	now := formatTime(s.config.Now())
 	inserted, err := s.registry.store.db.ExecContext(c.Request().Context(), "INSERT INTO platform.billing_events(event_id,mode,event_type,customer_id,charge_id,status,received_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(event_id) DO NOTHING",
 		event.ID, config.Mode, event.Type, event.Customer, event.Charge, status, now, now)
 	if err != nil {
@@ -110,7 +110,7 @@ func (s *Service) billingOrganization(ctx context.Context, customer string) (Org
 	if !binding.Enabled || binding.CustomerID != customer || binding.AccountID != config.AccountID || binding.Mode != config.Mode {
 		return Organization{}, errQuarantine
 	}
-	if _, err := s.registry.store.db.ExecContext(ctx, "INSERT INTO platform.billing_customers(mode,account_id,customer_id,organization_id,created_at) VALUES($1,$2,$3,$4,$5)", config.Mode, config.AccountID, customer, organization.ID, formatTime(s.config.now())); err != nil {
+	if _, err := s.registry.store.db.ExecContext(ctx, "INSERT INTO platform.billing_customers(mode,account_id,customer_id,organization_id,created_at) VALUES($1,$2,$3,$4,$5)", config.Mode, config.AccountID, customer, organization.ID, formatTime(s.config.Now())); err != nil {
 		return Organization{}, errQuarantine
 	}
 	return organization, nil
@@ -157,7 +157,7 @@ func (s *Service) deliverBillingEvent(parent context.Context, id string) {
 	if status == "quarantined" {
 		s.config.Logger.Warn("billing event quarantined", "event", id)
 	}
-	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.billing_events SET status = $1, organization_id = $2, attempts = attempts + 1, updated_at = $3 WHERE event_id = $4 AND status = 'pending'", status, organizationID, formatTime(s.config.now()), id); err != nil {
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.billing_events SET status = $1, organization_id = $2, attempts = attempts + 1, updated_at = $3 WHERE event_id = $4 AND status = 'pending'", status, organizationID, formatTime(s.config.Now()), id); err != nil {
 		s.config.Logger.Warn("billing event state could not be recorded", "event", id)
 	}
 }

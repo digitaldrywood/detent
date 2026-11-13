@@ -1,4 +1,4 @@
-package entrytest
+package harness
 
 import (
 	"bytes"
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 )
 
@@ -36,7 +37,7 @@ type Spaces struct {
 func NewSpaces(t *testing.T, public bool) *Spaces {
 	t.Helper()
 	f := &Spaces{Objects: map[string]SpacesObject{}, Public: public}
-	f.Transport = HandlerTransport{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.Transport = entrytest.HandlerTransport{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.Mu.Lock()
 		defer f.Mu.Unlock()
 		key := strings.TrimPrefix(r.URL.Path, "/private/")

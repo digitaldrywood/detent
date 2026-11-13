@@ -106,7 +106,7 @@ func (s *Service) connectGitHub(c echo.Context) error {
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	state := githubConnectionState{Session: session.Hash, Nonce: nonce, ReturnTo: input.ReturnTo, Phase: "install", Expires: s.config.now().Add(10 * time.Minute)}
+	state := githubConnectionState{Session: session.Hash, Nonce: nonce, ReturnTo: input.ReturnTo, Phase: "install", Expires: s.config.Now().Add(10 * time.Minute)}
 	if err := s.saveGitHubState(c, state); err != nil {
 		return oauthError(c, 503, "server_error")
 	}
@@ -143,7 +143,7 @@ func (s *Service) completeGitHubConnection(c echo.Context) error {
 		return oauthError(c, 400, "invalid_request")
 	}
 	var state githubConnectionState
-	if s.openOAuth("github-connect", cookie.Value, &state) != nil || state.Session != session.Hash || !state.Expires.After(s.config.now()) || subtle.ConstantTimeCompare([]byte(state.Nonce), []byte(c.QueryParam("state"))) != 1 {
+	if s.openOAuth("github-connect", cookie.Value, &state) != nil || state.Session != session.Hash || !state.Expires.After(s.config.Now()) || subtle.ConstantTimeCompare([]byte(state.Nonce), []byte(c.QueryParam("state"))) != 1 {
 		return oauthError(c, 400, "invalid_request")
 	}
 	s.setCookie(c, "github-connect", "", time.Unix(1, 0))
@@ -192,7 +192,7 @@ func (s *Service) saveGitHubConnection(ctx context.Context, owner string, token 
 		value := formatTime(token.Expiry)
 		expires = &value
 	}
-	_, err = s.auth.store.db.ExecContext(ctx, `INSERT INTO platform.github_user_connections(owner_subject,id,access_token,expires_at,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(owner_subject) DO UPDATE SET access_token=excluded.access_token,expires_at=excluded.expires_at,created_at=excluded.created_at,revoked_at=NULL`, owner, "github_"+id, sealed, expires, formatTime(s.config.now()))
+	_, err = s.auth.store.db.ExecContext(ctx, `INSERT INTO platform.github_user_connections(owner_subject,id,access_token,expires_at,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(owner_subject) DO UPDATE SET access_token=excluded.access_token,expires_at=excluded.expires_at,created_at=excluded.created_at,revoked_at=NULL`, owner, "github_"+id, sealed, expires, formatTime(s.config.Now()))
 	return err
 }
 
@@ -223,7 +223,7 @@ func (s *Service) githubRepositories(c echo.Context) error {
 	}
 	if expires.Valid {
 		expiry, err := time.Parse(time.RFC3339Nano, expires.String)
-		if err != nil || !expiry.After(s.config.now()) {
+		if err != nil || !expiry.After(s.config.Now()) {
 			return c.JSON(http.StatusOK, result)
 		}
 	}
@@ -234,7 +234,7 @@ func (s *Service) githubRepositories(c echo.Context) error {
 	repos, err := s.listGitHubUserRepositories(ctx, token)
 	if err != nil {
 		if errors.Is(err, errGitHubUserRevoked) {
-			if _, err := s.auth.store.db.ExecContext(ctx, `UPDATE platform.github_user_connections SET revoked_at=$1,access_token='' WHERE owner_subject=$2 AND access_token=$3 AND revoked_at IS NULL`, formatTime(s.config.now()), session.Subject, sealed); err != nil {
+			if _, err := s.auth.store.db.ExecContext(ctx, `UPDATE platform.github_user_connections SET revoked_at=$1,access_token='' WHERE owner_subject=$2 AND access_token=$3 AND revoked_at IS NULL`, formatTime(s.config.Now()), session.Subject, sealed); err != nil {
 				return oauthError(c, 503, "server_error")
 			}
 		}

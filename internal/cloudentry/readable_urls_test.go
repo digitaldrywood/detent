@@ -65,7 +65,7 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 	if denied.StatusCode != http.StatusNotFound || absent.StatusCode != http.StatusNotFound || denied.Body != absent.Body {
 		t.Fatalf("denied=%+v missing=%+v", denied, absent)
 	}
-	f.service.config.clientFS = fstest.MapFS{entryClientShell: {Data: []byte(`<html><head></head><body></body></html>`)}}
+	f.service.config.ClientFS = fstest.MapFS{entryClientShell: {Data: []byte(`<html><head></head><body></body></html>`)}}
 	for _, test := range []struct{ path, location string }{
 		{"/alpha", "/alpha/work"},
 		{"/alpha/", "/alpha/work"},

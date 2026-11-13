@@ -31,10 +31,10 @@ func TestAttemptDiffObjectStorage(t *testing.T) {
 	checked := false
 	checkStatus := http.StatusNoContent
 	s := &Service{attachments: storage, config: Config{
-		now:        time.Now,
+		Now:        time.Now,
 		Issuer:     "entry",
 		SigningKey: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)),
-		transport: func(Organization) (http.RoundTripper, error) {
+		Transport: func(Organization) (http.RoundTripper, error) {
 			return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/api/v2/organizations/org_alpha/projects/prj_test/attempts/attempt_test/diff/check" {
 					t.Errorf("unexpected check path %s", r.URL.Path)

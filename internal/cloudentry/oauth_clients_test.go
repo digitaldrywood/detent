@@ -17,7 +17,7 @@ func TestOAuthClientMigrationAndBackfill(t *testing.T) {
 	admin := entryPostgresDatabase(t)
 	var logs lockedBuffer
 	cfg := secretEntryConfig(t, &logs)
-	cfg.now = time.Now
+	cfg.Now = time.Now
 	entryPostgresConfig(t, admin)(&cfg)
 	registry, storage, err := openEntryStores(ctx, cfg, nil)
 	if err != nil {

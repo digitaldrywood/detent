@@ -338,8 +338,8 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 			attempt.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate, Prices: next.Runtime.Prices}
 			attemptCtx, cancelAttempt := context.WithCancel(t.Context())
 			defer cancelAttempt()
-			original := f.service.config.transport
-			defer func() { f.service.config.transport = original }()
+			original := f.service.config.Transport
+			defer func() { f.service.config.Transport = original }()
 			failed := false
 			if failure == "publication transaction refused" {
 				if _, err := admin.ExecContext(t.Context(), "REVOKE INSERT ON hosted_runtime_publications FROM detent_platform_v2"); err != nil {
@@ -352,7 +352,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 				})
 			}
 
-			f.service.config.transport = func(organization Organization) (http.RoundTripper, error) {
+			f.service.config.Transport = func(organization Organization) (http.RoundTripper, error) {
 				transport, err := original(organization)
 				if err != nil || organization.ID != "org_beta" {
 					return transport, err
@@ -406,7 +406,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), wantError) {
 				t.Fatalf("reload failure was not reported: %v", err)
 			}
-			f.service.config.transport = original
+			f.service.config.Transport = original
 			if f.service.currentRuntime(t.Context()) != entryBefore {
 				t.Fatal("failed reload published new tenant launch settings")
 			}
@@ -486,11 +486,11 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 			}
 			organization.CreatorSubject, organization.CreatorEmail = "user_alice", "alice@example.test"
 			allocation.Launcher = &silentLauncher{running: map[string]bool{}}
-			original := f.service.config.transport
+			original := f.service.config.Transport
 			paused, resume, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			var pauseOnce, resumeOnce sync.Once
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-			f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+			f.service.config.Transport = func(org Organization) (http.RoundTripper, error) {
 				transport, err := original(org)
 				if err != nil || org.ID != "org_beta" {
 					return transport, err
@@ -521,7 +521,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 				cancel()
 				resumeOnce.Do(func() { close(resume) })
 				<-finished
-				f.service.config.transport = original
+				f.service.config.Transport = original
 			})
 			select {
 			case <-paused:
@@ -582,7 +582,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				f.service.config.transport = original
+				f.service.config.Transport = original
 				f.service.provision(t.Context(), organization)
 			}
 			for _, id := range []string{"org_alpha", "org_beta"} {

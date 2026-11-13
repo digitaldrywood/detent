@@ -92,7 +92,7 @@ func (s *Service) tenantHealth(ctx context.Context, organizations []Organization
 			if reader, ok := allocation.Launcher.(interface {
 				Health(string, time.Time) (*int64, *int)
 			}); ok {
-				row.UptimeSeconds, row.Restarts24h = reader.Health(organization.ID, s.config.now())
+				row.UptimeSeconds, row.Restarts24h = reader.Health(organization.ID, s.config.Now())
 			}
 		}
 		if !row.Running {

@@ -74,7 +74,7 @@ func (s *Service) currentAdministrationSession(ctx context.Context, id operatort
 	if err != nil && entryAuthStatus(err, http.StatusUnauthorized) == http.StatusServiceUnavailable {
 		return accountSession{}, err
 	}
-	if err != nil || current.Subject != session.Subject || current.SessionID != session.Identity.SessionID || current.SupportActor != session.Identity.SupportActor || !current.ExpiresAt.After(s.config.now()) {
+	if err != nil || current.Subject != session.Subject || current.SessionID != session.Identity.SessionID || current.SupportActor != session.Identity.SupportActor || !current.ExpiresAt.After(s.config.Now()) {
 		return accountSession{}, operatortool.ErrAccessDenied
 	}
 	return session, nil
@@ -209,7 +209,7 @@ func (s *Service) invitedOrganizationFor(ctx context.Context, session accountSes
 	if err != nil && entryAuthStatus(err, http.StatusForbidden) == http.StatusServiceUnavailable {
 		return Organization{}, auth.Invitation{}, err
 	}
-	if err != nil || auth.InvitationProblem(invitation, session.Subject, session.Email, s.config.now()) != "" {
+	if err != nil || auth.InvitationProblem(invitation, session.Subject, session.Email, s.config.Now()) != "" {
 		return Organization{}, auth.Invitation{}, operatortool.ErrAccessDenied
 	}
 	organization, err := s.registry.ByProvider(ctx, invitation.OrganizationID)

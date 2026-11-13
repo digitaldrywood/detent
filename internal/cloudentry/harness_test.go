@@ -1,39 +1,39 @@
 package cloudentry
 
-import "github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
+import "github.com/digitaldrywood/detent/internal/cloudentry/internal/harness"
 
 type (
-	fakeProvider               = entrytest.FakeProvider
-	browser                    = entrytest.Browser
-	page                       = entrytest.Page
-	spacesFixture              = entrytest.Spaces
-	spacesObject               = entrytest.SpacesObject
-	conversationArchiveFixture = entrytest.ConversationArchive
-	tenantFixture              = entrytest.Tenant
-	tenantDetailFixture        = entrytest.TenantDetails
+	fakeProvider               = harness.FakeProvider
+	browser                    = harness.Browser
+	page                       = harness.Page
+	spacesFixture              = harness.Spaces
+	spacesObject               = harness.SpacesObject
+	conversationArchiveFixture = harness.ConversationArchive
+	tenantFixture              = harness.Tenant
+	tenantDetailFixture        = harness.TenantDetails
 )
 
 const (
-	testPublicURL             = entrytest.PublicURL
-	testAdminKey              = entrytest.AdminKey
-	issueContractTestSections = entrytest.IssueContractSections
+	testPublicURL             = harness.PublicURL
+	testAdminKey              = harness.AdminKey
+	issueContractTestSections = harness.IssueContractSections
 )
 
 var (
-	entryPostgresTemplate   = entrytest.Postgres
-	newFakeProvider         = entrytest.NewFakeProvider
-	newBrowser              = entrytest.NewBrowser
-	csrfFrom                = entrytest.CSRF
-	bootstrapCSRF           = entrytest.BootstrapCSRF
-	jsonBody                = entrytest.JSONBody
-	newSpacesFixture        = entrytest.NewSpaces
-	newTenant               = entrytest.NewTenant
-	pilotPlans              = entrytest.PilotPlans
-	capacityPlans           = entrytest.CapacityPlans
-	testSocketEndpoint      = entrytest.SocketEndpoint
-	signedTenantFixtureCall = entrytest.SignedTenantCall
-	pilotPolicy             = entrytest.PilotPolicy
-	entryPostgresDatabase   = entrytest.PostgresDatabase
-	configurePostgresTenant = entrytest.ConfigurePostgresTenant
-	entrySecretEnvironment  = entrytest.SecretEnvironment
+	entryPostgresTemplate   = harness.Postgres
+	newFakeProvider         = harness.NewFakeProvider
+	newBrowser              = harness.NewBrowser
+	csrfFrom                = harness.CSRF
+	bootstrapCSRF           = harness.BootstrapCSRF
+	jsonBody                = harness.JSONBody
+	newSpacesFixture        = harness.NewSpaces
+	newTenant               = harness.NewTenant
+	pilotPlans              = harness.PilotPlans
+	capacityPlans           = harness.CapacityPlans
+	testSocketEndpoint      = harness.SocketEndpoint
+	signedTenantFixtureCall = harness.SignedTenantCall
+	pilotPolicy             = harness.PilotPolicy
+	entryPostgresDatabase   = harness.PostgresDatabase
+	configurePostgresTenant = harness.ConfigurePostgresTenant
+	entrySecretEnvironment  = harness.SecretEnvironment
 )

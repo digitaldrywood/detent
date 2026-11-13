@@ -44,7 +44,7 @@ func TestPlatformMemberSeeding(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			test.config.now = time.Now
+			test.config.Now = time.Now
 			test.config.Logger = slog.New(slog.DiscardHandler)
 			err := registry.seedPlatformMembers(t.Context(), test.config)
 			if (err != nil) != test.fail {
@@ -128,7 +128,7 @@ func testPlatformMembersAPI(t *testing.T, configureStorage func(*Config)) {
 	t.Parallel()
 	f := newEntryFixture(t, configureStorage)
 	for email, role := range map[string]string{"admin@example.test": "admin", "supporter@example.test": "support", "billing@example.test": "billing", "viewer@example.test": "viewer"} {
-		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members VALUES($1,$2, 'fixture',$3,$4)", email, role, formatTime(f.service.config.now()), formatTime(f.service.config.now())); err != nil {
+		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform.platform_members VALUES($1,$2, 'fixture',$3,$4)", email, role, formatTime(f.service.config.Now()), formatTime(f.service.config.Now())); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -39,7 +39,7 @@ func TestOAuthSigningKeyRotation(t *testing.T) {
 			legacy, err := s.sealOAuth("oauth-refresh", struct {
 				Grant     string    `json:"g"`
 				ExpiresAt time.Time `json:"e"`
-			}{grant, s.config.now().Add(oauthRefreshLifetime)})
+			}{grant, s.config.Now().Add(oauthRefreshLifetime)})
 			if err != nil {
 				t.Fatal(err)
 			}

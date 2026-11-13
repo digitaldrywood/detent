@@ -233,7 +233,7 @@ func TestGitHubRepositoryConnection(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			token := &oauth2.Token{AccessToken: "user-token"}
 			if test.expired {
-				token.Expiry = s.config.now().Add(-time.Hour)
+				token.Expiry = s.config.Now().Add(-time.Hour)
 			}
 			if err := s.saveGitHubConnection(t.Context(), "user_alice", token); err != nil {
 				t.Fatal(err)

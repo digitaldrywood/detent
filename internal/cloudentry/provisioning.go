@@ -180,7 +180,7 @@ func (s *Service) provisionDue(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	now := s.config.now()
+	now := s.config.Now()
 	for _, organization := range due {
 		if organization.NextAttemptAt != "" {
 			if next, err := parseTime(organization.NextAttemptAt); err == nil && next.After(now) {
@@ -228,7 +228,7 @@ func (s *Service) provision(ctx context.Context, organization Organization) {
 			organization.State = "ready"
 		}
 		if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = $1, provider_id = $2, step = $3, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = $4 WHERE id = $5",
-			organization.State, organization.ProviderID, step, formatTime(s.config.now()), organization.ID); err != nil {
+			organization.State, organization.ProviderID, step, formatTime(s.config.Now()), organization.ID); err != nil {
 			return
 		}
 	}
@@ -237,7 +237,7 @@ func (s *Service) provision(ctx context.Context, organization Organization) {
 func (s *Service) recordFailure(ctx context.Context, organization Organization, step string, cause error) {
 	var terminal terminalError
 	attempts := organization.Attempts + 1
-	state, code, next := organization.State, "", formatTime(s.config.now().Add(min(time.Duration(1<<min(attempts, 6))*5*time.Second, 5*time.Minute)))
+	state, code, next := organization.State, "", formatTime(s.config.Now().Add(min(time.Duration(1<<min(attempts, 6))*5*time.Second, 5*time.Minute)))
 	switch {
 	case errors.Is(cause, errCapacity):
 		state, code, next = "failed", "capacity", ""
@@ -252,7 +252,7 @@ func (s *Service) recordFailure(ctx context.Context, organization Organization, 
 	detail := failureDetail(cause)
 	s.config.Logger.Warn("organization provisioning step failed", "organization", organization.ID, "step", step, "attempt", attempts, "retry_limit", s.config.Allocation.RetryLimit, "state", state, "detail", detail)
 	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = $1, attempts = $2, next_attempt_at = NULLIF($3, '')::timestamptz, error_code = $4, error_detail = $5, updated_at = $6 WHERE id = $7",
-		state, attempts, next, code, detail, formatTime(s.config.now()), organization.ID); err != nil {
+		state, attempts, next, code, detail, formatTime(s.config.Now()), organization.ID); err != nil {
 		s.config.Logger.Warn("organization provisioning state could not be recorded", "organization", organization.ID)
 	}
 }
@@ -521,7 +521,7 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 		return "", err
 	}
 	id := "org_" + random[:20]
-	now := formatTime(s.config.now())
+	now := formatTime(s.config.Now())
 	if _, err := tx.ExecContext(ctx, "INSERT INTO platform.organizations(id,provider_id,name,state,endpoint,generation,managed,creator_subject,creator_email,checkout_price,created_at,updated_at) VALUES ($1,'',$2,'requested',$3,1,true,$4,$5,$6,$7,$8)",
 		id, name, "unix:"+filepath.Join(s.config.Allocation.SocketRoot, id+".sock"), session.Subject, strings.ToLower(session.Email), price, now, now); err != nil {
 		return "", err
@@ -606,7 +606,7 @@ func (s *Service) resumeOrganization(ctx context.Context, organization Organizat
 	if organization.Step == "" {
 		state = "requested"
 	}
-	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = $1, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = $2 WHERE id = $3 AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = $1, attempts = 0, next_attempt_at = NULL, error_code = '', error_detail = '', updated_at = $2 WHERE id = $3 AND state = 'failed'", state, formatTime(s.config.Now()), organization.ID); err != nil {
 		return Organization{}, err
 	}
 	s.wakeAllocator()
@@ -777,7 +777,7 @@ func (s *Service) finishDeletion(ctx context.Context, id string) error {
 	if err := s.config.Allocation.Launcher.Stop(id); err != nil {
 		return err
 	}
-	_, err = s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = 'deleted', updated_at = $1 WHERE id = $2 AND state = 'deleting'", formatTime(s.config.now()), id)
+	_, err = s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state = 'deleted', updated_at = $1 WHERE id = $2 AND state = 'deleting'", formatTime(s.config.Now()), id)
 	return err
 }
 

@@ -56,7 +56,7 @@ func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
 	next := f.service.config
 	next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans}
 	f.service.config.Reload = func() (Config, error) { return next, nil }
-	f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+	f.service.config.Transport = func(Organization) (http.RoundTripper, error) {
 		return nil, errors.New("shared publication must not use tenant HTTP")
 	}
 	if err := f.service.AdoptPublishedRuntime(t.Context(), hubmaintenance.Tenant{Organization: "org_alpha", Generation: 1}); !errors.Is(err, corestore.ErrNotFound) {
@@ -319,11 +319,11 @@ func TestRuntimePublicationRefreshesAllowanceConsumers(t *testing.T) {
 			if got := readers["org_beta"](); got != 240 {
 				t.Errorf("joining tenant allowance window=%d, want 240", got)
 			}
-			originalTransport := f.service.config.transport
+			originalTransport := f.service.config.Transport
 			refreshes := make(map[string]int)
 			var logs bytes.Buffer
 			f.service.config.Logger = slog.New(slog.NewTextHandler(&logs, nil))
-			f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+			f.service.config.Transport = func(org Organization) (http.RoundTripper, error) {
 				transport, err := originalTransport(org)
 				if err != nil {
 					return nil, err
@@ -361,7 +361,7 @@ func TestRuntimePublicationRefreshesAllowanceConsumers(t *testing.T) {
 			if !strings.Contains(logs.String(), "published runtime tenant refresh failed") {
 				t.Error("refresh failure was not logged")
 			}
-			f.service.config.transport = originalTransport
+			f.service.config.Transport = originalTransport
 			plans.WindowSeconds = 600
 			if err := f.service.reloadConfiguration(t.Context()); err != nil {
 				t.Fatal(err)

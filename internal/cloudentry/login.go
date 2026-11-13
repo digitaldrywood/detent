@@ -76,7 +76,7 @@ func (s *Service) beginLogin(c echo.Context, transaction loginTransaction, provi
 		return err
 	}
 	s.expireLegacyLoginCookies(c)
-	s.setCookie(c, "login", token, s.config.now().Add(10*time.Minute))
+	s.setCookie(c, "login", token, s.config.Now().Add(10*time.Minute))
 	if transaction.InvitationToken != "" {
 		invitation, err := s.config.Provider.Invitation(c.Request().Context(), transaction.InvitationToken)
 		if err != nil {
@@ -162,7 +162,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 			callback.Err = err
 			message := auth.InvitationUnavailable
 			if err == nil {
-				if problem := auth.InvitationProblem(invitation, "", "", s.config.now()); problem != "" {
+				if problem := auth.InvitationProblem(invitation, "", "", s.config.Now()); problem != "" {
 					message = problem
 				}
 			}
@@ -182,7 +182,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 		callback.Reason = auth.HostedReasonSubjectMismatch
 	case identity.Hosted.SupportActor != "":
 		callback.Reason = "support_actor_unexpected"
-	case !identity.Hosted.ExpiresAt.After(s.config.now()):
+	case !identity.Hosted.ExpiresAt.After(s.config.Now()):
 		callback.Reason = auth.HostedReasonSessionExpired
 	}
 	if err != nil || callback.Reason != "" {
@@ -234,7 +234,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 		invitation, invitationErr := s.config.Provider.Invitation(ctx, transaction.InvitationToken)
 		message := auth.InvitationUnavailable
 		if invitationErr == nil {
-			message = auth.InvitationProblem(invitation, identity.Subject, identity.Email, s.config.now())
+			message = auth.InvitationProblem(invitation, identity.Subject, identity.Email, s.config.Now())
 		}
 		if invitationErr != nil || message != "" {
 			callback.Reason, callback.Err = "invitation_invalid", invitationErr
@@ -336,16 +336,16 @@ func (s *Service) establishSession(c echo.Context, identity auth.Identity) (acco
 	if err := s.auth.createSession(ctx, hash, csrfSecret, stored); err != nil {
 		return accountSession{}, err
 	}
-	if _, err := s.auth.store.db.ExecContext(ctx, "UPDATE platform.sessions SET expires_at = $1 WHERE token_hash = $2", formatTime(s.config.now().Add(sessionLifetime)), hash); err != nil {
+	if _, err := s.auth.store.db.ExecContext(ctx, "UPDATE platform.sessions SET expires_at = $1 WHERE token_hash = $2", formatTime(s.config.Now().Add(sessionLifetime)), hash); err != nil {
 		return accountSession{}, err
 	}
 	if err := s.recordSignIn(ctx, identity); err != nil {
 		return accountSession{}, err
 	}
-	s.setCookie(c, "session", token, s.config.now().Add(sessionLifetime))
+	s.setCookie(c, "session", token, s.config.Now().Add(sessionLifetime))
 	session := accountSession{Hash: hash, CSRFSecret: csrfSecret, Subject: identity.Subject, Email: identity.Email, Identity: hosted}
 	for _, previous := range carried {
-		if !previous.Support && previous.Identity.ExpiresAt.After(s.config.now()) {
+		if !previous.Support && previous.Identity.ExpiresAt.After(s.config.Now()) {
 			tokens, err := s.auth.tokens(previous)
 			if err != nil {
 				continue
@@ -538,7 +538,7 @@ func (s *Service) startInvitation(c echo.Context) error {
 		denial.Err = err
 		return s.invitationDenied(c, auth.InvitationUnavailable, denial)
 	}
-	if problem := auth.InvitationProblem(invitation, "", "", s.config.now()); problem != "" {
+	if problem := auth.InvitationProblem(invitation, "", "", s.config.Now()); problem != "" {
 		return s.invitationDenied(c, problem, denial)
 	}
 	organization, err := s.registry.ByProvider(ctx, invitation.OrganizationID)

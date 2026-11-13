@@ -61,7 +61,7 @@ func (s *Service) ownerOrganizationFor(ctx context.Context, session accountSessi
 		}
 		return Organization{}, err
 	}
-	if current.Subject != session.Subject || current.OrganizationID != organization.ProviderID || !current.ExpiresAt.After(s.config.now()) {
+	if current.Subject != session.Subject || current.OrganizationID != organization.ProviderID || !current.ExpiresAt.After(s.config.Now()) {
 		return Organization{}, errNoSession
 	}
 	memberships, err := s.config.Provider.Memberships(ctx, session.Subject, organization.ProviderID)
@@ -84,10 +84,10 @@ func (s *Service) deleteOrganizationFor(ctx context.Context, session accountSess
 	if err != nil {
 		return err
 	}
-	if billingBlocksDeletion(state, s.config.now()) {
+	if billingBlocksDeletion(state, s.config.Now()) {
 		return errNoSession
 	}
-	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state='deleting',updated_at=$1 WHERE id=$2 AND state='ready'", formatTime(s.config.now()), organization.ID); err != nil {
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state='deleting',updated_at=$1 WHERE id=$2 AND state='ready'", formatTime(s.config.Now()), organization.ID); err != nil {
 		return err
 	}
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
@@ -108,7 +108,7 @@ func (s *Service) joinOrganizationFor(ctx context.Context, session accountSessio
 		}
 		return Organization{}, err
 	}
-	if !strings.EqualFold(invitation.Email, session.Email) || !invitation.ExpiresAt.After(s.config.now()) || session.Identity.SupportActor != "" {
+	if !strings.EqualFold(invitation.Email, session.Email) || !invitation.ExpiresAt.After(s.config.Now()) || session.Identity.SupportActor != "" {
 		return Organization{}, operatortool.ErrAccessDenied
 	}
 	organization, err := s.registry.ByProvider(ctx, invitation.OrganizationID)

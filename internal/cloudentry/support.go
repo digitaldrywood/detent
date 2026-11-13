@@ -106,7 +106,7 @@ func (s *Service) startSupport(c echo.Context) error {
 	if err := s.postgresSupportRequest(c.Request().Context(), session, organization.ID, reason, requested); err != nil {
 		return s.loginDenied(c, http.StatusServiceUnavailable, "Support access is temporarily unavailable", denial)
 	}
-	s.setCookie(c, supportCookie, token, s.config.now().Add(10*time.Minute))
+	s.setCookie(c, supportCookie, token, s.config.Now().Add(10*time.Minute))
 	return s.render(c, http.StatusOK, templates.HostedPageData{Mode: "support", Title: "Start temporary support access", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""),
 		Notice: "Open " + organization.Name + " in the WorkOS dashboard and impersonate the customer using reason " + reason + ". Return in this browser within ten minutes."})
 }

@@ -106,8 +106,8 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 								t.Fatal(err)
 							}
 						}
-						provider, transport := s.config.Provider, s.config.transport
-						t.Cleanup(func() { s.config.Provider, s.config.transport = provider, transport })
+						provider, transport := s.config.Provider, s.config.Transport
+						t.Cleanup(func() { s.config.Provider, s.config.Transport = provider, transport })
 						outage := fault == "provider" || fault == "registry" || strings.HasPrefix(fault, "exchange ") || fault == "authority query" || fault == "refusal audit" || fault == "client registration" || fault == "registration scan" || fault == "consent query" || fault == "session" || fault == "session provider" || fault == "owner context"
 						membershipCalls := 0
 						s.config.Provider = oauthMembershipProvider{HostedProvider: provider, memberships: func(ctx context.Context, user, organization string) ([]auth.Membership, error) {
@@ -152,7 +152,7 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 							s.verified.mu.Unlock()
 							s.config.Provider = oauthSessionProvider{HostedProvider: provider}
 						case "owner context":
-							s.config.transport = func(Organization) (http.RoundTripper, error) {
+							s.config.Transport = func(Organization) (http.RoundTripper, error) {
 								return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })}, nil
 							}
 						case "unknown client":
@@ -174,7 +174,7 @@ func TestOAuthEndpointAuthorityFailures(t *testing.T) {
 							exec("INSERT INTO platform.organization_key_policy(organization_id,personal_keys) VALUES($1,'approval') ON CONFLICT(organization_id) DO UPDATE SET personal_keys='approval'", orgID)
 							t.Cleanup(func() { exec("DELETE FROM platform.organization_key_policy WHERE organization_id=$1", orgID) })
 							if fault == "refusal audit" {
-								s.config.transport = func(org Organization) (http.RoundTripper, error) {
+								s.config.Transport = func(org Organization) (http.RoundTripper, error) {
 									return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 										if r.URL.Path == "/internal/v1/keys/audit" {
 											w.WriteHeader(http.StatusServiceUnavailable)
@@ -312,8 +312,8 @@ func TestOAuthAnonymousRequestThrottling(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newEntryFixture(t)
-			now := f.service.config.now()
-			f.service.config.now = func() time.Time { return now }
+			now := f.service.config.Now()
+			f.service.config.Now = func() time.Time { return now }
 			client := registerTestOAuth(t, newBrowser(t, f.service.Handler()), "Example assistant", "none")
 			request := func(method, peer, forwarded string) *httptest.ResponseRecorder {
 				t.Helper()
@@ -540,7 +540,7 @@ func testOAuthCodeExchangeAndRotation(t *testing.T, configureStorage func(*Confi
 		}
 		refresh := url.Values{"client_id": {c.ID}, "client_secret": {c.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
 		restoreToken := f.service.config.generateToken
-		if _, err := f.service.auth.store.db.ExecContext(t.Context(), `INSERT INTO platform.oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at,access_hash) VALUES('example_collision',$1,'user_alice','alice@example.test','org_beta','read',$2,$3,$4)`, c.ID, testPublicURL+"/mcp", f.service.config.now(), apikey.HashToken(oauthAccessPrefix+"example_collision")); err != nil {
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), `INSERT INTO platform.oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at,access_hash) VALUES('example_collision',$1,'user_alice','alice@example.test','org_beta','read',$2,$3,$4)`, c.ID, testPublicURL+"/mcp", f.service.config.Now(), apikey.HashToken(oauthAccessPrefix+"example_collision")); err != nil {
 			t.Fatal(err)
 		}
 		f.service.config.generateToken = func() (string, error) { return "example_collision", nil }
@@ -651,9 +651,9 @@ func TestOAuthConsentBinding(t *testing.T) {
 					browser.Jar.SetCookies(base, []*http.Cookie{cookie})
 				}
 			case "expired request":
-				now := f.service.config.now
-				f.service.config.now = func() time.Time { return now().Add(11 * time.Minute) }
-				defer func() { f.service.config.now = now }()
+				now := f.service.config.Now
+				f.service.config.Now = func() time.Time { return now().Add(11 * time.Minute) }
+				defer func() { f.service.config.Now = now }()
 			case "wrong request":
 				path += "x"
 			}
@@ -973,11 +973,11 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 			case "refresh expired":
 				exec("UPDATE platform.oauth_refresh_tokens SET expires_at='2000-01-01T00:00:00Z' WHERE grant_id=$1", key.ID)
 			case "expired consumed refresh":
-				now := f.service.config.now()
-				f.service.config.now = func() time.Time { return now.Add(29 * 24 * time.Hour) }
+				now := f.service.config.Now()
+				f.service.config.Now = func() time.Time { return now.Add(29 * 24 * time.Hour) }
 				refresh := url.Values{"client_id": {client.ID}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
 				rotated := exchangeTestOAuth(t, b, refresh)
-				f.service.config.now = func() time.Time { return now.Add(30 * 24 * time.Hour) }
+				f.service.config.Now = func() time.Time { return now.Add(30 * 24 * time.Hour) }
 				if response := b.Do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode != http.StatusBadRequest {
 					t.Fatalf("expired consumed refresh=%+v", response)
 				}

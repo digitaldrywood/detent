@@ -58,7 +58,7 @@ func TestEntryPostgresHealthPreservesReadinessAndReadScope(t *testing.T) {
 				})
 			}
 			var visited sync.Map
-			f.service.config.transport = func(o Organization) (http.RoundTripper, error) {
+			f.service.config.Transport = func(o Organization) (http.RoundTripper, error) {
 				visited.Store(o.ID, true)
 				transport := handlerTransport{f.tenants[o.Endpoint]}
 				if o.ID == "org_beta" {

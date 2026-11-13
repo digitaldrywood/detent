@@ -13,8 +13,8 @@ import (
 const entryClientShell = "app/conversation/index.html"
 
 func (s *Service) clientFiles() fs.FS {
-	if s.config.clientFS != nil {
-		return s.config.clientFS
+	if s.config.ClientFS != nil {
+		return s.config.ClientFS
 	}
 	return detent.StaticFS()
 }

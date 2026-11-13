@@ -58,7 +58,7 @@ func TestKeyAuthorityOutagesRemainRetryable(t *testing.T) {
 	if err := f.service.auth.postgresCreateKey(t.Context(), key); err != nil {
 		t.Fatal(err)
 	}
-	f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+	f.service.config.Transport = func(Organization) (http.RoundTripper, error) {
 		return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })}, nil
 	}
 	_, err = f.service.keyTenantCall(t.Context(), key, org, "/internal/v1/keys/catalog", struct{}{})
@@ -68,8 +68,8 @@ func TestKeyAuthorityOutagesRemainRetryable(t *testing.T) {
 	}
 	for _, organization := range []string{"org_alpha", "org_beta"} {
 		t.Run(organization+"/tenant readiness", func(t *testing.T) {
-			transport := f.service.config.transport
-			t.Cleanup(func() { f.service.config.transport = transport })
+			transport := f.service.config.Transport
+			t.Cleanup(func() { f.service.config.Transport = transport })
 			org, err := f.service.readyOrganization(t.Context(), organization)
 			if err != nil {
 				t.Fatal(err)
@@ -88,7 +88,7 @@ func TestKeyAuthorityOutagesRemainRetryable(t *testing.T) {
 			call := entryMCPClient(t, newBrowser(t, f.service.Handler()), token, mcp.ProtocolVersion, "/mcp")
 			for _, code := range []string{"pending", "not_ready", "unknown", "", "malformed"} {
 				t.Run(code, func(t *testing.T) {
-					f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+					f.service.config.Transport = func(Organization) (http.RoundTripper, error) {
 						return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 							w.WriteHeader(http.StatusServiceUnavailable)
 							if code == "malformed" {
@@ -132,11 +132,11 @@ func TestKeyAuthorityOutagesRemainRetryable(t *testing.T) {
 		})
 	}
 	t.Run("attachment authority outage", func(t *testing.T) {
-		transport := f.service.config.transport
-		f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+		transport := f.service.config.Transport
+		f.service.config.Transport = func(Organization) (http.RoundTripper, error) {
 			return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })}, nil
 		}
-		t.Cleanup(func() { f.service.config.transport = transport })
+		t.Cleanup(func() { f.service.config.Transport = transport })
 		personal := key
 		personal.ID, personal.Hash, personal.Kind, personal.Owner, personal.ServiceOrganization = "key_personal", apikey.HashToken("personal_token"), "personal", "user_alice", ""
 		if err := f.service.auth.postgresCreateKey(t.Context(), personal); err != nil {
@@ -159,7 +159,7 @@ func TestKeyAuthorityOutagesRemainRetryable(t *testing.T) {
 	})
 	for _, status := range []int{0, http.StatusForbidden, http.StatusBadGateway, http.StatusServiceUnavailable} {
 		t.Run(fmt.Sprintf("attachment/%d", status), func(t *testing.T) {
-			f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+			f.service.config.Transport = func(Organization) (http.RoundTripper, error) {
 				return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					body := `{"entry_attachment":"read_attachment_metadata"}`
 					if status == 0 {
@@ -185,7 +185,7 @@ func TestKeyAuthorityOutagesRemainRetryable(t *testing.T) {
 	for _, organization := range []string{"org_alpha", "org_beta"} {
 		for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
 			t.Run(fmt.Sprintf("%s/admin/%d", organization, status), func(t *testing.T) {
-				f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+				f.service.config.Transport = func(Organization) (http.RoundTripper, error) {
 					return handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) })}, nil
 				}
 				response := httptest.NewRecorder()
@@ -284,7 +284,7 @@ func TestTenantKeyAuthorityDenialsAreAudited(t *testing.T) {
 
 func TestTenantKeyAuthorityStoreFailure(t *testing.T) {
 	registry := openTestRegistry(t)
-	s := &Service{registry: registry, auth: &authStore{store: registry.store}, config: Config{Issuer: "entry", now: time.Now}}
+	s := &Service{registry: registry, auth: &authStore{store: registry.store}, config: Config{Issuer: "entry", Now: time.Now}}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, err := s.resolveTenantKey(ctx, Organization{ID: "org_example", Generation: 1}, entryauthority.Origin{Issuer: "entry", Generation: 1, KeyID: "key_example", Subject: "owner", CredentialBinding: strings.Repeat("a", 64)})
@@ -296,7 +296,7 @@ func TestTenantKeyAuthorityStoreFailure(t *testing.T) {
 func TestTenantKeyAuthorityConcurrentClaims(t *testing.T) {
 	registry := openTestRegistry(t)
 	provider := newFakeProvider()
-	s := &Service{registry: registry, auth: &authStore{store: registry.store}, config: Config{Issuer: "entry", Provider: provider, now: time.Now}}
+	s := &Service{registry: registry, auth: &authStore{store: registry.store}, config: Config{Issuer: "entry", Provider: provider, Now: time.Now}}
 	var allocations []Organization
 	var origins []entryauthority.Origin
 	for _, suffix := range []string{"first", "second"} {

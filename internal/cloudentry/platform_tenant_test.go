@@ -84,12 +84,12 @@ func TestPlatformTenantDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	f.service.config.now = func() time.Time { return now }
-	f.service.auth.now = f.service.config.now
-	f.service.registry.now = f.service.config.now
+	f.service.config.Now = func() time.Time { return now }
+	f.service.auth.now = f.service.config.Now
+	f.service.registry.now = f.service.config.Now
 	synctest.Test(t, func(t *testing.T) {
 		admin := &browser{T: t, Entry: admin.Entry, Jar: admin.Jar, Origin: admin.Origin}
-		f.service.config.transport = func(Organization) (http.RoundTripper, error) { return platformTimeoutTransport{}, nil }
+		f.service.config.Transport = func(Organization) (http.RoundTripper, error) { return platformTimeoutTransport{}, nil }
 		response, body = admin.Get("/api/cloud/platform/organizations/org_alpha")
 		decodeJSON(t, body, &detail)
 		if response.StatusCode != http.StatusOK || detail.Members != nil || detail.Runners != nil || detail.Projects != nil || detail.Entitlements != nil || detail.CreditBalanceMicros != nil || detail.Organization.Billing.Available || len(detail.Unavailable) != 7 {

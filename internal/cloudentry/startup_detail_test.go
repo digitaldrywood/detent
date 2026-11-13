@@ -17,8 +17,8 @@ func TestTenantDetailStoreWritesBeforeTenantHTTPStarts(t *testing.T) {
 	f := newEntryFixture(t, entryPostgresConfig(t), func(config *Config) {
 		attachments := store.Config()
 		config.Attachments = &attachments
-		config.attachmentTransport = store.Transport
-		config.transport = func(Organization) (http.RoundTripper, error) {
+		config.AttachmentTransport = store.Transport
+		config.Transport = func(Organization) (http.RoundTripper, error) {
 			return runtimeTransport(func(request *http.Request) (*http.Response, error) {
 				if request.URL.Path == "/internal/v1/attachments/exists" {
 					tenantCalls.Add(1)
