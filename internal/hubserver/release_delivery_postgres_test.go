@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -500,6 +501,10 @@ func writeReleaseAdmissionIssue(t *testing.T, f *releaseTenantFixture, issue tra
 	if err != nil {
 		t.Fatal(err)
 	}
+	search, err := searchstore.NewContent(f.f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: "org_security", ProjectID: f.f.project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := f.repository.WriteTenant(t.Context(), "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 		row.BodyObjectKey = &fields.Body
 		row.IssueContractObjectKey = fields.Contract
@@ -512,6 +517,9 @@ func writeReleaseAdmissionIssue(t *testing.T, f *releaseTenantFixture, issue tra
 		}
 		if updated.Revision != int64(issue.Revision) {
 			return corestore.ErrRevisionConflict
+		}
+		if err := w.PutSearch(t.Context(), search, row.Revision); err != nil {
+			return err
 		}
 		_, err = w.CreateCollaborationVersion(t.Context(), version)
 		return err
