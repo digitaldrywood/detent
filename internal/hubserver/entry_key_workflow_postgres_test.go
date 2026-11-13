@@ -370,7 +370,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			return &boardWireConn{Conn: conn, wire: wire, startup: true}, nil
+			return boardWireConnection(conn, wire), nil
 		}
 		pool, err := pgxpool.NewWithConfig(t.Context(), poolConfig)
 		if err != nil {
