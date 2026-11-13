@@ -1121,8 +1121,8 @@ func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if value.Status != "cancelled" || value.Current || value.Sequence != sequence || value.AttemptID != start.Data.AttemptID {
-						t.Fatalf("cancelled attempt = %+v", value)
+					if value.Status != "interrupted" || value.Current || value.Sequence != sequence || value.AttemptID != start.Data.AttemptID {
+						t.Fatalf("attempt after its lease was released = %+v, want interrupted and unchanged", value)
 					}
 				})
 			}
