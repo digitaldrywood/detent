@@ -366,7 +366,7 @@ func TestNativeRetention(t *testing.T) {
 			t.Fatalf("retained %d hours, want 720", count)
 		}
 		stale := testHostSummary(now.Add(-720 * time.Hour))
-		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "host_metrics": []hostmetrics.Summary{stale}})
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": r.redemption.DisplayName, "capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "host_metrics": []hostmetrics.Summary{stale}})
 		requireNativeStatus(t, response, http.StatusOK)
 		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(DISTINCT hour) FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2", f.project.OrganizationID, r.binding.RunnerID).Scan(&count); err != nil {
 			t.Fatal(err)
