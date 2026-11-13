@@ -448,12 +448,12 @@ func TestNativeRunDetailUploadFailures(t *testing.T) {
 		sequence int64
 		status   int
 	}{
-		{"upload unavailable", 1, http.StatusInternalServerError},
-		{"upload unavailable", 2, http.StatusInternalServerError},
-		{"upload unavailable", 3, http.StatusInternalServerError},
-		{"verification unavailable", 1, http.StatusInternalServerError},
-		{"verification unavailable", 2, http.StatusInternalServerError},
-		{"verification unavailable", 3, http.StatusInternalServerError},
+		{"upload unavailable", 1, http.StatusServiceUnavailable},
+		{"upload unavailable", 2, http.StatusServiceUnavailable},
+		{"upload unavailable", 3, http.StatusServiceUnavailable},
+		{"verification unavailable", 1, http.StatusServiceUnavailable},
+		{"verification unavailable", 2, http.StatusServiceUnavailable},
+		{"verification unavailable", 3, http.StatusServiceUnavailable},
 		{"verification mismatch", 1, http.StatusInternalServerError},
 		{"verification mismatch", 2, http.StatusInternalServerError},
 		{"verification mismatch", 3, http.StatusInternalServerError},
