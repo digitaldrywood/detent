@@ -159,14 +159,14 @@ func (s *Server) commandUploadAttachmentPG(ctx context.Context, scope hubauth.In
 			return err
 		}
 		stage.ArchiveID = object.ID
-		usage, err := w.ChargeArchiveObject(ctx, object.ID, limit)
+		usage, err := w.AdjustCollaborationBytes(ctx, 0, limit)
 		if errors.Is(err, corestore.ErrNotFound) {
-			return &hubapi.Error{Code: "storage_owner_unavailable", Message: "Attachment accounting is unavailable with PostgreSQL storage", Status: http.StatusServiceUnavailable, Public: true}
+			return attachmentAccountingUnavailable()
 		}
 		if err != nil {
 			return err
 		}
-		if !usage.Allowed {
+		if usage.Used > limit-int64(len(upload.Content)) {
 			return s.deps.LimitError("collaboration_bytes", limit, usage.Used)
 		}
 		return w.AddArchiveOwner(ctx, stage)
@@ -210,8 +210,22 @@ func (s *Server) commandUploadAttachmentPG(ctx context.Context, scope hubauth.In
 		if current.Revision != revision {
 			return &ErrConversationRevision{ConversationID: id, Current: current.Revision}
 		}
+		limit, err := s.attachmentQuotaLimit(ctx, w)
+		if err != nil {
+			return err
+		}
 		if err := w.LockArchiveAccounting(ctx); err != nil {
 			return err
+		}
+		usage, err := w.AdjustCollaborationBytes(ctx, a.Size, limit)
+		if errors.Is(err, corestore.ErrNotFound) {
+			return attachmentAccountingUnavailable()
+		}
+		if err != nil {
+			return err
+		}
+		if !usage.Allowed {
+			return s.deps.LimitError("collaboration_bytes", limit, usage.Used)
 		}
 		if err := owner.CreateConversationAttachment(ctx, a, conversationstore.ContentObject{OrganizationID: scope.Organization, ID: a.ContentID, Reference: archive, CreatedAt: now}); err != nil {
 			return err
@@ -225,6 +239,10 @@ func (s *Server) commandUploadAttachmentPG(ctx context.Context, scope hubauth.In
 		return s.conversationAttachmentReplayPG(ctx, scope, existing, name, media, upload.Content)
 	}
 	return json.Marshal(conversation.AttachmentUpload{Attachment: ConversationAttachmentFromStore(a).resource(), ExpiresAt: a.ExpiresAt})
+}
+
+func attachmentAccountingUnavailable() error {
+	return &hubapi.Error{Code: "storage_owner_unavailable", Message: "Attachment accounting is unavailable with PostgreSQL storage", Status: http.StatusServiceUnavailable, Public: true}
 }
 
 func (s *Server) ReadAttachmentPG(ctx context.Context, scope hubauth.Input, conversationID, id string) (ConversationAttachmentRecord, []byte, error) {

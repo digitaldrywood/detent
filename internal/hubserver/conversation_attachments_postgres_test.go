@@ -39,6 +39,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 	service.conversations.Config.ControlQueueSize = 100
 	service.conversations.Broker = newNotificationBroker().Broker
 	service.conversations.Coordinator = newConversationCoordinator(service, service.conversations)
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(func() time.Time { return service.config.Clock() }))
 	service.ready.Store(true)
 	service.registerConversationAPIRoutes(service.echo)
 	type fixture struct {
@@ -720,6 +721,11 @@ func (r *attachmentReadCounter) WriteTenant(ctx context.Context, org tracker.Org
 func (r *attachmentReadCounter) ReadTenant(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
 	r.reads++
 	return r.Repository.ReadTenant(ctx, org, workload, read)
+}
+
+func (r *attachmentReadCounter) ReadTenantSnapshot(ctx context.Context, org tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	r.reads++
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, org, workload, read)
 }
 
 func TestConversationAttachmentPostgresSweep(t *testing.T) {
