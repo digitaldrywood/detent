@@ -194,7 +194,16 @@ func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
 			}
 			call(http.MethodDelete, suffix, "", http.StatusNoContent)
 			assertCommandOwner(0, "")
-			call(http.MethodDelete, suffix, "", http.StatusNoContent)
+			var repeated struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal(call(http.MethodDelete, suffix, "", http.StatusNotFound), &repeated); err != nil {
+				t.Fatal(err)
+			}
+			if repeated.Code != "not_found" {
+				t.Fatalf("repeat delete code=%q want not_found", repeated.Code)
+			}
+			assertCommandOwner(0, "")
 			if err := json.Unmarshal(call(http.MethodGet, "", "", http.StatusOK), &listed); err != nil {
 				t.Fatal(err)
 			}
