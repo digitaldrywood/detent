@@ -28,7 +28,7 @@ func TestChangeClientIdentityValidation(t *testing.T) {
 		{"wi_item", "change_good", "version_"},
 	} {
 		t.Run(test.item+test.change+test.version, func(t *testing.T) {
-			if _, err := changePath(tracker.NativeWorkItemID(test.item), test.change, test.version); err == nil {
+			if _, err := ChangePath(tracker.NativeWorkItemID(test.item), test.change, test.version); err == nil {
 				t.Fatal("unsafe identity accepted")
 			}
 		})

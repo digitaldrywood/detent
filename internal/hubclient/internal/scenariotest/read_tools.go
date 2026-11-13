@@ -43,7 +43,7 @@ func RunNativeCommentReadFallback(t *testing.T, factories Constructors) {
 		if index > 0 {
 			body = strings.Repeat("\x00", (64<<10)-1) + strconv.Itoa(index)
 		}
-		comment, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: body})
+		comment, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: api.NativeMutationKey(), Body: body})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,7 +182,7 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Runner admission context", Body: "private-admission-body" + issueContractTestSections, State: "Todo", Labels: []string{"selected-label"}})
+	selected := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Runner admission context", Body: "private-admission-body" + issueContractTestSections, State: "Todo", Labels: []string{"selected-label"}})
 	largeSelectors := make([]string, 33)
 	for i := range largeSelectors {
 		largeSelectors[i] = "label-" + strconv.Itoa(i)
@@ -222,7 +222,7 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 			}
 		})
 	}
-	if _, err := h.admin.SetArchived(t.Context(), selected.WorkItemID, selected.Revision, true, nativeMutationKey()); err != nil {
+	if _, err := h.admin.SetArchived(t.Context(), selected.WorkItemID, selected.Revision, true, api.NativeMutationKey()); err != nil {
 		t.Fatal(err)
 	}
 	h.claim(t, issue.ID)
@@ -231,22 +231,22 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 		t.Fatal(err)
 	}
 	item := tracker.NativeWorkItemID(issue.ID)
-	if _, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Genuine native discussion"}); err != nil {
+	if _, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: api.NativeMutationKey(), Body: "Genuine native discussion"}); err != nil {
 		t.Fatal(err)
 	}
-	change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Existing implementation"})
+	change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Existing implementation"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	version := h.publish(t, item, change.ID, nativeChangeFixtureHead("b"))
-	if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: version.ID, Body: "Current version finding"}); err != nil {
+	if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: api.NativeMutationKey(), VersionID: version.ID, Body: "Current version finding"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, label := range []string{"c", "d", "e", "f", "g", "h"} {
 		version = h.publish(t, item, change.ID, nativeChangeFixtureHead(label), version.ID)
 	}
 	for range 9 {
-		if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: version.ID, Body: strings.Repeat("é<\n", 5000)}); err != nil {
+		if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: api.NativeMutationKey(), VersionID: version.ID, Body: strings.Repeat("é<\n", 5000)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -267,11 +267,11 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 	if err != nil {
 		t.Fatal(err)
 	}
-	foreignIssue, err := foreign.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Foreign private instruction", Body: "Never reveal this foreign instruction", State: "Backlog"})
+	foreignIssue, err := foreign.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Foreign private instruction", Body: "Never reveal this foreign instruction", State: "Backlog"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := foreign.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Another foreign item", State: "Backlog"}); err != nil {
+	if _, err := foreign.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Another foreign item", State: "Backlog"}); err != nil {
 		t.Fatal(err)
 	}
 	foreignPage, err := foreign.Issues(t.Context(), operatortool.WorkReadRequest{Limit: 1}.NativeWorkQuery())
@@ -281,7 +281,7 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 	discovered := make(map[tracker.NativeWorkItemID]string)
 	for i, fingerprint := range []string{"native-search-existing-one", "native-search-existing-two"} {
 		body := issueorigin.Stamp("Authoritative existing problem"+issueContractTestSections, issueorigin.Origin{Kind: "worker", Source: "existing-owner", Fingerprint: fingerprint})
-		item := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Search fixture " + strconv.Itoa(i), Body: body, State: "Todo", Priority: new(0), Labels: []string{"search-fixture"}, Assignees: []string{"operator"}})
+		item := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Search fixture " + strconv.Itoa(i), Body: body, State: "Todo", Priority: new(0), Labels: []string{"search-fixture"}, Assignees: []string{"operator"}})
 		discovered[item.WorkItemID] = fingerprint
 	}
 	execution := h.scheduler.RunExecution(issue.ID)
@@ -368,7 +368,7 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 	}
 	t.Run("bounded native Change traversal", func(t *testing.T) {
 		for range 16 {
-			if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: fullChange.Versions[0].ID, Body: strings.Repeat("historical feedback\n", 3000)}); err != nil {
+			if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: api.NativeMutationKey(), VersionID: fullChange.Versions[0].ID, Body: strings.Repeat("historical feedback\n", 3000)}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -417,7 +417,7 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 		if len(seen) != 9 {
 			t.Fatalf("lost native evidence identities: %d", len(seen))
 		}
-		if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: version.ID, Body: "late immutable evidence"}); err != nil {
+		if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: api.NativeMutationKey(), VersionID: version.ID, Body: "late immutable evidence"}); err != nil {
 			t.Fatal(err)
 		}
 		arguments, err := json.Marshal(operatortool.ChangeArguments{ProjectID: string(h.project), ItemID: string(item), ChangeID: change.ID, Section: "discussion", Cursor: cursor, Limit: 2})
@@ -428,7 +428,7 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 		if err != nil || strings.Contains(result.Content, "late immutable evidence") {
 			t.Fatalf("continuation included evidence appended after snapshot: %v", err)
 		}
-		if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: version.ID, Body: strings.Repeat("\x00", 64000)}); err != nil {
+		if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: api.NativeMutationKey(), VersionID: version.ID, Body: strings.Repeat("\x00", 64000)}); err != nil {
 			t.Fatal(err)
 		}
 		cursor = ""
@@ -467,7 +467,7 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 	if err := owner.FlushRuntime(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	other := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Another item", Body: issueContractTestSections, State: "Todo"})
+	other := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Another item", Body: issueContractTestSections, State: "Todo"})
 	for _, tool := range tools {
 		if tool.Name == operatortool.WorkList && (!strings.Contains(tool.Description, "Use cursor, not offset") || strings.Contains(tool.Description, "reference must")) {
 			t.Fatal("project search advertised an unsupported paging or reference contract")
@@ -581,7 +581,7 @@ func RunNativeExecutionReadToolsKeepHostAuthority(t *testing.T, factories Constr
 	finished.Sequence++
 	finished.Outcome = "failed"
 	finished.CompletionBody = strings.Repeat("<", 64<<10)
-	if err := h.native.AppendEvent(t.Context(), item, tracker.NativeRunEvent{Mutation: nativeMutationKey(), Type: "run.finished", SchemaVersion: 1, Data: finished}); err != nil {
+	if err := h.native.AppendEvent(t.Context(), item, tracker.NativeRunEvent{Mutation: api.NativeMutationKey(), Type: "run.finished", SchemaVersion: 1, Data: finished}); err != nil {
 		t.Fatal(err)
 	}
 	for _, limit := range []int{1, 20, 200} {
@@ -652,7 +652,7 @@ func RunNativeChangeOversizedReviewRecovery(t *testing.T, factories Constructors
 	for i, field := range []string{"criterion", "security finding", "implementation commands", "second implementation commands"} {
 		issue := h.createInProgress(t, "Oversized retained "+field)
 		item := tracker.NativeWorkItemID(issue.ID)
-		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained review"})
+		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Retained review"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -738,7 +738,7 @@ func RunNativeChangeOversizedReviewRecovery(t *testing.T, factories Constructors
 	t.Cleanup(func() { fixtureClient(h.native.Transport()).requests.Store(nativeTransport) })
 	for _, fixture := range fixtures {
 		t.Run(fixture.name, func(t *testing.T) {
-			path, err := changePath(fixture.item, fixture.change.ID, "")
+			path, err := api.ChangePath(fixture.item, fixture.change.ID, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -754,7 +754,7 @@ func RunNativeChangeOversizedReviewRecovery(t *testing.T, factories Constructors
 			if err != nil || next.Fragment == nil || next.Read.Sections["reviews"].Complete || len(next.Detail.Reviews) != 0 {
 				t.Fatalf("oversized continuation did not return a bounded fragment: %v", err)
 			}
-			newer, err := h.admin.CreateChange(t.Context(), fixture.item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Newer independent Change"})
+			newer, err := h.admin.CreateChange(t.Context(), fixture.item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Newer independent Change"})
 			if err != nil {
 				t.Fatal(err)
 			}

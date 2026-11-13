@@ -8,7 +8,7 @@ import (
 )
 
 func (c *NativeClient) ChangeSource(ctx context.Context, item tracker.NativeWorkItemID, change, version string) ([]byte, error) {
-	path, err := changePath(item, change, version)
+	path, err := ChangePath(item, change, version)
 	if err != nil || change == "" || version == "" {
 		return nil, errors.New("valid Change Request and version identities are required")
 	}

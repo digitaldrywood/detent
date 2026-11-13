@@ -128,7 +128,7 @@ func RunPlanContinuation(t *testing.T, factories Constructors) {
 				if err := h.connector.CreateComment(guarded, issue.ID, "## Detent Plan\n\nStale plan"); err == nil {
 					t.Fatal("stale planning authority published a plan")
 				}
-				stale := tracker.NativeRunEvent{Mutation: nativeMutationKey(), Type: "run.finished", SchemaVersion: 1, Data: execution.CompletionData()}
+				stale := tracker.NativeRunEvent{Mutation: api.NativeMutationKey(), Type: "run.finished", SchemaVersion: 1, Data: execution.CompletionData()}
 				stale.Data.Sequence++
 				stale.Data.Disposition = &tracker.NativeDisposition{Status: "in_progress"}
 				if err := h.native.AppendEvent(t.Context(), tracker.NativeWorkItemID(held.ID), stale); err == nil {
@@ -329,7 +329,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		}
 		if planningRecovery {
 			if resumeCase != "" {
-				change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Preserved current Change"})
+				change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Preserved current Change"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -525,7 +525,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
+		if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
 			t.Fatal(err)
 		}
 		transport.failWorkflow.Store(false)

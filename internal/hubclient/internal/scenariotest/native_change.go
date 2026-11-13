@@ -395,34 +395,34 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				nativeChangeGit(t, reviewedPath, "-c", "commit.gpgsign=false", "commit", "-m", "preserved reviewed source")
 				item := tracker.NativeWorkItemID(issue.ID)
 				if test.StaleBase {
-					if _, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Human hold: preserve the original checkpoint and staged source"}); err != nil {
+					if _, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: api.NativeMutationKey(), Body: "Human hold: preserve the original checkpoint and staged source"}); err != nil {
 						t.Fatal(err)
 					}
 				}
-				change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
+				change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: issue.Title})
 				if err != nil {
 					t.Fatal(err)
 				}
 				old := h.publish(t, item, change.ID, nativeChangeFixtureHead("a"))
-				if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: old.ID, Body: "Historical discussion"}); err != nil {
+				if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: api.NativeMutationKey(), VersionID: old.ID, Body: "Historical discussion"}); err != nil {
 					t.Fatal(err)
 				}
 				historicalDecision := "changes_requested"
 				if test.Reopened || test.Publication != "" {
 					historicalDecision = "approved"
 				}
-				if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, old.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: historicalDecision, Body: "Historical review"}); err != nil {
+				if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, old.ID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), Decision: historicalDecision, Body: "Historical review"}); err != nil {
 					t.Fatal(err)
 				}
 				if test.Reopened {
-					if _, err := h.admin.LandChangeVersion(t.Context(), item, change.ID, old.ID, tracker.LandChangeVersion{Mutation: nativeMutationKey(), MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}); err != nil {
+					if _, err := h.admin.LandChangeVersion(t.Context(), item, change.ID, old.ID, tracker.LandChangeVersion{Mutation: api.NativeMutationKey(), MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}); err != nil {
 						t.Fatal(err)
 					}
 					currentIssue, err := h.admin.Issue(t.Context(), item)
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
+					if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -447,7 +447,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				if publicationCI != nil {
 					check := current.Checks[0]
-					if _, err := publicationCI.SubmitChangeCheck(t.Context(), item, change.ID, current.ID, tracker.SubmitChangeCheck{Mutation: nativeMutationKey(), ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: current.HeadSHA, RunID: current.RunID, PolicyID: current.PolicyID, ConfigDigest: current.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: current.CreatedAt, Evidence: []tracker.ChangeArtifact{{Kind: "test", URI: "s3://fixture/test", SHA256: policy.Digest([]byte("test receipt")), Availability: "available"}}}}); err != nil {
+					if _, err := publicationCI.SubmitChangeCheck(t.Context(), item, change.ID, current.ID, tracker.SubmitChangeCheck{Mutation: api.NativeMutationKey(), ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: current.HeadSHA, RunID: current.RunID, PolicyID: current.PolicyID, ConfigDigest: current.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: current.CreatedAt, Evidence: []tracker.ChangeArtifact{{Kind: "test", URI: "s3://fixture/test", SHA256: policy.Digest([]byte("test receipt")), Availability: "available"}}}}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -462,10 +462,10 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					nativeChangeGit(t, source, "push", "origin", "main")
 				}
 				if test.Formal {
-					if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, current.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "changes_requested", Body: "Serialize global config updates"}); err != nil {
+					if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, current.ID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), Decision: "changes_requested", Body: "Serialize global config updates"}); err != nil {
 						t.Fatal(err)
 					}
-				} else if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: current.ID, Body: "Global config loses concurrent updates"}); err != nil {
+				} else if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: api.NativeMutationKey(), VersionID: current.ID, Body: "Global config loses concurrent updates"}); err != nil {
 					t.Fatal(err)
 				}
 				currentIssue, err := h.admin.Issue(t.Context(), item)
@@ -474,7 +474,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				if test.StaleBase {
 					for _, lane := range []string{"Human Review", "Merging"} {
-						currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: lane, Reason: "user_requested"})
+						currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: lane, Reason: "user_requested"})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -517,7 +517,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 						if i == 104 {
 							t.Logf("fresh recovery after 104 historical attempts: %d bytes, %d attempts, %d comments, %d history events", len(compact), len(landing.Recovery().Attempts), len(landing.Recovery().Discussion), len(landing.Recovery().History))
 						}
-						if _, err := h.native.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: strings.Repeat("Historical worker output\n", 900)}); err != nil {
+						if _, err := h.native.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: api.NativeMutationKey(), Body: strings.Repeat("Historical worker output\n", 900)}); err != nil {
 							t.Fatal(err)
 						}
 						guarded, stop, err := landing.Guard(t.Context())
@@ -559,7 +559,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					}
 				} else {
 					for _, state := range []string{"Human Review", "Rework"} {
-						currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
+						currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -954,7 +954,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			var editedComment tracker.NativeComment
 			if test.Feedback == "edit" {
 				var err error
-				editedComment, err = h.admin.CreateComment(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Earlier feedback context."})
+				editedComment, err = h.admin.CreateComment(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateComment{Mutation: api.NativeMutationKey(), Body: "Earlier feedback context."})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -999,7 +999,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			}
 			if test.Publication == "head_read" {
 				owner := execution.(*ownedExecution)
-				if !nativeTransportUnavailable(err) || owner.Settled() || owner.CompletionData().Outcome != "" || owner.CompletionData().Handoff.UncertainForgeEffect() || owner.CompletionSnapshot().Publication != nil || forgeCreates != 0 || forgePull != "" {
+				if !api.NativeTransportUnavailable(err) || owner.Settled() || owner.CompletionData().Outcome != "" || owner.CompletionData().Handoff.UncertainForgeEffect() || owner.CompletionSnapshot().Publication != nil || forgeCreates != 0 || forgePull != "" {
 					t.Fatalf("HEAD discovery failure lost infrastructure retry: settled=%t outcome=%q checkpoint=%+v error=%v", owner.Settled(), owner.CompletionData().Outcome, owner.CompletionData().Handoff, err)
 				}
 				if after, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "for-each-ref", "--format=%(objectname) %(refname)").Output(); readErr != nil || string(after) != string(publicationRefsBefore) {
@@ -1072,7 +1072,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := h.admin.Transition(t.Context(), peerID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: peerIssue.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+					if _, err := h.admin.Transition(t.Context(), peerID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: peerIssue.Revision, State: "Done", Reason: "user_requested"}); err != nil {
 						t.Fatal(err)
 					}
 					readPeer := func() struct {
@@ -1152,7 +1152,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				oldLease := owner.Recovery().Lease
 				if test.Feedback == "bot" {
-					if _, err := h.native.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: "CHANGE.md must contain the repaired feedback value before this source can be accepted."}); err != nil {
+					if _, err := h.native.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: api.NativeMutationKey(), Body: "CHANGE.md must contain the repaired feedback value before this source can be accepted."}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -1237,7 +1237,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					if routing.Used != 0 || routing.HostUsed != 0 || len(routing.Leases) != 0 {
 						t.Errorf("settled source evidence hold retained runner capacity: used=%d host_used=%d leases=%+v", routing.Used, routing.HostUsed, routing.Leases)
 					}
-					if _, err := h.native.Renew(t.Context(), oldLease, 90); !nativeLeaseLost(err) {
+					if _, err := h.native.Renew(t.Context(), oldLease, 90); !api.NativeLeaseLost(err) {
 						t.Errorf("settled source evidence hold retained renewable authority: %v", err)
 					}
 					client, err := newTestClient(t, Config{URL: fixtureClient(h.native.Transport()).baseURL.String(), IdentityFile: identityPath, HTTPClient: &http.Client{Transport: h.failChanges}})
@@ -1259,7 +1259,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
+					if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
 						t.Fatal(err)
 					}
 					clockOffset.Add(int64(time.Minute))
@@ -1292,11 +1292,11 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				var feedbackRecord any
 				switch test.Feedback {
 				case "change", "technical":
-					feedbackRecord, err = h.admin.DiscussChange(t.Context(), item, change.ChangeID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: change.VersionID, Body: feedbackBody, Provenance: feedbackOrigin})
+					feedbackRecord, err = h.admin.DiscussChange(t.Context(), item, change.ChangeID, tracker.DiscussChange{Mutation: api.NativeMutationKey(), VersionID: change.VersionID, Body: feedbackBody, Provenance: feedbackOrigin})
 				case "issue":
-					feedbackRecord, err = h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: feedbackBody, Provenance: feedbackOrigin})
+					feedbackRecord, err = h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: api.NativeMutationKey(), Body: feedbackBody, Provenance: feedbackOrigin})
 				case "edit":
-					feedbackRecord, err = h.admin.UpdateComment(t.Context(), item, editedComment.ID, tracker.UpdateComment{Mutation: nativeMutationKey(), ExpectedRevision: editedComment.Revision, Body: feedbackBody})
+					feedbackRecord, err = h.admin.UpdateComment(t.Context(), item, editedComment.ID, tracker.UpdateComment{Mutation: api.NativeMutationKey(), ExpectedRevision: editedComment.Revision, Body: feedbackBody})
 				case "bot":
 					err = nil
 				}
@@ -1332,7 +1332,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					}
 				}
 				if current.State != "In Progress" {
-					if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
+					if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -1464,7 +1464,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
+					if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
 						t.Fatal(err)
 					}
 					repairCandidates := h.candidatesIn(t, "Rework")
@@ -1537,7 +1537,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 							continue
 						}
 						for _, check := range version.Checks {
-							if _, err := publicationCI.SubmitChangeCheck(t.Context(), tracker.NativeWorkItemID(issue.ID), current.Change.ID, version.ID, tracker.SubmitChangeCheck{Mutation: nativeMutationKey(), ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: version.HeadSHA, RunID: version.RunID, PolicyID: version.PolicyID, ConfigDigest: version.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: version.CreatedAt, Evidence: []tracker.ChangeArtifact{{Kind: "test", URI: "s3://fixture/test", SHA256: policy.Digest([]byte("test receipt")), Availability: "available"}}}}); err != nil {
+							if _, err := publicationCI.SubmitChangeCheck(t.Context(), tracker.NativeWorkItemID(issue.ID), current.Change.ID, version.ID, tracker.SubmitChangeCheck{Mutation: api.NativeMutationKey(), ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: version.HeadSHA, RunID: version.RunID, PolicyID: version.PolicyID, ConfigDigest: version.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: version.CreatedAt, Evidence: []tracker.ChangeArtifact{{Kind: "test", URI: "s3://fixture/test", SHA256: policy.Digest([]byte("test receipt")), Availability: "available"}}}}); err != nil {
 								t.Fatal(err)
 							}
 						}
@@ -1547,7 +1547,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 						t.Fatal(readErr)
 					}
 					if test.Formal {
-						if _, err := h.admin.ReviewChange(t.Context(), tracker.NativeWorkItemID(issue.ID), current.Change.ID, current.Change.CurrentVersion, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "changes_requested", Body: "Preserve human hold"}); err != nil {
+						if _, err := h.admin.ReviewChange(t.Context(), tracker.NativeWorkItemID(issue.ID), current.Change.ID, current.Change.CurrentVersion, tracker.ReviewChange{Mutation: api.NativeMutationKey(), Decision: "changes_requested", Body: "Preserve human hold"}); err != nil {
 							t.Fatal(err)
 						}
 						current, readErr = h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), current.Change.ID)
@@ -1655,7 +1655,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 						t.Fatal(readErr)
 					}
 					for _, state := range []string{"Human Review", "Rework"} {
-						currentIssue, readErr = h.admin.Transition(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
+						currentIssue, readErr = h.admin.Transition(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
 						if readErr != nil {
 							t.Fatalf("human transition state=%s: %T %v", state, readErr, readErr)
 						}
@@ -1694,7 +1694,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					}
 					rules.PolicyID = h.descriptor.ID
 					rules.RequireReview = rules.RequireReview || test.StalePolicy
-					if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
+					if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: api.NativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -1821,7 +1821,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					if test.PublicationFault == "post_push_read" && pushErr != nil || test.PublicationFault == "initial_read" && !errors.Is(pushErr, os.ErrNotExist) {
 						t.Fatalf("publication ref read failed at the wrong push boundary: %v", pushErr)
 					}
-					if !nativeTransportUnavailable(err) || !owner.CompletionData().Handoff.UncertainForgeEffect() || owner.Settled() || provider.calls != callsBefore || forgeCreates != wantCreates || forgePull != prBefore {
+					if !api.NativeTransportUnavailable(err) || !owner.CompletionData().Handoff.UncertainForgeEffect() || owner.Settled() || provider.calls != callsBefore || forgeCreates != wantCreates || forgePull != prBefore {
 						t.Fatalf("ref read failure lost infrastructure retry: settled=%t checkpoint=%+v error=%v", owner.Settled(), owner.CompletionData().Handoff, err)
 					}
 					branchHead, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "rev-parse", "refs/heads/"+oldPublicationBranch).Output()
@@ -1894,7 +1894,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					t.Fatalf("real Runner retry failed exact PR adoption: creates=%d publication=%v error=%v", forgeCreates, owner.CompletionSnapshot().Publication != nil, err)
 				}
 				item := tracker.NativeWorkItemID(issue.ID)
-				path, err := nativeItemPath(item)
+				path, err := api.NativeItemPath(item)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -2006,7 +2006,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				if err != nil || !reflect.DeepEqual(versionsWithoutLanding(detail.Versions), versionsWithoutLanding(expected.Versions)) || detail.Change.CurrentVersion != expected.Change.CurrentVersion {
 					t.Fatalf("absorbed Rework changed immutable identity: detail=%+v error=%v", detail, err)
 				}
-				attempt := executionID("attempt", string(execution.Recovery().Lease.ID))
+				attempt := api.ExecutionID("attempt", string(execution.Recovery().Lease.ID))
 				var stored tracker.AttemptDiff
 				if err := h.admin.Transport().Request(t.Context(), http.MethodGet, h.admin.Scope()+"/attempts/"+attempt+"/diff", nil, &stored); err != nil {
 					t.Fatal(err)
@@ -2184,7 +2184,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					}
 				}
 			}
-			attemptID := executionID("attempt", string(execution.Recovery().Lease.ID))
+			attemptID := api.ExecutionID("attempt", string(execution.Recovery().Lease.ID))
 			if !test.SSH {
 				var transcript struct {
 					Conversation struct {
@@ -2225,7 +2225,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				return
 			}
 			if test.AdvanceTarget {
-				attempt := executionID("attempt", string(execution.Recovery().Lease.ID))
+				attempt := api.ExecutionID("attempt", string(execution.Recovery().Lease.ID))
 				var stored tracker.AttemptDiff
 				if err := h.admin.Transport().Request(t.Context(), http.MethodGet, h.admin.Scope()+"/attempts/"+attempt+"/diff", nil, &stored); err != nil {
 					t.Fatal(err)
@@ -2382,7 +2382,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				if changes[0].ID != change.ChangeID || changes[0].Title != "Update the README" || !test.Rework && !strings.Contains(changes[0].Body, change.HeadSHA) {
 					t.Fatalf("change = %#v, reported %#v", changes[0], change)
 				}
-				attempt := executionID("attempt", string(execution.Recovery().Lease.ID))
+				attempt := api.ExecutionID("attempt", string(execution.Recovery().Lease.ID))
 				var stored tracker.AttemptDiff
 				if err := h.admin.Transport().Request(t.Context(), http.MethodGet, h.admin.Scope()+"/attempts/"+attempt+"/diff", nil, &stored); err != nil {
 					t.Fatalf("read stored diff: %v", err)
@@ -3034,7 +3034,7 @@ func isolateNativeChangeGit(t *testing.T) {
 // orchestrator's dispatch leaves a native item it runs.
 func (h *nativeChangeHub) createInProgress(t *testing.T, title string) connector.Issue {
 	t.Helper()
-	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: title, Body: "Change the README." + issueContractTestSections, State: "In Progress"})
+	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: title, Body: "Change the README." + issueContractTestSections, State: "In Progress"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3063,7 +3063,7 @@ func (h *nativeChangeHub) publishCapturedExternal(t *testing.T, item tracker.Nat
 	}
 	version, err := h.admin.PublishChangeVersion(t.Context(), item, changeID, tracker.PublishChangeVersion{
 		SourceBundle:      bundle,
-		Mutation:          nativeMutationKey(),
+		Mutation:          api.NativeMutationKey(),
 		ExpectedVersionID: expectedVersionID,
 		ChangeVersionInput: tracker.ChangeVersionInput{
 			External: external,
@@ -3167,7 +3167,7 @@ func (h *nativeChangeHub) publicationCI(t *testing.T) *NativeClient {
 	}
 	rules.PolicyID = h.descriptor.ID
 	rules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "full-ci", PrincipalID: "example_ci", WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}
-	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
+	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: api.NativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
 		t.Fatal(err)
 	}
 	return ci
@@ -3264,7 +3264,7 @@ func confirmIssueContract(t *testing.T, admin *NativeClient, id string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.UpdateIssue(t.Context(), issue.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: issue.Revision, Body: &issue.Body}); err != nil {
+	if _, err := admin.UpdateIssue(t.Context(), issue.WorkItemID, tracker.UpdateIssue{Mutation: api.NativeMutationKey(), ExpectedRevision: issue.Revision, Body: &issue.Body}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -146,7 +146,7 @@ func RunNativeRetryProgressLoadsRepeatedLandingRefusals(t *testing.T, factories 
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
+			if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
 				t.Fatal(err)
 			}
 			claim := func() connector.Issue {
@@ -417,7 +417,7 @@ func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool, factor
 	if original == nil {
 		t.Fatal("claimed planning execution is missing")
 	}
-	change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained progress source"})
+	change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Retained progress source"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,7 +578,7 @@ func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factor
 				t.Fatal(err)
 			}
 			for _, state := range []string{"In Progress", "Rework"} {
-				current, err = h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"})
+				current, err = h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -586,7 +586,7 @@ func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factor
 			issue = claim("Rework")
 			original := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 			if tt.effort == "" {
-				change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained progress source"})
+				change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Retained progress source"})
 				if err != nil {
 					t.Fatal(err)
 				}

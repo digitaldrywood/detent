@@ -154,7 +154,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
+				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
 					t.Fatal(err)
 				}
 				confirmIssueContract(t, h.admin, issue.ID)
@@ -424,18 +424,18 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
+				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: api.NativeMutationKey(), ExpectedID: rules.ID, Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.MergeResolution {
 				rules := tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}
-				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: rules}); err != nil {
+				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: api.NativeMutationKey(), Policy: rules}); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.Existing {
-				earlier, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Earlier change"})
+				earlier, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Earlier change"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -445,7 +445,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				passPublicationCheck := func(version tracker.ChangeVersion) {
 					t.Helper()
 					check := version.Checks[0]
-					if _, err := ci.SubmitChangeCheck(t.Context(), item, earlier.ID, version.ID, tracker.SubmitChangeCheck{Mutation: nativeMutationKey(), ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: version.HeadSHA, RunID: version.RunID, PolicyID: version.PolicyID, ConfigDigest: version.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: version.CreatedAt, Evidence: []tracker.ChangeArtifact{{Kind: "test", URI: "s3://fixture/test", SHA256: policy.Digest([]byte("test receipt")), Availability: "available"}}}}); err != nil {
+					if _, err := ci.SubmitChangeCheck(t.Context(), item, earlier.ID, version.ID, tracker.SubmitChangeCheck{Mutation: api.NativeMutationKey(), ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: version.HeadSHA, RunID: version.RunID, PolicyID: version.PolicyID, ConfigDigest: version.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: version.CreatedAt, Evidence: []tracker.ChangeArtifact{{Kind: "test", URI: "s3://fixture/test", SHA256: policy.Digest([]byte("test receipt")), Availability: "available"}}}}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -466,10 +466,10 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 							old := h.publishCapturedExternal(t, item, earlier.ID, publicationPrevious, nil, external, previous, base)
 							if test.PublicationLanded {
 								passPublicationCheck(old)
-								if _, err := h.admin.ReviewChange(t.Context(), item, earlier.ID, old.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), ExpectedVersionID: old.ID, Decision: "approved", Body: "Land the reviewed source"}); err != nil {
+								if _, err := h.admin.ReviewChange(t.Context(), item, earlier.ID, old.ID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), ExpectedVersionID: old.ID, Decision: "approved", Body: "Land the reviewed source"}); err != nil {
 									t.Fatal(err)
 								}
-								if _, err := h.admin.LandChangeVersion(t.Context(), item, earlier.ID, old.ID, tracker.LandChangeVersion{Mutation: nativeMutationKey(), MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}); err != nil {
+								if _, err := h.admin.LandChangeVersion(t.Context(), item, earlier.ID, old.ID, tracker.LandChangeVersion{Mutation: api.NativeMutationKey(), MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}); err != nil {
 									t.Fatal(err)
 								}
 								if h.state(t, issue.ID) != "Done" {
@@ -479,7 +479,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 								if err != nil {
 									t.Fatal(err)
 								}
-								if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
+								if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
 									t.Fatal(err)
 								}
 								confirmIssueContract(t, h.admin, issue.ID)
@@ -487,7 +487,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 								if err != nil {
 									t.Fatal(err)
 								}
-								if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
+								if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
 									t.Fatal(err)
 								}
 							}
@@ -501,7 +501,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 					}
 					if test.RequiredPR {
 						passPublicationCheck(version)
-						if _, err := h.admin.ReviewChange(t.Context(), item, earlier.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), ExpectedVersionID: version.ID, Decision: "changes_requested", Body: "Human hold: prepare the missing PR, do not land this version"}); err != nil {
+						if _, err := h.admin.ReviewChange(t.Context(), item, earlier.ID, version.ID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), ExpectedVersionID: version.ID, Decision: "changes_requested", Body: "Human hold: prepare the missing PR, do not land this version"}); err != nil {
 							t.Fatal(err)
 						}
 						original, err = h.admin.Change(t.Context(), item, earlier.ID)
@@ -516,7 +516,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 			}
 			if test.Reviewer && !test.RequiredPR {
 				rules := tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}
-				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: rules}); err != nil {
+				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: api.NativeMutationKey(), Policy: rules}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -526,7 +526,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := h.admin.ReviewChange(t.Context(), item, detail.Change.ID, detail.Change.CurrentVersion, tracker.ReviewChange{Mutation: nativeMutationKey(), ExpectedVersionID: detail.Change.CurrentVersion, Decision: "approved", Body: "Approved original source"}); err != nil {
+				if _, err := h.admin.ReviewChange(t.Context(), item, detail.Change.ID, detail.Change.CurrentVersion, tracker.ReviewChange{Mutation: api.NativeMutationKey(), ExpectedVersionID: detail.Change.CurrentVersion, Decision: "approved", Body: "Approved original source"}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -643,7 +643,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 						t.Fatal(err)
 					}
 					for _, state := range []string{"In Review", "In Progress"} {
-						currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
+						currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -729,7 +729,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 					t.Fatal(err)
 				}
 				rules.PolicyID = h.descriptor.ID
-				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
+				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: api.NativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
 					t.Fatal(err)
 				}
 

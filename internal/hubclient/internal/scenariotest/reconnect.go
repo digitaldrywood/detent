@@ -286,7 +286,7 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 				t.Fatal(err)
 			}
 			if test.hold {
-				current, err = h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Blocked", Reason: "user_requested"})
+				current, err = h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "Blocked", Reason: "user_requested"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -300,11 +300,11 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 				if err != nil {
 					t.Fatal(err)
 				}
-				blocker, err := privateClient.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Private prerequisite", State: "Backlog"})
+				blocker, err := privateClient.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Private prerequisite", State: "Backlog"})
 				if err != nil {
 					t.Fatal(err)
 				}
-				current, err = h.admin.Dependency(t.Context(), current.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"})
+				current, err = h.admin.Dependency(t.Context(), current.WorkItemID, tracker.DependencyMutation{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -572,7 +572,7 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "orchestrator_release"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := resumed.claim.source.NativeClient().Renew(t.Context(), original, 600); !nativeLeaseLost(err) {
+			if _, err := resumed.claim.source.NativeClient().Renew(t.Context(), original, 600); !api.NativeLeaseLost(err) {
 				t.Fatalf("finished execution retained lease: %v", err)
 			}
 		})

@@ -17,7 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func changePath(item tracker.NativeWorkItemID, change, version string) (string, error) {
+func ChangePath(item tracker.NativeWorkItemID, change, version string) (string, error) {
 	path, err := NativeItemPath(item)
 	if err != nil {
 		return "", err
@@ -42,7 +42,7 @@ func changePath(item tracker.NativeWorkItemID, change, version string) (string, 
 
 func (c *NativeClient) Changes(ctx context.Context, item tracker.NativeWorkItemID) ([]tracker.ChangeRequest, error) {
 	var result []tracker.ChangeRequest
-	path, err := changePath(item, "", "")
+	path, err := ChangePath(item, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,7 @@ func (c *NativeClient) Changes(ctx context.Context, item tracker.NativeWorkItemI
 
 func (c *NativeClient) Change(ctx context.Context, item tracker.NativeWorkItemID, id string) (tracker.ChangeDetail, error) {
 	var result tracker.ChangeDetail
-	path, err := changePath(item, id, "")
+	path, err := ChangePath(item, id, "")
 	if err != nil || id == "" {
 		return result, errors.New("valid Change Request identity is required")
 	}
@@ -61,7 +61,7 @@ func (c *NativeClient) Change(ctx context.Context, item tracker.NativeWorkItemID
 }
 
 func (c *NativeClient) RuntimeChange(ctx context.Context, item tracker.NativeWorkItemID, id string) (tracker.ChangeDetail, error) {
-	path, err := changePath(item, id, "")
+	path, err := ChangePath(item, id, "")
 	if err != nil || id == "" {
 		return tracker.ChangeDetail{}, errors.New("valid Change Request identity is required")
 	}
@@ -167,7 +167,7 @@ func (c *NativeClient) CurrentChange(ctx context.Context, item tracker.NativeWor
 
 func (c *NativeClient) CreateChange(ctx context.Context, item tracker.NativeWorkItemID, request tracker.CreateChange) (tracker.ChangeRequest, error) {
 	var result tracker.ChangeRequest
-	path, err := changePath(item, "", "")
+	path, err := ChangePath(item, "", "")
 	if err != nil {
 		return result, err
 	}
@@ -178,7 +178,7 @@ func (c *NativeClient) CreateChange(ctx context.Context, item tracker.NativeWork
 
 func (c *NativeClient) PublishChangeVersion(ctx context.Context, item tracker.NativeWorkItemID, id string, request tracker.PublishChangeVersion) (tracker.ChangeVersion, error) {
 	var result tracker.ChangeVersion
-	path, err := changePath(item, id, "")
+	path, err := ChangePath(item, id, "")
 	if err != nil || id == "" {
 		return result, errors.New("valid Change Request identity is required")
 	}
@@ -189,7 +189,7 @@ func (c *NativeClient) PublishChangeVersion(ctx context.Context, item tracker.Na
 
 func (c *NativeClient) ReviewChange(ctx context.Context, item tracker.NativeWorkItemID, id, version string, request tracker.ReviewChange) (tracker.ChangeReview, error) {
 	var result tracker.ChangeReview
-	path, err := changePath(item, id, version)
+	path, err := ChangePath(item, id, version)
 	if err != nil || id == "" || version == "" {
 		return result, errors.New("valid Change Request and version identities are required")
 	}
@@ -200,7 +200,7 @@ func (c *NativeClient) ReviewChange(ctx context.Context, item tracker.NativeWork
 
 func (c *NativeClient) ChangeViewedFiles(ctx context.Context, item tracker.NativeWorkItemID, id, version string) ([]tracker.ChangeViewedFile, error) {
 	var result []tracker.ChangeViewedFile
-	path, err := changePath(item, id, version)
+	path, err := ChangePath(item, id, version)
 	if err != nil || id == "" || version == "" {
 		return nil, errors.New("valid Change Request and version identities are required")
 	}
@@ -210,7 +210,7 @@ func (c *NativeClient) ChangeViewedFiles(ctx context.Context, item tracker.Nativ
 
 func (c *NativeClient) ViewChangeFile(ctx context.Context, item tracker.NativeWorkItemID, id, version string, request tracker.ViewChangeFile) (tracker.ChangeViewedFile, error) {
 	var result tracker.ChangeViewedFile
-	path, err := changePath(item, id, version)
+	path, err := ChangePath(item, id, version)
 	if err != nil || id == "" || version == "" {
 		return result, errors.New("valid Change Request and version identities are required")
 	}
@@ -220,7 +220,7 @@ func (c *NativeClient) ViewChangeFile(ctx context.Context, item tracker.NativeWo
 
 func (c *NativeClient) SubmitChangeCheck(ctx context.Context, item tracker.NativeWorkItemID, id, version string, request tracker.SubmitChangeCheck) (tracker.ChangeCheck, error) {
 	var result tracker.ChangeCheck
-	path, err := changePath(item, id, version)
+	path, err := ChangePath(item, id, version)
 	if err != nil || id == "" || version == "" {
 		return result, errors.New("valid Change Request and version identities are required")
 	}
@@ -230,7 +230,7 @@ func (c *NativeClient) SubmitChangeCheck(ctx context.Context, item tracker.Nativ
 
 func (c *NativeClient) DiscussChange(ctx context.Context, item tracker.NativeWorkItemID, id string, request tracker.DiscussChange) (tracker.ChangeDiscussion, error) {
 	var result tracker.ChangeDiscussion
-	path, err := changePath(item, id, "")
+	path, err := ChangePath(item, id, "")
 	if err != nil || id == "" {
 		return result, errors.New("valid Change Request identity is required")
 	}
@@ -275,7 +275,7 @@ func (c *NativeConnector) FetchNativeAttempts(ctx context.Context, item tracker.
 // The mutation is fenced by the lease the landing run holds.
 func (c *NativeClient) LandChangeVersion(ctx context.Context, item tracker.NativeWorkItemID, id, version string, request tracker.LandChangeVersion) (tracker.ChangeRequest, error) {
 	var result tracker.ChangeRequest
-	path, err := changePath(item, id, version)
+	path, err := ChangePath(item, id, version)
 	if err != nil || id == "" || version == "" {
 		return result, errors.New("valid Change Request and version identities are required")
 	}

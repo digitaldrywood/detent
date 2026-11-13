@@ -266,7 +266,7 @@ func (c *NativeClient) ReadAgentTool(ctx context.Context, call runner.AgentToolC
 			page := operatortool.OffsetPage(changes, request.Offset, request.Limit)
 			result.Changes, result.NextOffset = page.Items, page.NextOffset
 		} else {
-			path, pathErr := changePath(id, request.ChangeID, "")
+			path, pathErr := ChangePath(id, request.ChangeID, "")
 			if pathErr != nil {
 				return operatortool.Result{}, operatortool.ErrInvalidArguments
 			}

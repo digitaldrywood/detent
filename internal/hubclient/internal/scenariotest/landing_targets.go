@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -67,7 +68,7 @@ func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructor
 		t.Fatal(err)
 	}
 	h.descriptor = next
-	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
+	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: api.NativeMutationKey(), Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
 		t.Fatal(err)
 	}
 	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Operator source", Body: issueContractTestSections})
@@ -75,7 +76,7 @@ func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructor
 		t.Fatal(err)
 	}
 	item := tracker.NativeWorkItemID(issue.ID)
-	change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Operator source"})
+	change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Operator source"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +84,7 @@ func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructor
 	external := &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: nativeChangeRepository + "/pull/7"}
 	capture := nativeChangeSourceFixture(t.Context(), t, nativeChangeFixtureHead("a"), head)
 	version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{
-		Mutation: nativeMutationKey(), SourceBundle: capture.Bundle,
+		Mutation: api.NativeMutationKey(), SourceBundle: capture.Bundle,
 		ChangeVersionInput: tracker.ChangeVersionInput{Source: &capture.Source, BaseSHA: nativeChangeFixtureHead("a"), HeadSHA: head, MergeBaseSHA: nativeChangeFixtureHead("a"), Repository: nativeChangeRepository,
 			Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: policy.Digest([]byte(head)), Availability: "unverified"}, PolicyID: h.descriptor.ID, External: external},
 	})
@@ -96,7 +97,7 @@ func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructor
 	if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Human Review"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved"}); err != nil {
+	if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), Decision: "approved"}); err != nil {
 		t.Fatal(err)
 	}
 	candidates := h.candidatesIn(t, "Merging")
@@ -136,14 +137,14 @@ func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructor
 	secondInput.Code.SHA256 = policy.Digest([]byte(secondInput.HeadSHA))
 	secondCapture := nativeChangeSourceFixture(t.Context(), t, secondInput.BaseSHA, secondInput.HeadSHA)
 	secondInput.Source = &secondCapture.Source
-	second, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), ExpectedVersionID: version.ID, ChangeVersionInput: secondInput, SourceBundle: secondCapture.Bundle})
+	second, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: api.NativeMutationKey(), ExpectedVersionID: version.ID, ChangeVersionInput: secondInput, SourceBundle: secondCapture.Bundle})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := execution.LandingTarget(t.Context()); !errors.Is(err, runner.ErrLandingNotReviewed) {
 		t.Fatalf("unreviewed replacement target error = %v", err)
 	}
-	if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, second.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved"}); err != nil {
+	if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, second.ID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), Decision: "approved"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
@@ -171,26 +172,26 @@ func RunNativeLandingBatchClaimsOneCapacityUnit(t *testing.T, factories Construc
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review"}},
 		{Name: "Done", Terminal: true},
 	}, factories)
-	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
+	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: api.NativeMutationKey(), Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
 		t.Fatal(err)
 	}
 	for range 10 {
-		issue := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Batch source", Body: issueContractTestSections, State: "Todo"})
+		issue := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Batch source", Body: issueContractTestSections, State: "Todo"})
 		item := issue.WorkItemID
-		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Batch source"})
+		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Batch source"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		head := nativeChangeFixtureHead("c")
 		capture := nativeChangeSourceFixture(t.Context(), t, nativeChangeFixtureHead("a"), head)
-		version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), SourceBundle: capture.Bundle, ChangeVersionInput: tracker.ChangeVersionInput{Source: &capture.Source, BaseSHA: nativeChangeFixtureHead("a"), HeadSHA: head, MergeBaseSHA: nativeChangeFixtureHead("a"), Repository: nativeChangeRepository, Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: policy.Digest([]byte(head)), Availability: "unverified"}, PolicyID: h.descriptor.ID}})
+		version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: api.NativeMutationKey(), SourceBundle: capture.Bundle, ChangeVersionInput: tracker.ChangeVersionInput{Source: &capture.Source, BaseSHA: nativeChangeFixtureHead("a"), HeadSHA: head, MergeBaseSHA: nativeChangeFixtureHead("a"), Repository: nativeChangeRepository, Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: policy.Digest([]byte(head)), Availability: "unverified"}, PolicyID: h.descriptor.ID}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := h.connector.UpdateIssueState(t.Context(), string(issue.WorkItemID), "Human Review"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved"}); err != nil {
+		if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), Decision: "approved"}); err != nil {
 			t.Fatal(err)
 		}
 	}

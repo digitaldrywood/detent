@@ -182,7 +182,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				t.Fatal(err)
 			}
 			body := current.Body + issueContractTestSections
-			if _, err := h.admin.UpdateIssue(t.Context(), current.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, Body: &body}); err != nil {
+			if _, err := h.admin.UpdateIssue(t.Context(), current.WorkItemID, tracker.UpdateIssue{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, Body: &body}); err != nil {
 				t.Fatal(err)
 			}
 			confirmIssueContract(t, h.admin, issue.ID)
@@ -387,7 +387,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				change, err := h.admin.CreateChange(t.Context(), current.WorkItemID, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
+				change, err := h.admin.CreateChange(t.Context(), current.WorkItemID, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: issue.Title})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -400,7 +400,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
+				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
 					t.Fatal(err)
 				}
 				provider.finalMessage = "Source complete; published review is pending.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Published version needs host review\nhuman_action: null\n```"

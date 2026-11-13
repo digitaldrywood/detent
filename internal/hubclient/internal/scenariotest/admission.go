@@ -112,13 +112,13 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 					return err
 				})
 			}
-			prerequisite, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Actual prerequisite", State: "Backlog"})
+			prerequisite, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Actual prerequisite", State: "Backlog"})
 			if err != nil {
 				t.Fatal(err)
 			}
 			var second tracker.NativeIssue
 			if test.second {
-				second, err = h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Second prerequisite", State: "Backlog"})
+				second, err = h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Second prerequisite", State: "Backlog"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -126,7 +126,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			issue := h.createInProgress(t, "Reported dependency")
 			var unrelated tracker.NativeIssue
 			if test.refusal == "relation" {
-				other, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Unrelated prerequisite", State: "Done"})
+				other, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Unrelated prerequisite", State: "Done"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -137,7 +137,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			}
 			h.claim(t, issue.ID)
 			if unrelated.WorkItemID != "" {
-				if _, err := h.admin.Transition(t.Context(), unrelated.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: unrelated.Revision, State: "Backlog", Reason: "user_requested"}); err != nil {
+				if _, err := h.admin.Transition(t.Context(), unrelated.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: unrelated.Revision, State: "Backlog", Reason: "user_requested"}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -372,7 +372,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 				t.Fatal("blocked prerequisite was admitted")
 			}
 			if test.refusal != "" || test.laterLease != "" {
-				if _, err := h.admin.Transition(t.Context(), prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+				if _, err := h.admin.Transition(t.Context(), prerequisite.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -385,7 +385,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			case "report":
 				request.BlockerAttemptID = "attempt_unrelated"
 			case "operator":
-				current, err := h.admin.Transition(t.Context(), blocked.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: blocked.Revision, State: "Blocked", Reason: "user_requested"})
+				current, err := h.admin.Transition(t.Context(), blocked.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: blocked.Revision, State: "Blocked", Reason: "user_requested"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -463,7 +463,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			}
 			if test.laterLease == "" {
 				waitHolding(wantBlockers)
-				if _, err := h.admin.Transition(t.Context(), prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+				if _, err := h.admin.Transition(t.Context(), prerequisite.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := orch.RequestRefresh(t.Context()); err != nil {
@@ -472,7 +472,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			}
 			if test.second {
 				waitHolding(1)
-				if _, err := h.admin.Transition(t.Context(), second.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: second.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+				if _, err := h.admin.Transition(t.Context(), second.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: second.Revision, State: "Done", Reason: "user_requested"}); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := orch.RequestRefresh(t.Context()); err != nil {
@@ -563,14 +563,14 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 	}
 	h := newNativeChangeHubConfigured(t, "Human Review", states, true, true, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Clock: retryNow}, factories)
 	priority := 1
-	created, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Saved implementation", Body: "Preserve the saved implementation." + issueContractTestSections, State: initialLane, Priority: &priority})
+	created, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Saved implementation", Body: "Preserve the saved implementation." + issueContractTestSections, State: initialLane, Priority: &priority})
 	if err != nil {
 		t.Fatal(err)
 	}
 	issue := api.IssueFromNative(created)
 	request := orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Todo", "In Progress", "Rework", "Merging"}, PrioritizeUnblockers: true, DispatchPriorityByState: []string{"Merging", "Rework", "In Progress", "Todo"}}
 	priority = 2
-	prerequisite, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Prerequisite", Body: "Complete the prerequisite." + issueContractTestSections, State: "Backlog", Priority: &priority})
+	prerequisite, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Prerequisite", Body: "Complete the prerequisite." + issueContractTestSections, State: "Backlog", Priority: &priority})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,11 +582,11 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 		if len(current.Dependencies) != 1 || current.Dependencies[0] != prerequisite.WorkItemID {
 			return errors.New("terminal report did not create native dependency")
 		}
-		_, err = h.admin.Dependency(ctx, created.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: prerequisite.WorkItemID, Operation: "remove"})
+		_, err = h.admin.Dependency(ctx, created.WorkItemID, tracker.DependencyMutation{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: prerequisite.WorkItemID, Operation: "remove"})
 		return err
 	}
 	priority = 3
-	unrelated, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Unrelated work", Body: "Complete unrelated work." + issueContractTestSections, State: "Backlog", Priority: &priority})
+	unrelated, err := h.admin.CreateIssue(ctx, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Unrelated work", Body: "Complete unrelated work." + issueContractTestSections, State: "Backlog", Priority: &priority})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +626,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 	if err != nil {
 		t.Fatal(err)
 	}
-	change, err := h.admin.CreateChange(ctx, created.WorkItemID, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Saved implementation"})
+	change, err := h.admin.CreateChange(ctx, created.WorkItemID, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Saved implementation"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,7 +635,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 		external = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: nativeChangeRepository + "/pull/7"}
 	}
 	version := h.publishCapturedExternal(t, created.WorkItemID, change.ID, head, &capture, external, "", base)
-	if _, err := h.admin.ReviewChange(ctx, created.WorkItemID, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved"}); err != nil {
+	if _, err := h.admin.ReviewChange(ctx, created.WorkItemID, change.ID, version.ID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), Decision: "approved"}); err != nil {
 		t.Fatal(err)
 	}
 	request.LandingCapacity = 1
@@ -903,11 +903,11 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 		t.Fatalf("generic refusal lacks actual current dependency evidence: %+v", runtime.Admission)
 	}
 	if ready {
-		if _, err := h.admin.Transition(ctx, prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+		if _, err := h.admin.Transition(ctx, prerequisite.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
 			t.Fatal(err)
 		}
 	} else {
-		if _, err := h.admin.Transition(ctx, prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
+		if _, err := h.admin.Transition(ctx, prerequisite.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -916,7 +916,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.admin.Dependency(ctx, created.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: prerequisite.WorkItemID, Operation: "remove"}); err != nil {
+		if _, err := h.admin.Dependency(ctx, created.WorkItemID, tracker.DependencyMutation{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: prerequisite.WorkItemID, Operation: "remove"}); err != nil {
 			t.Fatal(err)
 		}
 		changed, err := h.admin.Issue(ctx, created.WorkItemID)
@@ -924,7 +924,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 			t.Fatalf("native edge removal=%+v error=%v", changed.Dependencies, err)
 		}
 	}
-	if _, err := h.admin.Transition(ctx, unrelated.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: unrelated.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
+	if _, err := h.admin.Transition(ctx, unrelated.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: unrelated.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
 		t.Fatal(err)
 	}
 	started := make(chan runner.RunRequest, 1)

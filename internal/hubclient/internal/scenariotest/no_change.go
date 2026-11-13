@@ -48,7 +48,7 @@ func RunNoChangeCompletion(t *testing.T, factories Constructors) {
 			}
 			if reported == "empty Change already integrated" {
 				item := tracker.NativeWorkItemID(issue.ID)
-				change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Already integrated behavior"})
+				change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Already integrated behavior"})
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -192,11 +192,11 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				var change tracker.ChangeRequest
 				var version tracker.ChangeVersion
 				if !test.checkpointOnly {
-					change, err = h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained source"})
+					change, err = h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Retained source"})
 					if err != nil {
 						t.Fatal(err)
 					}
-					publication := nativeMutationKey()
+					publication := api.NativeMutationKey()
 					publication.LeaseID, publication.FencingToken = owner.Recovery().Lease.ID, owner.Recovery().Lease.FencingToken
 					version, err = h.native.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: publication, SourceBundle: capture.Bundle, ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: initialBase, HeadSHA: sourceHead, MergeBaseSHA: initialBase, Repository: nativeChangeRepository, PolicyID: h.descriptor.ID, AttemptID: attempt.AttemptID, RunID: attempt.RunID, Source: &capture.Source, Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + sourceHead, SHA256: policy.Digest([]byte(sourceHead)), Availability: "unverified"}}})
 					if err != nil {
@@ -546,7 +546,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				input.HeadSHA, input.RunID, input.AttemptID, input.Validation = currentHead, "", "", nil
 				input.Code.URI, input.Code.SHA256 = nativeChangeRepository+"/commit/"+currentHead, policy.Digest([]byte(currentHead))
 				input.Source = &capture.Source
-				if _, err := h.admin.PublishChangeVersion(t.Context(), item, first.NativeChange.ChangeID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), ExpectedVersionID: first.NativeChange.VersionID, ChangeVersionInput: input, SourceBundle: capture.Bundle}); err != nil {
+				if _, err := h.admin.PublishChangeVersion(t.Context(), item, first.NativeChange.ChangeID, tracker.PublishChangeVersion{Mutation: api.NativeMutationKey(), ExpectedVersionID: first.NativeChange.VersionID, ChangeVersionInput: input, SourceBundle: capture.Bundle}); err != nil {
 					t.Fatal(err)
 				}
 				versionCount++
@@ -587,7 +587,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			if test.landing {
 				state = "Merging"
 			}
-			if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"}); err != nil {
+			if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"}); err != nil {
 				t.Fatal(err)
 			}
 			if test.landing {
@@ -891,7 +891,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 					t.Fatalf("landing quality did not freeze the canonical issue body: %+v, %v", canonical.Quality, err)
 				}
 				body := latestIssue.Body + "\nLater issue context.\n"
-				updated, err := h.admin.UpdateIssue(t.Context(), item, tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: latestIssue.Revision, Body: &body})
+				updated, err := h.admin.UpdateIssue(t.Context(), item, tracker.UpdateIssue{Mutation: api.NativeMutationKey(), ExpectedRevision: latestIssue.Revision, Body: &body})
 				if err != nil || updated.Body != body || updated.Body == canonical.Quality.IssueBody {
 					t.Fatalf("later issue update did not change current context: %+v, %v", updated, err)
 				}
@@ -950,7 +950,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
+				if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
 					t.Fatal(err)
 				}
 				h.claim(t, issue.ID)
@@ -1004,11 +1004,11 @@ func RunNativeSourceResumesWithoutPreviousRuntime(t *testing.T, factories Constr
 				t.Fatal(err)
 			}
 			item := tracker.NativeWorkItemID(issue.ID)
-			change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
+			change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: issue.Title})
 			if err != nil {
 				t.Fatal(err)
 			}
-			version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), SourceBundle: capture.Bundle, ChangeVersionInput: tracker.ChangeVersionInput{
+			version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: api.NativeMutationKey(), SourceBundle: capture.Bundle, ChangeVersionInput: tracker.ChangeVersionInput{
 				BaseSHA: base, HeadSHA: exactHead, MergeBaseSHA: base, Repository: nativeChangeRepository, PolicyID: h.descriptor.ID, Source: &capture.Source,
 				Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + exactHead, SHA256: policy.Digest([]byte(exactHead)), Availability: "unverified"},
 			}})

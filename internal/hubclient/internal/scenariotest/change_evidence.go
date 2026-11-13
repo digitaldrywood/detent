@@ -182,7 +182,7 @@ func RunNativeChangeLargeValidationFinalization(t *testing.T, factories Construc
 					command.EvidenceArtifact = &altered
 					candidate := input
 					candidate.Validation = &command
-					_, err := h.admin.PublishChangeVersion(ctx, tracker.NativeWorkItemID(issue.ID), change.ChangeID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), ExpectedVersionID: previous, ChangeVersionInput: candidate})
+					_, err := h.admin.PublishChangeVersion(ctx, tracker.NativeWorkItemID(issue.ID), change.ChangeID, tracker.PublishChangeVersion{Mutation: api.NativeMutationKey(), ExpectedVersionID: previous, ChangeVersionInput: candidate})
 					if err == nil || api.HubErrorCode(err) != "invalid_request" {
 						t.Fatalf("invalid artifact was not refused: %v", err)
 					}

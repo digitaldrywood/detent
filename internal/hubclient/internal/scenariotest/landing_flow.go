@@ -489,11 +489,11 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		if err := h.admin.Transport().Request(t.Context(), http.MethodPost, h.admin.Scope()+"/onboarding/repository", map[string]any{"idempotency_key": "attach", "expected_revision": "1", "repository": "example-org/example-project"}, nil); err != nil {
 			t.Fatal(err)
 		}
-		created, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Land me", GitHubIssueURL: "https://github.com/example-org/example-project/issues/12", State: "In Progress"})
+		created, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Land me", GitHubIssueURL: "https://github.com/example-org/example-project/issues/12", State: "In Progress"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.admin.IntakeSource(t.Context(), created.WorkItemID, tracker.GitHubIntake{Mutation: nativeMutationKey(), Snapshot: backend.snapshot(hubserver.GitHubImportRequest{})}); err != nil {
+		if _, err := h.admin.IntakeSource(t.Context(), created.WorkItemID, tracker.GitHubIntake{Mutation: api.NativeMutationKey(), Snapshot: backend.snapshot(hubserver.GitHubImportRequest{})}); err != nil {
 			t.Fatal(err)
 		}
 		confirmIssueContract(t, h.admin, string(created.WorkItemID))
@@ -585,7 +585,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if candidates := h.candidatesIn(t, "Merging"); len(candidates) != 0 {
 		t.Fatalf("an unreviewed item was offered for landing: %#v", candidates)
 	}
-	if _, err := h.admin.ReviewChange(t.Context(), item, change.ChangeID, change.VersionID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved", Body: "Ship it."}); err != nil {
+	if _, err := h.admin.ReviewChange(t.Context(), item, change.ChangeID, change.VersionID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), Decision: "approved", Body: "Ship it."}); err != nil {
 		t.Fatal(err)
 	}
 	if state := h.state(t, issue.ID); state != "Merging" {
@@ -597,7 +597,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"}); err != nil {
+			if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"}); err != nil {
 				t.Fatalf("returning reviewed source to %s: %v", state, err)
 			}
 		}
@@ -654,7 +654,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if batch {
 		want = 6
 		for range 5 {
-			createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Parallel coding", Body: issueContractTestSections, State: "Todo"})
+			createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Parallel coding", Body: issueContractTestSections, State: "Todo"})
 		}
 		h.scheduler.ExecutionSource("local").NativeClient().ApplyHeartbeatChanges(nil)
 		var err error
@@ -1042,7 +1042,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Merging", Reason: "user_requested"}); err != nil {
+		if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "Merging", Reason: "user_requested"}); err != nil {
 			t.Fatal(err)
 		}
 		resumed := h.candidatesIn(t, "Merging")
@@ -1253,7 +1253,7 @@ func testNativeLandingStaleAudit(t *testing.T, h *nativeChangeHub, issue connect
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Merging", Reason: "user_requested"}); err != nil {
+	if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "Merging", Reason: "user_requested"}); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()

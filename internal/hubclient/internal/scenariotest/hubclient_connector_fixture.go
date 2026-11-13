@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -19,7 +20,7 @@ func (c *hubclientFixtureConnector) UpdateIssueState(ctx context.Context, id, st
 	if reason == "recorded_blocker_recovery" || reason == "dependency_auto_unblock" {
 		return c.worker.SetIntakeIssueState(ctx, id, state)
 	}
-	mutation := tracker.MutationForContext(ctx, nativeMutationKey().IdempotencyKey)
+	mutation := tracker.MutationForContext(ctx, api.NativeMutationKey().IdempotencyKey)
 	mutation = c.worker.NativeClient().FencedMutation(ctx, tracker.NativeWorkItemID(id), mutation)
 	if mutation.LeaseID != "" {
 		return c.worker.SetIntakeIssueState(ctx, id, state)

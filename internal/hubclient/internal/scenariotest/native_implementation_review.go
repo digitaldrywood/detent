@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -154,7 +155,7 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 			}
 			if test.feedback != "" {
 				if test.feedback == "bot" {
-					if _, err := h.native.CreateComment(ctx, tracker.NativeWorkItemID(issue.ID), tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Latest bot completion: source complete."}); err != nil {
+					if _, err := h.native.CreateComment(ctx, tracker.NativeWorkItemID(issue.ID), tracker.CreateComment{Mutation: api.NativeMutationKey(), Body: "Latest bot completion: source complete."}); err != nil {
 						t.Fatal(err)
 					}
 				} else {
@@ -225,18 +226,18 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := h.admin.CreateComment(t.Context(), current.WorkItemID, tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Unrelated context must preserve the technical hold."}); err != nil {
+				if _, err := h.admin.CreateComment(t.Context(), current.WorkItemID, tracker.CreateComment{Mutation: api.NativeMutationKey(), Body: "Unrelated context must preserve the technical hold."}); err != nil {
 					t.Fatal(err)
 				}
 				h.restart()
 				if got := h.candidates(t); len(got) != 0 {
 					t.Fatalf("restart or comment redispatched held review: %+v", got)
 				}
-				wrong := tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision - 1, State: "In Progress", Reason: "user_requested"}
+				wrong := tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision - 1, State: "In Progress", Reason: "user_requested"}
 				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, wrong); err == nil {
 					t.Fatal("stale operator revision resumed review")
 				}
-				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
+				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
 					t.Fatal(err)
 				}
 				h.claim(t, issue.ID)
