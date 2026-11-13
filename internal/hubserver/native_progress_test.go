@@ -113,6 +113,14 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 	clock := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return clock.Add(time.Duration(offset.Load())) }})
 	scope := nativeBoardFixtureScope(t, f)
+	readRelationships := func(t *testing.T, id tracker.NativeWorkItemID) tracker.NativeIssue {
+		t.Helper()
+		issue := readWorkItem(t, f, id, "")
+		if err := f.service.hydrateWorkItemRelationshipFacts(t.Context(), scope, &issue); err != nil {
+			t.Fatal(err)
+		}
+		return issue
+	}
 	admin := conversationTestAdmin(t, f.service)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), scope.project)
@@ -294,7 +302,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			if published.DefectIssueID == "" {
 				t.Fatal("missing defect receipt")
 			}
-			dependent := readWorkItem(t, f, issue.WorkItemID, "")
+			dependent := readRelationships(t, issue.WorkItemID)
 			if len(dependent.Dependencies) != 1 || string(dependent.Dependencies[0]) != published.DefectIssueID || dependent.DependencyReady {
 				t.Fatalf("progress defect has no dispatch dependency: %+v", dependent)
 			}
@@ -345,7 +353,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 					if err != nil || !checked || result.DefectIssueID != published.DefectIssueID || result.CommentID == published.CommentID {
 						t.Fatalf("issue %s did not reuse the shared defect: result=%+v checked=%t error=%v", other.WorkItemID, result, checked, err)
 					}
-					linked := readWorkItem(t, f, other.WorkItemID, "")
+					linked := readRelationships(t, other.WorkItemID)
 					if len(linked.Dependencies) != 1 || string(linked.Dependencies[0]) != published.DefectIssueID || linked.DependencyReady {
 						t.Fatalf("issue %s lost its shared repair dependency: %+v", other.WorkItemID, linked)
 					}
@@ -380,7 +388,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 				if _, err := owner.Publish(t.Context(), record); err != nil {
 					t.Fatal(err)
 				}
-				linked := readWorkItem(t, f, issue.WorkItemID, "")
+				linked := readRelationships(t, issue.WorkItemID)
 				if linked.DependencyReady || len(linked.Dependencies) != 1 {
 					t.Fatalf("missing dependency before %s", eventType)
 				}
@@ -400,7 +408,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 				default:
 					appendHistory(t, issue, eventType)
 				}
-				reopened := readWorkItem(t, f, issue.WorkItemID, "")
+				reopened := readRelationships(t, issue.WorkItemID)
 				if !reopened.DependencyReady || len(reopened.Dependencies) != 0 {
 					t.Fatalf("%s retained progress veto", eventType)
 				}
@@ -415,7 +423,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &defect)
 			}
-			reopened := readWorkItem(t, f, issue.WorkItemID, "")
+			reopened := readRelationships(t, issue.WorkItemID)
 			if !reopened.DependencyReady {
 				t.Fatal("landed defect still vetoes dispatch")
 			}
@@ -423,7 +431,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+request.IssueID+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "ordinary-dependency"}, ExpectedRevision: reopened.Revision, Operation: "add", RelatedWorkItemID: ordinary.WorkItemID})
 			requireNativeStatus(t, response, http.StatusOK)
 			appendHistory(t, issue, "issue.edited")
-			retained := readWorkItem(t, f, issue.WorkItemID, "")
+			retained := readRelationships(t, issue.WorkItemID)
 			if retained.DependencyReady || len(retained.Dependencies) != 1 || retained.Dependencies[0] != ordinary.WorkItemID {
 				t.Fatal("new evidence changed ordinary dependency")
 			}
