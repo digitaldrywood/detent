@@ -87,7 +87,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope nativeScope,
 			return content.Receipt(ctx, previous)
 		}
 		now := s.config.now().UTC().Truncate(time.Microsecond)
-		record := workspaceRecord{ID: newNativeID("ws"), OrganizationID: scope.organization, ProjectID: scope.project, SubjectWorkItemID: string(subject.NativeID), AttemptID: strings.TrimSpace(request.AttemptID), Ref: strings.TrimSpace(request.Ref), State: workspacesession.StateRequested, Requires: request.Requires, ReadOnly: readOnly, IdleTimeoutSeconds: service.config.idleTimeoutSeconds(), ExpiresAt: now.Add(service.config.MaxLifetime), RequestedExpiresAt: now.Add(service.config.RequestTimeout), CreatedBy: scope.credential.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
+		record := workspaceRecord{ID: newNativeID("ws"), OrganizationID: scope.organization, ProjectID: scope.project, SubjectWorkItemID: string(subject.NativeID), AttemptID: strings.TrimSpace(request.AttemptID), Ref: strings.TrimSpace(request.Ref), State: workspacesession.StateRequested, Requires: request.Requires, ReadOnly: readOnly, IdleTimeoutSeconds: service.config.IdleTimeoutSeconds(), ExpiresAt: now.Add(service.config.MaxLifetime), RequestedExpiresAt: now.Add(service.config.RequestTimeout), CreatedBy: scope.credential.ID, Revision: 1, CreatedAt: now, UpdatedAt: now}
 		project, err := s.readProjectRecord(ctx, scope)
 		if err != nil {
 			return nil, err

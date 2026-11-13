@@ -1,4 +1,4 @@
-package hubserver
+package workspacehub
 
 import (
 	"errors"
@@ -7,12 +7,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// WorkspaceConfig is the `workspaces:` section of the hosted configuration.
+// Config is the `workspaces:` section of the hosted configuration.
 // Every field is a bound: how long a request waits
 // for a runner, how long a worktree stays available after its run, how long an
 // unused workspace lives, how many may be open at once, and how much of the
 // hub process the relay may hold.
-type WorkspaceConfig struct {
+type Config struct {
 	// Enabled mounts the workspace endpoints and the relay. With it off the
 	// surfaces stay disabled with their reason and no workspace
 	// work item is ever created.
@@ -50,11 +50,11 @@ type WorkspaceConfig struct {
 	// are live: Enabled gates the creation request and every frame, Isolation
 	// decides who may open one and what a recording's audience is, and Record
 	// decides whether the stream is stored.
-	Terminal WorkspaceTerminalConfig
+	Terminal TerminalConfig
 }
 
-// WorkspaceTerminalConfig is `workspaces.terminal`.
-type WorkspaceTerminalConfig struct {
+// TerminalConfig is `workspaces.terminal`.
+type TerminalConfig struct {
 	// Enabled is workspaces.terminal.enabled, default off; an owner turns it
 	// on.
 	Enabled   bool
@@ -71,31 +71,31 @@ type WorkspaceTerminalConfig struct {
 
 // Workspace configuration defaults, all from the workspace session contract and the relay protocol.
 const (
-	defaultWorkspaceRequestTimeout = 5 * time.Minute
-	defaultWorkspaceRetainAfterRun = 30 * time.Minute
-	defaultWorkspaceIdleTimeout    = 30 * time.Minute
-	defaultWorkspaceMaxLifetime    = 4 * time.Hour
-	defaultWorkspacePlanMaxOpen    = 20
-	// defaultWorkspacePersonMaxOpen is the workspace session contract's "per person, 3 at a
+	DefaultWorkspaceRequestTimeout = 5 * time.Minute
+	DefaultWorkspaceRetainAfterRun = 30 * time.Minute
+	DefaultWorkspaceIdleTimeout    = 30 * time.Minute
+	DefaultWorkspaceMaxLifetime    = 4 * time.Hour
+	DefaultWorkspacePlanMaxOpen    = 20
+	// DefaultWorkspacePersonMaxOpen is the workspace session contract's "per person, 3 at a
 	// time".
-	defaultWorkspacePersonMaxOpen = 3
+	DefaultWorkspacePersonMaxOpen = 3
 )
 
 // ErrWorkspaceConfig reports a workspace section the hub refuses to run with.
 var ErrWorkspaceConfig = errors.New("hub workspace configuration is invalid")
 
-func (c WorkspaceConfig) normalized() WorkspaceConfig {
+func (c Config) Normalized() Config {
 	if c.RequestTimeout <= 0 {
-		c.RequestTimeout = defaultWorkspaceRequestTimeout
+		c.RequestTimeout = DefaultWorkspaceRequestTimeout
 	}
 	if c.RetainAfterRun < 0 {
-		c.RetainAfterRun = defaultWorkspaceRetainAfterRun
+		c.RetainAfterRun = DefaultWorkspaceRetainAfterRun
 	}
 	if c.IdleTimeout <= 0 {
-		c.IdleTimeout = defaultWorkspaceIdleTimeout
+		c.IdleTimeout = DefaultWorkspaceIdleTimeout
 	}
 	if c.MaxLifetime <= 0 {
-		c.MaxLifetime = defaultWorkspaceMaxLifetime
+		c.MaxLifetime = DefaultWorkspaceMaxLifetime
 	}
 	if c.MaxLifetime < c.IdleTimeout {
 		// A hard cap under the idle timeout would make every workspace expire
@@ -103,10 +103,10 @@ func (c WorkspaceConfig) normalized() WorkspaceConfig {
 		c.MaxLifetime = c.IdleTimeout
 	}
 	if c.PlanMaxOpen <= 0 {
-		c.PlanMaxOpen = defaultWorkspacePlanMaxOpen
+		c.PlanMaxOpen = DefaultWorkspacePlanMaxOpen
 	}
 	if c.PersonMaxOpen <= 0 {
-		c.PersonMaxOpen = defaultWorkspacePersonMaxOpen
+		c.PersonMaxOpen = DefaultWorkspacePersonMaxOpen
 	}
 	if c.RelayMemoryBytes <= 0 {
 		c.RelayMemoryBytes = workspacesession.DefaultRelayMemoryBytes
@@ -124,7 +124,7 @@ func (c WorkspaceConfig) normalized() WorkspaceConfig {
 // validate refuses a section the hub cannot honour. It is separate from
 // normalized because a default is a choice the hub may make for an operator
 // and an invalid value is not.
-func (c WorkspaceConfig) validate() error {
+func (c Config) Validate() error {
 	if !workspacesession.ValidIsolation(c.Terminal.Isolation) || c.Terminal.Isolation == "" {
 		return errors.Join(ErrWorkspaceConfig, errors.New("workspaces.terminal.isolation must be sandbox, container or user"))
 	}
@@ -136,11 +136,11 @@ func (c WorkspaceConfig) validate() error {
 
 // RecordEnabled reports whether terminal sessions are recorded. A
 // configuration that never said records, which is the terminal contract's default.
-func (c WorkspaceTerminalConfig) RecordEnabled() bool {
+func (c TerminalConfig) RecordEnabled() bool {
 	return c.Record == nil || *c.Record
 }
 
-// idleTimeoutSeconds is what a workspace resource reports.
-func (c WorkspaceConfig) idleTimeoutSeconds() int {
+// IdleTimeoutSeconds is what a workspace resource reports.
+func (c Config) IdleTimeoutSeconds() int {
 	return int(c.IdleTimeout / time.Second)
 }

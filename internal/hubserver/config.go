@@ -145,7 +145,7 @@ func (c Config) normalized() Config {
 		c.Usage = &normalized
 	}
 	if c.Workspace != nil {
-		normalized := c.Workspace.normalized()
+		normalized := c.Workspace.Normalized()
 		c.Workspace = &normalized
 	}
 	if c.CredentialMaintenance {

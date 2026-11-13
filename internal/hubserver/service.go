@@ -327,7 +327,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		return errors.Join(err, database.Close())
 	}
 	if cfg.Workspace != nil && cfg.Workspace.Enabled && !cfg.CredentialMaintenance {
-		if err := cfg.Workspace.validate(); err != nil {
+		if err := cfg.Workspace.Validate(); err != nil {
 			workerCancel()
 			return nil, closeStartupDatabase(err)
 		}
