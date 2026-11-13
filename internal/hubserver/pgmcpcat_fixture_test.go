@@ -33,7 +33,7 @@ func pgmcpcatSeed(t *testing.T, s *Service, org tracker.OrganizationID) {
 	}
 	for _, project := range []string{"project", "compat"} {
 		profile := "native"
-		item, state := "wi_item", "Todo"
+		item, state := "wi_00000000000000000000000000000001", "Todo"
 		if project == "compat" {
 			profile, item = "github_compatible", "wi_compat_item"
 		}
@@ -50,11 +50,11 @@ func pgmcpcatSeed(t *testing.T, s *Service, org tracker.OrganizationID) {
 		}
 		ids := []string{item}
 		if project == "project" {
-			ids = append(ids, "wi_verify_item", "wi_reopen_item")
+			ids = append(ids, "wi_00000000000000000000000000000002", "wi_00000000000000000000000000000003")
 		}
 		for number, id := range ids {
 			verification := (*tracker.NativeVerification)(nil)
-			if id == "wi_verify_item" || id == "wi_reopen_item" {
+			if id == "wi_00000000000000000000000000000002" || id == "wi_00000000000000000000000000000003" {
 				state = "Done"
 				verification = &tracker.NativeVerification{State: tracker.VerificationPending}
 			}

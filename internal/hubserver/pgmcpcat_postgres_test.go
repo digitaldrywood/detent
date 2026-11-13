@@ -78,8 +78,8 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		lease := seedEntryRuntimeAttempt(t, service, tracker.OrganizationID(org), "wi_item")
-		if err := service.refreshBoardRecord(t.Context(), tracker.OrganizationID(org), viewstore.BoardCandidate{ProjectID: "project", WorkItemID: "wi_item"}, service.config.now()); err != nil {
+		lease := seedEntryRuntimeAttempt(t, service, tracker.OrganizationID(org), "wi_00000000000000000000000000000001")
+		if err := service.refreshBoardRecord(t.Context(), tracker.OrganizationID(org), viewstore.BoardCandidate{ProjectID: "project", WorkItemID: "wi_00000000000000000000000000000001"}, service.config.now()); err != nil {
 			t.Fatal(err)
 		}
 		claims := func(c *cloudassert.Claims) {
@@ -158,7 +158,7 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 					if !strings.Contains(collided, `"code":"revision_conflict"`) {
 						t.Fatalf("changed dependency request reused the receipt: %s", collided)
 					}
-					crossProject := call(t, test.name, `"project_id":"compat","identifier":"#1","related":"wi_item","operation":"add","request_id":"cross-project"`, http.StatusUnprocessableEntity)
+					crossProject := call(t, test.name, `"project_id":"compat","identifier":"#1","related":"wi_00000000000000000000000000000001","operation":"add","request_id":"cross-project"`, http.StatusUnprocessableEntity)
 					if !strings.Contains(crossProject, `"code":"not_found"`) {
 						t.Fatalf("dependency lookup escaped its project: %s", crossProject)
 					}
@@ -229,11 +229,11 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 			if entry.Rank != "001" || entry.Priority == nil || *entry.Priority != 1 {
 				t.Errorf("queue mutation lost fields: %+v", entry)
 			}
-			row, err := r.WorkItem(t.Context(), "project", "wi_verify_item")
+			row, err := r.WorkItem(t.Context(), "project", "wi_00000000000000000000000000000002")
 			if err != nil {
 				return err
 			}
-			version, err := r.CollaborationVersion(t.Context(), "wi_verify_item", row.Revision)
+			version, err := r.CollaborationVersion(t.Context(), "wi_00000000000000000000000000000002", row.Revision)
 			if err != nil {
 				return err
 			}
@@ -244,18 +244,18 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 			if issue.Verification == nil || issue.Verification.State != tracker.VerificationVerified {
 				t.Errorf("verification = %+v", issue.Verification)
 			}
-			reopened, err := r.WorkItem(t.Context(), "project", "wi_reopen_item")
+			reopened, err := r.WorkItem(t.Context(), "project", "wi_00000000000000000000000000000003")
 			if err != nil {
 				return err
 			}
-			comments, err := r.Comments(t.Context(), "project", "wi_reopen_item", 0, 10)
+			comments, err := r.Comments(t.Context(), "project", "wi_00000000000000000000000000000003", 0, 10)
 			if err != nil {
 				return err
 			}
 			if stringValue(reopened.WorkflowStateName) != "Todo" || reopened.DispatchGeneration != 1 || len(comments) != 1 {
 				t.Errorf("reopen state=%s dispatch=%d comments=%d", stringValue(reopened.WorkflowStateName), reopened.DispatchGeneration, len(comments))
 			}
-			stopped, err := r.WorkItem(t.Context(), "project", "wi_item")
+			stopped, err := r.WorkItem(t.Context(), "project", "wi_00000000000000000000000000000001")
 			if err != nil {
 				return err
 			}
