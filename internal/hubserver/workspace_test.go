@@ -1431,6 +1431,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 		publicRetained string
 		finished       bool
 		expired        bool
+		leaseLost      bool
 		race           bool
 		want           bool
 		reason         string
@@ -1485,6 +1486,10 @@ func TestWorkspaceClaimable(t *testing.T) {
 		{
 			name: "expired retention permits a fresh checkout on another runner", requires: surfaces,
 			capabilities: workspaceTestCapabilities, fresh: true, publicRetained: "runner_two", finished: true, expired: true, want: true,
+		},
+		{
+			name: "a lost lease past retention permits a fresh checkout on another runner", requires: surfaces,
+			capabilities: workspaceTestCapabilities, fresh: true, publicRetained: "runner_two", expired: true, leaseLost: true, want: true,
 		},
 		{
 			name: "a changed capability report is rechecked at commit", requires: surfaces,
@@ -1565,6 +1570,9 @@ func TestWorkspaceClaimable(t *testing.T) {
 					if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET updated_at=$3 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, attempt, now.Add(-f.service.workspaces.config.RetainAfterRun)); err != nil {
 						t.Fatal(err)
 					}
+				}
+				if test.leaseLost {
+					f.setLeaseExpiry(t, lease.ID, f.service.config.Clock().UTC().Add(-time.Second))
 				}
 				if !test.race {
 					if _, err := admin.ExecContext(t.Context(), "UPDATE workspace_sessions SET attempt_id=$4 WHERE organization_id=$1 AND project_id=$2 AND id=$3", f.project.OrganizationID, f.project.ID, session.ID, attempt); err != nil {

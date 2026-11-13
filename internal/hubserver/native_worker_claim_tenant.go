@@ -1636,7 +1636,8 @@ func (s *Service) nativeWorkspaceClaimAllowed(ctx context.Context, r tenantstore
 		if attempt.OrganizationID != scope.Organization || attempt.IssueID != subject.ID {
 			return false, corestore.ErrTenantMismatch
 		}
-		if attempt.Status == "running" || now.Before(attempt.UpdatedAt.Add(s.workspaces.config.RetainAfterRun)) {
+		retainedWindow := now.Before(attempt.UpdatedAt.Add(s.workspaces.config.RetainAfterRun))
+		if attempt.Status == "running" || retainedWindow {
 			lease, err := r.Lease(ctx, attempt.LeaseID)
 			if errors.Is(err, corestore.ErrNotFound) {
 				return unavailable("lease")
@@ -1647,14 +1648,16 @@ func (s *Service) nativeWorkspaceClaimAllowed(ctx context.Context, r tenantstore
 			if lease.IssueID != subject.ID || lease.FencingToken != attempt.FencingToken {
 				return false, corestore.ErrRevisionConflict
 			}
-			runner, err := r.RunnerForLease(ctx, attempt.LeaseID)
-			if errors.Is(err, corestore.ErrNotFound) {
-				return unavailable("attempt_runner")
+			if retainedWindow || lease.ReleasedAt == nil && lease.ExpiresAt.After(now) {
+				runner, err := r.RunnerForLease(ctx, attempt.LeaseID)
+				if errors.Is(err, corestore.ErrNotFound) {
+					return unavailable("attempt_runner")
+				}
+				if err != nil {
+					return false, err
+				}
+				retained = runner.RunnerID
 			}
-			if err != nil {
-				return false, err
-			}
-			retained = runner.RunnerID
 		}
 	}
 	fresh := !now.Before(identity.LastHeartbeatAt) && now.Before(identity.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout))
