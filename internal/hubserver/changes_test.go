@@ -1031,6 +1031,11 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		if includePolicy {
+			if _, err := nativeAttemptTestDatabase(t, local.nativeFixture).ExecContext(t.Context(), "UPDATE lease_policy_bindings SET selector_runner_id=NULL,selector_machine_id=NULL,selector_tags=NULL WHERE organization_id=$1 AND lease_id=$2", scope.Organization, actual.LeaseID); err != nil {
+				t.Fatal(err)
+			}
+		}
 		var pinned policystore.LeasePolicy
 		if err := service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
