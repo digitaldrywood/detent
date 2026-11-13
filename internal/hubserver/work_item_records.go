@@ -1199,6 +1199,9 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope nativeSco
 			if duplicateSearch != nil && duplicateSearch.available {
 				if err := lockWorkItemDuplicateSource(ctx, w, scope.project, duplicateSearch.sequence); err != nil {
 					if errors.Is(err, corestore.ErrRevisionConflict) {
+						if machineSearch != nil && len(machineSearch.matches) > 0 {
+							return nativeConflict(0)
+						}
 						return corestore.ErrSerializationFailure
 					}
 					return err
