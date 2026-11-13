@@ -1,9 +1,12 @@
-package hubserver
+package githubhosted_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,16 +23,21 @@ import (
 )
 
 func TestHostedGitHubRepositoriesPostgres(t *testing.T) {
-	admin := postgresStartupTemplate.Database(t)
-	connection := startupConnection(t, admin, "detent_runtime_v2", "")
-	key := hostedSharedKey(97)
-	config := startupConfig(connection)
-	config.Hosted.SharedEntry = &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
-	database, err := openDatabase(t.Context(), config)
-	if err != nil {
+	admin := hubtest.Database(t)
+	connection := hubtest.PostgresConfig(t, admin)
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{97}, ed25519.SeedSize))
+	config := hubserver.Config{DatabaseBackend: hubserver.DatabasePostgres, Postgres: &connection, RunDetails: hubtest.NewDetails(), Hosted: &hubserver.HostedConfig{OrganizationID: "org_startup", WorkOSOrganizationID: "provider_org_startup", PublicURL: "https://hub.example.test", Provider: sharedProvider{}}}
+	config.Hosted.SharedEntry = &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
+	repository := hubtest.RepositoryOn(t, admin)
+	nowSeed := time.Now().UTC()
+	if err := repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_startup", Name: "Example", Slug: "example-startup", CreatedAt: nowSeed}); err != nil {
+			return err
+		}
+		return w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: "org_startup", ProviderID: config.Hosted.WorkOSOrganizationID, Deployment: "shared", PublicURL: config.Hosted.PublicURL, AllocationGeneration: 1})
+	}); err != nil {
 		t.Fatal(err)
 	}
-	seedStartupOrganization(t, database.postgres, "org_startup", config.Hosted)
 	now := time.Now().UTC()
 	type projectBinding struct {
 		id                 tracker.ProjectID
@@ -39,11 +47,11 @@ func TestHostedGitHubRepositoriesPostgres(t *testing.T) {
 	}
 	for _, organization := range []tracker.OrganizationID{"org_startup", "org_other"} {
 		if organization != "org_startup" {
-			if err := database.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+			if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
 				if err := writer.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Other example", CreatedAt: now}); err != nil {
 					return err
 				}
-				deployment, generation := config.Hosted.deployment()
+				deployment, generation := "shared", int64(1)
 				return writer.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_other", BootstrapSubject: config.Hosted.BootstrapSubject, Deployment: deployment, PublicURL: config.Hosted.PublicURL, AllocationGeneration: generation})
 			}); err != nil {
 				t.Fatal(err)
@@ -66,7 +74,7 @@ func TestHostedGitHubRepositoriesPostgres(t *testing.T) {
 				{id: "project_other_copy", profile: "native", checkoutRepository: "OTHER-ORG/OTHER-REPO"},
 			}
 		}
-		if err := database.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
 			for _, project := range projects {
 				record, err := writer.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project.id, Name: string(project.id), Profile: project.profile}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})
 				if err != nil {
@@ -82,9 +90,6 @@ func TestHostedGitHubRepositoriesPostgres(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := database.Close(); err != nil {
-		t.Fatal(err)
 	}
 
 	for _, test := range []struct {
@@ -109,7 +114,7 @@ func TestHostedGitHubRepositoriesPostgres(t *testing.T) {
 			var receiptClock atomic.Int64
 			receiptClock.Store(firstReceipt.UnixNano())
 			config.Clock = func() time.Time { return time.Unix(0, receiptClock.Load()).UTC() }
-			service, err := Open(t.Context(), config)
+			service, err := hubserver.Open(t.Context(), config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -226,7 +231,10 @@ func TestHostedGitHubRepositoriesPostgres(t *testing.T) {
 						t.Fatalf("webhook status=%d want=%d body=%s", response.Code, delivery.status, response.Body.String())
 					}
 					if response.Code == http.StatusAccepted {
-						var result webhookResponse
+						var result struct {
+							DeliveryID string `json:"delivery_id"`
+							Duplicate  bool   `json:"duplicate"`
+						}
 						if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 							t.Fatal(err)
 						}
@@ -237,7 +245,7 @@ func TestHostedGitHubRepositoriesPostgres(t *testing.T) {
 					receipt(t, &delivery.wantLatest)
 				})
 			}
-			if err := service.config.TenantRepository.ReadTenant(t.Context(), test.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			if err := repository.ReadTenant(t.Context(), test.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 				owner := reader.(projectstore.GitHubIntakeReader)
 				for _, delivery := range []struct {
 					id   string

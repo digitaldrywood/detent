@@ -1,4 +1,4 @@
-package hubserver
+package githubhosted
 
 import (
 	"context"
@@ -11,27 +11,28 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) hostedGitHubRepositories(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+func (s *Service) Repositories(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	return s.hostedGitHubRepositoriesPostgres(ctx, c)
+	return s.repositories(ctx, c)
 }
 
-func (s *Service) hostedGitHubRepositoriesPostgres(ctx context.Context, c echo.Context) error {
-	if s.config.TenantRepository == nil {
-		return s.internalAPIError(c, "tenant_unavailable", "Repository bindings are unavailable", errors.New("typed GitHub repository binding reads are unavailable"))
+func (s *Service) repositories(ctx context.Context, c echo.Context) error {
+	if s.deps.Repository == nil {
+		return s.deps.Error(c, "tenant_unavailable", "Repository bindings are unavailable", errors.New("typed GitHub repository binding reads are unavailable"))
 	}
-	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	repository, ok := s.deps.Repository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return s.internalAPIError(c, "tenant_unavailable", "Repository bindings are unavailable", errors.New("typed GitHub repository snapshots are unavailable"))
+		return s.deps.Error(c, "tenant_unavailable", "Repository bindings are unavailable", errors.New("typed GitHub repository snapshots are unavailable"))
 	}
 	const pageSize = corestore.MaxPageSize
-	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
+	organization := s.deps.Organization
 	repositories := make(map[string]struct{})
 	err := repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		pageReader, ok := reader.(projectstore.GitHubRepositoryBindingsPageReader)
@@ -62,7 +63,7 @@ func (s *Service) hostedGitHubRepositoriesPostgres(ctx context.Context, c echo.C
 		}
 	})
 	if err != nil {
-		return s.internalAPIError(c, "tenant_unavailable", "Repository bindings are unavailable", err)
+		return s.deps.Error(c, "tenant_unavailable", "Repository bindings are unavailable", err)
 	}
 	result := make([]string, 0, len(repositories))
 	for repository := range repositories {
@@ -72,19 +73,19 @@ func (s *Service) hostedGitHubRepositoriesPostgres(ctx context.Context, c echo.C
 	return c.JSON(http.StatusOK, result)
 }
 
-func (s *Service) hostedGitHubReceipt(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+func (s *Service) Receipt(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	var result struct {
 		ReceivedAt *time.Time `json:"received_at"`
 	}
-	if s.config.TenantRepository == nil {
-		return s.internalAPIError(c, "tenant_unavailable", "GitHub webhook receipt is unavailable", ErrPostgresFeatureUnavailable)
+	if s.deps.Repository == nil {
+		return s.deps.Error(c, "tenant_unavailable", "GitHub webhook receipt is unavailable", s.deps.Unavailable)
 	}
-	err := s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), corestore.Serving, func(reader tenantstore.Reader) error {
+	err := s.deps.Repository.ReadTenant(ctx, s.deps.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(projectstore.GitHubIntakeReader)
 		if !ok {
-			return ErrPostgresFeatureUnavailable
+			return s.deps.Unavailable
 		}
 		received, err := owner.LatestGitHubWebhookReceipt(ctx)
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -98,7 +99,7 @@ func (s *Service) hostedGitHubReceipt(c echo.Context) error {
 		return nil
 	})
 	if err != nil {
-		return s.internalAPIError(c, "tenant_unavailable", "GitHub webhook receipt is unavailable", err)
+		return s.deps.Error(c, "tenant_unavailable", "GitHub webhook receipt is unavailable", err)
 	}
 	return c.JSON(http.StatusOK, result)
 }
