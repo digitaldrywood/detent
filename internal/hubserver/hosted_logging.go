@@ -73,6 +73,9 @@ func hostedTimingAttr(attr slog.Attr) bool {
 	switch attr.Key {
 	case "method":
 		return attr.Value.Kind() == slog.KindString && hostedErrorClass.MatchString(attr.Value.String())
+	case "status":
+		kind := attr.Value.Kind()
+		return kind == slog.KindInt64 || kind == slog.KindUint64 || kind == slog.KindString && hostedErrorClass.MatchString(attr.Value.String())
 	case "route":
 		return attr.Value.Kind() == slog.KindString && hostedRouteTemplate.MatchString(attr.Value.String())
 	case "pool_full":

@@ -467,7 +467,7 @@ func conversationContentUnavailable() error {
 }
 
 func (c *conversationService) logReceipt(conversationID, attemptID string, receipt conversation.Receipt) {
-	attributes := []any{"conversation_id", conversationID, "command_key", receipt.Key, "kind", receipt.Kind, "status", receipt.Status, "attempt_id", attemptID}
+	attributes := []any{"conversation_id", conversationID, "command_key", receipt.Key, "kind", string(receipt.Kind), "status", string(receipt.Status), "attempt_id", attemptID}
 	if receipt.Error != nil {
 		attributes = append(attributes, "error_code", receipt.Error.Code)
 	}

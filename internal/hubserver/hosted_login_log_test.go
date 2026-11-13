@@ -202,6 +202,10 @@ func TestHostedLogsKeepRequestTiming(t *testing.T) {
 			map[string]any{"msg": "conversation.restart_normalized", "messages": float64(3), "comments": float64(2)}},
 		{"conversation id kept and message text dropped", "conversation.receipt", []any{"conversation_id", "conv_0123456789abcdef0123456789abcdef", "text", "tenant content sentinel", "command_key", "conv_0123456789abcdef0123456789abcdef00"},
 			map[string]any{"msg": "conversation.receipt", "conversation_id": "conv_0123456789abcdef0123456789abcdef", "command_key": "[redacted]"}},
+		{"receipt status kept", "conversation.receipt", []any{"status", "saved", "kind", "message"},
+			map[string]any{"msg": "conversation.receipt", "status": "saved", "kind": "message"}},
+		{"free text status dropped", "conversation.receipt", []any{"status", "tenant status sentinel"},
+			map[string]any{"msg": "conversation.receipt"}},
 		{"other messages keep safe diagnostics", "lease renewed", []any{"duration_ms", int64(10), "route", "/api/v2/x"},
 			map[string]any{"msg": "lease renewed", "duration_ms": float64(10), "route": "/api/v2/x"}},
 	} {
