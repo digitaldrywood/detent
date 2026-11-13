@@ -103,7 +103,7 @@ func TestPlatformNotifications(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			startup := output.take()
+			startup := output.Take()
 			wantSkips := 0
 			if test.key == "" {
 				wantSkips = 1
@@ -223,7 +223,7 @@ func TestPlatformNotifications(t *testing.T) {
 					t.Fatalf("duplicate %s: %d", key, count)
 				}
 			}
-			logs := output.take()
+			logs := output.Take()
 			wantErrors := 0
 			if test.sendError {
 				wantErrors = 2

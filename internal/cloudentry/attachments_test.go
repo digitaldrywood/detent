@@ -595,15 +595,3 @@ func (s *lockProbeStorage) Walk(ctx context.Context, prefix string, visit func(a
 		return visit(object)
 	})
 }
-
-func createEntryTestProject(t *testing.T, browser *browser, name, csrf string) string {
-	t.Helper()
-	response := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/projects", jsonBody(t, map[string]any{"name": name, "grant_access": true, "idempotency_key": name}), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
-	var project struct {
-		ID string `json:"project_id"`
-	}
-	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &project) != nil || project.ID == "" {
-		t.Fatalf("create project=%d %s", response.Code, response.Body)
-	}
-	return project.ID
-}

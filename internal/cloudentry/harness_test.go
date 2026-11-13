@@ -1,8 +1,13 @@
 package cloudentry
 
-import "github.com/digitaldrywood/detent/internal/cloudentry/internal/harness"
+import (
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/harness"
+)
 
 type (
+	logBuffer                  = entrytest.LogBuffer
+	lockedBuffer               = entrytest.LockedBuffer
 	swappableHandler           = harness.SwappableHandler
 	fakeProvider               = harness.FakeProvider
 	browser                    = harness.Browser
@@ -23,6 +28,10 @@ const (
 )
 
 var (
+	createEntryTestProject  = harness.CreateProject
+	stateOf                 = harness.StateOf
+	assertEntryFallback     = harness.AssertEntryFallback
+	inviteEntryTestMember   = harness.InviteMember
 	registerTestOAuth       = harness.RegisterOAuth
 	testOAuthQuery          = harness.OAuthQuery
 	approveTestOAuth        = harness.ApproveOAuth

@@ -718,15 +718,6 @@ func TestSharedEntryLoginCookieReplacement(t *testing.T) {
 	}
 }
 
-func stateOf(t *testing.T, response page) string {
-	t.Helper()
-	location, err := url.Parse(response.Header.Get("Location"))
-	if err != nil || location.Query().Get("state") == "" {
-		t.Fatalf("no provider redirect: %d %q", response.StatusCode, response.Header.Get("Location"))
-	}
-	return location.Query().Get("state")
-}
-
 func TestSharedEntryInvitation(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -1070,26 +1061,6 @@ func testSharedEntrySupportAccess(t *testing.T, configureStorage func(*Config)) 
 	}
 }
 
-func assertEntryFallback(t *testing.T, browser *browser, body string) {
-	t.Helper()
-	for _, want := range []string{`class="detent-sign-in detent-entry"`, `href="/static/css/entry.css"`, `class="entry-card"`, `<form method="post" action="/logout">`, `name="csrf"`, `>Sign out</button>`} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("entry fallback missing %s: %s", want, body)
-		}
-	}
-	if strings.Contains(body, `<details`) || strings.Contains(body, `/static/app/`) {
-		t.Fatalf("entry fallback depends on workspace chrome or client assets: %s", body)
-	}
-	if csrfFrom(t, body) == "" {
-		t.Fatal("entry fallback has no logout CSRF token")
-	}
-	for _, asset := range []string{"/static/css/entry.css", "/static/css/sign-in.css", "/static/fonts/Geist-Variable.woff2"} {
-		if response, content := browser.Get(asset); response.StatusCode != http.StatusOK || len(content) == 0 {
-			t.Fatalf("entry fallback asset %s = %d", asset, response.StatusCode)
-		}
-	}
-}
-
 func TestSharedEntryKeepsTenantStaticCachePolicy(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
@@ -1112,12 +1083,6 @@ func TestSharedEntryKeepsTenantStaticCachePolicy(t *testing.T) {
 			}
 		})
 	}
-}
-
-func inviteEntryTestMember(t *testing.T, b *browser, email, role, csrf string) page {
-	t.Helper()
-	response := attachmentRequest(t, b, http.MethodPost, "/api/v2/organizations/org_alpha/members/invitations", jsonBody(t, map[string]any{"email": email, "role": role, "idempotency_key": "invite-" + email}), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
-	return page{StatusCode: response.Code, Header: response.Header(), Body: response.Body.String()}
 }
 
 func TestEntryAuthDependencyOutages(t *testing.T) {
