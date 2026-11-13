@@ -156,8 +156,8 @@ UPDATE issues SET
         ELSE COALESCE(sqlc.narg(terminal_clock)::timestamptz,CURRENT_TIMESTAMP)
     END,
     revision=issues.revision+1,
-    updated_at=CURRENT_TIMESTAMP,
-    native_updated_at=CURRENT_TIMESTAMP
+    updated_at=COALESCE(sqlc.narg(terminal_clock)::timestamptz,CURRENT_TIMESTAMP),
+    native_updated_at=COALESCE(sqlc.narg(terminal_clock)::timestamptz,CURRENT_TIMESTAMP)
 FROM previous
 WHERE issues.id=previous.id AND issues.organization_id=sqlc.arg(organization_id) AND issues.project_id=sqlc.arg(project_id) AND issues.native_id=sqlc.arg(native_id) AND issues.revision=sqlc.arg(expected_revision) RETURNING issues.*;
 

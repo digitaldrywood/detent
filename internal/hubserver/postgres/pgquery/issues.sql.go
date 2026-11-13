@@ -930,8 +930,8 @@ UPDATE issues SET
         ELSE COALESCE($9::timestamptz,CURRENT_TIMESTAMP)
     END,
     revision=issues.revision+1,
-    updated_at=CURRENT_TIMESTAMP,
-    native_updated_at=CURRENT_TIMESTAMP
+    updated_at=COALESCE($9::timestamptz,CURRENT_TIMESTAMP),
+    native_updated_at=COALESCE($9::timestamptz,CURRENT_TIMESTAMP)
 FROM previous
 WHERE issues.id=previous.id AND issues.organization_id=$23 AND issues.project_id=$24 AND issues.native_id=$25 AND issues.revision=$2 RETURNING issues.organization_id, issues.id, issues.native_id, issues.project_id, issues.number, issues.revision, issues.event_sequence, issues.native_source_key, issues.title, issues.body_object_key, issues.issue_contract_object_key, issues.report_context_object_key, issues.actor_kind, issues.actor_principal_id, issues.provenance_provider, issues.provenance_external_id, issues.archived, issues.created_at, issues.updated_at, issues.native_created_at, issues.native_updated_at, issues.workflow_state_name, issues.last_activity_at, issues.issue_type, issues.priority, issues.dispatch_generation, issues.dispatch_requested_at, issues.recovery_runner_id, issues.recovery_version_id, issues.doctor_identity_revision, issues.terminal_entered_at, issues.archive_restored_at, issues.archive_restore_known, issues.source_revision, issues.source_scheduled, issues.source_observed_at
 `

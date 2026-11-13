@@ -182,6 +182,9 @@ func TestWorkItemTerminalStreakSurvivesEditsAndRestartsOnReopen(t *testing.T) {
 						if err != nil {
 							return err
 						}
+						if !item.UpdatedAt.Equal(now) || !item.NativeUpdatedAt.Equal(now) {
+							t.Errorf("%s update clocks=%s/%s want=%s", org, item.UpdatedAt, item.NativeUpdatedAt, now)
+						}
 						if step.expected == nil {
 							if item.TerminalEnteredAt != nil {
 								t.Errorf("%s reopen retained clock %v", org, item.TerminalEnteredAt)
