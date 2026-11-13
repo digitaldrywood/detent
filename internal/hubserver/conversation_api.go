@@ -819,7 +819,11 @@ func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope
 	}
 	ctx = newConversationArchiveReads(ctx)
 
-	return s.commandPostConversationPG(ctx, scope, id, command)
+	value, err := s.commandPostConversationPG(ctx, scope, id, command)
+	if err != nil {
+		return nil, conversationStaleExecutionError(string(command.Kind), id, err)
+	}
+	return value, nil
 }
 
 func conversationLinkedIssueRequest(record conversationRecord, request conversationLinkRequest, next conversationLinkNextApplied) tracker.CreateIssue {
