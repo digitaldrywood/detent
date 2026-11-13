@@ -101,8 +101,8 @@ func validateWorkItemReceiptIssue(scope nativeScope, item string, raw json.RawMe
 	if err := decodeWorkItemReceipt(raw, &issue); err != nil {
 		return err
 	}
-	if issue.OrganizationID != scope.organization || issue.ProjectID != scope.project || !validNativeID(string(issue.WorkItemID), "wi") || item != "" && string(issue.WorkItemID) != item ||
-		issue.Number <= 0 || issue.Revision <= 0 || issue.Profile != "native" || issue.Title == "" || issue.State == "" {
+	if issue.OrganizationID != scope.organization || issue.ProjectID != scope.project || item == "" && !validNativeID(string(issue.WorkItemID), "wi") || item != "" && string(issue.WorkItemID) != item ||
+		issue.Number <= 0 || issue.Revision <= 0 || issue.Profile != "native" && issue.Profile != "github_compatible" || issue.Title == "" || issue.State == "" {
 		return receiptstore.ErrExpired
 	}
 	if !scope.reporterOwns(issue.Actor) {
