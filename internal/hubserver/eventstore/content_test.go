@@ -3,6 +3,7 @@ package eventstore
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -35,7 +36,8 @@ func TestContentReadPreservesStorageFailureClass(t *testing.T) {
 		integrity bool
 	}{
 		{"backend", artifact.ErrStorage, false},
-		{"missing", artifact.ErrMissing, false},
+		{"missing", artifact.ErrMissing, true},
+		{"not exist", fs.ErrNotExist, true},
 		{"integrity", artifact.ErrIntegrity, true},
 		{"cancelled", context.Canceled, false},
 	} {
