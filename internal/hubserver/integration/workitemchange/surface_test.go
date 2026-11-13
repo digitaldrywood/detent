@@ -1,6 +1,7 @@
 package workitemchange_test
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
@@ -263,10 +264,6 @@ func TestNativeIssueChangeIncluded(t *testing.T) {
 	}
 }
 
-// TestAttemptRecordsTheClaimedRevision pins the revision an attempt covers to
-// the one its lease was granted against. An edit between the claim and
-// run.started lands on an item the runner already hydrated, so crediting the
-// edited revision would report a change for a version nobody worked on.
 func TestAttemptRecordsTheClaimedRevision(t *testing.T) {
 	t.Parallel()
 
@@ -290,7 +287,19 @@ func TestAttemptRecordsTheClaimedRevision(t *testing.T) {
 					t.Fatalf("edited revision = %d, want above the claimed %d", edited.Revision, claimed)
 				}
 			}
-			f.start(t)
+			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("event")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy}}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event)
+			if test.editBeforeStart {
+				requireNativeCode(t, response, http.StatusConflict, "stale_fencing_token")
+				if err := f.repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+					_, err := r.Attempt(t.Context(), f.attempt)
+					return err
+				}); !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("rejected start recorded an attempt: %v", err)
+				}
+				return
+			}
+			requireNativeStatus(t, response, http.StatusOK)
 			var recorded tracker.Revision
 			if err := f.repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 				attempt, err := r.Attempt(t.Context(), f.attempt)
