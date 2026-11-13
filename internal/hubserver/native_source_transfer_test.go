@@ -64,6 +64,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 		{name: "stale revision", stale: true, released: true, status: http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 			var diagnostics bytes.Buffer
 			config := Config{Clock: clock.Now, Logger: slog.New(slog.NewTextHandler(&diagnostics, nil))}
