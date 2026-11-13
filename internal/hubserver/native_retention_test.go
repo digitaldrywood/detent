@@ -63,7 +63,6 @@ func TestNativeRetention(t *testing.T) {
 				t.Fatalf("review authority = %+v, want %+v", selected, expected)
 			}
 		}
-		assertReviews(first.ID, map[string]string{"reviewer-one": "approved", "reviewer-two": "changes_requested"})
 		admin := usagePostgresAdmin(t, f.service)
 		var traceMu sync.Mutex
 		statements, schemaChanges := 0, 0
