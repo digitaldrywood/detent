@@ -322,6 +322,9 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope nativeSc
 		if present {
 			cleanupPredecessor = previous
 		}
+		if err := admitNativeRunEventBatch(ctx, r, scope.project, workItem.NativeID, lease, events, s.config.now().UTC()); err != nil {
+			return err
+		}
 		if cleanupPredecessor != nil && cleanupPredecessor.attempt.CheckpointObjectKey != nil {
 			snapshot := tenantAttemptSnapshot{attempt: cleanupPredecessor.attempt, lease: cleanupPredecessor.lease, event: cleanupPredecessor.event}
 			if err := readTenantAttemptCheckpointPayload(ctx, r, &snapshot); err != nil {
@@ -1086,6 +1089,47 @@ func validateNativeDetailReference(ctx context.Context, store attachment.DetailS
 	}
 	if !bytes.Equal(actual, expected) {
 		return artifact.ErrIntegrity
+	}
+	return nil
+}
+
+func admitNativeRunEventBatch(ctx context.Context, r tenantstore.Reader, project tracker.ProjectID, item tracker.NativeWorkItemID, lease leasestore.Lease, events []tracker.NativeRunEvent, now time.Time) error {
+	request := events[len(events)-1]
+	terminating := len(events) == 1 && request.Type == "run.finished" && request.Data.Outcome == "cancelled" && request.Data.Sequence > 1
+	if !terminating && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) {
+		return &leasestore.FenceError{Check: "lease_current"}
+	}
+	for i := 1; i < len(events); i++ {
+		if events[i].Data.Sequence != events[i-1].Data.Sequence+1 {
+			return leasestore.ErrAttemptConflict
+		}
+	}
+	attempt, err := r.Attempt(ctx, request.Data.AttemptID)
+	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+		if events[0].Data.Sequence != 1 {
+			return leasestore.ErrAttemptConflict
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if events[0].Data.Sequence > attempt.Sequence+1 {
+		return leasestore.ErrAttemptConflict
+	}
+	for _, event := range events {
+		if event.Data.Sequence > attempt.Sequence {
+			break
+		}
+		reader, ok := r.(nativeRunEventReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		if _, err := reader.RunEvent(ctx, project, item, nativeAttemptHistoryID(event.Type, event.Data)); errors.Is(err, corestore.ErrNotFound) {
+			return leasestore.ErrAttemptConflict
+		} else if err != nil {
+			return err
+		}
 	}
 	return nil
 }

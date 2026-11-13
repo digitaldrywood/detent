@@ -540,6 +540,8 @@ func TestNativeRunDetailUploadFailures(t *testing.T) {
 	}
 }
 
+const runDetailReferenceCount = "SELECT count(*) FROM archive_objects o WHERE o.organization_id=$1 AND NOT EXISTS (SELECT 1 FROM archive_object_owners w WHERE w.organization_id=o.organization_id AND w.archive_id=o.id AND w.owner_kind='native-command')"
+
 func TestNativeRunDetailAdmission(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -580,11 +582,10 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			event := nativeStartedEvent(lease)
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
 			var initialReferences int
-			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_objects WHERE organization_id=$1", f.project.OrganizationID).Scan(&initialReferences); err != nil {
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), runDetailReferenceCount, f.project.OrganizationID).Scan(&initialReferences); err != nil {
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
-			initialUploads := store.uploads
 			if test.repeatedFinish {
 				plans := pilotHostedPlans()
 				limited := plans.Plans[0]
@@ -608,10 +609,7 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			}
 			original := event
 			if test.released {
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-					_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(lease.ID), FencingToken: int64(lease.FencingToken)}, "cancelled")
-					return err
-				}); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET released_at=$1,release_reason='cancelled' WHERE organization_id=$2 AND lease_id=$3", now, f.project.OrganizationID, lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -657,6 +655,7 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			if test.repeatedFinish || test.reversed {
 				repeats = 4
 			}
+			initialUploads := store.uploads
 			for i := range repeats {
 				if test.repeatedFinish || test.reversed {
 					event.IdempotencyKey = fmt.Sprintf("next-%d", i)
@@ -674,7 +673,7 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 				t.Fatalf("rejected or identity-only event uploaded detail: %d uploads", store.uploads)
 			}
 			var references int
-			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM archive_objects WHERE organization_id=$1", f.project.OrganizationID).Scan(&references); err != nil {
+			if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), runDetailReferenceCount, f.project.OrganizationID).Scan(&references); err != nil {
 				t.Fatal(err)
 			}
 			wantReferences := 2
