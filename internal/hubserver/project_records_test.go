@@ -134,6 +134,9 @@ func openLocalPostgresHubTestService(t *testing.T, repository *postgres.Reposito
 	t.Helper()
 	service := openPostgresHubTestService(t, repository, config)
 	service.config.Hosted = nil
+	if config.Logger != nil {
+		service.config.Logger = config.Logger
+	}
 	service.echo = echo.New()
 	service.echo.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
 	service.echo.POST("/api/v1/webhooks/github", service.githubWebhook)
