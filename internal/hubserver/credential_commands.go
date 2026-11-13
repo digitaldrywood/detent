@@ -2,9 +2,11 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -34,6 +36,12 @@ func (s *Service) grantNativeTokenFor(ctx context.Context, id, organization, pro
 	return s.accessWrite(ctx, tracker.OrganizationID(organization), func(w tenantstore.Writer) error {
 		if err := s.authorizeCredentialMaintenanceWrite(ctx, w, tracker.OrganizationID(organization)); err != nil {
 			return err
+		}
+		if _, err := w.RunnerIdentityByCredential(ctx, id); !errors.Is(err, corestore.ErrNotFound) {
+			if err != nil {
+				return err
+			}
+			return hubapi.NativeNotFound()
 		}
 		if err := w.ScopeAccessCredentialToNative(ctx, id, s.config.Clock()); err != nil {
 			return err
