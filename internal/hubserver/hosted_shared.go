@@ -492,7 +492,14 @@ func (s *Service) revokeHostedSharedBinding(ctx context.Context, binding, now st
 	if err != nil {
 		return err
 	}
-	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error { return w.RevokeAccessSession(ctx, binding, at) })
+	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
+		ended, active, err := w.EndAccessSession(ctx, binding, at)
+		if err != nil || !active || ended.SupportActor == "" {
+			return err
+		}
+		_, err = w.RecordAccessAudit(ctx, accessstore.SessionAudit(ended, "session_ended", "/logout", at))
+		return err
+	})
 }
 
 func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {

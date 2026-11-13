@@ -45,8 +45,14 @@ func (s *Authenticator) SharedAccessSession(ctx context.Context, c echo.Context,
 			if tenant.ProviderID != identity.OrganizationID {
 				return auth.ErrInvalidSession
 			}
-			if err := w.EnsureAccessSession(ctx, row); err != nil {
+			inserted, err := w.EnsureAccessSession(ctx, row)
+			if err != nil {
 				return err
+			}
+			if inserted && row.SupportActor != "" {
+				if _, err := w.RecordAccessAudit(ctx, accessstore.SessionAudit(row, "session_started", "/auth/oidc/callback", now)); err != nil {
+					return err
+				}
 			}
 			row, err = w.AccessSession(ctx, claims.Binding)
 			if !errors.Is(err, corestore.ErrNotFound) {

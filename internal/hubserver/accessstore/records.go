@@ -301,7 +301,7 @@ type Writer interface {
 	SetAccessTransactionInvitation(context.Context, string, string) error
 	DeleteAccessTokenGrant(context.Context, string, tracker.ProjectID) error
 	RewrapAccessSecret(context.Context, Secret, hubsecrets.Envelope, SecretAudit) error
-	EnsureAccessSession(context.Context, Session) error
+	EnsureAccessSession(context.Context, Session) (bool, error)
 	ClearAccessMemberGrants(context.Context, string) error
 	SetAccessProjectGrant(context.Context, ProjectGrant) error
 	SetAccessTokenGrant(context.Context, TokenGrant) error
@@ -333,6 +333,7 @@ type Writer interface {
 	ScopeAccessCredentialToNative(context.Context, string, time.Time) error
 	RevokeAccessCredential(context.Context, string, time.Time) error
 	RevokeAccessSession(context.Context, string, time.Time) error
+	EndAccessSession(context.Context, string, time.Time) (Session, bool, error)
 	ConsumeAccessTransaction(context.Context, string, string, time.Time) (LoginTransaction, error)
 	AcceptAccessInvitation(context.Context, string, string, string, time.Time) error
 	ReplaceAccessInvitationGrants(context.Context, string, []InvitationGrant) error

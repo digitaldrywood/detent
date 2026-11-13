@@ -1,6 +1,7 @@
 package accessstore
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -29,4 +30,12 @@ type Audit struct {
 	KeyKind        string
 	KeyOwner       string
 	Resource       string
+}
+
+func SessionAudit(session Session, event, route string, at time.Time) Audit {
+	actor := session.Subject
+	if session.SupportActor != "" {
+		actor = session.SupportActor
+	}
+	return Audit{OrganizationID: session.OrganizationID, SessionID: session.SessionID, ActualActor: actor, EffectiveUser: session.Subject, Reason: session.SupportReason, Event: event, Route: route, Status: http.StatusOK, StartedAt: session.IdentityCreatedAt, ExpiresAt: session.IdentityExpiresAt, RecordedAt: at, RecordedAtNS: at.UnixNano()}
 }

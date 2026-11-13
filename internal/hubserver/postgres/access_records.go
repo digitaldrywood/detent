@@ -491,7 +491,21 @@ func (s *session) RevokeAccessCredential(ctx context.Context, id string, at time
 }
 
 func (s *session) RevokeAccessSession(ctx context.Context, hash string, at time.Time) error {
-	return s.EnsureRevokedAccessSession(ctx, hash, at)
+	_, _, err := s.EndAccessSession(ctx, hash, at)
+	return err
+}
+
+func (s *session) EndAccessSession(ctx context.Context, hash string, at time.Time) (accessstore.Session, bool, error) {
+	var row accessstore.Session
+	err := s.db.QueryRow(ctx, `UPDATE hosted_sessions SET revoked_at=$3 WHERE organization_id=$1 AND token_hash=$2 AND revoked_at IS NULL
+RETURNING organization_id,token_hash,email,identity_subject,provider_organization_id,session_id,identity_created_at,identity_expires_at,support_actor,support_reason,created_at,expires_at,revoked_at`, s.organization, hash, at).Scan(&row.OrganizationID, &row.Hash, &row.Email, &row.Subject, &row.ProviderOrganizationID, &row.SessionID, &row.IdentityCreatedAt, &row.IdentityExpiresAt, &row.SupportActor, &row.SupportReason, &row.CreatedAt, &row.ExpiresAt, &row.RevokedAt)
+	if err == nil {
+		return row, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return accessstore.Session{}, false, mapError(ctx, err)
+	}
+	return accessstore.Session{}, false, s.EnsureRevokedAccessSession(ctx, hash, at)
 }
 
 func (s *session) EnsureRevokedAccessSession(ctx context.Context, hash string, at time.Time) error {
@@ -687,12 +701,15 @@ func (s *session) accessLock() string {
 	return " FOR SHARE"
 }
 
-func (s *session) EnsureAccessSession(ctx context.Context, row accessstore.Session) error {
+func (s *session) EnsureAccessSession(ctx context.Context, row accessstore.Session) (bool, error) {
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
-		return err
+		return false, err
 	}
-	_, err := s.db.Exec(ctx, `INSERT INTO hosted_sessions(organization_id,token_hash,email,identity_subject,provider_organization_id,session_id,identity_created_at,identity_expires_at,support_actor,support_reason,created_at,expires_at,revoked_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(organization_id,token_hash) DO NOTHING`, row.OrganizationID, row.Hash, row.Email, row.Subject, row.ProviderOrganizationID, row.SessionID, row.IdentityCreatedAt, row.IdentityExpiresAt, row.SupportActor, row.SupportReason, row.CreatedAt, row.ExpiresAt, row.RevokedAt)
-	return accessLookupError(ctx, "session_create", err)
+	result, err := s.db.Exec(ctx, `INSERT INTO hosted_sessions(organization_id,token_hash,email,identity_subject,provider_organization_id,session_id,identity_created_at,identity_expires_at,support_actor,support_reason,created_at,expires_at,revoked_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(organization_id,token_hash) DO NOTHING`, row.OrganizationID, row.Hash, row.Email, row.Subject, row.ProviderOrganizationID, row.SessionID, row.IdentityCreatedAt, row.IdentityExpiresAt, row.SupportActor, row.SupportReason, row.CreatedAt, row.ExpiresAt, row.RevokedAt)
+	if err != nil {
+		return false, accessLookupError(ctx, "session_create", err)
+	}
+	return result.RowsAffected() == 1, nil
 }
 
 func (s *session) ClearAccessMemberGrants(ctx context.Context, user string) error {

@@ -697,8 +697,12 @@ func TestAccessSessionTombstoneAndTransactionReplay(t *testing.T) {
 			if err := w.RevokeAccessSession(t.Context(), "binding", now); err != nil {
 				return err
 			}
-			if err := w.EnsureAccessSession(t.Context(), accessstore.Session{OrganizationID: org, Hash: "binding", Subject: "first", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+			inserted, err := w.EnsureAccessSession(t.Context(), accessstore.Session{OrganizationID: org, Hash: "binding", Subject: "first", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+			if err != nil {
 				return err
+			}
+			if inserted {
+				t.Fatal("replayed assertion reported a new binding")
 			}
 			row, err := w.AccessSession(t.Context(), "binding")
 			if err != nil {
@@ -706,6 +710,22 @@ func TestAccessSessionTombstoneAndTransactionReplay(t *testing.T) {
 			}
 			if row.RevokedAt == nil {
 				t.Fatal("replayed assertion resurrected revoked binding")
+			}
+			active := accessstore.Session{OrganizationID: org, Hash: "active", Subject: "first", SupportActor: "support@example.test", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+			if inserted, err := w.EnsureAccessSession(t.Context(), active); err != nil || !inserted {
+				t.Fatalf("new binding inserted=%t error=%v", inserted, err)
+			}
+			for i, want := range []bool{true, false} {
+				ended, ok, err := w.EndAccessSession(t.Context(), "active", now)
+				if err != nil {
+					return err
+				}
+				if ok != want || ok && (ended.SupportActor != active.SupportActor || ended.Subject != active.Subject) {
+					t.Fatalf("end binding attempt %d = %+v %t, want ended=%t", i, ended, ok, want)
+				}
+			}
+			if _, ok, err := w.EndAccessSession(t.Context(), "missing", now); err != nil || ok {
+				t.Fatalf("end missing binding ok=%t error=%v", ok, err)
 			}
 			return w.CreateAccessLoginTransaction(t.Context(), accessstore.LoginTransaction{OrganizationID: org, Hash: "login", State: "state", ExpiresAt: now.Add(time.Hour)})
 		})

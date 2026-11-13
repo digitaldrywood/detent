@@ -118,7 +118,7 @@ func TestBillingEventMetadataRetainsReplayAndSnapshotSemantics(t *testing.T) {
 				return err
 			}
 			session.CreatedAt = created.Add(time.Hour)
-			if err := w.EnsureAccessSession(t.Context(), session); err != nil {
+			if _, err := w.EnsureAccessSession(t.Context(), session); err != nil {
 				return err
 			}
 			return w.RevokeAccessSession(t.Context(), session.Hash, created.Add(time.Hour))
