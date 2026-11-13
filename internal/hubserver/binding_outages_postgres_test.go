@@ -10,7 +10,6 @@ import (
 )
 
 func TestPostgresBillingBindingLookupOutages(t *testing.T) {
-	t.Parallel()
 	f := newSharedRouteFixture(t, sharedRouteBillingConfig)
 	for org, service := range f.services {
 		repository := service.database.billingRepository
