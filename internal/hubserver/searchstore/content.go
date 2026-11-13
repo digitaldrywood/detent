@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -79,6 +80,31 @@ func (c *Content) Read(ctx context.Context, document Document) (Text, error) {
 		return Text{}, artifact.ErrIntegrity
 	}
 	return boundedText(value.Text), nil
+}
+
+const (
+	RefreshTickDocuments = 100
+	RefreshTickDuration  = 2 * time.Second
+)
+
+func (c *Content) RefreshTick(ctx context.Context, repository Repository, organization tracker.OrganizationID, now func() time.Time) (int, error) {
+	started := now()
+	for processed := 0; processed < RefreshTickDocuments; processed++ {
+		if err := ctx.Err(); err != nil {
+			return processed, err
+		}
+		if processed > 0 && now().Sub(started) >= RefreshTickDuration {
+			return processed, nil
+		}
+		more, err := c.RefreshOne(ctx, repository, organization)
+		if err != nil {
+			return processed, err
+		}
+		if !more {
+			return processed, nil
+		}
+	}
+	return RefreshTickDocuments, nil
 }
 
 func (c *Content) RefreshOne(ctx context.Context, repository Repository, organization tracker.OrganizationID) (bool, error) {

@@ -16,7 +16,7 @@ func (s *Service) maintainNativeSearch(ctx context.Context) {
 	if _, err := s.refreshNativeIdentity(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "rebuild scoped origin identities", "error", err)
 	}
-	_, err := searchstore.NewContent(s.runDetailStore()).RefreshOne(s.runDetailContext(ctx), tenantstore.SearchRepository{Repository: s.config.TenantRepository}, s.accessOrganization())
+	_, err := searchstore.NewContent(s.runDetailStore()).RefreshTick(s.runDetailContext(ctx), tenantstore.SearchRepository{Repository: s.config.TenantRepository}, s.accessOrganization(), s.config.Clock)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "rebuild scoped search index", "error", err)
 	}
