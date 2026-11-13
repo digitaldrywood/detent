@@ -735,3 +735,31 @@ func bulkUnrelatedWorkItemPages(ctx context.Context, admin *sql.DB, organization
 		return nil
 	})
 }
+func TestBoardSearchFallsBackForDocumentsAwaitingRebuild(t *testing.T) {
+	f := newBoardSearchFixture(t)
+	ctx := t.Context()
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			if _, err := f.admin.ExecContext(ctx, `DELETE FROM search_postings WHERE organization_id=$1 AND left(term,1)<>'~'`, org); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.admin.ExecContext(ctx, `INSERT INTO search_scope_refresh(organization_id,project_id,work_item_id,archived,principal_id) VALUES($1,'prj_first','',false,'')`, org); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range []string{"rebuilding", "rebuilt"} {
+				if state == "rebuilt" {
+					f.drain(t, org)
+				}
+				if err := f.repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+					rows, err := r.BoardPage(ctx, viewstore.BoardSelection{ProjectID: "prj_first", SearchText: "bcabca", Limit: 20})
+					if err == nil && len(rows) != 2 {
+						t.Fatalf("%s board search rows=%d want 2", state, len(rows))
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
