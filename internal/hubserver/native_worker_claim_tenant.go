@@ -136,6 +136,9 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 				position = claimCandidateCursor(candidate)
 				continue
 			}
+			if recordErr := s.recordClaimRoutingRefusal(ctx, scope, candidateRequest, now, recordableClaimRoutingRefusal(err, plan.Descriptor.Requirements)); recordErr != nil {
+				return leasestore.Lease{}, recordErr
+			}
 			return lease, err
 		}
 		if len(scan.plans) == 0 && scan.cursor.Position == (claimstore.CandidateCursor{}) && scan.pageNext == (claimstore.CandidateCursor{}) {
@@ -148,15 +151,15 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 		if budgetRefusal != nil {
 			return leasestore.Lease{}, budgetRefusal
 		}
-		return leasestore.Lease{}, ErrNoClaimableWork
-	}
-	plan, err := s.readNativeClaimPlan(ctx, scope, request, now)
 		if providerRefusal != nil {
 			return leasestore.Lease{}, providerRefusal
 		}
+		return leasestore.Lease{}, ErrNoClaimableWork
+	}
+	plan, err := s.readNativeClaimPlan(ctx, scope, request, now)
 	if err != nil {
 		if errors.Is(err, ErrNoClaimableWork) && explicitItem {
-			if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, errors.Is(err, errNativeClaimPlanRefused), "no_claimable_work"); recordErr != nil {
+			if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, errors.Is(err, errNativeClaimPlanRefused), "no_claimable_work", nil); recordErr != nil {
 				return leasestore.Lease{}, recordErr
 			}
 		}
@@ -168,7 +171,7 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 	}
 	if !contract.Allowed {
 		if explicitItem {
-			if err := s.recordRequestedClaimRefusal(ctx, scope, request, now, true, contract.Reason); err != nil {
+			if err := s.recordRequestedClaimRefusal(ctx, scope, request, now, true, contract.Reason, nil); err != nil {
 				return leasestore.Lease{}, err
 			}
 		}
@@ -184,7 +187,11 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 	if outranked {
 		return leasestore.Lease{}, ErrNoClaimableWork
 	}
-	return s.claimNativeIssueTenantWithPlan(ctx, scope, request, ttl, now, plan, nil)
+	lease, err := s.claimNativeIssueTenantWithPlan(ctx, scope, request, ttl, now, plan, nil)
+	if recordErr := s.recordClaimRoutingRefusal(ctx, scope, request, now, recordableClaimRoutingRefusal(err, plan.Descriptor.Requirements)); recordErr != nil {
+		return leasestore.Lease{}, recordErr
+	}
+	return lease, err
 }
 
 type requestedClaimRefusal struct {
@@ -195,7 +202,66 @@ type requestedClaimRefusal struct {
 	recorded        bool
 }
 
-func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, planRefused bool, reason string) (requestedClaimRefusal, error) {
+type claimRoutingRefusal struct {
+	code         string
+	requirements policy.Requirements
+}
+
+func recordableClaimRoutingRefusal(err error, requirements policy.Requirements) *claimRoutingRefusal {
+	var refusal *hubapi.NativeError
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
+		return nil
+	}
+	switch refusal.Code {
+	case "selector_no_match", "runner_draining", "host_capacity":
+		return &claimRoutingRefusal{code: refusal.Code, requirements: requirements}
+	}
+	return nil
+}
+
+func (r claimRoutingRefusal) source() string {
+	switch r.code {
+	case "selector_no_match":
+		return "native_claim_policy"
+	case "host_capacity":
+		return "native_host_capacity"
+	}
+	return "native_runner_routing"
+}
+
+func (r claimRoutingRefusal) holds(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, request tracker.NativeClaim, identity runnerstore.Identity, now time.Time) (bool, error) {
+	identityRefusal := runnerIdentityClaimRefusal(identity, scope, request.MachineID, now)
+	switch r.code {
+	case "runner_draining":
+		var failure *hubapi.NativeError
+		return errors.As(identityRefusal, &failure) && failure.Code == "runner_draining", nil
+	case "selector_no_match":
+		return identityRefusal == nil && r.requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags) != nil, nil
+	case "host_capacity":
+		if identityRefusal != nil {
+			return false, nil
+		}
+		machine, err := reader.Machine(ctx, string(identity.MachineID))
+		if err != nil {
+			return false, err
+		}
+		return machine.Capacity <= 0, nil
+	}
+	return false, nil
+}
+
+func (s *Service) recordClaimRoutingRefusal(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, refusal *claimRoutingRefusal) error {
+	if refusal == nil || request.WorkItemID == "" {
+		return nil
+	}
+	err := s.recordRequestedClaimRefusal(ctx, scope, request, now, false, refusal.code, refusal)
+	if errors.Is(err, corestore.ErrRevisionConflict) {
+		return nil
+	}
+	return err
+}
+
+func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, planRefused bool, reason string, routing *claimRoutingRefusal) (requestedClaimRefusal, error) {
 	var result requestedClaimRefusal
 	if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 		return result, err
@@ -204,8 +270,14 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	if err != nil {
 		return result, err
 	}
-	if err := runnerIdentityClaimRefusal(identity, scope, request.MachineID, s.config.Clock().UTC()); err != nil {
+	if routing == nil {
+		if err := runnerIdentityClaimRefusal(identity, scope, request.MachineID, s.config.Clock().UTC()); err != nil {
+			return result, err
+		}
+	} else if holds, err := routing.holds(ctx, r, scope, request, identity, s.config.Clock().UTC()); err != nil {
 		return result, err
+	} else if !holds {
+		return result, corestore.ErrRevisionConflict
 	}
 	currentPolicy, err := r.ProjectPolicy(ctx, scope.Project)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -225,7 +297,7 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	if err != nil {
 		return result, err
 	}
-	if len(page.Items) != 0 && !planRefused {
+	if len(page.Items) != 0 && !planRefused && routing == nil {
 		report, err := r.RunnerBackendIsolation(ctx, identity.RunnerID)
 		if err != nil {
 			return result, err
@@ -295,7 +367,7 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	return result, nil
 }
 
-func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, planRefused bool, reason string) error {
+func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, planRefused bool, reason string, routing *claimRoutingRefusal) error {
 	var refusal requestedClaimRefusal
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
@@ -303,12 +375,16 @@ func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope hubscop
 	}
 	if err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		refusal, err = s.readRequestedClaimRefusal(ctx, r, scope, request, now, planRefused, reason)
+		refusal, err = s.readRequestedClaimRefusal(ctx, r, scope, request, now, planRefused, reason, routing)
 		return err
 	}); err != nil || refusal.recorded {
 		return err
 	}
-	decision := tracker.CollaborationEvent{ID: refusal.eventID, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: request.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: tracker.Revision(refusal.item.Revision), Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.Credential.Runner.RunnerID, Source: "native_claim_eligibility", Outcome: "skipped", Reason: reason, At: now, WorkItemRevision: tracker.Revision(refusal.item.Revision)}}}
+	source := "native_claim_eligibility"
+	if routing != nil {
+		source = routing.source()
+	}
+	decision := tracker.CollaborationEvent{ID: refusal.eventID, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: request.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: tracker.Revision(refusal.item.Revision), Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.Credential.Runner.RunnerID, Source: source, Outcome: "skipped", Reason: reason, At: now, WorkItemRevision: tracker.Revision(refusal.item.Revision)}}}
 	if refusal.change.ChangeID != "" {
 		decision.Data.Change = &refusal.change
 	}
@@ -327,7 +403,7 @@ func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope hubscop
 		if _, err := w.LockWorkItem(ctx, scope.Project, request.WorkItemID); err != nil {
 			return err
 		}
-		current, err := s.readRequestedClaimRefusal(ctx, w, scope, request, s.config.Clock().UTC(), planRefused, reason)
+		current, err := s.readRequestedClaimRefusal(ctx, w, scope, request, s.config.Clock().UTC(), planRefused, reason, routing)
 		if err != nil {
 			return err
 		}
@@ -982,7 +1058,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 			"work_item_id", plan.Candidate.WorkItemID, "runner_id", scope.Credential.Runner.RunnerID, "reason", placementRefusal)
 	}
 	if errors.Is(err, ErrNoClaimableWork) && isolationRefused {
-		if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, false, "no_claimable_work"); recordErr != nil {
+		if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, false, "no_claimable_work", nil); recordErr != nil {
 			return leasestore.Lease{}, recordErr
 		}
 	}
