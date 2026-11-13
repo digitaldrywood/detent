@@ -648,8 +648,8 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 			}
 			app := hubChangeApplication{service: target.service}
 			for _, name := range []string{operatortool.GetChange, operatortool.GetChangeVersion, operatortool.GetChangeReviewPolicy, operatortool.ArtifactReferences} {
-				if value, err := app.ReadChange(t.Context(), name, args); !errors.Is(err, operatortool.ErrServiceUnavailable) || value.Receipt != nil {
-					t.Fatalf("unsupported PostgreSQL read %s entered a legacy owner: %v", name, err)
+				if value, err := app.ReadChange(t.Context(), name, args); !errors.Is(err, operatortool.ErrAccessDenied) || value.Receipt != nil {
+					t.Fatalf("PostgreSQL read %s answered without operator authority: %v", name, err)
 				}
 			}
 			replay := invoke("owner", args)
