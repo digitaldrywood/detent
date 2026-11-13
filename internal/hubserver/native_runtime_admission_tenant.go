@@ -182,6 +182,9 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 	evidence.Unavailable = slices.DeleteFunc(evidence.Unavailable, func(value string) bool {
 		return value == "native_admission_projection" || value == "runner_capacity_projection"
 	})
+	if evidence.LatestDecision == nil && !slices.Contains(evidence.Unavailable, "historical_scheduler_decision") {
+		evidence.Unavailable = append(evidence.Unavailable, "historical_scheduler_decision")
+	}
 	if truncated {
 		evidence.Unavailable = append(evidence.Unavailable, "capacity_projection_truncated")
 	}
