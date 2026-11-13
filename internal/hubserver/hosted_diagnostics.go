@@ -8,53 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type diagnosticsCoverage struct {
-	Source   string `json:"source"`
-	Observed *int   `json:"observed"`
-	Total    *int   `json:"total"`
-}
-
-type diagnosticsCapacity struct {
-	Hour  time.Time `json:"hour"`
-	Slots float64   `json:"slots"`
-	Todo  *int      `json:"todo"`
-}
-
-type diagnosticsReport struct {
-	Requests      *requestMetricsReport      `json:"requests,omitempty"`
-	From          time.Time                  `json:"from"`
-	To            time.Time                  `json:"to"`
-	Partial       bool                       `json:"partial"`
-	Findings      any                        `json:"findings"`
-	DetectorTick  *time.Time                 `json:"detector_tick"`
-	Capacity      []diagnosticsCapacity      `json:"capacity"`
-	Claimed       *int                       `json:"claimed"`
-	Ready         *int                       `json:"ready"`
-	Skipped       *int                       `json:"skipped"`
-	SkipReasons   []nativeAnalyticsSkip      `json:"skip_reasons"`
-	MergeEntered  int                        `json:"merge_entered"`
-	MergeLanded   int                        `json:"merge_landed"`
-	MergeWaitP50  *float64                   `json:"merge_wait_p50"`
-	MergeWaitP90  *float64                   `json:"merge_wait_p90"`
-	MergeWaitMax  *float64                   `json:"merge_wait_max"`
-	Refused       []diagnosticsRefusal       `json:"refused"`
-	Coverage      []diagnosticsCoverage      `json:"coverage"`
-	Configuration []diagnosticsConfiguration `json:"configuration"`
-}
-
-type diagnosticsRefusal struct {
-	Reason string `json:"reason"`
-	Count  int    `json:"count"`
-}
-
-type diagnosticsConfiguration struct {
-	Name   string  `json:"name"`
-	Value  *string `json:"value"`
-	Effect *string `json:"effect"`
-}
 
 func (s *Service) hostedDiagnostics(c echo.Context) error {
 	ctx := c.Request().Context()
@@ -89,31 +43,4 @@ func (s *Service) diagnosticsRequestMetrics(ctx context.Context) (*requestMetric
 		return nil, err
 	}
 	return &requests, nil
-}
-
-func diagnosticsTodoDepth(issues []analyticsResidenceIssue, states map[string]tracker.NativeState, clipped bool, at time.Time) *int {
-	if clipped {
-		return nil
-	}
-	count := 0
-	for _, issue := range issues {
-		if !issue.created.Before(at) {
-			continue
-		}
-		past := issue
-		past.events = nil
-		for _, event := range issue.events {
-			if event.at.Before(at) {
-				past.events = append(past.events, event)
-			}
-		}
-		timeline := buildAnalyticsResidenceTimeline(past, states, at)
-		if timeline.issue.partial {
-			return nil
-		}
-		if timeline.state == "Todo" {
-			count++
-		}
-	}
-	return &count
 }

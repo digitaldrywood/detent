@@ -207,14 +207,14 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 				return out, fmt.Errorf("read productivity quality: %w", err)
 			}
 			periods[i] = inputs
-			if inputs.partial || len(inputs.unavailable) > 0 {
+			if inputs.Partial || len(inputs.Unavailable) > 0 {
 				out.Unavailable = append(out.Unavailable, "rework_timeline_unavailable")
-				out.Unavailable = append(out.Unavailable, inputs.unavailable...)
+				out.Unavailable = append(out.Unavailable, inputs.Unavailable...)
 			}
-			for _, event := range inputs.events {
+			for _, event := range inputs.Events {
 				query.ActivityWorkItems = append(query.ActivityWorkItems, tracker.NativeWorkItemID(event.Item))
 			}
-			for _, landing := range inputs.landings {
+			for _, landing := range inputs.Landings {
 				query.ActivityWorkItems = append(query.ActivityWorkItems, landing.WorkItemID)
 			}
 		}
@@ -408,12 +408,12 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 			window  operatortool.AnalyticsWindow
 		}{{&row.Current, w}, {&row.Previous, prior}} {
 			inputs := qualityByProject[row.ProjectID][i]
-			if inputs.partial || len(inputs.unavailable) > 0 {
+			if inputs.Partial || len(inputs.Unavailable) > 0 {
 				continue
 			}
-			inputs.events = slices.DeleteFunc(slices.Clone(inputs.events), func(event qualityHistoryEvent) bool { return !selected[tracker.NativeWorkItemID(event.Item)] })
-			inputs.landings = slices.DeleteFunc(slices.Clone(inputs.landings), func(landing nativeAnalyticsLanding) bool { return !selected[landing.WorkItemID] })
-			counts := qualityCounts(inputs.landings, inputs.events, nil, period.window.From, period.window.To, period.window.To)
+			inputs.Events = slices.DeleteFunc(slices.Clone(inputs.Events), func(event qualityHistoryEvent) bool { return !selected[tracker.NativeWorkItemID(event.Item)] })
+			inputs.Landings = slices.DeleteFunc(slices.Clone(inputs.Landings), func(landing nativeAnalyticsLanding) bool { return !selected[landing.WorkItemID] })
+			counts := qualityCounts(inputs.Landings, inputs.Events, nil, period.window.From, period.window.To, period.window.To)
 			period.metrics.Worked, period.metrics.Reworked = new(counts.WorkedItems), new(counts.ReworkedItems)
 		}
 

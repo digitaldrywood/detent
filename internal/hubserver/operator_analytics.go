@@ -10,112 +10,13 @@ import (
 	"sort"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
-
-const maxAnalyticsPopulation = 1000
-
-type nativeAnalyticsBucket struct {
-	LaneResidence               operatortool.AnalyticsResidenceSummary `json:"lane_residence"`
-	ProviderCapacityWaitSeconds float64                                `json:"provider_capacity_wait_seconds"`
-	From                        time.Time                              `json:"from"`
-	To                          time.Time                              `json:"to"`
-	Shipped                     int                                    `json:"shipped"`
-	Sessions                    int                                    `json:"sessions"`
-	Tokens                      int64                                  `json:"tokens"`
-	Cost                        float64                                `json:"cost_usd"`
-	Activity                    nativeAnalyticsActivityTiming          `json:"activity"`
-	QueueSeconds                float64                                `json:"queue_seconds"`
-}
-type nativeAnalyticsLanding struct {
-	ChangeID   string                   `json:"change_id"`
-	WorkItemID tracker.NativeWorkItemID `json:"work_item_id"`
-	Landing    tracker.ChangeLanding    `json:"landing"`
-}
-type nativeAnalyticsPhase struct {
-	Name           string  `json:"name"`
-	Count          int     `json:"count"`
-	Seconds        float64 `json:"seconds"`
-	AverageSeconds float64 `json:"average_seconds"`
-}
-type nativeAnalyticsAttempt struct {
-	Pipeline            []gate.PipelineTiming `json:"pipeline,omitempty"`
-	PipelineDropped     int                   `json:"pipeline_dropped,omitempty"`
-	activityRaw         string
-	publicActivity      bool
-	UsageRowsObserved   int                              `json:"usage_rows_observed"`
-	Identity            agentidentity.Identity           `json:"identity,omitzero"`
-	Landing             *tracker.NativeLandingReceipt    `json:"landing,omitempty"`
-	AttemptID           string                           `json:"attempt_id"`
-	WorkItemID          string                           `json:"work_item_id"`
-	Status              string                           `json:"status"`
-	StartedAt           time.Time                        `json:"started_at"`
-	ObservedAt          time.Time                        `json:"observed_at"`
-	Phases              []tracker.NativePhase            `json:"phases"`
-	Activity            *workflowmetrics.ActivityProfile `json:"activity,omitempty"`
-	ActivityUnavailable string                           `json:"activity_unavailable,omitempty"`
-}
-type nativeAnalyticsSkip struct {
-	Source string `json:"source"`
-	Reason string `json:"reason"`
-	Count  int    `json:"count"`
-}
-type nativeAnalyticsOutcome struct {
-	Shipped            int      `json:"shipped"`
-	CostPerShipped     *float64 `json:"cost_per_shipped_usd,omitempty"`
-	TokensPerShipped   *float64 `json:"tokens_per_shipped,omitempty"`
-	PopulationObserved int      `json:"population_observed"`
-	PopulationTotal    *int     `json:"population_total,omitempty"`
-	Clipped            bool     `json:"clipped"`
-}
-type nativeAnalyticsProject struct {
-	PopulationCursors    map[string]string `json:"population_cursors,omitempty"`
-	pipelineTimings      []gate.PipelineTiming
-	allAttempts          []nativeAnalyticsAttempt
-	allLandings          []nativeAnalyticsLanding
-	failures             []nativeFailure
-	Pipeline             pipelineReport                                `json:"pipeline"`
-	PipelineReceipts     operatortool.ReadPage[gate.PipelineTiming]    `json:"pipeline_receipts"`
-	Quality              analyticsQuality                              `json:"quality"`
-	FailureSignatures    operatortool.ReadPage[nativeFailureSignature] `json:"failure_signatures"`
-	LaneResidence        operatortool.AnalyticsResidence               `json:"lane_residence"`
-	ProviderCapacityWait nativeAnalyticsCapacityWait                   `json:"provider_capacity_wait"`
-	ProjectID            string                                        `json:"project_id"`
-	Source               string                                        `json:"source"`
-	SourceAt             time.Time                                     `json:"source_at"`
-	Window               operatortool.AnalyticsWindow                  `json:"window"`
-	Digest               []nativeAnalyticsBucket                       `json:"digest"`
-	Efficiency           []nativeAnalyticsPhase                        `json:"efficiency"`
-	CostPerOutcome       nativeAnalyticsOutcome                        `json:"cost_per_outcome"`
-	Landings             operatortool.ReadPage[nativeAnalyticsLanding] `json:"landings"`
-	Attempts             operatortool.ReadPage[nativeAnalyticsAttempt] `json:"attempts"`
-	Activity             nativeAnalyticsActivity                       `json:"activity"`
-	QueueTime            operatortool.AnalyticsQueue                   `json:"queue_time"`
-	SkipReasons          []nativeAnalyticsSkip                         `json:"skip_reasons"`
-	PopulationLimit      int                                           `json:"population_limit"`
-	AttemptsObserved     int                                           `json:"attempts_observed"`
-	DecisionsObserved    int                                           `json:"decisions_observed"`
-	UsageRowsObserved    int                                           `json:"usage_rows_observed"`
-	Partial              bool                                          `json:"partial"`
-	Unavailable          []string                                      `json:"unavailable"`
-}
-type nativeAnalyticsReport struct {
-	Requests       *requestMetricsReport        `json:"requests,omitempty"`
-	RouteLatency   *routeLatencyHistory         `json:"route_latency,omitempty"`
-	OrganizationID string                       `json:"organization_id"`
-	Projects       []nativeAnalyticsProject     `json:"projects"`
-	ObservedAt     time.Time                    `json:"observed_at"`
-	Window         operatortool.AnalyticsWindow `json:"window"`
-	NextOffset     *int                         `json:"next_offset,omitempty"`
-}
 
 func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	r, w, err := operatortool.DecodeAnalytics(call.Name, call.Arguments, s.config.now().UTC())
@@ -266,13 +167,6 @@ func (s *Service) readAnalyticsReportFor(ctx context.Context, credential apiCred
 	return report, nil
 }
 
-func nativeAnalyticsBucketIndex(at time.Time, w operatortool.AnalyticsWindow) int {
-	if at.Before(w.From) || !at.Before(w.To) {
-		return -1
-	}
-	return int(at.Sub(w.From) / w.Bucket)
-}
-
 func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
 	ctx, paging, err := analyticsPagingContext(ctx, r.PopulationCursor)
 	if err != nil {
@@ -301,7 +195,7 @@ func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeSco
 	if err != nil {
 		return out, err
 	}
-	out.failures = failures
+	out.Failures = failures
 	out.FailureSignatures = nativeFailureSignaturePage(groupNativeFailures(failures), r.RowOffset, r.Limit)
 	out.Partial = out.Partial || partial
 	out.Unavailable = append(out.Unavailable, failureUnavailable...)
@@ -309,8 +203,8 @@ func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeSco
 		out.Unavailable = append(out.Unavailable, "failure_signatures_complete_population")
 	}
 	for _, failure := range failures {
-		if failure.at.After(out.SourceAt) {
-			out.SourceAt = failure.at
+		if failure.At.After(out.SourceAt) {
+			out.SourceAt = failure.At
 		}
 	}
 	for from := w.From; from.Before(w.To); from = from.Add(w.Bucket) {
@@ -334,7 +228,7 @@ func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeSco
 	if landingPopulation.ContinuationUnavailable {
 		out.Unavailable = append(out.Unavailable, "landings_continuation_requires_secret_keys")
 	}
-	out.allLandings = landings
+	out.AllLandings = landings
 	out.CostPerOutcome.Shipped = len(landings)
 	for _, l := range landings {
 		if i := nativeAnalyticsBucketIndex(l.Landing.LandedAt, w); i >= 0 {
@@ -386,24 +280,24 @@ func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeSco
 		if len(a.Pipeline) == 0 && a.Landing == nil {
 			out.Pipeline.Partial = true
 		}
-		out.pipelineTimings = append(out.pipelineTimings, a.Pipeline...)
+		out.PipelineTimings = append(out.PipelineTimings, a.Pipeline...)
 		if a.PipelineDropped > 0 {
 			out.Pipeline.Partial = true
 		}
 		if a.Landing != nil {
-			out.pipelineTimings = append(out.pipelineTimings, a.Landing.Pipeline...)
+			out.PipelineTimings = append(out.PipelineTimings, a.Landing.Pipeline...)
 			if a.Landing.PipelineDropped > 0 {
 				out.Pipeline.Partial = true
 			}
 			if result := a.Landing.Gate; result != nil {
-				out.pipelineTimings = append(out.pipelineTimings, result.PipelineTiming("landing_validation"))
+				out.PipelineTimings = append(out.PipelineTimings, result.PipelineTiming("landing_validation"))
 				if result.Pipeline != nil {
-					out.pipelineTimings = append(out.pipelineTimings, result.Pipeline.Timings...)
+					out.PipelineTimings = append(out.PipelineTimings, result.Pipeline.Timings...)
 					out.Pipeline.Partial = out.Pipeline.Partial || result.Pipeline.Dropped > 0
 				}
 			}
 		}
-		projectNativeAnalyticsActivity(&out, a, a.activityRaw)
+		projectNativeAnalyticsActivity(&out, a, a.ActivityRaw)
 	}
 	out.AttemptsObserved = len(attempts)
 	for _, a := range attempts {
@@ -411,7 +305,7 @@ func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeSco
 			out.Digest[i].Sessions++
 		}
 	}
-	out.allAttempts = attempts
+	out.AllAttempts = attempts
 	out.Attempts = nativeAnalyticsAttemptPage(attempts, r.RowOffset, r.Limit)
 	if out.Activity.ProfilesObserved == 0 {
 		out.Unavailable = append(out.Unavailable, "instruction_activity")
@@ -445,16 +339,16 @@ func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeSco
 	if err != nil {
 		return out, err
 	}
-	out.PopulationCursors = paging.next
-	out.Partial = out.Partial || paging.name != ""
+	out.PopulationCursors = paging.Next
+	out.Partial = out.Partial || paging.Name != ""
 	pipelinePartial := out.Pipeline.Partial
-	out.Pipeline = summarizePipelineTimings(out.pipelineTimings, w)
+	out.Pipeline = summarizePipelineTimings(out.PipelineTimings, w)
 	out.Pipeline.Partial = out.Pipeline.Partial || pipelinePartial || population.Partial || out.LaneResidence.Partial || out.Partial
 	if len(out.Pipeline.Stages) == 0 {
 		out.Pipeline.Partial = true
 		out.Unavailable = append(out.Unavailable, "recorded_pipeline_timings")
 	}
-	out.PipelineReceipts = pipelineTimingPage(uniquePipelineTimings(out.pipelineTimings, w), r.RowOffset, r.Limit)
+	out.PipelineReceipts = pipelineTimingPage(uniquePipelineTimings(out.PipelineTimings, w), r.RowOffset, r.Limit)
 	done = timeSpan(ctx, "analytics_quality")
 	out.Quality, err = s.readAnalyticsQualityTenant(ctx, scope, r, w)
 	done()
@@ -462,8 +356,8 @@ func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeSco
 		return out, err
 	}
 	out.Partial = out.Partial || out.Quality.Partial
-	out.Pipeline.Partial = out.Pipeline.Partial || out.Partial || len(paging.next) > 0
-	if paging.name == "usage" || paging.name == "attempts" || paging.name == "landings" {
+	out.Pipeline.Partial = out.Pipeline.Partial || out.Partial || len(paging.Next) > 0
+	if paging.Name == "usage" || paging.Name == "attempts" || paging.Name == "landings" {
 		out.CostPerOutcome.Clipped = true
 	}
 	out.UsageRowsObserved = len(usagePage.Items)
@@ -506,24 +400,6 @@ func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeSco
 		out.Unavailable = append(out.Unavailable, "recorded_source_time")
 	}
 	return out, nil
-}
-
-type analyticsCohortKey struct{}
-type analyticsCohortSelection struct {
-	runners     []string
-	items       map[tracker.NativeWorkItemID]bool
-	fingerprint string
-}
-
-func analyticsCohortAllows(ctx context.Context, id tracker.NativeWorkItemID) bool {
-	selection, _ := ctx.Value(analyticsCohortKey{}).(*analyticsCohortSelection)
-	return selection == nil || selection.items[id]
-}
-
-func bindAnalyticsCohort(params url.Values, ctx context.Context) {
-	if selection, _ := ctx.Value(analyticsCohortKey{}).(*analyticsCohortSelection); selection != nil {
-		params.Set("cohort", selection.fingerprint)
-	}
 }
 
 func (s *Service) analyticsSnapshotPrincipal(ctx context.Context, r tenantstore.Reader, scope nativeScope) (string, error) {
@@ -570,7 +446,7 @@ func (s *Service) analyticsCohortContext(ctx context.Context, scope nativeScope,
 		return ctx, err
 	}
 	digest := sha256.Sum256(raw)
-	selection := &analyticsCohortSelection{runners: slices.Clone(filter.Runners), items: map[tracker.NativeWorkItemID]bool{}, fingerprint: hex.EncodeToString(digest[:])}
+	selection := &analyticsCohortSelection{Runners: slices.Clone(filter.Runners), Items: map[tracker.NativeWorkItemID]bool{}, Fingerprint: hex.EncodeToString(digest[:])}
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return ctx, workItemStorageUnavailable()
@@ -589,7 +465,7 @@ func (s *Service) analyticsCohortContext(ctx context.Context, scope nativeScope,
 			return err
 		}
 		for _, item := range items {
-			selection.items[item] = true
+			selection.Items[item] = true
 		}
 		return nil
 	})
@@ -597,16 +473,4 @@ func (s *Service) analyticsCohortContext(ctx context.Context, scope nativeScope,
 		return ctx, err
 	}
 	return context.WithValue(ctx, analyticsCohortKey{}, selection), nil
-}
-
-func analyticsCohortRunners(ctx context.Context) []string {
-	selection, _ := ctx.Value(analyticsCohortKey{}).(*analyticsCohortSelection)
-	if selection == nil {
-		return nil
-	}
-	return selection.runners
-}
-func analyticsCohortRunnerAllows(ctx context.Context, runner string) bool {
-	selected := analyticsCohortRunners(ctx)
-	return len(selected) == 0 || slices.Contains(selected, runner)
 }

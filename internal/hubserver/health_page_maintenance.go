@@ -614,7 +614,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 	issues := make([]analyticsResidenceIssue, len(residence.Issues))
 	positions := map[tracker.NativeWorkItemID]int{}
 	for index, row := range residence.Issues {
-		issues[index] = analyticsResidenceIssue{id: string(row.WorkItemID), created: row.CreatedAt, initial: row.InitialState}
+		issues[index] = analyticsResidenceIssue{Id: string(row.WorkItemID), Created: row.CreatedAt, Initial: row.InitialState}
 		positions[row.WorkItemID] = index
 	}
 	for _, row := range residence.Events {
@@ -636,10 +636,10 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 		if value.Type == "scheduler.decision" && (value.Data.Decision == nil || value.Data.Decision.Source != "native_claim" || value.Data.Decision.Outcome != "claimed") {
 			continue
 		}
-		issues[index].events = append(issues[index].events, analyticsResidenceEvent{at: value.RecordedAt, kind: value.Type, data: value.Data})
+		issues[index].Events = append(issues[index].Events, analyticsResidenceEvent{At: value.RecordedAt, Kind: value.Type, Data: value.Data})
 	}
 	for _, issue := range issues {
-		issue.partial = rate.ResidencePartial
+		issue.Partial = rate.ResidencePartial
 		rate.Timelines = append(rate.Timelines, healthResidenceTimeline(buildAnalyticsResidenceTimeline(issue, states, now)))
 	}
 	for _, cost := range costs {

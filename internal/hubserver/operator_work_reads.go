@@ -373,7 +373,7 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope
 		if attempt.Runtime != nil && attempt.Runtime.Landing != nil && !attempt.Runtime.Landing.ObservedAt.IsZero() {
 			at = attempt.Runtime.Landing.ObservedAt
 		}
-		failures = append(failures, nativeFailure{attemptID: attempt.AttemptID, workItem: item, at: at, started: attempt.StartedAt, finished: attempt.UpdatedAt, example: example, class: class})
+		failures = append(failures, nativeFailure{AttemptID: attempt.AttemptID, WorkItem: item, At: at, Started: attempt.StartedAt, Finished: attempt.UpdatedAt, Example: example, Class: class})
 	}
 	var decisions eventstore.SchedulerDecisionRows
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {

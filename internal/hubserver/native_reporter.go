@@ -78,12 +78,12 @@ func reporterReadContext(ctx context.Context, scope nativeScope) context.Context
 		args = append(args, scope.project)
 	}
 	existing, _ := reportsScopeFrom(ctx)
-	if existing.issues != "" {
-		statement += " AND ri.native_id IN (" + existing.issues + ")"
-		args = append(args, existing.issueArgs...)
+	if existing.Issues != "" {
+		statement += " AND ri.native_id IN (" + existing.Issues + ")"
+		args = append(args, existing.IssueArgs...)
 	}
-	existing.issues, existing.issueArgs = statement, args
-	existing.reporterPrincipal = scope.actor().PrincipalID
+	existing.Issues, existing.IssueArgs = statement, args
+	existing.ReporterPrincipal = scope.actor().PrincipalID
 	return context.WithValue(ctx, reportsScopeKey{}, existing)
 }
 
@@ -140,6 +140,6 @@ func prepareReporterReadContext(ctx context.Context, q nativeQueryer, scope nati
 		return ctx, nil
 	}
 	selection, _ := reportsScopeFrom(ctx)
-	selection.issues, selection.issueArgs = pageQuery.statement(selection.issues, selection.issueArgs)
+	selection.Issues, selection.IssueArgs = pageQuery.statement(selection.Issues, selection.IssueArgs)
 	return context.WithValue(ctx, reportsScopeKey{}, selection), nil
 }

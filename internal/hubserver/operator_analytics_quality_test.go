@@ -59,109 +59,20 @@ func TestAnalyticsQualityEvidencePopulationOrder(t *testing.T) {
 				t.Fatal(err)
 			}
 			var ids []string
-			for _, event := range inputs.events {
+			for _, event := range inputs.Events {
 				if event.Kind == "changes_requested" {
 					ids = append(ids, event.ID)
 				}
 			}
-			if len(ids) != test.count || inputs.partial != test.partial {
-				t.Fatalf("evidence count=%d partial=%v", len(ids), inputs.partial)
+			if len(ids) != test.count || inputs.Partial != test.partial {
+				t.Fatalf("evidence count=%d partial=%v", len(ids), inputs.Partial)
 			}
 			if ids[0] != test.first || ids[len(ids)-1] != test.last {
 				t.Fatalf("evidence page begins %s and ends %s", ids[0], ids[len(ids)-1])
 			}
-			token = paging.next["quality_evidence"]
+			token = paging.Next["quality_evidence"]
 			if (token != "") != (test.offset < 2000) {
-				t.Fatalf("evidence continuation=%v", paging.next)
-			}
-		})
-	}
-}
-
-func TestQualityEscapeHistories(t *testing.T) {
-	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	at := func(hour int) time.Time { return base.Add(time.Duration(hour) * time.Hour) }
-	w := operatortool.AnalyticsWindow{From: base, To: at(48), Bucket: 24 * time.Hour}
-	landing := nativeAnalyticsLanding{ChangeID: "change", WorkItemID: "wi_work", Landing: tracker.ChangeLanding{VersionID: "version", MergeSHA: strings.Repeat("a", 40), LandedAt: at(10)}}
-	assessment := func(kind, cause string, hour int) qualityDiscussion {
-		return qualityDiscussion{ChangeID: landing.ChangeID, ChangeDiscussion: tracker.ChangeDiscussion{ID: "assessment", VersionID: "version", CreatedAt: at(hour), Escape: &tracker.QualityEscape{OccurrenceID: "occurrence", Kind: kind, Cause: cause, ObservedAt: at(hour), EvidenceReference: "record", EvidenceQuote: "failure"}}}
-	}
-	for _, tt := range []struct {
-		name              string
-		landings          []nativeAnalyticsLanding
-		events            []qualityHistoryEvent
-		discussions       []qualityDiscussion
-		escapes, affected int
-		cause             string
-		pending, infra    int
-	}{
-		{name: "revert", landings: []nativeAnalyticsLanding{landing}, discussions: []qualityDiscussion{assessment("revert", "missing_criterion", 30)}, escapes: 1, affected: 1, cause: "missing_criterion"},
-		{name: "attributed red suite", landings: []nativeAnalyticsLanding{landing}, discussions: []qualityDiscussion{assessment("scheduled_failure", "validator_miss", 30)}, escapes: 1, affected: 1, cause: "validator_miss"},
-		{name: "repeat occurrence does not inflate rate", landings: []nativeAnalyticsLanding{landing}, discussions: []qualityDiscussion{assessment("revert", "missing_criterion", 30), assessment("revert", "missing_criterion", 30)}, escapes: 1, affected: 1, cause: "missing_criterion"},
-		{name: "reopen detected without assessment", landings: []nativeAnalyticsLanding{landing}, events: []qualityHistoryEvent{{ID: "reopen", Item: "wi_work", Kind: "workflow.transitioned", At: at(30), Data: tracker.CollaborationData{FromState: "Done", ToState: "Todo"}}}, escapes: 1, affected: 1, pending: 1},
-		{name: "Done to another terminal state is not reopening", landings: []nativeAnalyticsLanding{landing}, events: []qualityHistoryEvent{{ID: "cancel", Item: "wi_work", Kind: "workflow.transitioned", At: at(30), ToTerminal: true, Data: tracker.CollaborationData{FromState: "Done", ToState: "Cancelled"}}}},
-		{name: "reopen assessment replaces pending detection", landings: []nativeAnalyticsLanding{landing}, events: []qualityHistoryEvent{{ID: "occurrence", Item: "wi_work", Kind: "workflow.transitioned", At: at(30), Data: tracker.CollaborationData{FromState: "Done", ToState: "Todo"}}}, discussions: []qualityDiscussion{assessment("reopened", "validator_miss", 30)}, escapes: 1, affected: 1, cause: "validator_miss"},
-		{name: "terminal item without landed source is not escape", events: []qualityHistoryEvent{{ID: "reopen", Item: "wi_work", Kind: "workflow.transitioned", At: at(30), Data: tracker.CollaborationData{FromState: "Done", ToState: "Todo"}}}},
-		{name: "infrastructure stays instance owned", landings: []nativeAnalyticsLanding{landing}, discussions: []qualityDiscussion{assessment("scheduled_failure", "infrastructure", 30)}, escapes: 1, cause: "infrastructure", infra: 1},
-		{name: "outside window", landings: []nativeAnalyticsLanding{landing}, discussions: []qualityDiscussion{assessment("revert", "missing_criterion", 48)}},
-		{name: "unlanded change is not escape", discussions: []qualityDiscussion{assessment("revert", "missing_criterion", 30)}},
-		{name: "detection before landing is not escape", landings: []nativeAnalyticsLanding{landing}, discussions: []qualityDiscussion{assessment("revert", "missing_criterion", 5)}},
-		{name: "old landing contributes detection counts but not window cohort", landings: []nativeAnalyticsLanding{{ChangeID: "change", WorkItemID: "wi_work", Landing: tracker.ChangeLanding{VersionID: "version", LandedAt: at(-10)}}}, discussions: []qualityDiscussion{assessment("revert", "underspecified_issue", 30)}, escapes: 1, cause: "underspecified_issue"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			got := summarizeAnalyticsQuality(tt.landings, tt.events, tt.discussions, w)
-			inputs := qualityInputsInWindow(analyticsQualityInputs{landings: tt.landings, events: tt.events, discussions: tt.discussions}, w)
-			shared := summarizeAnalyticsQuality(inputs.landings, inputs.events, inputs.discussions, w)
-			assertAnalyticsJSONEqual(t, got, shared)
-			if got.Escapes != tt.escapes || got.EscapedVersions != tt.affected || got.Pending != tt.pending || got.Infrastructure != tt.infra || (tt.cause != "" && got.Causes[tt.cause] != 1) {
-				t.Fatalf("quality = %+v", got)
-			}
-			if tt.infra > 0 && (got.Occurrences.Items[0].WorkItemID != "" || got.Occurrences.Items[0].Attribution != "instance") {
-				t.Fatalf("infrastructure attribution = %+v", got.Occurrences.Items[0])
-			}
-			if tt.affected > 0 && (got.EscapePercent == nil || *got.EscapePercent != 100 || got.Buckets[0].EscapedVersions != 1 || got.Buckets[1].Escapes != 1) {
-				t.Fatalf("landing cohort and detection buckets = %+v", got)
-			}
-		})
-	}
-	first := assessment("revert", "missing_criterion", 30)
-	override := assessment("revert", "underspecified_issue", 30)
-	override.Escape.HumanOverride = true
-	got := summarizeAnalyticsQuality([]nativeAnalyticsLanding{landing}, []qualityHistoryEvent{
-		{Item: "wi_work", Kind: "changes_requested", At: at(5)},
-		{Item: "wi_work", Kind: "changes_requested", At: at(6)},
-		{Item: "wi_other", Kind: "worked", At: at(6)},
-		{Item: "wi_other", Kind: "workflow.transitioned", At: at(7), Data: tracker.CollaborationData{FromState: "Merging", ToState: "Rework", ReasonDetail: "landing refused: base_protected"}},
-		{Item: "wi_work", Kind: "changes_requested", At: at(35)},
-	}, []qualityDiscussion{first, override, first}, w)
-	if got.ReworkedItems != 1 || got.WorkedItems != 2 || got.ReworkPercent == nil || *got.ReworkPercent != 50 || got.InfraReturns != 1 || got.Causes["underspecified_issue"] != 1 || got.Causes["missing_criterion"] != 0 {
-		t.Fatalf("dedupe, pre-landing rework, infrastructure return or human override = %+v", got)
-	}
-}
-
-func TestQualityCauseEvidence(t *testing.T) {
-	snapshot := &tracker.LandingQualitySnapshot{IssueBody: "Contract: inputs must be valid", Criteria: []string{"Reject invalid input"}, Evidence: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: gate.EvidenceTest, Reference: "TestInvalidInput", Behavior: "Asserts invalid input rejected"}}}
-	for _, tt := range []struct {
-		name, cause, criterion, quote string
-		missing, valid                bool
-	}{
-		{"covered criterion and evidence", "validator_miss", "Reject invalid input", "TestInvalidInput", false, true},
-		{"invented criterion", "validator_miss", "Reject unknown input", "TestInvalidInput", false, false},
-		{"invented evidence", "validator_miss", "Reject invalid input", "TestOther", false, false},
-		{"missing criterion grounded in contract", "missing_criterion", "", "inputs must be valid", false, true},
-		{"missing criterion cannot name a covered criterion", "missing_criterion", "Reject invalid input", "inputs must be valid", false, false},
-		{"missing section is not complete contract", "missing_criterion", "", "inputs must be valid", true, false},
-		{"weak contract quoted", "underspecified_issue", "", "inputs must be valid", false, true},
-		{"invented contract", "underspecified_issue", "", "Invented contract", false, false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			copy := *snapshot
-			if tt.missing {
-				copy.Missing = []string{"Must not break"}
-			}
-			err := validateQualityBasis(&copy, tracker.QualityEscape{Cause: tt.cause, Criterion: tt.criterion, BasisQuote: tt.quote})
-			if (err == nil) != tt.valid {
-				t.Fatalf("classification error = %v", err)
+				t.Fatalf("evidence continuation=%v", paging.Next)
 			}
 		})
 	}
@@ -294,5 +205,33 @@ func replaceAnalyticsTestIssueBody(t *testing.T, service *Service, scope nativeS
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestQualityCauseEvidence(t *testing.T) {
+	snapshot := &tracker.LandingQualitySnapshot{IssueBody: "Contract: inputs must be valid", Criteria: []string{"Reject invalid input"}, Evidence: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: gate.EvidenceTest, Reference: "TestInvalidInput", Behavior: "Asserts invalid input rejected"}}}
+	for _, tt := range []struct {
+		name, cause, criterion, quote string
+		missing, valid                bool
+	}{
+		{"covered criterion and evidence", "validator_miss", "Reject invalid input", "TestInvalidInput", false, true},
+		{"invented criterion", "validator_miss", "Reject unknown input", "TestInvalidInput", false, false},
+		{"invented evidence", "validator_miss", "Reject invalid input", "TestOther", false, false},
+		{"missing criterion grounded in contract", "missing_criterion", "", "inputs must be valid", false, true},
+		{"missing criterion cannot name a covered criterion", "missing_criterion", "Reject invalid input", "inputs must be valid", false, false},
+		{"missing section is not complete contract", "missing_criterion", "", "inputs must be valid", true, false},
+		{"weak contract quoted", "underspecified_issue", "", "inputs must be valid", false, true},
+		{"invented contract", "underspecified_issue", "", "Invented contract", false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			copy := *snapshot
+			if tt.missing {
+				copy.Missing = []string{"Must not break"}
+			}
+			err := validateQualityBasis(&copy, tracker.QualityEscape{Cause: tt.cause, Criterion: tt.criterion, BasisQuote: tt.quote})
+			if (err == nil) != tt.valid {
+				t.Fatalf("classification error = %v", err)
+			}
+		})
 	}
 }

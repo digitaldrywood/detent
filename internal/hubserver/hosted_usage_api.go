@@ -88,11 +88,11 @@ func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []
 		query.Projects = append(query.Projects, tracker.ProjectID(project))
 	}
 	if scope, ok := reportsScopeFrom(ctx); ok {
-		if scope.issues != "" {
+		if scope.Issues != "" {
 			return nil, errors.New("typed usage requires resolved report filters")
 		}
-		query.Principal = scope.reporterPrincipal
-		query.Filter = reportstore.Filter{Runners: scope.attempts.Runners, Models: scope.attempts.Models, Stages: scope.attempts.Stages}
+		query.Principal = scope.ReporterPrincipal
+		query.Filter = reportstore.Filter{Runners: scope.Attempts.Runners, Models: scope.Attempts.Models, Stages: scope.Attempts.Stages}
 	}
 	var facts []reportstore.UsageFact
 	var attempts []reportstore.AttemptFact

@@ -109,32 +109,32 @@ func readExplanationFailures(ctx context.Context, q nativeQueryer, scope nativeS
 		observed++
 		var f nativeFailure
 		var status, started, updated, raw, signature string
-		if err := rows.Scan(&f.attemptID, &status, &started, &updated, &raw, &signature); err != nil {
+		if err := rows.Scan(&f.AttemptID, &status, &started, &updated, &raw, &signature); err != nil {
 			return nil, false, err
 		}
 		var data tracker.NativeRunData
 		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 			return nil, false, err
 		}
-		f.example, f.class = failureFromAttempt(data, status)
+		f.Example, f.Class = failureFromAttempt(data, status)
 		if signature != "" {
-			f.example = signature
+			f.Example = signature
 		}
-		if f.example == "" {
+		if f.Example == "" {
 			continue
 		}
-		f.workItem = item
-		f.started, err = parseTimeValue(started)
+		f.WorkItem = item
+		f.Started, err = parseTimeValue(started)
 		if err != nil {
 			return nil, false, err
 		}
-		f.finished, err = parseTimeValue(updated)
+		f.Finished, err = parseTimeValue(updated)
 		if err != nil {
 			return nil, false, err
 		}
-		f.at = f.finished
+		f.At = f.Finished
 		if data.Runtime != nil && data.Runtime.Landing != nil && !data.Runtime.Landing.ObservedAt.IsZero() {
-			f.at = data.Runtime.Landing.ObservedAt
+			f.At = data.Runtime.Landing.ObservedAt
 		}
 		failures = append(failures, f)
 	}

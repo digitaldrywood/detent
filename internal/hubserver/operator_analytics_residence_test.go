@@ -24,35 +24,35 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	at := func(hour int) time.Time { return base.Add(time.Duration(hour) * time.Hour) }
 	transition := func(hour int, from, to, detail string) analyticsResidenceEvent {
-		return analyticsResidenceEvent{at: at(hour), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: from, ToState: to, ReasonDetail: detail}}
+		return analyticsResidenceEvent{At: at(hour), Kind: "workflow.transitioned", Data: tracker.CollaborationData{FromState: from, ToState: to, ReasonDetail: detail}}
 	}
 	claim := func(hour int) analyticsResidenceEvent {
-		return analyticsResidenceEvent{at: at(hour), kind: "scheduler.decision", data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", At: at(hour)}}}
+		return analyticsResidenceEvent{At: at(hour), Kind: "scheduler.decision", Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", At: at(hour)}}}
 	}
 	fixtures := []analyticsResidenceIssue{
-		{id: "a", created: base, initial: "Backlog", events: []analyticsResidenceEvent{
+		{Id: "a", Created: base, Initial: "Backlog", Events: []analyticsResidenceEvent{
 			transition(2, "Backlog", "Todo", ""), transition(4, "Todo", "In Progress", ""),
 			transition(6, "In Progress", "Blocked", ""), transition(8, "Blocked", "In Progress", ""),
 			transition(8, "In Progress", "Rework", "tests"), claim(9), transition(10, "Rework", "In Progress", ""),
 			transition(12, "In Progress", "Human Review", ""), transition(14, "Human Review", "Rework", "review"),
 			transition(16, "Rework", "Merging", ""), transition(18, "Merging", "Done", ""),
 		}},
-		{id: "b", created: base, initial: "Todo", events: []analyticsResidenceEvent{
+		{Id: "b", Created: base, Initial: "Todo", Events: []analyticsResidenceEvent{
 			transition(4, "Todo", "In Progress", ""), transition(8, "In Progress", "Rework", "tests"), claim(10), transition(14, "Rework", "Done", ""),
 		}},
-		{id: "c", created: base, initial: "Backlog", events: []analyticsResidenceEvent{
+		{Id: "c", Created: base, Initial: "Backlog", Events: []analyticsResidenceEvent{
 			transition(1, "Backlog", "Blocked", ""), transition(3, "Blocked", "Todo", ""),
 		}},
-		{id: "d", created: base, initial: "Triage"},
+		{Id: "d", Created: base, Initial: "Triage"},
 	}
 	details := &memoryRunDetails{}
 	f := newPostgresDefaultNativeFixture(t, Config{now: func() time.Time { return base }, RunDetails: details})
 	scope := analyticsResidenceTestScope(t, f)
 	ids := map[string]string{}
 	for _, fixture := range fixtures {
-		id := seedAnalyticsResidenceIssue(t, f, fixture.id, fixture.initial, fixture.created, false)
-		ids[fixture.id] = string(id)
-		for _, event := range fixture.events {
+		id := seedAnalyticsResidenceIssue(t, f, fixture.Id, fixture.Initial, fixture.Created, false)
+		ids[fixture.Id] = string(id)
+		for _, event := range fixture.Events {
 			appendAnalyticsResidenceTestEvent(t, f, id, event)
 		}
 	}
@@ -209,11 +209,11 @@ func TestNativeAnalyticsResidencePopulation(t *testing.T) {
 					if i%2 == 1 {
 						from, to = to, from
 					}
-					appendAnalyticsResidenceTestEvent(t, f, issue, analyticsResidenceEvent{at: base.Add(time.Duration(i+1) * time.Second), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: from, ToState: to}})
+					appendAnalyticsResidenceTestEvent(t, f, issue, analyticsResidenceEvent{At: base.Add(time.Duration(i+1) * time.Second), Kind: "workflow.transitioned", Data: tracker.CollaborationData{FromState: from, ToState: to}})
 				}
 			}
 			if kind == "events" {
-				appendAnalyticsResidenceTestEvent(t, f, issue, analyticsResidenceEvent{at: base.Add(1001 * time.Second), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}})
+				appendAnalyticsResidenceTestEvent(t, f, issue, analyticsResidenceEvent{At: base.Add(1001 * time.Second), Kind: "workflow.transitioned", Data: tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}})
 			}
 			report, err := readAnalyticsResidenceTestReport(t, t.Context(), f, details, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
 			if err != nil {
@@ -306,7 +306,7 @@ func seedAnalyticsResidenceIssue(t *testing.T, f nativeFixture, id, state string
 func appendAnalyticsResidenceTestEvent(t *testing.T, f nativeFixture, id tracker.NativeWorkItemID, event analyticsResidenceEvent) {
 	t.Helper()
 	content := eventstore.NewContent(f.service.runDetailStore())
-	row, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: id, Type: event.kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: event.at, Data: event.data}))
+	row, err := content.PrepareEvent(t.Context(), f.project.OrganizationID, historyTestJSON(t, tracker.CollaborationEvent{ID: newNativeID("event"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: id, Type: event.Kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: event.At, Data: event.Data}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,10 +315,10 @@ func appendAnalyticsResidenceTestEvent(t *testing.T, f nativeFixture, id tracker
 		if err != nil {
 			return err
 		}
-		if event.kind == "workflow.transitioned" {
-			current.WorkflowStateName = &event.data.ToState
-			current.NativeUpdatedAt = event.at
-			current.UpdatedAt = event.at
+		if event.Kind == "workflow.transitioned" {
+			current.WorkflowStateName = &event.Data.ToState
+			current.NativeUpdatedAt = event.At
+			current.UpdatedAt = event.At
 			if _, err := w.UpdateWorkItem(t.Context(), current); err != nil {
 				return err
 			}
@@ -358,6 +358,6 @@ func readAnalyticsResidenceTestReport(t *testing.T, ctx context.Context, f nativ
 		out.Digest = append(out.Digest, nativeAnalyticsBucket{From: from, To: minTime(from.Add(window.Bucket), window.To)})
 	}
 	err = f.service.projectNativeAnalyticsResidenceTenant(ctx, scope, request, &out)
-	out.PopulationCursors = paging.next
+	out.PopulationCursors = paging.Next
 	return out, err
 }

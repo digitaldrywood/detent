@@ -15,30 +15,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// reportsTrackingFingerprints maps the fingerprint a machine-filed issue would
-// carry for a failure to its class: the normalized signature, the signature's
-// digest, the class name and the class name's digest.
-func reportsTrackingFingerprints(failures []nativeFailure) map[string]string {
-	out := map[string]string{}
-	for _, f := range failures {
-		class := classifyFailure(f.example).Name
-		signature := normalizeFailureSignature(f.example)
-		for _, fingerprint := range []string{signature, issueorigin.Fingerprint(signature), class, issueorigin.Fingerprint(class)} {
-			if _, taken := out[fingerprint]; !taken && fingerprint != "" {
-				out[fingerprint] = class
-			}
-		}
-	}
-	return out
-}
-
-// reportsTrackingIssues links each failure class to an open issue whose origin
-// fingerprint matches one of its signatures. A class with no match keeps no link.
 func (s *Service) reportsTrackingIssues(ctx context.Context, scope nativeScope, classes []reportClassTotal, failures []nativeFailure) error {
 	if len(failures) > maxAnalyticsPopulation {
 		return nativePublicInvalid("Report failure tracking population exceeds the read limit")
@@ -165,7 +145,7 @@ func (s *Service) populatePostgresReportTracking(ctx context.Context, credential
 			partial = true
 			continue
 		}
-		failures[attempt.ProjectID] = append(failures[attempt.ProjectID], nativeFailure{attemptID: attempt.AttemptID, workItem: string(attempt.WorkItemID), at: attempt.OutcomeAt, example: example, class: class})
+		failures[attempt.ProjectID] = append(failures[attempt.ProjectID], nativeFailure{AttemptID: attempt.AttemptID, WorkItem: string(attempt.WorkItemID), At: attempt.OutcomeAt, Example: example, Class: class})
 	}
 	for _, project := range projects {
 		projectFailures := failures[tracker.ProjectID(project)]

@@ -455,8 +455,8 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 			}
 		}
 		inputs, err := f.service.readAnalyticsQualityInputsTenant(t.Context(), scope, reopenedWindow)
-		if err != nil || len(inputs.landings) != 2 {
-			t.Fatalf("pending events=%v lost reopened historical landings: rows=%v error=%v", pending, inputs.landings, err)
+		if err != nil || len(inputs.Landings) != 2 {
+			t.Fatalf("pending events=%v lost reopened historical landings: rows=%v error=%v", pending, inputs.Landings, err)
 		}
 	}
 }

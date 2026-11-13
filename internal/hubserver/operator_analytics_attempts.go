@@ -15,14 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-type nativeAnalyticsAttemptPopulation struct {
-	Items                   []nativeAnalyticsAttempt
-	Partial                 bool
-	Malformed               bool
-	Clipped                 bool
-	ContinuationUnavailable bool
-}
-
 func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, runner string, usage []reportstore.UsageFact, usageClipped bool) (nativeAnalyticsAttemptPopulation, string, error) {
 	out := nativeAnalyticsAttemptPopulation{Items: []nativeAnalyticsAttempt{}, Partial: usageClipped, Clipped: usageClipped}
 	if len(usage) > maxAnalyticsPopulation+1 {
@@ -116,7 +108,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 		}
 		run := value.Data.Run
 		a := nativeAnalyticsAttempt{AttemptID: row.AttemptID, WorkItemID: string(row.WorkItemID), Status: row.Status, StartedAt: row.StartedAt, ObservedAt: row.UpdatedAt, UsageRowsObserved: counts[row.AttemptID]}
-		a.activityRaw = "null"
+		a.ActivityRaw = "null"
 		if run.Runtime != nil {
 			runtime := run.Runtime
 			a.Phases = runtime.Phases
@@ -131,7 +123,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 			if err != nil {
 				return out, "", err
 			}
-			a.activityRaw = string(raw)
+			a.ActivityRaw = string(raw)
 			out.Partial = out.Partial || runtime.PhasesDropped > 0
 		}
 		if a.Identity.Role == "" && run.Identity != nil {
@@ -151,7 +143,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 			return out, "", err
 		}
 		if paging := analyticsPagingFromContext(ctx); paging != nil {
-			paging.next["attempts"] = next
+			paging.Next["attempts"] = next
 		}
 	}
 	return out, next, nil
@@ -196,7 +188,7 @@ func (s *Service) readNativeAnalyticsUsagePopulationTenant(ctx context.Context, 
 			return page, "", err
 		}
 		if paging := analyticsPagingFromContext(ctx); paging != nil {
-			paging.next["usage"] = next
+			paging.Next["usage"] = next
 		}
 	}
 	return page, next, nil

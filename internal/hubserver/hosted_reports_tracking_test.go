@@ -19,9 +19,9 @@ import (
 
 func TestReportsTrackingIssues(t *testing.T) {
 	failures := []nativeFailure{
-		{workItem: "wi_a", example: "hub request timed out"},
-		{workItem: "wi_b", example: "landing gate failed"},
-		{workItem: "wi_c", example: "something nobody filed"},
+		{WorkItem: "wi_a", Example: "hub request timed out"},
+		{WorkItem: "wi_b", Example: "landing gate failed"},
+		{WorkItem: "wi_c", Example: "something nobody filed"},
 	}
 	for _, tt := range []struct {
 		name     string

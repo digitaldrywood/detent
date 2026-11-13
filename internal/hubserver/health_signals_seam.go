@@ -83,11 +83,11 @@ func healthRecoveryReason(text string) string {
 	return healthsignals.New(healthsignals.Deps{NormalizeFailureSignature: normalizeFailureSignature}).RecoveryReason(text)
 }
 func healthResidenceTimeline(t analyticsResidenceTimeline) healthsignals.ResidenceTimeline {
-	out := healthsignals.ResidenceTimeline{Issue: healthsignals.ResidenceIssue{ID: t.issue.id, Partial: t.issue.partial}, State: t.state, Entered: t.entered, Done: t.done}
-	if t.spans != nil {
-		out.Spans = make([]healthsignals.ResidenceSpan, len(t.spans))
-		for i, s := range t.spans {
-			out.Spans[i] = healthsignals.ResidenceSpan{Lane: s.lane, From: s.from, To: s.to}
+	out := healthsignals.ResidenceTimeline{Issue: healthsignals.ResidenceIssue{ID: t.Issue.Id, Partial: t.Issue.Partial}, State: t.State, Entered: t.Entered, Done: t.Done}
+	if t.Spans != nil {
+		out.Spans = make([]healthsignals.ResidenceSpan, len(t.Spans))
+		for i, s := range t.Spans {
+			out.Spans[i] = healthsignals.ResidenceSpan{Lane: s.Lane, From: s.From, To: s.To}
 		}
 	}
 	return out
