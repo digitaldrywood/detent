@@ -36,6 +36,7 @@ import (
 )
 
 const testHostedPlanAdminToken = "plan-admin-token-for-isolated-tests-2195"
+const bootstrapTokenID = "bootstrap-admin"
 const testHubAdminToken = "detent_test_hub_admin_token_00000000000000000000000000000000"
 
 type hubDatabase struct {
@@ -301,7 +302,7 @@ func (f entitlementFixture) request(t *testing.T, user hubtest.HTTPActor, method
 	return f.http.Request(t, user, method, target, body).Recorder
 }
 
-func newEntitlementFixture(t *testing.T) entitlementFixture {
+func newEntitlementFixture(t *testing.T, configure ...func(*hubConfig)) entitlementFixture {
 	t.Helper()
 	repo, admin := postgresWithAdmin(t, 4)
 	const organization = tracker.OrganizationID("org_security")
@@ -312,6 +313,9 @@ func newEntitlementFixture(t *testing.T) entitlementFixture {
 	}
 	legacyPlans := PilotPlans()
 	cfg := hubConfig{Logger: discardLogger(), now: time.Now, Hosted: &HostedConfig{OrganizationID: string(organization), Plans: &legacyPlans}}
+	for _, apply := range configure {
+		apply(&cfg)
+	}
 	d := &hubDatabase{billingRepository: repo, hostedOrganization: organization, billingAuditStore: hubtest.NewDetails(), now: time.Now, logger: discardLogger()}
 	if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), PlansInput(cfg.Hosted))); err != nil {
 		t.Fatal(err)
