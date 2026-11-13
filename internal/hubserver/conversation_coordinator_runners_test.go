@@ -104,7 +104,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 				} `json:"conversation"`
 			}
 			decodeHubResponse(t, response, &created)
-			c := f.service.conversations.coordinator.(*conversationTurnCoordinator)
+			c := f.service.conversations.Coordinator.(*conversationTurnCoordinator)
 			messages, err := c.coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: created.Conversation.ID, Limit: 100})
 			if err != nil {
 				t.Fatal(err)

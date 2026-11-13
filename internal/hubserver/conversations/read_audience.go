@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func conversationReadAudience(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, credential apiCredential) (string, error) {
+func conversationReadAudience(ctx context.Context, query Queryer, organization tracker.OrganizationID, credential hubauth.Credential) (string, error) {
 	if credential.Hosted == nil {
 		raw := sha256.Sum256([]byte(string(organization) + ":" + credential.ID + ":" + string(credential.Scope)))
 		return hex.EncodeToString(raw[:]), nil
@@ -21,7 +23,7 @@ func conversationReadAudience(ctx context.Context, query nativeQueryer, organiza
 	if err := query.QueryRowContext(ctx, "SELECT role FROM hosted_members WHERE user_id=? AND active=1", credential.Hosted.Subject).Scan(&role); err != nil {
 		return "", err
 	}
-	role = lesserHostedRole(credential.HostedRole, role)
+	role = hubapi.LesserHostedRole(credential.HostedRole, role)
 	type grant struct {
 		Project       string
 		Write, Runner bool
@@ -45,7 +47,7 @@ func conversationReadAudience(ctx context.Context, query nativeQueryer, organiza
 	raw, err := json.Marshal(struct {
 		Organization tracker.OrganizationID
 		Role         string
-		Scope        apiScope
+		Scope        hubauth.TokenScope
 		KeyScope     string
 		SupportActor string
 		Grants       []grant
@@ -57,7 +59,7 @@ func conversationReadAudience(ctx context.Context, query nativeQueryer, organiza
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func conversationReadAudienceRecord(ctx context.Context, reader tenantstore.Reader, organization tracker.OrganizationID, credential apiCredential) (string, error) {
+func ConversationReadAudienceRecord(ctx context.Context, reader tenantstore.Reader, organization tracker.OrganizationID, credential hubauth.Credential) (string, error) {
 	if credential.Hosted == nil {
 		raw := sha256.Sum256([]byte(string(organization) + ":" + credential.ID + ":" + string(credential.Scope)))
 		return hex.EncodeToString(raw[:]), nil
@@ -121,11 +123,11 @@ func conversationReadAudienceRecord(ctx context.Context, reader tenantstore.Read
 	raw, err := json.Marshal(struct {
 		Organization tracker.OrganizationID
 		Role         string
-		Scope        apiScope
+		Scope        hubauth.TokenScope
 		KeyScope     string
 		SupportActor string
 		Grants       []grant
-	}{organization, lesserHostedRole(credential.HostedRole, member.Role), credential.Scope, string(credential.HostedKeyScope), credential.Hosted.SupportActor, grants})
+	}{organization, hubapi.LesserHostedRole(credential.HostedRole, member.Role), credential.Scope, string(credential.HostedKeyScope), credential.Hosted.SupportActor, grants})
 	if err != nil {
 		return "", err
 	}

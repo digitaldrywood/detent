@@ -133,7 +133,7 @@ func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conve
 		return nil, err
 	}
 	scope.project = record.ProjectID
-	s := t.coordinator.service.server
+	s := t.coordinator.server
 	row, version, err := s.readWorkItemRecord(readCtx, scope, split.ParentID)
 	if err != nil {
 		return nil, err

@@ -73,7 +73,7 @@ func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record con
 			return nil, err
 		}
 	}
-	s := t.coordinator.service.server
+	s := t.coordinator.server
 	archive := chat.IssueArchive{Items: make([]chat.IssueArchiveItem, 0, len(args.WorkItemIDs))}
 	if scope.credential.Scope == apiScopeWorker {
 		return nil, nativePublicInvalid("Archive and restore require an operator")

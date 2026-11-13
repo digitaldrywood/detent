@@ -47,7 +47,7 @@ func tfConvReopenConversationService(t *testing.T, original *Service, configure 
 		service.config.Logger = logger
 		service.database.logger = logger
 		if service.conversations != nil {
-			service.conversations.logger = logger.With("component", "conversation")
+			service.conversations.Logger = logger.With("component", "conversation")
 			service.registerConversationRoutes(service.echo)
 		}
 	} else {
@@ -57,7 +57,7 @@ func tfConvReopenConversationService(t *testing.T, original *Service, configure 
 	service.localOrganization = local
 	service.requestMetrics.Organization = organization
 	if cfg.Hosted == nil && service.conversations != nil {
-		if err := service.conversations.start(t.Context()); err != nil {
+		if err := service.conversations.Start(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 	}

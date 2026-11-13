@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -14,6 +14,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventbroker"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -78,15 +81,15 @@ const (
 	// conversationReferencePage bounds one "referenced from" listing.
 	conversationSettleBatch       = 100
 	conversationReferencePage     = 100
-	conversationHeartbeatInterval = 15 * time.Second
-	conversationAuthorizeInterval = 30 * time.Second
+	ConversationHeartbeatInterval = 15 * time.Second
+	ConversationAuthorizeInterval = 30 * time.Second
 	conversationEventPage         = 200
-	conversationMessagePage       = 50
+	ConversationMessagePage       = 50
 	// conversationSnapshotQuestions bounds the questions a snapshot carries.
-	conversationSnapshotQuestions = 20
+	ConversationSnapshotQuestions = 20
 )
 
-func (c ConversationConfig) normalized() ConversationConfig {
+func (c ConversationConfig) Normalized() ConversationConfig {
 	if c.ControlQueueSize <= 0 {
 		c.ControlQueueSize = defaultConversationControlQueueSize
 	}
@@ -102,24 +105,24 @@ func (c ConversationConfig) normalized() ConversationConfig {
 // conversationService owns the conversation product inside the hub: durable
 // storage, event fan-out to subscribers and the shared authorization rules.
 // HTTP handlers, coordinator turns and worker bindings live in sibling files.
-type conversationService struct {
-	server *Service
-	store  *conversationStore
-	broker *notificationBroker
-	config ConversationConfig
-	logger *slog.Logger
+type ConversationService struct {
+	Server *Server
+	Store  *ConversationStore
+	Broker *eventbroker.Broker
+	Config ConversationConfig
+	Logger *slog.Logger
 	// coordinator answers messages in conversations without a linked
 	// issue. It is woken after a message command committed.
-	coordinator conversationCoordinator
+	Coordinator ConversationCoordinator
 	// controls delivers committed controls to the bound worker of a linked
 	// conversation. It is woken after a control committed.
-	controls conversationControlRouter
+	Controls ConversationControlRouter
 	// settle stops the settle sweep; settled waits for it to exit.
-	settle           chan struct{}
-	settled          chan struct{}
-	settleCancel     context.CancelFunc
-	settleTicks      <-chan time.Time
-	stopSettleTicker func()
+	Settle           chan struct{}
+	Settled          chan struct{}
+	SettleCancel     context.CancelFunc
+	SettleTicks      <-chan time.Time
+	StopSettleTicker func()
 	lifecycleMu      sync.Mutex
 	lifecycleCursors map[string]string
 	once             sync.Once
@@ -128,7 +131,7 @@ type conversationService struct {
 // conversationCoordinator runs model turns for unlinked conversations. The
 // durable store is the queue: Wake only signals that saved user messages
 // may exist for the conversation.
-type conversationCoordinator interface {
+type ConversationCoordinator interface {
 	Available() bool
 	Wake(conversationID string)
 	// Cancel stops a running coordinator turn and reports whether one was
@@ -142,133 +145,121 @@ type conversationCoordinator interface {
 
 // conversationControlRouter hands committed controls to bound workers.
 // Wake signals that queued controls may exist for the conversation.
-type conversationControlRouter interface {
+type ConversationControlRouter interface {
 	Wake(conversationID string)
 	Stop()
 }
 
-func newConversationService(server *Service, cfg ConversationConfig) *conversationService {
+func NewConversationService(server *Server, cfg ConversationConfig) *ConversationService {
 	if cfg.UsageSink == nil {
-		cfg.UsageSink = server.database
+		cfg.UsageSink = server.deps.UsageSink
 	}
 	settleContext, settleCancel := context.WithCancel(context.Background())
 	ticker := time.NewTicker(conversationSettleInterval)
-	service := &conversationService{
-		server:           server,
-		store:            newConversationStore(nil),
-		broker:           server.notifications,
-		config:           cfg,
-		logger:           server.config.Logger.With("component", "conversation"),
-		settleCancel:     settleCancel,
-		settleTicks:      ticker.C,
-		stopSettleTicker: ticker.Stop,
+	service := &ConversationService{
+		Server:           server,
+		Store:            NewConversationStore(nil),
+		Broker:           server.deps.Broker,
+		Config:           cfg,
+		Logger:           server.deps.Logger.With("component", "conversation"),
+		SettleCancel:     settleCancel,
+		SettleTicks:      ticker.C,
+		StopSettleTicker: ticker.Stop,
 	}
-	service.store.database = server.database
-	service.store.contents = cfg.ArchiveContents
-	if server.config.Hosted != nil && server.config.Hosted.SharedEntry != nil {
-		service.store.contents = server.config.Hosted.SharedEntry.ArchiveContents
-	}
-	if service.store.contents == nil {
-		call := server.config.Content
-		if call == nil && server.config.Hosted != nil && server.config.Hosted.SharedEntry != nil {
-			call = server.config.Hosted.SharedEntry.Content
-		}
-		if call != nil {
-			service.store.contents = conversationArchiveStore{call: call}
-		}
-	}
-	service.coordinator = newConversationCoordinator(service)
-	service.controls = newConversationControlRouter(service)
-	service.settle = make(chan struct{})
-	service.settled = make(chan struct{})
-	go service.settleLoop(settleContext)
+	service.Store.ResolveWorkItems = server.deps.ResolveWorkItems
+	service.Store.Contents = server.deps.Contents(cfg.ArchiveContents)
+	service.Coordinator = server.deps.NewCoordinator(service)
+	service.Controls = server.deps.NewControls(service)
+	service.Settle = make(chan struct{})
+	service.Settled = make(chan struct{})
+	go service.SettleLoop(settleContext)
 	return service
 }
 
 // committed must be called after every transaction that appended events:
 // it wakes stream subscribers and the component that owns the next step.
-func (c *conversationService) committed(record conversationRecord) {
-	c.broker.notify(record.ID)
+func (c *ConversationService) Committed(record ConversationRecord) {
+	c.Broker.Notify(record.ID)
 	if record.WorkItemID == "" {
-		c.coordinator.Wake(record.ID)
+		c.Coordinator.Wake(record.ID)
 		return
 	}
-	c.controls.Wake(record.ID)
+	c.Controls.Wake(record.ID)
 }
 
-func (c *conversationService) wakeCoordinator(ctx context.Context, id string) error {
+func (c *ConversationService) wakeCoordinator(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if coordinator, ok := c.coordinator.(*conversationTurnCoordinator); ok {
-		if err := coordinator.deliverCoordinatorCommands(ctx, id); err != nil {
+	if coordinator, ok := c.Coordinator.(CommandDeliverer); ok {
+		if err := coordinator.DeliverCoordinatorCommands(ctx, id); err != nil {
 			return err
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	c.coordinator.Wake(id)
+	c.Coordinator.Wake(id)
 	return nil
 }
 
-func (c *conversationService) start(ctx context.Context) error {
-	organization, err := c.lifecycleOrganization()
+func (c *ConversationService) Start(ctx context.Context) error {
+	organization, err := c.LifecycleOrganization()
 	if err != nil {
 		return err
 	}
-	now := c.server.config.now()
+	now := c.Server.config().Now()
 	summary, err := c.normalizeAfterRestartPG(ctx, organization, now)
 	if err != nil {
 		return err
 	}
-	c.logger.Info("conversation.restart_normalized",
+	c.Logger.Info("conversation.restart_normalized",
 		"conversations", summary.Conversations, "messages", summary.Messages,
 		"questions", summary.Questions, "receipts", summary.Receipts)
-	if err := c.reconcileExecutionsPG(ctx, organization); err != nil {
+	if err := c.ReconcileExecutionsPG(ctx, organization); err != nil {
 		return err
 	}
-	return c.wakePendingPG(ctx, organization)
+	return c.WakePendingPG(ctx, organization)
 }
 
 // settleLoop settles conversations that have been finished and idle for the
 // project's settle window. The sweep is periodic rather than scheduled: a
 // conversation that wakes in the meantime is simply not a candidate when the
 // sweep next runs.
-func (c *conversationService) settleLoop(ctx context.Context) {
-	defer close(c.settled)
-	if c.stopSettleTicker != nil {
-		defer c.stopSettleTicker()
+func (c *ConversationService) SettleLoop(ctx context.Context) {
+	defer close(c.Settled)
+	if c.StopSettleTicker != nil {
+		defer c.StopSettleTicker()
 	}
 	for {
 		select {
-		case <-c.settle:
+		case <-c.Settle:
 			return
 		case <-ctx.Done():
 			return
-		case <-c.settleTicks:
-			organization, err := c.lifecycleOrganization()
+		case <-c.SettleTicks:
+			organization, err := c.LifecycleOrganization()
 			if err != nil {
-				c.logger.Warn("conversation.settle_sweep_failed", "error", err)
+				c.Logger.Warn("conversation.settle_sweep_failed", "error", err)
 				continue
 			}
-			now := c.server.config.now()
-			if err := c.wakePendingPG(ctx, organization); err != nil {
-				c.logger.Warn("conversation.pending_wake_failed", "error", err)
+			now := c.Server.config().Now()
+			if err := c.WakePendingPG(ctx, organization); err != nil {
+				c.Logger.Warn("conversation.pending_wake_failed", "error", err)
 			}
-			settled, err := c.settleIdleConversationsPG(ctx, organization, now)
+			settled, err := c.SettleIdleConversationsPG(ctx, organization, now)
 			if err != nil {
-				c.logger.Warn("conversation.settle_sweep_failed", "error", err)
+				c.Logger.Warn("conversation.settle_sweep_failed", "error", err)
 				continue
 			}
 			if settled > 0 {
-				c.logger.Info("conversation.settle_sweep", "settled", settled)
+				c.Logger.Info("conversation.settle_sweep", "settled", settled)
 			}
-			if _, err := c.compactEventsPG(ctx, organization, now); err != nil {
-				c.logger.Warn("conversation.compaction_failed", "error", err)
+			if _, err := c.CompactEventsPG(ctx, organization, now); err != nil {
+				c.Logger.Warn("conversation.compaction_failed", "error", err)
 			}
-			if _, err := c.sweepAttachments(ctx); err != nil {
-				c.logger.Warn("conversation.attachment_sweep_failed", "error", err)
+			if _, err := c.SweepAttachments(ctx); err != nil {
+				c.Logger.Warn("conversation.attachment_sweep_failed", "error", err)
 			}
 		}
 	}
@@ -278,44 +269,44 @@ func (c *conversationService) settleLoop(ctx context.Context) {
 // conversations with saved user messages are handed to the coordinator and
 // linked conversations with queued controls to the control router. Nothing
 // is replayed; the components re-read durable state.
-func (c *conversationService) wakePending(ctx context.Context) error {
-	organization, err := c.lifecycleOrganization()
+func (c *ConversationService) WakePending(ctx context.Context) error {
+	organization, err := c.LifecycleOrganization()
 	if err != nil {
 		return err
 	}
-	return c.wakePendingPG(ctx, organization)
+	return c.WakePendingPG(ctx, organization)
 }
 
-func (c *conversationService) stop() {
+func (c *ConversationService) Stop() {
 	c.once.Do(func() {
-		close(c.settle)
-		if c.settleCancel != nil {
-			c.settleCancel()
+		close(c.Settle)
+		if c.SettleCancel != nil {
+			c.SettleCancel()
 		}
-		<-c.settled
+		<-c.Settled
 	})
-	c.coordinator.Stop()
-	c.controls.Stop()
-	c.broker.closeAll()
+	c.Coordinator.Stop()
+	c.Controls.Stop()
+	c.Broker.CloseAll()
 }
 
 // Error codes specific to conversations, in addition to the shared native
 // vocabulary (not_found, invalid_request, idempotency_conflict).
 func conversationForbidden(message string) error {
-	return &nativeError{Code: "forbidden", Message: message, status: http.StatusForbidden, publicMessage: true}
+	return &hubapi.Error{Code: "forbidden", Message: message, Status: http.StatusForbidden, Public: true}
 }
 
-func conversationStale(message string) error {
-	return &nativeError{Code: "stale_execution", Message: message, status: http.StatusConflict, publicMessage: true}
+func ConversationStale(message string) error {
+	return &hubapi.Error{Code: "stale_execution", Message: message, Status: http.StatusConflict, Public: true}
 }
 
 // conversationStaleOwner reports an owner-generation mismatch with both
 // attempts in details so the client can tell a lost race from a stale tab
 // without a second request. Either identifier may be null.
-func conversationStaleOwner(message, expected, current string) error {
-	return &nativeError{
-		Code: "stale_execution", Message: message, status: http.StatusConflict, publicMessage: true,
-		Details: map[string]any{"expected_attempt_id": conversationOptional(expected), "current_attempt_id": conversationOptional(current)},
+func ConversationStaleOwner(message, expected, current string) error {
+	return &hubapi.Error{
+		Code: "stale_execution", Message: message, Status: http.StatusConflict, Public: true,
+		Details: map[string]any{"expected_attempt_id": ConversationOptional(expected), "current_attempt_id": ConversationOptional(current)},
 	}
 }
 
@@ -323,7 +314,7 @@ func conversationStaleOwner(message, expected, current string) error {
 // and reports a mismatch as stale_execution carrying both attempts.
 func conversationRequireOwner(owner conversation.Owner, expected conversation.Expected) error {
 	if err := owner.Matches(expected); err != nil {
-		return conversationStaleOwner(err.Error(), expected.AttemptID, owner.AttemptID)
+		return ConversationStaleOwner(err.Error(), expected.AttemptID, owner.AttemptID)
 	}
 	return nil
 }
@@ -331,8 +322,8 @@ func conversationRequireOwner(owner conversation.Owner, expected conversation.Ex
 // staleExecutionAttempts reports whether err is a stale_execution rejection
 // and returns the expected and current attempt identifiers it carries. A
 // rejection raised without a generation comparison carries neither.
-func staleExecutionAttempts(err error) (expected, current string, ok bool) {
-	var native *nativeError
+func StaleExecutionAttempts(err error) (expected, current string, ok bool) {
+	var native *hubapi.Error
 	if !errors.As(err, &native) || native.Code != "stale_execution" {
 		return "", "", false
 	}
@@ -346,23 +337,21 @@ func staleExecutionAttempts(err error) (expected, current string, ok bool) {
 	return read("expected_attempt_id"), read("current_attempt_id"), true
 }
 
-func conversationStaleExecutionError(path, conversationID string, err error) error {
-	expected, current, ok := staleExecutionAttempts(err)
+func ConversationStaleExecutionError(path, conversationID string, err error) error {
+	expected, current, ok := StaleExecutionAttempts(err)
 	if !ok {
 		return err
 	}
-	var failure *nativeError
+	var failure *hubapi.Error
 	if !errors.As(err, &failure) {
 		return err
 	}
-	refusal := *failure
-	refusal.logAttributes = []any{"component", "conversation", "conversation_id", conversationID,
-		"expected_attempt_id", expected, "current_attempt_id", current, "path", path}
-	return &refusal
+	return failure.WithLogAttributes("component", "conversation", "conversation_id", conversationID,
+		"expected_attempt_id", expected, "current_attempt_id", current, "path", path)
 }
 
-func conversationAlreadyLinked(existing string) error {
-	err := &nativeError{Code: "conversation_already_linked", Message: "The conversation or issue is already linked", status: http.StatusConflict, publicMessage: true}
+func ConversationAlreadyLinked(existing string) error {
+	err := &hubapi.Error{Code: "conversation_already_linked", Message: "The conversation or issue is already linked", Status: http.StatusConflict, Public: true}
 	if existing != "" {
 		err.Details = map[string]any{"existing_conversation_id": existing}
 	}
@@ -370,40 +359,40 @@ func conversationAlreadyLinked(existing string) error {
 }
 
 func conversationQuestionAnswered() error {
-	return &nativeError{Code: "question_already_answered", Message: "The question has already been answered", status: http.StatusConflict, publicMessage: true}
+	return &hubapi.Error{Code: "question_already_answered", Message: "The question has already been answered", Status: http.StatusConflict, Public: true}
 }
 
-func conversationUnsupported(message string) error {
-	return &nativeError{Code: "unsupported_control", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
+func ConversationUnsupported(message string) error {
+	return &hubapi.Error{Code: "unsupported_control", Message: message, Status: http.StatusUnprocessableEntity, Public: true}
 }
 
 func conversationShareRequired() error {
-	return &nativeError{Code: "share_history_required", Message: "Linking shares the conversation history; confirm with share_history", status: http.StatusUnprocessableEntity, publicMessage: true}
+	return &hubapi.Error{Code: "share_history_required", Message: "Linking shares the conversation history; confirm with share_history", Status: http.StatusUnprocessableEntity, Public: true}
 }
 
 func conversationProjectFixed() error {
-	return &nativeError{Code: "conversation_project_fixed", Message: "Conversations never move between projects", status: http.StatusUnprocessableEntity, publicMessage: true}
+	return &hubapi.Error{Code: "conversation_project_fixed", Message: "Conversations never move between projects", Status: http.StatusUnprocessableEntity, Public: true}
 }
 
-func conversationQueueFull() error {
-	return &nativeError{Code: "queue_full", Message: "The control queue is full; retry later", status: http.StatusServiceUnavailable}
+func ConversationQueueFull() error {
+	return &hubapi.Error{Code: "queue_full", Message: "The control queue is full; retry later", Status: http.StatusServiceUnavailable}
 }
 
 // translateConversationError maps store errors onto API errors.
-func translateConversationError(err error) error {
-	var linked *errConversationLinked
+func TranslateConversationError(err error) error {
+	var linked *ErrConversationLinked
 	if errors.As(err, &linked) {
-		return conversationAlreadyLinked(linked.ExistingConversationID)
+		return ConversationAlreadyLinked(linked.ExistingConversationID)
 	}
-	var revision *errConversationRevision
+	var revision *ErrConversationRevision
 	if errors.As(err, &revision) {
-		return &nativeError{Code: "revision_conflict", Message: "The conversation changed; reload and retry", status: http.StatusConflict, publicMessage: true}
+		return &hubapi.Error{Code: "revision_conflict", Message: "The conversation changed; reload and retry", Status: http.StatusConflict, Public: true}
 	}
 	if errors.Is(err, conversation.ErrStaleExecution) {
-		return conversationStale(err.Error())
+		return ConversationStale(err.Error())
 	}
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, corestore.ErrNotFound) {
-		return nativeNotFound()
+		return hubapi.NotFound()
 	}
 	return err
 }
@@ -411,28 +400,28 @@ func translateConversationError(err error) error {
 // authorizeRead applies the audience rules from the decisions document:
 // the record must belong to the request scope, private conversations are
 // visible only to their owner, and every denial is an opaque not_found.
-func (c *conversationService) authorizeRead(ctx context.Context, query nativeQueryer, scope nativeScope, record conversationRecord) error {
-	if record.OrganizationID != scope.organization || record.ProjectID != scope.project {
-		return nativeNotFound()
+func (c *ConversationService) AuthorizeRead(ctx context.Context, query Queryer, scope hubauth.Input, record ConversationRecord) error {
+	if record.OrganizationID != scope.Organization || record.ProjectID != scope.Project {
+		return hubapi.NotFound()
 	}
 	if record.ReadAudience != "" {
-		audience, err := conversationReadAudience(ctx, query, scope.organization, scope.credential)
+		audience, err := conversationReadAudience(ctx, query, scope.Organization, scope.Credential)
 		if err != nil || audience != record.ReadAudience {
-			return nativeNotFound()
+			return hubapi.NotFound()
 		}
 	}
-	if record.Visibility == conversation.VisibilityPrivate && record.OwnerPrincipalID != scope.credential.ID {
-		return nativeNotFound()
+	if record.Visibility == conversation.VisibilityPrivate && record.OwnerPrincipalID != scope.Credential.ID {
+		return hubapi.NotFound()
 	}
 	return nil
 }
 
 // actorFor describes the request principal for message attribution.
-func conversationActorFor(scope nativeScope) conversation.Actor {
-	if scope.credential.Runner.RunnerID != "" || scope.credential.Scope == apiScopeWorker {
-		return conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: scope.credential.ID}
+func ConversationActorFor(scope hubauth.Input) conversation.Actor {
+	if scope.Credential.Runner.RunnerID != "" || scope.Credential.Scope == hubauth.Worker {
+		return conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: scope.Credential.ID}
 	}
-	return conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: scope.credential.ID}
+	return conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: scope.Credential.ID}
 }
 
 // Public resource projections (the conversation contract).
@@ -442,7 +431,7 @@ type conversationOwnerResource struct {
 	Subject     string `json:"subject"`
 }
 
-type conversationExecutionResource struct {
+type ConversationExecutionResource struct {
 	Status conversation.ExecutionStatus `json:"status"`
 	// The owner identifiers are null rather than empty when no attempt owns
 	// the conversation; the client tells "absent" from "known" by null.
@@ -461,7 +450,7 @@ type conversationExecutionResource struct {
 
 // conversationWorkItemResource is the linked issue as the client renders it:
 // enough to show and open the issue card without a second request.
-type conversationWorkItemResource struct {
+type ConversationWorkItemResource struct {
 	ID         string `json:"id"`
 	Identifier string `json:"identifier"`
 	Title      string `json:"title"`
@@ -471,7 +460,7 @@ type conversationWorkItemResource struct {
 	RunnerBound bool `json:"runner_bound"`
 }
 
-type conversationResource struct {
+type ConversationResource struct {
 	ID             string                  `json:"id"`
 	WebURL         string                  `json:"web_url,omitempty"`
 	OrganizationID tracker.OrganizationID  `json:"organization_id"`
@@ -487,9 +476,9 @@ type conversationResource struct {
 	SubjectWorkItemID *string                       `json:"subject_work_item_id,omitempty"`
 	WorkItemID        *string                       `json:"work_item_id"`
 	LinkedAt          *time.Time                    `json:"linked_at"`
-	WorkItem          *conversationWorkItemResource `json:"work_item"`
+	WorkItem          *ConversationWorkItemResource `json:"work_item"`
 	Owner             conversationOwnerResource     `json:"owner"`
-	Execution         conversationExecutionResource `json:"execution"`
+	Execution         ConversationExecutionResource `json:"execution"`
 	Revision          int64                         `json:"revision"`
 	EventSeq          int64                         `json:"event_seq"`
 	CreatedAt         time.Time                     `json:"created_at"`
@@ -500,7 +489,7 @@ type conversationResource struct {
 	MessageCount int64 `json:"message_count"`
 }
 
-type conversationMessageResource struct {
+type ConversationMessageResource struct {
 	revision       int64
 	contentID      string
 	ID             string                   `json:"id"`
@@ -518,7 +507,7 @@ type conversationMessageResource struct {
 	CommandKey     *string                  `json:"command_key"`
 	// References are the issues and conversations the text names, resolved
 	// against the project.
-	References []conversationReferenceResource `json:"references"`
+	References []ConversationReferenceResource `json:"references"`
 	// Attachments are the uploads the message carries, each with the URL
 	// that streams it.
 	Attachments []conversation.Attachment `json:"attachments"`
@@ -528,17 +517,17 @@ type conversationMessageResource struct {
 
 // conversationReferenceResource is one resolved reference as the client
 // renders it: a link with a label.
-type conversationReferenceResource struct {
+type ConversationReferenceResource struct {
 	Kind  conversation.ReferenceKind `json:"kind"`
 	ID    string                     `json:"id"`
 	Label string                     `json:"label"`
 	URL   string                     `json:"url"`
 }
 
-func projectReferences(references []conversationMessageReference) []conversationReferenceResource {
-	projected := make([]conversationReferenceResource, 0, len(references))
+func projectReferences(references []ConversationMessageReference) []ConversationReferenceResource {
+	projected := make([]ConversationReferenceResource, 0, len(references))
 	for _, reference := range references {
-		projected = append(projected, conversationReferenceResource{
+		projected = append(projected, ConversationReferenceResource{
 			Kind: reference.Kind, ID: reference.ID, Label: reference.Label,
 			URL: reference.URL,
 		})
@@ -546,36 +535,36 @@ func projectReferences(references []conversationMessageReference) []conversation
 	return projected
 }
 
-func conversationOptional(value string) *string {
+func ConversationOptional(value string) *string {
 	if value == "" {
 		return nil
 	}
 	return &value
 }
 
-func conversationBetweenTurns(execution conversation.Execution) bool {
+func ConversationBetweenTurns(execution conversation.Execution) bool {
 	return execution.Status == conversation.ExecutionRunning && execution.Owner.AttemptID != "" && execution.Owner.TurnID == ""
 }
 
-func projectExecution(execution conversation.Execution) conversationExecutionResource {
+func ProjectExecution(execution conversation.Execution) ConversationExecutionResource {
 	status := execution.Status
 	if status == "" {
 		status = conversation.ExecutionIdle
 	}
 	capabilities := execution.Capabilities
-	if conversationBetweenTurns(execution) {
+	if ConversationBetweenTurns(execution) {
 		capabilities.Steer = false
 	}
-	return conversationExecutionResource{
+	return ConversationExecutionResource{
 		Status:       status,
-		AttemptID:    conversationOptional(execution.Owner.AttemptID),
-		RunID:        conversationOptional(execution.Owner.RunID),
-		RunnerID:     conversationOptional(execution.Owner.RunnerID),
-		ThreadID:     conversationOptional(execution.Owner.ThreadID),
-		TurnID:       conversationOptional(execution.Owner.TurnID),
+		AttemptID:    ConversationOptional(execution.Owner.AttemptID),
+		RunID:        ConversationOptional(execution.Owner.RunID),
+		RunnerID:     ConversationOptional(execution.Owner.RunnerID),
+		ThreadID:     ConversationOptional(execution.Owner.ThreadID),
+		TurnID:       ConversationOptional(execution.Owner.TurnID),
 		Resume:       execution.Resume,
 		Capabilities: capabilities,
-		Error:        conversationOptional(execution.Error),
+		Error:        ConversationOptional(execution.Error),
 		UpdatedAt:    execution.UpdatedAt,
 	}
 }
@@ -589,11 +578,11 @@ func conversationRunnerBound(execution conversation.Execution) bool {
 
 // projectWorkItem renders the linked issue summary. An unlinked conversation,
 // or one whose issue could not be resolved, projects null.
-func projectWorkItem(record conversationRecord) *conversationWorkItemResource {
+func projectWorkItem(record ConversationRecord) *ConversationWorkItemResource {
 	if record.WorkItemID == "" || record.WorkItem == nil {
 		return nil
 	}
-	return &conversationWorkItemResource{
+	return &ConversationWorkItemResource{
 		ID:          record.WorkItem.ID,
 		Identifier:  record.WorkItem.Identifier,
 		Title:       record.WorkItem.Title,
@@ -605,7 +594,7 @@ func projectWorkItem(record conversationRecord) *conversationWorkItemResource {
 // conversationIssueResult is the data.issue payload of the status message a
 // completed handoff appends. It survives a reload and reaches other tabs,
 // so the result card does not depend on the linking response.
-func conversationIssueResult(record conversationRecord) map[string]any {
+func ConversationIssueResult(record ConversationRecord) map[string]any {
 	item := projectWorkItem(record)
 	if item == nil {
 		return nil
@@ -620,68 +609,15 @@ func conversationIssueResult(record conversationRecord) map[string]any {
 // record so that every projection reports the same identity without a
 // second lookup. runner_bound is not cached: it comes from the record's own
 // execution state, which changes far more often than the issue.
-type conversationWorkItem struct {
+type ConversationWorkItem struct {
 	ID         string
 	Identifier string
 	Title      string
 	Lane       string
 }
 
-// resolveConversationWorkItems fills the linked issue summary of every linked
-// record in one query. A record whose issue is no longer readable keeps a nil
-// summary and projects work_item: null rather than failing the read.
-func resolveConversationWorkItems(ctx context.Context, query nativeQueryer, records []*conversationRecord) error {
-	linked := make([]string, 0, len(records))
-	for _, record := range records {
-		if record.WorkItemID != "" {
-			linked = append(linked, record.WorkItemID)
-		}
-	}
-	if len(linked) == 0 {
-		return nil
-	}
-	ids, err := sqlList(linked)
-	if err != nil {
-		return fmt.Errorf("encode linked work items: %w", err)
-	}
-	rows, err := querySQL(ctx, query, `SELECT i.organization_id, i.project_id, i.native_id, p.name, COALESCE(i.number, 0), i.title, COALESCE(ws.detent_state, '')
-FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
-LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.native_id IN (SELECT value FROM sql_rows(?))`, ids)
-	if err != nil {
-		return fmt.Errorf("read linked work items: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	items := map[string]conversationWorkItem{}
-	for rows.Next() {
-		var organization, project, id, name, title, lane string
-		var number int64
-		if err := rows.Scan(&organization, &project, &id, &name, &number, &title, &lane); err != nil {
-			return fmt.Errorf("read linked work items: %w", err)
-		}
-		items[conversationWorkItemKey(organization, project, id)] = conversationWorkItem{
-			ID: id, Identifier: fmt.Sprintf("%s#%d", name, number), Title: title, Lane: lane,
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read linked work items: %w", err)
-	}
-	for _, record := range records {
-		item, ok := items[conversationWorkItemKey(string(record.OrganizationID), string(record.ProjectID), record.WorkItemID)]
-		if !ok {
-			continue
-		}
-		record.WorkItem = &item
-	}
-	return nil
-}
-
-func conversationWorkItemKey(organization, project, workItem string) string {
-	return organization + "/" + project + "/" + workItem
-}
-
-func projectConversation(record conversationRecord) conversationResource {
-	return conversationResource{
+func ProjectConversation(record ConversationRecord) ConversationResource {
+	return ConversationResource{
 		ID:                record.ID,
 		OrganizationID:    record.OrganizationID,
 		ProjectID:         record.ProjectID,
@@ -691,12 +627,12 @@ func projectConversation(record conversationRecord) conversationResource {
 		Status:            record.Status,
 		Archived:          record.Archived,
 		Preferences:       record.Preferences.Normalized(),
-		SubjectWorkItemID: conversationOptional(record.SubjectWorkItemID),
-		WorkItemID:        conversationOptional(record.WorkItemID),
+		SubjectWorkItemID: ConversationOptional(record.SubjectWorkItemID),
+		WorkItemID:        ConversationOptional(record.WorkItemID),
 		LinkedAt:          record.LinkedAt,
 		WorkItem:          projectWorkItem(record),
 		Owner:             conversationOwnerResource{PrincipalID: record.OwnerPrincipalID, Subject: record.OwnerSubject},
-		Execution:         projectExecution(record.Execution),
+		Execution:         ProjectExecution(record.Execution),
 		Revision:          record.Revision,
 		EventSeq:          record.EventSeq,
 		CreatedAt:         record.CreatedAt,
@@ -706,12 +642,12 @@ func projectConversation(record conversationRecord) conversationResource {
 	}
 }
 
-func projectMessage(record conversationMessageRecord) conversationMessageResource {
+func ProjectMessage(record ConversationMessageRecord) ConversationMessageResource {
 	var data any = map[string]any{}
 	if len(record.Data) > 0 && string(record.Data) != "null" {
 		data = record.Data
 	}
-	return conversationMessageResource{
+	return ConversationMessageResource{
 		contentID:      record.ContentID,
 		revision:       record.Revision,
 		ID:             record.ID,
@@ -722,13 +658,13 @@ func projectMessage(record conversationMessageRecord) conversationMessageResourc
 		Text:           record.Text,
 		Data:           data,
 		Delivery:       record.Delivery,
-		AttemptID:      conversationOptional(record.AttemptID),
-		TurnID:         conversationOptional(record.TurnID),
-		ProviderItemID: conversationOptional(record.ProviderItemID),
+		AttemptID:      ConversationOptional(record.AttemptID),
+		TurnID:         ConversationOptional(record.TurnID),
+		ProviderItemID: ConversationOptional(record.ProviderItemID),
 		Actor:          record.Actor,
-		CommandKey:     conversationOptional(record.CommandKey),
+		CommandKey:     ConversationOptional(record.CommandKey),
 		References:     projectReferences(record.References),
-		Attachments:    projectAttachments(record.Attachments),
+		Attachments:    ProjectAttachments(record.Attachments),
 		CreatedAt:      record.CreatedAt,
 		UpdatedAt:      record.UpdatedAt,
 	}
@@ -736,33 +672,33 @@ func projectMessage(record conversationMessageRecord) conversationMessageResourc
 
 // loadConversation reads a conversation for the request scope and applies
 // the read rule. Any failure is an API error.
-func (c *conversationService) loadConversation(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (conversationRecord, error) {
+func (c *ConversationService) LoadConversation(ctx context.Context, query Queryer, scope hubauth.Input, id string) (ConversationRecord, error) {
 	record, err := c.loadConversationRow(ctx, query, scope, id)
 	if err != nil {
-		return conversationRecord{}, err
+		return ConversationRecord{}, err
 	}
-	if c.server.conversationRecordsSelected() {
+	if c.Server.conversationRecordsSelected() {
 		return record, nil
 	}
-	if err := c.store.resolveConversationRecord(ctx, query, &record); err != nil {
-		return conversationRecord{}, translateConversationError(err)
+	if err := c.Store.resolveConversationRecord(ctx, query, &record); err != nil {
+		return ConversationRecord{}, TranslateConversationError(err)
 	}
 	return record, nil
 }
 
-func (c *conversationService) loadConversationRow(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (conversationRecord, error) {
+func (c *ConversationService) loadConversationRow(ctx context.Context, query Queryer, scope hubauth.Input, id string) (ConversationRecord, error) {
 	if err := conversation.ValidateConversationID(id); err != nil {
-		return conversationRecord{}, nativeNotFound()
+		return ConversationRecord{}, hubapi.NotFound()
 	}
-	if c.server.conversationRecordsSelected() {
-		return c.server.readPGConversation(ctx, scope, id)
+	if c.Server.conversationRecordsSelected() {
+		return c.Server.ReadPGConversation(ctx, scope, id)
 	}
-	record, err := c.store.readConversationRow(ctx, query, scope.organization, scope.project, id)
+	record, err := c.Store.readConversationRow(ctx, query, scope.Organization, scope.Project, id)
 	if err != nil {
-		return conversationRecord{}, translateConversationError(err)
+		return ConversationRecord{}, TranslateConversationError(err)
 	}
-	if err := c.authorizeRead(ctx, query, scope, record); err != nil {
-		return conversationRecord{}, err
+	if err := c.AuthorizeRead(ctx, query, scope, record); err != nil {
+		return ConversationRecord{}, err
 	}
 	return record, nil
 }
@@ -776,24 +712,24 @@ func (c *conversationService) loadConversationRow(ctx context.Context, query nat
 // something the hub can see. Extraction is bounded by
 // conversation.MaxReferences, so one message can never write more rows than
 // that.
-func (c *conversationService) recordReferences(ctx context.Context, tx *sql.Tx, record conversationRecord, message *conversationMessageRecord, now time.Time) error {
+func (c *ConversationService) recordReferences(ctx context.Context, tx *sql.Tx, record ConversationRecord, message *ConversationMessageRecord, now time.Time) error {
 	resolved, err := c.resolveReferences(ctx, tx, record, conversation.ExtractReferences(message.Text))
 	if err != nil {
 		return err
 	}
 	message.References = resolved
-	return c.store.replaceMessageReferences(ctx, tx, *message, now)
+	return c.Store.replaceMessageReferences(ctx, tx, *message, now)
 }
 
 // resolveReferences turns extracted tokens into stored references. A bare
 // "#123" resolves inside the conversation's project; a qualified token
 // resolves in the named project of the same organization. A token that names
 // nothing the hub holds is dropped rather than stored as a dead link.
-func (c *conversationService) resolveReferences(ctx context.Context, tx *sql.Tx, record conversationRecord, references []conversation.Reference) ([]conversationMessageReference, error) {
+func (c *ConversationService) resolveReferences(ctx context.Context, tx *sql.Tx, record ConversationRecord, references []conversation.Reference) ([]ConversationMessageReference, error) {
 	if len(references) == 0 {
 		return nil, nil
 	}
-	resolved := make([]conversationMessageReference, 0, len(references))
+	resolved := make([]ConversationMessageReference, 0, len(references))
 	for _, reference := range references {
 		switch reference.Kind {
 		case conversation.ReferenceConversation:
@@ -820,7 +756,7 @@ func (c *conversationService) resolveReferences(ctx context.Context, tx *sql.Tx,
 // resolveConversationReference reports the referenced conversation; ok is
 // false when the token names nothing in the organization, or names the
 // conversation the message belongs to.
-func (c *conversationService) resolveConversationReference(ctx context.Context, tx *sql.Tx, record conversationRecord, reference conversation.Reference) (found conversationMessageReference, ok bool, err error) {
+func (c *ConversationService) resolveConversationReference(ctx context.Context, tx *sql.Tx, record ConversationRecord, reference conversation.Reference) (found ConversationMessageReference, ok bool, err error) {
 	if reference.ConversationID == record.ID {
 		// A conversation never references itself.
 		return found, false, nil
@@ -833,12 +769,12 @@ func (c *conversationService) resolveConversationReference(ctx context.Context, 
 	if err != nil {
 		return found, false, fmt.Errorf("resolve conversation reference: %w", err)
 	}
-	return conversationMessageReference{Kind: conversation.ReferenceConversation, ID: reference.ConversationID, Label: reference.Text, URL: "/chat/c/" + reference.ConversationID}, true, nil
+	return ConversationMessageReference{Kind: conversation.ReferenceConversation, ID: reference.ConversationID, Label: reference.Text, URL: "/chat/c/" + reference.ConversationID}, true, nil
 }
 
 // resolveIssueReference reports the referenced issue; ok is false when the
 // number names no issue the hub holds in the named project.
-func (c *conversationService) resolveIssueReference(ctx context.Context, tx *sql.Tx, record conversationRecord, reference conversation.Reference) (found conversationMessageReference, ok bool, err error) {
+func (c *ConversationService) resolveIssueReference(ctx context.Context, tx *sql.Tx, record ConversationRecord, reference conversation.Reference) (found ConversationMessageReference, ok bool, err error) {
 	query := "SELECT i.native_id FROM issues i WHERE i.organization_id = ? AND i.project_id = ? AND i.number = ?"
 	args := []any{record.OrganizationID, record.ProjectID, reference.Number}
 	if reference.Project != "" {
@@ -859,9 +795,9 @@ WHERE i.organization_id = ? AND lower(p.name) = ? AND i.number = ?`
 	if err != nil {
 		return found, false, fmt.Errorf("resolve issue reference: %w", err)
 	}
-	path, err := readIssueBrowserPath(ctx, tx, workItemID)
+	path, err := c.Server.deps.IssueBrowserPath(ctx, tx, workItemID)
 	if err != nil {
 		return found, false, err
 	}
-	return conversationMessageReference{Kind: conversation.ReferenceIssue, ID: workItemID, Label: reference.Text, URL: path}, true, nil
+	return ConversationMessageReference{Kind: conversation.ReferenceIssue, ID: workItemID, Label: reference.Text, URL: path}, true, nil
 }

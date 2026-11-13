@@ -390,17 +390,17 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		assertArchiveGolden(t, read.history, response.Body.Bytes())
 		page, err := f.service.readPGConversationPage(ctx, f.scope, read.conversation, 0, 100)
-		if err != nil || len(page.messages) != len(read.messages) {
-			t.Fatalf("unrelated live records entered archive read: messages=%+v error=%v", page.messages, err)
+		if err != nil || len(page.Messages) != len(read.messages) {
+			t.Fatalf("unrelated live records entered archive read: messages=%+v error=%v", page.Messages, err)
 		}
-		for i, message := range page.messages {
+		for i, message := range page.Messages {
 			before := read.messages[i]
 			if message.ID != before.ID || message.Seq != before.Seq || message.Revision != before.Revision || message.Text != before.Text || !storageArchiveJSONEqual(t, message.Data, before.Data) || message.Role != before.Role || !reflect.DeepEqual(message.Actor, before.Actor) || !message.CreatedAt.Equal(before.CreatedAt) || !message.UpdatedAt.Equal(before.UpdatedAt) {
 				t.Fatalf("historical message fields changed across archive: %+v", message)
 			}
 		}
-		if len(page.messages) != 2 || page.messages[0].ConversationID != read.conversation || page.messages[1].ConversationID != read.conversation {
-			t.Fatalf("archive read crossed conversation scope: %+v", page.messages)
+		if len(page.Messages) != 2 || page.Messages[0].ConversationID != read.conversation || page.Messages[1].ConversationID != read.conversation {
+			t.Fatalf("archive read crossed conversation scope: %+v", page.Messages)
 		}
 		if err := f.service.config.TenantRepository.ReadTenant(ctx, f.scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			for _, lookup := range []struct {

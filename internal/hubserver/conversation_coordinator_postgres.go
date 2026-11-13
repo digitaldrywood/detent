@@ -20,13 +20,13 @@ import (
 )
 
 func (c *conversationTurnCoordinator) coordinatorMessages(ctx context.Context, filter conversationstore.MessageFilter) ([]conversationMessageRecord, error) {
-	organization, err := c.service.lifecycleOrganization()
+	organization, err := c.service.LifecycleOrganization()
 	if err != nil {
 		return nil, err
 	}
 	var messages []conversationMessageRecord
 	refs := map[string]attachment.ArchiveReference{}
-	err = c.service.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		current, err := r.ConversationByID(ctx, filter.ConversationID)
 		if err != nil {
 			return err
@@ -92,7 +92,7 @@ func (c *conversationTurnCoordinator) coordinatorMessages(ctx context.Context, f
 	for i := range messages {
 		if ref, ok := refs[messages[i].ContentID]; ok {
 			var content conversationContent
-			if err := c.service.server.readConversationObject(ctx, string(organization), ref, &content); err != nil {
+			if err := c.server.readConversationObject(ctx, string(organization), ref, &content); err != nil {
 				return nil, err
 			}
 			messages[i].Text, messages[i].Data = content.Text, content.Data
@@ -114,8 +114,8 @@ func (c *conversationTurnCoordinator) authorizeRecord(ctx context.Context, scope
 	if record.OrganizationID != scope.organization || record.ProjectID != scope.project {
 		return nativeNotFound()
 	}
-	return c.service.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := c.service.server.authorizeAccessScope(ctx, r, scope, write); err != nil {
+	return c.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := c.server.authorizeAccessScope(ctx, r, scope, write); err != nil {
 			return err
 		}
 		if record.Visibility == conversation.VisibilityPrivate && record.OwnerPrincipalID != scope.credential.ID {
@@ -136,7 +136,7 @@ func (c *conversationTurnCoordinator) appendMessage(ctx context.Context, w tenan
 	if err != nil {
 		return err
 	}
-	prepared, ok := p.messages[message.ID]
+	prepared, ok := p.Messages[message.ID]
 	if ok {
 		*message = prepared
 	}
@@ -168,7 +168,7 @@ func (c *conversationTurnCoordinator) updateMessage(ctx context.Context, w tenan
 	if err != nil {
 		return err
 	}
-	if prepared, ok := p.messages[message.ID]; ok {
+	if prepared, ok := p.Messages[message.ID]; ok {
 		message = prepared
 	}
 	current, err := w.Message(ctx, message.ConversationID, message.ID)
@@ -212,7 +212,7 @@ func (c *conversationTurnCoordinator) saveConversation(ctx context.Context, w te
 	if err != nil {
 		return err
 	}
-	ref, ok := plan.prepared[string(record.OrganizationID)+"/"+artifact.Digest(content)]
+	ref, ok := plan.Prepared[string(record.OrganizationID)+"/"+artifact.Digest(content)]
 	if !ok {
 		return errors.New("coordinator record content was not prepared")
 	}
@@ -222,7 +222,7 @@ func (c *conversationTurnCoordinator) saveConversation(ctx context.Context, w te
 		return err
 	}
 	*record = conversationRecordFromStore(current)
-	return appendCoordinatorEvent(ctx, w, record.OrganizationID, record.ID, conversation.EventConversationUpdated, projectConversation(plan.record), now)
+	return appendCoordinatorEvent(ctx, w, record.OrganizationID, record.ID, conversation.EventConversationUpdated, projectConversation(plan.Record), now)
 }
 
 func (c *conversationTurnCoordinator) updateExecution(ctx context.Context, w tenantstore.Writer, record *conversationRecord, execution conversation.Execution, now time.Time) error {
@@ -240,7 +240,7 @@ func (c *conversationTurnCoordinator) appendDelta(ctx context.Context, w tenants
 	if err != nil {
 		return err
 	}
-	prepared, ok := plan.messages[message.ID]
+	prepared, ok := plan.Messages[message.ID]
 	if !ok {
 		return errors.New("coordinator delta content was not prepared")
 	}
@@ -279,12 +279,12 @@ func (c *conversationTurnCoordinator) setControlDelivery(ctx context.Context, w 
 }
 
 func (c *conversationTurnCoordinator) attachmentContent(ctx context.Context, id string) ([]byte, error) {
-	organization, err := c.service.lifecycleOrganization()
+	organization, err := c.service.LifecycleOrganization()
 	if err != nil {
 		return nil, err
 	}
 	var object conversationstore.ContentObject
-	err = c.service.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		object, err = r.ConversationContent(ctx, id)
 		return err
@@ -292,18 +292,18 @@ func (c *conversationTurnCoordinator) attachmentContent(ctx context.Context, id 
 	if err != nil {
 		return nil, translateConversationError(err)
 	}
-	if c.service.store.contents == nil {
+	if c.service.Store.Contents == nil {
 		return nil, conversationContentUnavailable()
 	}
-	return c.service.store.contents.ReadContent(ctx, string(organization), object.Reference)
+	return c.service.Store.Contents.ReadContent(ctx, string(organization), object.Reference)
 }
 
 func (c *conversationTurnCoordinator) modelChoiceGranted(ctx context.Context, r tenantstore.Reader, organization tracker.OrganizationID, now time.Time) (bool, error) {
-	return c.service.server.conversationModelChoiceGranted(ctx, r, organization, now)
+	return c.server.conversationModelChoiceGranted(ctx, r, organization, now)
 }
 
 func (c *conversationTurnCoordinator) modelChoices(ctx context.Context, r tenantstore.Reader, project tracker.ProjectID, now time.Time) ([]conversationModel, error) {
-	return c.service.server.conversationModelChoices(ctx, r, []tracker.ProjectID{project}, now)
+	return c.server.conversationModelChoices(ctx, r, []tracker.ProjectID{project}, now)
 }
 
 func appendCoordinatorEvent(ctx context.Context, w tenantstore.Writer, organization tracker.OrganizationID, id string, kind conversation.EventType, _ any, now time.Time) error {
@@ -311,10 +311,10 @@ func appendCoordinatorEvent(ctx context.Context, w tenantstore.Writer, organizat
 	if err != nil {
 		return err
 	}
-	if plan.eventCursor >= len(plan.events) {
+	if plan.EventCursor >= len(plan.Events) {
 		return errors.New("coordinator event was not prepared")
 	}
-	body := plan.events[plan.eventCursor]
+	body := plan.Events[plan.EventCursor]
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -323,13 +323,13 @@ func appendCoordinatorEvent(ctx context.Context, w tenantstore.Writer, organizat
 	if err != nil {
 		return err
 	}
-	ref, ok := plan.prepared[string(organization)+"/"+artifact.Digest(content)]
+	ref, ok := plan.Prepared[string(organization)+"/"+artifact.Digest(content)]
 	if !ok {
 		return errors.New("coordinator event content was not prepared")
 	}
 	_, err = w.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: organization, ConversationID: id, Event: conversation.Event{Type: kind, CreatedAt: now}, ContentReference: contentArchiveID(string(organization), ref)})
 	if err == nil {
-		plan.eventCursor++
+		plan.EventCursor++
 	}
 	return err
 }
@@ -390,17 +390,17 @@ func coordinatorPublicationPlan(ctx context.Context) (*conversationPublicationPl
 	return plan, nil
 }
 
-func (c *conversationTurnCoordinator) deliverCoordinatorCommands(ctx context.Context, id string) error {
+func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	organization, err := c.service.lifecycleOrganization()
+	organization, err := c.service.LifecycleOrganization()
 	if err != nil {
 		return err
 	}
 	var record conversationstore.Conversation
 	var page conversationstore.CommandPage
-	if err := c.service.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		record, err = r.ConversationByID(ctx, id)
 		if err != nil {
@@ -417,7 +417,7 @@ func (c *conversationTurnCoordinator) deliverCoordinatorCommands(ctx context.Con
 		}
 		delivered := c.cancelRecordedTurn(id, command.TargetTurnID)
 		if !delivered && command.TargetTurnID != "" {
-			if err := c.service.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 				target, err := r.Message(ctx, id, command.TargetTurnID)
 				if errors.Is(err, corestore.ErrNotFound) {
 					return nil
@@ -438,14 +438,14 @@ func (c *conversationTurnCoordinator) deliverCoordinatorCommands(ctx context.Con
 			receipt.Status = conversation.DeliveryRejected
 			receipt.Error = &conversation.ReceiptError{Code: "no_active_turn", Message: "The intended coordinator turn is no longer running"}
 		}
-		now := c.service.server.config.now()
+		now := c.server.config.now()
 		receipt.UpdatedAt = now
-		plan := conversationPublicationPlan{service: c.service, record: conversationRecordFromStore(record), now: now, coordinator: true}
-		if err := plan.recordReceipt(ctx, receipt); err != nil {
+		plan := conversationPublicationPlan{Service: c.service, Record: conversationRecordFromStore(record), Now: now, Coordinator: true}
+		if err := plan.RecordReceipt(ctx, receipt); err != nil {
 			return err
 		}
-		prepared := plan.context(ctx)
-		if err := c.service.server.config.TenantRepository.WriteTenant(prepared, organization, corestore.Serving, func(w tenantstore.Writer) error {
+		prepared := plan.Context(ctx)
+		if err := c.server.config.TenantRepository.WriteTenant(prepared, organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if _, err := w.LockConversation(prepared, record.ProjectID, id); err != nil {
 				return err
 			}
@@ -462,7 +462,7 @@ func (c *conversationTurnCoordinator) deliverCoordinatorCommands(ctx context.Con
 			if stored.Receipt.Status != conversation.DeliverySaved {
 				return nil
 			}
-			if err := registerPreparedConversationObjects(prepared, w, organization, plan.prepared, now); err != nil {
+			if err := registerPreparedConversationObjects(prepared, w, organization, plan.Prepared, now); err != nil {
 				return err
 			}
 			stored.Receipt, stored.UpdatedAt = receipt, now
@@ -473,7 +473,7 @@ func (c *conversationTurnCoordinator) deliverCoordinatorCommands(ctx context.Con
 		}); err != nil {
 			return err
 		}
-		c.service.broker.notify(id)
+		c.service.Broker.Notify(id)
 	}
 	return nil
 }

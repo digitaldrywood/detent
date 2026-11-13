@@ -59,7 +59,7 @@ func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversa
 		return nil, err
 	}
 	scope.project = record.ProjectID
-	server := t.coordinator.service.server
+	server := t.coordinator.server
 	issue, err := server.resolveOperatorNativeItem(ctx, nil, scope, args.WorkItemID)
 	if err != nil {
 		return nil, err

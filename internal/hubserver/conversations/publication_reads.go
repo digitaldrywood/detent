@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -12,23 +12,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (c *conversationService) readPublicationConversation(ctx context.Context, id string) (conversationRecord, error) {
-	organization, err := c.lifecycleOrganization()
+func (c *ConversationService) ReadPublicationConversation(ctx context.Context, id string) (ConversationRecord, error) {
+	organization, err := c.LifecycleOrganization()
 	if err != nil {
-		return conversationRecord{}, err
+		return ConversationRecord{}, err
 	}
-	return c.readPublicationConversationForOrganization(ctx, organization, id)
+	return c.ReadPublicationConversationForOrganization(ctx, organization, id)
 }
 
-func (c *conversationService) readPublicationConversationForOrganization(ctx context.Context, organization tracker.OrganizationID, id string) (conversationRecord, error) {
-	var record conversationRecord
+func (c *ConversationService) ReadPublicationConversationForOrganization(ctx context.Context, organization tracker.OrganizationID, id string) (ConversationRecord, error) {
+	var record ConversationRecord
 	var ref attachment.ArchiveReference
-	err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		stored, err := r.ConversationByID(ctx, id)
 		if err != nil {
 			return err
 		}
-		record = conversationRecordFromStore(stored)
+		record = ConversationRecordFromStore(stored)
 		if record.ContentID != "" && (record.Execution.Status == "" || record.Preferences == (conversation.Preferences{})) {
 			content, err := r.ConversationContent(ctx, record.ContentID)
 			if err != nil {
@@ -45,7 +45,7 @@ func (c *conversationService) readPublicationConversationForOrganization(ctx con
 			if err != nil {
 				return err
 			}
-			record.WorkItem = &conversationWorkItem{ID: string(item.NativeID), Identifier: fmt.Sprintf("%s#%d", project.Name, item.Number), Title: item.Title}
+			record.WorkItem = &ConversationWorkItem{ID: string(item.NativeID), Identifier: fmt.Sprintf("%s#%d", project.Name, item.Number), Title: item.Title}
 			if item.WorkflowStateName != nil {
 				record.WorkItem.Lane = *item.WorkflowStateName
 			}
@@ -53,14 +53,14 @@ func (c *conversationService) readPublicationConversationForOrganization(ctx con
 		return nil
 	})
 	if err != nil {
-		return record, translateConversationError(err)
+		return record, TranslateConversationError(err)
 	}
 	if record.ContentID != "" && (record.Execution.Status == "" || record.Preferences == (conversation.Preferences{})) {
-		var content conversationContent
-		if err := c.server.readConversationObject(ctx, string(organization), ref, &content); err != nil {
+		var content ConversationContent
+		if err := c.Server.ReadConversationObject(ctx, string(organization), ref, &content); err != nil {
 			return record, err
 		}
-		var payload conversationRecordContent
+		var payload ConversationRecordContent
 		if err := json.Unmarshal(content.Data, &payload); err != nil {
 			return record, err
 		}
@@ -74,15 +74,15 @@ func (c *conversationService) readPublicationConversationForOrganization(ctx con
 	return record, nil
 }
 
-func (c *conversationService) readPublicationMessage(ctx context.Context, organization tracker.OrganizationID, id, messageID string) (conversationMessageRecord, error) {
-	var message conversationMessageRecord
+func (c *ConversationService) ReadPublicationMessage(ctx context.Context, organization tracker.OrganizationID, id, messageID string) (ConversationMessageRecord, error) {
+	var message ConversationMessageRecord
 	var ref attachment.ArchiveReference
-	err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		stored, err := r.Message(ctx, id, messageID)
 		if err != nil {
 			return err
 		}
-		message = conversationMessageFromStore(stored)
+		message = ConversationMessageFromStore(stored)
 		if message.ContentID != "" {
 			content, err := r.ConversationContent(ctx, message.ContentID)
 			if err != nil {
@@ -93,11 +93,11 @@ func (c *conversationService) readPublicationMessage(ctx context.Context, organi
 		return nil
 	})
 	if err != nil {
-		return message, translateConversationError(err)
+		return message, TranslateConversationError(err)
 	}
 	if message.ContentID != "" {
-		var content conversationContent
-		if err := c.server.readConversationObject(ctx, string(organization), ref, &content); err != nil {
+		var content ConversationContent
+		if err := c.Server.ReadConversationObject(ctx, string(organization), ref, &content); err != nil {
 			return message, err
 		}
 		message.Text, message.Data = content.Text, content.Data

@@ -366,7 +366,7 @@ func TestConversationUnsentAttachmentReclaimsArchiveCharge(t *testing.T) {
 				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversation_attachments SET expires_at=$3 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, upload.ID, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 					t.Fatal(err)
 				}
-				if swept, err := f.service.conversations.sweepAttachments(t.Context()); err != nil || swept != 1 {
+				if swept, err := f.service.conversations.SweepAttachments(t.Context()); err != nil || swept != 1 {
 					t.Fatalf("expired uploads=%d; want 1: %v", swept, err)
 				}
 			} else {

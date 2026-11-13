@@ -114,3 +114,8 @@ func hostedSubject(credential Credential) string {
 	}
 	return ""
 }
+
+func ReporterOwns(input Input, actor tracker.Actor) bool {
+	principal := Actor(input.Credential, input.Organization).PrincipalID
+	return input.Credential.HostedRole != "reporter" || principal != "" && actor.PrincipalID == principal
+}

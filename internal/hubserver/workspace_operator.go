@@ -106,7 +106,7 @@ func (s *Service) checkOperatorResource(ctx context.Context, query nativeQueryer
 		if s.conversations == nil {
 			return errWorkspaceOperationUnavailable
 		}
-		_, err := s.conversations.loadConversation(ctx, query, scope, r.ResourceID)
+		_, err := s.conversations.LoadConversation(ctx, query, conversationInput(scope), r.ResourceID)
 		return err
 	case "action":
 		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
@@ -635,7 +635,7 @@ func (s *Service) commandWorkspaceTool(ctx context.Context, scope nativeScope, n
 		if err != nil || len(content) > 32768 {
 			return nil, operatortool.ErrInvalidArguments
 		}
-		return s.commandUploadAttachment(ctx, scope, r.ConversationID, conversationAttachmentUpload{key: r.RequestID, name: input.Name, media: input.MIME, content: content})
+		return s.commandUploadAttachment(ctx, scope, r.ConversationID, conversationAttachmentUpload{Key: r.RequestID, Name: input.Name, Media: input.MIME, Content: content})
 	case "delete_conversation_attachment":
 		return s.commandDeleteAttachment(ctx, scope, r.ConversationID, r.AttachmentID)
 	case "create_project_action":

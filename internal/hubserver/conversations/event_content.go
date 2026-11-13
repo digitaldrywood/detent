@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"encoding/json"
@@ -23,7 +23,7 @@ type conversationMessageFact struct {
 	UpdatedAt time.Time             `json:"updated_at"`
 }
 
-type conversationDeltaFact struct {
+type ConversationDeltaFact struct {
 	Text      string `json:"text,omitempty"`
 	Revision  int64  `json:"message_revision"`
 	MessageID string `json:"message_id"`
@@ -41,7 +41,7 @@ type conversationQuestionFact struct {
 
 func compactConversationEvent(body any) any {
 	switch value := body.(type) {
-	case conversationMessageResource:
+	case ConversationMessageResource:
 		raw, ok := value.Data.(json.RawMessage)
 		empty := !ok || len(raw) == 0 || string(raw) == "{}" || string(raw) == "null"
 		return conversationMessageFact{ID: value.ID, TurnID: value.TurnID, EmptyData: empty, Role: value.Role, Kind: value.Kind, AttemptID: value.AttemptID, MessageID: value.ID, ContentID: value.contentID, Revision: value.revision, Delivery: value.Delivery, TextBytes: len(value.Text), UpdatedAt: value.UpdatedAt}

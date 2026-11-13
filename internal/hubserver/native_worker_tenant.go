@@ -348,7 +348,7 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 			return err
 		}
 		if s.conversations != nil {
-			return s.conversations.leaseReleasedTenant(ctx, w, leaseID, authority.Lease.FencingToken, request.Reason)
+			return s.conversations.LeaseReleasedTenant(ctx, w, leaseID, authority.Lease.FencingToken, request.Reason)
 		}
 		return nil
 	})

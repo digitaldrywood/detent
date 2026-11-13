@@ -345,7 +345,7 @@ func TestConversationAttachmentSweep(t *testing.T) {
 	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversation_attachments SET expires_at=$3 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, expired.ID, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	swept, err := f.service.conversations.sweepAttachments(t.Context())
+	swept, err := f.service.conversations.SweepAttachments(t.Context())
 	if err != nil {
 		t.Fatalf("sweepAttachments: %v", err)
 	}
@@ -576,5 +576,5 @@ func (f conversationAPIFixture) storedConversationAttachmentContent(ctx context.
 	}); err != nil {
 		return nil, err
 	}
-	return f.service.conversations.store.contents.ReadContent(ctx, string(f.project.OrganizationID), object.Reference)
+	return f.service.conversations.Store.Contents.ReadContent(ctx, string(f.project.OrganizationID), object.Reference)
 }

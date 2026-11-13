@@ -372,17 +372,17 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	stream := newConversationStream(c)
-	stream.now = s.config.now
+	stream.Now = s.config.now
 	if scope.credential.EntryKey != nil {
-		stream.authorize = func() error {
+		stream.Authorize = func() error {
 			_, err := s.reauthorizeConversationStream(c, &scope, record.ID)
 			return err
 		}
 	}
 	if after > record.EventSeq {
-		return stream.closed(conversationClosedCursorExpired)
+		return stream.Closed(conversationClosedCursorExpired)
 	}
-	subscription, cancel := service.broker.subscribe(record.ID)
+	subscription, cancel := conversationSubscribe(service.Broker, record.ID)
 	defer cancel()
 	heartbeat := time.NewTicker(conversationStreamHeartbeat)
 	defer heartbeat.Stop()
@@ -392,21 +392,21 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 	for {
 		// The re-read proves the stream may continue: a settled conversation
 		// keeps streaming, only a revoked audience closes it.
-		stream.nextAuthorization = stream.now().Add(conversationStreamAuthorize)
+		stream.NextAuthorization = stream.Now().Add(conversationStreamAuthorize)
 		authorized, err := s.reauthorizeConversationStream(c, &scope, record.ID)
 		if err != nil {
 			reason := conversationStreamCloseReason(err)
-			service.logger.Warn("conversation.stream_reauthorize_failed", "conversation_id", record.ID, "reason", reason, "error", err)
-			return stream.closed(reason)
+			service.Logger.Warn("conversation.stream_reauthorize_failed", "conversation_id", record.ID, "reason", reason, "error", err)
+			return stream.Closed(reason)
 		}
 
 		cursor, err = s.replayPGConversationEvents(ctx, scope, stream, record.ID, cursor, authorized.EventSeq)
 
 		if err != nil {
 			if errors.Is(err, errConversationCursorExpired) {
-				return stream.closed(conversationClosedCursorExpired)
+				return stream.Closed(conversationClosedCursorExpired)
 			}
-			return stream.closed(conversationStreamCloseReason(err))
+			return stream.Closed(conversationStreamCloseReason(err))
 		}
 	wait:
 		for {
@@ -414,9 +414,9 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 			case <-ctx.Done():
 				return nil
 			case <-subscription.closed:
-				return stream.closed(conversationClosedShutdown)
+				return stream.Closed(conversationClosedShutdown)
 			case <-heartbeat.C:
-				if err := stream.heartbeat(cursor); err != nil {
+				if err := stream.Heartbeat(cursor); err != nil {
 					return nil
 				}
 			case <-subscription.wake:
@@ -473,6 +473,7 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 // denial is a decision the client must respect; a failure is transient and
 // the client may reconnect.
 func conversationStreamCloseReason(err error) string {
+	err = fromFeatureError(err)
 	var native *nativeError
 	switch {
 	case errors.Is(err, tenantauth.ErrUnavailable):
@@ -512,14 +513,14 @@ func readConversationAttachmentUpload(c echo.Context) (conversationAttachmentUpl
 				return conversationAttachmentUpload{}, conversationAttachmentRefusal(part, "An upload carries one file")
 			}
 			seenFile = true
-			upload.name = part.FileName()
-			upload.media = part.Header.Get(echo.HeaderContentType)
+			upload.Name = part.FileName()
+			upload.Media = part.Header.Get(echo.HeaderContentType)
 			// One byte over the limit is enough to know the file is too big.
-			upload.content, err = readConversationAttachmentPart(part, conversation.MaxAttachmentBytes+1)
+			upload.Content, err = readConversationAttachmentPart(part, conversation.MaxAttachmentBytes+1)
 			if err != nil {
 				return conversationAttachmentUpload{}, conversationAttachmentBodyError(err)
 			}
-			if int64(len(upload.content)) > conversation.MaxAttachmentBytes {
+			if int64(len(upload.Content)) > conversation.MaxAttachmentBytes {
 				return conversationAttachmentUpload{}, conversationAttachmentTooLarge()
 			}
 		case "idempotency_key":
@@ -527,7 +528,7 @@ func readConversationAttachmentUpload(c echo.Context) (conversationAttachmentUpl
 			if err != nil {
 				return conversationAttachmentUpload{}, conversationAttachmentBodyError(err)
 			}
-			upload.key = strings.TrimSpace(string(value))
+			upload.Key = strings.TrimSpace(string(value))
 		default:
 			return conversationAttachmentUpload{}, conversationAttachmentRefusal(part, "Field "+part.FormName()+" is not part of an attachment upload")
 		}
@@ -535,7 +536,7 @@ func readConversationAttachmentUpload(c echo.Context) (conversationAttachmentUpl
 	if !seenFile {
 		return conversationAttachmentUpload{}, nativePublicInvalid("A file part is required")
 	}
-	if upload.key == "" || len(upload.key) > conversation.MaxCommandKeyBytes {
+	if upload.Key == "" || len(upload.Key) > conversation.MaxCommandKeyBytes {
 		return conversationAttachmentUpload{}, nativePublicInvalid(fmt.Sprintf("An idempotency key of at most %d bytes is required", conversation.MaxCommandKeyBytes))
 	}
 	return upload, nil
@@ -619,7 +620,7 @@ func (s *Service) archiveConversation(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	id := c.Param("conversation")
-	original, err := s.conversations.readPublicationConversationForOrganization(ctx, scope.organization, id)
+	original, err := s.conversations.ReadPublicationConversationForOrganization(ctx, scope.organization, id)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -641,7 +642,7 @@ func (s *Service) archiveConversation(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	ref, err := s.conversations.store.publishPayload(ctx, string(scope.organization), payload)
+	ref, err := s.conversations.Store.PublishPayload(ctx, string(scope.organization), payload)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -675,7 +676,7 @@ func (s *Service) archiveConversation(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, translateConversationError(err))
 	}
-	s.conversations.committed(record)
+	s.conversations.Committed(record)
 	return c.JSON(http.StatusOK, projectConversation(record))
 }
 
@@ -684,7 +685,7 @@ func (s *Service) deleteConversation(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	id := c.Param("conversation")
-	original, err := s.conversations.readPublicationConversationForOrganization(ctx, scope.organization, id)
+	original, err := s.conversations.ReadPublicationConversationForOrganization(ctx, scope.organization, id)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -715,7 +716,7 @@ func (s *Service) deleteConversation(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, translateConversationError(err))
 	}
-	s.conversations.broker.notify(id)
+	s.conversations.Broker.Notify(id)
 	return c.NoContent(http.StatusNoContent)
 }
 

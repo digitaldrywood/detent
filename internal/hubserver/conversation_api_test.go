@@ -184,7 +184,7 @@ func (f conversationAPIFixture) settle(t *testing.T, id string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	settled, err := f.service.conversations.settleIdleConversationPG(t.Context(), f.project.OrganizationID, record, f.service.config.now().Add(time.Hour), f.service.config.now().Add(time.Hour))
+	settled, err := f.service.conversations.SettleIdleConversationPG(t.Context(), f.project.OrganizationID, record, f.service.config.now().Add(time.Hour), f.service.config.now().Add(time.Hour))
 	if err != nil || !settled {
 		t.Fatalf("settle conversation: settled=%t err=%v", settled, err)
 	}
@@ -588,14 +588,14 @@ func TestConversationAPICommands(t *testing.T) {
 			t.Fatal(err)
 		}
 		for page := 1; page <= 3; page++ {
-			if err := fixture.conversations.wakePendingPG(t.Context(), fixture.organization); err != nil {
+			if err := fixture.conversations.WakePendingPG(t.Context(), fixture.organization); err != nil {
 				t.Fatal(err)
 			}
 			wantBoundary, wantStatus := "", conversation.DeliveryDelivered
 			if page < 3 {
 				wantBoundary, wantStatus = id(page*conversationLifecycleBatchSize), conversation.DeliverySaved
 			}
-			if got := fixture.conversations.lifecycleCursor("pending"); got != wantBoundary {
+			if got := fixture.conversations.LifecycleCursor("pending"); got != wantBoundary {
 				t.Fatalf("page %d examined boundary=%q want=%q", page, got, wantBoundary)
 			}
 			if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -877,7 +877,7 @@ func TestConversationAPICommands(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		organization, err := fixture.conversations.lifecycleOrganization()
+		organization, err := fixture.conversations.LifecycleOrganization()
 		if err != nil || organization != fixture.organization {
 			t.Fatalf("lifecycle organization=%s expected=%s error=%v", organization, fixture.organization, err)
 		}
@@ -885,7 +885,7 @@ func TestConversationAPICommands(t *testing.T) {
 		if !fixture.coordinator().Available() {
 			t.Fatal("coordinator delivery is unavailable in scan fixture")
 		}
-		if fixture.conversations.store.contents != objects {
+		if fixture.conversations.Store.Contents != objects {
 			t.Fatal("scan fixture storage is not installed")
 		}
 		if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -919,7 +919,7 @@ func TestConversationAPICommands(t *testing.T) {
 		parent, cancel := context.WithCancel(context.WithValue(t.Context(), conversationCancelScanContextKey{}, true))
 		done := make(chan struct{})
 		var scanErr error
-		go func() { scanErr = fixture.conversations.wakePendingPG(parent, fixture.organization); close(done) }()
+		go func() { scanErr = fixture.conversations.WakePendingPG(parent, fixture.organization); close(done) }()
 		t.Cleanup(func() { cancel(); close(objects.release); <-done; fixture.service.config.TenantRepository = original })
 		var storage, scan context.Context
 		select {
@@ -1031,11 +1031,11 @@ func TestConversationAPICommands(t *testing.T) {
 			repository := &conversationCancelFailureRepository{Repository: original, pendingLimit: 3, completionConversation: ids[0], completionError: failure}
 			repository.completion.Store(true)
 			fixture.service.config.TenantRepository = repository
-			controls := &conversationScanControlSignals{conversationControlRouter: fixture.conversations.controls, wakes: make(chan string, 4)}
-			fixture.conversations.controls = controls
+			controls := &conversationScanControlSignals{conversationControlRouter: fixture.conversations.Controls, wakes: make(chan string, 4)}
+			fixture.conversations.Controls = controls
 			t.Cleanup(func() { fixture.service.config.TenantRepository = original })
 			ctx := context.WithValue(t.Context(), conversationCancelScanContextKey{}, true)
-			err := fixture.conversations.wakePendingPG(ctx, fixture.organization)
+			err := fixture.conversations.WakePendingPG(ctx, fixture.organization)
 			if !errors.Is(err, failure) || ctx.Err() != nil {
 				t.Fatalf("independent delivery error=%v scan context=%v", err, ctx.Err())
 			}
@@ -1060,17 +1060,17 @@ func TestConversationAPICommands(t *testing.T) {
 			default:
 				t.Fatal("earlier failure starved later linked control work")
 			}
-			if got := fixture.conversations.lifecycleCursor("pending"); got != firstPage.Next {
+			if got := fixture.conversations.LifecycleCursor("pending"); got != firstPage.Next {
 				t.Fatalf("traversed-page cursor=%q want=%q", got, firstPage.Next)
 			}
-			if err := fixture.conversations.wakePendingPG(ctx, fixture.organization); err != nil {
+			if err := fixture.conversations.WakePendingPG(ctx, fixture.organization); err != nil {
 				t.Fatalf("later page did not progress: %v", err)
 			}
 			requireReceipt(ids[3], conversation.DeliveryDelivered)
-			if got := fixture.conversations.lifecycleCursor("pending"); got != "" {
+			if got := fixture.conversations.LifecycleCursor("pending"); got != "" {
 				t.Fatalf("cursor did not wrap: %q", got)
 			}
-			if err := fixture.conversations.wakePendingPG(ctx, fixture.organization); !errors.Is(err, failure) {
+			if err := fixture.conversations.WakePendingPG(ctx, fixture.organization); !errors.Is(err, failure) {
 				t.Fatalf("wrapped failed intent=%v", err)
 			}
 			requireReceipt(ids[0], conversation.DeliverySaved)
@@ -1110,27 +1110,27 @@ func TestConversationAPIAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	execution := conversation.Execution{Status: conversation.ExecutionWaitingInput, Owner: conversation.Owner{AttemptID: "att_1", RunID: "run_1", TurnID: "turn_1"}, Capabilities: conversation.Capabilities{Answer: true}}
-	if err := plan.updateExecution(t.Context(), execution); err != nil {
+	if err := plan.UpdateExecution(t.Context(), execution); err != nil {
 		t.Fatal(err)
 	}
 	question := conversationQuestionRecord{Question: conversation.Question{
 		ID: conversation.NewQuestionID(), ConversationID: record.ID, Status: conversation.QuestionPending,
 		Owner: execution.Owner, Prompts: []conversation.Prompt{{ID: "color", Question: "Which color?", Options: []conversation.Option{{Label: "red"}, {Label: "blue"}}}},
-		CreatedAt: plan.now, UpdatedAt: plan.now,
+		CreatedAt: plan.Now, UpdatedAt: plan.Now,
 	}}
-	if err := plan.prepareQuestion(t.Context(), question); err != nil {
+	if err := plan.PrepareQuestion(t.Context(), question); err != nil {
 		t.Fatal(err)
 	}
-	ctx := plan.context(t.Context())
+	ctx := plan.Context(t.Context())
 	if err := f.service.config.TenantRepository.WriteTenant(ctx, f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(ctx, w, f.project.OrganizationID, plan.prepared, plan.now); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, f.project.OrganizationID, plan.Prepared, plan.Now); err != nil {
 			return err
 		}
 		linked, err := w.Conversation(ctx, f.project.ID, record.ID)
 		if err != nil {
 			return err
 		}
-		linked.Execution, linked.UpdatedAt = execution, plan.now
+		linked.Execution, linked.UpdatedAt = execution, plan.Now
 		if _, err := w.UpdateConversation(ctx, linked, linked.Revision); err != nil {
 			return err
 		}
@@ -1535,7 +1535,7 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 	f := newConversationAPIFixture(t, nil)
 	repository := f.service.config.TenantRepository
 
-	contents := f.service.conversations.store.contents.(*conversationContentFixture)
+	contents := f.service.conversations.Store.Contents.(*conversationContentFixture)
 	contents.setFail(true)
 	failed := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations", f.token, map[string]any{"key": "pg-failed-create", "title": "Example"})
 	if failed.Code < http.StatusInternalServerError {

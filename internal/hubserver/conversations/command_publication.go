@@ -1,3 +1,3 @@
-package hubserver
+package conversations
 
 type conversationPreparedRetryKey struct{}

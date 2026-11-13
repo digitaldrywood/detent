@@ -102,7 +102,7 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 		}
 
 		idleID = conversation.NewConversationID()
-		old := now.Add(-2 * f.service.conversations.config.SettleWindow)
+		old := now.Add(-2 * f.service.conversations.Config.SettleWindow)
 		_, err = writer.CreateConversation(t.Context(), conversationstore.Conversation{
 			OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: idleID, OwnerPrincipalID: owner.ID, Origin: conversationOriginUser,
 			Title: "Idle conversation", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1,
@@ -113,9 +113,9 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 		t.Fatalf("seed PostgreSQL lifecycle records: %v", err)
 	}
 
-	staleWake, cancelWake := f.service.conversations.broker.subscribe(staleID)
+	staleWake, cancelWake := conversationSubscribe(f.service.conversations.Broker, staleID)
 	defer cancelWake()
-	if err := f.service.conversations.start(t.Context()); err != nil {
+	if err := f.service.conversations.Start(t.Context()); err != nil {
 		t.Fatalf("selected PostgreSQL startup lifecycle: %v", err)
 	}
 	select {
@@ -198,7 +198,7 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 		t.Fatal(err)
 	}
 	for range 2 {
-		changed, err := f.service.conversations.reconcileExecutionPG(t.Context(), f.project.OrganizationID, staleCandidate)
+		changed, err := f.service.conversations.ReconcileExecutionPG(t.Context(), f.project.OrganizationID, staleCandidate)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -239,7 +239,7 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	settled, err := f.service.conversations.settleIdleConversationsPG(t.Context(), f.project.OrganizationID, now)
+	settled, err := f.service.conversations.SettleIdleConversationsPG(t.Context(), f.project.OrganizationID, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,20 +314,20 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 	settleTicks := make(chan time.Time, 2)
 	settleContext, settleCancel := context.WithCancel(t.Context())
 	lifecycle := &conversationService{
-		server: f.service, broker: f.service.conversations.broker, config: f.service.conversations.config,
-		logger: f.service.conversations.logger, coordinator: coordinator, controls: f.service.conversations.controls,
-		settle: make(chan struct{}), settled: make(chan struct{}),
-		settleCancel: settleCancel, settleTicks: settleTicks, stopSettleTicker: func() {},
+		Server: f.service.conversationServer(), Broker: f.service.conversations.Broker, Config: f.service.conversations.Config,
+		Logger: f.service.conversations.Logger, Coordinator: coordinator, Controls: f.service.conversations.Controls,
+		Settle: make(chan struct{}), Settled: make(chan struct{}),
+		SettleCancel: settleCancel, SettleTicks: settleTicks, StopSettleTicker: func() {},
 	}
 	loopDone := make(chan struct{})
 	go func() {
-		lifecycle.settleLoop(settleContext)
+		lifecycle.SettleLoop(settleContext)
 		close(loopDone)
 	}()
 	var stopOnce sync.Once
 	stopLoop := func() {
 		stopOnce.Do(func() {
-			close(lifecycle.settle)
+			close(lifecycle.Settle)
 			settleCancel()
 		})
 		<-loopDone
@@ -364,21 +364,21 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 	blockedContext, blockedCancel := context.WithCancel(t.Context())
 	blockedTicks := make(chan time.Time, 1)
 	blockedLifecycle := &conversationService{
-		server: f.service, broker: newNotificationBroker(), config: f.service.conversations.config,
-		logger: f.service.conversations.logger, coordinator: coordinator, controls: lifecycleSignalControls{},
-		settle: make(chan struct{}), settled: make(chan struct{}),
-		settleCancel: blockedCancel, settleTicks: blockedTicks, stopSettleTicker: func() {},
+		Server: f.service.conversationServer(), Broker: newNotificationBroker().Broker, Config: f.service.conversations.Config,
+		Logger: f.service.conversations.Logger, Coordinator: coordinator, Controls: lifecycleSignalControls{},
+		Settle: make(chan struct{}), Settled: make(chan struct{}),
+		SettleCancel: blockedCancel, SettleTicks: blockedTicks, StopSettleTicker: func() {},
 	}
 	blockedDone := make(chan struct{})
 	go func() {
-		blockedLifecycle.settleLoop(blockedContext)
+		blockedLifecycle.SettleLoop(blockedContext)
 		close(blockedDone)
 	}()
 	blockedTicks <- now
 	<-blockedRepository.started
 	stopDone := make(chan struct{})
 	go func() {
-		blockedLifecycle.stop()
+		blockedLifecycle.Stop()
 		close(stopDone)
 	}()
 	select {
@@ -455,11 +455,11 @@ func newConversationTenantFixture(t *testing.T, repository tenantstore.Repositor
 		database: &database{}, notifications: newNotificationBroker(),
 	}
 	service.ready.Store(true)
-	chat := &conversationService{server: service, store: &conversationStore{contents: &conversationContentFixture{}, database: service.database}, broker: service.notifications, logger: service.config.Logger, config: (ConversationConfig{Enabled: true}).normalized(), settle: make(chan struct{}), settled: make(chan struct{})}
-	close(chat.settled)
-	chat.coordinator = newConversationCoordinator(chat)
-	chat.controls = &conversationWorkerRouter{service: chat, stop: make(chan struct{})}
+	chat := &conversationService{Server: service.conversationServer(), Store: &conversationStore{Contents: &conversationContentFixture{}}, Broker: service.notifications.Broker, Logger: service.config.Logger, Config: (ConversationConfig{Enabled: true}).Normalized(), Settle: make(chan struct{}), Settled: make(chan struct{})}
+	close(chat.Settled)
+	chat.Coordinator = newConversationCoordinator(service, chat)
+	chat.Controls = &conversationWorkerRouter{server: service, service: chat, stop: make(chan struct{})}
 	service.conversations = chat
-	t.Cleanup(service.conversations.stop)
+	t.Cleanup(service.conversations.Stop)
 	return conversationAPIFixture{nativeFixture: nativeFixture{service: service, project: tracker.NativeProject{OrganizationID: "org_conversation", ID: "prj_conversation", Name: "Example project", Slug: "example-project", Profile: "native", States: nativeFixtureStates()}}, ownerID: "owner_conversation"}
 }

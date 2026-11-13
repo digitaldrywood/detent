@@ -64,17 +64,18 @@ func checkCompactionReplaySnapshot(t *testing.T) {
 	}
 	record = readStreamCompactionConversation(t, f, record.ID)
 	scope := nativeAttemptListingScope(t, f.nativeFixture)
-	fixture := conversationFixture{nativeFixture: f.nativeFixture, store: f.service.conversations.store, organization: f.project.OrganizationID}
-	chat := fixture.recordChat(f.project.OrganizationID)
+	fixture := conversationFixture{nativeFixture: f.nativeFixture, store: f.service.conversations.Store, organization: f.project.OrganizationID}
+	chatServer := fixture.recordServer(f.project.OrganizationID)
+	chat := chatServer.conversations
 	triggered := false
-	chat.server.config.TenantRepository = compactionInterleaveRepository{
+	chatServer.config.TenantRepository = compactionInterleaveRepository{
 		Repository: f.service.config.TenantRepository, SnapshotRepository: f.service.config.TenantRepository.(tenantstore.SnapshotRepository),
 		afterConversation: func() error {
 			if triggered {
 				return nil
 			}
 			triggered = true
-			removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now)
+			removed, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now)
 			if err == nil && removed != 1 {
 				return fmt.Errorf("interleaved compaction removed %d events, want 1", removed)
 			}
@@ -83,7 +84,7 @@ func checkCompactionReplaySnapshot(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	stream := newConversationStream(echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response))
-	cursor, err := chat.server.replayPGConversationEvents(t.Context(), scope, stream, record.ID, 0, record.EventSequence)
+	cursor, err := chat.Server.ReplayPGConversationEvents(t.Context(), conversationInput(scope), stream, record.ID, 0, record.EventSequence)
 	if !triggered || err != nil && !errors.Is(err, errConversationCursorExpired) {
 		t.Fatalf("compaction interleave: triggered=%t error=%v", triggered, err)
 	}
@@ -97,20 +98,20 @@ func checkCompactionSettleTick(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	record := seedStreamCompactionConversation(t, f, now.Add(-31*24*time.Hour), 1)
 	chat := f.service.conversations
-	wake, unsubscribe := chat.broker.subscribe(record.ID)
+	wake, unsubscribe := conversationSubscribe(chat.Broker, record.ID)
 	defer unsubscribe()
 	ctx, cancel := context.WithCancel(t.Context())
 	ticks := make(chan time.Time, 1)
 	lifecycle := &conversationService{
-		server: f.service, store: chat.store, broker: chat.broker, config: chat.config, logger: chat.logger,
-		coordinator: lifecycleSignalCoordinator{wakes: make(chan string, conversationLifecycleBatchSize)}, controls: lifecycleSignalControls{},
-		settle: make(chan struct{}), settled: make(chan struct{}), settleTicks: ticks, stopSettleTicker: func() {},
+		Server: f.service.conversationServer(), Store: chat.Store, Broker: chat.Broker, Config: chat.Config, Logger: chat.Logger,
+		Coordinator: lifecycleSignalCoordinator{wakes: make(chan string, conversationLifecycleBatchSize)}, Controls: lifecycleSignalControls{},
+		Settle: make(chan struct{}), Settled: make(chan struct{}), SettleTicks: ticks, StopSettleTicker: func() {},
 	}
 	done := make(chan struct{})
 	t.Cleanup(func() { cancel(); <-done })
 	go func() {
 		defer close(done)
-		lifecycle.settleLoop(ctx)
+		lifecycle.SettleLoop(ctx)
 	}()
 	ticks <- now
 	select {
@@ -130,7 +131,7 @@ func checkCompactionPublicationSource(t *testing.T) {
 			f := newStreamFixture(t)
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			record := seedStreamCompactionConversation(t, f, now.Add(-31*24*time.Hour), 1)
-			contents := f.service.conversations.store.contents.(*conversationContentFixture)
+			contents := f.service.conversations.Store.Contents.(*conversationContentFixture)
 			mutated := false
 			contents.onIO = func() error {
 				if mutated {
@@ -164,7 +165,7 @@ func checkCompactionPublicationSource(t *testing.T) {
 				})
 			}
 			t.Cleanup(func() { contents.onIO = nil })
-			removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now)
+			removed, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now)
 			contents.onIO = nil
 			if err != nil {
 				t.Fatal(err)
@@ -192,7 +193,7 @@ func checkCompactionRestart(t *testing.T) {
 	if _, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversation_events SET compaction_group_key=NULL WHERE organization_id=$1 AND conversation_id=$2", f.project.OrganizationID, record.ID); err != nil {
 		t.Fatal(err)
 	}
-	removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now)
+	removed, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func checkCompactionRestart(t *testing.T) {
 	}
 	reopen()
 	for range 2 {
-		if _, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil {
+		if _, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -234,7 +235,7 @@ func checkCompactionRestart(t *testing.T) {
 	stream := f.open(t, f.token, record.ID, 0)
 	defer stream.close()
 	requireClosed(t, stream.nextEvent(t), conversationClosedCursorExpired)
-	if removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 0 {
+	if removed, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 0 {
 		t.Fatalf("completed compaction was repeated: removed=%d error=%v", removed, err)
 	}
 }

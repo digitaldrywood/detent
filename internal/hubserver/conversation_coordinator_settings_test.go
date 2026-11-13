@@ -106,7 +106,7 @@ func coordinatorSettingsArguments(t *testing.T, f hostedSecurityFixture, tool, r
 
 func coordinatorSettingsProposal(t *testing.T, f hostedSecurityFixture, conversationID string) chat.Action {
 	t.Helper()
-	messages, err := f.service.conversations.coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: conversationID, Limit: 100})
+	messages, err := f.service.conversations.Coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: conversationID, Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestCoordinatorSettingsCapacityBatch(t *testing.T) {
 			t.Fatalf("capacity preview for %s: %+v, %v", id, result, err)
 		}
 	}
-	messages, err := f.service.conversations.coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: record.ID, Limit: 100})
+	messages, err := f.service.conversations.Coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: record.ID, Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}

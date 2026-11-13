@@ -545,7 +545,7 @@ func scaleSoakMaintenance(ctx context.Context, seed scaleSoakSeed, metrics *scal
 			}
 			return ctx.Err()
 		}},
-		{"conversation_attachment_sweep", func() error { _, err := seed.service.conversations.sweepAttachments(ctx); return err }},
+		{"conversation_attachment_sweep", func() error { _, err := seed.service.conversations.SweepAttachments(ctx); return err }},
 	}
 	for _, job := range jobs {
 		start := time.Now()

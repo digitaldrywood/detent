@@ -23,7 +23,7 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	objects := &conversationContentFixture{}
 	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: func() time.Time { return now }}}
-	service.conversations = &conversationService{server: service, store: &conversationStore{contents: objects}, broker: newNotificationBroker(), coordinator: &recordingWaker{}}
+	service.conversations = &conversationService{Server: service.conversationServer(), Store: &conversationStore{Contents: objects}, Broker: newNotificationBroker().Broker, Coordinator: &recordingWaker{}}
 	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org_removal", Name: "Example", Slug: "example"})
 	scope := nativeScope{organization: "org_removal", project: "prj_removal", credential: apiCredential{ID: "test_hub_admin", Scope: apiScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
 	payload, err := json.Marshal(conversationRecordContent{Execution: conversation.Execution{Status: conversation.ExecutionIdle}, Preferences: conversation.Preferences{Model: "example-model", ReasoningEffort: "auto", Access: "auto"}})
@@ -34,7 +34,7 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := service.conversations.store.publishPayload(t.Context(), string(scope.organization), wrapped)
+	ref, err := service.conversations.Store.PublishPayload(t.Context(), string(scope.organization), wrapped)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 				{"record", func() (conversationRecord, error) { return service.readPGConversation(t.Context(), scope, id) }},
 				{"page", func() (conversationRecord, error) {
 					page, err := service.readPGConversationPage(t.Context(), scope, id, 0, 10)
-					return page.record, err
+					return page.Record, err
 				}},
 			} {
 				record, err := read.call()
@@ -119,7 +119,7 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 				if !errors.As(err, &denied) || denied.status != http.StatusNotFound {
 					t.Fatalf("patch different audience error = %v", err)
 				}
-				stream := &conversationStream{response: echo.NewResponse(httptest.NewRecorder(), echo.New())}
+				stream := &conversationStream{Response: echo.NewResponse(httptest.NewRecorder(), echo.New())}
 				if _, err := service.replayPGConversationEvents(t.Context(), scope, stream, id, 0, 1); !errors.As(err, &denied) || denied.status != http.StatusNotFound {
 					t.Fatalf("replay different audience error = %v", err)
 				}
@@ -157,7 +157,7 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 				t.Fatalf("patch matching audience: %v", err)
 			}
 			output := httptest.NewRecorder()
-			stream := &conversationStream{response: echo.NewResponse(output, echo.New())}
+			stream := &conversationStream{Response: echo.NewResponse(output, echo.New())}
 			if cursor, err := service.replayPGConversationEvents(t.Context(), scope, stream, id, 0, 2); err != nil || cursor != 2 {
 				t.Fatalf("replay matching audience cursor=%d error=%v", cursor, err)
 			}

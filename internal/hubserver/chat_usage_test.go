@@ -26,7 +26,7 @@ import (
 func TestConversationCoordinatorPersistsUsage(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "persist-usage")
-	f.conversations.config.Model = "gpt-6-luna"
+	f.conversations.Config.Model = "gpt-6-luna"
 	f.backend.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 		err := update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 20, CachedInputTokens: 5, OutputTokens: 10, ReasoningOutputTokens: 3, TotalTokens: 30}})
 		return runner.AgentTurnResult{}, err
@@ -237,8 +237,8 @@ func TestGenkitCoordinatorPersistsPricedUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := newCoordinatorFixture(t, "genkit-usage")
-	f.conversations.config.Backend = backend
-	f.conversations.config.Model = genkitbackend.Model
+	f.conversations.Config.Backend = backend
+	f.conversations.Config.Model = genkitbackend.Model
 	record := f.seed(t, "Usage", nil)
 	f.say(t, &record, "Hello")
 	assistant := f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
@@ -280,7 +280,7 @@ func TestConversationCoordinatorMetersFailedAndInterruptedTurns(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newCoordinatorFixture(t, "usage-"+test.name)
-			f.conversations.config.Model = genkitbackend.Model
+			f.conversations.Config.Model = genkitbackend.Model
 			record := f.seed(t, "Usage", nil)
 			reported := make(chan struct{})
 			f.backend.setRun(func(ctx context.Context, _ int, _ runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
@@ -396,7 +396,7 @@ func TestConversationUsageCommitsWithCompletion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newCoordinatorFixture(t, "atomic-usage")
-			f.conversations.config.Model = "example-model"
+			f.conversations.Config.Model = "example-model"
 			f.service.config.TenantRepository = coordinatorUsageRepository{Repository: f.service.config.TenantRepository, fail: test.fail}
 			f.backend.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 				return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 5}})

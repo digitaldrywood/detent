@@ -98,7 +98,7 @@ func TestConversationPayloadBytesStayBounded(t *testing.T) {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			f := newConversationFixture(t)
 			objects := &conversationContentFixture{}
-			f.store.contents = objects
+			f.store.Contents = objects
 			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 			record := f.create(t, f.record(f.owner, "payload", now))
 			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Text: strings.Repeat("x", size), Data: json.RawMessage(`{"value":"` + strings.Repeat("y", size) + `"}`), Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: now, UpdatedAt: now}
@@ -159,7 +159,7 @@ func TestConversationPayloadRequiresPublication(t *testing.T) {
 			if configured {
 				objects.setFail(true)
 			} else {
-				f.chat.store.contents = nil
+				f.chat.Store.Contents = nil
 			}
 			message := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+f.record.ID+"/commands", f.token, conversation.Command{Key: "publication-message", Kind: conversation.CommandMessage, Text: "unpublished private message"})
 			if message.Code < 400 {
@@ -180,7 +180,7 @@ func TestConversationPayloadRequiresPublication(t *testing.T) {
 			if messages != beforeMessages || events != beforeEvents || attachments != beforeAttachments {
 				t.Fatalf("failed publication left messages=%d events=%d attachments=%d; want %d/%d/%d", messages, events, attachments, beforeMessages, beforeEvents, beforeAttachments)
 			}
-			f.chat.store.contents = objects
+			f.chat.Store.Contents = objects
 			stored := f.messages(t)
 			if len(stored) != 1 {
 				t.Fatalf("failed publication changed message population: %d", len(stored))
@@ -202,7 +202,7 @@ func postgresContentTestMessage(t *testing.T, f *postgresStorageArchiveFixture, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := f.service.conversations.store.publishPayload(t.Context(), string(f.project.OrganizationID), raw)
+	ref, err := f.service.conversations.Store.PublishPayload(t.Context(), string(f.project.OrganizationID), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func postgresContentTestDelta(t *testing.T, f *postgresStorageArchiveFixture, me
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := f.service.conversations.store.publishPayload(t.Context(), string(f.project.OrganizationID), raw)
+	ref, err := f.service.conversations.Store.PublishPayload(t.Context(), string(f.project.OrganizationID), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
 func TestConversationEventStorageFootprint(t *testing.T) {
 	f := newConversationFixture(t)
 	compressed := map[string][]byte{}
-	f.store.contents = conversationArchiveStore{call: func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+	f.store.Contents = conversationArchiveStore{Call: func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 		if request.Write {
 			compressed[request.Reference.Key] = bytes.Clone(request.Data)
 		}
@@ -657,16 +657,16 @@ func TestConversationUsesExistingArchiveBackend(t *testing.T) {
 		}
 		return bytes.Clone(data), nil
 	}
-	chat := newConversationService(server, (ConversationConfig{Enabled: true}).normalized())
+	chat := newConversationService(server, (ConversationConfig{Enabled: true}).Normalized())
 	server.conversations = chat
-	t.Cleanup(chat.stop)
+	t.Cleanup(chat.Stop)
 	for index := range 2 {
 		text := "archive message " + strconv.Itoa(index)
 		payload, err := messageContent(conversationMessageRecord{Text: text})
 		if err != nil {
 			t.Fatal(err)
 		}
-		ref, err := chat.store.publishPayload(t.Context(), "org_example", payload)
+		ref, err := chat.Store.PublishPayload(t.Context(), "org_example", payload)
 		if err != nil {
 			t.Fatal(err)
 		}

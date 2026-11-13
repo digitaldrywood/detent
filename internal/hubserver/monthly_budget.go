@@ -171,7 +171,7 @@ func (s *Service) stopMonthlyBudgetTurns(ctx context.Context, organization track
 	if s.conversations == nil {
 		return
 	}
-	coordinator, ok := s.conversations.coordinator.(*conversationTurnCoordinator)
+	coordinator, ok := s.conversations.Coordinator.(*conversationTurnCoordinator)
 	if !ok {
 		return
 	}
@@ -204,7 +204,7 @@ func (s *Service) stopMonthlyBudgetTurns(ctx context.Context, organization track
 
 func (s *Service) resumeMonthlyBudgetWork(ctx context.Context, scope nativeScope) {
 	if s.conversations != nil {
-		if err := s.conversations.wakePending(ctx); err != nil {
+		if err := s.conversations.WakePending(ctx); err != nil {
 			s.config.Logger.Warn("Resume budget-eligible conversations", "error", err)
 		}
 	}

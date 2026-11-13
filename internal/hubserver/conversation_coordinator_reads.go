@@ -86,7 +86,7 @@ func coordinatorReadPermission(name string) string {
 }
 
 func (t *coordinatorToolset) screenRead(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
-	s := t.coordinator.service.server
+	s := t.coordinator.server
 	ctx, err := t.actionContext(ctx, record)
 	if err != nil {
 		return nil, fmt.Errorf("you don't have access to %s: %w", coordinatorReadPermission(call.Name), operatortool.ErrAccessDenied)
@@ -393,7 +393,7 @@ func coordinatorProjectMembers(raw json.RawMessage, project tracker.ProjectID) (
 
 func (t *coordinatorToolset) restrictReadAudience(ctx context.Context, record conversationRecord, credential apiCredential) error {
 	var audience string
-	err := t.coordinator.service.server.config.TenantRepository.ReadTenant(ctx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+	err := t.coordinator.server.config.TenantRepository.ReadTenant(ctx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		audience, err = conversationReadAudienceRecord(ctx, r, record.OrganizationID, credential)
 		return err
@@ -411,10 +411,10 @@ func (t *coordinatorToolset) restrictReadAudience(ctx context.Context, record co
 		fresh.ReadAudience = audience
 		return t.coordinator.saveConversation(ctx, w, fresh, now)
 	}, func(ctx context.Context, p *conversationPublicationPlan) error {
-		if p.record.ReadAudience == audience {
+		if p.Record.ReadAudience == audience {
 			return nil
 		}
-		p.record.ReadAudience = audience
-		return p.saveConversation(ctx)
+		p.Record.ReadAudience = audience
+		return p.SaveConversation(ctx)
 	})
 }

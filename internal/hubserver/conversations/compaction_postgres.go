@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -9,22 +9,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (c *conversationService) compactEventsPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (c *ConversationService) CompactEventsPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	before := now.Add(-conversationstore.EventRetention)
 	var candidates conversationstore.CompactionPage
-	if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+	if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(conversationstore.CompactionReader)
 		if !ok {
-			return conversationUnsupported("Conversation compaction owner is unavailable")
+			return ConversationUnsupported("Conversation compaction owner is unavailable")
 		}
 		var err error
-		candidates, err = owner.CompactionCandidates(ctx, c.lifecycleCursor("compaction"), before, now, conversationstore.CompactionConversations)
+		candidates, err = owner.CompactionCandidates(ctx, c.LifecycleCursor("compaction"), before, now, conversationstore.CompactionConversations)
 		return err
 	}); err != nil {
 		return 0, err
@@ -50,14 +51,14 @@ func (c *conversationService) compactEventsPG(ctx context.Context, organization 
 	return removed, nil
 }
 
-func (c *conversationService) compactConversationEventsPG(ctx context.Context, candidate conversationstore.Conversation, before, now time.Time, budget int) (int, int, error) {
+func (c *ConversationService) compactConversationEventsPG(ctx context.Context, candidate conversationstore.Conversation, before, now time.Time, budget int) (int, int, error) {
 	organization := candidate.OrganizationID
 	var metadata conversationstore.EventPage
 	var full bool
-	if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+	if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(conversationstore.CompactionReader)
 		if !ok {
-			return conversationUnsupported("Conversation compaction owner is unavailable")
+			return ConversationUnsupported("Conversation compaction owner is unavailable")
 		}
 		var err error
 		metadata, err = owner.UnprojectedConversationEvents(ctx, candidate.ID, budget)
@@ -67,10 +68,10 @@ func (c *conversationService) compactConversationEventsPG(ctx context.Context, c
 	}
 	processed := len(metadata.Items)
 	if processed > 0 {
-		if err := c.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
+		if err := c.Server.config().TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
 			owner, ok := writer.(conversationstore.CompactionWriter)
 			if !ok {
-				return conversationUnsupported("Conversation compaction owner is unavailable")
+				return ConversationUnsupported("Conversation compaction owner is unavailable")
 			}
 			return owner.ProjectConversationEvents(ctx, candidate.ID, metadata.Items)
 		}); err != nil {
@@ -82,10 +83,10 @@ func (c *conversationService) compactConversationEventsPG(ctx context.Context, c
 	}
 	var events conversationstore.CompactionEventPage
 	var reference attachment.ArchiveReference
-	if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+	if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(conversationstore.CompactionReader)
 		if !ok {
-			return conversationUnsupported("Conversation compaction owner is unavailable")
+			return ConversationUnsupported("Conversation compaction owner is unavailable")
 		}
 		var err error
 		candidate, err = reader.Conversation(ctx, candidate.ProjectID, candidate.ID)
@@ -120,20 +121,20 @@ func (c *conversationService) compactConversationEventsPG(ctx context.Context, c
 	if full {
 		state.ScannedSequence = max(state.ScannedSequence, scanThrough)
 	}
-	plan := &conversationPublicationPlan{service: c, record: conversationRecordFromStore(candidate), now: now}
+	plan := &ConversationPublicationPlan{Service: c, Record: ConversationRecordFromStore(candidate), Now: now}
 	var sequences []int64
 	if len(events.Items) > 0 {
 		var summary tracker.EventCompaction
 		if state.ContentReference != "" {
-			var payload conversationContent
-			if err := c.server.readConversationObject(ctx, string(organization), reference, &payload); err != nil {
+			var payload ConversationContent
+			if err := c.Server.ReadConversationObject(ctx, string(organization), reference, &payload); err != nil {
 				return processed, 0, err
 			}
 			if err := json.Unmarshal(payload.Data, &summary); err != nil {
 				return processed, 0, fmt.Errorf("decode conversation compaction summary: %w", err)
 			}
 			if summary.ThroughSequence != state.ThroughSequence {
-				return processed, 0, conversationContentUnavailable()
+				return processed, 0, ConversationContentUnavailable()
 			}
 		}
 		if summary.RemovedByType == nil {
@@ -152,35 +153,35 @@ func (c *conversationService) compactConversationEventsPG(ctx context.Context, c
 		if err != nil {
 			return processed, 0, err
 		}
-		content, err := json.Marshal(conversationContent{Data: raw})
+		content, err := json.Marshal(ConversationContent{Data: raw})
 		if err != nil {
 			return processed, 0, err
 		}
-		ref, err := plan.prepare(ctx, content)
+		ref, err := plan.Prepare(ctx, content)
 		if err != nil {
 			return processed, 0, err
 		}
-		state.ContentReference = contentArchiveID(string(organization), ref)
+		state.ContentReference = ContentArchiveID(string(organization), ref)
 		state.ThroughSequence = summary.ThroughSequence
 	}
 	changed := false
-	err := c.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
+	err := c.Server.config().TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(conversationstore.CompactionWriter)
 		if !ok {
-			return conversationUnsupported("Conversation compaction owner is unavailable")
+			return ConversationUnsupported("Conversation compaction owner is unavailable")
 		}
 		var err error
 		changed, err = owner.CompactConversationEvents(ctx, candidate.ProjectID, conversationstore.CompactionRequest{Conversation: candidate, Sequences: sequences, State: state, Before: before, Now: now, Full: full})
 		if err != nil || !changed {
 			return err
 		}
-		return registerPreparedConversationObjects(ctx, writer, organization, plan.prepared, now)
+		return RegisterPreparedConversationObjects(ctx, writer, organization, plan.Prepared, now)
 	})
 	if err != nil || !changed {
 		return processed, 0, err
 	}
 	if len(sequences) > 0 {
-		c.broker.notify(candidate.ID)
+		c.Broker.Notify(candidate.ID)
 	}
 	return processed, len(sequences), nil
 }

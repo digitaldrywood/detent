@@ -132,7 +132,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 	if err != nil {
 		return nil, err
 	}
-	s := t.coordinator.service.server
+	s := t.coordinator.server
 	scope, err := s.coordinatorScope(ctx, record.ProjectID, manage)
 	if err != nil {
 		return nil, err

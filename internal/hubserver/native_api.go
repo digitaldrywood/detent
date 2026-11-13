@@ -128,11 +128,13 @@ func nativeConflict(revision tracker.Revision) error {
 
 // isNativeNotFound reports whether err is the opaque native not-found error.
 func isNativeNotFound(err error) bool {
+	err = fromFeatureError(err)
 	var failure *nativeError
 	return errors.As(err, &failure) && failure != nil && failure.Code == "not_found"
 }
 
 func isNativeConflict(err error) bool {
+	err = fromFeatureError(err)
 	var failure *nativeError
 	return errors.As(err, &failure) && failure != nil && failure.Code == "revision_conflict"
 }
@@ -164,6 +166,7 @@ func operatorAuthorizationCause(err error) string {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) error {
+	err = fromFeatureError(err)
 	var deniedAuthorization *operatortool.AuthorizationError
 	authorizationFailure := errors.As(err, &deniedAuthorization)
 	authorizationUnavailable := errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid

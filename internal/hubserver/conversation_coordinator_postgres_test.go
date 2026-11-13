@@ -54,7 +54,7 @@ func TestCoordinatorPostgresReadsPendingMessages(t *testing.T) {
 				t.Fatal(err)
 			}
 			server := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(organization)}}}
-			coordinator := &conversationTurnCoordinator{service: &conversationService{server: server, store: &conversationStore{}}}
+			coordinator := &conversationTurnCoordinator{server: server, service: &conversationService{Server: server.conversationServer(), Store: &conversationStore{}}}
 			record, err := coordinator.readConversation(t.Context(), nil, id)
 			if err != nil {
 				t.Fatal(err)
@@ -126,7 +126,7 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			service.conversations = &conversationService{server: service, store: &conversationStore{contents: &conversationContentFixture{}}}
+			service.conversations = &conversationService{Server: service.conversationServer(), Store: &conversationStore{Contents: &conversationContentFixture{}}}
 			other := projects[0]
 			if other == project {
 				other = projects[1]
@@ -145,7 +145,7 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					ref, err := service.conversations.store.publishPayload(t.Context(), string(organization), body)
+					ref, err := service.conversations.Store.PublishPayload(t.Context(), string(organization), body)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -180,8 +180,8 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if len(page.messages) != 1 || page.messages[0].Text != text {
-						t.Fatalf("stored answer = %+v", page.messages)
+					if len(page.Messages) != 1 || page.Messages[0].Text != text {
+						t.Fatalf("stored answer = %+v", page.Messages)
 					}
 					switch restriction {
 					case "token grant":

@@ -1,6 +1,6 @@
-package hubserver
+package conversations
 
-type queryMessageData struct {
+type QueryMessageData struct {
 	Tool                 *string `json:"tool"`
 	ItemID               *string `json:"item_id"`
 	Status               *string `json:"status"`

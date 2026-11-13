@@ -21,13 +21,13 @@ func checkPGWorkerMessagePage(t *testing.T) {
 	messages := make([]conversationMessageRecord, corestore.MaxPageSize+1)
 	for index := range messages {
 		message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: f.record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: fmt.Sprintf("message-%d", index), Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.principal}, CreatedAt: f.now, UpdatedAt: f.now}
-		messages[index], err = plan.message(t.Context(), message)
+		messages[index], err = plan.Message(t.Context(), message)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(t.Context(), writer, f.project.OrganizationID, plan.prepared, f.now); err != nil {
+		if err := registerPreparedConversationObjects(t.Context(), writer, f.project.OrganizationID, plan.Prepared, f.now); err != nil {
 			return err
 		}
 		for _, message := range messages {
@@ -92,14 +92,14 @@ func checkPGWorkerCompletionHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			history, err := plan.message(t.Context(), conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: f.record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "historical response", Delivery: conversation.DeliveryCompleted, AttemptID: f.attempt, TurnID: "turn-history", Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.principal}, CreatedAt: f.now, UpdatedAt: f.now})
+			history, err := plan.Message(t.Context(), conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: f.record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "historical response", Delivery: conversation.DeliveryCompleted, AttemptID: f.attempt, TurnID: "turn-history", Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.principal}, CreatedAt: f.now, UpdatedAt: f.now})
 			if err != nil {
 				t.Fatal(err)
 			}
 			other := history
 			other.ID, other.TurnID, other.Delivery = conversation.NewMessageID(), "turn-other", conversation.DeliveryResponding
 			f.writeTenant(t, func(writer tenantstore.Writer) error {
-				if err := registerPreparedConversationObjects(t.Context(), writer, f.project.OrganizationID, plan.prepared, f.now); err != nil {
+				if err := registerPreparedConversationObjects(t.Context(), writer, f.project.OrganizationID, plan.Prepared, f.now); err != nil {
 					return err
 				}
 				for range test.history {
@@ -143,7 +143,7 @@ func checkPGWorkerCompletionHistory(t *testing.T) {
 			}
 			completion = append(completion, map[string]any{"type": "turn_completed", "turn_id": "turn-current", "status": "completed"})
 			requireNativeStatus(t, f.turnEvents(t, completion...), http.StatusAccepted)
-			message, err := f.chat.readPublicationMessage(t.Context(), f.project.OrganizationID, f.record.ID, current.ID)
+			message, err := f.chat.ReadPublicationMessage(t.Context(), f.project.OrganizationID, f.record.ID, current.ID)
 			if err != nil || message.Text != wantText || message.Delivery != conversation.DeliveryCompleted || message.ContentID == "" {
 				t.Fatalf("completed assistant = %+v, error = %v", message, err)
 			}

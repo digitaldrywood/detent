@@ -16,7 +16,7 @@ import (
 
 func TestConversationRecordPayloadsNeverInline(t *testing.T) {
 	f := newConversationFixture(t)
-	ctx := conversationObjectIOContext(t, f.store.contents.(*conversationContentFixture))
+	ctx := conversationObjectIOContext(t, f.store.Contents.(*conversationContentFixture))
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	record := f.record(f.owner, "payloads", now)
 	if err := f.createRecord(ctx, &record); err != nil {
@@ -81,7 +81,7 @@ func TestConversationRecordPayloadsNeverInline(t *testing.T) {
 		}
 	})
 	t.Run("attachment", func(t *testing.T) {
-		ref, err := f.store.publishPayload(ctx, string(f.organization), []byte("example"))
+		ref, err := f.store.PublishPayload(ctx, string(f.organization), []byte("example"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -111,7 +111,7 @@ func TestConversationRecordPayloadsNeverInline(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		got, err := f.store.contents.ReadContent(ctx, string(f.organization), storedObject.Reference)
+		got, err := f.store.Contents.ReadContent(ctx, string(f.organization), storedObject.Reference)
 		if err != nil || string(got) != "example" {
 			t.Fatalf("attachment round trip changed: %q, %v", got, err)
 		}
@@ -170,7 +170,7 @@ func prepareRecordTestPayload(t *testing.T, f conversationFixture, record conver
 		}
 		contents = append(contents, content)
 	}
-	ctx, err := f.store.preparePayloads(t.Context(), string(record.OrganizationID), contents...)
+	ctx, err := f.store.PreparePayloads(t.Context(), string(record.OrganizationID), contents...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func prepareTestConversationRecord(t *testing.T, store *conversationStore, recor
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, err := store.preparePayloads(t.Context(), string(record.OrganizationID), content)
+	ctx, err := store.PreparePayloads(t.Context(), string(record.OrganizationID), content)
 	if err != nil {
 		t.Fatal(err)
 	}

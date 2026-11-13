@@ -13,21 +13,21 @@ func conversationDeltaBody(messageID string, seq int64, text string) map[string]
 	return map[string]any{"message_id": messageID, "seq": seq, "text": text}
 }
 
-func (c *conversationService) settleIdleConversationsForTest(ctx context.Context, now time.Time) (int, error) {
-	organization, err := c.lifecycleOrganization()
+func settleIdleConversationsForTest(c *conversationService, ctx context.Context, now time.Time) (int, error) {
+	organization, err := c.LifecycleOrganization()
 	if err != nil {
 		return 0, err
 	}
-	return c.settleIdleConversationsPG(ctx, organization, now)
+	return c.SettleIdleConversationsPG(ctx, organization, now)
 }
 
 func newTestPublicationPlan(c *conversationService, ctx context.Context, id string) (*conversationPublicationPlan, error) {
 	ctx = newConversationArchiveReads(ctx)
-	record, err := c.readPublicationConversation(ctx, id)
+	record, err := c.ReadPublicationConversation(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return &conversationPublicationPlan{service: c, record: record, original: record, now: c.server.config.now(), reads: conversationArchiveCache(ctx)}, nil
+	return &conversationPublicationPlan{Service: c, Record: record, Original: record, Now: c.Server.Now(), Reads: conversationArchiveCache(ctx)}, nil
 }
 
 func validateConversationRecord(record *conversationRecord) error {

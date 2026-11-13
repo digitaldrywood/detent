@@ -288,7 +288,7 @@ func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.
 		}
 		first := seedStreamCompactionConversation(t, f, old.Add(-time.Hour), 1200, firstID)
 		second := seedStreamCompactionConversation(t, f, old, 1, secondID)
-		removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now)
+		removed, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -302,7 +302,7 @@ func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.
 		if got := readStreamCompactionConversation(t, f, second.ID); got.Compaction.ThroughSequence != 0 {
 			t.Fatalf("first tick exceeded its event budget: %+v", got.Compaction)
 		}
-		if _, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil {
+		if _, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil {
 			t.Fatal(err)
 		}
 		if got := readStreamCompactionConversation(t, f, second.ID); got.Compaction.ThroughSequence != second.EventSequence {
@@ -319,10 +319,10 @@ func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.
 			t.Fatal(err)
 		}
 		body := map[string]string{"text": "transient"}
-		if err := plan.event(t.Context(), body); err != nil {
+		if err := plan.Event(t.Context(), body); err != nil {
 			t.Fatal(err)
 		}
-		ctx := plan.context(t.Context())
+		ctx := plan.Context(t.Context())
 		if err := f.service.config.TenantRepository.WriteTenant(ctx, f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
 			if err := appendPGConversationEvent(ctx, writer, f.project.OrganizationID, id, conversation.EventMessageDelta, body, old); err != nil {
 				return err
@@ -666,7 +666,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 			var sink *conversationLogSink
 			if verifyStream {
 				sink = &conversationLogSink{}
-				f.service.conversations.logger = slog.New(slog.NewJSONHandler(sink, nil)).With("component", "conversation")
+				f.service.conversations.Logger = slog.New(slog.NewJSONHandler(sink, nil)).With("component", "conversation")
 				response = httptest.NewRecorder()
 				ready := make(chan struct{})
 				ctx, cancel := context.WithCancel(t.Context())
@@ -727,7 +727,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 				}
 			}
 			if verifyStream {
-				f.service.conversations.broker.notify(f.conversation)
+				f.service.conversations.Broker.Notify(f.conversation)
 				select {
 				case <-streamDone:
 				case <-testenv.WaitContext(t, t.Context()).Done():

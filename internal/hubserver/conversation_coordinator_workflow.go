@@ -86,7 +86,7 @@ func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversati
 	if err != nil {
 		return nil, err
 	}
-	executor := hubProjectExecutor{t.coordinator.service.server}
+	executor := hubProjectExecutor{t.coordinator.server}
 	var approval coordinatorPolicyApprovalArguments
 	if call.Name == "approve_project_policy" {
 		var args struct {

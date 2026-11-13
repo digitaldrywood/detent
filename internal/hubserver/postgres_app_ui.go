@@ -156,7 +156,7 @@ func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential apiCr
 			return appBootstrap{}, err
 		}
 	}
-	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator != nil && s.conversations.coordinator.Available()
+	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.Coordinator != nil && s.conversations.Coordinator.Available()
 	payload.Feature = s.appBootstrapFeature()
 	payload.Feature.Workspaces = s.config.Workspace != nil && s.config.Workspace.Enabled && !s.config.CredentialMaintenance
 	payload.Preferences, err = s.appBootstrapPreferences(ctx, string(organizationID), projects)

@@ -637,7 +637,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 	if _, err := service.appendNativeRunEventTenant(t.Context(), runnerScope, string(thirdIssue.WorkItemID), cancelStart); err != nil {
 		t.Fatal(err)
 	}
-	service.conversations = newConversationService(service, ConversationConfig{}.normalized())
+	service.conversations = newConversationService(service, ConversationConfig{}.Normalized())
 	conversationID := conversation.NewConversationID()
 	conversationNow := service.config.now().UTC()
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {

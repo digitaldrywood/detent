@@ -240,7 +240,7 @@ func (f *coordinatorFixture) attachOperatorConnection(t *testing.T) {
 }
 
 func (f *coordinatorFixture) coordinator() conversationCoordinator {
-	return f.conversations.coordinator
+	return f.conversations.Coordinator
 }
 
 func TestCoordinatorPublicationRefreshesBeforeMutation(t *testing.T) {
@@ -256,7 +256,7 @@ func TestCoordinatorPublicationRefreshesBeforeMutation(t *testing.T) {
 				updated.Execution.Status = conversation.ExecutionCompleted
 			}
 			updated.Preferences = updated.Preferences.Normalized()
-			preparedUpdate := prepareTestConversationRecord(t, f.conversations.store, updated)
+			preparedUpdate := prepareTestConversationRecord(t, f.conversations.Store, updated)
 			message := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: "prepared", Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
 			preparations, mutations := 0, 0
 			err := f.coordinator().(*conversationTurnCoordinator).write(t.Context(), record.ID, func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error {
@@ -267,7 +267,7 @@ func TestCoordinatorPublicationRefreshesBeforeMutation(t *testing.T) {
 				return f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, tx, record, &message, now)
 			}, func(ctx context.Context, p *conversationPublicationPlan) error {
 				preparations++
-				if err := p.appendMessage(ctx, &message); err != nil {
+				if err := p.AppendMessage(ctx, &message); err != nil {
 					return err
 				}
 				if preparations != 1 {
@@ -361,7 +361,7 @@ func (f *coordinatorFixture) seed(t *testing.T, title string, mutate func(*conve
 	if err := validateConversationRecord(&record); err != nil {
 		t.Fatal(err)
 	}
-	ctx := prepareTestConversationRecord(t, f.conversations.store, record)
+	ctx := prepareTestConversationRecord(t, f.conversations.Store, record)
 	prepared, _ := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
 	if err := f.service.config.TenantRepository.WriteTenant(ctx, f.organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := registerPreparedConversationObjects(ctx, w, f.organization, prepared, now); err != nil {
@@ -387,7 +387,7 @@ func (f *coordinatorFixture) say(t *testing.T, record *conversationRecord, text 
 	t.Helper()
 	message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: text, Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}}
 	f.appendMessage(t, record, &message)
-	f.conversations.committed(*record)
+	f.conversations.Committed(*record)
 	return message
 }
 
@@ -411,25 +411,25 @@ func (f *coordinatorFixture) appendMessage(t *testing.T, record *conversationRec
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan.coordinator = true
-	if err := plan.appendMessage(t.Context(), message); err != nil {
+	plan.Coordinator = true
+	if err := plan.AppendMessage(t.Context(), message); err != nil {
 		t.Fatal(err)
 	}
-	for _, body := range plan.events {
+	for _, body := range plan.Events {
 		raw, err := json.Marshal(body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := plan.prepareValue(t.Context(), raw); err != nil {
+		if err := plan.PrepareValue(t.Context(), raw); err != nil {
 			t.Fatal(err)
 		}
 	}
-	ctx := plan.context(t.Context())
+	ctx := plan.Context(t.Context())
 	if err := f.service.config.TenantRepository.WriteTenant(ctx, f.organization, corestore.Serving, func(tx tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(ctx, tx, f.organization, plan.prepared, plan.now); err != nil {
+		if err := registerPreparedConversationObjects(ctx, tx, f.organization, plan.Prepared, plan.Now); err != nil {
 			return err
 		}
-		return f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, tx, record, message, plan.now)
+		return f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, tx, record, message, plan.Now)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -577,8 +577,8 @@ func TestConversationCoordinatorAvailability(t *testing.T) {
 	if !f.coordinator().Available() {
 		t.Fatal("Available() = false with a backend configured")
 	}
-	without := &conversationService{config: ConversationConfig{}, logger: discardLogger()}
-	if newConversationCoordinator(without).Available() {
+	without := &conversationService{Config: ConversationConfig{}, Logger: discardLogger()}
+	if newConversationCoordinator(nil, without).Available() {
 		t.Fatal("Available() = true without a backend")
 	}
 }
@@ -596,8 +596,8 @@ func TestConversationCoordinatorReportsUsage(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "usage")
 	sink := recordingConversationUsageSink{usage: make(chan ConversationUsage, 1)}
-	f.conversations.config.UsageSink = sink
-	f.conversations.config.Model = "gpt-6-luna"
+	f.conversations.Config.UsageSink = sink
+	f.conversations.Config.Model = "gpt-6-luna"
 	f.backend.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 		if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{
 			InputTokens: 20, CachedInputTokens: 5, OutputTokens: 10, ReasoningOutputTokens: 3, TotalTokens: 30,
@@ -1103,7 +1103,7 @@ func TestConversationCoordinatorListAttention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	questionContext := prepareRecordTestPayload(t, conversationFixture{store: f.conversations.store}, linkedConversation, questionRaw)
+	questionContext := prepareRecordTestPayload(t, conversationFixture{store: f.conversations.Store}, linkedConversation, questionRaw)
 	prepared, _ := questionContext.Value(conversationContentsKey{}).(preparedConversationContents)
 	f.write(t, func(w tenantstore.Writer) error {
 		if err := registerPreparedConversationObjects(questionContext, w, f.organization, prepared, linkedAt); err != nil {
@@ -1460,7 +1460,7 @@ func TestConversationCoordinatorToolMessagesFromUpdates(t *testing.T) {
 							t.Fatalf("immutable tool revisions changed: %q %+v -> %q %+v", acceptedText, acceptedData, updatedText, updatedData)
 						}
 						output := httptest.NewRecorder()
-						stream := &conversationStream{response: echo.NewResponse(output, echo.New())}
+						stream := &conversationStream{Response: echo.NewResponse(output, echo.New())}
 						head := f.conversation(t, record.ID).EventSeq
 						if cursor, err := f.service.replayPGConversationEvents(t.Context(), nativeAttemptListingScope(t, f.nativeFixture), stream, record.ID, 0, head); err != nil || cursor != head || !strings.Contains(output.Body.String(), wantAccepted) || !strings.Contains(output.Body.String(), wantUpdated) {
 							t.Fatalf("SSE tool replay: cursor=%d head=%d error=%v", cursor, head, err)
@@ -1496,7 +1496,7 @@ func TestConversationReconcileLeavesHubCoordinatorTurns(t *testing.T) {
 		t.Fatalf("seeded execution = %#v, want running", before.Execution)
 	}
 
-	if err := f.conversations.reconcileExecutions(t.Context()); err != nil {
+	if err := f.conversations.ReconcileExecutions(t.Context()); err != nil {
 		t.Fatalf("reconcileExecutions() error = %v", err)
 	}
 
@@ -1546,8 +1546,8 @@ func TestConversationRetryOnTheHubCoordinatorPath(t *testing.T) {
 func TestConversationCoordinatorHonoursPreferences(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "preferences")
-	f.conversations.config.Model = "configured-model"
-	f.conversations.config.ReasoningEffort = "medium"
+	f.conversations.Config.Model = "configured-model"
+	f.conversations.Config.ReasoningEffort = "medium"
 
 	auto := f.seed(t, "auto", nil)
 	f.say(t, &auto, "Anything blocked?")
@@ -1605,8 +1605,8 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newCoordinatorFixture(t, "luna-preferences")
-			f.conversations.config.Model = genkitbackend.Model
-			f.conversations.config.ReasoningEffort = "low"
+			f.conversations.Config.Model = genkitbackend.Model
+			f.conversations.Config.ReasoningEffort = "low"
 			reportConversationModels(t, conversationAPIFixture{nativeFixture: f.nativeFixture, ownerID: f.owner}, "gpt-6-astra")
 			d := f.service.database
 			if test.hosted {
@@ -1637,14 +1637,14 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				f.conversations.config.Backend = luna
-				f.conversations.config.UsageSink = sink
+				f.conversations.Config.Backend = luna
+				f.conversations.Config.UsageSink = sink
 				chosen.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 					return runner.AgentTurnResult{}, onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 20, OutputTokens: 10, TotalTokens: 30}})
 				})
 			}
 			if !test.unavailable {
-				f.conversations.config.ModelBackend = func() (runner.AgentBackend, string, error) { return chosen, "chosen-workspace", nil }
+				f.conversations.Config.ModelBackend = func() (runner.AgentBackend, string, error) { return chosen, "chosen-workspace", nil }
 			}
 			record := f.seed(t, "preferences", func(record *conversationRecord) {
 				record.Preferences = conversation.Preferences{Model: test.model, ReasoningEffort: test.effort, Access: conversation.AccessFull}
@@ -2026,39 +2026,39 @@ func TestConversationCoordinatorAttachmentReadFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := plan.appendMessage(t.Context(), &message); err != nil {
+			if err := plan.AppendMessage(t.Context(), &message); err != nil {
 				t.Fatal(err)
 			}
-			for _, event := range plan.events {
+			for _, event := range plan.Events {
 				raw, err := json.Marshal(event)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := plan.prepareValue(t.Context(), raw); err != nil {
+				if err := plan.PrepareValue(t.Context(), raw); err != nil {
 					t.Fatal(err)
 				}
 			}
-			objects := f.conversations.store.contents.(*conversationContentFixture)
+			objects := f.conversations.Store.Contents.(*conversationContentFixture)
 			ref, err := objects.PublishContent(t.Context(), string(f.organization), []byte("secret plan"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx := plan.context(t.Context())
+			ctx := plan.Context(t.Context())
 			contentID := contentArchiveID(string(f.organization), ref)
-			expires := plan.now.Add(time.Hour)
+			expires := plan.Now.Add(time.Hour)
 			f.write(t, func(w tenantstore.Writer) error {
-				if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, plan.now); err != nil {
+				if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, plan.Now); err != nil {
 					return err
 				}
-				if err := f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, w, &record, &message, plan.now); err != nil {
+				if err := f.coordinator().(*conversationTurnCoordinator).appendMessage(ctx, w, &record, &message, plan.Now); err != nil {
 					return err
 				}
-				a := conversationstore.Attachment{OrganizationID: f.organization, ProjectID: f.project.ID, ConversationID: record.ID, ID: conversation.NewAttachmentID(), PrincipalID: f.owner, Name: "notes.txt", MIME: "text/plain", Size: 11, ArtifactRef: "ref_1", ContentID: contentID, CreatedAt: plan.now, ExpiresAt: &expires}
+				a := conversationstore.Attachment{OrganizationID: f.organization, ProjectID: f.project.ID, ConversationID: record.ID, ID: conversation.NewAttachmentID(), PrincipalID: f.owner, Name: "notes.txt", MIME: "text/plain", Size: 11, ArtifactRef: "ref_1", ContentID: contentID, CreatedAt: plan.Now, ExpiresAt: &expires}
 				owner := w.(conversationstore.AttachmentWriter)
-				if err := owner.CreateConversationAttachment(ctx, a, conversationstore.ContentObject{OrganizationID: f.organization, ID: contentID, Reference: ref, CreatedAt: plan.now}); err != nil {
+				if err := owner.CreateConversationAttachment(ctx, a, conversationstore.ContentObject{OrganizationID: f.organization, ID: contentID, Reference: ref, CreatedAt: plan.Now}); err != nil {
 					return err
 				}
-				return owner.BindConversationAttachment(ctx, f.project.ID, record.ID, a.ID, f.owner, message.ID, plan.now)
+				return owner.BindConversationAttachment(ctx, f.project.ID, record.ID, a.ID, f.owner, message.ID, plan.Now)
 			})
 			if test.breakStore {
 				objects.mu.Lock()
@@ -2201,7 +2201,7 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 			if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 				t.Fatal(err)
 			}
-			f.conversations.config.Model = "gpt-6-luna"
+			f.conversations.Config.Model = "gpt-6-luna"
 			if test.credits {
 				d.aiCreditMode, d.aiCreditCostMultiplier = "test", defaultAICreditCostMultiplier
 				role := "viewer"
@@ -2340,7 +2340,7 @@ func coordinatorTraceRepository(t *testing.T, f *coordinatorFixture, probe *coor
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		f.conversations.stop()
+		f.conversations.Stop()
 		if err := repository.Close(); err != nil {
 			t.Error(err)
 		}
@@ -2421,7 +2421,7 @@ func reopenCoordinatorService(t *testing.T, original *Service, configure ...func
 		service.config.Logger = logger
 		service.database.logger = logger
 		if service.conversations != nil {
-			service.conversations.logger = logger.With("component", "conversation")
+			service.conversations.Logger = logger.With("component", "conversation")
 			service.registerConversationRoutes(service.echo)
 		}
 	} else {
@@ -2432,7 +2432,7 @@ func reopenCoordinatorService(t *testing.T, original *Service, configure ...func
 	service.localOrganization = local
 	service.requestMetrics.Organization = organization
 	if cfg.Hosted == nil && service.conversations != nil {
-		if err := service.conversations.start(t.Context()); err != nil {
+		if err := service.conversations.Start(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -59,8 +59,8 @@ func coordinatorReadFixture(t *testing.T) (hostedSecurityFixture, hostedSecurity
 		_, err = w.UpdateConversation(t.Context(), row, row.Revision)
 		return err
 	})
-	c := f.service.conversations.coordinator.(*conversationTurnCoordinator)
-	record, err := c.service.readPublicationConversation(t.Context(), created.Conversation.ID)
+	c := f.service.conversations.Coordinator.(*conversationTurnCoordinator)
+	record, err := c.service.ReadPublicationConversation(t.Context(), created.Conversation.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func coordinatorViewerTools(t *testing.T, f hostedSecurityFixture, record conver
 	if actorCtx == nil {
 		t.Fatal("missing viewer context")
 	}
-	c := f.service.conversations.coordinator.(*conversationTurnCoordinator)
+	c := f.service.conversations.Coordinator.(*conversationTurnCoordinator)
 	state := &coordinatorTurnState{coordinator: c, conversationID: record.ID, users: []conversationMessageRecord{{Role: conversation.RoleUser, Text: "Read project screens", Data: coordinatorConnectionData(actorCtx)}}}
 	return newCoordinatorToolset(c, state), actorCtx
 }

@@ -55,7 +55,7 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 			if s.conversations == nil {
 				return nil
 			}
-			_, err := s.conversations.compactEventsPG(ctx, tracker.OrganizationID(s.appOrganizationID()), now)
+			_, err := s.conversations.CompactEventsPG(ctx, tracker.OrganizationID(s.appOrganizationID()), now)
 			return err
 		}},
 	})

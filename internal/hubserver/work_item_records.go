@@ -978,7 +978,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope nativeSco
 			return nil, err
 		}
 		if link != nil {
-			if err := link.prepare(ctx, plan); err != nil {
+			if err := link.Prepare(ctx, plan); err != nil {
 				return nil, err
 			}
 		}
@@ -1495,7 +1495,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope nativeSco
 				}
 			}
 			if link != nil {
-				if err := link.write(ctx, w, plan); err != nil {
+				if err := link.Write(ctx, w, plan); err != nil {
 					return err
 				}
 			}

@@ -198,8 +198,8 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				} `json:"conversation"`
 			}
 			decodeHubResponse(t, response, &created)
-			c := f.service.conversations.coordinator.(*conversationTurnCoordinator)
-			record, err := c.service.readPublicationConversation(t.Context(), created.Conversation.ID)
+			c := f.service.conversations.Coordinator.(*conversationTurnCoordinator)
+			record, err := c.service.ReadPublicationConversation(t.Context(), created.Conversation.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -591,7 +591,7 @@ func (f *browserHostedFixture) seedCoordinatorWorkflow(t *testing.T) {
 	if err := coordinatorFixturePolicyObservation(t.Context(), f.service, scope, r.RunnerID, policy.Observation{Descriptor: selected, Source: &policy.RepositorySource{Repository: "example-org/example-project", Commit: selected.SourceRevision}}); err != nil {
 		t.Fatal(err)
 	}
-	backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
+	backend := f.service.conversations.Config.Backend.(*fakeCoordinatorBackend)
 	backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 		heartbeat()
 		configuration, err := handle(ctx, runner.AgentToolCall{Name: operatortool.LocalProjectConfiguration, Arguments: json.RawMessage(`{}`)})

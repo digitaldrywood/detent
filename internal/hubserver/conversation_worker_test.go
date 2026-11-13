@@ -193,7 +193,7 @@ func (f *conversationWorkerFixture) controls(t *testing.T, after int64, wait int
 func (f *conversationWorkerFixture) awaitControlSubscribers(t *testing.T, want int) {
 	t.Helper()
 	testenv.WaitUntil(t, t.Context(), func() error {
-		got := f.chat.broker.Subscribers(f.record.ID)
+		got := f.chat.Broker.Subscribers(f.record.ID)
 		if got >= want {
 			return nil
 		}
@@ -214,40 +214,40 @@ func (f *conversationWorkerFixture) queue(t *testing.T, kind conversation.Messag
 		t.Fatal(err)
 	}
 	message := conversationMessageRecord{Role: conversation.RoleUser, Kind: kind, Text: text, Data: encoded, Delivery: conversation.DeliveryQueued, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.principal}, CommandKey: key}
-	plan := &conversationPublicationPlan{service: f.chat, record: record, original: record, now: now, coordinator: true}
-	if err := plan.appendMessage(t.Context(), &message); err != nil {
+	plan := &conversationPublicationPlan{Service: f.chat, Record: record, Original: record, Now: now, Coordinator: true}
+	if err := plan.AppendMessage(t.Context(), &message); err != nil {
 		t.Fatal(err)
 	}
 	receiptPlan := conversation.Receipt{Key: key, Kind: commandKind, Status: conversation.DeliveryQueued, MessageID: message.ID}
 	if data != nil {
 		receiptPlan.QuestionID, _ = data["question_id"].(string)
 	}
-	if err := plan.recordReceipt(t.Context(), receiptPlan); err != nil {
+	if err := plan.RecordReceipt(t.Context(), receiptPlan); err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.saveConversation(t.Context()); err != nil {
+	if err := plan.SaveConversation(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	initial, err := json.Marshal(conversation.Receipt{Key: key, Kind: commandKind, Status: conversation.DeliverySaved, UpdatedAt: now.UTC()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plan.prepareValue(t.Context(), initial); err != nil {
+	if err := plan.PrepareValue(t.Context(), initial); err != nil {
 		t.Fatal(err)
 	}
-	for _, body := range plan.events {
+	for _, body := range plan.Events {
 		raw, err := json.Marshal(body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := plan.prepareValue(t.Context(), raw); err != nil {
+		if err := plan.PrepareValue(t.Context(), raw); err != nil {
 			t.Fatal(err)
 		}
 	}
-	ctx = plan.context(t.Context())
-	coordinator := f.chat.coordinator.(*conversationTurnCoordinator)
+	ctx = plan.Context(t.Context())
+	coordinator := f.chat.Coordinator.(*conversationTurnCoordinator)
 	f.writeTenant(t, func(w tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(ctx, w, f.project.OrganizationID, plan.prepared, now); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, f.project.OrganizationID, plan.Prepared, now); err != nil {
 			return err
 		}
 		if _, _, err := w.ReserveCommand(ctx, conversationstore.Command{OrganizationID: f.project.OrganizationID, ConversationID: record.ID, Key: key, Kind: commandKind, RequestHash: "hash-" + key, Receipt: conversation.Receipt{Key: key, Kind: commandKind, Status: conversation.DeliverySaved, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -268,7 +268,7 @@ func (f *conversationWorkerFixture) queue(t *testing.T, kind conversation.Messag
 		}
 		return coordinator.saveConversation(ctx, w, &record, now)
 	})
-	f.chat.committed(record)
+	f.chat.Committed(record)
 	return message
 }
 
@@ -285,7 +285,7 @@ func (f *conversationWorkerFixture) load(t *testing.T) conversationRecord {
 
 func (f *conversationWorkerFixture) messages(t *testing.T) map[string]conversationMessageRecord {
 	t.Helper()
-	list, err := f.chat.coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: f.record.ID, Limit: 200})
+	list, err := f.chat.Coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: f.record.ID, Limit: 200})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,8 +502,8 @@ func TestConversationWorkerBind(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				reconciler := &conversationService{server: &Service{config: f.service.config}}
-				changed, err := reconciler.reconcileExecutionPG(t.Context(), f.project.OrganizationID, conversationRecordToStore(before))
+				reconciler := &conversationService{Server: (&Service{config: f.service.config}).conversationServer()}
+				changed, err := reconciler.ReconcileExecutionPG(t.Context(), f.project.OrganizationID, conversationRecordToStore(before))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -559,7 +559,7 @@ func TestConversationWorkerBind(t *testing.T) {
 		body["fencing_token"] = f.lease.FencingToken + 1
 		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
-		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+		if err := f.chat.ReconcileExecutions(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		if record := f.load(t); record.Execution.Status != conversation.ExecutionStarting {
@@ -960,7 +960,7 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 		ticker := time.NewTicker(time.Millisecond)
 		defer ticker.Stop()
 		for {
-			waiting := f.chat.broker.Subscribers(f.record.ID) > 0
+			waiting := f.chat.Broker.Subscribers(f.record.ID) > 0
 			if waiting {
 				break
 			}
@@ -1061,7 +1061,7 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		if response.Code != http.StatusAccepted {
 			t.Fatalf("turn response=%d logs=%s", response.Code, logs.String())
 		}
-		messages, err := f.chat.coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: f.record.ID, Limit: 200})
+		messages, err := f.chat.Coordinator.(*conversationTurnCoordinator).coordinatorMessages(t.Context(), conversationstore.MessageFilter{ConversationID: f.record.ID, Limit: 200})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1184,7 +1184,7 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		}
 
 		output := httptest.NewRecorder()
-		stream := &conversationStream{response: echo.NewResponse(output, echo.New())}
+		stream := &conversationStream{Response: echo.NewResponse(output, echo.New())}
 		head := f.load(t).EventSeq
 		cursor, err := f.service.replayPGConversationEvents(t.Context(), nativeAttemptListingScope(t, f.nativeFixture), stream, f.record.ID, 0, head)
 		if err != nil || cursor != head || !strings.Contains(output.Body.String(), toolText) || !strings.Contains(output.Body.String(), second) {
@@ -1286,7 +1286,7 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		}
 		publishCapacity(t, f.nativeFixture, r, capacityReport(f.now))
 		before := f.load(t)
-		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+		if err := f.chat.ReconcileExecutions(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		if after := f.load(t); after.Execution != before.Execution || after.EventSeq != before.EventSeq {
@@ -1307,7 +1307,7 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusUnauthorized)
 		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-registered", "text": " revoked"}), http.StatusUnauthorized)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 90}), http.StatusUnauthorized)
-		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+		if err := f.chat.ReconcileExecutions(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		if execution := f.load(t).Execution; execution.Status != conversation.ExecutionInterrupted || execution.Owner != owner {
@@ -1634,7 +1634,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 					t.Fatalf("refused requests changed the execution: %+v", after.Execution)
 				}
 			}
-			if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+			if err := f.chat.ReconcileExecutions(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			after := f.load(t)
@@ -1659,7 +1659,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		before := f.load(t)
 		observation, cancel := context.WithCancel(t.Context())
 		cancel()
-		if err := f.chat.reconcileExecutions(observation); !errors.Is(err, context.Canceled) {
+		if err := f.chat.ReconcileExecutions(observation); !errors.Is(err, context.Canceled) {
 			t.Fatalf("canceled observation = %v", err)
 		}
 		if after := f.load(t); after.Execution != before.Execution || after.EventSeq != before.EventSeq {
@@ -1671,7 +1671,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		if !f.now.After(oldExpiry) {
 			t.Fatal("fixture did not cross the original lease expiry")
 		}
-		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+		if err := f.chat.ReconcileExecutions(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		if after := f.load(t); after.Execution != before.Execution || after.EventSeq != before.EventSeq {
@@ -1736,7 +1736,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		f.advance(11 * time.Minute)
 		requireConversationErrorCode(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-1", "text": "late"}), http.StatusConflict, "stale_execution")
 		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
-		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+		if err := f.chat.ReconcileExecutions(t.Context()); err != nil {
 			t.Fatalf("reconcileExecutions() error = %v", err)
 		}
 		record := f.load(t)
@@ -1755,7 +1755,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		if question := f.questions(t)[0]; question.Status != conversation.QuestionExpired {
 			t.Fatalf("question = %#v", question)
 		}
-		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+		if err := f.chat.ReconcileExecutions(t.Context()); err != nil {
 			t.Fatalf("second reconcileExecutions() error = %v", err)
 		}
 	})
@@ -1785,7 +1785,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		f.claim(t)
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-3"}), http.StatusAccepted)
-		if err := f.chat.start(t.Context()); err != nil {
+		if err := f.chat.Start(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		if record := f.load(t); record.Execution.Status != conversation.ExecutionRunning {
@@ -1804,9 +1804,9 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 func TestConversationControlRouterWakeAndStop(t *testing.T) {
 	t.Parallel()
 	f := newConversationWorkerFixture(t)
-	subscription, cancel := f.chat.broker.subscribe(f.record.ID)
+	subscription, cancel := conversationSubscribe(f.chat.Broker, f.record.ID)
 	defer cancel()
-	f.chat.controls.Wake(f.record.ID)
+	f.chat.Controls.Wake(f.record.ID)
 	select {
 	case <-subscription.wake:
 	case <-testenv.WaitContext(t, t.Context()).Done():
@@ -1816,7 +1816,7 @@ func TestConversationControlRouterWakeAndStop(t *testing.T) {
 	done := make(chan int, 1)
 	go func() { done <- f.controls(t, 0, 10).Code }()
 	f.awaitControlSubscribers(t, 2)
-	f.chat.controls.Stop()
+	f.chat.Controls.Stop()
 	select {
 	case code := <-done:
 		if code != http.StatusOK {
@@ -2215,7 +2215,7 @@ func TestConversationReconcileSettlesTerminalTurnAfterLeaseLoss(t *testing.T) {
 		t.Fatalf("execution before reconciliation = %#v", record.Execution)
 	}
 
-	if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+	if err := f.chat.ReconcileExecutions(t.Context()); err != nil {
 		t.Fatalf("reconcileExecutions() error = %v", err)
 	}
 	record := f.load(t)
@@ -2226,7 +2226,7 @@ func TestConversationReconcileSettlesTerminalTurnAfterLeaseLoss(t *testing.T) {
 		t.Fatalf("handed control = %s, want unknown", delivery)
 	}
 	seq := record.EventSeq
-	if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+	if err := f.chat.ReconcileExecutions(t.Context()); err != nil {
 		t.Fatalf("second reconcileExecutions() error = %v", err)
 	}
 	if again := f.load(t); again.EventSeq != seq {

@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"database/sql"
@@ -12,13 +12,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestConversationReferenceReadsUseTenantState(t *testing.T) {
-	repository := projectRecordPostgres(t)
+	repository := hubtest.Repository(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	ids := map[tracker.OrganizationID][]string{}
 	for _, org := range []tracker.OrganizationID{"org_reference_first", "org_reference_second"} {
@@ -30,13 +31,13 @@ func TestConversationReferenceReadsUseTenantState(t *testing.T) {
 			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "owner", Name: "Example", Hash: "hash_" + string(org), Fingerprint: "fingerprint_" + string(org), Scope: "operator", Kind: "personal", ProjectAccess: "all", CreatedAt: now, UpdatedAt: now}); err != nil {
 				return err
 			}
-			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: "Example", Slug: "example", Profile: "native", CreatedAt: now}, Settings: projectstore.Settings{OrganizationID: org, ProjectID: project}, States: nativeFixtureStates()}); err != nil {
+			if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: project, Name: "Example", Slug: "example", Profile: "native", CreatedAt: now}, Settings: projectstore.Settings{OrganizationID: org, ProjectID: project}, States: hubtest.States()}); err != nil {
 				return err
 			}
 			for i := 0; i < 2; i++ {
 				id := conversation.NewConversationID()
 				ids[org] = append(ids[org], id)
-				if _, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: org, ProjectID: project, ID: id, OwnerPrincipalID: "owner", Origin: conversationOriginUser, Title: "Example", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
+				if _, err := w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: org, ProjectID: project, ID: id, OwnerPrincipalID: "owner", Origin: ConversationOriginUser, Title: "Example", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
 					return err
 				}
 				if _, err := w.RecordConversationUsage(t.Context(), billingstore.ConversationUsage{OrganizationID: org, ProjectID: project, ConversationID: id, TurnID: "turn_" + id, Provider: "example", Model: "example", OccurredAt: now, Input: 1, Output: 1, Outcome: "completed"}); err != nil {

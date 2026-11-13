@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"fmt"
@@ -11,7 +11,7 @@ import (
 
 // firstDispatchableState reports the project's first non-terminal
 // dispatchable workflow state, the lane a handoff issue starts in.
-func firstDispatchableState(project tracker.NativeProject) (string, bool) {
+func FirstDispatchableState(project tracker.NativeProject) (string, bool) {
 	for _, state := range project.States {
 		if !state.Terminal && state.Dispatchable && !state.OperatorOnly {
 			return state.Name, true
@@ -22,19 +22,19 @@ func firstDispatchableState(project tracker.NativeProject) (string, bool) {
 
 // conversationTranscriptRunes bounds each transcript line handed to a runner
 // that cannot resume the provider thread.
-const conversationTranscriptRunes = 2000
+const ConversationTranscriptRunes = 2000
 
 // conversationTranscriptMessages is how much history that runner receives.
-const conversationTranscriptMessages = 20
+const ConversationTranscriptMessages = 20
 
-func boundRunes(value string, limit int) string {
+func BoundRunes(value string, limit int) string {
 	return hubapi.BoundRunes(value, limit)
 }
 
 // conversationResumeDecision is the bind's answer to "does this attempt
 // continue the recorded provider thread?", separated from the transcript read
 // so the rule is testable on its own.
-type conversationResumeDecision struct {
+type ConversationResumeDecision struct {
 	// RunnerThreadID is the thread the binding runner named on this bind,
 	// empty when it named none.
 	RunnerThreadID string
@@ -65,7 +65,7 @@ type conversationResumeDecision struct {
 // recorded origin does not apply to it. Otherwise the recorded runner must be
 // this runner, and both identifiers must be present so that a credential with
 // no runner identity never inherits another runner's thread.
-func (d conversationResumeDecision) resumeThread() bool {
+func (d ConversationResumeDecision) ResumeThread() bool {
 	if strings.TrimSpace(d.RunnerThreadID) != "" {
 		return true
 	}
@@ -77,7 +77,7 @@ func (d conversationResumeDecision) resumeThread() bool {
 
 // conversationResumeKind reports what the bind handed the runner, for the
 // execution resource's resume field.
-func conversationResumeKind(resume conversationResumeResource) string {
+func ConversationResumeKind(resume ConversationResumeResource) string {
 	switch {
 	case resume.ThreadID != "":
 		return conversation.ResumeThread
@@ -90,6 +90,6 @@ func conversationResumeKind(resume conversationResumeResource) string {
 
 // conversationTranscriptNotice is the exact copy the history records when a
 // runner continues from a transcript instead of a resumable provider thread.
-func conversationTranscriptNotice(messages int) string {
+func ConversationTranscriptNotice(messages int) string {
 	return fmt.Sprintf("Provider history was not available on this runner; continuing from a transcript of the last %d messages", messages)
 }

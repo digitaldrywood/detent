@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -18,40 +18,40 @@ import (
 // conversationStore is the durable storage for the hosted conversation
 // product. Transactional operations take the caller's *sql.Tx so that state
 // and the events describing it commit together.
-type conversationStore struct {
-	contents attachment.ArchiveContentStore
-	database *database
+type ConversationStore struct {
+	Contents         attachment.ArchiveContentStore
+	ResolveWorkItems func(context.Context, Queryer, []*ConversationRecord) error
 }
 
-func newConversationStore(_ *sql.DB) *conversationStore {
-	return &conversationStore{}
+func NewConversationStore(_ *sql.DB) *ConversationStore {
+	return &ConversationStore{}
 }
 
 // errConversationRevision reports a compare-and-set failure on a conversation.
-type errConversationRevision struct {
+type ErrConversationRevision struct {
 	ConversationID string
 	Current        int64
 }
 
-func (e *errConversationRevision) Error() string {
+func (e *ErrConversationRevision) Error() string {
 	return fmt.Sprintf("conversation %s revision conflict: current %d", e.ConversationID, e.Current)
 }
 
 // errConversationLinked reports a violated one-issue-one-conversation constraint.
-type errConversationLinked struct {
+type ErrConversationLinked struct {
 	ExistingConversationID string
 }
 
-func (e *errConversationLinked) Error() string {
+func (e *ErrConversationLinked) Error() string {
 	return "conversation_already_linked: " + e.ExistingConversationID
 }
 
 const (
-	conversationOriginUser   = "user"
-	conversationOriginWorker = "worker"
+	ConversationOriginUser   = "user"
+	ConversationOriginWorker = "worker"
 )
 
-type conversationRecord struct {
+type ConversationRecord struct {
 	ContentID         string
 	ID                string
 	CreationKey       string
@@ -71,7 +71,7 @@ type conversationRecord struct {
 	LinkedAt          *time.Time
 	// WorkItem caches the linked issue summary the projections report. It
 	// is filled by resolveConversationWorkItems on every read.
-	WorkItem         *conversationWorkItem
+	WorkItem         *ConversationWorkItem
 	Revision         int64
 	ProviderThreadID string
 	// ProviderThreadRunnerID names the runner whose provider login produced
@@ -102,7 +102,7 @@ type conversationRecord struct {
 	MessageCount int64
 }
 
-type conversationMessageRecord struct {
+type ConversationMessageRecord struct {
 	Revision        int64
 	ID              string
 	ContentID       string
@@ -124,10 +124,10 @@ type conversationMessageRecord struct {
 	CommandKey      string
 	// References are the issues and conversations the message names, filled
 	// by every read that projects the message.
-	References []conversationMessageReference
+	References []ConversationMessageReference
 	// Attachments are the uploads bound to the message, filled by the same
 	// reads as References.
-	Attachments []conversationAttachmentRecord
+	Attachments []ConversationAttachmentRecord
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
@@ -135,14 +135,14 @@ type conversationMessageRecord struct {
 // conversationMessageReference is one stored, resolved reference: the hub
 // only records targets it could resolve, so a row always names something
 // that exists.
-type conversationMessageReference struct {
+type ConversationMessageReference struct {
 	URL   string
 	Kind  conversation.ReferenceKind
 	ID    string
 	Label string
 }
 
-type conversationQuestionRecord struct {
+type ConversationQuestionRecord struct {
 	ContentID string
 	conversation.Question
 	RequestID string
@@ -153,7 +153,11 @@ func conversationParseNullTime(value sql.NullString) (*time.Time, error) {
 		var none *time.Time
 		return none, nil
 	}
-	return parsedTime(value.String)
+	parsed, err := hubapi.ParseTime(value.String)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
 }
 
 const conversationColumns = `id, organization_id, project_id, owner_principal_id, owner_subject, origin, title, visibility, status,
@@ -175,8 +179,8 @@ type conversationScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanConversation(row conversationScanner) (conversationRecord, error) {
-	var record conversationRecord
+func scanConversation(row conversationScanner) (ConversationRecord, error) {
+	var record ConversationRecord
 	var subject, workItem, linkedAt, lastMessageAt, settledAt sql.NullString
 	var execution, preferences, created, updated string
 	if err := row.Scan(
@@ -196,10 +200,10 @@ func scanConversation(row conversationScanner) (conversationRecord, error) {
 	}
 	record.Preferences = record.Preferences.Normalized()
 	var err error
-	if record.CreatedAt, err = parseTimeValue(created); err != nil {
+	if record.CreatedAt, err = hubapi.ParseTime(created); err != nil {
 		return record, fmt.Errorf("decode conversation %s created_at: %w", record.ID, err)
 	}
-	if record.UpdatedAt, err = parseTimeValue(updated); err != nil {
+	if record.UpdatedAt, err = hubapi.ParseTime(updated); err != nil {
 		return record, fmt.Errorf("decode conversation %s updated_at: %w", record.ID, err)
 	}
 	if record.LinkedAt, err = conversationParseNullTime(linkedAt); err != nil {
@@ -214,15 +218,15 @@ func scanConversation(row conversationScanner) (conversationRecord, error) {
 	return record, nil
 }
 
-func (s *conversationStore) readConversationRow(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, project tracker.ProjectID, id string) (conversationRecord, error) {
+func (s *ConversationStore) readConversationRow(ctx context.Context, query Queryer, organization tracker.OrganizationID, project tracker.ProjectID, id string) (ConversationRecord, error) {
 	record, err := scanConversation(query.QueryRowContext(ctx, "SELECT "+conversationReadProjection(ctx, query, id)+" FROM conversations WHERE organization_id = ? AND project_id = ? AND id = ?", organization, project, id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return record, nativeNotFound()
+		return record, hubapi.NotFound()
 	}
 	if err != nil {
 		return record, fmt.Errorf("read conversation: %w", err)
 	}
-	if err := resolveConversationWorkItems(ctx, query, []*conversationRecord{&record}); err != nil {
+	if err := s.ResolveWorkItems(ctx, query, []*ConversationRecord{&record}); err != nil {
 		return record, err
 	}
 	return record, nil
@@ -231,7 +235,7 @@ func (s *conversationStore) readConversationRow(ctx context.Context, query nativ
 // conversationListQuery is the filter a listing applies. Everything is
 // pushed into SQL: the hub pool holds a single connection, so a page must
 // not be filtered in Go and then re-fetched.
-type conversationListQuery struct {
+type ConversationListQuery struct {
 	Organization tracker.OrganizationID
 	// Project restricts to one project. Empty lists across the
 	// organization, subject to Projects.
@@ -263,24 +267,24 @@ type conversationNormalizeSummary struct {
 
 // Message references.
 
-func conversationTime(value time.Time) string {
+func ConversationTime(value time.Time) string {
 	return hubapi.ConversationTime(value)
 }
 
 // replaceMessageReferences rewrites the stored references of one message.
 // Re-extraction is idempotent: an assistant message that completes after its
 // text streamed in replaces the rows its earlier text produced.
-func (s *conversationStore) replaceMessageReferences(ctx context.Context, tx *sql.Tx, message conversationMessageRecord, now time.Time) error {
+func (s *ConversationStore) replaceMessageReferences(ctx context.Context, tx *sql.Tx, message ConversationMessageRecord, now time.Time) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM message_references WHERE message_id = ?", message.ID); err != nil {
 		return fmt.Errorf("clear message references: %w", err)
 	}
 	for _, reference := range message.References {
 		if !reference.Kind.Valid() || strings.TrimSpace(reference.ID) == "" {
-			return nativePublicInvalid("A message reference requires a known kind and a target")
+			return hubapi.PublicInvalid("A message reference requires a known kind and a target")
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO message_references (message_id, conversation_id, target_kind, target_id, label, created_at)
 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (message_id, target_kind, target_id) DO NOTHING`,
-			message.ID, message.ConversationID, reference.Kind, reference.ID, reference.Label, conversationTime(now)); err != nil {
+			message.ID, message.ConversationID, reference.Kind, reference.ID, reference.Label, ConversationTime(now)); err != nil {
 			return fmt.Errorf("insert message reference: %w", err)
 		}
 	}

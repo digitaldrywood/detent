@@ -144,7 +144,7 @@ func coordinatorBudgetTools(t *testing.T, f hostedSecurityFixture, user hostedSe
 	if actorCtx == nil {
 		t.Fatal("budget coordinator context is missing")
 	}
-	coordinator := f.service.conversations.coordinator.(*conversationTurnCoordinator)
+	coordinator := f.service.conversations.Coordinator.(*conversationTurnCoordinator)
 	state := &coordinatorTurnState{coordinator: coordinator, conversationID: record.ID, users: []conversationMessageRecord{{Role: conversation.RoleUser, CreatedAt: now, Data: coordinatorConnectionData(actorCtx)}}}
 	return newCoordinatorToolset(coordinator, state), actorCtx, record
 }

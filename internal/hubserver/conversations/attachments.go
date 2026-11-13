@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -20,16 +21,16 @@ import (
 const (
 	// conversationAttachmentRequestBytes bounds the whole multipart body: the
 	// file limit plus room for the framing and the idempotency key.
-	conversationAttachmentRequestBytes = conversation.MaxAttachmentBytes + (1 << 20)
+	ConversationAttachmentRequestBytes = conversation.MaxAttachmentBytes + (1 << 20)
 	// conversationAttachmentFieldBytes bounds a non-file form field.
-	conversationAttachmentFieldBytes = 4096
+	ConversationAttachmentFieldBytes = 4096
 	// conversationAttachmentSweepBatch bounds one abandoned-upload sweep.
 	conversationAttachmentSweepBatch = 200
 )
 
 // conversationAttachmentRecord is one stored attachment. MessageID is empty
 // while the upload is unsent; ExpiresAt is set only then.
-type conversationAttachmentRecord struct {
+type ConversationAttachmentRecord struct {
 	ID             string
 	ContentID      string
 	ConversationID string
@@ -49,15 +50,15 @@ type conversationAttachmentRecord struct {
 // conversationAttachmentURL is the hub path that streams an attachment. It is
 // the `url` every attachment resource carries, so the client and the runner
 // both read the blob through the conversation's audience.
-func conversationAttachmentURL(organization tracker.OrganizationID, project tracker.ProjectID, conversationID, attachmentID string) string {
+func ConversationAttachmentURL(organization tracker.OrganizationID, project tracker.ProjectID, conversationID, attachmentID string) string {
 	return "/api/v2/organizations/" + string(organization) + "/projects/" + string(project) +
 		"/conversations/" + conversationID + "/attachments/" + attachmentID
 }
 
-func (r conversationAttachmentRecord) resource() conversation.Attachment {
+func (r ConversationAttachmentRecord) resource() conversation.Attachment {
 	return conversation.Attachment{
 		ID: r.ID, Name: r.Name, MIME: r.MIME, Size: r.Size,
-		URL: conversationAttachmentURL(r.OrganizationID, r.ProjectID, r.ConversationID, r.ID),
+		URL: ConversationAttachmentURL(r.OrganizationID, r.ProjectID, r.ConversationID, r.ID),
 	}
 }
 
@@ -70,7 +71,7 @@ func conversationAttachmentRef(conversationID, principalID, key string) string {
 	return "conv:" + conversationID + ":" + hex.EncodeToString(sum[:])
 }
 
-func projectAttachments(records []conversationAttachmentRecord) []conversation.Attachment {
+func ProjectAttachments(records []ConversationAttachmentRecord) []conversation.Attachment {
 	projected := make([]conversation.Attachment, 0, len(records))
 	for _, record := range records {
 		projected = append(projected, record.resource())
@@ -84,23 +85,23 @@ func projectAttachments(records []conversationAttachmentRecord) []conversation.A
 
 // sweepAttachments deletes abandoned uploads and their bytes, and reports how
 // many it removed.
-func (c *conversationService) sweepAttachments(ctx context.Context) (int, error) {
+func (c *ConversationService) SweepAttachments(ctx context.Context) (int, error) {
 	return c.sweepAttachmentsPG(ctx)
 }
 
 // HTTP.
 
-type conversationAttachmentUpload struct {
-	name    string
-	media   string
-	key     string
-	content []byte
+type ConversationAttachmentUpload struct {
+	Name    string
+	Media   string
+	Key     string
+	Content []byte
 }
 
-func (s *Service) commandDeleteAttachment(ctx context.Context, scope nativeScope, conversationID, id string) (json.RawMessage, error) {
+func (s *Server) CommandDeleteAttachment(ctx context.Context, scope hubauth.Input, conversationID, id string) (json.RawMessage, error) {
 	return s.commandDeleteAttachmentPG(ctx, scope, conversationID, id)
 }
 
-func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope, id string, upload conversationAttachmentUpload) (json.RawMessage, error) {
+func (s *Server) CommandUploadAttachment(ctx context.Context, scope hubauth.Input, id string, upload ConversationAttachmentUpload) (json.RawMessage, error) {
 	return s.commandUploadAttachmentPG(ctx, scope, id, upload)
 }

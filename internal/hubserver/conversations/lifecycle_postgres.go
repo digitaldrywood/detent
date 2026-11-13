@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -13,21 +13,22 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const conversationLifecycleBatchSize = 200
+const ConversationLifecycleBatchSize = 200
 
-func (c *conversationService) lifecycleCursor(kind string) string {
+func (c *ConversationService) LifecycleCursor(kind string) string {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
 	return c.lifecycleCursors[kind]
 }
 
-func (c *conversationService) advanceLifecycleCursor(kind, next string) {
+func (c *ConversationService) advanceLifecycleCursor(kind, next string) {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
 	if c.lifecycleCursors == nil {
@@ -36,25 +37,25 @@ func (c *conversationService) advanceLifecycleCursor(kind, next string) {
 	c.lifecycleCursors[kind] = next
 }
 
-func (c *conversationService) lifecycleOrganization() (tracker.OrganizationID, error) {
-	if !c.server.conversationRecordsSelected() {
+func (c *ConversationService) LifecycleOrganization() (tracker.OrganizationID, error) {
+	if !c.Server.conversationRecordsSelected() {
 		return "", errors.New("conversation tenant repository is required for PostgreSQL lifecycle work")
 	}
-	organization := strings.TrimSpace(c.server.appOrganizationID())
+	organization := strings.TrimSpace(c.Server.appOrganizationID())
 	if organization == "" {
 		return "", errors.New("conversation service organization is required for PostgreSQL lifecycle work")
 	}
 	return tracker.OrganizationID(organization), nil
 }
 
-func (c *conversationService) normalizeAfterRestartPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (conversationNormalizeSummary, error) {
+func (c *ConversationService) normalizeAfterRestartPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (conversationNormalizeSummary, error) {
 	var summary conversationNormalizeSummary
 	after := ""
 	for {
 		var page conversationstore.ConversationPage
-		if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+		if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 			var err error
-			page, err = reader.LifecycleConversations(ctx, conversationstore.LifecycleQuery{Kind: conversationstore.LifecycleRestart, AfterID: after, Limit: conversationLifecycleBatchSize})
+			page, err = reader.LifecycleConversations(ctx, conversationstore.LifecycleQuery{Kind: conversationstore.LifecycleRestart, AfterID: after, Limit: ConversationLifecycleBatchSize})
 			return err
 		}); err != nil {
 			return summary, fmt.Errorf("list conversations for PostgreSQL restart normalization: %w", err)
@@ -81,10 +82,10 @@ func (c *conversationService) normalizeAfterRestartPG(ctx context.Context, organ
 	}
 }
 
-func (c *conversationService) normalizeRestartConversationBatchPG(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation, now time.Time) (conversationNormalizeSummary, bool, error) {
+func (c *ConversationService) normalizeRestartConversationBatchPG(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation, now time.Time) (conversationNormalizeSummary, bool, error) {
 	var summary conversationNormalizeSummary
 	more := false
-	err := c.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
+	err := c.Server.config().TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
 		stored, err := writer.LockConversation(ctx, candidate.ProjectID, candidate.ID)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
@@ -98,7 +99,7 @@ func (c *conversationService) normalizeRestartConversationBatchPG(ctx context.Co
 		messages, err := writer.FilteredMessages(ctx, conversationstore.MessageFilter{
 			ConversationID: stored.ID,
 			Deliveries:     []conversation.Delivery{conversation.DeliverySending, conversation.DeliverySent, conversation.DeliveryResponding},
-			Limit:          conversationLifecycleBatchSize,
+			Limit:          ConversationLifecycleBatchSize,
 		})
 		if err != nil {
 			return err
@@ -113,7 +114,7 @@ func (c *conversationService) normalizeRestartConversationBatchPG(ctx context.Co
 		more = more || messages.Next != 0
 
 		afterQuestion := ""
-		questions, err := writer.RestartQuestions(ctx, stored.ID, afterQuestion, conversationLifecycleBatchSize)
+		questions, err := writer.RestartQuestions(ctx, stored.ID, afterQuestion, ConversationLifecycleBatchSize)
 		if err != nil {
 			return err
 		}
@@ -126,7 +127,7 @@ func (c *conversationService) normalizeRestartConversationBatchPG(ctx context.Co
 		}
 		more = more || questions.Next != ""
 
-		commands, err := writer.PendingCommands(ctx, stored.ID, "", conversationLifecycleBatchSize)
+		commands, err := writer.PendingCommands(ctx, stored.ID, "", ConversationLifecycleBatchSize)
 		if err != nil {
 			return err
 		}
@@ -154,17 +155,17 @@ func (c *conversationService) normalizeRestartConversationBatchPG(ctx context.Co
 	return summary, more, err
 }
 
-func (c *conversationService) wakePendingPG(ctx context.Context, organization tracker.OrganizationID) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (c *ConversationService) WakePendingPG(ctx context.Context, organization tracker.OrganizationID) error {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	const cursor = "pending"
-	after := c.lifecycleCursor(cursor)
+	after := c.LifecycleCursor(cursor)
 	coordinator, controls := 0, 0
 	var page conversationstore.PendingConversationPage
 	var errs []error
-	if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+	if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		var err error
-		page, err = reader.PendingConversations(ctx, after, conversationLifecycleBatchSize)
+		page, err = reader.PendingConversations(ctx, after, ConversationLifecycleBatchSize)
 		return err
 	}); err != nil {
 		return fmt.Errorf("list PostgreSQL conversations with pending messages: %w", err)
@@ -175,11 +176,11 @@ func (c *conversationService) wakePendingPG(ctx context.Context, organization tr
 			return errors.Join(append(errs, err)...)
 		}
 		if pending.Linked {
-			c.controls.Wake(pending.ID)
+			c.Controls.Wake(pending.ID)
 			controls++
 			continue
 		}
-		if c.coordinator.Available() {
+		if c.Coordinator.Available() {
 			if err := c.wakeCoordinator(ctx, pending.ID); err != nil {
 				if ctx.Err() != nil {
 					return errors.Join(append(errs, ctx.Err())...)
@@ -193,56 +194,56 @@ func (c *conversationService) wakePendingPG(ctx context.Context, organization tr
 	if err := ctx.Err(); err != nil {
 		return errors.Join(append(errs, err)...)
 	}
-	c.logger.Info("conversation.wake_pending", "coordinator", coordinator, "controls", controls)
+	c.Logger.Info("conversation.wake_pending", "coordinator", coordinator, "controls", controls)
 	return errors.Join(errs...)
 }
 
-func (c *conversationService) reconcileExecutionsPG(ctx context.Context, organization tracker.OrganizationID) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (c *ConversationService) ReconcileExecutionsPG(ctx context.Context, organization tracker.OrganizationID) error {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	const cursor = "execution"
-	after := c.lifecycleCursor(cursor)
+	after := c.LifecycleCursor(cursor)
 	var errs []error
 	var page conversationstore.ConversationPage
-	if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+	if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		var err error
-		page, err = reader.LifecycleConversations(ctx, conversationstore.LifecycleQuery{Kind: conversationstore.LifecycleExecution, AfterID: after, Limit: conversationLifecycleBatchSize})
+		page, err = reader.LifecycleConversations(ctx, conversationstore.LifecycleQuery{Kind: conversationstore.LifecycleExecution, AfterID: after, Limit: ConversationLifecycleBatchSize})
 		return err
 	}); err != nil {
 		return fmt.Errorf("list PostgreSQL conversation executions: %w", err)
 	}
 	c.advanceLifecycleCursor(cursor, page.Next)
 	for _, candidate := range page.Items {
-		changed, err := c.reconcileExecutionPG(ctx, organization, candidate)
+		changed, err := c.ReconcileExecutionPG(ctx, organization, candidate)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("conversation %s: %w", candidate.ID, err))
 			continue
 		}
 		if changed {
-			var record conversationRecord
-			if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+			var record ConversationRecord
+			if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 				var err error
-				record, err = readConversationRecordFromTenant(ctx, reader, candidate.ProjectID, candidate.ID)
+				record, err = ReadConversationRecordFromTenant(ctx, reader, candidate.ProjectID, candidate.ID)
 				return err
 			}); err != nil {
 				errs = append(errs, fmt.Errorf("read reconciled PostgreSQL conversation %s: %w", candidate.ID, err))
 				continue
 			}
-			c.committed(record)
+			c.Committed(record)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (c *conversationService) reconcileExecutionPG(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation) (bool, error) {
+func (c *ConversationService) ReconcileExecutionPG(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation) (bool, error) {
 	if candidate.WorkItemID == "" || candidate.Execution.Owner.LeaseID == "" || candidate.Execution.Owner.AttemptID == "" {
 		return false, nil
 	}
 	changed := false
-	err := c.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
+	err := c.Server.config().TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
 		locker, ok := writer.(leasestore.FencedLeaseLocker)
 		if !ok {
-			return nativeRunEventStorageUnavailable()
+			return hubapi.RunEventStorageUnavailable()
 		}
 		runner, runnerErr := writer.RunnerForLease(ctx, candidate.Execution.Owner.LeaseID)
 		if runnerErr != nil && !errors.Is(runnerErr, corestore.ErrNotFound) {
@@ -269,12 +270,12 @@ func (c *conversationService) reconcileExecutionPG(ctx context.Context, organiza
 		if stored.WorkItemID != candidate.WorkItemID || stored.Execution.Owner != candidate.Execution.Owner {
 			return nil
 		}
-		record := conversationRecordFromStore(stored)
+		record := ConversationRecordFromStore(stored)
 		if stored.WorkItemID == "" || record.Execution.Owner.LeaseID == "" || record.Execution.Owner.AttemptID == "" || (record.Execution.Status.Terminal() && record.Execution.Settled) {
 			return nil
 		}
-		now := c.server.config.now()
-		current, err := conversationLeaseCurrentPG(ctx, writer, record, now)
+		now := c.Server.config().Now()
+		current, err := c.Server.ConversationLeaseCurrentPG(ctx, writer, record, now)
 		if err != nil {
 			return err
 		}
@@ -284,14 +285,14 @@ func (c *conversationService) reconcileExecutionPG(ctx context.Context, organiza
 		status := record.Execution.Status
 		if !status.Terminal() {
 			status = conversation.ExecutionInterrupted
-			record.Execution.Error = conversationLeaseLostError
+			record.Execution.Error = ConversationLeaseLostError
 		}
-		processed, moreMessages, err := settlePGWorkerMessagesBatch(ctx, writer, &record, status, now, conversationLifecycleBatchSize)
+		processed, moreMessages, err := settlePGWorkerMessagesBatch(ctx, writer, &record, status, now, ConversationLifecycleBatchSize)
 		if err != nil {
 			return err
 		}
 		moreQuestions := false
-		remaining := conversationLifecycleBatchSize - processed
+		remaining := ConversationLifecycleBatchSize - processed
 		if remaining > 0 {
 			questions, err := writer.OutstandingQuestions(ctx, record.ID, record.Execution.Owner.AttemptID, "", "", remaining)
 			if err != nil {
@@ -302,7 +303,7 @@ func (c *conversationService) reconcileExecutionPG(ctx context.Context, organiza
 				if err := writer.UpsertQuestion(ctx, question); err != nil {
 					return err
 				}
-				if err := appendPGConversationEvent(ctx, writer, organization, record.ID, conversation.EventQuestionUpdated, question.Question, now); err != nil {
+				if err := AppendPGConversationEvent(ctx, writer, organization, record.ID, conversation.EventQuestionUpdated, question.Question, now); err != nil {
 					return err
 				}
 			}
@@ -320,12 +321,12 @@ func (c *conversationService) reconcileExecutionPG(ctx context.Context, organiza
 		if err != nil {
 			return err
 		}
-		updatedRecord := conversationRecordFromStore(updated)
+		updatedRecord := ConversationRecordFromStore(updated)
 		updatedRecord.WorkItem = record.WorkItem
-		if err := appendPGConversationEvent(ctx, writer, organization, record.ID, conversation.EventConversationUpdated, projectConversation(updatedRecord), now); err != nil {
+		if err := AppendPGConversationEvent(ctx, writer, organization, record.ID, conversation.EventConversationUpdated, ProjectConversation(updatedRecord), now); err != nil {
 			return err
 		}
-		if err := appendPGConversationEvent(ctx, writer, organization, record.ID, conversation.EventExecutionUpdated, projectExecution(updated.Execution), now); err != nil {
+		if err := AppendPGConversationEvent(ctx, writer, organization, record.ID, conversation.EventExecutionUpdated, ProjectExecution(updated.Execution), now); err != nil {
 			return err
 		}
 		changed = true
@@ -334,7 +335,7 @@ func (c *conversationService) reconcileExecutionPG(ctx context.Context, organiza
 	return changed, err
 }
 
-func conversationLeaseCurrentPG(ctx context.Context, reader tenantstore.Reader, record conversationRecord, now time.Time) (bool, error) {
+func (s *Server) ConversationLeaseCurrentPG(ctx context.Context, reader tenantstore.Reader, record ConversationRecord, now time.Time) (bool, error) {
 	lease, err := reader.Lease(ctx, record.Execution.Owner.LeaseID)
 	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -371,15 +372,15 @@ func conversationLeaseCurrentPG(ctx context.Context, reader tenantstore.Reader, 
 		return false, err
 	}
 	identity := runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runner.RunnerID, MachineID: runner.MachineID}, OrganizationID: runner.OrganizationID, Scope: runner.Scope, Operations: runner.Operations, ExpiresAt: runner.ExpiresAt}
-	authority := tenantRunnerAuthority{now: func() time.Time { return now }}
+	authority := s.deps.WorkerAuthorityAt(now)
 	if err := authority.VerifyConversationWorker(ctx, reader, ConversationWorkerIdentity{Credential: credential, Runner: identity, Organization: record.OrganizationID, Project: record.ProjectID}); err != nil {
-		var refusal *nativeError
-		if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) || errors.As(err, &refusal) && refusal.status == http.StatusNotFound {
+		var refusal *hubapi.Error
+		if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) || errors.As(err, &refusal) && refusal.Status == http.StatusNotFound {
 			return false, nil
 		}
 		return false, err
 	}
-	if err := checkMonthlyLeasePG(ctx, reader, record.ProjectID, lease.LeaseID, now); err != nil {
+	if err := s.deps.CheckMonthlyLease(ctx, reader, record.ProjectID, lease.LeaseID, now); err != nil {
 		if errors.Is(err, tracker.ErrLeaseConflict) {
 			return false, nil
 		}
@@ -387,7 +388,7 @@ func conversationLeaseCurrentPG(ctx context.Context, reader tenantstore.Reader, 
 	}
 	attempt, err := reader.Attempt(ctx, owner.AttemptID)
 	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-		if record.Execution.Status != conversation.ExecutionStarting || record.Execution.Settled || !validNativeID(owner.AttemptID, "attempt") || !validNativeID(owner.RunID, "run") {
+		if record.Execution.Status != conversation.ExecutionStarting || record.Execution.Settled || !hubapi.ValidID(owner.AttemptID, "attempt") || !hubapi.ValidID(owner.RunID, "run") {
 			return false, nil
 		}
 		latest, latestErr := reader.LatestAttempt(ctx, item.ID)
@@ -408,15 +409,15 @@ func conversationLeaseCurrentPG(ctx context.Context, reader tenantstore.Reader, 
 	return attempt.ID == owner.AttemptID && attempt.OrganizationID == record.OrganizationID && attempt.IssueID == item.ID && attempt.LeaseID == lease.LeaseID && attempt.FencingToken == owner.FencingToken && attempt.RunID == owner.RunID && attempt.Status == "running", nil
 }
 
-func (c *conversationService) settleIdleConversationsPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (c *ConversationService) SettleIdleConversationsPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	before := now.Add(-c.config.SettleWindow)
+	before := now.Add(-c.Config.SettleWindow)
 	const cursor = "settle"
-	after := c.lifecycleCursor(cursor)
+	after := c.LifecycleCursor(cursor)
 	settled := 0
 	var page conversationstore.ConversationPage
-	if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+	if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		var err error
 		page, err = reader.LifecycleConversations(ctx, conversationstore.LifecycleQuery{Kind: conversationstore.LifecycleSettle, AfterID: after, Before: before, Limit: conversationSettleBatch})
 		return err
@@ -426,7 +427,7 @@ func (c *conversationService) settleIdleConversationsPG(ctx context.Context, org
 	c.advanceLifecycleCursor(cursor, page.Next)
 	var errs []error
 	for _, candidate := range page.Items {
-		changed, err := c.settleIdleConversationPG(ctx, organization, candidate, before, now)
+		changed, err := c.SettleIdleConversationPG(ctx, organization, candidate, before, now)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("settle PostgreSQL conversation %s: %w", candidate.ID, err))
 			continue
@@ -438,9 +439,9 @@ func (c *conversationService) settleIdleConversationsPG(ctx context.Context, org
 	return settled, errors.Join(errs...)
 }
 
-func (c *conversationService) settleIdleConversationPG(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation, before, now time.Time) (bool, error) {
+func (c *ConversationService) SettleIdleConversationPG(ctx context.Context, organization tracker.OrganizationID, candidate conversationstore.Conversation, before, now time.Time) (bool, error) {
 	changed := false
-	err := c.server.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
+	err := c.Server.config().TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(writer tenantstore.Writer) error {
 		stored, err := writer.LockConversation(ctx, candidate.ProjectID, candidate.ID)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
@@ -462,8 +463,8 @@ func (c *conversationService) settleIdleConversationPG(ctx context.Context, orga
 		if err != nil {
 			return err
 		}
-		updatedRecord := conversationRecordFromStore(updated)
-		if err := appendPGConversationEvent(ctx, writer, organization, updated.ID, conversation.EventConversationUpdated, projectConversation(updatedRecord), now); err != nil {
+		updatedRecord := ConversationRecordFromStore(updated)
+		if err := AppendPGConversationEvent(ctx, writer, organization, updated.ID, conversation.EventConversationUpdated, ProjectConversation(updatedRecord), now); err != nil {
 			return err
 		}
 		changed = true
@@ -473,15 +474,15 @@ func (c *conversationService) settleIdleConversationPG(ctx context.Context, orga
 		return false, err
 	}
 	if changed {
-		var record conversationRecord
-		if err := c.server.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
+		var record ConversationRecord
+		if err := c.Server.config().TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 			var err error
-			record, err = readConversationRecordFromTenant(ctx, reader, candidate.ProjectID, candidate.ID)
+			record, err = ReadConversationRecordFromTenant(ctx, reader, candidate.ProjectID, candidate.ID)
 			return err
 		}); err != nil {
 			return false, err
 		}
-		c.committed(record)
+		c.Committed(record)
 	}
 	return changed, nil
 }

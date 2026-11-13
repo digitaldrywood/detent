@@ -952,7 +952,7 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 	if err := validateConversationRecord(&worker); err != nil {
 		t.Fatal(err)
 	}
-	ctx := prepareTestConversationRecord(t, f.service.conversations.store, worker)
+	ctx := prepareTestConversationRecord(t, f.service.conversations.Store, worker)
 	prepared, _ := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
 	if len(prepared) != 1 {
 		t.Fatalf("worker conversation content objects=%d, want 1", len(prepared))
@@ -1239,7 +1239,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 				return
 			}
 			if r.URL.Path == "/block" {
-				backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
+				backend := f.service.conversations.Config.Backend.(*fakeCoordinatorBackend)
 				backend.setRun(blockingRun(make(chan struct{}), "Working before restart"))
 				w.WriteHeader(http.StatusNoContent)
 				return

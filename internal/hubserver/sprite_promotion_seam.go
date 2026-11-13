@@ -47,7 +47,7 @@ func (t *coordinatorToolset) promoteSpritesTokenTool(ctx context.Context, record
 	if err != nil {
 		return nil, err
 	}
-	s := t.coordinator.service.server
+	s := t.coordinator.server
 	scope, err := s.coordinatorScope(ctx, "", true)
 	if err != nil {
 		return nil, err

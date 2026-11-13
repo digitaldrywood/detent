@@ -37,7 +37,7 @@ func (s *Service) notifyNativeDispatch(ctx context.Context, scope nativeScope, i
 		s.resumeMonthlyBudgetWork(ctx, scope)
 	case tracker.NativeRunEvent:
 		if s.conversations != nil {
-			if err := s.conversations.wakePending(ctx); err != nil {
+			if err := s.conversations.WakePending(ctx); err != nil {
 				s.config.Logger.Warn("Resume cost-corrected conversations", "error", err)
 			}
 		}

@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"

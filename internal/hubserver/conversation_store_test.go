@@ -36,7 +36,7 @@ func newConversationFixture(t *testing.T) conversationFixture {
 	f.service.registerConversationRoutes(f.service.echo)
 	owner := conversationFixturePrincipal(t, f, "owner")
 	other := conversationFixturePrincipal(t, f, "other")
-	return conversationFixture{nativeFixture: f, store: f.service.conversations.store, organization: f.project.OrganizationID, owner: owner.ID, ownerToken: owner.Token, other: other.ID}
+	return conversationFixture{nativeFixture: f, store: f.service.conversations.Store, organization: f.project.OrganizationID, owner: owner.ID, ownerToken: owner.Token, other: other.ID}
 }
 
 func (f conversationFixture) record(owner, title string, at time.Time) conversationRecord {
@@ -584,7 +584,7 @@ func TestConversationStoreEvents(t *testing.T) {
 	ctx := context.WithValue(t.Context(), pgWorkerPublicationKey{}, plan)
 	rollback := errors.New("deliberate conversation rollback")
 	err = f.writeTenant(ctx, func(w tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, now); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, now); err != nil {
 			return err
 		}
 		for index, body := range bodies {
@@ -602,7 +602,7 @@ func TestConversationStoreEvents(t *testing.T) {
 		}
 		var events []conversation.Event
 		for _, row := range page.Items {
-			content, ok := plan.reads.load(string(f.organization) + "/" + row.ContentReference)
+			content, ok := plan.Reads.Load(string(f.organization) + "/" + row.ContentReference)
 			if !ok {
 				t.Fatal("published uncommitted event content is absent")
 			}
@@ -645,8 +645,7 @@ func TestConversationStoreEvents(t *testing.T) {
 	}
 	t.Run("external content stays isolated across conversations and organizations", func(t *testing.T) {
 		objects := &conversationContentFixture{}
-		f.store.contents = objects
-		f.store.database = f.service.database
+		f.store.Contents = objects
 		response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Second organization"})
 		requireNativeStatus(t, response, http.StatusCreated)
 		var organization nativeOrganization
@@ -721,7 +720,7 @@ func TestConversationStoreEvents(t *testing.T) {
 		if _, err := f.readConversation(t.Context(), f.project.ID, records[2].ID); err == nil {
 			t.Fatal("foreign conversation was readable")
 		}
-		f.store.contents = objects
+		f.store.Contents = objects
 		for index, record := range records {
 			tool := "tool-" + strconv.Itoa(index)
 			data, err := json.Marshal(map[string]string{"tool": tool, "item_id": record.ID, "status": "running"})
@@ -788,7 +787,7 @@ func TestConversationStoreEvents(t *testing.T) {
 				t.Fatalf("noncompact events=%d error=%v", oversized, err)
 			}
 		}
-		f.store.contents = objects
+		f.store.Contents = objects
 		if result, err := nativeAttemptTestDatabase(t, f.nativeFixture).ExecContext(t.Context(), "UPDATE conversation_messages SET content_attachment_id=$1 WHERE organization_id=$2 AND conversation_id=$3", ids[2], f.organization, records[0].ID); err != nil {
 			t.Fatal(err)
 		} else if count, err := result.RowsAffected(); err != nil || count != 2 {
@@ -865,14 +864,14 @@ func (f conversationFixture) publication(ctx context.Context, id string) (*conve
 	if err != nil {
 		return nil, err
 	}
-	return &conversationPublicationPlan{service: f.recordChat(record.OrganizationID), record: record, now: record.UpdatedAt}, nil
+	return &conversationPublicationPlan{Service: f.recordChat(record.OrganizationID), Record: record, Now: record.UpdatedAt}, nil
 }
 
 func (f conversationFixture) createRecord(ctx context.Context, record *conversationRecord) error {
 	if err := validateConversationRecord(record); err != nil {
 		return err
 	}
-	plan := &conversationPublicationPlan{service: f.recordChat(record.OrganizationID), record: *record, now: record.UpdatedAt}
+	plan := &conversationPublicationPlan{Service: f.recordChat(record.OrganizationID), Record: *record, Now: record.UpdatedAt}
 	raw, err := recordPayload(*record)
 	if err != nil {
 		return err
@@ -881,13 +880,13 @@ func (f conversationFixture) createRecord(ctx context.Context, record *conversat
 	if err != nil {
 		return err
 	}
-	ref, err := plan.prepare(ctx, content)
+	ref, err := plan.Prepare(ctx, content)
 	if err != nil {
 		return err
 	}
 	record.ContentID = contentArchiveID(string(record.OrganizationID), ref)
 	return f.service.config.TenantRepository.WriteTenant(ctx, record.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(ctx, w, record.OrganizationID, plan.prepared, record.CreatedAt); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, record.OrganizationID, plan.Prepared, record.CreatedAt); err != nil {
 			return err
 		}
 		row, err := w.CreateConversation(ctx, conversationRecordToStore(*record))
@@ -900,7 +899,7 @@ func (f conversationFixture) createRecord(ctx context.Context, record *conversat
 
 func (f conversationFixture) updateConversation(t *testing.T, ctx context.Context, record *conversationRecord, expected int64) error {
 	t.Helper()
-	plan := &conversationPublicationPlan{service: f.recordChat(record.OrganizationID), record: *record, now: record.UpdatedAt}
+	plan := &conversationPublicationPlan{Service: f.recordChat(record.OrganizationID), Record: *record, Now: record.UpdatedAt}
 	raw, err := recordPayload(*record)
 	if err != nil {
 		return err
@@ -909,13 +908,13 @@ func (f conversationFixture) updateConversation(t *testing.T, ctx context.Contex
 	if err != nil {
 		return err
 	}
-	ref, err := plan.prepare(ctx, content)
+	ref, err := plan.Prepare(ctx, content)
 	if err != nil {
 		return err
 	}
 	record.ContentID = contentArchiveID(string(record.OrganizationID), ref)
 	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, record.UpdatedAt); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, record.UpdatedAt); err != nil {
 			return err
 		}
 		row, err := w.UpdateConversation(ctx, conversationRecordToStore(*record), expected)
@@ -939,7 +938,7 @@ func (f conversationFixture) appendMessage(t *testing.T, ctx context.Context, me
 		return err
 	}
 	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, message.CreatedAt); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, message.CreatedAt); err != nil {
 			return err
 		}
 		row, err := w.CreateMessage(ctx, conversationMessageToStore(f.organization, *message))
@@ -951,7 +950,8 @@ func (f conversationFixture) appendMessage(t *testing.T, ctx context.Context, me
 }
 
 func (f conversationFixture) listMessages(ctx context.Context, id string, before int64, limit int) ([]conversationMessageRecord, error) {
-	return (&conversationTurnCoordinator{service: f.recordChat(f.organization)}).coordinatorMessages(ctx, conversationstore.MessageFilter{ConversationID: id, BeforeSequence: before, Limit: limit})
+	server := f.recordServer(f.organization)
+	return (&conversationTurnCoordinator{server: server, service: server.conversations}).coordinatorMessages(ctx, conversationstore.MessageFilter{ConversationID: id, BeforeSequence: before, Limit: limit})
 }
 
 func (f conversationFixture) updateMessage(t *testing.T, ctx context.Context, message conversationMessageRecord) error {
@@ -960,7 +960,7 @@ func (f conversationFixture) updateMessage(t *testing.T, ctx context.Context, me
 	if err != nil {
 		return err
 	}
-	message, err = plan.message(ctx, message)
+	message, err = plan.Message(ctx, message)
 	if err != nil {
 		return err
 	}
@@ -969,7 +969,7 @@ func (f conversationFixture) updateMessage(t *testing.T, ctx context.Context, me
 		if err != nil {
 			return err
 		}
-		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, message.UpdatedAt); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, message.UpdatedAt); err != nil {
 			return err
 		}
 		_, err = w.UpdateMessage(ctx, conversationMessageToStore(f.organization, message), stored.Revision)
@@ -992,7 +992,7 @@ func (f conversationFixture) updateChatMessage(t *testing.T, ctx context.Context
 		return err
 	}
 	message.Revision, message.UpdatedAt = stored.Revision+1, now
-	message, err = plan.message(ctx, message)
+	message, err = plan.Message(ctx, message)
 	if err != nil {
 		return err
 	}
@@ -1002,7 +1002,7 @@ func (f conversationFixture) updateChatMessage(t *testing.T, ctx context.Context
 	}
 	ctx = context.WithValue(ctx, pgWorkerPublicationKey{}, plan)
 	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, now); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, now); err != nil {
 			return err
 		}
 		if _, err := w.UpdateMessage(ctx, conversationMessageToStore(f.organization, message), stored.Revision); err != nil {
@@ -1026,7 +1026,7 @@ func (f conversationFixture) appendEvent(t *testing.T, ctx context.Context, id s
 	}
 	ctx = context.WithValue(ctx, pgWorkerPublicationKey{}, plan)
 	err = f.writeTenant(ctx, func(w tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, now); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, now); err != nil {
 			return err
 		}
 		if err := appendPGConversationEvent(ctx, w, f.organization, id, kind, body, now); err != nil {
@@ -1057,7 +1057,7 @@ func (f conversationFixture) upsertQuestion(t *testing.T, ctx context.Context, q
 	if err != nil {
 		return err
 	}
-	if err := plan.prepareQuestion(ctx, question); err != nil {
+	if err := plan.PrepareQuestion(ctx, question); err != nil {
 		return err
 	}
 	ctx = context.WithValue(ctx, pgWorkerPublicationKey{}, plan)
@@ -1066,7 +1066,7 @@ func (f conversationFixture) upsertQuestion(t *testing.T, ctx context.Context, q
 		return err
 	}
 	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, question.UpdatedAt); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, question.UpdatedAt); err != nil {
 			return err
 		}
 		return w.UpsertQuestion(ctx, stored)
@@ -1083,7 +1083,7 @@ func (f conversationFixture) readQuestion(ctx context.Context, id, questionID st
 	if err != nil {
 		return question, translateConversationError(err)
 	}
-	row, err = f.recordChat(f.organization).server.hydratePGConversationQuestion(ctx, f.organization, row)
+	row, err = f.recordChat(f.organization).Server.HydratePGConversationQuestion(ctx, f.organization, row)
 	return conversationQuestionRecord{Question: row.Question, RequestID: row.RequestID, ContentID: row.ContentReference}, err
 }
 
@@ -1117,16 +1117,16 @@ func (f conversationFixture) reserveCommand(t *testing.T, ctx context.Context, i
 	if err != nil {
 		return nil, false, err
 	}
-	if err := plan.prepareValue(ctx, raw); err != nil {
+	if err := plan.PrepareValue(ctx, raw); err != nil {
 		return nil, false, err
 	}
 	content, err := messageContent(conversationMessageRecord{Data: raw})
 	if err != nil {
 		return nil, false, err
 	}
-	ref := plan.prepared[string(f.organization)+"/"+artifact.Digest(content)]
+	ref := plan.Prepared[string(f.organization)+"/"+artifact.Digest(content)]
 	err = f.writeTenant(ctx, func(w tenantstore.Writer) error {
-		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, now); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, now); err != nil {
 			return err
 		}
 		row, inserted, err := w.ReserveCommand(ctx, conversationstore.Command{OrganizationID: f.organization, ConversationID: id, Key: key, Kind: kind, RequestHash: hash, Receipt: receipt, CreatedAt: now, UpdatedAt: now, ContentReference: contentArchiveID(string(f.organization), ref)})
@@ -1155,14 +1155,14 @@ func (f conversationFixture) updateReceipt(t *testing.T, ctx context.Context, id
 	if err != nil {
 		return err
 	}
-	if err := plan.prepareValue(ctx, raw); err != nil {
+	if err := plan.PrepareValue(ctx, raw); err != nil {
 		return err
 	}
 	content, err := messageContent(conversationMessageRecord{Data: raw})
 	if err != nil {
 		return err
 	}
-	ref := plan.prepared[string(f.organization)+"/"+artifact.Digest(content)]
+	ref := plan.Prepared[string(f.organization)+"/"+artifact.Digest(content)]
 	return f.writeTenant(ctx, func(w tenantstore.Writer) error {
 		row, found, err := w.Command(ctx, id, key)
 		if err != nil {
@@ -1171,7 +1171,7 @@ func (f conversationFixture) updateReceipt(t *testing.T, ctx context.Context, id
 		if !found {
 			return corestore.ErrNotFound
 		}
-		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.prepared, receipt.UpdatedAt); err != nil {
+		if err := registerPreparedConversationObjects(ctx, w, f.organization, plan.Prepared, receipt.UpdatedAt); err != nil {
 			return err
 		}
 		row.Receipt, row.UpdatedAt, row.ContentReference = receipt, receipt.UpdatedAt, contentArchiveID(string(f.organization), ref)

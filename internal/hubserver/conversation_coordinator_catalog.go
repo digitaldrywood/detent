@@ -55,7 +55,7 @@ func (t *coordinatorToolset) catalogContext(ctx context.Context, record conversa
 	if err != nil {
 		return nil, err
 	}
-	return t.coordinator.service.server.withOperatorCatalog(ctx, credential, string(record.OrganizationID)), nil
+	return t.coordinator.server.withOperatorCatalog(ctx, credential, string(record.OrganizationID)), nil
 }
 
 func (s *Service) coordinatorCatalog(ctx context.Context) ([]operatortool.Definition, error) {
@@ -86,7 +86,7 @@ func (t *coordinatorToolset) findTools(ctx context.Context, record conversationR
 	if err != nil {
 		return nil, err
 	}
-	definitions, err := t.coordinator.service.server.coordinatorCatalog(ctx)
+	definitions, err := t.coordinator.server.coordinatorCatalog(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +151,7 @@ func (t *coordinatorToolset) callTool(ctx context.Context, record conversationRe
 	if err != nil {
 		return nil, err
 	}
-	s := t.coordinator.service.server
+	s := t.coordinator.server
 	definitions, err := s.coordinatorCatalog(ctx)
 	if err != nil {
 		return nil, err

@@ -1,4 +1,4 @@
-package hubserver
+package conversations
 
 import (
 	"context"
@@ -16,6 +16,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -26,53 +28,53 @@ import (
 const (
 	conversationTitleMaxRunes     = 200
 	conversationDerivedTitleRunes = 80
-	conversationDefaultTitle      = "New chat"
+	ConversationDefaultTitle      = "New chat"
 )
 
 // Request and response shapes.
 
-type conversationFirstMessage struct {
+type ConversationFirstMessage struct {
 	Key  string `json:"key"`
 	Text string `json:"text"`
 }
 
-type conversationCreateRequest struct {
+type ConversationCreateRequest struct {
 	// Key makes creation idempotent by actor and key: a retry returns the
 	// stored response and a different payload under the same key is
 	// idempotency_conflict. first_message.key
 	// stays the message command key.
 	Key               string                    `json:"key"`
 	Title             string                    `json:"title"`
-	FirstMessage      *conversationFirstMessage `json:"first_message"`
+	FirstMessage      *ConversationFirstMessage `json:"first_message"`
 	SubjectWorkItemID string                    `json:"subject_work_item_id,omitempty"`
 }
 
-type conversationCreatedResponse struct {
-	Conversation conversationResource  `json:"conversation"`
+type ConversationCreatedResponse struct {
+	Conversation ConversationResource  `json:"conversation"`
 	Receipt      *conversation.Receipt `json:"receipt,omitempty"`
 }
 
-type conversationListPage struct {
-	Conversations []conversationResource `json:"conversations"`
+type ConversationListPage struct {
+	Conversations []ConversationResource `json:"conversations"`
 	// NextCursor is the opaque keyset cursor of the next page, null on the
 	// last page.
 	NextCursor *string `json:"next_cursor"`
 }
 
-type conversationSnapshot struct {
+type ConversationSnapshot struct {
 	Skills          []skills.ProviderSkill        `json:"skills"`
 	SkillsTruncated bool                          `json:"skills_truncated,omitempty"`
 	Compaction      *tracker.EventCompaction      `json:"compaction,omitempty"`
-	Conversation    conversationResource          `json:"conversation"`
-	Messages        []conversationMessageResource `json:"messages"`
+	Conversation    ConversationResource          `json:"conversation"`
+	Messages        []ConversationMessageResource `json:"messages"`
 	Questions       []conversation.Question       `json:"questions"`
 	Cursor          int64                         `json:"cursor"`
 	// HasMore reports that older messages exist beyond the returned page.
 	HasMore bool `json:"has_more"`
 }
 
-type conversationMessagesPage struct {
-	Messages []conversationMessageResource `json:"messages"`
+type ConversationMessagesPage struct {
+	Messages []ConversationMessageResource `json:"messages"`
 	// NextCursor is the seq to pass as before= for the next older page,
 	// null when no older messages exist.
 	NextCursor *string `json:"next_cursor"`
@@ -81,7 +83,7 @@ type conversationMessagesPage struct {
 // conversationOlderCursor reports whether messages older than the page
 // exist and the before= value that fetches them. Sequence numbers are
 // contiguous from 1, so a page whose oldest seq is above 1 has older rows.
-func conversationOlderCursor(messages []conversationMessageResource) (bool, *string) {
+func ConversationOlderCursor(messages []ConversationMessageResource) (bool, *string) {
 	if len(messages) == 0 || messages[0].Seq <= 1 {
 		return false, nil
 	}
@@ -91,7 +93,7 @@ func conversationOlderCursor(messages []conversationMessageResource) (bool, *str
 
 // conversationLinkedIssue is the created issue with the client's short
 // identity (id, identifier) alongside the full native issue.
-type conversationLinkedIssue struct {
+type ConversationLinkedIssue struct {
 	ID         string `json:"id"`
 	Identifier string `json:"identifier"`
 	tracker.NativeIssue
@@ -126,7 +128,7 @@ func (p *conversationPriority) rank() *int {
 	return &value
 }
 
-type conversationLinkIssue struct {
+type ConversationLinkIssue struct {
 	Title       string                `json:"title"`
 	Description string                `json:"description"`
 	State       string                `json:"state,omitempty"`
@@ -151,17 +153,17 @@ type conversationLinkNextApplied struct {
 	Dispatch string `json:"dispatch"`
 }
 
-type conversationLinkRequest struct {
+type ConversationLinkRequest struct {
 	Key          string                `json:"key"`
 	ShareHistory bool                  `json:"share_history"`
-	Issue        conversationLinkIssue `json:"issue"`
+	Issue        ConversationLinkIssue `json:"issue"`
 	Next         *conversationLinkNext `json:"next,omitempty"`
 }
 
 // Dispatch values of the handoff next step.
 const (
-	conversationDispatchNow   = "now"
-	conversationDispatchLater = "later"
+	ConversationDispatchNow   = "now"
+	ConversationDispatchLater = "later"
 	// conversationBacklogState is the lane a "later" handoff prefers: a
 	// non-dispatchable, non-terminal state named Backlog.
 	conversationBacklogState = "backlog"
@@ -204,16 +206,16 @@ func conversationStateDispatchable(project tracker.NativeProject, name string) b
 // handoff creates. An explicit state wins; otherwise "later" parks the issue
 // in Backlog when the project has one and every other case starts it in the
 // first dispatchable state.
-func resolveConversationNext(project tracker.NativeProject, request conversationLinkRequest) (conversationLinkNextApplied, error) {
+func resolveConversationNext(project tracker.NativeProject, request ConversationLinkRequest) (conversationLinkNextApplied, error) {
 	next := conversationLinkNext{}
 	if request.Next != nil {
 		next = *request.Next
 	}
 	dispatch := strings.ToLower(strings.TrimSpace(next.Dispatch))
 	switch dispatch {
-	case "", conversationDispatchNow, conversationDispatchLater:
+	case "", ConversationDispatchNow, ConversationDispatchLater:
 	default:
-		return conversationLinkNextApplied{}, nativePublicInvalid("next.dispatch must be now or later")
+		return conversationLinkNextApplied{}, hubapi.PublicInvalid("next.dispatch must be now or later")
 	}
 	state := strings.TrimSpace(next.State)
 	if state == "" {
@@ -223,18 +225,18 @@ func resolveConversationNext(project tracker.NativeProject, request conversation
 	case state != "":
 		named, ok := conversationProjectState(project, state)
 		if !ok {
-			return conversationLinkNextApplied{}, nativePublicInvalid("next.state must be one of the project's workflow states")
+			return conversationLinkNextApplied{}, hubapi.PublicInvalid("next.state must be one of the project's workflow states")
 		}
 		state = named
-	case dispatch == conversationDispatchLater:
+	case dispatch == ConversationDispatchLater:
 		if backlog, ok := conversationBacklogLane(project); ok {
 			state = backlog
 		}
 	}
 	if state == "" {
-		first, ok := firstDispatchableState(project)
+		first, ok := FirstDispatchableState(project)
 		if !ok {
-			return conversationLinkNextApplied{}, conversationUnsupported("The project has no dispatchable workflow state for a handoff")
+			return conversationLinkNextApplied{}, ConversationUnsupported("The project has no dispatchable workflow state for a handoff")
 		}
 		state = first
 	}
@@ -243,34 +245,34 @@ func resolveConversationNext(project tracker.NativeProject, request conversation
 		priority = request.Issue.Priority
 	}
 	if rank := priority.rank(); rank != nil && (*rank < 0 || *rank > 3) {
-		return conversationLinkNextApplied{}, nativePublicInvalid("next.priority must be the numeric rank 0 to 3")
+		return conversationLinkNextApplied{}, hubapi.PublicInvalid("next.priority must be the numeric rank 0 to 3")
 	}
 	if dispatch == "" {
 		// The applied dispatch is read from the lane the issue lands in, so
 		// the response is honest about what happened.
-		dispatch = conversationDispatchLater
+		dispatch = ConversationDispatchLater
 		if conversationStateDispatchable(project, state) {
-			dispatch = conversationDispatchNow
+			dispatch = ConversationDispatchNow
 		}
 	}
 	return conversationLinkNextApplied{State: state, Priority: priority.rank(), Dispatch: dispatch}, nil
 }
 
-type conversationScheduling struct {
+type ConversationScheduling struct {
 	Lane        string `json:"lane"`
 	RunnerBound bool   `json:"runner_bound"`
 }
 
-type conversationLinkResult struct {
-	Conversation conversationResource        `json:"conversation"`
-	Issue        conversationLinkedIssue     `json:"issue"`
-	Scheduling   conversationScheduling      `json:"scheduling"`
+type ConversationLinkResult struct {
+	Conversation ConversationResource        `json:"conversation"`
+	Issue        ConversationLinkedIssue     `json:"issue"`
+	Scheduling   ConversationScheduling      `json:"scheduling"`
 	Next         conversationLinkNextApplied `json:"next"`
 }
 
 // conversationPatchRequest is the PATCH body. Every field is a pointer so
 // that "not mentioned" is distinguishable from "set to empty".
-type conversationPatchRequest struct {
+type ConversationPatchRequest struct {
 	Title       *string                         `json:"title"`
 	ProjectID   string                          `json:"project_id"`
 	Preferences *conversationPreferencesRequest `json:"preferences"`
@@ -301,17 +303,17 @@ func (r *conversationPreferencesRequest) apply(current conversation.Preferences)
 	return preferences.Normalized()
 }
 
-func projectMessages(records []conversationMessageRecord) []conversationMessageResource {
-	messages := make([]conversationMessageResource, 0, len(records))
+func projectMessages(records []ConversationMessageRecord) []ConversationMessageResource {
+	messages := make([]ConversationMessageResource, 0, len(records))
 	for _, record := range records {
-		messages = append(messages, projectMessage(record))
+		messages = append(messages, ProjectMessage(record))
 	}
 	return messages
 }
 
 // deriveConversationTitle takes the first non-empty line of the first
 // message, truncated to conversationDerivedTitleRunes runes.
-func deriveConversationTitle(text string) string {
+func DeriveConversationTitle(text string) string {
 	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -323,32 +325,32 @@ func deriveConversationTitle(text string) string {
 		}
 		return line
 	}
-	return conversationDefaultTitle
+	return ConversationDefaultTitle
 }
 
 // readableConversationProjects returns the projects the actor can read in
 // the organization; every is true when all projects are readable (instance
 // administrators).
-func (s *Service) readableConversationProjects(ctx context.Context, scope nativeScope) (projects []tracker.ProjectID, every bool, err error) {
-	if scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly {
+func (s *Server) ReadableConversationProjects(ctx context.Context, scope hubauth.Input) (projects []tracker.ProjectID, every bool, err error) {
+	if scope.Credential.Scope == hubauth.Admin && !scope.Credential.NativeOnly {
 		return nil, true, nil
 	}
-	if s.config.TenantRepository == nil {
+	if s.config().TenantRepository == nil {
 		return []tracker.ProjectID{}, false, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	const pageSize = 200
 	projects = []tracker.ProjectID{}
 	after := tracker.ProjectID("")
 	for {
 		var count int
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		err := s.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			pageReader, ok := reader.(accessstore.ProjectAccessPageReader)
 			if !ok {
-				return ErrProjectParticipants
+				return s.deps.ProjectParticipantsUnavailable
 			}
-			rows, err := pageReader.ProjectAccessPage(ctx, projectAccessFilter(scope.credential, "", after, pageSize))
+			rows, err := pageReader.ProjectAccessPage(ctx, hubauth.ProjectFilter(scope.Credential, "", after, pageSize))
 			if err != nil {
 				return err
 			}
@@ -356,7 +358,7 @@ func (s *Service) readableConversationProjects(ctx context.Context, scope native
 			if count > 0 {
 				after = rows[count-1].ProjectID
 			}
-			granted, err := s.grantedAccessProjects(ctx, reader, scope.organization, scope.credential, rows[:count])
+			granted, err := s.grantedAccessProjects(ctx, reader, scope.Organization, scope.Credential, rows[:count])
 			if err != nil {
 				return err
 			}
@@ -374,8 +376,8 @@ func (s *Service) readableConversationProjects(ctx context.Context, scope native
 	}
 }
 
-func (s *Service) readWorkItemConversationSnapshot(ctx context.Context, scope nativeScope, item string) (json.RawMessage, error) {
-	return s.readConversationSnapshotFor(ctx, scope, "", item, false)
+func (s *Server) ReadWorkItemConversationSnapshot(ctx context.Context, scope hubauth.Input, item string) (json.RawMessage, error) {
+	return s.ReadConversationSnapshotFor(ctx, scope, "", item, false)
 }
 
 // conversationExecutionLive reports whether an attempt is bound and can be
@@ -403,166 +405,166 @@ func renderAnswer(question conversation.Question, answers map[string][]string) s
 // saveConversationChange loads, authorizes (owner or write access), applies
 // change and saves the conversation, then reports the result.
 
-func (s *Service) commandCreateConversation(ctx context.Context, scope nativeScope, request conversationCreateRequest) (json.RawMessage, error) {
+func (s *Server) CommandCreateConversation(ctx context.Context, scope hubauth.Input, request ConversationCreateRequest) (json.RawMessage, error) {
 	if strings.TrimSpace(request.Key) == "" || len(request.Key) > 128 {
-		return nil, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
+		return nil, hubapi.PublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	request.Title = strings.TrimSpace(request.Title)
 	if utf8.RuneCountInString(request.Title) > conversationTitleMaxRunes {
-		return nil, nativePublicInvalid(fmt.Sprintf("Title must be at most %d characters", conversationTitleMaxRunes))
+		return nil, hubapi.PublicInvalid(fmt.Sprintf("Title must be at most %d characters", conversationTitleMaxRunes))
 	}
 	var command conversation.Command
 	if request.FirstMessage != nil {
 		command = conversation.Command{Key: request.FirstMessage.Key, Kind: conversation.CommandMessage, Text: request.FirstMessage.Text}
 		if err := conversation.ValidateCommand(command); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, hubapi.Invalid(err.Error())
 		}
 	}
 	ctx, err := s.bindCoordinatorConnection(ctx, command.Key)
 	if err != nil {
 		return nil, err
 	}
-	service := s.conversations
+	service := s.conversations()
 	// Write capability is checked before the mutation so that a read-only
 	// member is refused with the contract's forbidden rather than the
 	// hosted mutation guard's opaque not_found, as linkConversation does.
 
-	if err := s.authorizeConversationScopePG(ctx, scope, true); err != nil {
+	if err := s.AuthorizeConversationScopePG(ctx, scope, true); err != nil {
 		return nil, err
 	}
 
-	now := s.config.now().UTC().Truncate(time.Microsecond)
+	now := s.config().Now().UTC().Truncate(time.Microsecond)
 
-	if err := s.requireConversationFeaturePG(ctx, scope.organization, "collaboration", now); err != nil {
+	if err := s.requireConversationFeaturePG(ctx, scope.Organization, "collaboration", now); err != nil {
 		return nil, err
 	}
 
 	title := request.Title
 	if title == "" {
-		title = conversationDefaultTitle
+		title = ConversationDefaultTitle
 		if request.FirstMessage != nil {
-			title = deriveConversationTitle(request.FirstMessage.Text)
+			title = DeriveConversationTitle(request.FirstMessage.Text)
 		}
 	}
 	if request.SubjectWorkItemID != "" {
 
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			item, err := reader.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(request.SubjectWorkItemID))
+		err := s.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			item, err := reader.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(request.SubjectWorkItemID))
 			if err != nil {
 				return err
 			}
-			title = boundRunes(fmt.Sprintf("#%d · %s", item.Number, title), conversationTitleMaxRunes)
+			title = BoundRunes(fmt.Sprintf("#%d · %s", item.Number, title), conversationTitleMaxRunes)
 			return nil
 		})
 		if err != nil {
-			return nil, translateConversationError(err)
+			return nil, TranslateConversationError(err)
 		}
 
 	}
 
 	if command.Key != "" {
 		if err := conversation.ValidateCommand(command); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, hubapi.Invalid(err.Error())
 		}
 	}
 
-	prepared := newConversationArchiveReads(ctx)
+	prepared := NewConversationArchiveReads(ctx)
 
 	ctx = prepared
-	freshRecord := conversationRecord{ID: conversation.NewConversationID(), SubjectWorkItemID: request.SubjectWorkItemID, OrganizationID: scope.organization, ProjectID: scope.project, OwnerPrincipalID: scope.credential.ID, Origin: conversationOriginUser, Title: title, Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Execution: conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now, Revision: 1}
-	if scope.credential.Hosted != nil {
-		freshRecord.OwnerSubject = scope.credential.Hosted.Subject
+	freshRecord := ConversationRecord{ID: conversation.NewConversationID(), SubjectWorkItemID: request.SubjectWorkItemID, OrganizationID: scope.Organization, ProjectID: scope.Project, OwnerPrincipalID: scope.Credential.ID, Origin: ConversationOriginUser, Title: title, Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Execution: conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now, Revision: 1}
+	if scope.Credential.Hosted != nil {
+		freshRecord.OwnerSubject = scope.Credential.Hosted.Subject
 	}
-	plan := &conversationPublicationPlan{service: service, record: freshRecord, now: now}
+	plan := &ConversationPublicationPlan{Service: service, Record: freshRecord, Now: now}
 	if err := plan.prepareRecord(ctx, freshRecord); err != nil {
 		return nil, err
 	}
 	if request.FirstMessage != nil {
 
-		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: command.Text, Data: coordinatorConnectionData(ctx), Delivery: conversation.DeliverySaved, Actor: conversationActorFor(scope), CommandKey: command.Key, CreatedAt: now, UpdatedAt: now}
-		if err := preparePGConversationMessage(ctx, plan, &message); err != nil {
+		message := ConversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: command.Text, Data: CoordinatorConnectionData(ctx), Delivery: conversation.DeliverySaved, Actor: ConversationActorFor(scope), CommandKey: command.Key, CreatedAt: now, UpdatedAt: now}
+		if err := PreparePGConversationMessage(ctx, plan, &message); err != nil {
 			return nil, err
 		}
 
 	}
-	ctx = plan.context(ctx)
+	ctx = plan.Context(ctx)
 
-	return s.commandCreateConversationPG(ctx, scope, request, command, plan.record, plan)
+	return s.commandCreateConversationPG(ctx, scope, request, command, plan.Record, plan)
 }
 
-func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope, id string, command conversation.Command) (json.RawMessage, error) {
+func (s *Server) CommandPostConversation(ctx context.Context, scope hubauth.Input, id string, command conversation.Command) (json.RawMessage, error) {
 	if err := conversation.ValidateCommand(command); err != nil {
-		return nil, nativeInvalid(err.Error())
+		return nil, hubapi.Invalid(err.Error())
 	}
 	ctx, bindErr := s.bindCoordinatorConnection(ctx, command.Key)
 	if bindErr != nil {
 		return nil, bindErr
 	}
-	ctx = newConversationArchiveReads(ctx)
+	ctx = NewConversationArchiveReads(ctx)
 
 	value, err := s.commandPostConversationPG(ctx, scope, id, command)
 	if err != nil {
-		return nil, conversationStaleExecutionError(string(command.Kind), id, err)
+		return nil, ConversationStaleExecutionError(string(command.Kind), id, err)
 	}
 	return value, nil
 }
 
-func conversationLinkedIssueRequest(record conversationRecord, request conversationLinkRequest, next conversationLinkNextApplied) tracker.CreateIssue {
+func conversationLinkedIssueRequest(record ConversationRecord, request ConversationLinkRequest, next conversationLinkNextApplied) tracker.CreateIssue {
 	body := strings.TrimRight(request.Issue.Description, "\n")
 	if body != "" {
 		body += "\n\n"
 	}
 	body += "Conversation: " + record.ID
-	body = conversationAgentOverrideBody(body, record.Preferences)
+	body = ConversationAgentOverrideBody(body, record.Preferences)
 	return tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: request.Key}, Title: strings.TrimSpace(request.Issue.Title), Body: body, State: next.State, Labels: request.Issue.Labels, Priority: next.Priority}
 }
 
-func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope, id string, request conversationLinkRequest) (json.RawMessage, error) {
+func (s *Server) CommandLinkConversation(ctx context.Context, scope hubauth.Input, id string, request ConversationLinkRequest) (json.RawMessage, error) {
 
 	return s.commandLinkConversationPG(ctx, scope, id, request)
 }
 
-func (s *Service) readConversationSnapshot(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
-	return s.readConversationSnapshotFor(ctx, scope, id, "", false)
+func (s *Server) ReadConversationSnapshot(ctx context.Context, scope hubauth.Input, id string) (json.RawMessage, error) {
+	return s.ReadConversationSnapshotFor(ctx, scope, id, "", false)
 }
 
-type conversationPageRead struct {
-	record     conversationRecord
-	messages   []conversationMessageRecord
+type ConversationPageRead struct {
+	Record     ConversationRecord
+	Messages   []ConversationMessageRecord
 	contents   *conversationReadBatch
 	compaction tracker.EventCompaction
 }
 
-func (s *Service) captureConversationPage(ctx context.Context, scope nativeScope, id, item string, before int64, limit int) (conversationPageRead, error) {
+func (s *Server) captureConversationPage(ctx context.Context, scope hubauth.Input, id, item string, before int64, limit int) (ConversationPageRead, error) {
 
 	if item != "" {
-		var record conversationRecord
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			stored, err := reader.ConversationByWorkItem(ctx, scope.project, item)
+		var record ConversationRecord
+		err := s.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			stored, err := reader.ConversationByWorkItem(ctx, scope.Project, item)
 			if err != nil {
 				return err
 			}
-			record = conversationRecordFromStore(stored)
+			record = ConversationRecordFromStore(stored)
 			return nil
 		})
 		if err != nil {
-			return conversationPageRead{}, translateConversationError(err)
+			return ConversationPageRead{}, TranslateConversationError(err)
 		}
 		id = record.ID
 	}
-	return s.readPGConversationPage(ctx, scope, id, before, limit)
+	return s.ReadPGConversationPage(ctx, scope, id, before, limit)
 }
 
-func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeScope, id, item string, diagnoseMissing bool) (json.RawMessage, error) {
+func (s *Server) ReadConversationSnapshotFor(ctx context.Context, scope hubauth.Input, id, item string, diagnoseMissing bool) (json.RawMessage, error) {
 	ctx = withConversationArchiveReads(s.archiveContext(ctx, scope, false))
 	if item != "" {
-		var record conversationRecord
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			stored, err := reader.ConversationByWorkItem(ctx, scope.project, item)
+		var record ConversationRecord
+		err := s.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			stored, err := reader.ConversationByWorkItem(ctx, scope.Project, item)
 			if err != nil {
 				return err
 			}
-			record = conversationRecordFromStore(stored)
+			record = ConversationRecordFromStore(stored)
 			return nil
 		})
 		if err != nil {
@@ -573,36 +575,36 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 				}
 				return json.Marshal(struct {
 					Status       string                        `json:"status"`
-					Conversation *conversationResource         `json:"conversation"`
+					Conversation *ConversationResource         `json:"conversation"`
 					Runtime      tracker.NativeRuntimeEvidence `json:"runtime"`
 				}{Status: "unavailable", Runtime: runtime})
 			}
-			return nil, translateConversationError(err)
+			return nil, TranslateConversationError(err)
 		}
 		id = record.ID
 	}
-	page, err := s.captureConversationPage(ctx, scope, id, item, 0, conversationMessagePage)
+	page, err := s.captureConversationPage(ctx, scope, id, item, 0, ConversationMessagePage)
 	if err != nil {
 		return nil, err
 	}
-	store := s.conversations.store
+	store := s.conversations().Store
 	if page.contents != nil {
-		if err := page.contents.hydrateRecord(ctx, store, &page.record); err != nil {
+		if err := page.contents.hydrateRecord(ctx, store, &page.Record); err != nil {
 			return nil, err
 		}
-		if err := page.contents.hydrateMessages(ctx, store, page.messages); err != nil {
+		if err := page.contents.hydrateMessages(ctx, store, page.Messages); err != nil {
 			return nil, err
 		}
 	}
-	questions, skills, skillsTruncated, err := s.readConversationSnapshotDetails(ctx, scope, page.record)
+	questions, skills, skillsTruncated, err := s.readConversationSnapshotDetails(ctx, scope, page.Record)
 	if err != nil {
 		return nil, err
 	}
-	snapshot := conversationSnapshot{Conversation: projectConversation(page.record), Messages: projectMessages(page.messages), Questions: make([]conversation.Question, 0, len(questions)), Skills: skills, SkillsTruncated: skillsTruncated, Cursor: page.record.EventSeq}
+	snapshot := ConversationSnapshot{Conversation: ProjectConversation(page.Record), Messages: projectMessages(page.Messages), Questions: make([]conversation.Question, 0, len(questions)), Skills: skills, SkillsTruncated: skillsTruncated, Cursor: page.Record.EventSeq}
 	if page.compaction.RemovedEvents > 0 {
 		snapshot.Compaction = &page.compaction
 	}
-	snapshot.HasMore, _ = conversationOlderCursor(snapshot.Messages)
+	snapshot.HasMore, _ = ConversationOlderCursor(snapshot.Messages)
 	for _, question := range questions {
 		snapshot.Questions = append(snapshot.Questions, question.Question)
 	}
@@ -614,17 +616,17 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 	if err != nil {
 		return nil, err
 	}
-	return withNativeArchive(raw, nativeArchiveDescriptor(ctx))
+	return s.deps.WithArchive(ctx, raw)
 }
 
-func (s *Service) readConversationSnapshotDetails(ctx context.Context, scope nativeScope, record conversationRecord) ([]conversationQuestionRecord, []skills.ProviderSkill, bool, error) {
+func (s *Server) readConversationSnapshotDetails(ctx context.Context, scope hubauth.Input, record ConversationRecord) ([]ConversationQuestionRecord, []skills.ProviderSkill, bool, error) {
 
-	var questions []conversationQuestionRecord
+	var questions []ConversationQuestionRecord
 	projectSkills := []skills.ProviderSkill{}
 	skillsTruncated := false
 	contentReferences := map[string]conversationstore.ContentObject{}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		reports, truncated, err := reader.RunnerProjectSkills(ctx, record.ProjectID, record.Execution.Owner.RunnerID, s.config.now().UTC(), runnerstore.MaxProjectSkills)
+	err := s.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		reports, truncated, err := reader.RunnerProjectSkills(ctx, record.ProjectID, record.Execution.Owner.RunnerID, s.config().Now().UTC(), runnerstore.MaxProjectSkills)
 		skillsTruncated = truncated
 		if err != nil {
 			return err
@@ -637,7 +639,7 @@ func (s *Service) readConversationSnapshotDetails(ctx context.Context, scope nat
 				projectSkills = append(projectSkills, report.Skill)
 			}
 		}
-		stored, err := reader.Questions(ctx, record.ID, record.Execution.Owner.AttemptID, conversationSnapshotQuestions)
+		stored, err := reader.Questions(ctx, record.ID, record.Execution.Owner.AttemptID, ConversationSnapshotQuestions)
 		if err != nil {
 			return err
 		}
@@ -649,7 +651,7 @@ func (s *Service) readConversationSnapshotDetails(ctx context.Context, scope nat
 				}
 				contentReferences[question.ContentReference] = object
 			}
-			questions = append(questions, conversationQuestionRecord{Question: question.Question, RequestID: question.RequestID, ContentID: question.ContentReference})
+			questions = append(questions, ConversationQuestionRecord{Question: question.Question, RequestID: question.RequestID, ContentID: question.ContentReference})
 		}
 		return nil
 	})
@@ -660,60 +662,60 @@ func (s *Service) readConversationSnapshotDetails(ctx context.Context, scope nat
 				continue
 			}
 			object := contentReferences[question.ContentID]
-			var payload conversationContent
-			if err := s.readConversationObject(ctx, string(scope.organization), object.Reference, &payload); err != nil {
+			var payload ConversationContent
+			if err := s.ReadConversationObject(ctx, string(scope.Organization), object.Reference, &payload); err != nil {
 				return nil, nil, false, err
 			}
-			var content conversationQuestionContent
+			var content ConversationQuestionContent
 			if err := json.Unmarshal(payload.Data, &content); err != nil {
 				return nil, nil, false, fmt.Errorf("decode question content: %w", err)
 			}
 			question.Prompts, question.Answers = content.Prompts, content.Answers
 		}
 	}
-	return questions, projectSkills, skillsTruncated, translateConversationError(err)
+	return questions, projectSkills, skillsTruncated, TranslateConversationError(err)
 }
 
-func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScope, id string, request conversationPatchRequest) (json.RawMessage, error) {
+func (s *Server) CommandPatchConversation(ctx context.Context, scope hubauth.Input, id string, request ConversationPatchRequest) (json.RawMessage, error) {
 	if request.Title == nil && request.Preferences == nil {
-		return nil, nativePublicInvalid("A patch must change the title, the preferences, or both")
+		return nil, hubapi.PublicInvalid("A patch must change the title, the preferences, or both")
 	}
 	title := ""
 	if request.Title != nil {
 		title = strings.TrimSpace(*request.Title)
 		if title == "" || utf8.RuneCountInString(title) > conversationTitleMaxRunes {
-			return nil, nativePublicInvalid(fmt.Sprintf("Title must contain 1 to %d characters", conversationTitleMaxRunes))
+			return nil, hubapi.PublicInvalid(fmt.Sprintf("Title must contain 1 to %d characters", conversationTitleMaxRunes))
 		}
 	}
 
-	return s.commandPatchConversationPG(ctx, scope, id, request, title)
+	return s.CommandPatchConversationPG(ctx, scope, id, request, title)
 }
 
-func (s *Service) readConversationMessages(ctx context.Context, scope nativeScope, id string, before int64, limit int) (json.RawMessage, error) {
+func (s *Server) ReadConversationMessages(ctx context.Context, scope hubauth.Input, id string, before int64, limit int) (json.RawMessage, error) {
 	ctx = withConversationArchiveReads(s.archiveContext(ctx, scope, false))
 	captured, err := s.captureConversationPage(ctx, scope, id, "", before, limit)
 	if err != nil {
 		return nil, err
 	}
 	if captured.contents != nil {
-		if err := captured.contents.hydrateMessages(ctx, s.conversations.store, captured.messages); err != nil {
+		if err := captured.contents.hydrateMessages(ctx, s.conversations().Store, captured.Messages); err != nil {
 			return nil, err
 		}
 	}
-	page := conversationMessagesPage{Messages: projectMessages(captured.messages)}
-	_, page.NextCursor = conversationOlderCursor(page.Messages)
+	page := ConversationMessagesPage{Messages: projectMessages(captured.Messages)}
+	_, page.NextCursor = ConversationOlderCursor(page.Messages)
 	raw, err := json.Marshal(page)
 	if err != nil {
 		return nil, err
 	}
-	return withNativeArchive(raw, nativeArchiveDescriptor(ctx))
+	return s.deps.WithArchive(ctx, raw)
 }
 
-func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, filter conversationListQuery) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+func (s *Server) ReadConversationsPage(ctx context.Context, scope hubauth.Input, filter ConversationListQuery) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	filter.Organization = scope.organization
-	filter.Principal = scope.credential.ID
+	filter.Organization = scope.Organization
+	filter.Principal = scope.Credential.ID
 
 	limit := filter.Limit
 	if limit <= 0 {
@@ -723,18 +725,18 @@ func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, 
 		limit = corestore.MaxPageSize
 	}
 	var page conversationstore.ConversationPage
-	var records []conversationRecord
+	var records []ConversationRecord
 	contentObjects := map[string]conversationstore.ContentObject{}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err := s.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 			return err
 		}
 		var err error
 		grantCredential := ""
-		if scope.project == "" && scope.credential.Hosted == nil && scope.credential.EntryKey == nil {
-			grantCredential = scope.credential.ID
+		if scope.Project == "" && scope.Credential.Hosted == nil && scope.Credential.EntryKey == nil {
+			grantCredential = scope.Credential.ID
 		}
-		audience, err := conversationReadAudienceRecord(ctx, reader, scope.organization, scope.credential)
+		audience, err := ConversationReadAudienceRecord(ctx, reader, scope.Organization, scope.Credential)
 		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, operatortool.ErrAccessDenied) {
 			audience, err = "", nil
 		}
@@ -748,19 +750,19 @@ func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, 
 		})
 		if err != nil {
 			if errors.Is(err, corestore.ErrInvalidCursor) {
-				return nativePublicInvalid("Invalid conversation cursor")
+				return hubapi.PublicInvalid("Invalid conversation cursor")
 			}
 			return err
 		}
 		projectCache := map[tracker.ProjectID]corestore.Project{}
 		for _, stored := range page.Items {
-			record := conversationRecordFromStore(stored)
+			record := ConversationRecordFromStore(stored)
 			if record.ReadAudience != "" && record.ReadAudience != audience {
 				continue
 			}
-			if err := authorizeConversationLinkedItemPG(ctx, reader, scope, record); err != nil {
-				var denied *nativeError
-				if errors.As(err, &denied) && denied.status == http.StatusNotFound {
+			if err := AuthorizeConversationLinkedItemPG(ctx, reader, scope, record); err != nil {
+				var denied *hubapi.Error
+				if errors.As(err, &denied) && denied.Status == http.StatusNotFound {
 					continue
 				}
 				return err
@@ -788,12 +790,12 @@ func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, 
 					}
 					projectCache[record.ProjectID] = project
 				}
-				record.WorkItem = &conversationWorkItem{ID: string(item.NativeID), Identifier: fmt.Sprintf("%s#%d", project.Name, item.Number), Title: item.Title}
+				record.WorkItem = &ConversationWorkItem{ID: string(item.NativeID), Identifier: fmt.Sprintf("%s#%d", project.Name, item.Number), Title: item.Title}
 				if item.WorkflowStateName != nil {
 					record.WorkItem.Lane = *item.WorkflowStateName
 				}
 			}
-			if record.OrganizationID != scope.organization || (record.Visibility == conversation.VisibilityPrivate && record.OwnerPrincipalID != scope.credential.ID) {
+			if record.OrganizationID != scope.Organization || (record.Visibility == conversation.VisibilityPrivate && record.OwnerPrincipalID != scope.Credential.ID) {
 				continue
 			}
 			records = append(records, record)
@@ -801,7 +803,7 @@ func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, 
 		return nil
 	})
 	if err != nil {
-		return nil, translateConversationError(err)
+		return nil, TranslateConversationError(err)
 	}
 	for index := range records {
 		record := &records[index]
@@ -809,19 +811,19 @@ func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, 
 		if !ok {
 			continue
 		}
-		var payload conversationContent
-		if err := s.readConversationObject(ctx, string(scope.organization), object.Reference, &payload); err != nil {
+		var payload ConversationContent
+		if err := s.ReadConversationObject(ctx, string(scope.Organization), object.Reference, &payload); err != nil {
 			return nil, err
 		}
-		var content conversationRecordContent
+		var content ConversationRecordContent
 		if err := json.Unmarshal(payload.Data, &content); err != nil {
 			return nil, fmt.Errorf("decode conversation content: %w", err)
 		}
 		record.Execution, record.Preferences = content.Execution, content.Preferences.Normalized()
 	}
-	result := conversationListPage{Conversations: make([]conversationResource, 0, len(records)), NextCursor: conversationOptional(page.Next)}
+	result := ConversationListPage{Conversations: make([]ConversationResource, 0, len(records)), NextCursor: ConversationOptional(page.Next)}
 	for _, record := range records {
-		resource := projectConversation(record)
+		resource := ProjectConversation(record)
 		resource.WebURL, err = s.canonicalBrowserLink(ctx, conversationCursorURL(record))
 		if err != nil {
 			return nil, err
@@ -831,7 +833,7 @@ func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, 
 	return json.Marshal(result)
 }
 
-func coordinatorConnectionData(ctx context.Context) json.RawMessage {
+func CoordinatorConnectionData(ctx context.Context) json.RawMessage {
 	connection := operatortool.CurrentConnection(ctx)
 	if connection.Client != "Luna" {
 		return nil

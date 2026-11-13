@@ -38,15 +38,20 @@ func (f conversationFixture) readRecord(ctx context.Context, project tracker.Pro
 }
 
 func (f conversationFixture) recordChat(organization tracker.OrganizationID) *conversationService {
+	return f.recordServer(organization).conversations
+}
+
+func (f conversationFixture) recordServer(organization tracker.OrganizationID) *Service {
 	server := &Service{config: f.service.config, database: f.service.database, localOrganization: string(organization)}
 	server.config.Hosted = &HostedConfig{OrganizationID: string(organization)}
-	chat := &conversationService{server: server, store: f.store, broker: newNotificationBroker(), coordinator: &recordingWaker{}, controls: &recordingWaker{}}
+	chat := &conversationService{Server: server.conversationServer(), Store: f.store, Broker: newNotificationBroker().Broker, Coordinator: &recordingWaker{}, Controls: &recordingWaker{}}
 	server.conversations = chat
-	return chat
+	return server
 }
 
 func (f conversationFixture) publishedRecordMessages(ctx context.Context, record conversationRecord) ([]conversationMessageRecord, error) {
-	return (&conversationTurnCoordinator{service: f.recordChat(record.OrganizationID)}).coordinatorMessages(ctx, conversationstore.MessageFilter{ConversationID: record.ID, Limit: 100})
+	server := f.recordServer(record.OrganizationID)
+	return (&conversationTurnCoordinator{server: server, service: server.conversations}).coordinatorMessages(ctx, conversationstore.MessageFilter{ConversationID: record.ID, Limit: 100})
 }
 
 func (f conversationFixture) publishedRecordEvents(ctx context.Context, record conversationRecord, after int64) ([]conversation.Event, error) {
@@ -62,11 +67,11 @@ func (f conversationFixture) publishedRecordEvents(ctx context.Context, record c
 		return nil, err
 	}
 	scope := nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: apiCredential{ID: credential.ID, Hash: credential.Hash, Scope: apiScopeOperator}}
-	current, err := chat.server.readPGConversation(ctx, scope, record.ID)
+	current, err := chat.Server.ReadPGConversation(ctx, conversationInput(scope), record.ID)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := chat.server.replayPGConversationEvents(ctx, scope, stream, record.ID, after, current.EventSeq); err != nil {
+	if _, err := chat.Server.ReplayPGConversationEvents(ctx, conversationInput(scope), stream, record.ID, after, current.EventSeq); err != nil {
 		return nil, err
 	}
 	reader := bufio.NewReader(bytes.NewReader(response.Body.Bytes()))

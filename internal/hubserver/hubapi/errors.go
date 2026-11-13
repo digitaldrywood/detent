@@ -54,3 +54,9 @@ func WorkItemStorageUnavailable() error {
 func RunEventStorageUnavailable() error {
 	return &Error{Code: "not_ready", Message: "Run event storage is not available", Status: http.StatusServiceUnavailable, Public: true}
 }
+
+func (e *Error) WithLogAttributes(attributes ...any) *Error {
+	copied := *e
+	copied.logAttributes = append([]any(nil), attributes...)
+	return &copied
+}

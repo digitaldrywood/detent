@@ -22,7 +22,7 @@ import (
 func TestPostgresConversationArchiveAuthorization(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, now: time.Now, Logger: discardLogger()}}
-	service.conversations = &conversationService{server: service, store: &conversationStore{}}
+	service.conversations = &conversationService{Server: service.conversationServer(), Store: &conversationStore{}}
 	organization := nativeOrganization{ID: "org_archive", Name: "Example organization", Slug: "example-org"}
 	seedPostgresHubAdmin(t, repository, service, organization)
 	now := service.config.now().UTC()

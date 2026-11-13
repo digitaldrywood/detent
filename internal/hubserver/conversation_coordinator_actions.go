@@ -93,10 +93,10 @@ func (t *coordinatorToolset) actionContext(ctx context.Context, record conversat
 	if json.Unmarshal(message.Data, &data) != nil || data.ConnectionID == "" {
 		return nil, operatortool.ErrAccessDenied
 	}
-	if age := t.coordinator.service.server.config.now().Sub(message.CreatedAt); age >= 0 && age <= coordinatorTurnTimeout {
+	if age := t.coordinator.server.config.now().Sub(message.CreatedAt); age >= 0 && age <= coordinatorTurnTimeout {
 		ctx = context.WithValue(ctx, operatorAccessTimeKey{}, message.CreatedAt)
 	}
-	service := t.coordinator.service.server.operatorChat
+	service := t.coordinator.server.operatorChat
 	ctx = context.WithValue(ctx, operatorChatOrganizationKey{}, record.OrganizationID)
 	if err := service.RestoreConnection(ctx, data.ConnectionID); err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func (t *coordinatorToolset) actionContext(ctx context.Context, record conversat
 }
 
 func (t *coordinatorToolset) projectAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall, requireConfirmation ...bool) (any, error) {
-	s := t.coordinator.service.server
+	s := t.coordinator.server
 	ctx, err := t.actionContext(ctx, record)
 	if err != nil {
 		return nil, err
@@ -514,7 +514,7 @@ func coordinatorActionError(err error) error {
 		return &nativeError{Code: conflict.Code, Message: message, CurrentRevision: tracker.Revision(conflict.CurrentRevision), status: http.StatusConflict, publicMessage: true}
 	}
 	var native *nativeError
-	if errors.As(err, &native) {
+	if errors.As(fromFeatureError(err), &native) {
 		return errors.New(native.Message)
 	}
 	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.Is(err, mutation.ErrConflict) || errors.Is(err, errCoordinatorToolArguments) || errors.Is(err, errCoordinatorProjectUnreadable) {
@@ -527,7 +527,7 @@ func (s *Service) publishCoordinatorDecision(ctx context.Context, action chat.Ac
 	if action.ConversationID == "" || action.Mutation.Source != "chat" {
 		return nil
 	}
-	coordinator, ok := s.conversations.coordinator.(*conversationTurnCoordinator)
+	coordinator, ok := s.conversations.Coordinator.(*conversationTurnCoordinator)
 	if !ok {
 		return operatortool.ErrAccessDenied
 	}
@@ -551,10 +551,10 @@ func (s *Service) publishCoordinatorDecision(ctx context.Context, action chat.Ac
 		}
 		return coordinator.appendMessage(ctx, tx, record, &message, now)
 	}, func(ctx context.Context, p *conversationPublicationPlan) error {
-		if string(p.record.ProjectID) != action.ProjectID || string(p.record.OrganizationID) != action.OrganizationID {
+		if string(p.Record.ProjectID) != action.ProjectID || string(p.Record.OrganizationID) != action.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
-		return p.appendMessage(ctx, &message)
+		return p.AppendMessage(ctx, &message)
 	})
 }
 

@@ -79,8 +79,8 @@ func newPostgresStorageArchiveFixture(t *testing.T) *postgresStorageArchiveFixtu
 	f.scope = nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 	f.bodies = &conversationContentFixture{onIO: func() error { f.checkIO(t); return nil }}
 	store := newConversationStore(nil)
-	store.contents = f.bodies
-	service.conversations = &conversationService{server: service, store: store, broker: newNotificationBroker()}
+	store.Contents = f.bodies
+	service.conversations = &conversationService{Server: service.conversationServer(), Store: store, Broker: newNotificationBroker().Broker}
 	t.Cleanup(func() { service.conversations = nil })
 	service.tokenUseWork.Wait()
 	return f
@@ -209,11 +209,11 @@ func (f *postgresStorageArchiveFixture) readMessages(t *testing.T, id string) []
 		if err != nil {
 			t.Fatal(err)
 		}
-		result = append(page.messages, result...)
-		if len(page.messages) < 100 {
+		result = append(page.Messages, result...)
+		if len(page.Messages) < 100 {
 			break
 		}
-		next := page.messages[0].Seq
+		next := page.Messages[0].Seq
 		if before != 0 && next >= before {
 			t.Fatal("message cursor did not advance")
 		}

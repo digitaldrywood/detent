@@ -91,7 +91,7 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 // handle runs one tool call. Errors are returned to the model as
 // {"error": ...} and logged; they never end the turn.
 func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
-	if server := t.coordinator.service.server; server != nil {
+	if server := t.coordinator.server; server != nil {
 		ctx = server.runDetailContext(ctx)
 	}
 	t.state.endTextSegment(ctx)
@@ -141,6 +141,7 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 }
 
 func coordinatorToolError(err error) runner.AgentToolResult {
+	err = fromFeatureError(err)
 	message := err.Error()
 	var native *nativeError
 	var request *operatortool.RequestError
@@ -305,8 +306,8 @@ func (t *coordinatorToolset) readableProjects(ctx context.Context, record conver
 		return nil, err
 	}
 	projects := []tracker.ProjectID{}
-	err = t.coordinator.service.server.config.TenantRepository.ReadTenant(actorCtx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := t.coordinator.service.server.authorizeAccessScope(actorCtx, r, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, false); err != nil {
+	err = t.coordinator.server.config.TenantRepository.ReadTenant(actorCtx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := t.coordinator.server.authorizeAccessScope(actorCtx, r, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, false); err != nil {
 			return err
 		}
 		var after tracker.ProjectID
@@ -333,7 +334,7 @@ func (t *coordinatorToolset) readableProjects(ctx context.Context, record conver
 				if len(rows) > 0 {
 					after = rows[len(rows)-1].ID
 				}
-				allowed, err := t.coordinator.service.server.coordinatorAllowedProjects(actorCtx, r, nativeScope{organization: record.OrganizationID, credential: credential}, ids)
+				allowed, err := t.coordinator.server.coordinatorAllowedProjects(actorCtx, r, nativeScope{organization: record.OrganizationID, credential: credential}, ids)
 				if err != nil {
 					return err
 				}
@@ -351,7 +352,7 @@ func (t *coordinatorToolset) readableProjects(ctx context.Context, record conver
 					ids = append(ids, grant.ProjectID)
 				}
 			}
-			allowed, err := t.coordinator.service.server.coordinatorAllowedProjects(actorCtx, r, nativeScope{organization: record.OrganizationID, credential: credential}, ids)
+			allowed, err := t.coordinator.server.coordinatorAllowedProjects(actorCtx, r, nativeScope{organization: record.OrganizationID, credential: credential}, ids)
 			if err != nil {
 				return err
 			}
@@ -408,7 +409,7 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 		projects = readable
 	}
 	result := coordinatorAttention{Scope: scope, Projects: projects, Blocked: []coordinatorAttentionItem{}, WaitingForInput: []coordinatorAttentionItem{}, Running: []coordinatorAttentionItem{}, Review: []coordinatorAttentionItem{}, Unavailable: []coordinatorAttentionItem{}}
-	s := t.coordinator.service.server
+	s := t.coordinator.server
 	err := s.config.TenantRepository.ReadTenant(ctx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(conversationstore.AttentionReader)
 		if !ok {
@@ -543,7 +544,7 @@ func (t *coordinatorToolset) resolveIssueReference(ctx context.Context, record c
 		return "", err
 	}
 	scope.project = record.ProjectID
-	s := t.coordinator.service.server
+	s := t.coordinator.server
 	issue, err := s.resolveOperatorNativeItem(ctx, nil, scope, reference)
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, explain.ErrNotFound) || isNativeNotFound(err) {
 		return "", fmt.Errorf("no issue %s in this project", "#"+strings.TrimPrefix(reference, "#"))
@@ -571,7 +572,7 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 	if err != nil {
 		return nil, err
 	}
-	s := t.coordinator.service.server
+	s := t.coordinator.server
 	scope := nativeScope{organization: record.OrganizationID, credential: credential}
 	result := coordinatorIssue{Comments: []coordinatorComment{}}
 	var attemptID string

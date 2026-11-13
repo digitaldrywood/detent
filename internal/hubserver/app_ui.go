@@ -495,7 +495,7 @@ func (s *Service) appBootstrapPreferences(ctx context.Context, organization stri
 		return preferences, err
 	}
 	preferences.Models = appBootstrapModelChoices(models, s.conversationDefaultModel())
-	preferences.Efforts = appBootstrapChoices(conversation.ReasoningEfforts()[1:], conversationChoiceLabel, strings.TrimSpace(s.conversations.config.ReasoningEffort))
+	preferences.Efforts = appBootstrapChoices(conversation.ReasoningEfforts()[1:], conversationChoiceLabel, strings.TrimSpace(s.conversations.Config.ReasoningEffort))
 	preferences.Access = appBootstrapChoices(conversation.AccessLevels()[1:], conversationChoiceLabel, "")
 	return preferences, nil
 }

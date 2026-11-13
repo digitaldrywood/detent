@@ -8,6 +8,6 @@ import (
 
 func (f *conversationWorkerFixture) replay(t *testing.T) ([]conversation.Event, error) {
 	t.Helper()
-	fixture := conversationFixture{nativeFixture: f.nativeFixture, store: f.chat.store, organization: f.project.OrganizationID}
+	fixture := conversationFixture{nativeFixture: f.nativeFixture, store: f.chat.Store, organization: f.project.OrganizationID}
 	return fixture.publishedRecordEvents(t.Context(), f.record, 0)
 }

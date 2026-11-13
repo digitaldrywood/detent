@@ -868,7 +868,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 					t.Fatalf("conversation transport fixture reference differs: %v", err)
 				}
 				probing, calls := false, 0
-				transport := conversationArchiveStore{call: func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+				transport := conversationArchiveStore{Call: func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 					calls++
 					if request.Organization != string(org) || request.Reference != ref || request.Write {
 						return nil, artifact.ErrIntegrity

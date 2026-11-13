@@ -23,14 +23,15 @@ var conversationReconcileInterval = 30 * time.Second
 // the long-poll endpoint and reconciles executions whose lease was lost.
 // The durable store is the queue: Wake only signals broker subscribers.
 type conversationWorkerRouter struct {
+	server  *Service
 	service *conversationService
 	stop    chan struct{}
 	once    sync.Once
 	wg      sync.WaitGroup
 }
 
-func newConversationControlRouter(service *conversationService) conversationControlRouter {
-	router := &conversationWorkerRouter{service: service, stop: make(chan struct{})}
+func newConversationControlRouter(server *Service, service *conversationService) conversationControlRouter {
+	router := &conversationWorkerRouter{server: server, service: service, stop: make(chan struct{})}
 	router.wg.Add(1)
 	go router.reconcileLoop()
 	return router
@@ -38,7 +39,7 @@ func newConversationControlRouter(service *conversationService) conversationCont
 
 // Wake notifies long-polling workers that queued controls may exist.
 func (r *conversationWorkerRouter) Wake(conversationID string) {
-	r.service.broker.notify(conversationID)
+	r.service.Broker.Notify(conversationID)
 }
 
 // Stop ends the reconcile loop and every in-flight long poll.
@@ -56,8 +57,8 @@ func (r *conversationWorkerRouter) reconcileLoop() {
 		case <-r.stop:
 			return
 		case <-ticker.C:
-			if err := r.service.reconcileExecutions(context.Background()); err != nil {
-				r.service.logger.Warn("conversation execution reconcile failed", "error", err)
+			if err := r.service.ReconcileExecutions(context.Background()); err != nil {
+				r.service.Logger.Warn("conversation execution reconcile failed", "error", err)
 			}
 		}
 	}
@@ -65,7 +66,7 @@ func (r *conversationWorkerRouter) reconcileLoop() {
 
 // registerConversationWorkerRoutes mounts the lease-fenced worker endpoints.
 func (s *Service) registerConversationWorkerRoutes(e *echo.Echo) {
-	router, ok := s.conversations.controls.(*conversationWorkerRouter)
+	router, ok := s.conversations.Controls.(*conversationWorkerRouter)
 	if !ok {
 		return
 	}
@@ -192,13 +193,6 @@ type conversationTurnEventsResponse struct {
 
 // Ownership checks.
 
-func (identity conversationWorkerIdentity) validate() error {
-	if strings.TrimSpace(string(identity.LeaseID)) == "" || identity.FencingToken <= 0 || strings.TrimSpace(identity.AttemptID) == "" {
-		return nativePublicInvalid("lease_id, fencing_token and attempt_id are required")
-	}
-	return nil
-}
-
 func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity, error) {
 	header := c.Request().Header
 	token, err := strconv.ParseInt(strings.TrimSpace(header.Get(conversationHeaderFencingToken)), 10, 64)
@@ -210,7 +204,7 @@ func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity
 		FencingToken: tracker.FencingToken(token),
 		AttemptID:    strings.TrimSpace(header.Get(conversationHeaderAttempt)),
 	}
-	return identity, identity.validate()
+	return identity, identity.Validate()
 }
 
 // Transactions.
@@ -222,12 +216,12 @@ func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity
 // Handlers.
 
 func (r *conversationWorkerRouter) bind(e echo.Context) error {
-	s := r.service.server
+	s := r.server
 	var request conversationBindRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
 		return s.invalidAPIRequest(e, err)
 	}
-	if err := request.validate(); err != nil {
+	if err := request.Validate(); err != nil {
 		return s.nativeAPIError(e, err)
 	}
 	if strings.TrimSpace(request.RunID) == "" {
@@ -238,12 +232,12 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 }
 
 func (r *conversationWorkerRouter) unbind(e echo.Context) error {
-	s := r.service.server
+	s := r.server
 	var request conversationUnbindRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
 		return s.invalidAPIRequest(e, err)
 	}
-	if err := request.validate(); err != nil {
+	if err := request.Validate(); err != nil {
 		return s.nativeAPIError(e, err)
 	}
 	status, ok := map[string]conversation.ExecutionStatus{
@@ -258,7 +252,7 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 }
 
 func (r *conversationWorkerRouter) controls(e echo.Context) error {
-	s := r.service.server
+	s := r.server
 	identity, err := conversationIdentityFromHeaders(e)
 	if err != nil {
 		return s.nativeAPIError(e, err)
@@ -294,12 +288,12 @@ func conversationControlQuery(e echo.Context) (after int64, wait time.Duration, 
 // changed nothing, so an idle worker never produces events.
 
 func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
-	s := r.service.server
+	s := r.server
 	var request conversationTurnEventsRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
 		return s.invalidAPIRequest(e, err)
 	}
-	if err := request.validate(); err != nil {
+	if err := request.Validate(); err != nil {
 		return s.nativeAPIError(e, err)
 	}
 	if len(request.Events) > conversationMaxTurnEvents {
@@ -342,11 +336,3 @@ func conversationTruncate(value string, limit int) string {
 }
 
 // Lease loss.
-
-func (c *conversationService) reconcileExecutions(ctx context.Context) error {
-	organization, err := c.lifecycleOrganization()
-	if err != nil {
-		return err
-	}
-	return c.reconcileExecutionsPG(ctx, organization)
-}

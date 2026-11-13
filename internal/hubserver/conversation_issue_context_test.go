@@ -295,7 +295,7 @@ func (f *browserHostedFixture) seedIssueAsk(t *testing.T) {
 	if issue.State != "Blocked" {
 		browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "ask-blocked"}, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "user_requested"}, http.StatusOK), &issue)
 	}
-	backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
+	backend := f.service.conversations.Config.Backend.(*fakeCoordinatorBackend)
 	backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 		request := backend.request(t, turn-1)
 		if !strings.Contains(request.Prompt, "<issue_context>") {

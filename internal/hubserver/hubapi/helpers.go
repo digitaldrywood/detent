@@ -55,3 +55,12 @@ func DecodeJSONLimit(c echo.Context, target any, limit int64) error {
 	}
 	return nil
 }
+
+func MarshalString(value any) (string, error) {
+	encoded, err := json.Marshal(value)
+	return string(encoded), err
+}
+
+func ParseTime(value string) (time.Time, error) {
+	return time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+}

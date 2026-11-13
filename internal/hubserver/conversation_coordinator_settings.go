@@ -131,7 +131,7 @@ func (t *coordinatorToolset) settingsTool(ctx context.Context, record conversati
 	if err != nil {
 		return nil, coordinatorSettingsRefusal(call.Name)
 	}
-	s := t.coordinator.service.server
+	s := t.coordinator.server
 	var fields map[string]json.RawMessage
 	if len(call.Arguments) > coordinatorToolArgumentBytes || json.Unmarshal(call.Arguments, &fields) != nil || fields == nil {
 		return nil, operatortool.ErrInvalidArguments

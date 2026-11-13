@@ -180,7 +180,7 @@ func TestEventCompactionConversations(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := streamFixture{conversationAPIFixture: newConversationAPIFixture(t, nil)}
-			fixture := conversationFixture{nativeFixture: f.nativeFixture, store: f.service.conversations.store, organization: f.project.OrganizationID}
+			fixture := conversationFixture{nativeFixture: f.nativeFixture, store: f.service.conversations.Store, organization: f.project.OrganizationID}
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			at := now.Add(-time.Duration(test.age) * 24 * time.Hour)
 			id := f.create(t, f.token, map[string]any{"title": "preserved conversation"}).Conversation.ID
@@ -195,15 +195,15 @@ func TestEventCompactionConversations(t *testing.T) {
 			if test.streaming {
 				message.Delivery = conversation.DeliveryResponding
 			}
-			plan := &conversationPublicationPlan{service: f.service.conversations, record: record, now: at}
+			plan := &conversationPublicationPlan{Service: f.service.conversations, Record: record, Now: at}
 			if err := preparePGConversationMessage(t.Context(), plan, &message); err != nil {
 				t.Fatal(err)
 			}
 			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
-				if err := registerPreparedConversationObjects(t.Context(), writer, f.project.OrganizationID, plan.prepared, at); err != nil {
+				if err := registerPreparedConversationObjects(t.Context(), writer, f.project.OrganizationID, plan.Prepared, at); err != nil {
 					return err
 				}
-				if _, err := writer.CreateMessage(t.Context(), conversationMessageToStore(f.project.OrganizationID, plan.messages[message.ID])); err != nil {
+				if _, err := writer.CreateMessage(t.Context(), conversationMessageToStore(f.project.OrganizationID, plan.Messages[message.ID])); err != nil {
 					return err
 				}
 				appendEvent := func(kind conversation.EventType, body any) error {
@@ -249,7 +249,7 @@ func TestEventCompactionConversations(t *testing.T) {
 				t.Fatal(err)
 			}
 			for pass := range 3 {
-				if _, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil {
+				if _, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil {
 					t.Fatal(err)
 				}
 				events, err := streamCompactionEvents(t, f, record.ID, 0)

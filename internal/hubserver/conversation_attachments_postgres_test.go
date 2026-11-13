@@ -30,10 +30,10 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	objects := &conversationContentFixture{}
 	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: time.Now}}
-	service.conversations = &conversationService{server: service, store: &conversationStore{contents: objects}, logger: service.config.Logger}
-	service.conversations.config.ControlQueueSize = 100
-	service.conversations.broker = newNotificationBroker()
-	service.conversations.coordinator = newConversationCoordinator(service.conversations)
+	service.conversations = &conversationService{Server: service.conversationServer(), Store: &conversationStore{Contents: objects}, Logger: service.config.Logger}
+	service.conversations.Config.ControlQueueSize = 100
+	service.conversations.Broker = newNotificationBroker().Broker
+	service.conversations.Coordinator = newConversationCoordinator(service, service.conversations)
 	service.ready.Store(true)
 	service.registerConversationAPIRoutes(service.echo)
 	type fixture struct {
@@ -182,7 +182,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			previous := service.localOrganization
 			service.localOrganization = string(f.org)
 			t.Cleanup(func() { service.localOrganization = previous })
-			if swept, err := service.conversations.sweepAttachments(t.Context()); err != nil || swept != 1 {
+			if swept, err := service.conversations.SweepAttachments(t.Context()); err != nil || swept != 1 {
 				t.Fatalf("sweep = %d, %v; want 1", swept, err)
 			}
 			state(size, map[string][2]int{expired.ID: {0, 0}, uploads[2].ID: {1, 1}})
@@ -721,10 +721,10 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	objects := &conversationContentFixture{}
 	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: time.Now}}
-	service.conversations = &conversationService{server: service, store: &conversationStore{contents: objects}, logger: service.config.Logger}
-	service.conversations.config.ControlQueueSize = 100
-	service.conversations.broker = newNotificationBroker()
-	service.conversations.coordinator = newConversationCoordinator(service.conversations)
+	service.conversations = &conversationService{Server: service.conversationServer(), Store: &conversationStore{Contents: objects}, Logger: service.config.Logger}
+	service.conversations.Config.ControlQueueSize = 100
+	service.conversations.Broker = newNotificationBroker().Broker
+	service.conversations.Coordinator = newConversationCoordinator(service, service.conversations)
 	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(func() time.Time { return service.config.now() }))
 	service.ready.Store(true)
 	service.registerConversationAPIRoutes(service.echo)
@@ -828,7 +828,7 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 			}
 			writeErr := errors.New("attachment write unavailable")
 			service.config.TenantRepository = &attachmentReadCounter{Repository: repository, beforeWrite: func() error { return writeErr }}
-			swept, err := service.conversations.sweepAttachments(t.Context())
+			swept, err := service.conversations.SweepAttachments(t.Context())
 			service.config.TenantRepository = repository
 			if !errors.Is(err, writeErr) || swept != 0 {
 				t.Fatalf("failed sweep=%d err=%v", swept, err)
@@ -847,7 +847,7 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 				t.Fatal(err)
 			}
 			counter := &attachmentReadCounter{Repository: repository, beforeWrite: func() error {
-				swept, err := service.conversations.sweepAttachments(t.Context())
+				swept, err := service.conversations.SweepAttachments(t.Context())
 				if err == nil && swept != 2 {
 					return fmt.Errorf("concurrent sweep=%d want=2", swept)
 				}
@@ -856,7 +856,7 @@ func TestConversationAttachmentPostgresSweep(t *testing.T) {
 			service.config.TenantRepository = counter
 			t.Cleanup(func() { service.config.TenantRepository = repository })
 			for _, want := range []int{0, 0} {
-				if swept, err := service.conversations.sweepAttachments(t.Context()); err != nil || swept != want {
+				if swept, err := service.conversations.SweepAttachments(t.Context()); err != nil || swept != want {
 					t.Fatalf("sweep = %d, %v; want %d", swept, err, want)
 				}
 			}

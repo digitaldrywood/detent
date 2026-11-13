@@ -158,7 +158,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		t.Fatal(err)
 	}
 	identity := conversationWorkerIdentity{LeaseID: "lease-pg-worker", FencingToken: 1, AttemptID: "attempt-pg-worker"}
-	router := f.service.conversations.controls.(*conversationWorkerRouter)
+	router := f.service.conversations.Controls.(*conversationWorkerRouter)
 	var currentLease leasestore.Lease
 	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -303,7 +303,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 			return nil
 		})
 	}}
-	changed, reconcileErr := f.service.conversations.reconcileExecutionPG(t.Context(), scope.organization, reconcileCandidate)
+	changed, reconcileErr := f.service.conversations.ReconcileExecutionPG(t.Context(), scope.organization, reconcileCandidate)
 	f.service.config.TenantRepository = repository
 	f.service.config.now = func() time.Time { return renewedAt }
 	if reconcileErr != nil || changed || renewedAt.IsZero() {
@@ -351,7 +351,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	if len(storedMessages) != 1 || storedMessages[0].Text != "" || storedMessages[0].ContentReference == "" {
 		t.Fatalf("stored assistant delta messages = %+v", storedMessages)
 	}
-	storedMessage, err := f.service.conversations.readPublicationMessage(t.Context(), f.project.OrganizationID, linked.ID, storedMessages[0].ID)
+	storedMessage, err := f.service.conversations.ReadPublicationMessage(t.Context(), f.project.OrganizationID, linked.ID, storedMessages[0].ID)
 	if err != nil || storedMessage.Text != "example response" {
 		t.Fatalf("stored assistant delta text = %q, error = %v", storedMessage.Text, err)
 	}
@@ -572,7 +572,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		if err != nil {
 			return fmt.Errorf("release previous lease: %w", err)
 		}
-		return f.service.conversations.leaseReleasedTenant(t.Context(), w, released.LeaseID, released.FencingToken, "released")
+		return f.service.conversations.LeaseReleasedTenant(t.Context(), w, released.LeaseID, released.FencingToken, "released")
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -646,7 +646,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 			t.Fatal(err)
 		}
 	}
-	if changed, err := f.service.conversations.reconcileExecutionPG(t.Context(), scope.organization, unstarted); err != nil || changed {
+	if changed, err := f.service.conversations.ReconcileExecutionPG(t.Context(), scope.organization, unstarted); err != nil || changed {
 		t.Fatalf("current bound execution was settled before its first attempt event: changed=%t error=%v", changed, err)
 	}
 	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -860,7 +860,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 				}}
 			}
 			t.Cleanup(func() { f.service.config.TenantRepository = repository })
-			changed, err := f.service.conversations.reconcileExecutionPG(t.Context(), scope.organization, selected)
+			changed, err := f.service.conversations.ReconcileExecutionPG(t.Context(), scope.organization, selected)
 			f.service.config.TenantRepository = repository
 			if err != nil || changed == replaced {
 				t.Fatalf("missing lease reconciliation: replaced=%t changed=%t error=%v", replaced, changed, err)
@@ -891,7 +891,7 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 	originalClock, originalDispatch := service.config.now, service.config.ConversationDispatch
 	defer func() { service.config.now, service.config.ConversationDispatch = originalClock, originalDispatch }()
 	service.config.ConversationDispatch = tenantNativeRunEventParticipant{service: service}
-	router := service.conversations.controls.(*conversationWorkerRouter)
+	router := service.conversations.Controls.(*conversationWorkerRouter)
 	claimNumber := 0
 	release := func() {
 		t.Helper()
@@ -900,7 +900,7 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 			if err != nil {
 				return err
 			}
-			return service.conversations.leaseReleasedTenant(t.Context(), w, released.LeaseID, released.FencingToken, "released")
+			return service.conversations.LeaseReleasedTenant(t.Context(), w, released.LeaseID, released.FencingToken, "released")
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -1311,7 +1311,7 @@ func reconcileWithWorkerLock(t *testing.T, admin *sql.DB, service *Service, repo
 	}()
 	go func() {
 		defer close(finished)
-		changed, reconcileErr = service.conversations.reconcileExecutionPG(ctx, scope.organization, candidate)
+		changed, reconcileErr = service.conversations.ReconcileExecutionPG(ctx, scope.organization, candidate)
 	}()
 	attempted := order.workItemAttempted
 	if held == "lease" {

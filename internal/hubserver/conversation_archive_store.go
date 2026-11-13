@@ -10,7 +10,7 @@ import (
 )
 
 type conversationArchiveStore struct {
-	call entryauthority.ContentHandler
+	Call entryauthority.ContentHandler
 }
 
 func (s conversationArchiveStore) PublishContent(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
@@ -21,7 +21,7 @@ func (s conversationArchiveStore) PublishContent(ctx context.Context, organizati
 	if stored, err := s.ReadContent(ctx, organization, ref); err == nil && bytes.Equal(stored, content) {
 		return ref, nil
 	}
-	if _, err := s.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref, Data: compressed, Write: true}); err != nil {
+	if _, err := s.Call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref, Data: compressed, Write: true}); err != nil {
 		return ref, err
 	}
 	stored, err := s.ReadContent(ctx, organization, ref)
@@ -35,7 +35,7 @@ func (s conversationArchiveStore) PublishContent(ctx context.Context, organizati
 }
 
 func (s conversationArchiveStore) ReadContent(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	content := &changeContent{call: s.call, readOrganization: organization}
+	content := &changeContent{call: s.Call, readOrganization: organization}
 	if prior, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && prior.readOrganization != "" {
 		if prior.readOrganization != organization {
 			return nil, artifact.ErrIntegrity

@@ -22,7 +22,7 @@ func TestConversationCoordinatorRejectsRecordOutsideScope(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	service := &Service{config: Config{TenantRepository: repository, now: func() time.Time { return now }}}
-	coordinator := &conversationTurnCoordinator{service: &conversationService{server: service}}
+	coordinator := &conversationTurnCoordinator{server: service, service: &conversationService{Server: service.conversationServer()}}
 	organizations := []tracker.OrganizationID{"org_first", "org_second"}
 	for _, organization := range organizations {
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {

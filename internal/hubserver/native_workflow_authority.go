@@ -131,7 +131,7 @@ func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Wr
 		return err
 	}
 	if s.conversations != nil {
-		return s.conversations.leaseReleasedTenant(ctx, w, lease.LeaseID, lease.FencingToken, "cancelled")
+		return s.conversations.LeaseReleasedTenant(ctx, w, lease.LeaseID, lease.FencingToken, "cancelled")
 	}
 	return nil
 }

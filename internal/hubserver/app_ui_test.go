@@ -967,7 +967,7 @@ func TestAppBootstrapPreferenceChoices(t *testing.T) {
 					t.Fatalf("%s defaults = %v, want [%s]", check.name, defaults, check.lead)
 				}
 			}
-			coordinator := service.conversations != nil && service.conversations.coordinator.Available()
+			coordinator := service.conversations != nil && service.conversations.Coordinator.Available()
 			if coordinator != test.wantCoordinator {
 				t.Fatalf("coordinator available = %t, want %t", coordinator, test.wantCoordinator)
 			}

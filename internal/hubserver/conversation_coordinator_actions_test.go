@@ -248,8 +248,8 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						t.Fatalf("MCP post=%s", result.Content)
 					}
 				}
-				c := f.service.conversations.coordinator.(*conversationTurnCoordinator)
-				record, err := c.service.readPublicationConversation(t.Context(), created.Conversation.ID)
+				c := f.service.conversations.Coordinator.(*conversationTurnCoordinator)
+				record, err := c.service.ReadPublicationConversation(t.Context(), created.Conversation.ID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -989,7 +989,7 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 	blockedArchive := seedArchiveIssues(t, f.service, scope, 1, "Merging")[0]
 	coordinatorActionWriteIssue(t, f.service, "org_browser_preview", tracker.ProjectID(f.project), blockedArchive.WorkItemID, func(issue *tracker.NativeIssue) { issue.Title = "Running cleanup issue" })
 	seedCoordinatorArchiveLease(t, f.service, string(blockedArchive.WorkItemID))
-	backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
+	backend := f.service.conversations.Config.Backend.(*fakeCoordinatorBackend)
 	backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 		prompt := strings.ToLower(backend.request(t, turn-1).Prompt)
 		if _, current, ok := strings.Cut(prompt, "</transcript>"); ok {
@@ -1203,7 +1203,7 @@ func runCoordinatorIssueSplitPostgresCases(t *testing.T) {
 						} `json:"conversation"`
 					}
 					decodeHubResponse(t, response, &created)
-					coordinator := service.conversations.coordinator.(*conversationTurnCoordinator)
+					coordinator := service.conversations.Coordinator.(*conversationTurnCoordinator)
 					record, err := coordinator.readConversation(t.Context(), nil, created.Conversation.ID)
 					if err != nil {
 						t.Fatal(err)

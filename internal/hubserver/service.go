@@ -318,11 +318,11 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		}
 	}
 	if cfg.Conversation != nil && cfg.Conversation.Enabled && !cfg.CredentialMaintenance {
-		service.conversations = newConversationService(service, cfg.Conversation.normalized())
+		service.conversations = newConversationService(service, cfg.Conversation.Normalized())
 	}
 	closeStartupDatabase := func(err error) error {
 		if service.conversations != nil {
-			service.conversations.stop()
+			service.conversations.Stop()
 		}
 		return errors.Join(err, database.Close())
 	}
@@ -340,7 +340,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	e.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
 	service.registerRoutes(e)
 	if service.conversations != nil {
-		if err := service.conversations.start(ctx); err != nil {
+		if err := service.conversations.Start(ctx); err != nil {
 			workerCancel()
 			return nil, closeStartupDatabase(err)
 		}
@@ -593,7 +593,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		s.dashboard.stop()
 	}
 	if s.conversations != nil {
-		s.conversations.stop()
+		s.conversations.Stop()
 	}
 	var mcpErr error
 	if s.mcpHTTP != nil {
@@ -641,7 +641,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 			s.outbox.stop()
 		}
 		if s.conversations != nil {
-			s.conversations.stop()
+			s.conversations.Stop()
 		}
 		if s.workspaces != nil {
 			s.workspaces.StopContext(ctx)

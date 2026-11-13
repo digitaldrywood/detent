@@ -311,7 +311,7 @@ func TestConversationSettleSweep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settled, err := f.service.conversations.settleIdleConversationsForTest(t.Context(), now)
+	settled, err := settleIdleConversationsForTest(f.service.conversations, t.Context(), now)
 	if err != nil {
 		t.Fatalf("settleIdleConversations() error = %v", err)
 	}
@@ -337,7 +337,7 @@ func TestConversationSettleSweep(t *testing.T) {
 	if got := f.snapshot(t, f.token, idle.ID).Conversation.Status; got != conversation.StatusActive {
 		t.Fatalf("status after a message = %q, want active", got)
 	}
-	settled, err = f.service.conversations.settleIdleConversationsForTest(t.Context(), now)
+	settled, err = settleIdleConversationsForTest(f.service.conversations, t.Context(), now)
 	if err != nil {
 		t.Fatalf("settleIdleConversations() error = %v", err)
 	}
@@ -411,15 +411,6 @@ func conversationEmitted(t *testing.T, f conversationAPIFixture, id string, want
 		t.Fatalf("read events: %v", err)
 	}
 	return found
-}
-
-// TestConversationDefaultSettleWindow proves the configuration default is the
-// 24 hours.
-func TestConversationDefaultSettleWindow(t *testing.T) {
-	t.Parallel()
-	if got := (ConversationConfig{Enabled: true}).normalized().SettleWindow; got != 24*time.Hour {
-		t.Fatalf("SettleWindow = %s, want 24h", got)
-	}
 }
 
 // TestConversationHandoffNextStep covers the handoff's next step: the default

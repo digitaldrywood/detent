@@ -38,7 +38,7 @@ func TestCoordinatorPublicationPreservesEventSequence(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	coordinator := &conversationTurnCoordinator{service: fixture.service.conversations}
+	coordinator := &conversationTurnCoordinator{server: fixture.service, service: fixture.service.conversations}
 	future := now.Add(time.Hour)
 	for _, tc := range []struct {
 		name              string
@@ -61,10 +61,10 @@ func TestCoordinatorPublicationPreservesEventSequence(t *testing.T) {
 				}
 				return coordinator.updateExecution(ctx, w, record, execution, now)
 			}, func(ctx context.Context, plan *conversationPublicationPlan) error {
-				if err := plan.appendMessage(ctx, &message); err != nil {
+				if err := plan.AppendMessage(ctx, &message); err != nil {
 					return err
 				}
-				return plan.updateExecution(ctx, execution)
+				return plan.UpdateExecution(ctx, execution)
 			}); err != nil {
 				t.Fatalf("publish message and execution: %v", err)
 			}

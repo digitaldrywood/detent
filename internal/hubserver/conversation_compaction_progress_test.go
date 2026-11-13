@@ -46,7 +46,7 @@ func seedCompactionProgress(t *testing.T, prefix int, delivery conversation.Deli
 func checkCompactionRestartEligibility(t *testing.T) {
 	f, before, message := seedCompactionProgress(t, 0, conversation.DeliveryResponding)
 	now := time.Now().UTC()
-	if removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 0 {
+	if removed, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 0 {
 		t.Fatalf("streaming scan: removed=%d error=%v", removed, err)
 	}
 	if scanned := readStreamCompactionConversation(t, f, before.ID); scanned.Compaction.ContentScannedSequence != before.EventSequence {
@@ -65,7 +65,7 @@ func checkCompactionRestartEligibility(t *testing.T) {
 	if after := readStreamCompactionConversation(t, f, before.ID); after.EventSequence != before.EventSequence || after.Status != conversation.StatusActive {
 		t.Fatalf("restart changed event head or active state: %+v", after)
 	}
-	if removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 1 {
+	if removed, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 1 {
 		t.Fatalf("restart terminal delta excluded: removed=%d error=%v", removed, err)
 	}
 }
@@ -82,7 +82,7 @@ func checkCompactionAppendMode(t *testing.T, full bool) {
 	if full {
 		setProgressConversationOld(t, f, record.ID, now)
 	}
-	if removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 0 {
+	if removed, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 0 {
 		t.Fatalf("retained prefix scan: removed=%d error=%v", removed, err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
@@ -91,7 +91,7 @@ func checkCompactionAppendMode(t *testing.T, full bool) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 1 {
+	if removed, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 1 {
 		t.Fatalf("append starved terminal delta beyond retained prefix: removed=%d error=%v", removed, err)
 	}
 	if got := readStreamCompactionConversation(t, f, record.ID); got.Compaction.ContentScannedSequence != got.EventSequence || got.Compaction.ThroughSequence != record.EventSequence {
@@ -138,11 +138,11 @@ func checkCompactionPredecessorInvalidation(t *testing.T) {
 			if kind == conversation.EventConversationUpdated {
 				appendEvent()
 			}
-			if removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 1 {
+			if removed, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 1 {
 				t.Fatalf("initial compaction: removed=%d error=%v", removed, err)
 			}
 			appendEvent()
-			if removed, err := f.service.conversations.compactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 1 {
+			if removed, err := f.service.conversations.CompactEventsPG(t.Context(), f.project.OrganizationID, now); err != nil || removed != 1 {
 				t.Fatalf("new replacement did not retire predecessor: removed=%d error=%v", removed, err)
 			}
 		})

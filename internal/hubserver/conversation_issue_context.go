@@ -33,7 +33,7 @@ func (t *coordinatorToolset) issueContext(ctx context.Context, record conversati
 	if err != nil {
 		return operatortool.IssueContext{}, err
 	}
-	return operatortool.ReadIssueContext(ctx, operatorWorkReads{service: t.coordinator.service.server, scope: scope}, operatortool.WorkReadRequest{ProjectID: string(record.ProjectID), Reference: record.SubjectWorkItemID})
+	return operatortool.ReadIssueContext(ctx, operatorWorkReads{service: t.coordinator.server, scope: scope}, operatortool.WorkReadRequest{ProjectID: string(record.ProjectID), Reference: record.SubjectWorkItemID})
 }
 
 func (t *coordinatorToolset) readIssueHistory(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -81,7 +81,7 @@ func (t *coordinatorToolset) readIssueHistory(ctx context.Context, record conver
 	if err != nil {
 		return nil, err
 	}
-	result, err := (operatorWorkReads{service: t.coordinator.service.server, scope: scope}).ReadWork(ctx, args.Section, request)
+	result, err := (operatorWorkReads{service: t.coordinator.server, scope: scope}).ReadWork(ctx, args.Section, request)
 	return result.Content, err
 }
 

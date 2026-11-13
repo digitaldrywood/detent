@@ -217,14 +217,14 @@ func (s *Service) publishStorageArchive(ctx context.Context, organization tracke
 			message.Data = json.RawMessage(`{}`)
 			continue
 		}
-		if s.conversations == nil || s.conversations.store == nil {
+		if s.conversations == nil || s.conversations.Store == nil {
 			return conversationContentUnavailable()
 		}
 		raw, err := messageContent(conversationMessageFromStore(*message))
 		if err != nil {
 			return err
 		}
-		ref, err := s.conversations.store.publishPayload(ctx, string(organization), raw)
+		ref, err := s.conversations.Store.PublishPayload(ctx, string(organization), raw)
 		if err != nil {
 			return err
 		}

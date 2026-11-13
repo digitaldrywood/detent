@@ -78,7 +78,7 @@ func (f *conversationWorkerFixture) as(generation conversationGeneration, body f
 func (f *conversationWorkerFixture) restart(t *testing.T) {
 	t.Helper()
 	service := tfConvReopenConversationService(t, f.service, func(cfg *Config) {
-		cfg.Conversation = &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour, ArchiveContents: f.chat.store.contents}
+		cfg.Conversation = &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour, ArchiveContents: f.chat.Store.Contents}
 	})
 	f.service = service
 	f.chat = service.conversations
@@ -274,7 +274,7 @@ func TestConversationRevokedWorkerToken(t *testing.T) {
 		// A revoked worker cannot renew, so the lease runs out and the hub
 		// settles the execution without the worker's cooperation.
 		f.advance(11 * time.Minute)
-		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+		if err := f.chat.ReconcileExecutions(t.Context()); err != nil {
 			t.Fatalf("reconcileExecutions() error = %v", err)
 		}
 		record := f.load(t)
@@ -374,7 +374,7 @@ func TestConversationDuplicateAnswers(t *testing.T) {
 			var calls atomic.Int64
 			var releaseOnce sync.Once
 			closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
-			f.service.conversations.store.contents.(*conversationContentFixture).onIO = func() error {
+			f.service.conversations.Store.Contents.(*conversationContentFixture).onIO = func() error {
 				if calls.Add(1) <= 2 {
 					arrived <- struct{}{}
 					<-release
@@ -494,7 +494,7 @@ func conversationBurstDeltas(t *testing.T, f streamFixture, id string, count int
 		}); err != nil {
 			t.Fatal(err)
 		}
-		f.service.conversations.broker.notify(id)
+		f.service.conversations.Broker.Notify(id)
 	}
 	return ids
 
@@ -932,7 +932,7 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 						return err
 					})
 				}
-				if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+				if err := f.chat.ReconcileExecutions(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 				if execution := f.load(t).Execution; execution.Status != wantStatus {
@@ -1012,11 +1012,11 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 	})
 
 	t.Run("pending work is woken again", func(t *testing.T) {
-		router := f.chat.controls
+		router := f.chat.Controls
 		recorder := &recordingWaker{}
-		f.chat.controls = recorder
-		defer func() { f.chat.controls = router }()
-		if err := f.chat.wakePending(t.Context()); err != nil {
+		f.chat.Controls = recorder
+		defer func() { f.chat.Controls = router }()
+		if err := f.chat.WakePending(t.Context()); err != nil {
 			t.Fatalf("wakePending() error = %v", err)
 		}
 		if len(recorder.woken) != 1 || recorder.woken[0] != f.record.ID {
