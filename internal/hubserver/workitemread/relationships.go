@@ -67,6 +67,11 @@ func (rd Reader) HydrateRelationshipFacts(ctx context.Context, scope hubscope.Na
 	}
 
 	for _, relation := range relations {
+		visible := authorizedProjects[relation.RelatedProjectID]
+		visible = visible && scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
+		if !visible {
+			continue
+		}
 		if relation.Type == "dependency" {
 			switch relation.Direction {
 			case "blocked_by":
@@ -76,19 +81,6 @@ func (rd Reader) HydrateRelationshipFacts(ctx context.Context, scope hubscope.Na
 				edges.unblocks = append(edges.unblocks, string(relation.RelatedWorkItemID))
 				edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.Project
 			}
-		}
-		visible := authorizedProjects[relation.RelatedProjectID]
-		visible = visible && scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
-		if !visible {
-			if relation.Type == "dependency" {
-				switch relation.Direction {
-				case "blocked_by":
-					edges.privateBlocked = true
-				case "blocks":
-					edges.privateUnblocks = true
-				}
-			}
-			continue
 		}
 		link := tracker.NativeDependency{
 			Dispatchable: relation.Dispatchable,
@@ -129,20 +121,8 @@ func (rd Reader) HydrateRelationshipFacts(ctx context.Context, scope hubscope.Na
 	slices.SortFunc(issue.Related, func(a, b tracker.NativeDependency) int {
 		return strings.Compare(string(a.ID), string(b.ID))
 	})
-	issue.BlockedReason.CurrentBasis = DependencyBasis(edges.blocked)
-	issue.UnblocksReason.CurrentBasis = DependencyBasis(edges.unblocks)
-	if issue.BlockedReason.Basis != issue.BlockedReason.CurrentBasis || edges.privateBlocked {
-		issue.BlockedReason.Text = ""
-	}
-	if issue.UnblocksReason.Basis != issue.UnblocksReason.CurrentBasis || edges.privateUnblocks {
-		issue.UnblocksReason.Text = ""
-	}
-	if edges.privateBlocked {
-		issue.BlockedReason.CurrentBasis = ""
-	}
-	if edges.privateUnblocks {
-		issue.UnblocksReason.CurrentBasis = ""
-	}
+	issue.BlockedReason = VisibleDependencyReason(issue.BlockedReason, edges.blocked, edges.privateBlocked)
+	issue.UnblocksReason = VisibleDependencyReason(issue.UnblocksReason, edges.unblocks, edges.privateUnblocks)
 	return nil
 }
 
@@ -197,6 +177,17 @@ func (rd Reader) ProjectAccess(ctx context.Context, scope hubscope.NativeScope, 
 		return nil
 	})
 	return allowed, err
+}
+
+func VisibleDependencyReason(reason tracker.DependencyReason, visible []string, crossProject bool) tracker.DependencyReason {
+	reason.CurrentBasis = DependencyBasis(slices.Clone(visible))
+	if reason.Basis != reason.CurrentBasis || crossProject {
+		reason.Text = ""
+	}
+	if crossProject {
+		reason.CurrentBasis = ""
+	}
+	return reason
 }
 
 func DependencyBasis(ids []string) string {

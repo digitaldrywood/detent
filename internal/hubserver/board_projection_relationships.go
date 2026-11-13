@@ -48,34 +48,11 @@ func (s *Service) projectBoardRelationships(scope hubscope.NativeScope, issue *t
 	issue.Dependents = []tracker.NativeDependency{}
 	issue.Related = []tracker.NativeDependency{}
 	issue.DependencyReady = true
-	type dependencyEdges struct {
-		blocked, unblocks               []string
-		privateBlocked, privateUnblocks bool
-	}
-	edges := dependencyEdges{}
 	for _, fact := range facts {
 		relation := fact.Relationship
 		visible := relation.RelatedProjectID == scope.Project || fact.RelatedProjectVisible
-		if relation.Type == "dependency" {
-			switch relation.Direction {
-			case "blocked_by":
-				edges.blocked = append(edges.blocked, string(relation.RelatedWorkItemID))
-				edges.privateBlocked = edges.privateBlocked || relation.RelatedProjectID != scope.Project
-			case "blocks":
-				edges.unblocks = append(edges.unblocks, string(relation.RelatedWorkItemID))
-				edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.Project
-			}
-		}
 		visible = visible && scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
 		if !visible {
-			if relation.Type == "dependency" {
-				switch relation.Direction {
-				case "blocked_by":
-					edges.privateBlocked = true
-				case "blocks":
-					edges.privateUnblocks = true
-				}
-			}
 			continue
 		}
 		link := tracker.NativeDependency{
@@ -111,18 +88,5 @@ func (s *Service) projectBoardRelationships(scope hubscope.NativeScope, issue *t
 	slices.SortFunc(issue.Blockers, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 	slices.SortFunc(issue.Dependents, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 	slices.SortFunc(issue.Related, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
-	issue.BlockedReason.CurrentBasis = workitemread.DependencyBasis(edges.blocked)
-	issue.UnblocksReason.CurrentBasis = workitemread.DependencyBasis(edges.unblocks)
-	if issue.BlockedReason.Basis != issue.BlockedReason.CurrentBasis || edges.privateBlocked {
-		issue.BlockedReason.Text = ""
-	}
-	if issue.UnblocksReason.Basis != issue.UnblocksReason.CurrentBasis || edges.privateUnblocks {
-		issue.UnblocksReason.Text = ""
-	}
-	if edges.privateBlocked {
-		issue.BlockedReason.CurrentBasis = ""
-	}
-	if edges.privateUnblocks {
-		issue.UnblocksReason.CurrentBasis = ""
-	}
+	issue.BlockedReason.CurrentBasis, issue.UnblocksReason.CurrentBasis = "", ""
 }

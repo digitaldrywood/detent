@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -80,39 +81,28 @@ func (s *Service) authorizeBoardModel(ctx context.Context, reader tenantstore.Re
 			if err != nil {
 				return err
 			}
-			hidden := false
 			keep := func(values []tracker.NativeDependency) []tracker.NativeDependency {
 				if values == nil {
 					return nil
 				}
-				result := make([]tracker.NativeDependency, 0, len(values))
-				for _, link := range values {
-					if allowed.Items[link.ID] == link.ProjectID {
-						result = append(result, link)
-					} else {
-						hidden = true
-					}
-				}
-				return result
+				return slices.DeleteFunc(slices.Clone(values), func(link tracker.NativeDependency) bool { return allowed.Items[link.ID] != link.ProjectID })
 			}
 			issue := card.Issue
 			issue.Blockers, issue.Dependents, issue.Related = keep(issue.Blockers), keep(issue.Dependents), keep(issue.Related)
 			if issue.Dependencies != nil {
-				ids := make([]tracker.NativeWorkItemID, 0, len(issue.Dependencies))
-				for _, id := range issue.Dependencies {
-					if allowed.Items[id] != "" {
-						ids = append(ids, id)
-					} else {
-						hidden = true
-					}
-				}
-				issue.Dependencies = ids
+				issue.Dependencies = slices.DeleteFunc(slices.Clone(issue.Dependencies), func(id tracker.NativeWorkItemID) bool { return allowed.Items[id] == "" })
 			}
-			if hidden {
-				issue.BlockedReason, issue.UnblocksReason = tracker.DependencyReason{}, tracker.DependencyReason{}
-				issue.DependencyReady = !slices.ContainsFunc(issue.Blockers, func(link tracker.NativeDependency) bool { return !link.Terminal })
-				issue.OmittedFields = append(slices.Clone(issue.OmittedFields), "blocked_reason", "unblocks_reason")
+			issue.DependencyReady = !slices.ContainsFunc(issue.Blockers, func(link tracker.NativeDependency) bool { return !link.Terminal })
+			blocked, unblocks := make([]string, 0, len(issue.Dependencies)), make([]string, 0, len(issue.Dependents))
+			for _, id := range issue.Dependencies {
+				blocked = append(blocked, string(id))
 			}
+			for _, link := range issue.Dependents {
+				unblocks = append(unblocks, string(link.ID))
+			}
+			crossProject := func(link tracker.NativeDependency) bool { return link.ProjectID != scope.Project }
+			issue.BlockedReason = workitemread.VisibleDependencyReason(issue.BlockedReason, blocked, slices.ContainsFunc(issue.Blockers, crossProject))
+			issue.UnblocksReason = workitemread.VisibleDependencyReason(issue.UnblocksReason, unblocks, slices.ContainsFunc(issue.Dependents, crossProject))
 			row.PageIssue = &issue
 			if reporter != "" {
 				facts := *row.ReporterRelations

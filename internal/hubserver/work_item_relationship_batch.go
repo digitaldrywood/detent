@@ -117,6 +117,10 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 			for _, fact := range factsByWorkItem[workItem] {
 				relation := fact.Relationship
 				visible := relation.RelatedProjectID == scope.Project || fact.RelatedProjectVisible && authorizedProjects[relation.RelatedProjectID]
+				visible = visible && scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
+				if !visible {
+					continue
+				}
 				if relation.Type == "dependency" {
 					switch relation.Direction {
 					case "blocked_by":
@@ -126,18 +130,6 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 						edges.unblocks = append(edges.unblocks, string(relation.RelatedWorkItemID))
 						edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.Project
 					}
-				}
-				visible = visible && scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
-				if !visible {
-					if relation.Type == "dependency" {
-						switch relation.Direction {
-						case "blocked_by":
-							edges.privateBlocked = true
-						case "blocks":
-							edges.privateUnblocks = true
-						}
-					}
-					continue
 				}
 				link := tracker.NativeDependency{
 					Dispatchable: relation.Dispatchable,
@@ -172,20 +164,8 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 			slices.SortFunc(issue.Blockers, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 			slices.SortFunc(issue.Dependents, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 			slices.SortFunc(issue.Related, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
-			issue.BlockedReason.CurrentBasis = workitemread.DependencyBasis(edges.blocked)
-			issue.UnblocksReason.CurrentBasis = workitemread.DependencyBasis(edges.unblocks)
-			if issue.BlockedReason.Basis != issue.BlockedReason.CurrentBasis || edges.privateBlocked {
-				issue.BlockedReason.Text = ""
-			}
-			if issue.UnblocksReason.Basis != issue.UnblocksReason.CurrentBasis || edges.privateUnblocks {
-				issue.UnblocksReason.Text = ""
-			}
-			if edges.privateBlocked {
-				issue.BlockedReason.CurrentBasis = ""
-			}
-			if edges.privateUnblocks {
-				issue.UnblocksReason.CurrentBasis = ""
-			}
+			issue.BlockedReason = workitemread.VisibleDependencyReason(issue.BlockedReason, edges.blocked, edges.privateBlocked)
+			issue.UnblocksReason = workitemread.VisibleDependencyReason(issue.UnblocksReason, edges.unblocks, edges.privateUnblocks)
 		}
 	}
 	return nil

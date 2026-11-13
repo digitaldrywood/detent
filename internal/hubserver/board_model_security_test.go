@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -16,9 +17,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/workitemread"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -129,7 +132,10 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 								t.Errorf("%s/%s links=%v want=%v", label, include, ids, want)
 							}
 						}
-						if len(want) < len(links) && (got.DependencyReady || got.BlockedReason.Text != "" || got.UnblocksReason.Text != "") {
+						if got.DependencyReady != (len(want) == 0) {
+							t.Errorf("%s/%s readiness=%v not computed from visible blockers %v", label, include, got.DependencyReady, want)
+						}
+						if len(want) < len(links) && (got.BlockedReason.Text != "" || got.UnblocksReason.Text != "" || slices.Contains(got.OmittedFields, "blocked_reason") || slices.Contains(got.OmittedFields, "unblocks_reason")) {
 							t.Errorf("%s/%s hidden relationship exposed derived facts", label, include)
 						}
 					}
@@ -224,6 +230,156 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 			}
 			if _, err := service.readBoardRecords(t.Context(), scope, url.Values{"include": {"board"}}); !errors.Is(err, accessstore.ErrDenied) {
 				t.Errorf("moved source error=%v, want denied", err)
+			}
+		})
+	}
+}
+
+func TestBoardModelHiddenBlockerLeavesNoTrace(t *testing.T) {
+	t.Parallel()
+	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
+	repository := service.config.TenantRepository
+	org := tracker.OrganizationID("org_first")
+	source := newNativeFixture(t, service, org, "Example source")
+	target := newNativeFixture(t, service, org, "Example target")
+	partial, status, err := service.authenticateTenantAPIHash(t.Context(), org, apikey.HashToken(source.token), "", "")
+	if err != nil {
+		t.Fatalf("partial credential status=%d: %v", status, err)
+	}
+	full, status, err := service.authenticateTenantAPIHash(t.Context(), org, apikey.HashToken(target.token), "", "")
+	if err != nil {
+		t.Fatalf("full credential status=%d: %v", status, err)
+	}
+	now := service.config.Clock().UTC().Truncate(time.Microsecond)
+	same := tracker.NativeDependency{ID: "wi_same", ProjectID: source.project.ID, Number: 5, Title: "Same project blocker", State: "Todo"}
+	hidden := tracker.NativeDependency{ID: "wi_hidden", ProjectID: target.project.ID, Number: 1, Title: "Private target blocker", State: "Todo"}
+	type item struct {
+		id     tracker.NativeWorkItemID
+		number int
+		links  []tracker.NativeDependency
+		basis  []string
+	}
+	pairs := []struct {
+		name          string
+		with, without item
+		ready         bool
+	}{
+		{"visible blocker", item{"wi_with_visible", 1, []tracker.NativeDependency{same, hidden}, []string{"wi_same"}}, item{"wi_without_visible", 2, []tracker.NativeDependency{same}, []string{"wi_same"}}, false},
+		{"only hidden blocker", item{"wi_with_hidden", 3, []tracker.NativeDependency{hidden}, nil}, item{"wi_without_any", 4, nil, nil}, true},
+	}
+	if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+		if err := w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: full.ID, ProjectID: source.project.ID}); err != nil {
+			return err
+		}
+		for _, link := range []tracker.NativeDependency{same, hidden} {
+			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: link.ProjectID, NativeID: link.ID, Number: int64(link.Number), Title: link.Title, WorkflowStateName: new("Todo"), ActorKind: new("human"), ActorPrincipalID: new("owner")}); err != nil {
+				return err
+			}
+		}
+		project, err := w.Project(t.Context(), source.project.ID)
+		if err != nil {
+			return err
+		}
+		for _, pair := range pairs {
+			for _, entry := range []item{pair.with, pair.without} {
+				stored, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: org, ProjectID: source.project.ID, NativeID: entry.id, Number: int64(entry.number), Title: "Example item", WorkflowStateName: new("Todo"), ActorKind: new("human"), ActorPrincipalID: new("owner")})
+				if err != nil {
+					return err
+				}
+				ids := make([]tracker.NativeWorkItemID, len(entry.links))
+				for i, link := range entry.links {
+					ids[i] = link.ID
+				}
+				reason := tracker.DependencyReason{Text: "Waiting on visible work", Basis: workitemread.DependencyBasis(slices.Clone(entry.basis)), Revision: 1}
+				issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: source.project.ID, WorkItemID: entry.id, Number: entry.number, Revision: 1, Profile: "native"}, Title: "Example item", Body: "Example body", State: "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "owner"}, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: ids, Blockers: slices.Clone(entry.links), Dependents: slices.Clone(entry.links), Related: slices.Clone(entry.links), DependencyReady: len(entry.links) == 0, BlockedReason: reason, UnblocksReason: reason}
+				payload, err := viewstore.NewContent(service.runDetailStore()).PrepareBoard(t.Context(), tracker.NativeBoardCard{Issue: issue})
+				if err != nil {
+					return err
+				}
+				row := viewstore.BoardRecord{OrganizationID: org, ProjectID: source.project.ID, WorkItemID: entry.id, SourceRevision: stored.Revision, SourceEventSequence: stored.EventSequence, SourceProjectRevision: project.ContentSettingsRevision,
+					Position: viewstore.BoardPosition{State: "Todo", Identifier: fmt.Sprintf("%s#%d", source.project.ID, entry.number)}, Dispatchable: true, ActorPrincipalID: "owner", CreatedAt: now, UpdatedAt: now, Payload: payload, PageIssue: &issue, ListIssue: &issue, ListBytes: 4096, ProjectedAt: now,
+					ReporterRelations: &viewstore.BoardReporterRelations{ReporterStatus: "reported", Dependencies: slices.Clone(ids), Blockers: slices.Clone(entry.links), Dependents: slices.Clone(entry.links), Related: slices.Clone(entry.links), DependencyReady: issue.DependencyReady, BlockedReason: reason, UnblocksReason: reason},
+					Display:           viewstore.BoardDisplay{Ready: true, Exact: true, Title: issue.Title, Number: entry.number, Actor: issue.Actor}}
+				if err := w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: source.project.ID, WorkItemID: entry.id, ExpectedRevision: stored.Revision, ExpectedEventSequence: stored.EventSequence, ExpectedProjectRevision: project.ContentSettingsRevision, Current: &row}); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	normalized := func(t *testing.T, issue tracker.NativeIssue, card *tracker.NativeBoardCard) string {
+		t.Helper()
+		issue.WorkItemID, issue.Number, issue.WebURL = "", 0, ""
+		var value any = issue
+		if card != nil {
+			copied := *card
+			copied.Issue = issue
+			value = copied
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	for _, include := range []string{"", "board", "work"} {
+		t.Run("include "+include, func(t *testing.T) {
+			read := func(t *testing.T, credential hubapi.APICredential) (tracker.NativeIssuePage, map[tracker.NativeWorkItemID]tracker.NativeIssue, map[tracker.NativeWorkItemID]tracker.NativeBoardCard) {
+				t.Helper()
+				page, err := service.readBoardRecords(t.Context(), hubscope.NativeScope{Organization: org, Project: source.project.ID, Credential: credential}, url.Values{"include": {include}, "limit": {"10"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				items, cards := map[tracker.NativeWorkItemID]tracker.NativeIssue{}, map[tracker.NativeWorkItemID]tracker.NativeBoardCard{}
+				all := slices.Clone(page.Items)
+				if page.Work != nil {
+					all = append(all, page.Work.Items...)
+				}
+				for _, issue := range all {
+					items[issue.WorkItemID] = issue
+				}
+				for _, card := range page.Cards {
+					cards[card.Issue.WorkItemID] = card
+				}
+				return page, items, cards
+			}
+			page, items, cards := read(t, partial)
+			raw, err := json.Marshal(page)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range []string{string(hidden.ID), string(target.project.ID), hidden.Title} {
+				if strings.Contains(string(raw), secret) {
+					t.Errorf("page leaked hidden blocker %q", secret)
+				}
+			}
+			for _, pair := range pairs {
+				with, okWith := items[pair.with.id]
+				without, okWithout := items[pair.without.id]
+				if !okWith || !okWithout {
+					t.Fatalf("%s: page items=%v", pair.name, slices.Collect(maps.Keys(items)))
+				}
+				if with.DependencyReady != pair.ready || without.DependencyReady != pair.ready {
+					t.Errorf("%s readiness with=%v without=%v want %v", pair.name, with.DependencyReady, without.DependencyReady, pair.ready)
+				}
+				if with.BlockedReason.Text == "" || with.BlockedReason.CurrentBasis == "" {
+					t.Errorf("%s visible reason withheld: %+v", pair.name, with.BlockedReason)
+				}
+				var withCard, withoutCard *tracker.NativeBoardCard
+				if include == "board" {
+					first, second := cards[pair.with.id], cards[pair.without.id]
+					withCard, withoutCard = &first, &second
+				}
+				if got, want := normalized(t, with, withCard), normalized(t, without, withoutCard); got != want {
+					t.Errorf("%s: hidden blocker changed the response\nwith:    %s\nwithout: %s", pair.name, got, want)
+				}
+			}
+			_, items, _ = read(t, full)
+			got := items[pairs[0].with.id]
+			if !slices.ContainsFunc(got.Blockers, func(link tracker.NativeDependency) bool { return link.ID == hidden.ID }) || got.DependencyReady || got.BlockedReason.Text != "" {
+				t.Errorf("full viewer lost the cross-project blocker or its reason rule: %+v", got)
 			}
 		})
 	}
