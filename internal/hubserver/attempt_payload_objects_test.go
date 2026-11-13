@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -630,7 +631,8 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("projected=%t/edits=%d", test.projected, test.postRunEdits), func(t *testing.T) {
 			objects := &changeObjectFixture{}
-			f := claimedAttemptDiffFixture(t, false, Config{Content: objects.call})
+			details := &memoryRunDetails{}
+			f := claimedAttemptDiffFixture(t, false, Config{Content: objects.call, RunDetails: details})
 			dependency := f.create(t, "prerequisite")
 			states := nativeFixtureStates()
 			states[0].Transitions = append(states[0].Transitions, "Blocked")
@@ -653,9 +655,8 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 				t.Fatal("completion did not add the dependency and advance revision")
 			}
 			transition := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "blocked", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "worker_progress"}
-			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, transition)
-			requireNativeStatus(t, response, http.StatusOK)
-			decodeHubResponse(t, response, &issue)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, transition), http.StatusUnprocessableEntity)
+			issue = payloadSeedRecoveryEdits(t, f.nativeFixture, issue, 0)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/release", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(dependency.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "dependency-done"}, ExpectedRevision: dependency.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
 			credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.worker), "", "")
@@ -701,17 +702,23 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			f.service.config.TenantRepository = probe
 			readContext := context.WithValue(f.service.freshRunDetailContext(t.Context()), payloadRecoveryProbeKey{}, probe)
 			historyObjects := 0
-			originalContent := f.service.config.Content
+			originalContent, originalDetails := f.service.config.Content, f.service.config.RunDetails
 			f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 				if ctx.Value(payloadRecoveryProbeKey{}) == probe && !request.Write && request.Reference.Key != attemptSnapshot.Attempt.PayloadObjectKey {
 					historyObjects++
 				}
 				return objects.call(ctx, request)
 			}
+			f.service.config.RunDetails = collaborationReadProbe{DetailStore: originalDetails, beforeRead: func(ctx context.Context, ref attachment.ArchiveReference) error {
+				if ctx.Value(payloadRecoveryProbeKey{}) == probe && ref.Key != attemptSnapshot.Attempt.PayloadObjectKey {
+					historyObjects++
+				}
+				return nil
+			}}
 			readContext = context.WithValue(f.service.freshRunDetailContext(t.Context()), payloadRecoveryProbeKey{}, probe)
 			proof := tracker.Transition{Mutation: tracker.Mutation{LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, State: "Todo", BlockerAttemptID: f.attempt, PolicyID: f.policy}
 			recovery, proofErr := f.service.prepareRecordedRecoveryTenant(readContext, scope, row, issue, proof)
-			f.service.config.Content = originalContent
+			f.service.config.Content, f.service.config.RunDetails = originalContent, originalDetails
 			if proofErr == nil {
 				proofErr = probe.WriteTenant(readContext, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					return f.service.authorizeRecordedRecoveryTenant(readContext, w, scope, *recovery)
@@ -728,32 +735,43 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			}
 			transition = tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "recover", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ExpectedRevision: issue.Revision, State: "Todo", Reason: "dependency_ready", ReasonDetail: "recorded blocker recovery", BlockerAttemptID: f.attempt, PolicyID: f.policy}
 			if test.postRunEdits > 0 {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, transition), http.StatusUnprocessableEntity)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, transition)
+				requireNativeStatus(t, response, http.StatusConflict)
+				var refusal hubapi.APIErrorResponse
+				decodeHubResponse(t, response, &refusal)
+				if refusal.Code != "revision_conflict" {
+					t.Fatalf("post-run edit recovery refusal=%q", refusal.Code)
+				}
+				var current tracker.NativeIssue
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil), &current)
+				if current.State != "Blocked" || current.Revision != issue.Revision {
+					t.Fatalf("refused recovery changed the item: state=%q revision=%d want Blocked %d", current.State, current.Revision, issue.Revision)
+				}
 				return
 			}
 			for _, changed := range []string{"attempt sequence", "issue revision"} {
 				t.Run("stale "+changed, func(t *testing.T) {
 					type recoveryRequestKey struct{}
 					var injected atomic.Bool
-					f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
-						if ctx.Value(recoveryRequestKey{}) != nil && !request.Write && request.Reference.Key == key && injected.CompareAndSwap(false, true) {
+					f.service.config.RunDetails = collaborationReadProbe{DetailStore: originalDetails, beforeRead: func(ctx context.Context, ref attachment.ArchiveReference) error {
+						if ctx.Value(recoveryRequestKey{}) != nil && ref.Key == key && injected.CompareAndSwap(false, true) {
 							statement := "UPDATE native_attempts SET sequence=sequence+1 WHERE organization_id=$1 AND id=$2"
 							id := f.attempt
 							if changed == "issue revision" {
 								statement, id = "UPDATE issues SET revision=revision+1 WHERE organization_id=$1 AND native_id=$2", string(issue.WorkItemID)
 							}
 							if _, err := admin.ExecContext(ctx, statement, scope.Organization, id); err != nil {
-								return nil, err
+								return err
 							}
 						}
-						return objects.call(ctx, request)
-					}
+						return nil
+					}}
 					request := transition
 					request.IdempotencyKey += "-" + changed
 					response := httptest.NewRecorder()
 					ctx := context.WithValue(t.Context(), recoveryRequestKey{}, true)
 					f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path+"/workflow", f.worker, request).WithContext(ctx))
-					f.service.config.Content = objects.call
+					f.service.config.RunDetails = originalDetails
 					if !injected.Load() {
 						t.Fatal("recovery did not hydrate archived completion evidence")
 					}
@@ -771,10 +789,13 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			objects.mu.Lock()
 			readsBefore := objects.reads
 			objects.mu.Unlock()
+			details.mu.Lock()
+			readsBefore += details.reads
+			details.mu.Unlock()
 			probe.writerReads.Store(0)
 			probe.writerEntries.Store(0)
 			ctx := context.WithValue(t.Context(), payloadRecoveryProbeKey{}, probe)
-			response = httptest.NewRecorder()
+			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path+"/workflow", f.worker, transition).WithContext(ctx))
 			requireNativeStatus(t, response, http.StatusOK)
 			if probe.writerEntries.Load() == 0 {
@@ -786,6 +807,9 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			objects.mu.Lock()
 			reads := objects.reads - readsBefore
 			objects.mu.Unlock()
+			details.mu.Lock()
+			reads += details.reads
+			details.mu.Unlock()
 			if reads > 12 {
 				t.Errorf("recovery read %d objects, including unrelated issue history", reads)
 			}
@@ -1296,9 +1320,15 @@ func payloadSeedRecoveryEdits(t *testing.T, f nativeFixture, issue tracker.Nativ
 		}
 		events = append(events, prepared)
 	}
+	searchRevision := int64(issue.Revision)
 	issue.Revision += tracker.Revision(count) + 1
+	issue.State = "Blocked"
 	issue.UpdatedAt = f.service.config.Clock()
 	raw, err := json.Marshal(issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(t.Context(), searchstore.Document{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1307,10 +1337,13 @@ func payloadSeedRecoveryEdits(t *testing.T, f nativeFixture, issue tracker.Nativ
 		t.Fatal(err)
 	}
 	coordinatorFixtureWrite(t, f.service, f.project.OrganizationID, func(w tenantstore.Writer) error {
-		for _, event := range events {
+		for index, event := range events {
 			row, err := w.WorkItem(t.Context(), f.project.ID, issue.WorkItemID)
 			if err != nil {
 				return err
+			}
+			if index == count {
+				row.WorkflowStateName = &issue.State
 			}
 			if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
 				return err
@@ -1318,6 +1351,9 @@ func payloadSeedRecoveryEdits(t *testing.T, f nativeFixture, issue tracker.Nativ
 			if _, err := w.AppendEvent(t.Context(), event); err != nil {
 				return err
 			}
+		}
+		if err := w.PutSearch(t.Context(), document, searchRevision); err != nil {
+			return err
 		}
 		_, err := w.CreateCollaborationVersion(t.Context(), version)
 		return err
