@@ -20,7 +20,7 @@ func TestRunnerRetainedLeaseClaimEligibility(t *testing.T) {
 		{name: "live foreign lease", want: http.StatusConflict},
 		{name: "draining foreign lease", drain: true, want: http.StatusConflict},
 		{name: "foreign lease expires", expire: true, want: http.StatusOK},
-		{name: "revocation immediately releases", revoke: true, want: http.StatusOK},
+		{name: "revocation waits for the lease to expire", revoke: true, want: http.StatusOK},
 		{name: "owner reclaims with original fence", reclaim: true, want: http.StatusOK},
 		{name: "draining owner reclaims", drain: true, reclaim: true, want: http.StatusOK},
 		{name: "wrong fence cannot reclaim", reclaim: true, wrongFence: true, want: http.StatusConflict},
@@ -47,11 +47,20 @@ func TestRunnerRetainedLeaseClaimEligibility(t *testing.T) {
 				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPut, owner.IdentityPath()+"/routing", hubfixture.AdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "draining", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.Project.ID}}}), http.StatusOK)
 			}
 			if test.revoke {
-				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodDelete, owner.IdentityPath(), hubfixture.AdminToken, nil), http.StatusNoContent)
+				refused := f.Hub.Request(t, http.MethodDelete, owner.IdentityPath(), hubfixture.AdminToken, nil)
+				hubfixture.RequireStatus(t, refused, http.StatusUnprocessableEntity)
+				var failure struct{ Code, Message string }
+				hubfixture.Decode(t, refused, &failure)
+				if failure.Code != "invalid_request" || failure.Message != "This runner has active work. Drain it and wait for its leases to finish or expire before removing it." {
+					t.Fatalf("revocation with a live lease = %+v", failure)
+				}
 			}
-			if test.expire {
+			if test.expire || test.revoke {
 				now = now.Add(600 * time.Second)
 				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/machines/"+string(other.Binding.MachineID)+"/heartbeat", other.Redemption.Credential, map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": other.Redemption.BackendIsolation}), http.StatusOK)
+			}
+			if test.revoke {
+				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodDelete, owner.IdentityPath(), hubfixture.AdminToken, nil), http.StatusNoContent)
 			}
 			if test.reclaim {
 				token := lease.FencingToken
