@@ -190,6 +190,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 		}
 	}
 	view := sourceRecoveryView{Destinations: []sourceRecoveryRunner{}, WorkItemID: snapshot.item.NativeID, Revision: tracker.Revision(snapshot.item.Revision)}
+	interrupted := false
 	if snapshot.attemptFound {
 		run, err := s.readNativeAttemptRunTenant(ctx, snapshot.attempt)
 		if err != nil {
@@ -211,6 +212,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 		}
 		attempt := snapshot.attempt.attempt
 		unacknowledged := run.TerminalFailure != nil && run.TerminalFailure.Stage == "lease_release" && attempt.CleanupAcknowledgedAt == nil
+		interrupted = snapshot.attempt.lease.ReleasedAt != nil && unacknowledged
 		view.Quiesced = snapshot.attempt.lease.ReleasedAt != nil && !unacknowledged && (attempt.Status == "succeeded" || attempt.Status == "failed" || attempt.Status == "cancelled")
 	}
 	if snapshot.version != nil {
@@ -236,6 +238,8 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 		view.Reason = "Restore or explicitly reopen this work item before changing recovery ownership"
 	case !view.Available:
 		view.Reason = "No verified Hub source is available for recovery"
+	case interrupted:
+		view.Reason = "Source execution has no acknowledged terminal outcome; acknowledge that work on the source runner has stopped before transfer"
 	case !view.Quiesced:
 		view.Reason = "Finish or cancel work on the source runner and release its lease before transfer; expiry or an unreachable owner does not prove quiescence"
 	default:
