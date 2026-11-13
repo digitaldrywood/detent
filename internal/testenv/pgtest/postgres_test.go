@@ -18,7 +18,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -294,63 +293,6 @@ func TestConnectionConfigDoesNotReadHostCredentials(t *testing.T) {
 	}
 }
 
-func TestFixtureAdmissionWaitsBeforeCancellation(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		p := NewTemplate(nil)
-		for i := range fixtureLimit {
-			if _, err := p.acquire(t.Context(), fmt.Sprint(i)); err != nil {
-				t.Fatal(err)
-			}
-		}
-		nestedCtx, nestedCancel := context.WithCancel(t.Context())
-		defer nestedCancel()
-		nested := make(chan error, 1)
-		go func() {
-			release, err := p.acquire(nestedCtx, "0/child")
-			if err == nil {
-				release()
-			}
-			nested <- err
-		}()
-		synctest.Wait()
-		select {
-		case err := <-nested:
-			if err != nil {
-				t.Fatalf("nested fixture admission: %v", err)
-			}
-		default:
-			nestedCancel()
-			<-nested
-			t.Fatal("nested fixture waited on its own top-level test slot")
-		}
-		ctx, cancel := context.WithCancel(t.Context())
-		result := make(chan error, 1)
-		go func() {
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					result <- fmt.Errorf("fixture bypassed admission: %v", recovered)
-				}
-			}()
-			_, _, err := p.clone(ctx, "waiting", nil)
-			result <- err
-		}()
-		t.Cleanup(func() {
-			cancel()
-			synctest.Wait()
-		})
-		synctest.Wait()
-		select {
-		case err := <-result:
-			t.Fatalf("active fifth fixture did not wait for capacity: %v", err)
-		default:
-		}
-		cancel()
-		if err := <-result; !errors.Is(err, context.Canceled) {
-			t.Fatalf("waiting fixture cancellation = %v", err)
-		}
-	})
-}
-
 func TestUnconfiguredPostgresFails(t *testing.T) {
 	if os.Getenv("DETENT_TEST_UNCONFIGURED_CHILD") == "1" {
 		t.Setenv(Environment, "")
@@ -610,7 +552,7 @@ func TestPostgresFailedSetupCleanup(t *testing.T) {
 			defer cancel()
 			var databaseName string
 			requireSetupFailure(t, func() error {
-				_, _, err := processTemplate.clone(ctx, t.Name(), func(ctx context.Context, db *sql.DB) error {
+				_, _, err := processTemplate.clone(ctx, func(ctx context.Context, db *sql.DB) error {
 					if err := db.QueryRowContext(ctx, "SELECT current_database()").Scan(&databaseName); err != nil {
 						return err
 					}
@@ -671,17 +613,6 @@ func serverSelection(s *server) string {
 	return u.String()
 }
 
-type admissionContext struct {
-	context.Context
-	reached chan struct{}
-	once    sync.Once
-}
-
-func (c *admissionContext) Done() <-chan struct{} {
-	c.once.Do(func() { close(c.reached) })
-	return c.Context.Done()
-}
-
 func TestPostgresFixtureBounds(t *testing.T) {
 	processTemplate.Database(t)
 	p := NewTemplate(migrateFixture)
@@ -707,10 +638,10 @@ func TestPostgresFixtureBounds(t *testing.T) {
 			}
 		}
 	})
-	for i := range fixtureLimit {
-		db, release, err := p.clone(t.Context(), fmt.Sprint(i), func(context.Context, *sql.DB) error { return nil })
+	for i := range 5 {
+		db, release, err := p.clone(t.Context(), func(context.Context, *sql.DB) error { return nil })
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("live fixture %d was not admitted while %d others stay open: %v", i, len(releases), err)
 		}
 		releases = append(releases, release)
 		if db.Stats().MaxOpenConnections != connectionLimit {
@@ -734,42 +665,6 @@ func TestPostgresFixtureBounds(t *testing.T) {
 		first.Close()
 		second.Close()
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	attempt := &admissionContext{Context: ctx, reached: make(chan struct{})}
-	type cloneResult struct {
-		release func(context.Context) error
-		err     error
-	}
-	result := make(chan cloneResult, 1)
-	go func() {
-		_, release, err := p.clone(attempt, "waiting", func(context.Context, *sql.DB) error { return nil })
-		result <- cloneResult{release: release, err: err}
-	}()
-	joined := false
-	t.Cleanup(func() {
-		cancel()
-		if !joined {
-			pending := <-result
-			if pending.release != nil {
-				ctx, cancel := testContext(t)
-				defer cancel()
-				if err := pending.release(ctx); err != nil {
-					t.Error(err)
-				}
-			}
-		}
-	})
-	<-attempt.reached
-	if err := releases[0](t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	releases = releases[1:]
-	admitted := <-result
-	joined = true
-	if admitted.err != nil {
-		t.Fatalf("releasing fixture capacity did not admit the active fifth request: %v", admitted.err)
-	}
-	releases = append(releases, admitted.release)
 	for _, release := range releases {
 		if err := release(bounded); err != nil {
 			t.Fatal(err)
@@ -932,7 +827,7 @@ func TestPostgresParallelIsolation(t *testing.T) {
 		for _, name := range []string{"one", "two", "three", "four", "five", "six", "seven", "eight"} {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				for fixture := range fixtureLimit + 1 {
+				for fixture := range 5 {
 					db := processTemplate.Database(t)
 					var databaseName string
 					if err := db.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&databaseName); err != nil {
@@ -1100,13 +995,10 @@ func TestTemplatesShareBinaryClusterAndKeepOwnership(t *testing.T) {
 		if p.server.admin != processTemplate.server.admin {
 			t.Fatal("Templates opened separate administrator pools")
 		}
-		if p.admission != processTemplate.admission {
-			t.Fatal("Templates do not share server admission")
-		}
 		if err := p.server.drop(ctx, processTemplate.name); err == nil {
 			t.Fatal("shared server accepted another Template's database")
 		}
-		db, cleanup, err := p.clone(ctx, t.Name(), func(context.Context, *sql.DB) error { return nil })
+		db, cleanup, err := p.clone(ctx, func(context.Context, *sql.DB) error { return nil })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1154,10 +1046,11 @@ func TestOwnerMigrationFailureKeepsBinaryLifetime(t *testing.T) {
 	}
 }
 
-func TestSharedBinaryClusterSupportsFullTemplatePools(t *testing.T) {
+func TestSharedBinaryClusterSupportsFixtureConnectionBudget(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 	const templateCount = 16
+	ownersPerTemplate := max(1, binaryFixtureBudget()/templateCount)
 	templates := make([]*Template, templateCount)
 	for i := range templates {
 		p := NewTemplate(migrateFixture)
@@ -1180,10 +1073,16 @@ func TestSharedBinaryClusterSupportsFullTemplatePools(t *testing.T) {
 	for i, p := range templates {
 		workers.Go(func() {
 			var connections []*sql.Conn
+			var pools []*sql.DB
 			var cleanups []func(context.Context) error
 			defer func() {
 				for _, connection := range connections {
 					if err := connection.Close(); err != nil {
+						t.Error(err)
+					}
+				}
+				for _, pool := range pools {
+					if err := pool.Close(); err != nil {
 						t.Error(err)
 					}
 				}
@@ -1194,19 +1093,31 @@ func TestSharedBinaryClusterSupportsFullTemplatePools(t *testing.T) {
 				}
 			}()
 			err := func() error {
-				for owner := range fixtureLimit {
-					db, cleanup, err := p.clone(ctx, fmt.Sprintf("owner-%d", owner), func(context.Context, *sql.DB) error { return nil })
+				for owner := range ownersPerTemplate {
+					db, cleanup, err := p.clone(ctx, func(context.Context, *sql.DB) error { return nil })
 					if err != nil {
 						return fmt.Errorf("template %d owner %d: %w", i, owner, err)
 					}
 					cleanups = append(cleanups, cleanup)
-					for range connectionLimit {
-						connection, err := db.Conn(ctx)
-						if err != nil {
-							return fmt.Errorf("template %d owner %d pool: %w", i, owner, err)
+					var name string
+					if err := db.QueryRowContext(ctx, "SELECT current_database()").Scan(&name); err != nil {
+						return fmt.Errorf("template %d owner %d database: %w", i, owner, err)
+					}
+					service, err := p.server.database(name)
+					if err != nil {
+						return fmt.Errorf("template %d owner %d service pool: %w", i, owner, err)
+					}
+					pools = append(pools, service)
+					service.SetMaxOpenConns(fixtureConnectionBudget - connectionLimit)
+					for _, pool := range []*sql.DB{db, service} {
+						for range pool.Stats().MaxOpenConnections {
+							connection, err := pool.Conn(ctx)
+							if err != nil {
+								return fmt.Errorf("template %d owner %d connection: %w", i, owner, err)
+							}
+							connections = append(connections, connection)
+							connected.Add(1)
 						}
-						connections = append(connections, connection)
-						connected.Add(1)
 					}
 				}
 				return nil
@@ -1220,7 +1131,7 @@ func TestSharedBinaryClusterSupportsFullTemplatePools(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	if got, want := connected.Load(), int32(templateCount*fixtureLimit*connectionLimit); got != want {
+	if got, want := connected.Load(), int32(templateCount*ownersPerTemplate*fixtureConnectionBudget); got != want {
 		t.Errorf("held connections=%d, want %d", got, want)
 	}
 	release.Do(func() { close(hold) })

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,13 +33,22 @@ import (
 )
 
 const Environment = "DETENT_TEST_POSTGRES"
-const fixtureLimit = 4
 const connectionLimit = 2
 const preparedClones = 2
 const adminConnectionLimit = preparedClones + 2
-const binaryTemplateCapacity = 16
-const binaryConnectionHeadroom = binaryTemplateCapacity * (fixtureLimit + adminConnectionLimit)
-const binaryConnectionLimit = binaryTemplateCapacity*(fixtureLimit*connectionLimit+adminConnectionLimit) + binaryConnectionHeadroom
+const fixtureConnectionBudget = 10
+const fixturesPerProcessor = 4
+const binaryConnectionHeadroom = 64
+const minimumBinaryConnections = 320
+const maximumBinaryConnections = 2000
+
+func binaryFixtureBudget() int {
+	return runtime.GOMAXPROCS(0) * fixturesPerProcessor
+}
+
+func binaryConnectionLimit() int {
+	return min(maximumBinaryConnections, max(minimumBinaryConnections, adminConnectionLimit+binaryConnectionHeadroom+binaryFixtureBudget()*fixtureConnectionBudget))
+}
 
 var errNotConfigured = errors.New("PostgreSQL 17 or 18 fixtures require DETENT_TEST_POSTGRES=binary or a disposable local postgres:// URL")
 
@@ -52,20 +62,15 @@ type binaryCluster struct {
 	server    *server
 	err       error
 	closed    bool
-	admission *Template
 }
 
 type Template struct {
 	cluster   *binaryCluster
-	admission *Template
 	once      sync.Once
 	migrate   func(context.Context, *sql.DB) error
 	server    *server
 	name      string
 	err       error
-	mu        sync.Mutex
-	owners    map[string]int
-	changed   chan struct{}
 	prepareMu sync.Mutex
 	prepared  []string
 	preparing int
@@ -83,7 +88,7 @@ type server struct {
 }
 
 func NewTemplate(migrate func(context.Context, *sql.DB) error) *Template {
-	p := &Template{migrate: migrate, owners: make(map[string]int), changed: make(chan struct{}), cluster: &processCluster}
+	p := &Template{migrate: migrate, cluster: &processCluster}
 	processCluster.mu.Lock()
 	if processCluster.owner == nil {
 		processCluster.owner = p
@@ -113,7 +118,7 @@ func (p *Template) DatabaseContext(ctx context.Context, t testing.TB) *sql.DB {
 	if p.err != nil {
 		t.Fatalf("initialize PostgreSQL fixture: %v", p.err)
 	}
-	db, cleanup, err := p.clone(ctx, t.Name(), func(context.Context, *sql.DB) error { return nil })
+	db, cleanup, err := p.clone(ctx, func(context.Context, *sql.DB) error { return nil })
 	if err != nil {
 		t.Fatalf("clone PostgreSQL fixture: %v", err)
 	}
@@ -202,7 +207,6 @@ func (p *Template) initialize(ctx context.Context, selection string) (resultErr 
 	var err error
 	if selection == "binary" {
 		s, err = p.cluster.open(ctx)
-		p.admission = p.cluster.admission
 	} else {
 		s, err = openServer(ctx, selection)
 	}
@@ -240,69 +244,27 @@ func (p *Template) initialize(ctx context.Context, selection string) (resultErr 
 	return err
 }
 
-func (p *Template) acquire(ctx context.Context, name string) (func(), error) {
-	if p.admission != nil {
-		return p.admission.acquire(ctx, name)
-	}
-	owner, _, _ := strings.Cut(name, "/")
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		p.mu.Lock()
-		if p.owners[owner] > 0 || len(p.owners) < fixtureLimit {
-			p.owners[owner]++
-			p.mu.Unlock()
-			return func() {
-				p.mu.Lock()
-				defer p.mu.Unlock()
-				p.owners[owner]--
-				if p.owners[owner] == 0 {
-					delete(p.owners, owner)
-					close(p.changed)
-					p.changed = make(chan struct{})
-				}
-			}, nil
-		}
-		changed := p.changed
-		p.mu.Unlock()
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-}
-
-func (p *Template) clone(ctx context.Context, owner string, setup func(context.Context, *sql.DB) error) (_ *sql.DB, _ func(context.Context) error, resultErr error) {
+func (p *Template) clone(ctx context.Context, setup func(context.Context, *sql.DB) error) (_ *sql.DB, _ func(context.Context) error, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-	release, err := p.acquire(ctx, owner)
-	if err != nil {
-		return nil, nil, err
-	}
+	var err error
 	name, ok := p.takePrepared()
 	if !ok {
 		name, err = p.server.create(ctx, p.name)
 	}
 	p.prepare(ctx)
 	if err != nil {
-		release()
 		return nil, nil, err
 	}
 	db, err := p.server.database(name)
 	if err != nil {
 		cleanupCtx, cancel := cleanupContext(ctx)
 		defer cancel()
-		err = errors.Join(err, p.server.drop(cleanupCtx, name))
-		release()
-		return nil, nil, err
+		return nil, nil, errors.Join(err, p.server.drop(cleanupCtx, name))
 	}
 	cleanup := func(ctx context.Context) error {
-		err := errors.Join(db.Close(), p.server.drop(ctx, name))
-		release()
-		return err
+		return errors.Join(db.Close(), p.server.drop(ctx, name))
 	}
 	complete := false
 	defer func() {
@@ -607,7 +569,7 @@ wait "$watchdog" 2>/dev/null
 exit "$status"
 `
 	cmd := exec.CommandContext(processCtx, "/bin/sh", "-c", supervise, "pgtest", "postgres", "-D", "data", "-h", "", "-k", socketDir, "-c", "lc_messages=C", "-c", "logging_collector=off", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off")
-	cmd.Args = append(cmd.Args, "-c", "max_connections="+strconv.Itoa(binaryConnectionLimit))
+	cmd.Args = append(cmd.Args, "-c", "max_connections="+strconv.Itoa(binaryConnectionLimit()))
 	cmd.Dir = dir
 	cmd.Env = init.Env
 	cmd.Stdin = lifetime
@@ -700,7 +662,6 @@ func (c *binaryCluster) open(ctx context.Context) (*server, error) {
 			tempDir = os.TempDir()
 		}
 		c.server, c.err = openServerAt(ctx, "binary", tempDir)
-		c.admission = &Template{owners: make(map[string]int), changed: make(chan struct{})}
 	})
 	if c.err != nil {
 		return nil, c.err
