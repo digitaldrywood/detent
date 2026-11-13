@@ -127,20 +127,21 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			}
 			rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
 			for _, test := range []struct {
-				name string
-				edit func(*tracker.ChangeReviewPolicy)
+				name   string
+				edit   func(*tracker.ChangeReviewPolicy)
+				status int
 			}{
-				{"review floor", func(p *tracker.ChangeReviewPolicy) { p.RequireReview = false }},
-				{"check floor", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks = nil }},
-				{"unpinned workflow", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks[0].WorkflowSHA256 = "" }},
-				{"ungranted principal", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks[0].PrincipalID = "ungranted-ci" }},
-				{"stale repository policy", func(p *tracker.ChangeReviewPolicy) { p.PolicyID = hubTestPolicy().ID }},
+				{"review floor", func(p *tracker.ChangeReviewPolicy) { p.RequireReview = false }, http.StatusUnprocessableEntity},
+				{"check floor", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks = nil }, http.StatusUnprocessableEntity},
+				{"unpinned workflow", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks[0].WorkflowSHA256 = "" }, http.StatusUnprocessableEntity},
+				{"ungranted principal", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks[0].PrincipalID = "ungranted-ci" }, http.StatusUnprocessableEntity},
+				{"stale repository policy", func(p *tracker.ChangeReviewPolicy) { p.PolicyID = hubTestPolicy().ID }, http.StatusConflict},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					invalid := rules
 					invalid.RequiredChecks = append([]tracker.ChangeCheckSpec(nil), rules.RequiredChecks...)
 					test.edit(&invalid)
-					requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: test.name}, Policy: invalid}), http.StatusUnprocessableEntity)
+					requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: test.name}, Policy: invalid}), test.status)
 				})
 			}
 			approve := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Policy: rules}
@@ -200,8 +201,14 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: descriptor.ID, Policy: updated}), http.StatusOK)
 			publish.IdempotencyKey, publish.ExpectedVersionID = "reported-configuration", version.ID
 			response = f.setupRequest(t, "owner", http.MethodPost, path+"/versions", publish)
+			requireNativeStatus(t, response, http.StatusConflict)
+			response = f.setupRequest(t, "owner", http.MethodGet, base+"/change-review-policy", nil)
 			requireNativeStatus(t, response, http.StatusOK)
-			decodeHubResponse(t, response, &version)
+			var retained tracker.ChangeReviewPolicy
+			decodeHubResponse(t, response, &retained)
+			rebind := tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rebind"}, ExpectedID: retained.ID, Policy: retained}
+			rebind.Policy.PolicyID = updated.ID
+			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/change-review-policy", rebind), http.StatusOK)
 			publish.ExpectedVersionID = version.ID
 			publish.IdempotencyKey, publish.PolicyID = "reported-review-configuration", updated.ID
 			response = f.setupRequest(t, "owner", http.MethodPost, path+"/versions", publish)
