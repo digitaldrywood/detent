@@ -577,7 +577,7 @@ func prepareCoreWorkItemImport(ctx context.Context, tx *coreNeutralImport, objec
 	}
 	record.Search = &document
 	var sourceContract *issuecontract.State
-	if row.Contract.Valid && row.Contract.String != "" {
+	if row.Contract.Valid && row.Contract.String != "" && strings.TrimSpace(row.Contract.String) != "{}" {
 		if err := json.Unmarshal([]byte(row.Contract.String), &sourceContract); err != nil {
 			return postgres.CoreWorkItemImport{}, eventstore.ErrInvalidRecord
 		}
