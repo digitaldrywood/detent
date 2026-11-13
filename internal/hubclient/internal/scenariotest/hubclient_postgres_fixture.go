@@ -40,7 +40,7 @@ func ClosePostgres() error {
 	return testsupport.CloseScenarioPostgres(ctx)
 }
 
-func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracker.NativeState, requireDependencies bool) (hubserver.Config, func(context.Context, string) error) {
+func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracker.NativeState, requireDependencies bool) (hubserver.Config, func(context.Context, string) error, func(context.Context, string) (bool, error)) {
 	t.Helper()
 	admin := testsupport.ScenarioPostgresDatabase(t)
 	connection := pgtransport.Connection{User: "hubclient_test", Password: "test-only", SSLMode: "disable"}
@@ -123,34 +123,29 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 		t.Fatal(err)
 	}
 	return cfg, func(ctx context.Context, attempt string) error {
-		var before string
-		if err := admin.QueryRowContext(ctx, "SELECT checkpoint_object_key FROM native_attempts WHERE organization_id=$1 AND id=$2", organization, attempt).Scan(&before); err != nil {
-			return fmt.Errorf("read historical checkpoint key: %w", err)
+			var before string
+			if err := admin.QueryRowContext(ctx, "SELECT checkpoint_object_key FROM native_attempts WHERE organization_id=$1 AND id=$2", organization, attempt).Scan(&before); err != nil {
+				return fmt.Errorf("read historical checkpoint key: %w", err)
+			}
+			if before == "" {
+				return errors.New("historical checkpoint has no source key")
+			}
+			var after string
+			var preserves *bool
+			if err := admin.QueryRowContext(ctx, "UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE organization_id=$1 AND id=$2 RETURNING checkpoint_object_key,checkpoint_preserves_source", organization, attempt).Scan(&after, &preserves); err != nil {
+				return fmt.Errorf("clear historical source fact: %w", err)
+			}
+			if after != before || preserves != nil {
+				return errors.New("historical source fixture changed its key or retained a known fact")
+			}
+			return nil
+		}, func(ctx context.Context, attempt string) (bool, error) {
+			var preserves *bool
+			if err := admin.QueryRowContext(ctx, "SELECT checkpoint_preserves_source FROM native_attempts WHERE organization_id=$1 AND id=$2", organization, attempt).Scan(&preserves); err != nil {
+				return false, fmt.Errorf("read historical source fact: %w", err)
+			}
+			return preserves != nil, nil
 		}
-		if before == "" {
-			return errors.New("historical checkpoint has no source key")
-		}
-		result, err := admin.ExecContext(ctx, "UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE organization_id=$1 AND id=$2", organization, attempt)
-		if err != nil {
-			return fmt.Errorf("clear historical source fact: %w", err)
-		}
-		rows, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("read historical source fact rows: %w", err)
-		}
-		if rows != 1 {
-			return errors.New("historical source fixture did not update exactly one attempt")
-		}
-		var after string
-		var preserves *bool
-		if err := admin.QueryRowContext(ctx, "SELECT checkpoint_object_key,checkpoint_preserves_source FROM native_attempts WHERE organization_id=$1 AND id=$2", organization, attempt).Scan(&after, &preserves); err != nil {
-			return fmt.Errorf("verify historical source fact: %w", err)
-		}
-		if after != before || preserves != nil {
-			return errors.New("historical source fixture changed its key or retained a known fact")
-		}
-		return nil
-	}
 }
 
 func hubclientPostgresProject(cfg hubserver.Config) tracker.ProjectID {

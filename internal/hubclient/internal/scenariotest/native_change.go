@@ -2735,7 +2735,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if config.Clock == nil {
 		config.Clock = time.Now
 	}
-	config, markHistoricalCheckpointSourceUnknown := hubclientPostgresConfig(t, config, states, requireDependencies)
+	config, markHistoricalCheckpointSourceUnknown, checkpointSourceKnown := hubclientPostgresConfig(t, config, states, requireDependencies)
 
 	if config.Conversation != nil && config.Conversation.Enabled && config.Conversation.ArchiveContents == nil {
 		conversationConfig := *config.Conversation
@@ -2796,7 +2796,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), project: hubclientPostgresProject(config), descriptor: clientTestPolicy(), markHistoricalCheckpointSourceUnknown: markHistoricalCheckpointSourceUnknown}
+	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), project: hubclientPostgresProject(config), descriptor: clientTestPolicy(), markHistoricalCheckpointSourceUnknown: markHistoricalCheckpointSourceUnknown, checkpointSourceKnown: checkpointSourceKnown}
 	h.restart = func() {
 		t.Helper()
 		requests.Lock()
@@ -2871,6 +2871,7 @@ func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, c
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
 	markHistoricalCheckpointSourceUnknown func(context.Context, string) error
+	checkpointSourceKnown                 func(context.Context, string) (bool, error)
 	config                                hubserver.Config
 	leaseHolds                            atomic.Int64
 	clock                                 func() time.Time

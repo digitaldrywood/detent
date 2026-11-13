@@ -23,14 +23,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	newNativeChangeHubWithStates := func(t *testing.T, review string, states []tracker.NativeState, details *archivedRunDetails) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, false, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, RunDetails: details}, factories)
+	newNativeChangeHubWithStates := func(t *testing.T, review string, states []tracker.NativeState, details *archivedRunDetails, maintenance time.Duration) *nativeChangeHub {
+		return newNativeChangeHubConfigured(t, review, states, false, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, RunDetails: details, WebhookMaintenanceInterval: maintenance}, factories)
 	}
 	t.Setenv("TMPDIR", t.TempDir())
 	isolateNativeChangeGit(t)
@@ -93,7 +94,11 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				states = append(states, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework", "Done"}})
 			}
 			details := &archivedRunDetails{}
-			h := newNativeChangeHubWithStates(t, "In Review", states, details)
+			var maintenance time.Duration
+			if test.sourceUnknown {
+				maintenance = 10 * time.Millisecond
+			}
+			h := newNativeChangeHubWithStates(t, "In Review", states, details, maintenance)
 			previousPolicy := h.descriptor.ID
 			h.descriptor.Gates.Validator = true
 			h.descriptor = h.descriptor.WithID()
@@ -212,6 +217,13 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 					if err := h.markHistoricalCheckpointSourceUnknown(t.Context(), attempt.AttemptID); err != nil {
 						t.Fatal(err)
 					}
+					testenv.WaitUntil(t, t.Context(), func() error {
+						known, err := h.checkpointSourceKnown(t.Context(), attempt.AttemptID)
+						if err == nil && !known {
+							err = errors.New("Hub has not classified the historical checkpoint source")
+						}
+						return err
+					})
 				}
 				preserved, err := h.admin.Recovery(t.Context(), item)
 				if err != nil {
