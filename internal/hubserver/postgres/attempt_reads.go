@@ -54,7 +54,7 @@ func (s *session) AttemptMetadata(ctx context.Context, project tracker.ProjectID
 	})
 	batch.Queue(`SELECT latest.* FROM unnest($4::text[]) requested(attempt_id) CROSS JOIN LATERAL (
 		SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3
-		AND attempt_id=requested.attempt_id AND attempt_id<>'' ORDER BY sequence DESC LIMIT 1) latest`, s.organization, project, item, ids).Query(func(rows pgx.Rows) error {
+		AND attempt_id=requested.attempt_id AND attempt_id<>'' ORDER BY sequence DESC LIMIT 1) latest LIMIT $5`, s.organization, project, item, ids, len(ids)).Query(func(rows pgx.Rows) error {
 		values, err := pgx.CollectRows(rows, pgx.RowToStructByName[pgquery.CollaborationEvent])
 		for _, value := range values {
 			metadata.Events[value.AttemptID] = eventRecord(value)
