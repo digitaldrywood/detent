@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -73,6 +74,9 @@ func TestNativeClaimReleaseHTTPWireIncludesAuthentication(t *testing.T) {
 
 	for index, binding := range f.bindings {
 		if err := repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.ReplaceRunnerBackendIsolation(t.Context(), binding.RunnerID, isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}); err != nil {
+				return err
+			}
 			return w.UpdateRunnerCapacityConfig(t.Context(), binding.RunnerID, runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, ObservedAt: f.service.config.now().UTC()})
 		}); err != nil {
 			t.Fatal(err)
@@ -120,7 +124,7 @@ func TestNativeClaimReleaseHTTPWireIncludesAuthentication(t *testing.T) {
 		}
 
 		claimPath := "/api/v2/organizations/org_startup/projects/prj_runner/claims"
-		claim := tracker.NativeClaim{PolicyID: f.policy.PolicyID, WorkItemID: f.leases[index].WorkItemID, MachineID: binding.MachineID, SessionID: f.leases[index].SessionID, TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
+		claim := tracker.NativeClaim{PolicyID: f.policy.PolicyID, WorkItemID: f.leases[index].WorkItemID, MachineID: binding.MachineID, SessionID: f.leases[index].SessionID, TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 		releasePath := "/api/v2/organizations/org_startup/projects/prj_runner/leases/" + string(f.leases[index].ID) + "/release"
 		for _, operation := range []struct {
 			name, path string
