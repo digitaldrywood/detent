@@ -377,7 +377,12 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope hubscope.NativeS
 			plan.Issue.Title = *request.Title
 			plan.Fields = append(plan.Fields, "title")
 		}
-		if request.Body != nil && (plan.Issue.Body != *request.Body || plan.LinkedSource != nil && !plan.LinkedSource.BodyOwned) {
+		var confirmedSections map[string]string
+		if plan.Issue.IssueContract != nil {
+			confirmedSections = plan.Issue.IssueContract.ConfirmedSections
+		}
+		humanConfirmation := request.Body != nil && scope.Actor().Kind == "human" && scope.Credential.HostedRole != "reporter" && !maps.Equal(confirmedSections, config.IssueContractSectionDigests(*request.Body))
+		if request.Body != nil && (plan.Issue.Body != *request.Body || plan.LinkedSource != nil && !plan.LinkedSource.BodyOwned || humanConfirmation) {
 			bodyChanged := plan.Issue.Body != *request.Body
 			plan.Issue.Body = *request.Body
 			contractChanged := false

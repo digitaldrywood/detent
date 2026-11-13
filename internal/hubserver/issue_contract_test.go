@@ -291,15 +291,17 @@ func TestNativeIssueContract(t *testing.T) {
 			fence := tracker.Mutation{IdempotencyKey: "hold", LeaseID: tracker.LeaseID(heldLease.LeaseID), FencingToken: tracker.FencingToken(heldLease.FencingToken)}
 			hold := fmt.Sprintf("## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\nfields:\n  issue_contract_return_state: Todo\n```", action)
 			path := f.base + "/work-items/" + string(issue.WorkItemID)
+			unattended := fence
+			unattended.IdempotencyKey = "unattended-hold"
+			requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", worker, tracker.Transition{Mutation: unattended, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "worker_progress", ReasonDetail: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\n```"}), http.StatusUnprocessableEntity, "invalid_request")
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", worker, tracker.Transition{Mutation: fence, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "worker_progress", ReasonDetail: hold})
 			requireNativeStatus(t, response, http.StatusOK)
 			issue = tracker.NativeIssue{}
 			decodeHubResponse(t, response, &issue)
-			if issue.State != "Blocked" || issue.IssueContract.HumanAction != action || issue.IssueContract.ReturnState != "Todo" {
-				t.Fatalf("missing persisted human action: %+v", issue)
+			if issue.State != "Blocked" || issue.IssueContract == nil || issue.IssueContract.HumanAction != "" || issue.IssueContract.ReturnState != "" {
+				t.Fatalf("worker hold wrote issue-contract hold fields: %+v", issue.IssueContract)
 			}
-			recovery := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "premature", LeaseID: fence.LeaseID, FencingToken: fence.FencingToken}, ExpectedRevision: issue.Revision, State: "Todo", Reason: "worker_progress", ReasonDetail: "recorded blocker recovery"}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", worker, recovery), http.StatusUnprocessableEntity)
+			recovery := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "recover", LeaseID: fence.LeaseID, FencingToken: fence.FencingToken}, State: "Todo", Reason: "worker_progress", ReasonDetail: "recorded blocker recovery"}
 
 			fixed := complete
 			if test.machine {
@@ -312,7 +314,7 @@ func TestNativeIssueContract(t *testing.T) {
 			if issue.State != "Blocked" || issue.IssueContract.HumanAction != "" {
 				t.Fatalf("human edit did not clear the contract action: %+v", issue.IssueContract)
 			}
-			recovery.ExpectedRevision, recovery.IdempotencyKey = issue.Revision, "recover"
+			recovery.ExpectedRevision = issue.Revision
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", worker, recovery)
 			requireNativeStatus(t, response, http.StatusOK)
 			issue = tracker.NativeIssue{}
@@ -503,8 +505,12 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 					return GitHubImportPage{}, errors.New("Actions permission denied")
 				}
 				if test.stalePolicy {
-					workflow.Definition.Revision = strings.Repeat("b", 40)
-					replacement, err := config.ResolvePolicy(workflow)
+					changed, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte(prompt + "\nChanged authored instructions.\n"), Config: []byte(projectConfig), HasConfig: true, ConfigPath: "detent.yaml"})
+					if err != nil {
+						return GitHubImportPage{}, err
+					}
+					changed.Definition.Revision = strings.Repeat("b", 40)
+					replacement, err := config.ResolvePolicy(changed)
 					if err != nil {
 						return GitHubImportPage{}, err
 					}
@@ -647,7 +653,7 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 		allowed     bool
 	}{
 		{name: "human Todo", operation: "create", state: "Todo"},
-		{name: "machine Todo", operation: "create", state: "Todo", machine: true},
+		{name: "machine Todo", operation: "create", state: "Todo", machine: true, allowed: true},
 		{name: "reuse incomplete Todo", operation: "reuse", state: "Todo", machine: true, allowed: true},
 		{name: "reuse without policy", operation: "reuse", state: "Todo", machine: true, noPolicy: true, allowed: true},
 		{name: "reuse config error", operation: "reuse", state: "Todo", machine: true, configError: true, allowed: true},
@@ -724,6 +730,7 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 			}
 			if test.operation == "reuse" {
 				replaceAnalyticsTestIssueBody(t, f.service, analyticsTestScope(t, f), original.WorkItemID, body)
+				operatorRefreshSearch(t, f)
 				var err error
 				original, err = f.service.readWorkItem(t.Context(), analyticsTestScope(t, f), string(original.WorkItemID))
 				if err != nil || original.Body != body {
@@ -782,6 +789,13 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 			}
 			if test.allowed {
 				requireNativeStatus(t, response, http.StatusOK)
+				if test.operation == "create" && test.machine {
+					var filed tracker.NativeIssue
+					decodeHubResponse(t, response, &filed)
+					if filed.State != test.state || filed.Body != body || filed.Revision != 1 {
+						t.Fatalf("machine-stamped filing was not kept as filed: %+v", filed)
+					}
+				}
 				if test.operation == "reuse" {
 					var reused tracker.NativeIssue
 					decodeHubResponse(t, response, &reused)

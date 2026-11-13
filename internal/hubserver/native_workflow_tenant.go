@@ -98,6 +98,9 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 	if !human && strings.EqualFold(request.State, "Cancelled") {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
+	if !human && strings.EqualFold(request.State, "Blocked") && !typedWorkerHumanAction(request.ReasonDetail) {
+		return nil, hubapi.NativePublicInvalid("A worker may move an item to Blocked only with a typed human_action")
+	}
 	if human && scope.Credential.HostedRole == "reporter" && request.State != "Cancelled" {
 		return nil, operatortool.ErrAccessDenied
 	}
@@ -651,6 +654,15 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		return committed, nil
 	}
+}
+
+func typedWorkerHumanAction(detail string) bool {
+	content, found := workpad.LastStatusBlock(detail)
+	if !found {
+		return false
+	}
+	signal, err := workpad.ParseStatusBlock(content, "")
+	return err == nil && signal.Invalid == nil && signal.Status == workpad.StatusBlocked && strings.TrimSpace(signal.HumanAction) != ""
 }
 
 func (s *Service) humanWorkflowReceipt(ctx context.Context, scope hubscope.NativeScope, item, operation, key, hash string) (eventstore.Receipt, bool, error) {

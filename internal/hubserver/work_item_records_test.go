@@ -1057,6 +1057,14 @@ type projectUpdateBeforeWriteRepository struct {
 	skip   int
 }
 
+func (r *projectUpdateBeforeWriteRepository) ReadRequest(ctx context.Context, organization tracker.OrganizationID, read func(context.Context) error) error {
+	return r.Repository.(tenantstore.RequestReader).ReadRequest(ctx, organization, read)
+}
+
+func (r *projectUpdateBeforeWriteRepository) ReadTenantSnapshot(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.Repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, organization, workload, read)
+}
+
 func (r *projectUpdateBeforeWriteRepository) WriteTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, write func(tenantstore.Writer) error) error {
 	if workload != corestore.Serving {
 		return r.Repository.WriteTenant(ctx, organization, workload, write)
