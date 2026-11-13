@@ -7,9 +7,11 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -41,7 +43,18 @@ func (s *Service) projectIntegration(ctx context.Context, scope hubscope.NativeS
 	if err != nil {
 		return result, err
 	}
+	if err := s.authorizeProjectIntegrationLive(ctx, scope); err != nil {
+		return ProjectIntegration{}, err
+	}
 	return result, s.applyProjectIntegrationLive(ctx, scope, &result)
+}
+
+func (s *Service) authorizeProjectIntegrationLive(ctx context.Context, scope hubscope.NativeScope) error {
+	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
+	defer cancel()
+	return hubapi.ProjectRecordError(s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.authorizeAccessScope(ctx, r, scope, false)
+	}))
 }
 
 func (s *Service) applyProjectIntegrationLive(ctx context.Context, scope hubscope.NativeScope, result *ProjectIntegration) error {

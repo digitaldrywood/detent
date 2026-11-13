@@ -6,20 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -736,5 +742,133 @@ func TestCutoverRefusesChangedAuthoritySourcesAndRollsBack(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type integrationRevokingRepository struct {
+	*postgres.Repository
+	revoke atomic.Pointer[func(context.Context) error]
+}
+
+type integrationProjectReadSpy struct {
+	tenantstore.Reader
+	read *bool
+}
+
+func (r integrationProjectReadSpy) ProjectRecord(ctx context.Context, project tracker.ProjectID) (projectstore.Record, error) {
+	*r.read = true
+	return r.Reader.ProjectRecord(ctx, project)
+}
+
+func (r *integrationRevokingRepository) ReadTenant(ctx context.Context, organization tracker.OrganizationID, workload corestore.Workload, read func(tenantstore.Reader) error) error {
+	if r.revoke.Load() == nil {
+		return r.Repository.ReadTenant(ctx, organization, workload, read)
+	}
+	var projectRead bool
+	err := r.Repository.ReadTenant(ctx, organization, workload, func(reader tenantstore.Reader) error {
+		return read(integrationProjectReadSpy{Reader: reader, read: &projectRead})
+	})
+	if err == nil && projectRead {
+		if revoke := r.revoke.Swap(nil); revoke != nil {
+			err = (*revoke)(ctx)
+		}
+	}
+	return err
+}
+
+func TestProjectIntegrationToolRechecksAuthorityBeforeLiveRead(t *testing.T) {
+	t.Parallel()
+	postgresRepository, _ := projectRecordPostgresWithAdmin(t, 3)
+	repository := &integrationRevokingRepository{Repository: postgresRepository}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	var live atomic.Int32
+	service := &Service{echo: echo.New(), database: &database{postgres: postgresRepository}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: postgresRepository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now },
+		ReconcileBackend: &gitHubRepairFixture{},
+		GitHubAppInstallation: func(context.Context, string) (GitHubAppInstallation, error) {
+			live.Add(1)
+			return GitHubAppInstallation{Slug: "example-app", Installed: true}, nil
+		}}}
+	service.registerNativeRoutes(service.echo)
+	service.registerOperatorTools(service.echo)
+	service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
+	organizations := []tracker.OrganizationID{"org_first", "org_second"}
+	for _, org := range organizations {
+		seedStartupOrganization(t, repository, org)
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: org, ID: "reader_" + string(org), Name: "Example reader", Hash: apikey.HashToken(string(org)), Scope: "operator", KeyScope: "read", ProjectAccess: "selected", Kind: "service", CreatedAt: now, UpdatedAt: now}); err != nil {
+				return err
+			}
+			created, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: org, ID: tracker.ProjectID("project_" + string(org)), Name: "Example", Profile: "native", CreatedAt: now}, States: nativeFixtureStates()})
+			if err != nil {
+				return err
+			}
+			created.Settings.Repository = "example-org/example-project"
+			if _, err := w.UpdateProjectRecord(t.Context(), created); err != nil {
+				return err
+			}
+			return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: "reader_" + string(org), ProjectID: tracker.ProjectID("project_" + string(org))})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	call := func(org tracker.OrganizationID, project string) *httptest.ResponseRecorder {
+		service.localOrganization = string(org)
+		body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "get_project_integration", "arguments": map[string]any{"project_id": project}, "_meta": json.RawMessage(fleetProtocolMeta)}}
+		return performHubWorkCall(t, service, "/api/v2/organizations/"+string(org)+"/mcp", string(org), "get_project_integration", body)
+	}
+	type toolResult struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Data    struct {
+				Integration ProjectIntegration `json:"data"`
+			} `json:"structuredContent"`
+		} `json:"result"`
+	}
+	for _, org := range organizations {
+		requireNativeStatus(t, call(org, "project_"+string(org)), http.StatusOK)
+	}
+	if calls := live.Load(); calls != int32(len(organizations)) {
+		t.Fatalf("authorized live callback calls = %d, want %d", calls, len(organizations))
+	}
+	revoked, other := organizations[0], organizations[1]
+	project := "project_" + string(revoked)
+	live.Store(0)
+	revoke := func(ctx context.Context) error {
+		return postgresRepository.WriteTenant(context.WithoutCancel(ctx), revoked, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.DeleteAccessTokenGrant(ctx, "reader_"+string(revoked), tracker.ProjectID(project))
+		})
+	}
+	repository.revoke.Store(&revoke)
+	response := call(revoked, project)
+	if repository.revoke.Load() != nil {
+		t.Fatal("authority was not revoked between the project read and the live read")
+	}
+	if calls := live.Load(); calls != 0 {
+		t.Fatalf("live callback ran %d times for a revoked caller: %s", calls, response.Body.String())
+	}
+	var revokedResult toolResult
+	decodeHubResponse(t, response, &revokedResult)
+	if !revokedResult.Result.IsError && response.Code == http.StatusOK {
+		t.Fatalf("revoked caller received the integration: %s", response.Body.String())
+	}
+	fresh := call(revoked, project)
+	missing := call(revoked, "project_missing")
+	for name, answer := range map[string]*httptest.ResponseRecorder{"fresh hidden project": fresh, "missing project": missing} {
+		if answer.Code != response.Code || answer.Body.String() != response.Body.String() {
+			t.Errorf("revoked live read answer %d %s differs from the %s answer %d %s", response.Code, response.Body.String(), name, answer.Code, answer.Body.String())
+		}
+	}
+	if calls := live.Load(); calls != 0 {
+		t.Fatalf("live callback ran %d times for a hidden project", calls)
+	}
+	authorized := call(other, "project_"+string(other))
+	requireNativeStatus(t, authorized, http.StatusOK)
+	var result toolResult
+	decodeHubResponse(t, authorized, &result)
+	if result.Result.IsError || result.Result.Data.Integration.GitHubAppInstalled == nil || !*result.Result.Data.Integration.GitHubAppInstalled {
+		t.Fatalf("authorized tenant integration = %s", authorized.Body.String())
+	}
+	if calls := live.Load(); calls != 1 {
+		t.Fatalf("authorized tenant %s live callback calls = %d, want 1", other, calls)
 	}
 }
