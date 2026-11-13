@@ -721,21 +721,31 @@ environment, or a test that can open a connection to a production endpoint.
 ## INV-23 — The tenant is never a process
 
 The tenant is an attribute of a request, a job and a row, never of a process,
-binary, connection pool, timer or configuration file. One Hub process serves
-many organizations: no change starts a process per tenant, opens a database
-pool per tenant, runs a timer or long-lived goroutine per idle tenant, or
-writes a configuration file per tenant. Tenant identity comes from the verified
-request or the scheduler's selected tenant and is passed explicitly, never read
-from process-wide configuration. Background work is one shared scheduler per
-process with a fixed per-tick budget, bounded workers and per-tenant fairness,
-and its cost is stated at INV-21 scale. The rules and their rationale are in
-[the multi-tenancy architecture](architecture/multi-tenancy.md).
+binary, physical connection pool, timer or configuration file. One Hub process
+serves many organizations: no change starts a process per tenant, creates or
+closes a physical pool when an organization is added or removed, runs a timer
+or idle goroutine per tenant, or keeps a configuration file per tenant. The
+tenant scope is built once from the verified request or the scheduler's
+selected tenant, passed explicitly and rechecked where writes commit and
+results are published; it is never read from process-wide configuration.
+Background work is one shared scheduler per process with bounded pages,
+workers and deadlines, and its cost is stated at INV-21 scale. The only
+dedicated placement is a shard assignment Cory approves, with a recorded
+reason, using the same shard machinery. This invariant incorporates
+[the multi-tenancy architecture](architecture/multi-tenancy.md) as normative;
+where they differ, this section wins.
 
-**Enforcement:** `TestRepositoryTenancy` in `internal/invariants` counts, per
-non-test file, process launches under `internal/cloudentry` and
-`internal/hubserver`, database pool construction outside `internal/pgtransport`,
-and process-wide organization reads in the hosted serving tree. Counts must
-equal `internal/invariants/tenancy_policy.json`; the baseline only shrinks and
-must reach zero. `TestTenancyPolicyViolations` tests the scanner. The scan is
-syntactic; review applies the remaining rules and the
+**Enforcement:** `TestRepositoryTenancy` in `internal/invariants` is a
+syntactic ratchet over non-test Go files in the whole repository. Process
+package imports and launch symbols, and physical pool constructors and
+factories, are pinned to named sites in
+`internal/invariants/tenancy_policy.json`; occurrences in the hosted serving
+tree, pool constructors outside `internal/pgtransport`, hosted-path timer
+constructors and process-wide organization reads are debt that only shrinks.
+Test-support packages are exempt only by name. Counts must equal the policy;
+`-tenancy-baseline` rewrites it and refuses growth over the committed policy.
+`TestTenancyPolicyViolations` and `TestTenancyBaselineRefusesGrowth` test the
+scanner. The ratchet does not follow call graphs, types or runtime
+multiplicity, and an empty debt list is not proof the migration is complete;
+review applies the remaining rules and the
 [review checklist](architecture/multi-tenancy.md#review-checklist).
