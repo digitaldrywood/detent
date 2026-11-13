@@ -3269,6 +3269,9 @@ func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				var version tracker.ChangeVersion
 				decodeHubResponse(t, response, &version)
+				if _, err := f.service.config.TenantRepository.(*postgres.Repository).BackfillCurrentChangeReviews(t.Context(), f.project.OrganizationID, eventstore.NewContent(f.service.runDetailStore()), corestore.MaxPageSize); err != nil {
+					t.Fatal(err)
+				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve-republished"}, Decision: "approved"}), http.StatusOK)
 			}
 			if got := ready(); got != test.want {
