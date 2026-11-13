@@ -396,7 +396,7 @@ func newBrowserHostedFixtureBackendWithService(t *testing.T, allocated bool, org
 		base: base, organization: auth.Organization{ID: "org_browser_provider", ExternalID: organization, Name: "Browser organization"},
 		members: make(map[string]auth.Membership), sessions: make(map[string]auth.HostedIdentity), invitations: make(map[string]auth.Invitation), inviteRoles: make(map[string]string), authorizations: make(map[string]string), codes: make(map[string]auth.Identity),
 	}
-	legacyPlans := pilotHostedPlans()
+	legacyPlans := hostedplans.PilotPlans()
 	cfg := Config{Content: (&changeObjectFixture{}).call, InitialAdminToken: []byte(testHubAdminToken), Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &hostedplans.HostedConfig{
 		Plans: &legacyPlans, OrganizationID: organization, BootstrapSubject: "user_browser_owner", PublicURL: base, Provider: provider,
 		StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
@@ -840,11 +840,11 @@ const browserHostedOwnerEmail = "owner@example.test"
 func browserPreviewConfig(cfg *Config) {
 	cfg.Content = (&changeObjectFixture{}).call
 	if os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_CAPACITY") != "" {
-		plans := pilotHostedPlans()
+		plans := hostedplans.PilotPlans()
 		plan := plans.Plans[0]
 		plan.ID = "browser_capacity"
 		plan.Allowances["concurrent_work"] = 16
-		plans.Plans, plans.Base = []HostedPlan{plan}, plan.PlanReference
+		plans.Plans, plans.Base = []hostedplans.HostedPlan{plan}, plan.PlanReference
 		cfg.Hosted.Plans = &plans
 	}
 	cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Model: genkitbackend.Model, ReasoningEffort: "low", ArchiveContents: &conversationContentFixture{}}
@@ -1131,8 +1131,8 @@ func TestHostedBrowserPreview(t *testing.T) {
 		f.seedCoordinatorWorkflow(t)
 	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CAPACITY") != "" {
-		plans := capacityHostedPlans()
-		if err := f.service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+		plans := hostedplans.CapacityPlans()
+		if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
@@ -1147,11 +1147,11 @@ func TestHostedBrowserPreview(t *testing.T) {
 		}
 		provider := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
 		cfg := f.service.config.Hosted
-		cfg.Billing = &HostedBillingConfig{Mode: billing.ModeTest, AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_browser_capacity"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: provider}
+		cfg.Billing = &hostedplans.HostedBillingConfig{Mode: billing.ModeTest, AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_browser_capacity"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: provider}
 		for _, id := range []string{"starter", "growth", "scale"} {
-			cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_" + id + "_test", Label: id, Plan: PlanReference{ID: id, Version: 1}})
+			cfg.Billing.Prices = append(cfg.Billing.Prices, hostedplans.HostedBillingPrice{PriceID: "price_" + id + "_test", Label: id, Plan: hostedplans.PlanReference{ID: id, Version: 1}})
 		}
-		if err := f.service.database.configureHostedBilling(t.Context(), cfg); err != nil {
+		if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigureBilling(t.Context(), hostedplans.PlansInput(cfg))); err != nil {
 			t.Fatal(err)
 		}
 		done := make(chan struct{})
@@ -1163,7 +1163,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 		base := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
 		cfg := f.service.config.Hosted
 		cfg.Plans = &plans
-		cfg.Billing = &HostedBillingConfig{AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_credits_browser"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: base, Prices: []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}}}
+		cfg.Billing = &hostedplans.HostedBillingConfig{AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_credits_browser"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: base, Prices: []hostedplans.HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}}}
 		configureTestCredits(t, f, base, billingstore.CreditAccount{PaymentMethod: "pm_credit", Failure: "automatic payment failed; update the saved payment method"})
 		postAICreditFixture(t, f.service.database, billingstore.CreditTransaction{Mode: billing.ModeTest, Source: "fixture-purchase", AmountMicros: 1250000, Kind: "purchase", RecordedAt: f.service.config.now()})
 		done := make(chan struct{})

@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -19,7 +20,7 @@ import (
 )
 
 func TestPostgresOperatorCatalogFamilies(t *testing.T) {
-	f := newSharedRouteFixture(t, func(cfg *Config) { plans := pilotHostedPlans(); cfg.Hosted.Plans = &plans })
+	f := newSharedRouteFixture(t, func(cfg *Config) { plans := hostedplans.PilotPlans(); cfg.Hosted.Plans = &plans })
 	names := []string{operatortool.Reports, operatortool.ConnectionInfo, operatortool.ActionResult, operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerHost, operatortool.RevokeRunnerEnrollment, operatortool.RevokeRunnerIdentity}
 	for _, org := range []string{"org_startup", "org_other"} {
 		s := f.services[org]

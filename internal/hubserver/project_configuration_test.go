@@ -749,7 +749,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				f.service.config.Hosted.OrganizationID = string(f.project.OrganizationID)
 				configurationTestStorageLimit(t, f, 1)
 				_, storageErr := prepareChangeContent(f.service.contentContext(t.Context()), string(f.project.OrganizationID), []byte(strings.Repeat("ordinary billable storage probe", 80)))
-				var quota *hostedLimitError
+				var quota *hostedplans.LimitError
 				if !errors.As(storageErr, &quota) || quota.Resource != "collaboration_bytes" || quota.Allowance != 1 {
 					t.Fatalf("one-byte storage allowance did not refuse an ordinary write: %v", storageErr)
 				}
@@ -882,17 +882,17 @@ func seedHubConfiguration(t *testing.T, f nativeFixture, runner string, view run
 
 func configurationTestStorageLimit(t *testing.T, f nativeFixture, limit int64) {
 	t.Helper()
-	plans := pilotHostedPlans()
+	plans := hostedplans.PilotPlans()
 	selected := plans.Plans[0]
-	selected.PlanReference = PlanReference{ID: "configuration_storage", Version: 1}
+	selected.PlanReference = hostedplans.PlanReference{ID: "configuration_storage", Version: 1}
 	selected.Allowances["collaboration_bytes"] = limit
-	plans.Plans = []HostedPlan{selected}
+	plans.Plans = []hostedplans.HostedPlan{selected}
 	plans.Base = selected.PlanReference
 	cfg := *f.service.config.Hosted
 	cfg.Plans = &plans
 	f.service.database.billingAuditStore = f.service.runDetailStore()
 	f.service.database.hostedOrganization = f.project.OrganizationID
-	if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 		t.Fatal(err)
 	}
 	err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {

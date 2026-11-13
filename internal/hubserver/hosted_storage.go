@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
@@ -16,20 +17,20 @@ var (
 )
 
 type hostedMetadataResponse struct {
-	OrganizationID         string            `json:"organization_id"`
-	ProviderOrganizationID string            `json:"provider_organization_id"`
-	Members                *int64            `json:"members"`
-	Projects               *int64            `json:"projects"`
-	Runners                *int64            `json:"runners"`
-	Events                 *int64            `json:"events"`
-	LastActivity           *time.Time        `json:"last_activity"`
-	DatabaseBytes          *int64            `json:"database_bytes"`
-	Healthy                bool              `json:"healthy"`
-	UnavailableUsage       []string          `json:"unavailable_usage"`
-	Entitlement            HostedEntitlement `json:"entitlement"`
-	PlanID                 string            `json:"plan_id"`
-	StorageQuotaBytes      int64             `json:"storage_quota_bytes,omitempty"`
-	EventQuota             int64             `json:"event_quota,omitempty"`
+	OrganizationID         string                        `json:"organization_id"`
+	ProviderOrganizationID string                        `json:"provider_organization_id"`
+	Members                *int64                        `json:"members"`
+	Projects               *int64                        `json:"projects"`
+	Runners                *int64                        `json:"runners"`
+	Events                 *int64                        `json:"events"`
+	LastActivity           *time.Time                    `json:"last_activity"`
+	DatabaseBytes          *int64                        `json:"database_bytes"`
+	Healthy                bool                          `json:"healthy"`
+	UnavailableUsage       []string                      `json:"unavailable_usage"`
+	Entitlement            hostedplans.HostedEntitlement `json:"entitlement"`
+	PlanID                 string                        `json:"plan_id"`
+	StorageQuotaBytes      int64                         `json:"storage_quota_bytes,omitempty"`
+	EventQuota             int64                         `json:"event_quota,omitempty"`
 	CostDrivers            struct {
 		ActiveIssues          *int64           `json:"active_issues"`
 		ArchivedIssues        *int64           `json:"archived_issues"`

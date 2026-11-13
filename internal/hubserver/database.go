@@ -11,6 +11,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -30,9 +31,9 @@ type database struct {
 	schemaVersion          int64
 	schemaFingerprint      string
 	hostedOrganization     tracker.OrganizationID
-	hostedRuntime          atomic.Pointer[hostedRuntimeConfig]
+	hostedRuntime          atomic.Pointer[hostedplans.RuntimeConfig]
 	runtimeLoads           singleflight.Group
-	runtimeBilling         *HostedBillingConfig
+	runtimeBilling         *hostedplans.HostedBillingConfig
 	logger                 *slog.Logger
 	hostedBilling          bool
 	aiCreditMode           string

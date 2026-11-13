@@ -519,7 +519,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 			currentTime := s.config.now().UTC()
 			if options.Feature != "" && (human || s.database.billingRepository != nil) {
-				if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, currentTime); err != nil {
+				if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, options.Feature, currentTime)); err != nil {
 					return err
 				}
 			}

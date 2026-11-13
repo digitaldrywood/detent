@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
@@ -21,8 +22,8 @@ import (
 
 func TestProjectListAndRunnerReadContention(t *testing.T) {
 	var logs hostedLogBuffer
-	plans := capacityHostedPlans()
-	plans.Base = PlanReference{ID: "scale", Version: 1}
+	plans := hostedplans.CapacityPlans()
+	plans.Base = hostedplans.PlanReference{ID: "scale", Version: 1}
 	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(cfg *Config) { cfg.Hosted.Plans = &plans; cfg.Logger = slog.New(slog.NewTextHandler(&logs, nil)) })
 	grantAppRunners(t, f)
 	runners := make([]appTestRunner, 10)

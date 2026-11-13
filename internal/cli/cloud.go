@@ -29,7 +29,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudentry"
 	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
 type cloudFileConfig struct {
@@ -83,20 +82,20 @@ func (b *cloudBillingFileConfig) defaults() {
 }
 
 type cloudAllocationFileConfig struct {
-	TenantRoot               string                       `yaml:"tenant_root"`
-	SocketRoot               string                       `yaml:"socket_root"`
-	Binary                   string                       `yaml:"binary"`
-	MaxTenants               int                          `yaml:"max_tenants"`
-	MaxConcurrentProvisions  int                          `yaml:"max_concurrent_provisions"`
-	RetryLimit               int                          `yaml:"retry_limit"`
-	MinFreeDiskBytes         uint64                       `yaml:"min_free_disk_bytes"`
-	MinAvailableMemoryBytes  uint64                       `yaml:"min_available_memory_bytes"`
-	AllowedEmails            []string                     `yaml:"allowed_emails"`
-	AllowedDomains           []string                     `yaml:"allowed_domains"`
-	Entitlements             *hubserver.HostedPlansConfig `yaml:"entitlements"`
-	Billing                  *hostedBillingFileConfig     `yaml:"billing"`
-	EntitlementAdministrator string                       `yaml:"entitlement_administrator"`
-	EntitlementAdminTokenEnv string                       `yaml:"entitlement_admin_token_env"`
+	TenantRoot               string                         `yaml:"tenant_root"`
+	SocketRoot               string                         `yaml:"socket_root"`
+	Binary                   string                         `yaml:"binary"`
+	MaxTenants               int                            `yaml:"max_tenants"`
+	MaxConcurrentProvisions  int                            `yaml:"max_concurrent_provisions"`
+	RetryLimit               int                            `yaml:"retry_limit"`
+	MinFreeDiskBytes         uint64                         `yaml:"min_free_disk_bytes"`
+	MinAvailableMemoryBytes  uint64                         `yaml:"min_available_memory_bytes"`
+	AllowedEmails            []string                       `yaml:"allowed_emails"`
+	AllowedDomains           []string                       `yaml:"allowed_domains"`
+	Entitlements             *hostedplans.HostedPlansConfig `yaml:"entitlements"`
+	Billing                  *hostedBillingFileConfig       `yaml:"billing"`
+	EntitlementAdministrator string                         `yaml:"entitlement_administrator"`
+	EntitlementAdminTokenEnv string                         `yaml:"entitlement_admin_token_env"`
 }
 
 func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []string {
@@ -151,7 +150,7 @@ func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]
 			Postgres:    config.TenantPostgres,
 		}
 		if spec.Organization.CheckoutPrice != "" {
-			tenant.Plans = hubserver.CheckoutHostedPlans(tenant.Plans)
+			tenant.Plans = hostedplans.CheckoutHostedPlans(tenant.Plans)
 		}
 		tenant.WorkOS.ClientID, tenant.WorkOS.APIKeyEnv, tenant.WorkOS.APIURL, tenant.WorkOS.IssuerURL = config.WorkOS.ClientID, config.WorkOS.APIKeyEnv, config.WorkOS.APIURL, config.WorkOS.IssuerURL
 		return yaml.Marshal(tenant)
@@ -391,7 +390,7 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	}
 	if config.Allocation != nil {
 		initial := config
-		result.ConfigureRuntime = func(update hubserver.HostedRuntimeUpdate) func(cloudentry.TenantSpec) ([]byte, error) {
+		result.ConfigureRuntime = func(update hostedplans.HostedRuntimeUpdate) func(cloudentry.TenantSpec) ([]byte, error) {
 			next := initial
 			allocation := *initial.Allocation
 			allocation.Entitlements = update.Plans
@@ -403,7 +402,7 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 			next.Allocation = &allocation
 			return tenantConfiguration(next)
 		}
-		result.Runtime = &hubserver.HostedRuntimeUpdate{Plans: config.Allocation.Entitlements}
+		result.Runtime = &hostedplans.HostedRuntimeUpdate{Plans: config.Allocation.Entitlements}
 		if config.Allocation.Billing != nil {
 			result.Runtime.Prices = config.Allocation.Billing.Prices
 		}

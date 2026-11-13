@@ -6,10 +6,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 func (s *Service) applyRunnerTenantUsage(ctx context.Context, writer billingstore.Writer, now time.Time, receiptID string, completion, heartbeat bool) error {
-	plans := s.database.plans()
+	plans := s.database.plansService().Plans()
 	if plans == nil {
 		return nil
 	}
@@ -18,7 +20,7 @@ func (s *Service) applyRunnerTenantUsage(ctx context.Context, writer billingstor
 		return writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: s.database.hostedOrganization, ID: id + "/" + metric, WindowStart: windowStart, Metric: metric, Amount: 1}, limit)
 	}
 	if ctx.Value(runnerRequestBudgetContext{}) != true {
-		entitlement, err := s.database.hostedEntitlementRecord(ctx, writer, now)
+		entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, writer, now))
 		if err != nil {
 			return err
 		}
@@ -31,7 +33,7 @@ func (s *Service) applyRunnerTenantUsage(ctx context.Context, writer billingstor
 			return err
 		}
 		if !result.Allowed {
-			return &hostedLimitError{Resource: "api_mutations", Allowance: limit, Consumption: result.Used}
+			return &hostedplans.LimitError{Resource: "api_mutations", Allowance: limit, Consumption: result.Used}
 		}
 	}
 	if heartbeat {
@@ -43,7 +45,7 @@ func (s *Service) applyRunnerTenantUsage(ctx context.Context, writer billingstor
 }
 
 func (s *Service) checkRunnerAdmission(ctx context.Context, writer billingstore.Writer, now time.Time, counted int64, metrics ...string) error {
-	plans := s.database.plans()
+	plans := s.database.plansService().Plans()
 	if plans == nil {
 		return nil
 	}
@@ -51,7 +53,7 @@ func (s *Service) checkRunnerAdmission(ctx context.Context, writer billingstore.
 	if !ok {
 		return nil
 	}
-	entitlement, err := s.database.hostedEntitlementRecord(ctx, writer, now)
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, writer, now))
 	if err != nil {
 		return err
 	}
@@ -65,7 +67,7 @@ func (s *Service) checkRunnerAdmission(ctx context.Context, writer billingstore.
 			return err
 		}
 		if before := used - counted; known && before >= limit {
-			return &hostedLimitError{Resource: metric, Allowance: limit, Consumption: before}
+			return &hostedplans.LimitError{Resource: metric, Allowance: limit, Consumption: before}
 		}
 	}
 	return nil

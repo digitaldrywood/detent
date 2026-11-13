@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -85,7 +86,7 @@ func (s *Service) createAccessToken(ctx context.Context, request hubapi.TokenReq
 				return auth.ErrHostedIdentity
 			}
 			for _, project := range request.ProjectIDs {
-				if !hostedSafeID(project) {
+				if !hostedplans.SafeID(project) {
 					return hubapi.NativeNotFound()
 				}
 				scope.Project = tracker.ProjectID(project)

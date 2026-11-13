@@ -46,7 +46,7 @@ func (s *Service) checkAttachmentEvidenceTenant(ctx context.Context, scope hubsc
 		if attempt.OrganizationID != scope.Organization || attempt.IssueID != item.ID || attempt.LeaseID != lease.LeaseID || attempt.FencingToken != lease.FencingToken || attempt.Status != "running" {
 			return hubapi.NativeStaleExecution("Evidence producer is not the running attempt")
 		}
-		if s.database.plans() != nil {
+		if s.database.plansService().Plans() != nil {
 			if _, err := r.CollaborationBytes(ctx); err != nil {
 				if errors.Is(err, corestore.ErrNotFound) {
 					return &hubapi.NativeError{Code: "storage_owner_unavailable", Message: "Evidence upload accounting is unavailable with PostgreSQL storage", Status: http.StatusServiceUnavailable, PublicMessage: true}

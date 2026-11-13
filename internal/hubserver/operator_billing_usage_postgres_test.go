@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	hubpostgres "github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -75,7 +76,7 @@ func (r operatorBillingUsageReader) BillingPopulation(ctx context.Context, metri
 
 	owner, ok := r.Reader.(billingstore.PopulationReader)
 	if !ok {
-		return 0, false, ErrBillingUsageUnavailable
+		return 0, false, hostedplans.ErrBillingUsageUnavailable
 	}
 	return owner.BillingPopulation(ctx, metric, now, connected)
 }
@@ -100,7 +101,7 @@ func (r operatorBillingUsageReader) BillingIssuePopulation(ctx context.Context) 
 	}
 	owner, ok := r.Reader.(billingIssuePopulationReader)
 	if !ok {
-		return 0, 0, false, ErrBillingUsageUnavailable
+		return 0, 0, false, hostedplans.ErrBillingUsageUnavailable
 	}
 	return owner.BillingIssuePopulation(ctx)
 }
@@ -418,7 +419,7 @@ SELECT CASE WHEN count(*)=$3 THEN $3 ELSE count(*) FILTER (WHERE active) END FRO
 						if err := f.service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 							owner, ok := r.(billingstore.PopulationReader)
 							if !ok {
-								return ErrBillingUsageUnavailable
+								return hostedplans.ErrBillingUsageUnavailable
 							}
 							count, known, err := owner.BillingPopulation(t.Context(), test.metric, now, 0)
 							if err == nil && (count != test.count || known != test.known) {
@@ -543,7 +544,7 @@ SELECT CASE WHEN count(*)=$3 THEN $3 ELSE count(*) FILTER (WHERE active) END FRO
 			default:
 				probeService.config.TenantRepository = struct{ tenantstore.Repository }{first.service.config.TenantRepository}
 			}
-			if _, err := probeService.operatorBillingUsage(t.Context(), now); !errors.Is(err, ErrBillingUsageUnavailable) {
+			if _, err := probeService.operatorBillingUsage(t.Context(), now); !errors.Is(err, hostedplans.ErrBillingUsageUnavailable) {
 				t.Fatalf("missing typed owner error = %v", err)
 			}
 		})

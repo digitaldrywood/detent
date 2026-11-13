@@ -116,8 +116,8 @@ func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential hubap
 		payload.Organization.Logo = &logo
 		payload.Organization.Name = organization.Name
 		payload.Organization.Slug = organization.Slug
-		if s.database.plans() != nil {
-			entitlement, err := s.database.hostedEntitlementRecord(ctx, r, s.config.now())
+		if s.database.plansService().Plans() != nil {
+			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, s.config.now()))
 			if err != nil {
 				return err
 			}

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
@@ -82,10 +83,10 @@ func TestPostgresCreditWritesStayBoundedWithHistory(t *testing.T) {
 			seeded := 0
 			for _, size := range []int{2, 50} {
 				for seeded < size {
-					if err := service.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+					if err := hubapi.FromFeatureError(service.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 						_, err := w.PostBillingCredit(t.Context(), billingstore.CreditTransaction{OrganizationID: service.database.hostedOrganization, Mode: billing.ModeTest, Source: fmt.Sprintf("history_%d", seeded), Kind: "purchase", AmountMicros: 1, RecordedAt: service.config.now()})
 						return err
-					}); err != nil {
+					})); err != nil {
 						t.Fatal(err)
 					}
 					seeded++

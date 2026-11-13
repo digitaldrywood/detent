@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -324,7 +325,7 @@ func TestNativeEventRejectionsLeaveNoContent(t *testing.T) {
 				}
 				f.service.database.billingRepository = f.service.config.TenantRepository
 				f.service.config.BillingRepository = f.service.config.TenantRepository
-				f.service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{Base: PlanReference{ID: ref.ID, Version: ref.Version}, WindowSeconds: 60, RetentionWindows: 10}})
+				f.service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{Base: hostedplans.PlanReference{ID: ref.ID, Version: ref.Version}, WindowSeconds: 60, RetentionWindows: 10}})
 				event.Type, event.Data.Outcome = "run.observed", ""
 				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: clock.Now()}
 				status = http.StatusTooManyRequests

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -27,7 +28,7 @@ import (
 
 func TestPostgresBootstrapWorkspaceCostAndTenantIsolation(t *testing.T) {
 	f := newSharedRouteFixture(t, func(cfg *Config) {
-		plans := pilotHostedPlans()
+		plans := hostedplans.PilotPlans()
 		cfg.Hosted.Plans = &plans
 		cfg.Workspace = &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: true}}
 	})

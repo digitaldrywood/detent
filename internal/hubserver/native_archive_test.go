@@ -269,7 +269,7 @@ func TestHostedIssueAllowanceBoundaries(t *testing.T) {
 					}
 				}
 			}
-			usage, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+			usage, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -315,10 +315,10 @@ func TestHostedIssueArchiveAndDowngrade(t *testing.T) {
 	config.Plans = append(config.Plans, plan)
 	cfg := *f.service.config.Hosted
 	cfg.Plans = &config
-	if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.database.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "downgrade", Action: "base", ExpectedRevision: 1, Plan: plan.PlanReference, Reason: "test downgrade"}); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "downgrade", Action: "base", ExpectedRevision: 1, Plan: plan.PlanReference, Reason: "test downgrade"})); err != nil {
 		t.Fatal(err)
 	}
 	archived = action(restored, "archive", "after-downgrade", http.StatusOK)
@@ -327,7 +327,7 @@ func TestHostedIssueArchiveAndDowngrade(t *testing.T) {
 		requireNativeStatus(t, f.request(t, owner, http.MethodGet, issuePath(archived)+resource, nil), http.StatusOK)
 	}
 	action(archived, "restore", "after-downgrade-restore", http.StatusTooManyRequests)
-	usage, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+	usage, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +372,7 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 	if winners != 1 {
 		t.Fatalf("winners=%d", winners)
 	}
-	usage, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+	usage, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,9 +401,9 @@ func TestHostedIssueImportAllocation(t *testing.T) {
 	f := newNativeFixture(t, service, "", "import-quota")
 	d := service.database
 	d.hostedOrganization = f.project.OrganizationID
-	config := pilotHostedPlans()
+	config := hostedplans.PilotPlans()
 	config.Plans[0].Allowances["unarchived_issues"] = 1
-	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &config}); err != nil {
+	if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &config}))); err != nil {
 		t.Fatal(err)
 	}
 	response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/integration/repository", testHubAdminToken, map[string]any{"idempotency_key": "bind", "expected_revision": "1", "repository": "example-org/example-project"})
@@ -432,7 +432,7 @@ func TestHostedIssueImportAllocation(t *testing.T) {
 	if !readWorkItem(t, f, tracker.NativeWorkItemID(first.WorkItemID), "").Archived {
 		t.Fatal("reimport restored archived issue")
 	}
-	usage, err := d.hostedPlanUsage(context.Background(), time.Now())
+	usage, err := hubapi.FeatureResult(d.plansService().PlanUsage(context.Background(), time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestHostedIssueAllowanceAcrossProjects(t *testing.T) {
 	hostedTestPlans(t, f.service, map[string]int64{"unarchived_issues": 1})
 	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), Project: f.project, Credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
 	seedArchiveIssues(t, f.service, scope, 2, "Done")
-	usage, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+	usage, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,23 +496,23 @@ func TestHostedIssueAllowanceCatalog(t *testing.T) {
 			config := hostedTestPlans(t, f.service, limits)
 			cfg := *f.service.config.Hosted
 			cfg.Plans = &config
-			if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 				t.Fatal(err)
 			}
 			storedPlan := func() billingstore.Plan {
 				t.Helper()
 				var stored billingstore.Plan
-				if err := f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+				if err := hubapi.FromFeatureError(f.service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 					var err error
 					stored, err = r.BillingPlan(t.Context(), billingstore.PlanReference{ID: config.Base.ID, Version: config.Base.Version})
 					return err
-				}); err != nil {
+				})); err != nil {
 					t.Fatal(err)
 				}
 				return stored
 			}
 			before := storedPlan()
-			plan, err := f.service.database.readHostedPlan(t.Context(), nil, config.Base)
+			plan, err := hubapi.FeatureResult(f.service.database.plansService().ReadPlan(t.Context(), nil, config.Base))
 			if err != nil {
 				t.Fatal(err)
 			}

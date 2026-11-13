@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -162,12 +163,12 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 	if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, auth.ErrInvalidSession) {
 		return s.refusedAPIError(c, http.StatusForbidden, "access_denied", "Access is no longer available", hubapi.APIErrorResponse{Code: "access_denied", Message: "Access is no longer available"}, append(attributes, "authorization_cause", operatorAuthorizationCause(err), "hosted_reason", auth.HostedIdentityReason(err))...)
 	}
-	var limit *hostedLimitError
+	var limit *hostedplans.LimitError
 	if errors.As(err, &limit) {
 		return s.refusedAPIError(c, http.StatusTooManyRequests, "allowance_exhausted", limit.Error(), struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
-			*hostedLimitError
+			*hostedplans.LimitError
 		}{"allowance_exhausted", limit.Error(), limit})
 	}
 	var failure *hubapi.NativeError

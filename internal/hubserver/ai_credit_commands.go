@@ -62,14 +62,14 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 	}
 
 	var purchase billingstore.CreditPurchase
-	err = s.database.readBillingTenant(readCtx, func(reader tenantstore.Reader) error {
+	err = hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(readCtx, func(reader tenantstore.Reader) error {
 		var err error
 		purchase, err = reader.BillingCreditPurchase(readCtx, key)
 		return err
-	})
+	}))
 	if errors.Is(err, corestore.ErrNotFound) {
 		purchase = billingstore.CreditPurchase{OrganizationID: s.database.hostedOrganization, Key: key, Mode: cfg.CreditMode(), PriceID: pack.PriceID, USDCents: pack.USDCents, State: "pending", CreatedAt: s.config.now().UTC()}
-		if err := s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.CreateBillingCreditPurchase(ctx, purchase) }); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.CreateBillingCreditPurchase(ctx, purchase) })); err != nil {
 			return billingDestination{}, err
 		}
 	} else if err != nil {
@@ -92,22 +92,22 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 			var failure *billing.StripeError
 			if errors.As(err, &failure) && failure.StatusCode >= 400 && failure.StatusCode < 500 && failure.StatusCode != http.StatusConflict && failure.Type != "" && failure.Type != "idempotency_error" {
 				if failure.Method == http.MethodPost && failure.Path == "checkout/sessions" {
-					err = errors.Join(err, s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+					err = errors.Join(err, hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error {
 						_, err := writer.MarkBillingCreditPurchaseFailed(ctx, purchase.Key)
 						return err
-					}))
+					})))
 				}
 				return billingDestination{}, checkoutProviderFailure("", fmt.Errorf("create credit checkout: %w", err))
 			}
 			return billingDestination{}, errors.Join(billingFailure(http.StatusServiceUnavailable, "Credit checkout is temporarily unavailable; retry the same purchase"), fmt.Errorf("create credit checkout: %w", err))
 		}
-		if err := s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+		if err := hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error {
 			stored, err := writer.SetBillingCreditPurchaseSession(ctx, purchase.Key, session)
 			if err == nil {
 				session = stored
 			}
 			return err
-		}); err != nil {
+		})); err != nil {
 			return billingDestination{}, err
 		}
 	}
@@ -158,16 +158,16 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 			return creditFundingInput{}, billingFailure(http.StatusBadRequest, "Choose a threshold greater than zero and smaller than the credit pack")
 		}
 		{
-			err := s.database.readBillingTenant(readCtx, func(reader tenantstore.Reader) error {
+			err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(readCtx, func(reader tenantstore.Reader) error {
 				account, err := reader.BillingCreditAccount(readCtx, s.database.aiCreditMode)
 				method = account.PaymentMethod
 				return err
-			})
+			}))
 			if err != nil {
 				return creditFundingInput{}, err
 			}
 		}
-		binding, err := s.database.hostedBillingBinding(ctx, cfg)
+		binding, err := hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg))
 		if err != nil {
 			return creditFundingInput{}, billingFailure(http.StatusConflict, "Buy credits or save a payment method in the billing portal first")
 		}
@@ -190,7 +190,7 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 		}
 	}
 
-	err = s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+	err = hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error {
 		account, err := writer.BillingCreditAccount(ctx, s.database.aiCreditMode)
 		if err != nil {
 			return err
@@ -206,7 +206,7 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 			account.PaymentMethod = method
 		}
 		return writer.SetBillingCreditFunding(ctx, account)
-	})
+	}))
 	if err != nil {
 		return creditFundingInput{}, err
 	}

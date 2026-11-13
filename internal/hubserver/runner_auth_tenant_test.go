@@ -284,7 +284,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	organization := nativeOrganization{ID: "org_example", Name: "Example organization", Slug: "example"}
 	service.database.hostedOrganization = organization.ID
 	service.database.billingRepository = repository
-	service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
+	service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
 	usagePlan := billingstore.PlanReference{ID: "runner_protocol", Version: 1}
 	now := service.config.now()
 	secret := "example_runner_heartbeat_secret"
@@ -1190,7 +1190,7 @@ func TestRunnerTenantUsageUsesBillingReceiptsAndPreservesExemptions(t *testing.T
 	organization := nativeOrganization{ID: "org_example", Name: "Example organization", Slug: "example"}
 	service.database.hostedOrganization = organization.ID
 	service.database.billingRepository = repository
-	service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
+	service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
 	plan := billingstore.PlanReference{ID: "runner_usage", Version: 1}
 	if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization.ID, Name: organization.Name, Slug: organization.Slug, Local: true, CreatedAt: clock.Now()}); err != nil {
@@ -1217,7 +1217,7 @@ func TestRunnerTenantUsageUsesBillingReceiptsAndPreservesExemptions(t *testing.T
 	if err := apply(t.Context(), "mutation_denied", false, false); err == nil {
 		t.Fatal("mutation beyond the allowance was accepted")
 	} else {
-		var limit *hostedLimitError
+		var limit *hostedplans.LimitError
 		if !errors.As(err, &limit) || limit.Resource != "api_mutations" {
 			t.Fatalf("over-limit error=%v", err)
 		}
@@ -1258,7 +1258,7 @@ func TestRunnerTenantUsageUsesBillingReceiptsAndPreservesExemptions(t *testing.T
 	if err := apply(t.Context(), "mutation_missing_allowance", false, false); err == nil {
 		t.Fatal("mutation with omitted api_mutations allowance was accepted")
 	} else {
-		var limit *hostedLimitError
+		var limit *hostedplans.LimitError
 		if !errors.As(err, &limit) || limit.Resource != "api_mutations" || limit.Allowance != 0 {
 			t.Fatalf("omitted allowance error=%v, want api_mutations allowance 0", err)
 		}

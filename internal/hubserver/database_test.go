@@ -43,7 +43,7 @@ func TestOpenTestServiceUsesPostgres(t *testing.T) {
 		t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
 			cfg := Config{InitialAdminToken: []byte("example_fixture_admin_token")}
 			if hosted {
-				plans := pilotHostedPlans()
+				plans := hostedplans.PilotPlans()
 				cfg.Hosted = &hostedplans.HostedConfig{
 					Plans:                &plans,
 					OrganizationID:       "org_example",

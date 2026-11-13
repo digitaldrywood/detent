@@ -18,6 +18,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/credits"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -563,8 +565,8 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		if !decision.Allowed {
 			return errCoordinatorNothingPending
 		}
-		refusal = c.server.database.requireHostedFeatureRecord(ctx, tx, "native_execution", now)
-		var limit *hostedLimitError
+		refusal = hubapi.FromFeatureError(c.server.database.plansService().RequireFeatureRecord(ctx, tx, "native_execution", now))
+		var limit *hostedplans.LimitError
 		if refusal != nil && !errors.As(refusal, &limit) {
 			return refusal
 		}
@@ -1330,14 +1332,14 @@ func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.
 	ctx = prepared
 	var preparedUsage preparedConversationUsage
 	if usage != nil {
-		preparedUsage, err = s.coordinator.server.database.prepareConversationUsagePostgres(ctx, *usage)
+		preparedUsage, err = hubapi.FeatureResult(s.coordinator.server.database.creditsService().PrepareUsage(ctx, credits.Usage(*usage)))
 		if err != nil {
 			return err
 		}
 	}
 	return s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx tenantstore.Writer, record *conversationRecord, now time.Time) error {
 		if usage != nil {
-			if err := s.coordinator.server.database.writeConversationUsagePostgres(ctx, tx, preparedUsage); err != nil {
+			if err := hubapi.FromFeatureError(s.coordinator.server.database.creditsService().WriteUsage(ctx, tx, preparedUsage)); err != nil {
 				return err
 			}
 		}

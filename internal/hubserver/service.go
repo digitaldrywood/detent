@@ -256,10 +256,10 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		return nil, errors.Join(err, database.Close())
 	}
 	if database.postgres != nil && cfg.Hosted != nil && !cfg.CredentialMaintenance {
-		if err := database.configureHostedPlans(ctx, cfg.Hosted); err != nil {
+		if err := hubapi.FromFeatureError(database.plansService().ConfigurePlans(ctx, hostedplans.PlansInput(cfg.Hosted))); err != nil {
 			return nil, errors.Join(err, database.Close())
 		}
-		if err := database.configureHostedBilling(ctx, cfg.Hosted); err != nil {
+		if err := hubapi.FromFeatureError(database.plansService().ConfigureBilling(ctx, hostedplans.PlansInput(cfg.Hosted))); err != nil {
 			return nil, errors.Join(err, database.Close())
 		}
 	}

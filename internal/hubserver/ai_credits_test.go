@@ -102,7 +102,7 @@ func configureTestCredits(t *testing.T, f *browserHostedFixture, base *hostedBil
 	t.Helper()
 	p := &hostedCreditProvider{hostedBillingProvider: base, chargeStatus: "succeeded"}
 	f.service.config.Hosted.Billing.Provider = p
-	f.service.config.Hosted.Billing.CreditPacks = []HostedCreditPack{{PriceID: "price_credit", Label: "AI credit pack", USDCents: 500}}
+	f.service.config.Hosted.Billing.CreditPacks = []hostedplans.HostedCreditPack{{PriceID: "price_credit", Label: "AI credit pack", USDCents: 500}}
 	if err := hostedplans.ValidateHostedConfig(f.service.config.Hosted); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func configureTestCredits(t *testing.T, f *browserHostedFixture, base *hostedBil
 			t.Fatal(err)
 		}
 	}
-	if err := f.service.database.configureHostedBilling(t.Context(), f.service.config.Hosted); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigureBilling(t.Context(), hostedplans.PlansInput(f.service.config.Hosted))); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -138,7 +138,7 @@ func postAICreditFixture(t *testing.T, d *database, row billingstore.CreditTrans
 		row.Mode = billing.ModeTest
 	}
 	if row.Reason != "" {
-		ref, err := d.archiveBillingReason(t.Context(), row.Reason)
+		ref, err := hubapi.FeatureResult(d.plansService().ArchiveBillingReason(t.Context(), row.Reason))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -205,10 +205,10 @@ func TestAICreditCheckoutSessionDoesNotRegressWebhookPayment(t *testing.T) {
 	p.payment = billing.CreditPayment{ID: "pi_checkout_race", PriceID: "price_credit", USDCents: 500, Status: "succeeded", PaymentMethod: "pm_webhook"}
 	p.duringCheckout = func(ctx context.Context, request billing.CreditRequest) error {
 		p.payment.Key = request.IdempotencyKey
-		if err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+		if err := hubapi.FromFeatureError(d.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error {
 			_, err := writer.CreateBillingEvent(ctx, billingstore.Event{OrganizationID: d.hostedOrganization, ID: "evt_checkout_race", Type: "checkout.session.completed", ReceivedAt: d.now().UTC()})
 			return err
-		}); err != nil {
+		})); err != nil {
 			return err
 		}
 		return service.billing.creditEvent(ctx, "evt_checkout_race", "checkout.session.completed")
@@ -244,7 +244,7 @@ func newPostgresAICreditFixture(t *testing.T, automatic bool) (*Service, *hosted
 	t.Helper()
 	repository := projectRecordPostgres(t)
 	f := accountPreferencesPostgresFixture(t, repository)
-	plans := pilotHostedPlans()
+	plans := hostedplans.PilotPlans()
 	f.service.config.Hosted.Plans = &plans
 	now := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
 	f.service.config.now = func() time.Time { return now }
@@ -254,10 +254,10 @@ func newPostgresAICreditFixture(t *testing.T, automatic bool) (*Service, *hosted
 	d.billingAuditStore = &memoryRunDetails{}
 	base := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
 	p := &hostedCreditProvider{hostedBillingProvider: base, chargeStatus: "succeeded"}
-	f.service.config.Hosted.Billing = &HostedBillingConfig{
+	f.service.config.Hosted.Billing = &hostedplans.HostedBillingConfig{
 		AccountID: "acct_fixture", CustomerID: "cus_fixture", Mode: billing.ModeTest, PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_2196_secret"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: p,
-		Prices:      []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}},
-		CreditPacks: []HostedCreditPack{{PriceID: "price_credit", Label: "AI credit pack", USDCents: 500}},
+		Prices:      []hostedplans.HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}},
+		CreditPacks: []hostedplans.HostedCreditPack{{PriceID: "price_credit", Label: "AI credit pack", USDCents: 500}},
 	}
 	for _, organization := range []tracker.OrganizationID{d.hostedOrganization, "org_credit_other"} {
 		seedHostedBillingRecordAccount(t, repository, organization, billingstore.Account{
@@ -308,11 +308,11 @@ func TestPlatformAICreditServiceAuthority(t *testing.T) {
 			f := newHostedSharedFixture(t)
 			d := f.service.database
 			d.aiCreditMode = billing.ModeTest
-			f.service.config.Hosted.Billing = &HostedBillingConfig{}
+			f.service.config.Hosted.Billing = &hostedplans.HostedBillingConfig{}
 			d.billingAuditStore = &memoryRunDetails{}
-			if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+			if err := hubapi.FromFeatureError(d.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 				return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest})
-			}); err != nil {
+			})); err != nil {
 				t.Fatal(err)
 			}
 			owner := f.member(t, "owner", "owner", "")
@@ -364,12 +364,12 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 					initial -= 10000000 + 5000000 + 25000000 - 1000000 - 750000 - 9000000 - 9000000 + 51*2000000 + 50*51/2
 					live += 9000000
 				}
-				if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+				if err := hubapi.FromFeatureError(d.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 					if err := w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: d.hostedOrganization, Mode: billing.ModeTest, BalanceMicros: initial, AutoEnabled: test.history}); err != nil {
 						return err
 					}
 					return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: d.hostedOrganization, Mode: billing.ModeLive, BalanceMicros: live})
-				}); err != nil {
+				})); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -421,11 +421,11 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 						t.Fatalf("credits=%+v", result)
 					}
 					var liveBalance int64
-					err := d.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+					err := hubapi.FromFeatureError(d.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 						account, err := r.BillingCreditAccount(t.Context(), billing.ModeLive)
 						liveBalance = account.BalanceMicros
 						return err
-					})
+					}))
 					if err != nil || liveBalance != 999000000 {
 						t.Fatalf("live balance=%d err=%v", liveBalance, err)
 					}
@@ -441,7 +441,7 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 func TestHostedUsageUsesSelectedPostgresWindowsAndRefusesSQLiteWrites(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
-	plans := HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}
+	plans := hostedplans.HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 	for index, organization := range []tracker.OrganizationID{"org_usage_first", "org_usage_second"} {
 		want := int64(index + 1)
@@ -458,21 +458,21 @@ func TestHostedUsageUsesSelectedPostgresWindowsAndRefusesSQLiteWrites(t *testing
 	for index, organization := range []tracker.OrganizationID{"org_usage_first", "org_usage_second"} {
 		t.Run(string(organization), func(t *testing.T) {
 			d := &database{billingRepository: repository, hostedOrganization: organization, now: func() time.Time { return now }}
-			d.hostedRuntime.Store(&hostedRuntimeConfig{Plans: plans})
+			d.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: plans})
 			want := int64(index + 1)
 			for range 2 {
-				usage, err := d.hostedConsumption(t.Context(), nil, now, "usage_windows")
+				usage, err := hubapi.FeatureResult(d.plansService().Consumption(t.Context(), nil, now, "usage_windows"))
 				if err != nil || usage["api_mutations"] != want {
 					t.Fatalf("PostgreSQL usage window=%v error=%v, want %d", usage, err, want)
 				}
-				storage, err := d.hostedConsumption(t.Context(), nil, now, "collaboration_bytes")
+				storage, err := hubapi.FeatureResult(d.plansService().Consumption(t.Context(), nil, now, "collaboration_bytes"))
 				if err != nil || len(storage) != 1 || storage["collaboration_bytes"] != 0 {
 					t.Fatalf("PostgreSQL collaboration usage=%v error=%v", storage, err)
 				}
-				if _, err := d.hostedConsumption(t.Context(), nil, now, "unsupported_metric"); !errors.Is(err, ErrBillingUsageUnavailable) {
+				if _, err := hubapi.FeatureResult(d.plansService().Consumption(t.Context(), nil, now, "unsupported_metric")); !errors.Is(err, hostedplans.ErrBillingUsageUnavailable) {
 					t.Fatalf("unsupported PG usage read error=%v", err)
 				}
-				if err := d.recordHostedUsage(t.Context(), nil, now, "api_mutations", 1); !errors.Is(err, ErrBillingUsageUnavailable) {
+				if err := hubapi.FromFeatureError(d.plansService().RecordUsage(t.Context(), nil, now, "api_mutations", 1)); !errors.Is(err, hostedplans.ErrBillingUsageUnavailable) {
 					t.Fatalf("selected PG usage write error=%v", err)
 				}
 			}
@@ -508,13 +508,13 @@ func TestAICreditAutoFund(t *testing.T) {
 			p.chargeStatus, p.chargeError = test.status, test.chargeError
 			if test.included {
 				d := f.service.database
-				plans := capacityHostedPlans()
+				plans := hostedplans.CapacityPlans()
 				plans.Plans = append(plans.Plans, f.service.config.Hosted.Plans.Plans...)
-				if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+				if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 					t.Fatal(err)
 				}
 				now := f.service.config.now()
-				setIncludedCreditSubscription(t, d, d.hostedOrganization, now.Add(-time.Hour), now.Add(time.Hour), now.Add(time.Hour), PlanReference{ID: "team", Version: 2})
+				setIncludedCreditSubscription(t, d, d.hostedOrganization, now.Add(-time.Hour), now.Add(time.Hour), now.Add(time.Hour), hostedplans.PlanReference{ID: "team", Version: 2})
 			}
 			for range 2 {
 				err := f.service.billing.autoFund(t.Context())
@@ -534,9 +534,9 @@ func TestAICreditAutoFund(t *testing.T) {
 			}
 			if !test.wantEnabled {
 				requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodPut, "/billing/credits/auto-fund", `{"enabled":true,"threshold_cents":100,"price":"price_credit"}`), http.StatusNoContent)
-				err := f.service.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
-					return f.service.database.applyCreditPaymentRecord(t.Context(), w, billing.CreditPayment{Key: p.chargeKeys[0], ID: "pi_auto", PriceID: "price_credit", USDCents: 500, Status: "requires_payment_method"})
-				})
+				err := hubapi.FromFeatureError(f.service.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+					return hubapi.FromFeatureError(f.service.database.creditsService().ApplyPayment(t.Context(), w, billing.CreditPayment{Key: p.chargeKeys[0], ID: "pi_auto", PriceID: "price_credit", USDCents: 500, Status: "requires_payment_method"}))
+				}))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -546,9 +546,9 @@ func TestAICreditAutoFund(t *testing.T) {
 				}
 			}
 			if test.status == "processing" {
-				err := f.service.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+				err := hubapi.FromFeatureError(f.service.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 					return w.CreateBillingCreditPurchase(t.Context(), billingstore.CreditPurchase{OrganizationID: f.service.database.hostedOrganization, Key: "duplicate_auto", Mode: billing.ModeTest, PriceID: "price_credit", USDCents: 500, Automatic: true, State: "pending", CreatedAt: f.service.config.now().UTC()})
-				})
+				}))
 				if err == nil {
 					t.Fatal("second in-flight charge accepted")
 				}
@@ -573,14 +573,14 @@ func TestAICreditOwnerSettings(t *testing.T) {
 	} {
 		requireNativeStatus(t, f.billingAPI(t, test.role, http.MethodPut, "/billing/credits/auto-fund", test.body), test.want)
 	}
-	if err := f.service.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 		account, err := w.BillingCreditAccount(t.Context(), billing.ModeTest)
 		if err != nil {
 			return err
 		}
 		account.PaymentMethod = ""
 		return w.SetBillingCreditFunding(t.Context(), account)
-	}); err != nil {
+	})); err != nil {
 		t.Fatal(err)
 	}
 	f.service.config.Hosted.Billing.Provider.(*hostedCreditProvider).savedMethod = "pm_subscription"
@@ -603,14 +603,14 @@ func TestAICreditCSVExport(t *testing.T) {
 	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `INSERT INTO conversations(id,organization_id,project_id,owner_principal_id,origin,visibility,status,execution_status,execution_lease_id,execution_settled,created_at,updated_at) VALUES($1,$2,$3,'test_hub_admin','user','private','active','idle','',TRUE,$4,$4)`, f.conversation, d.hostedOrganization, f.project, at); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+	if err := hubapi.FromFeatureError(d.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 		price := billingstore.ConversationPrice{OrganizationID: d.hostedOrganization, ID: at.UnixMicro(), Provider: "openai", Model: "example-model", EffectiveAt: at.Add(-time.Hour)}
 		if err := w.CreateConversationPrice(t.Context(), price); err != nil {
 			return err
 		}
 		_, err := w.RecordConversationUsage(t.Context(), billingstore.ConversationUsage{OrganizationID: d.hostedOrganization, ProjectID: tracker.ProjectID(f.project), ConversationID: f.conversation, TurnID: "turn-0", Provider: "openai", Model: "example-model", OccurredAt: at, Input: 100, CachedInput: 20, Output: 50, ReasoningOutput: 10, Outcome: "completed", PriceID: &price.ID, CostUSD: new(999.0), CacheSavingsUSD: new(0.0)})
 		return err
-	}); err != nil {
+	})); err != nil {
 		t.Fatal(err)
 	}
 	for index, kind := range []string{"usage", "purchase", "auto_fund", "complimentary"} {
@@ -628,7 +628,7 @@ func TestAICreditCSVExport(t *testing.T) {
 	}
 }
 
-func setIncludedCreditSubscription(t *testing.T, d *database, organization tracker.OrganizationID, start, end, access time.Time, ref PlanReference) {
+func setIncludedCreditSubscription(t *testing.T, d *database, organization tracker.OrganizationID, start, end, access time.Time, ref hostedplans.PlanReference) {
 	t.Helper()
 	if err := d.billingRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		account, err := w.BillingAccount(t.Context())
@@ -661,28 +661,28 @@ func TestIncludedAICreditAllowance(t *testing.T) {
 	f, base := newHostedBillingFixture(t)
 	configureTestCredits(t, f, base)
 	d := f.service.database
-	plans := capacityHostedPlans()
+	plans := hostedplans.CapacityPlans()
 	plans.Plans = append(plans.Plans, f.service.config.Hosted.Plans.Plans...)
-	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+	if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 		t.Fatal(err)
 	}
 	now := f.service.config.now()
 	for _, test := range []struct {
 		name   string
-		ref    PlanReference
+		ref    hostedplans.PlanReference
 		paid   bool
 		want   int64
 		custom bool
 	}{
-		{"Starter", PlanReference{ID: "starter", Version: 1}, true, 4900000, false},
-		{"Team", PlanReference{ID: "team", Version: 2}, true, 9900000, false},
-		{"Growth", PlanReference{ID: "growth", Version: 2}, true, 24900000, false},
-		{"Scale", PlanReference{ID: "scale", Version: 2}, true, 0, true},
-		{"Free", PlanReference{ID: "free", Version: 1}, true, 0, false},
-		{"pilot", PlanReference{ID: "pilot_free", Version: 1}, true, 0, false},
-		{"complimentary team", PlanReference{ID: "comp_team", Version: 1}, true, 0, false},
-		{"complimentary grant", PlanReference{ID: "team", Version: 2}, false, 0, false},
-		{"legacy growth", PlanReference{ID: "growth", Version: 1}, true, 0, false},
+		{"Starter", hostedplans.PlanReference{ID: "starter", Version: 1}, true, 4900000, false},
+		{"Team", hostedplans.PlanReference{ID: "team", Version: 2}, true, 9900000, false},
+		{"Growth", hostedplans.PlanReference{ID: "growth", Version: 2}, true, 24900000, false},
+		{"Scale", hostedplans.PlanReference{ID: "scale", Version: 2}, true, 0, true},
+		{"Free", hostedplans.PlanReference{ID: "free", Version: 1}, true, 0, false},
+		{"pilot", hostedplans.PlanReference{ID: "pilot_free", Version: 1}, true, 0, false},
+		{"complimentary team", hostedplans.PlanReference{ID: "comp_team", Version: 1}, true, 0, false},
+		{"complimentary grant", hostedplans.PlanReference{ID: "team", Version: 2}, false, 0, false},
+		{"legacy growth", hostedplans.PlanReference{ID: "growth", Version: 1}, true, 0, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			access := now.AddDate(0, 1, 0)
@@ -691,26 +691,26 @@ func TestIncludedAICreditAllowance(t *testing.T) {
 			}
 			setIncludedCreditSubscription(t, d, d.hostedOrganization, now, now.AddDate(0, 1, 0), access, test.ref)
 			if !test.paid {
-				grant := HostedGrant{ID: "included-credit-grant", Plan: test.ref, Scope: []string{"concurrent_work"}, StartsAt: now}
-				if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+				grant := hostedplans.HostedGrant{ID: "included-credit-grant", Plan: test.ref, Scope: []string{"concurrent_work"}, StartsAt: now}
+				if err := hubapi.FromFeatureError(d.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 					return w.CreateBillingGrant(t.Context(), billingstore.Grant{OrganizationID: d.hostedOrganization, ID: grant.ID, Plan: billingstore.PlanReference{ID: grant.Plan.ID, Version: grant.Plan.Version}, Scope: grant.Scope, StartsAt: grant.StartsAt})
-				}); err != nil {
+				})); err != nil {
 					t.Fatal(err)
 				}
 				defer func() {
-					if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+					if err := hubapi.FromFeatureError(d.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 						return w.RevokeBillingGrant(t.Context(), grant.ID, now)
-					}); err != nil {
+					})); err != nil {
 						t.Error(err)
 					}
 				}()
 			}
-			var entitlement HostedEntitlement
-			err := d.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			var entitlement hostedplans.HostedEntitlement
+			err := hubapi.FromFeatureError(d.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 				var err error
-				entitlement, err = d.hostedEntitlementRecord(t.Context(), r, now)
+				entitlement, err = hubapi.FeatureResult(d.plansService().EntitlementRecord(t.Context(), r, now))
 				return err
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}

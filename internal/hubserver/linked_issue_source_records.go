@@ -387,7 +387,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 	if err != nil {
 		return nil, err
 	}
-	if s.database.plans() != nil && s.database.billingRepository == nil {
+	if s.database.plansService().Plans() != nil && s.database.billingRepository == nil {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
@@ -417,12 +417,12 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		if s.database.plans() != nil {
+		if s.database.plansService().Plans() != nil {
 			now, err := s.database.currentTime()
 			if err != nil {
 				return err
 			}
-			if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", now)); err != nil {
 				return err
 			}
 		}

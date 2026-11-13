@@ -9,6 +9,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -18,19 +20,19 @@ func (s *Service) hostedPlanPage(c echo.Context) error {
 		return s.hostedError(c, http.StatusForbidden, "Organization plan and usage require owner or admin access")
 	}
 	now := s.config.now()
-	entitlement, err := s.database.hostedPlanUsage(c.Request().Context(), now)
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().PlanUsage(c.Request().Context(), now))
 	if err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Plan information is temporarily unavailable")
 	}
 	data := templates.HostedPageData{Mode: "plan", Title: "Plan and usage", CanManage: true, CanManageOwnership: credential.HostedRole == "owner"}
 	data.PlanName = entitlement.Name
-	data.PlanPrice = hostedPlanPrice(entitlement.MonthlyUSDCents)
+	data.PlanPrice = hostedplans.PlanPrice(entitlement.MonthlyUSDCents)
 	data.PlanSource = "Base plan"
 	if entitlement.Source == "subscription" {
 		data.PlanSource = "Subscription-derived plan"
 	}
 	data.UsageWindow = entitlement.WindowEndsAt.Format(time.RFC3339)
-	for _, name := range hostedAllowanceNames() {
+	for _, name := range hostedplans.AllowanceNames() {
 		allowance, limited := entitlement.Allowances[name]
 		if !limited {
 			continue

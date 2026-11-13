@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -40,12 +41,12 @@ type tenantProjectParticipants struct {
 func (p tenantProjectParticipants) CreateProject(ctx context.Context, w tenantstore.Writer, actor tenantstore.ProjectActor, record projectstore.Record) error {
 	s := p.service
 	now := s.config.now().UTC()
-	if s.database.plans() != nil {
-		entitlement, err := s.database.hostedEntitlementRecord(ctx, w, now)
+	if s.database.plansService().Plans() != nil {
+		entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
 		if err != nil {
 			return err
 		}
-		if err := requireHostedFeatureInEntitlement(entitlement, "collaboration"); err != nil {
+		if err := hubapi.FromFeatureError(hostedplans.RequireFeatureInEntitlement(entitlement, "collaboration")); err != nil {
 			return err
 		}
 		if limit, limited := entitlement.Allowances["projects"]; limited && limit < math.MaxInt64 {
@@ -54,7 +55,7 @@ func (p tenantProjectParticipants) CreateProject(ctx context.Context, w tenantst
 				return err
 			}
 			if used > limit {
-				return &hostedLimitError{Resource: "projects", Allowance: limit, Consumption: used - 1}
+				return &hostedplans.LimitError{Resource: "projects", Allowance: limit, Consumption: used - 1}
 			}
 		}
 	}
@@ -75,12 +76,12 @@ func (p tenantProjectParticipants) CreateProject(ctx context.Context, w tenantst
 func (p tenantProjectParticipants) UpdateProject(ctx context.Context, w tenantstore.Writer, actor tenantstore.ProjectActor, _ projectstore.Record, after projectstore.Record) error {
 	s := p.service
 	now := s.config.now().UTC()
-	if s.database.plans() != nil {
-		entitlement, err := s.database.hostedEntitlementRecord(ctx, w, now)
+	if s.database.plansService().Plans() != nil {
+		entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
 		if err != nil {
 			return err
 		}
-		if err := requireHostedFeatureInEntitlement(entitlement, "collaboration"); err != nil {
+		if err := hubapi.FromFeatureError(hostedplans.RequireFeatureInEntitlement(entitlement, "collaboration")); err != nil {
 			return err
 		}
 	}
@@ -98,12 +99,12 @@ func (p tenantProjectParticipants) UpdateProject(ctx context.Context, w tenantst
 func (p tenantProjectParticipants) RetireProject(ctx context.Context, w tenantstore.Writer, actor tenantstore.ProjectActor, record projectstore.Record, now time.Time) error {
 	s := p.service
 	now = now.UTC()
-	if s.database.plans() != nil {
-		entitlement, err := s.database.hostedEntitlementRecord(ctx, w, now)
+	if s.database.plansService().Plans() != nil {
+		entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
 		if err != nil {
 			return err
 		}
-		if err := requireHostedFeatureInEntitlement(entitlement, "collaboration"); err != nil {
+		if err := hubapi.FromFeatureError(hostedplans.RequireFeatureInEntitlement(entitlement, "collaboration")); err != nil {
 			return err
 		}
 	}

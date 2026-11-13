@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -502,7 +503,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope hubs
 		if current.Revision != parent.Current.Revision || current.EventSequence != parent.Current.EventSequence || current.Archived {
 			return hubapi.NativeConflict(tracker.Revision(current.Revision))
 		}
-		if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, now); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, options.Feature, now)); err != nil {
 			return err
 		}
 		policy, policyErr := w.ProjectPolicy(ctx, scope.Project)
@@ -542,7 +543,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope hubs
 					return err
 				}
 				if !usage.Allowed {
-					return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+					return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 				}
 			}
 			if err := hubrecords.WriteWorkItemRecord(ctx, w, plan, record.fields); err != nil {

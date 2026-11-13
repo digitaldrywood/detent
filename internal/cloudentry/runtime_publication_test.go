@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
@@ -32,10 +33,10 @@ import (
 
 type sharedRuntimeLauncher struct {
 	*silentLauncher
-	adopt func(context.Context, Organization, string, hubserver.HostedRuntimeUpdate) error
+	adopt func(context.Context, Organization, string, hostedplans.HostedRuntimeUpdate) error
 }
 
-func (l *sharedRuntimeLauncher) AdoptRuntime(ctx context.Context, org Organization, expected string, update hubserver.HostedRuntimeUpdate) error {
+func (l *sharedRuntimeLauncher) AdoptRuntime(ctx context.Context, org Organization, expected string, update hostedplans.HostedRuntimeUpdate) error {
 	return l.adopt(ctx, org, expected, update)
 }
 
@@ -47,14 +48,14 @@ func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
 	plans := *f.fixtures["org_alpha"].Config.Hosted.Plans
 	f.service.config.Allocation = &AllocationConfig{
 		TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5,
-		Launcher: &sharedRuntimeLauncher{silentLauncher: &silentLauncher{}, adopt: func(context.Context, Organization, string, hubserver.HostedRuntimeUpdate) error {
+		Launcher: &sharedRuntimeLauncher{silentLauncher: &silentLauncher{}, adopt: func(context.Context, Organization, string, hostedplans.HostedRuntimeUpdate) error {
 			t.Error("publication adopted a tenant synchronously")
 			return nil
 		}},
 	}
 	f.service.config.ConfigureRuntime = nil
 	next := f.service.config
-	next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans}
+	next.Runtime = &hostedplans.HostedRuntimeUpdate{Plans: &plans}
 	f.service.config.Reload = func() (Config, error) { return next, nil }
 	f.service.config.Transport = func(Organization) (http.RoundTripper, error) {
 		return nil, errors.New("shared publication must not use tenant HTTP")
@@ -76,7 +77,7 @@ func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
 	failBeta := true
 	calls := 0
 	launcher := f.service.config.Allocation.Launcher.(*sharedRuntimeLauncher)
-	launcher.adopt = func(ctx context.Context, org Organization, expected string, update hubserver.HostedRuntimeUpdate) error {
+	launcher.adopt = func(ctx context.Context, org Organization, expected string, update hostedplans.HostedRuntimeUpdate) error {
 		calls++
 		if !f.service.reloadMu.TryLock() {
 			t.Fatal("publication mutex held during adoption")
@@ -223,12 +224,12 @@ func TestRuntimePublicationRefreshesAllowanceConsumers(t *testing.T) {
 			const token = "runtime-entitlement-admin-0123456789abcdef"
 			for id, tenant := range f.fixtures {
 				if billing {
-					tenant.Config.Hosted.Billing = &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_runtime", CustomerID: "cus_" + id, PortalConfigurationID: "bpc_runtime", WebhookSecret: []byte(testWebhookSecret), GraceSeconds: 3600, ReconcileSeconds: 3600, Provider: &fakeBilling{}, Prices: []hubserver.HostedBillingPrice{{PriceID: "price_initial", Label: "Initial plan", Plan: tenant.Config.Hosted.Plans.Plans[1].PlanReference}}}
+					tenant.Config.Hosted.Billing = &hostedplans.HostedBillingConfig{Mode: "test", AccountID: "acct_runtime", CustomerID: "cus_" + id, PortalConfigurationID: "bpc_runtime", WebhookSecret: []byte(testWebhookSecret), GraceSeconds: 3600, ReconcileSeconds: 3600, Provider: &fakeBilling{}, Prices: []hostedplans.HostedBillingPrice{{PriceID: "price_initial", Label: "Initial plan", Plan: tenant.Config.Hosted.Plans.Plans[1].PlanReference}}}
 				}
 			}
 			entitlementFixture(t, f, token)
 			f.service.config.Allocation = &AllocationConfig{TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5, Launcher: &ExecLauncher{}, EntitlementAdminToken: []byte(token)}
-			f.service.config.ConfigureRuntime = func(update hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
+			f.service.config.ConfigureRuntime = func(update hostedplans.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
 				return func(TenantSpec) ([]byte, error) { return json.Marshal(update) }
 			}
 			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true"); err != nil {
@@ -236,7 +237,7 @@ func TestRuntimePublicationRefreshesAllowanceConsumers(t *testing.T) {
 			}
 			plans := *f.fixtures["org_alpha"].Config.Hosted.Plans
 			next := f.service.config
-			next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans}
+			next.Runtime = &hostedplans.HostedRuntimeUpdate{Plans: &plans}
 			if billing {
 				next.Runtime.Prices = f.fixtures["org_alpha"].Config.Hosted.Billing.Prices
 			}
@@ -306,7 +307,7 @@ func TestRuntimePublicationRefreshesAllowanceConsumers(t *testing.T) {
 			}
 			local := plans
 			local.WindowSeconds = 600
-			update := hubserver.HostedRuntimeUpdate{Plans: &local, Prices: next.Runtime.Prices, Reason: "tenant override before adoption"}
+			update := hostedplans.HostedRuntimeUpdate{Plans: &local, Prices: next.Runtime.Prices, Reason: "tenant override before adoption"}
 			if err := f.service.changeTenantRuntime(t.Context(), beta, &update); err != nil {
 				t.Fatal(err)
 			}

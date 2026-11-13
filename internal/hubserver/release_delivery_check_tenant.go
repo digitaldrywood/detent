@@ -211,7 +211,7 @@ func (s *Service) recheckReleaseDelivery(ctx context.Context, w tenantstore.Writ
 	if _, err := w.LockChange(ctx, plan.change.ID); err != nil {
 		return err
 	}
-	if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
+	if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
 		return err
 	}
 	current, err := s.readReleaseDeliveryRows(ctx, w, scope, string(plan.current.NativeID), plan.request, plan.publishing)

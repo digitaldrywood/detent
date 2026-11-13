@@ -15,6 +15,7 @@ import (
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -304,7 +305,7 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope hubscope.N
 		if err := s.gitHubBatchRequestAuthority(ctx, w, scope, scope.GitHubIntakeRevision.RequireAdminKey); err != nil {
 			return err
 		}
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "github_integration", s.config.now()); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.now())); err != nil {
 			return err
 		}
 		current, err := w.ProjectRecord(ctx, scope.Project)
@@ -758,13 +759,13 @@ func (s *Service) existingGitHubBatchItem(ctx context.Context, scope hubscope.Na
 }
 
 func (s *Service) githubBatchRecordLimit(ctx context.Context, scope hubscope.NativeScope) (int, error) {
-	if s.database.plans() == nil {
+	if s.database.plansService().Plans() == nil {
 		return 1000, nil
 	}
-	var entitlement HostedEntitlement
+	var entitlement hostedplans.HostedEntitlement
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		entitlement, err = s.database.hostedEntitlementRecord(ctx, r, s.config.now())
+		entitlement, err = hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, s.config.now()))
 		return err
 	})
 	if err != nil {
@@ -835,7 +836,7 @@ func (s *Service) closeGitHubBatchSources(ctx context.Context, scope hubscope.Na
 		if err := s.gitHubBatchRequestAuthority(ctx, writer, scope, scope.GitHubIntakeRevision.RequireAdminKey); err != nil {
 			return err
 		}
-		if err := s.database.requireHostedFeatureRecord(ctx, writer, "github_integration", s.config.now()); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, writer, "github_integration", s.config.now())); err != nil {
 			return err
 		}
 		current, err := writer.ProjectRecord(ctx, scope.Project)

@@ -63,7 +63,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope hubscope.
 		return nil, hubapi.NativePublicInvalid("Manual intake is disabled")
 	}
 	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		return s.database.requireHostedFeatureRecord(ctx, r, "github_integration", s.config.now())
+		return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "github_integration", s.config.now()))
 	}); err != nil {
 		return nil, err
 	}
@@ -193,7 +193,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope hubscope.
 		}
 	}
 	return s.tenantReceiptMutation(ctx, scope, operation, tracker.Mutation{IdempotencyKey: key}, input, next, func(w tenantstore.Writer) error {
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "github_integration", s.config.now()); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.now())); err != nil {
 			return err
 		}
 		latestProject, err := w.ProjectRecord(ctx, scope.Project)

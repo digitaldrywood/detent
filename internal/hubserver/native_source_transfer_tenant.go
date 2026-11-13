@@ -174,8 +174,8 @@ func (s *Service) transferNativeSourceCommand(ctx context.Context, scope hubscop
 				return err
 			}
 		}
-		if s.database.plans() != nil {
-			if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
+		if s.database.plansService().Plans() != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", now)); err != nil {
 				return err
 			}
 		}

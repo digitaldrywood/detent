@@ -39,7 +39,7 @@ func TestPostgresMonthlyBudgetPut(t *testing.T) {
 			cfg.Hosted.WorkOSOrganizationID = "provider_" + string(organization)
 			cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 			cfg.RunDetails = &memoryRunDetails{}
-			plans := pilotHostedPlans()
+			plans := hostedplans.PilotPlans()
 			cfg.Hosted.Plans = &plans
 			store, err := openDatabase(t.Context(), cfg)
 			if err != nil {

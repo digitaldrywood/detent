@@ -38,7 +38,7 @@ func TestPostgresBillingBudgetReadRoutes(t *testing.T) {
 		t.Run(string(organization), func(t *testing.T) {
 			provider := newHostedSecurityProvider()
 			details := &memoryRunDetails{}
-			plans := pilotHostedPlans()
+			plans := hostedplans.PilotPlans()
 			now := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
 			service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: organization, aiCreditMode: "test", now: func() time.Time { return now }, logger: discardLogger()}, config: Config{Logger: discardLogger(), now: func() time.Time { return now }, newLeaseID: func() string { return hubapi.NewID("lease") }, generateToken: apikey.GenerateToken, AccessRepository: repository, TenantRepository: repository, RunDetails: details, Hosted: &hostedplans.HostedConfig{OrganizationID: string(organization), WorkOSOrganizationID: "org_provider", PublicURL: "http://example.test", Provider: provider, Plans: &plans}}}
 			sessions, err := auth.NewSessionService(auth.SessionConfig{SessionTTL: 24 * time.Hour, PublicURL: service.config.Hosted.PublicURL}, service)
@@ -87,11 +87,11 @@ func TestPostgresBillingBudgetReadRoutes(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := service.database.configureHostedPlans(t.Context(), service.config.Hosted); err != nil {
+			if err := hubapi.FromFeatureError(service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(service.config.Hosted))); err != nil {
 				t.Fatal(err)
 			}
 			t.Run("shared billing binding", func(t *testing.T) {
-				service.config.Hosted.Billing = &HostedBillingConfig{AccountID: "acct_example", Mode: "test"}
+				service.config.Hosted.Billing = &hostedplans.HostedBillingConfig{AccountID: "acct_example", Mode: "test"}
 				t.Cleanup(func() {
 					service.config.Hosted.Billing = nil
 					ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)

@@ -10,12 +10,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func (s *Service) hostedArtifactAllowances(c echo.Context) error {
-	runtimePlans := s.database.plans()
+	runtimePlans := s.database.plansService().Plans()
 	credential, _, err := s.authenticateAPIRequest(c)
 	if err != nil || credential.Scope != hubapi.APIScopeWorker || !credential.NativeOnly || credential.Hosted != nil || credential.Runner.RunnerID != "" || c.Request().Header.Get(echo.HeaderAuthorization) == "" {
 		return s.hostedJSONError(c, http.StatusForbidden, "A scoped artifact publisher credential is required")
@@ -37,7 +38,7 @@ func (s *Service) hostedArtifactAllowances(c echo.Context) error {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Artifact usage clock is invalid"))
 	}
 	ctx := c.Request().Context()
-	var entitlement HostedEntitlement
+	var entitlement hostedplans.HostedEntitlement
 	err = s.config.TenantRepository.WriteTenant(ctx, s.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
 		current, err := w.AccessCredential(ctx, credential.ID)
 		if err != nil {
@@ -49,14 +50,14 @@ func (s *Service) hostedArtifactAllowances(c echo.Context) error {
 		if err := w.RecordHostedArtifactUsage(ctx, c.Param("service"), credential.ID, usage, now, runtimePlans.WindowSeconds); err != nil {
 			return err
 		}
-		entitlement, err = s.database.hostedEntitlementRecord(ctx, w, now)
+		entitlement, err = hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
 		return s.hostedJSONError(c, http.StatusForbidden, "Artifact publisher is not bound to this service")
 	}
 	if errors.Is(err, artifact.ErrQuota) {
-		return s.nativeAPIError(c, &hostedLimitError{Resource: "hosted_artifact_services", Allowance: 1, Consumption: 1})
+		return s.nativeAPIError(c, &hostedplans.LimitError{Resource: "hosted_artifact_services", Allowance: 1, Consumption: 1})
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)

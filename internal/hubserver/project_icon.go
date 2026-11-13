@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -103,7 +104,7 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope hubscope.Nati
 	value := projectIntegrationRecord(current)
 	applied := false
 	raw, err := s.tenantReceiptMutation(ctx, scope, options.OperationID, request.Mutation, request, value, func(w tenantstore.Writer) error {
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
 			return err
 		}
 		latest, err := w.ProjectRecord(ctx, scope.Project)
@@ -152,7 +153,7 @@ func (s *Service) createIconAttachment(ctx context.Context, w tenantstore.Writer
 		return err
 	}
 	if !usage.Allowed {
-		return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+		return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 	}
 	record.ProjectID, record.Uploader, record.CreatedAt = string(scope.Project), scope.Credential.ID, s.config.now()
 	return w.CreateAttachment(ctx, attachmentstore.Record{OrganizationID: scope.Organization, Metadata: record, Kind: "attachment", Retention: "organization"})

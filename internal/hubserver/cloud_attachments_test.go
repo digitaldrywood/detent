@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
@@ -353,17 +354,17 @@ func TestCloudAttachmentQuota(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
-			plans := capacityHostedPlans()
-			base := PlanReference{ID: test.plan, Version: 1}
+			plans := hostedplans.CapacityPlans()
+			base := hostedplans.PlanReference{ID: test.plan, Version: 1}
 			if test.plan == "" {
-				plans = pilotHostedPlans()
+				plans = hostedplans.PilotPlans()
 				plan := plans.Plans[0]
 				plan.ID = "example-attachment-plan"
 				plan.Allowances = maps.Clone(plan.Allowances)
 				plan.Allowances["collaboration_bytes"], plan.Allowances["api_mutations"] = test.allowance, test.apiLimit
-				plans.Plans, plans.Base, base = append([]HostedPlan{plan}, plans.Plans...), plan.PlanReference, plan.PlanReference
+				plans.Plans, plans.Base, base = append([]hostedplans.HostedPlan{plan}, plans.Plans...), plan.PlanReference, plan.PlanReference
 			}
-			if err := f.service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 				t.Fatal(err)
 			}
 			cloudAttachmentWrite(t, f, func(w tenantstore.Writer) error {
@@ -472,7 +473,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 					return err
 				})
 				if test.name == "API exhausted" {
-					var failure hostedLimitError
+					var failure hostedplans.LimitError
 					decodeHubResponse(t, response, &failure)
 					if failure.Resource != "api_mutations" || failure.Consumption != test.used {
 						t.Fatalf("inner quota refusal=%+v", failure)
@@ -480,7 +481,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 				}
 				return
 			}
-			usage, err := f.service.database.hostedConsumption(t.Context(), nil, time.Now(), "collaboration_bytes", "api_mutations")
+			usage, err := hubapi.FeatureResult(f.service.database.plansService().Consumption(t.Context(), nil, time.Now(), "collaboration_bytes", "api_mutations"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -491,7 +492,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			if replay.Code != http.StatusCreated || replay.Body.String() != response.Body.String() {
 				t.Fatalf("metadata replay=%d %s", replay.Code, replay.Body.String())
 			}
-			replayedUsage, err := f.service.database.hostedConsumption(t.Context(), nil, time.Now(), "collaboration_bytes", "api_mutations")
+			replayedUsage, err := hubapi.FeatureResult(f.service.database.plansService().Consumption(t.Context(), nil, time.Now(), "collaboration_bytes", "api_mutations"))
 			if err != nil || replayedUsage["collaboration_bytes"] != usage["collaboration_bytes"] || replayedUsage["api_mutations"] != 2 || usage["api_mutations"] != 2 {
 				t.Fatalf("metadata replay consumption=%v err=%v", replayedUsage, err)
 			}
@@ -500,7 +501,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT COALESCE(sum(size),0) FROM attachments WHERE organization_id=$1 AND object_deleted_at IS NULL AND NOT customer_owned", "org_security").Scan(&stored); err != nil || stored != record.Size {
 					t.Fatalf("stored attachment bytes=%d error=%v", stored, err)
 				}
-				recounted, err := f.service.database.hostedConsumption(t.Context(), nil, now, "collaboration_bytes")
+				recounted, err := hubapi.FeatureResult(f.service.database.plansService().Consumption(t.Context(), nil, now, "collaboration_bytes"))
 				if err != nil || recounted["collaboration_bytes"] != record.Size {
 					t.Fatalf("metadata recount consumption=%v err=%v", recounted, err)
 				}

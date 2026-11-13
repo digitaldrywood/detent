@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -41,7 +42,7 @@ func (s *Service) hostedPlanReport(c echo.Context) error {
 		}
 		limit = parsed
 	}
-	report, err := s.database.hostedEntitlementReport(c.Request().Context(), after, limit)
+	report, err := hubapi.FeatureResult(s.database.plansService().Entitlements(c.Request().Context(), after, limit))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -53,11 +54,11 @@ func (s *Service) updateHostedPlan(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
 	}
 
-	var command hostedPlanCommand
+	var command hostedplans.PlanCommand
 	if err := hubapi.DecodeAPIJSON(c, &command); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if err := s.database.applyHostedPlanCommand(c.Request().Context(), s.config.Hosted.EntitlementAdministrator, command); err != nil {
+	if err := hubapi.FromFeatureError(s.database.plansService().ApplyPlanCommand(c.Request().Context(), s.config.Hosted.EntitlementAdministrator, command)); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)

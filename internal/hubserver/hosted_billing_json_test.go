@@ -14,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -109,7 +111,7 @@ func TestHostedBillingJSONForTheClient(t *testing.T) {
 	}
 	// Both choices are approved, so changed content reaches the receipt conflict.
 	cfg := f.service.config.Hosted.Billing
-	cfg.Prices = append(cfg.Prices, HostedBillingPrice{PriceID: "price_changed", Plan: cfg.Prices[0].Plan})
+	cfg.Prices = append(cfg.Prices, hostedplans.HostedBillingPrice{PriceID: "price_changed", Plan: cfg.Prices[0].Plan})
 	requireNativeStatus(t, f.billingAPI(t, "owner", http.MethodPost, "/billing/checkout", `{"price":"price_changed","idempotency_key":"k2"}`), http.StatusConflict)
 	previousMode := cfg.Mode
 	cfg.Mode = "live"
@@ -181,7 +183,7 @@ func TestHostedBillingJSONSubscriptionRestrictions(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f, _ := newHostedCustomerFixture(t)
-			state := hostedBillingState{Status: test.status}
+			state := hostedplans.BillingState{Status: test.status}
 			if test.status == "active" {
 				state.Snapshot = activeBillingSnapshot(f.service.config.now().UTC().Truncate(time.Microsecond))
 				state.Snapshot.CancelAtPeriodEnd = test.cancel
@@ -223,7 +225,7 @@ func TestHostedBillingUsageJSON(t *testing.T) {
 	f, provider := newHostedBillingFixture(t)
 	configureTestCredits(t, f, provider, billingstore.CreditAccount{Mode: billing.ModeLive})
 	cfg := f.service.config.Hosted
-	cfg.Plans.Plans = append(cfg.Plans.Plans, capacityHostedPlans().Plans...)
+	cfg.Plans.Plans = append(cfg.Plans.Plans, hostedplans.CapacityPlans().Plans...)
 	for index := range cfg.Plans.Plans {
 		plan := &cfg.Plans.Plans[index]
 		if plan.ID == "growth" && plan.Version == 2 {
@@ -231,11 +233,11 @@ func TestHostedBillingUsageJSON(t *testing.T) {
 			plan.Allowances["history_records"] = 31
 		}
 	}
-	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_growth", Label: "Growth", Plan: PlanReference{ID: "growth", Version: 2}})
-	if err := f.service.database.configureHostedPlans(t.Context(), cfg); err != nil {
+	cfg.Billing.Prices = append(cfg.Billing.Prices, hostedplans.HostedBillingPrice{PriceID: "price_growth", Label: "Growth", Plan: hostedplans.PlanReference{ID: "growth", Version: 2}})
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(cfg))); err != nil {
 		t.Fatal(err)
 	}
-	window := chatBillingWindow(f.service.config.now(), hostedBillingState{}.Snapshot)
+	window := chatBillingWindow(f.service.config.now(), hostedplans.BillingState{}.Snapshot)
 	for index := range 60 {
 		postAICreditFixture(t, f.service.database, billingstore.CreditTransaction{Mode: billing.ModeTest, Source: fmt.Sprintf("period-%d", index), AmountMicros: -1500, Kind: "usage", RecordedAt: window.From.Add(time.Duration(index) * time.Minute)})
 	}
@@ -307,13 +309,13 @@ func TestHostedBillingUsageComplimentaryPlan(t *testing.T) {
 			t.Parallel()
 			f, _ := newHostedBillingFixture(t)
 			cfg := f.service.config.Hosted
-			cfg.Plans.Plans = append(cfg.Plans.Plans, capacityHostedPlans().Plans...)
-			if err := f.service.database.configureHostedPlans(t.Context(), cfg); err != nil {
+			cfg.Plans.Plans = append(cfg.Plans.Plans, hostedplans.CapacityPlans().Plans...)
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(cfg))); err != nil {
 				t.Fatal(err)
 			}
 			now := f.service.config.now().UTC().Truncate(time.Microsecond)
 			end := now.Add(30 * 24 * time.Hour)
-			grant := HostedGrant{ID: "grant_example", Plan: PlanReference{ID: "team", Version: 2}, Scope: []string{"native_execution"}, StartsAt: now.Add(-time.Hour), ExpiresAt: &end}
+			grant := hostedplans.HostedGrant{ID: "grant_example", Plan: hostedplans.PlanReference{ID: "team", Version: 2}, Scope: []string{"native_execution"}, StartsAt: now.Add(-time.Hour), ExpiresAt: &end}
 			if test.noEnd {
 				grant.ExpiresAt = nil
 			}

@@ -80,9 +80,9 @@ func newWriteLoadFixture(t *testing.T, history, runners, sessions int) *writeLoa
 	approveHubTestPolicy(t, f.service, f.base+"/policy", policy)
 	d := f.service.database
 	d.hostedOrganization = f.project.OrganizationID
-	plans := capacityHostedPlans()
-	plans.Base = PlanReference{ID: "scale", Version: 1}
-	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+	plans := hostedplans.CapacityPlans()
+	plans.Base = hostedplans.PlanReference{ID: "scale", Version: 1}
+	if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 		t.Fatal(err)
 	}
 	streamRunner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Collaborate, runnerauth.Events)

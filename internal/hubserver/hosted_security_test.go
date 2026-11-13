@@ -310,7 +310,7 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSecurityFixture {
 	t.Helper()
 	provider := newHostedSecurityProvider()
-	legacyPlans := pilotHostedPlans()
+	legacyPlans := hostedplans.PilotPlans()
 	cfg := Config{
 		Hosted: &hostedplans.HostedConfig{
 			Plans:                &legacyPlans,

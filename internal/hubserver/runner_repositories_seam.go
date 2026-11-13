@@ -2,9 +2,11 @@ package hubserver
 
 import (
 	"context"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -12,9 +14,12 @@ import (
 )
 
 func (s *Service) runnerRepositoriesService() *runnerrepos.Service {
+	db := s.database
 	return runnerrepos.New(runnerrepos.Deps{
 		Repository: s.config.TenantRepository, Now: s.config.now, Details: s.runDetailStore, Auth: s.requestAuth,
-		RequireFeature: s.database.requireHostedFeatureRecord, ApplyUsage: s.applyRunnerTenantUsage, RecordError: hubapi.ProjectRecordError,
+		RequireFeature: func(ctx context.Context, r billingstore.Reader, feature string, at time.Time) error {
+			return hubapi.FromFeatureError(db.plansService().RequireFeatureRecord(ctx, r, feature, at))
+		}, ApplyUsage: s.applyRunnerTenantUsage, RecordError: hubapi.ProjectRecordError,
 	})
 }
 

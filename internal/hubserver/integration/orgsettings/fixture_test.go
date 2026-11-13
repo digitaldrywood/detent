@@ -258,8 +258,8 @@ func (p *hostedProvider) SetMembershipRole(_ context.Context, user, role string)
 	return nil
 }
 
-func hostedPlans(collaborationBytes int64) hubserver.HostedPlansConfig {
-	return hubserver.HostedPlansConfig{Base: hubserver.PlanReference{ID: "pilot_free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400, Plans: []hubserver.HostedPlan{{PlanReference: hubserver.PlanReference{ID: "pilot_free", Version: 1}, Features: []string{"collaboration", "native_execution", "github_integration"}, Allowances: map[string]int64{"members": 10, "projects": 10, "repositories": 10, "registered_runners": 10, "connected_runners": 10, "concurrent_work": 5, "api_mutations": 1000000, "ingested_events": 1000000, "collaboration_bytes": collaborationBytes, "history_records": 10000}}}}
+func hostedPlans(collaborationBytes int64) hostedplans.HostedPlansConfig {
+	return hostedplans.HostedPlansConfig{Base: hostedplans.PlanReference{ID: "pilot_free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400, Plans: []hostedplans.HostedPlan{{PlanReference: hostedplans.PlanReference{ID: "pilot_free", Version: 1}, Features: []string{"collaboration", "native_execution", "github_integration"}, Allowances: map[string]int64{"members": 10, "projects": 10, "repositories": 10, "registered_runners": 10, "connected_runners": 10, "concurrent_work": 5, "api_mutations": 1000000, "ingested_events": 1000000, "collaboration_bytes": collaborationBytes, "history_records": 10000}}}}
 }
 
 type hostedFixture struct {

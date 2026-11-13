@@ -349,7 +349,7 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope hubscop
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
-		if err := s.database.requireHostedFeatureRecord(ctx, r, "github_integration", now); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "github_integration", now)); err != nil {
 			return err
 		}
 		var err error
@@ -401,7 +401,7 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope hubscop
 		}
 	}
 	return s.tenantReceiptMutation(ctx, scope, options.OperationID, request.Mutation, request, receipt, func(w tenantstore.Writer) error {
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "github_integration", now); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", now)); err != nil {
 			return err
 		}
 		if err := w.LockRelationshipGraph(ctx); err != nil {
@@ -669,7 +669,7 @@ func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope h
 		Status string `json:"status"`
 	}{"pending"}
 	return s.tenantReceiptMutation(ctx, scope, options.OperationID, request.Mutation, request, result, func(w tenantstore.Writer) error {
-		if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, s.config.now()); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, options.Feature, s.config.now())); err != nil {
 			return err
 		}
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {

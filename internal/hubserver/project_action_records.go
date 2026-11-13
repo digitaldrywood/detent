@@ -225,7 +225,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope hubscope.NativeS
 			}
 		}
 		if method != "DELETE" {
-			if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
 				return err
 			}
 		}

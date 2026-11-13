@@ -22,7 +22,7 @@ func (s *Service) releaseAuditsService(caller hubscope.NativeScope) *releaseaudi
 		RecordError: func(err error) error { return hubapi.ProjectRecordError(hubapi.FromFeatureError(err)) },
 		Recheck:     func(ctx context.Context, _ hubapi.Scope) error { return s.recheckProjectRecordMutation(ctx, caller) },
 		RequireFeature: func(ctx context.Context, r tenantstore.Reader, feature string, now time.Time) error {
-			return s.database.requireHostedFeatureRecord(ctx, r, feature, now)
+			return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, feature, now))
 		},
 		Audit: func(hubapi.Scope) (accessstore.Audit, bool) {
 			return projectRecordActor(caller).Audit, caller.Credential.Hosted != nil

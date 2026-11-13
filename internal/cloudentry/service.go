@@ -34,7 +34,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudentry/webhooks"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/staticasset"
@@ -66,8 +66,8 @@ type Config struct {
 	Billing                   *BillingConfig
 	ConfigPath                string
 	Reload                    func() (Config, error)
-	ConfigureRuntime          func(hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error)
-	Runtime                   *hubserver.HostedRuntimeUpdate
+	ConfigureRuntime          func(hostedplans.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error)
+	Runtime                   *hostedplans.HostedRuntimeUpdate
 	RestartSettings           []byte
 	ArchiveCredentials        func(context.Context, string, string) (attachment.Credentials, error)
 	Attachments               *attachment.Config

@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -90,7 +91,7 @@ func TestPostgresCreditWriteRoutes(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			if err := hubapi.FromFeatureError(service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 				account, err := r.BillingCreditAccount(t.Context(), billing.ModeTest)
 				if err != nil {
 					return err
@@ -100,7 +101,7 @@ func TestPostgresCreditWriteRoutes(t *testing.T) {
 					return fmt.Errorf("payment replay changed credit balance or settings: account=%+v rows=%d", account, len(rows))
 				}
 				return err
-			}); err != nil {
+			})); err != nil {
 				t.Fatal(err)
 			}
 			provider.checkoutLoss = true
@@ -109,13 +110,13 @@ func TestPostgresCreditWriteRoutes(t *testing.T) {
 				t.Fatalf("uncertain checkout = %d, want 503", got)
 			}
 			key := provider.creditCheckouts[1].IdempotencyKey
-			if err := service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			if err := hubapi.FromFeatureError(service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 				purchase, err := r.BillingCreditPurchase(t.Context(), key)
 				if err == nil && (purchase.State != "pending" || purchase.Session.URL != "") {
 					return fmt.Errorf("uncertain purchase lost reservation: %+v", purchase)
 				}
 				return err
-			}); err != nil {
+			})); err != nil {
 				t.Fatal(err)
 			}
 			provider.checkoutLoss = false
@@ -143,13 +144,13 @@ func TestPostgresCreditWebhookRoute(t *testing.T) {
 			for range 2 {
 				requireNativeStatus(t, postBillingEvent(t, browser, "evt_example", "checkout.session.completed", true), http.StatusOK)
 			}
-			if err := service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			if err := hubapi.FromFeatureError(service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 				events, err := r.BillingEvents(t.Context(), 0, 100, 10)
 				if err == nil && (len(events) != 1 || events[0].ID != "evt_example" || string(events[0].OrganizationID) != org) {
 					return fmt.Errorf("webhook receipt not tenant scoped and idempotent: %+v", events)
 				}
 				return err
-			}); err != nil {
+			})); err != nil {
 				t.Fatal(err)
 			}
 		})

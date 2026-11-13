@@ -47,7 +47,7 @@ func (s *Service) replayReleaseAssociation(ctx context.Context, scope hubscope.N
 		if err := s.authorizeReleaseScope(ctx, w, scope); err != nil {
 			return err
 		}
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
 			return err
 		}
 		if _, err := w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item)); err != nil {

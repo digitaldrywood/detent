@@ -719,7 +719,7 @@ func newChangePolicyPostgresTenantFixture(t *testing.T, repository tenantstore.R
 		if err := w.ApproveProjectPolicy(t.Context(), policyRevision, ""); err != nil {
 			return err
 		}
-		free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
+		free := hostedplans.NormalizePlan(hostedplans.PilotPlans().Plans[0])
 		plan := billingstore.Plan{OrganizationID: organization, PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, MonthlyUSDCents: free.MonthlyUSDCents, Allowances: free.Allowances, Features: free.Features}
 		if err := w.CreateBillingPlan(t.Context(), plan); err != nil {
 			return err
@@ -729,7 +729,7 @@ func newChangePolicyPostgresTenantFixture(t *testing.T, repository tenantstore.R
 		t.Fatal(err)
 	}
 	provider := newHostedSecurityProvider()
-	plans := pilotHostedPlans()
+	plans := hostedplans.PilotPlans()
 	service := openTestService(t, Config{
 		AccessRepository:  repository,
 		BillingRepository: repository,

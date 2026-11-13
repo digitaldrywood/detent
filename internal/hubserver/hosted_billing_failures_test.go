@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -120,14 +121,14 @@ func TestHostedBillingCheckoutFailures(t *testing.T) {
 				}
 				var before, after hostedCheckout
 				readIntent := func(intent *hostedCheckout) {
-					if err := f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+					if err := hubapi.FromFeatureError(f.service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 						account, err := r.BillingAccount(t.Context())
 						if err != nil {
 							return err
 						}
 						*intent = hostedCheckout{Key: account.Checkout.Key, PriceID: account.Checkout.PriceID, ExpiresAt: account.Checkout.ExpiresAt, Session: account.Checkout.Session}
 						return nil
-					}); err != nil {
+					})); err != nil {
 						t.Fatal(err)
 					}
 				}

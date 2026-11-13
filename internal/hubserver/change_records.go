@@ -876,12 +876,12 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope hubscope.
 					return corestore.ErrRevisionConflict
 				}
 			}
-			if s.database.plans() != nil {
+			if s.database.plansService().Plans() != nil {
 				currentTime, err := s.database.currentTime()
 				if err != nil {
 					return err
 				}
-				if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", currentTime); err != nil {
+				if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", currentTime)); err != nil {
 					return err
 				}
 			}

@@ -192,7 +192,7 @@ func TestAPIRefusals(t *testing.T) {
 		{"billing webhook", "/webhooks/stripe", `{"private-token":"test-secret"}`, "invalid_request", "Billing webhook signature, timestamp or mode is invalid", http.StatusBadRequest, func(s *Service, c echo.Context) error {
 			s.database = &database{}
 			s.config.now = time.Now
-			s.config.Hosted.Billing = &HostedBillingConfig{WebhookSecret: []byte("test-secret")}
+			s.config.Hosted.Billing = &hostedplans.HostedBillingConfig{WebhookSecret: []byte("test-secret")}
 			return s.hostedStripeWebhook(c)
 		}},
 		{"operator writer", "/api/v1/work-items/:id/workflow", "", "idempotency_conflict", "Idempotency key conflicts with an earlier mutation", http.StatusConflict, func(s *Service, c echo.Context) error {

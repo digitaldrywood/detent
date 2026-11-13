@@ -13,6 +13,7 @@ import (
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -125,13 +126,13 @@ func TestPostgresEntryKeyBillingCatalog(t *testing.T) {
 			if provider.checkouts[0].OrganizationID != org || provider.portals[0].OrganizationID != org || provider.creditCheckouts[0].OrganizationID != org {
 				t.Fatal("billing provider received another tenant's binding")
 			}
-			if err := service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			if err := hubapi.FromFeatureError(service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 				account, err := r.BillingCreditAccount(t.Context(), service.database.aiCreditMode)
 				if err == nil && (!account.AutoEnabled || account.ThresholdCents != 100 || account.PriceID != "price_credit") {
 					t.Fatalf("auto funding not persisted: %+v", account)
 				}
 				return err
-			}); err != nil {
+			})); err != nil {
 				t.Fatal(err)
 			}
 		})

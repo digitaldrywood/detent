@@ -20,6 +20,10 @@ func FromFeatureError(err error) error {
 	return &NativeError{Code: failure.Code, Message: failure.Message, CurrentRevision: failure.CurrentRevision, Details: failure.Details, Status: failure.Status, PublicMessage: failure.Public, LogAttributes: failure.LogAttributes()}
 }
 
+func FeatureResult[T any](value T, err error) (T, error) {
+	return value, FromFeatureError(err)
+}
+
 const NativeBase = "/api/v2/organizations/:organization/projects/:project"
 
 type NativeError struct {

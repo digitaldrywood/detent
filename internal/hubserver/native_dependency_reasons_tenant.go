@@ -153,8 +153,8 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 		if request.Basis != dependencyBasis(related) {
 			return hubapi.NativeConflict(tracker.Revision(reason.Revision))
 		}
-		if s.database.plans() != nil {
-			if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
+		if s.database.plansService().Plans() != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", now)); err != nil {
 				return err
 			}
 		}

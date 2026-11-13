@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -14,16 +16,16 @@ func (d *database) checkConversationCollaborationGrowthPostgres(ctx context.Cont
 	if before < 0 || after < 0 || strings.TrimSpace(receiptID) == "" || now.IsZero() {
 		return billingstore.ErrInvalidUsage
 	}
-	plans := d.plans()
+	plans := d.plansService().Plans()
 	if plans == nil {
 		return nil
 	}
-	entitlement, err := d.hostedEntitlementRecord(ctx, writer, now)
+	entitlement, err := hubapi.FeatureResult(d.plansService().EntitlementRecord(ctx, writer, now))
 	if err != nil {
 		return err
 	}
 	if limit, limited := entitlement.Allowances["collaboration_bytes"]; limited && !completion && after > before && after > limit {
-		return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: before}
+		return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: before}
 	}
 	if ctx.Value(runnerRequestBudgetContext{}) == true {
 		return nil
@@ -38,7 +40,7 @@ func (d *database) checkConversationCollaborationGrowthPostgres(ctx context.Cont
 		return err
 	}
 	if !result.Allowed {
-		return &hostedLimitError{Resource: "api_mutations", Allowance: limit, Consumption: result.Used}
+		return &hostedplans.LimitError{Resource: "api_mutations", Allowance: limit, Consumption: result.Used}
 	}
 	return nil
 }
@@ -47,11 +49,11 @@ func (d *database) chargeAttachmentAPIMutationsPostgres(ctx context.Context, wri
 	if strings.TrimSpace(receiptID) == "" || now.IsZero() {
 		return billingstore.ErrInvalidUsage
 	}
-	plans := d.plans()
+	plans := d.plansService().Plans()
 	if plans == nil || ctx.Value(runnerRequestBudgetContext{}) == true {
 		return nil
 	}
-	entitlement, err := d.hostedEntitlementRecord(ctx, writer, now)
+	entitlement, err := hubapi.FeatureResult(d.plansService().EntitlementRecord(ctx, writer, now))
 	if err != nil {
 		return err
 	}
@@ -63,7 +65,7 @@ func (d *database) chargeAttachmentAPIMutationsPostgres(ctx context.Context, wri
 			return err
 		}
 		if !result.Allowed {
-			return &hostedLimitError{Resource: "api_mutations", Allowance: limit, Consumption: result.Used}
+			return &hostedplans.LimitError{Resource: "api_mutations", Allowance: limit, Consumption: result.Used}
 		}
 	}
 	return nil

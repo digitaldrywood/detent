@@ -68,14 +68,14 @@ func TestHostedProjectRetryAfterDowngrade(t *testing.T) {
 			config.Plans = append(config.Plans, plan)
 			cfg := *f.service.config.Hosted
 			cfg.Plans = &config
-			if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.database.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "downgrade", Action: "base", ExpectedRevision: 1, Plan: plan.PlanReference, Reason: "pilot downgrade"}); err != nil {
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "downgrade", Action: "base", ExpectedRevision: 1, Plan: plan.PlanReference, Reason: "pilot downgrade"})); err != nil {
 				t.Fatal(err)
 			}
 			now := time.Now()
-			before, err := f.service.database.hostedPlanUsage(t.Context(), now)
+			before, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), now))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -90,7 +90,7 @@ func TestHostedProjectRetryAfterDowngrade(t *testing.T) {
 			}
 			group.Wait()
 			requireNativeStatus(t, f.form(t, "owner", "/projects", url.Values{"name": {"Excess project"}, "grant_access": {"true"}}), http.StatusTooManyRequests)
-			after, err := f.service.database.hostedPlanUsage(t.Context(), now)
+			after, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), now))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -112,11 +112,11 @@ func TestHostedProjectRetryAfterDowngrade(t *testing.T) {
 	}
 }
 
-func hostedTestPlans(t *testing.T, service *Service, limits map[string]int64) HostedPlansConfig {
+func hostedTestPlans(t *testing.T, service *Service, limits map[string]int64) hostedplans.HostedPlansConfig {
 	t.Helper()
 	service.config.Hosted.EntitlementAdminToken = []byte(testHostedPlanAdminToken)
 	service.config.Hosted.EntitlementAdministrator = "test-operator"
-	config := pilotHostedPlans()
+	config := hostedplans.PilotPlans()
 	free := config.Plans[0]
 	free.ID = "test_free"
 	maps.Copy(free.Allowances, limits)
@@ -126,20 +126,20 @@ func hostedTestPlans(t *testing.T, service *Service, limits map[string]int64) Ho
 	paid.Allowances["projects"] = 20
 	paid.Allowances["concurrent_work"] = 20
 	paid.Features = append(slices.Clone(free.Features), "hosted_artifacts")
-	transition := pilotHostedPlans()
+	transition := hostedplans.PilotPlans()
 	transition.Plans = append(transition.Plans, free, paid)
 	cfg := *service.config.Hosted
 	cfg.Plans = &transition
-	if err := service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+	if err := hubapi.FromFeatureError(service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := usagePostgresAdmin(t, service).ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id=$1,base_version=$2 WHERE organization_id=$3", free.ID, free.Version, service.database.hostedOrganization); err != nil {
 		t.Fatal(err)
 	}
-	config.Plans = []HostedPlan{free, paid}
+	config.Plans = []hostedplans.HostedPlan{free, paid}
 	config.Base = free.PlanReference
 	cfg.Plans = &config
-	if err := service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+	if err := hubapi.FromFeatureError(service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 		t.Fatal(err)
 	}
 	return config
@@ -196,31 +196,31 @@ func TestHostedPlanResolutionBoundaries(t *testing.T) {
 			config.Base = config.Plans[0].PlanReference
 			cfg := *f.service.config.Hosted
 			cfg.Plans = &transition
-			if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_version=$1 WHERE organization_id=$2", config.Base.Version, f.service.database.hostedOrganization); err != nil {
 				t.Fatal(err)
 			}
 			cfg.Plans = &config
-			if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 				t.Fatal(err)
 			}
 			f.user(t, "owner", "owner", "owner@example.test", "", "")
 			f.service.database.now = func() time.Time { return now }
 			revision := int64(1)
-			apply := func(command hostedPlanCommand) {
+			apply := func(command hostedplans.PlanCommand) {
 				t.Helper()
 				command.ExpectedRevision = revision
 				command.Reason = "pilot testing"
-				if err := f.service.database.applyHostedPlanCommand(t.Context(), bootstrapTokenID, command); err != nil {
+				if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, command)); err != nil {
 					t.Fatal(err)
 				}
 				revision++
 			}
 			if test.subscription {
 				until := now.Add(2 * time.Minute)
-				apply(hostedPlanCommand{ID: "paid", Action: "subscription", Plan: config.Plans[1].PlanReference, ExpiresAt: &until})
+				apply(hostedplans.PlanCommand{ID: "paid", Action: "subscription", Plan: config.Plans[1].PlanReference, ExpiresAt: &until})
 			}
 			if test.grant {
 				until := now.Add(time.Minute)
@@ -228,12 +228,12 @@ func TestHostedPlanResolutionBoundaries(t *testing.T) {
 				if test.modelChoice {
 					plan, scope = config.Base, []string{"model_choice"}
 				}
-				apply(hostedPlanCommand{ID: "grant", Action: "grant", GrantID: "pilot_grant", Plan: plan, Scope: scope, ExpiresAt: &until})
+				apply(hostedplans.PlanCommand{ID: "grant", Action: "grant", GrantID: "pilot_grant", Plan: plan, Scope: scope, ExpiresAt: &until})
 			}
 			if test.revoke {
-				apply(hostedPlanCommand{ID: "revoke", Action: "revoke", GrantID: "pilot_grant"})
+				apply(hostedplans.PlanCommand{ID: "revoke", Action: "revoke", GrantID: "pilot_grant"})
 			}
-			got, err := f.service.database.hostedPlanUsage(t.Context(), now.Add(test.at))
+			got, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), now.Add(test.at)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -281,7 +281,7 @@ func TestHostedPlanCommandsAndPermissions(t *testing.T) {
 	config := hostedTestPlans(t, f.service, nil)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
 	member := f.user(t, "member", "member", "member@example.test", "", "")
-	command := hostedPlanCommand{ID: "grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp", Plan: config.Plans[1].PlanReference, Scope: []string{"projects"}, Reason: "pilot approval"}
+	command := hostedplans.PlanCommand{ID: "grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp", Plan: config.Plans[1].PlanReference, Scope: []string{"projects"}, Reason: "pilot approval"}
 	path := "/api/v2/organizations/org_security/entitlements"
 	for _, test := range []struct {
 		name, path string
@@ -343,7 +343,7 @@ func TestHostedPlanReportRequiresEntitlementAdministrator(t *testing.T) {
 	owner := f.user(t, "owner", "owner", "owner@example.test", "", "")
 	path := "/api/v2/organizations/org_security/entitlements"
 	until := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
-	grant := hostedPlanCommand{ID: "report-grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp_report", Plan: config.Plans[1].PlanReference, Scope: []string{"projects", "hosted_artifacts"}, ExpiresAt: &until, Reason: "design partner"}
+	grant := hostedplans.PlanCommand{ID: "report-grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp_report", Plan: config.Plans[1].PlanReference, Scope: []string{"projects", "hosted_artifacts"}, ExpiresAt: &until, Reason: "design partner"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, grant), http.StatusNoContent)
 	for _, test := range []struct {
 		name     string
@@ -365,11 +365,11 @@ func TestHostedPlanReportRequiresEntitlementAdministrator(t *testing.T) {
 		})
 	}
 	response := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
-	var report hostedEntitlementReport
+	var report hostedplans.EntitlementReport
 	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Revision != 2 || report.Base != config.Base || report.EffectiveBase != config.Base || !slices.ContainsFunc(report.Plans, func(plan HostedPlan) bool { return plan.PlanReference == config.Plans[1].PlanReference }) || len(report.Grants) != 1 {
+	if report.Revision != 2 || report.Base != config.Base || report.EffectiveBase != config.Base || !slices.ContainsFunc(report.Plans, func(plan hostedplans.HostedPlan) bool { return plan.PlanReference == config.Plans[1].PlanReference }) || len(report.Grants) != 1 {
 		t.Fatalf("report = %+v", report)
 	}
 	recorded := report.Grants[0]
@@ -385,7 +385,7 @@ func TestHostedPlanReportPaginatesGrantHistory(t *testing.T) {
 	path := "/api/v2/organizations/org_security/entitlements"
 	until := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
 	for i := 1; i <= 3; i++ {
-		grant := hostedPlanCommand{ID: fmt.Sprintf("history-grant-%d", i), Action: "grant", ExpectedRevision: int64(i), GrantID: fmt.Sprintf("history-%d", i), Plan: config.Plans[1].PlanReference, Scope: []string{"projects"}, ExpiresAt: &until, Reason: "history example"}
+		grant := hostedplans.PlanCommand{ID: fmt.Sprintf("history-grant-%d", i), Action: "grant", ExpectedRevision: int64(i), GrantID: fmt.Sprintf("history-%d", i), Plan: config.Plans[1].PlanReference, Scope: []string{"projects"}, ExpiresAt: &until, Reason: "history example"}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, grant), http.StatusNoContent)
 	}
 	after := ""
@@ -396,7 +396,7 @@ func TestHostedPlanReportPaginatesGrantHistory(t *testing.T) {
 		}
 		response := performHubAPIRequest(t, f.service, http.MethodGet, target, testHostedPlanAdminToken, nil)
 		requireNativeStatus(t, response, http.StatusOK)
-		var report hostedEntitlementReport
+		var report hostedplans.EntitlementReport
 		if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
 			t.Fatal(err)
 		}
@@ -484,10 +484,10 @@ func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 	config.Plans = append(config.Plans, zero)
 	cfg := *f.service.config.Hosted
 	cfg.Plans = &config
-	if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.database.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "downgrade", Action: "base", ExpectedRevision: 1, Plan: zero.PlanReference, Reason: "pilot downgrade"}); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "downgrade", Action: "base", ExpectedRevision: 1, Plan: zero.PlanReference, Reason: "pilot downgrade"})); err != nil {
 		t.Fatal(err)
 	}
 	renewed := performHubAPIRequest(t, f.service, http.MethodPost, work.base+"/leases/"+string(winner.lease.ID)+"/renew", tokens[winner.index], tracker.NativeLeaseMutation{FencingToken: winner.lease.FencingToken, TTLSeconds: 60})
@@ -509,14 +509,14 @@ func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 			t.Fatalf("release %d: %d %s", i, response.Code, response.Body.String())
 		}
 	}
-	usage, err := f.service.database.hostedPlanUsage(t.Context(), now)
+	usage, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), now))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if usage.Usage["concurrent_work"] != 0 {
 		t.Fatal("failed start retained capacity")
 	}
-	if err := f.service.database.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "restore", Action: "base", ExpectedRevision: 2, Plan: config.Base, Reason: "pilot restore"}); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "restore", Action: "base", ExpectedRevision: 2, Plan: config.Base, Reason: "pilot restore"})); err != nil {
 		t.Fatal(err)
 	}
 	next := requests[(winner.index+1)%contenders]
@@ -542,10 +542,10 @@ func TestHostedConcurrentClaimsDowngradeRelease(t *testing.T) {
 		delete(unlimited.Allowances, "concurrent_work")
 		config.Plans = append(config.Plans, unlimited)
 		cfg.Plans = &config
-		if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+		if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.database.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "unlimited", Action: "base", ExpectedRevision: 3, Plan: unlimited.PlanReference, Reason: "unrestricted concurrency"}); err != nil {
+		if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "unlimited", Action: "base", ExpectedRevision: 3, Plan: unlimited.PlanReference, Reason: "unrestricted concurrency"})); err != nil {
 			t.Fatal(err)
 		}
 		next := requests[(winner.index+3)%contenders]
@@ -636,12 +636,12 @@ func TestHostedMutationQuotaRollbackAndRetry(t *testing.T) {
 				}
 				return
 			}
-			before, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+			before, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 			if err != nil {
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, f.request(t, f.user, http.MethodPost, f.base+"/work-items", request), http.StatusOK)
-			after, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+			after, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -660,16 +660,16 @@ func TestHostedPlanConfigurationAndTelemetry(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name   string
-		change func(*HostedPlansConfig)
+		change func(*hostedplans.HostedPlansConfig)
 	}{
-		{"missing base", func(c *HostedPlansConfig) { c.Base.ID = "absent" }},
-		{"negative allowance", func(c *HostedPlansConfig) { c.Plans[0].Allowances["projects"] = -1 }},
-		{"unknown allowance", func(c *HostedPlansConfig) { c.Plans[0].Allowances["unlimited"] = 1 }},
-		{"unbounded retention", func(c *HostedPlansConfig) { c.RetentionWindows = 721 }},
-		{"unknown feature", func(c *HostedPlansConfig) { c.Plans[0].Features = []string{"admin_bypass"} }},
+		{"missing base", func(c *hostedplans.HostedPlansConfig) { c.Base.ID = "absent" }},
+		{"negative allowance", func(c *hostedplans.HostedPlansConfig) { c.Plans[0].Allowances["projects"] = -1 }},
+		{"unknown allowance", func(c *hostedplans.HostedPlansConfig) { c.Plans[0].Allowances["unlimited"] = 1 }},
+		{"unbounded retention", func(c *hostedplans.HostedPlansConfig) { c.RetentionWindows = 721 }},
+		{"unknown feature", func(c *hostedplans.HostedPlansConfig) { c.Plans[0].Features = []string{"admin_bypass"} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			c := pilotHostedPlans()
+			c := hostedplans.PilotPlans()
 			test.change(&c)
 			if c.Validate() == nil {
 				t.Fatal("invalid config accepted")
@@ -681,10 +681,10 @@ func TestHostedPlanConfigurationAndTelemetry(t *testing.T) {
 	config.Plans[0].Allowances["projects"]++
 	cfg := *f.service.config.Hosted
 	cfg.Plans = &config
-	if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 		t.Fatalf("changed seed stopped startup: %v", err)
 	}
-	stored, err := f.service.database.readHostedPlan(t.Context(), nil, config.Base)
+	stored, err := hubapi.FeatureResult(f.service.database.plansService().ReadPlan(t.Context(), nil, config.Base))
 	if err != nil || stored.Allowances["projects"] == config.Plans[0].Allowances["projects"] {
 		t.Fatalf("changed seed overwrote stored plan: %+v %v", stored, err)
 	}
@@ -758,7 +758,7 @@ func TestHostedPlanConfigurationAndTelemetry(t *testing.T) {
 func TestHostedPlansDisabledWithoutNetwork(t *testing.T) {
 	t.Parallel()
 	service := newPostgresNativeService(t, Config{})
-	if service.database.plans() != nil {
+	if service.database.plansService().Plans() != nil {
 		t.Fatal("self-hosted plan restrictions enabled")
 	}
 	exerciseHostedPlanUnrestrictedWork(t, service)
@@ -848,7 +848,7 @@ func TestHostedPlanReportListsOnlyActiveGrants(t *testing.T) {
 		after func(t *testing.T, f *hostedSecurityFixture, path string, clock *leaseTestClock)
 	}{
 		{name: "revoked", after: func(t *testing.T, f *hostedSecurityFixture, path string, _ *leaseTestClock) {
-			revoke := hostedPlanCommand{ID: "report-revoke", Action: "revoke", ExpectedRevision: 2, GrantID: "comp_report", Reason: "partnership ended"}
+			revoke := hostedplans.PlanCommand{ID: "report-revoke", Action: "revoke", ExpectedRevision: 2, GrantID: "comp_report", Reason: "partnership ended"}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, revoke), http.StatusNoContent)
 		}},
 		{name: "expired", after: func(_ *testing.T, _ *hostedSecurityFixture, _ string, clock *leaseTestClock) {
@@ -866,12 +866,12 @@ func TestHostedPlanReportListsOnlyActiveGrants(t *testing.T) {
 			f.service.database.now = clock.Now
 			path := "/api/v2/organizations/org_security/entitlements"
 			until := clock.value.Add(time.Hour).Truncate(time.Second)
-			grant := hostedPlanCommand{ID: "report-grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp_report", Plan: config.Plans[1].PlanReference, Scope: []string{"projects"}, ExpiresAt: &until, Reason: "design partner"}
+			grant := hostedplans.PlanCommand{ID: "report-grant", Action: "grant", ExpectedRevision: 1, GrantID: "comp_report", Plan: config.Plans[1].PlanReference, Scope: []string{"projects"}, ExpiresAt: &until, Reason: "design partner"}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, grant), http.StatusNoContent)
 			test.after(t, &f, path, clock)
 			response := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
 			requireNativeStatus(t, response, http.StatusOK)
-			var report hostedEntitlementReport
+			var report hostedplans.EntitlementReport
 			if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
 				t.Fatal(err)
 			}
@@ -886,16 +886,16 @@ func TestHostedPlanConfigurationDefaults(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name  string
-		plans *HostedPlansConfig
+		plans *hostedplans.HostedPlansConfig
 		zero  bool
 	}{
 		{name: "absent", zero: true},
-		{name: "empty mapping", plans: &HostedPlansConfig{}, zero: true},
-		{name: "empty plan list", plans: &HostedPlansConfig{Plans: []HostedPlan{}}, zero: true},
-		{name: "windows only", plans: &HostedPlansConfig{WindowSeconds: 3600}},
-		{name: "base only", plans: &HostedPlansConfig{Base: PlanReference{ID: "pilot_free", Version: 1}}},
-		{name: "pilot catalog", plans: func() *HostedPlansConfig { c := pilotHostedPlans(); return &c }()},
-		{name: "Cloud catalog", plans: func() *HostedPlansConfig { c := capacityHostedPlans(); return &c }()},
+		{name: "empty mapping", plans: &hostedplans.HostedPlansConfig{}, zero: true},
+		{name: "empty plan list", plans: &hostedplans.HostedPlansConfig{Plans: []hostedplans.HostedPlan{}}, zero: true},
+		{name: "windows only", plans: &hostedplans.HostedPlansConfig{WindowSeconds: 3600}},
+		{name: "base only", plans: &hostedplans.HostedPlansConfig{Base: hostedplans.PlanReference{ID: "pilot_free", Version: 1}}},
+		{name: "pilot catalog", plans: func() *hostedplans.HostedPlansConfig { c := hostedplans.PilotPlans(); return &c }()},
+		{name: "Cloud catalog", plans: func() *hostedplans.HostedPlansConfig { c := hostedplans.CapacityPlans(); return &c }()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -919,7 +919,7 @@ func TestHostedPlanConfigurationDefaults(t *testing.T) {
 			configured := newHostedSecurityFixture(t, func(config *Config) { config.Hosted.Plans = cfg.Plans })
 			d := configured.service.database
 			if test.zero {
-				if cfg.Plans != nil || d.plans() != nil {
+				if cfg.Plans != nil || d.plansService().Plans() != nil {
 					t.Fatal("hosted configuration without a catalog enabled plan allowances")
 				}
 				var count int
@@ -929,13 +929,13 @@ func TestHostedPlanConfigurationDefaults(t *testing.T) {
 				exerciseHostedPlanUnrestrictedWork(t, configured.service)
 				return
 			}
-			entitlement, err := d.hostedPlanUsage(t.Context(), time.Now())
+			entitlement, err := hubapi.FeatureResult(d.plansService().PlanUsage(t.Context(), time.Now()))
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := PlanReference{ID: "pilot_free", Version: 1}
+			want := hostedplans.PlanReference{ID: "pilot_free", Version: 1}
 			if test.name == "Cloud catalog" {
-				want = PlanReference{ID: "free", Version: 1}
+				want = hostedplans.PlanReference{ID: "free", Version: 1}
 				if entitlement.Allowances["concurrent_work"] != 2 {
 					t.Fatalf("Free concurrency = %d, want 2", entitlement.Allowances["concurrent_work"])
 				}
@@ -949,26 +949,26 @@ func TestHostedPlanConfigurationDefaults(t *testing.T) {
 
 func TestCapacityCatalog(t *testing.T) {
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
-		plans := capacityHostedPlans()
+		plans := hostedplans.CapacityPlans()
 		cfg.Hosted.Plans = &plans
 	})
 	for _, test := range []struct {
-		ref        PlanReference
+		ref        hostedplans.PlanReference
 		cents      int64
 		priced     bool
 		concurrent int64
 		storage    int64
 	}{
-		{PlanReference{ID: "free", Version: 1}, 0, true, 2, 1 << 30},
-		{PlanReference{ID: "starter", Version: 1}, 4900, true, 8, 25 << 30},
-		{PlanReference{ID: "team", Version: 2}, 9900, true, 20, 100 << 30},
-		{PlanReference{ID: "growth", Version: 2}, 24900, true, 50, 250 << 30},
-		{PlanReference{ID: "scale", Version: 2}, 0, false, 100, 1 << 30},
-		{PlanReference{ID: "growth", Version: 1}, 14900, true, 50, 1 << 30},
-		{PlanReference{ID: "scale", Version: 1}, 39900, true, 100, 1 << 30},
+		{hostedplans.PlanReference{ID: "free", Version: 1}, 0, true, 2, 1 << 30},
+		{hostedplans.PlanReference{ID: "starter", Version: 1}, 4900, true, 8, 25 << 30},
+		{hostedplans.PlanReference{ID: "team", Version: 2}, 9900, true, 20, 100 << 30},
+		{hostedplans.PlanReference{ID: "growth", Version: 2}, 24900, true, 50, 250 << 30},
+		{hostedplans.PlanReference{ID: "scale", Version: 2}, 0, false, 100, 1 << 30},
+		{hostedplans.PlanReference{ID: "growth", Version: 1}, 14900, true, 50, 1 << 30},
+		{hostedplans.PlanReference{ID: "scale", Version: 1}, 39900, true, 100, 1 << 30},
 	} {
 		t.Run(fmt.Sprintf("%s v%d", test.ref.ID, test.ref.Version), func(t *testing.T) {
-			plan, err := f.service.database.readHostedPlan(t.Context(), nil, test.ref)
+			plan, err := hubapi.FeatureResult(f.service.database.plansService().ReadPlan(t.Context(), nil, test.ref))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -995,7 +995,7 @@ func TestCapacityCatalog(t *testing.T) {
 	if customers != 0 || f.service.billing != nil {
 		t.Fatal("Free signup created billing state")
 	}
-	entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+	entitlement, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1034,15 +1034,15 @@ func TestCapacityCatalog(t *testing.T) {
 func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	d := f.service.database
-	base := PlanReference{ID: "pilot_free", Version: 1}
+	base := hostedplans.PlanReference{ID: "pilot_free", Version: 1}
 	readPlan := func() billingstore.Plan {
 		t.Helper()
 		var plan billingstore.Plan
-		err := d.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+		err := hubapi.FromFeatureError(d.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 			var err error
 			plan, err = r.BillingPlan(t.Context(), billingstore.PlanReference{ID: base.ID, Version: base.Version})
 			return err
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1051,11 +1051,11 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 	readGrant := func() billingstore.Grant {
 		t.Helper()
 		var grant billingstore.Grant
-		err := d.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+		err := hubapi.FromFeatureError(d.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 			var err error
 			grant, err = r.BillingGrant(t.Context(), "legacy")
 			return err
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1063,15 +1063,15 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 	}
 	original := readPlan()
 	for _, test := range []struct {
-		ref     PlanReference
+		ref     hostedplans.PlanReference
 		limit   int64
 		history int64
 	}{
-		{PlanReference{ID: "pilot_free", Version: 1}, 10, 10000},
-		{PlanReference{ID: "comp_team", Version: 1}, 20, 20000},
+		{hostedplans.PlanReference{ID: "pilot_free", Version: 1}, 10, 10000},
+		{hostedplans.PlanReference{ID: "comp_team", Version: 1}, 20, 20000},
 	} {
 		t.Run(test.ref.ID+" before capacity publication", func(t *testing.T) {
-			plan, err := d.readHostedPlan(t.Context(), nil, test.ref)
+			plan, err := hubapi.FeatureResult(d.plansService().ReadPlan(t.Context(), nil, test.ref))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1080,13 +1080,13 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 			}
 		})
 	}
-	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "legacy-grant", Action: "grant", ExpectedRevision: 1, GrantID: "legacy", Plan: PlanReference{ID: "comp_team", Version: 1}, Scope: []string{"projects", "native_execution", "collaboration_bytes"}, Reason: "existing complimentary access"}); err != nil {
+	if err := hubapi.FromFeatureError(d.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "legacy-grant", Action: "grant", ExpectedRevision: 1, GrantID: "legacy", Plan: hostedplans.PlanReference{ID: "comp_team", Version: 1}, Scope: []string{"projects", "native_execution", "collaboration_bytes"}, Reason: "existing complimentary access"})); err != nil {
 		t.Fatal(err)
 	}
 	originalGrant := readGrant()
 
-	plans := capacityHostedPlans()
-	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+	plans := hostedplans.CapacityPlans()
+	if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 		t.Fatal(err)
 	}
 	retained := readPlan()
@@ -1094,11 +1094,11 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 		t.Fatalf("capacity seeding rewrote the legacy grant: before=%+v after=%+v", originalGrant, retainedGrant)
 	}
 
-	entitlement, err := d.hostedEntitlement(t.Context(), nil, time.Now())
+	entitlement, err := hubapi.FeatureResult(d.plansService().Entitlement(t.Context(), nil, time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state := d.runtimeState(); state == nil || retained.RuntimeID != state.Revision {
+	if state := d.plansService().RuntimeState(); state == nil || retained.RuntimeID != state.Revision {
 		t.Fatalf("capacity seeding did not bind the retained legacy plan to its runtime: %+v", retained)
 	}
 	original.RuntimeID = retained.RuntimeID
@@ -1112,14 +1112,14 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 		t.Fatalf("legacy storage changed: %d", entitlement.Allowances["collaboration_bytes"])
 	}
 	for _, test := range []struct {
-		ref   PlanReference
+		ref   hostedplans.PlanReference
 		bytes int64
 	}{
-		{PlanReference{ID: "pilot_free", Version: 1}, 64 << 20}, {PlanReference{ID: "comp_team", Version: 1}, 128 << 20},
-		{PlanReference{ID: "free", Version: 1}, 1 << 30}, {PlanReference{ID: "starter", Version: 1}, 25 << 30}, {PlanReference{ID: "team", Version: 2}, 100 << 30}, {PlanReference{ID: "growth", Version: 2}, 250 << 30}, {PlanReference{ID: "scale", Version: 2}, 1 << 30},
+		{hostedplans.PlanReference{ID: "pilot_free", Version: 1}, 64 << 20}, {hostedplans.PlanReference{ID: "comp_team", Version: 1}, 128 << 20},
+		{hostedplans.PlanReference{ID: "free", Version: 1}, 1 << 30}, {hostedplans.PlanReference{ID: "starter", Version: 1}, 25 << 30}, {hostedplans.PlanReference{ID: "team", Version: 2}, 100 << 30}, {hostedplans.PlanReference{ID: "growth", Version: 2}, 250 << 30}, {hostedplans.PlanReference{ID: "scale", Version: 2}, 1 << 30},
 	} {
 		t.Run(test.ref.ID, func(t *testing.T) {
-			plan, err := d.readHostedPlan(t.Context(), nil, test.ref)
+			plan, err := hubapi.FeatureResult(d.plansService().ReadPlan(t.Context(), nil, test.ref))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1149,14 +1149,14 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 		}
 	}
 	t.Run("comp_team base", func(t *testing.T) {
-		if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "legacy-comp-base", Action: "base", ExpectedRevision: entitlement.Revision, Plan: PlanReference{ID: "comp_team", Version: 1}, Reason: "existing Team access"}); err != nil {
+		if err := hubapi.FromFeatureError(d.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "legacy-comp-base", Action: "base", ExpectedRevision: entitlement.Revision, Plan: hostedplans.PlanReference{ID: "comp_team", Version: 1}, Reason: "existing Team access"})); err != nil {
 			t.Fatal(err)
 		}
-		team, err := d.hostedEntitlement(t.Context(), nil, time.Now())
+		team, err := hubapi.FeatureResult(d.plansService().Entitlement(t.Context(), nil, time.Now()))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if team.Base != (PlanReference{ID: "comp_team", Version: 1}) || team.Name != "Legacy Team" || team.Allowances["history_records"] != 2000000 || team.Allowances["collaboration_bytes"] != 128<<20 || !slices.Contains(team.Features, "native_execution") {
+		if team.Base != (hostedplans.PlanReference{ID: "comp_team", Version: 1}) || team.Name != "Legacy Team" || team.Allowances["history_records"] != 2000000 || team.Allowances["collaboration_bytes"] != 128<<20 || !slices.Contains(team.Features, "native_execution") {
 			t.Fatalf("legacy Team base normalization=%+v", team)
 		}
 		for _, resource := range []string{"members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
@@ -1175,31 +1175,31 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 		f := newHostedSecurityFixture(t)
 		d := f.service.database
 		const runtimeID = "runtime_unpublished_normalization"
-		if err := d.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+		if err := hubapi.FromFeatureError(d.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 			if err := w.StageRuntime(t.Context(), billingstore.RuntimeRevision{ID: runtimeID}); err != nil {
 				return err
 			}
 			return w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: d.hostedOrganization, PlanReference: billingstore.PlanReference{ID: "starter", Version: 1}, RuntimeID: runtimeID, Name: "Example unpublished starter", Allowances: map[string]int64{"projects": 1}})
-		}); err != nil {
+		})); err != nil {
 			t.Fatal(err)
 		}
-		if err := d.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+		if err := hubapi.FromFeatureError(d.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 			visible, err := r.RuntimePublished(t.Context(), runtimeID)
 			if visible {
 				t.Fatal("staged starter is already published")
 			}
 			return err
-		}); err != nil {
+		})); err != nil {
 			t.Fatal(err)
 		}
 		for _, test := range []struct {
-			ref               PlanReference
+			ref               hostedplans.PlanReference
 			projects, history int64
 		}{
-			{PlanReference{ID: "pilot_free", Version: 1}, 10, 10000},
-			{PlanReference{ID: "comp_team", Version: 1}, 20, 20000},
+			{hostedplans.PlanReference{ID: "pilot_free", Version: 1}, 10, 10000},
+			{hostedplans.PlanReference{ID: "comp_team", Version: 1}, 20, 20000},
 		} {
-			plan, err := d.readHostedPlan(t.Context(), nil, test.ref)
+			plan, err := hubapi.FeatureResult(d.plansService().ReadPlan(t.Context(), nil, test.ref))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1210,10 +1210,10 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 	})
 	t.Run("capacity tier read preserves stored plan", func(t *testing.T) {
 		f := newHostedSecurityFixture(t, func(cfg *Config) {
-			plans := capacityHostedPlans()
+			plans := hostedplans.CapacityPlans()
 			for index := range plans.Plans {
 				plan := &plans.Plans[index]
-				if plan.PlanReference == (PlanReference{ID: "free", Version: 1}) || plan.PlanReference == (PlanReference{ID: "team", Version: 2}) {
+				if plan.PlanReference == (hostedplans.PlanReference{ID: "free", Version: 1}) || plan.PlanReference == (hostedplans.PlanReference{ID: "team", Version: 2}) {
 					plan.Allowances["unarchived_issues"], plan.Allowances["concurrent_work"] = 31, 61
 					for _, resource := range []string{"members", "projects", "repositories", "registered_runners", "connected_runners"} {
 						plan.Allowances[resource] = 3
@@ -1224,24 +1224,24 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 		})
 		d := f.service.database
 		for _, test := range []struct {
-			ref        PlanReference
+			ref        hostedplans.PlanReference
 			concurrent int64
 		}{
-			{PlanReference{ID: "free", Version: 1}, 2},
-			{PlanReference{ID: "team", Version: 2}, 20},
+			{hostedplans.PlanReference{ID: "free", Version: 1}, 2},
+			{hostedplans.PlanReference{ID: "team", Version: 2}, 20},
 		} {
 			var raw billingstore.Plan
-			if err := d.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			if err := hubapi.FromFeatureError(d.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 				var err error
 				raw, err = r.BillingPlan(t.Context(), billingstore.PlanReference{ID: test.ref.ID, Version: test.ref.Version})
 				return err
-			}); err != nil {
+			})); err != nil {
 				t.Fatal(err)
 			}
 			if raw.Allowances["unarchived_issues"] != 31 || raw.Allowances["concurrent_work"] != 61 || raw.Allowances["projects"] != 3 {
 				t.Fatalf("stored older capacity premise missing: %+v", raw)
 			}
-			plan, err := d.readHostedPlan(t.Context(), nil, test.ref)
+			plan, err := hubapi.FeatureResult(d.plansService().ReadPlan(t.Context(), nil, test.ref))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1253,13 +1253,13 @@ func TestCapacityLegacyAssignmentsAndGrants(t *testing.T) {
 					t.Fatalf("capacity tier read still limits %s", resource)
 				}
 			}
-			if err := d.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			if err := hubapi.FromFeatureError(d.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 				stored, err := r.BillingPlan(t.Context(), billingstore.PlanReference{ID: test.ref.ID, Version: test.ref.Version})
 				if err == nil && !reflect.DeepEqual(stored, raw) {
 					t.Fatalf("read normalization rewrote stored plan: before=%+v after=%+v", raw, stored)
 				}
 				return err
-			}); err != nil {
+			})); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1375,20 +1375,20 @@ func TestCapacityCostDriversUnknownInputs(t *testing.T) {
 
 func TestCapacityGrantPreservesUnrestrictedResources(t *testing.T) {
 	f := newHostedSecurityFixture(t)
-	config := capacityHostedPlans()
-	grant := HostedPlan{PlanReference: PlanReference{ID: "capacity_grant", Version: 1}, Allowances: map[string]int64{"concurrent_work": 9, "projects": 1, "repositories": 1, "registered_runners": 1, "connected_runners": 1}}
+	config := hostedplans.CapacityPlans()
+	grant := hostedplans.HostedPlan{PlanReference: hostedplans.PlanReference{ID: "capacity_grant", Version: 1}, Allowances: map[string]int64{"concurrent_work": 9, "projects": 1, "repositories": 1, "registered_runners": 1, "connected_runners": 1}}
 	config.Plans = append(config.Plans, grant)
 	d := f.service.database
-	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &config}); err != nil {
+	if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &config}))); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "capacity-base", Action: "base", ExpectedRevision: 1, Plan: config.Base, Reason: "capacity access"}); err != nil {
+	if err := hubapi.FromFeatureError(d.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "capacity-base", Action: "base", ExpectedRevision: 1, Plan: config.Base, Reason: "capacity access"})); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "capacity-grant", Action: "grant", ExpectedRevision: 2, GrantID: "capacity", Plan: grant.PlanReference, Scope: []string{"concurrent_work", "projects", "repositories", "registered_runners", "connected_runners"}, Reason: "additional capacity"}); err != nil {
+	if err := hubapi.FromFeatureError(d.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "capacity-grant", Action: "grant", ExpectedRevision: 2, GrantID: "capacity", Plan: grant.PlanReference, Scope: []string{"concurrent_work", "projects", "repositories", "registered_runners", "connected_runners"}, Reason: "additional capacity"})); err != nil {
 		t.Fatal(err)
 	}
-	entitlement, err := d.hostedPlanUsage(t.Context(), time.Now())
+	entitlement, err := hubapi.FeatureResult(d.plansService().PlanUsage(t.Context(), time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1400,10 +1400,10 @@ func TestCapacityGrantPreservesUnrestrictedResources(t *testing.T) {
 			t.Fatalf("grant introduced a %s restriction", resource)
 		}
 	}
-	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "tier-grant", Action: "grant", ExpectedRevision: 3, GrantID: "tier", Plan: PlanReference{ID: "team", Version: 2}, Scope: []string{"projects"}, Reason: "Team access"}); err != nil {
+	if err := hubapi.FromFeatureError(d.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "tier-grant", Action: "grant", ExpectedRevision: 3, GrantID: "tier", Plan: hostedplans.PlanReference{ID: "team", Version: 2}, Scope: []string{"projects"}, Reason: "Team access"})); err != nil {
 		t.Fatal(err)
 	}
-	entitlement, err = d.hostedPlanUsage(t.Context(), time.Now())
+	entitlement, err = hubapi.FeatureResult(d.plansService().PlanUsage(t.Context(), time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1419,10 +1419,10 @@ func TestCapacityLegacyMetadataKeepsImmutablePlan(t *testing.T) {
 	cfg.PlanID = "pilot_free"
 	cfg.StorageQuotaBytes = 64 << 20
 	cfg.EventQuota = 10000
-	if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 		t.Fatal(err)
 	}
-	entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+	entitlement, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1436,8 +1436,8 @@ func TestCapacityFreeConcurrentWorkQueues(t *testing.T) {
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	d := f.service.database
 	d.hostedOrganization = f.project.OrganizationID
-	plans := capacityHostedPlans()
-	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+	plans := hostedplans.CapacityPlans()
+	if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 		t.Fatal(err)
 	}
 	tokens := map[string]string{}
@@ -1638,12 +1638,12 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 		}
 		return statements
 	}
-	readConsumption := func(t *testing.T, at time.Time, metrics ...string) hostedConsumptionRecord {
+	readConsumption := func(t *testing.T, at time.Time, metrics ...string) hostedplans.ConsumptionRecord {
 		t.Helper()
-		var result hostedConsumptionRecord
+		var result hostedplans.ConsumptionRecord
 		if err := repository.ReadTenant(ctx, f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			result, err = d.readHostedConsumptionRecord(ctx, r, at, metrics...)
+			result, err = hubapi.FeatureResult(d.plansService().ReadConsumptionRecord(ctx, r, at, metrics...))
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -1786,7 +1786,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			}
 		}
 	}
-	plans := pilotHostedPlans()
+	plans := hostedplans.PilotPlans()
 	plans.Plans[0].Allowances = maps.Clone(plans.Plans[0].Allowances)
 	plans.Plans[0].Allowances["concurrent_work"] = 10000
 	plans.Plans[0].Allowances["collaboration_bytes"] = 1 << 30
@@ -1807,7 +1807,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", retainedWorker, event), http.StatusOK)
 		}
 		previous = retained
-		if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+		if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 			t.Fatal(err)
 		}
 		if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -1916,7 +1916,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					}
 				}
 				queries.reset()
-				selected, err := d.readHostedPlanUsage(ctx, nil, at, hostedAllowanceNames()...)
+				selected, err := hubapi.FeatureResult(d.plansService().ReadPlanUsage(ctx, nil, at, hostedplans.AllowanceNames()...))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1941,7 +1941,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 						t.Errorf("Fleet read unlimited metric %s", metric)
 					}
 				}
-				authoritative, err := d.readHostedPlanUsage(t.Context(), nil, at)
+				authoritative, err := hubapi.FeatureResult(d.plansService().ReadPlanUsage(t.Context(), nil, at))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -2317,7 +2317,7 @@ func TestHostedRunnerTransactionQuotas(t *testing.T) {
 			hostedTestPlans(t, f.service, test.limits)
 			observeHostedArtifactUsage(t, f.service)
 			f.service.config.Hosted = nil
-			before, err := d.hostedConsumption(t.Context(), nil, time.Now())
+			before, err := hubapi.FeatureResult(d.plansService().Consumption(t.Context(), nil, time.Now()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2328,7 +2328,7 @@ func TestHostedRunnerTransactionQuotas(t *testing.T) {
 				body = tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: r.binding.MachineID}}
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, body), test.status)
-			after, err := d.hostedConsumption(t.Context(), nil, time.Now())
+			after, err := hubapi.FeatureResult(d.plansService().Consumption(t.Context(), nil, time.Now()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2408,7 +2408,7 @@ func TestHostedNativeRunMutationQuotas(t *testing.T) {
 			if test.kind == "run.checkpointed" {
 				event.Data.Handoff = nativeTestCheckpoint()
 			}
-			before, err := f.service.database.hostedConsumption(t.Context(), nil, time.Now())
+			before, err := hubapi.FeatureResult(f.service.database.plansService().Consumption(t.Context(), nil, time.Now()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2417,7 +2417,7 @@ func TestHostedNativeRunMutationQuotas(t *testing.T) {
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), test.status)
-			after, err := f.service.database.hostedConsumption(t.Context(), nil, time.Now())
+			after, err := hubapi.FeatureResult(f.service.database.plansService().Consumption(t.Context(), nil, time.Now()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2434,7 +2434,7 @@ func TestHostedNativeRunMutationQuotas(t *testing.T) {
 				return
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
-			replay, err := f.service.database.hostedConsumption(t.Context(), nil, time.Now())
+			replay, err := hubapi.FeatureResult(f.service.database.plansService().Consumption(t.Context(), nil, time.Now()))
 			if err != nil || !maps.Equal(after, replay) {
 				t.Fatalf("replay usage changed: %v -> %v error=%v", after, replay, err)
 			}
@@ -2478,7 +2478,7 @@ func exerciseHostedPlanUnrestrictedWork(t *testing.T, service *Service) {
 		if err := service.database.checkConversationCollaborationGrowthPostgres(t.Context(), w, "unrestricted-growth", 0, 1, service.config.now(), false); err != nil {
 			return err
 		}
-		return service.database.requireHostedFeatureRecord(t.Context(), w, "hosted_artifacts", service.config.now())
+		return hubapi.FromFeatureError(service.database.plansService().RequireFeatureRecord(t.Context(), w, "hosted_artifacts", service.config.now()))
 	}); err != nil {
 		t.Fatalf("unlimited growth or feature = %v", err)
 	}

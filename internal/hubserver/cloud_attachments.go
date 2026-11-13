@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -96,7 +97,7 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 			return err
 		}
 		if input.Size > limit-used {
-			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
+			return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
 		}
 		return nil
 	})

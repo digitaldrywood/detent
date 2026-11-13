@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -27,7 +27,7 @@ type AllocationConfig struct {
 	SocketRoot              string
 	MaxTenants              int
 	MaxConcurrent           int
-	Prices                  []hubserver.HostedBillingPrice
+	Prices                  []hostedplans.HostedBillingPrice
 	RetryLimit              int
 	MinFreeDiskBytes        uint64
 	MinAvailableMemoryBytes uint64

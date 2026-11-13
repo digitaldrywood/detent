@@ -592,13 +592,13 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			if test.repeatedFinish {
-				plans := pilotHostedPlans()
+				plans := hostedplans.PilotPlans()
 				limited := plans.Plans[0]
 				limited.ID, limited.Allowances = "run_detail_limit", maps.Clone(limited.Allowances)
 				limited.Allowances["collaboration_bytes"] = 1
-				plans.Plans, plans.Base = []HostedPlan{limited}, limited.PlanReference
+				plans.Plans, plans.Base = []hostedplans.HostedPlan{limited}, limited.PlanReference
 				config := &hostedplans.HostedConfig{OrganizationID: string(f.project.OrganizationID), Plans: &plans, EntitlementAdministrator: "operator"}
-				if err := f.service.database.configureHostedPlans(t.Context(), config); err != nil {
+				if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(config))); err != nil {
 					t.Fatal(err)
 				}
 				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {

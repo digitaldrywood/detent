@@ -528,7 +528,7 @@ func (s *Service) queueActionRunRecord(ctx context.Context, scope hubscope.Nativ
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if err := s.database.requireHostedFeatureRecord(ctx, writer, "collaboration", s.config.now()); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, writer, "collaboration", s.config.now())); err != nil {
 			return err
 		}
 		owner, ok := writer.(postgres.RelayActionWriter)

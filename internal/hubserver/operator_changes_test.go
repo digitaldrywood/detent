@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -286,7 +287,7 @@ func TestOperatorChangePublication(t *testing.T) {
 }
 
 func TestOperatorMutationRefusalPrecedence(t *testing.T) {
-	limit := &hostedLimitError{Resource: "collaboration_bytes", Allowance: 10, Consumption: 11}
+	limit := &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: 10, Consumption: 11}
 	for _, projection := range []struct {
 		name    string
 		project func(error) error

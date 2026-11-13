@@ -29,7 +29,7 @@ func hostedRequestUsageFor(c echo.Context, elapsed time.Duration) hostedRequestU
 }
 func (d *database) metricsBillingOwner() *requestmetrics.BillingOwner {
 	return &requestmetrics.BillingOwner{Repository: d.billingRepository, Organization: d.hostedOrganization, Plans: func() *requestmetrics.BillingPlan {
-		p := d.plans()
+		p := d.plansService().Plans()
 		if p == nil {
 			return nil
 		}

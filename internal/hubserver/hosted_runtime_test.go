@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -18,18 +19,18 @@ func TestHostedPlanVersionCreatedAndGrantedWithoutRestart(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	config := hostedTestPlans(t, f.service, nil)
 	path := "/api/v2/organizations/org_security/entitlements"
-	plan := HostedPlan{PlanReference: PlanReference{ID: "capacity_extension", Version: 1}, Name: "Capacity extension", Features: []string{"collaboration"}, Allowances: map[string]int64{"collaboration_bytes": 1 << 34}}
-	create := hostedPlanCommand{ID: "runtime-create", Action: "create_plan", ExpectedRevision: 1, Plan: plan.PlanReference, Definition: &plan, Reason: "runtime capacity"}
+	plan := hostedplans.HostedPlan{PlanReference: hostedplans.PlanReference{ID: "capacity_extension", Version: 1}, Name: "Capacity extension", Features: []string{"collaboration"}, Allowances: map[string]int64{"collaboration_bytes": 1 << 34}}
+	create := hostedplans.PlanCommand{ID: "runtime-create", Action: "create_plan", ExpectedRevision: 1, Plan: plan.PlanReference, Definition: &plan, Reason: "runtime capacity"}
 	for _, test := range []struct {
 		name, token string
-		command     hostedPlanCommand
+		command     hostedplans.PlanCommand
 		want        int
 	}{
 		{"Hub admin cannot create", testHubAdminToken, create, http.StatusForbidden},
 		{"create", testHostedPlanAdminToken, create, http.StatusNoContent},
 		{"replay", testHostedPlanAdminToken, create, http.StatusNoContent},
-		{"changed replay", testHostedPlanAdminToken, func() hostedPlanCommand { changed := create; changed.Reason = "changed reason"; return changed }(), http.StatusConflict},
-		{"immutable version", testHostedPlanAdminToken, func() hostedPlanCommand {
+		{"changed replay", testHostedPlanAdminToken, func() hostedplans.PlanCommand { changed := create; changed.Reason = "changed reason"; return changed }(), http.StatusConflict},
+		{"immutable version", testHostedPlanAdminToken, func() hostedplans.PlanCommand {
 			changed := create
 			changed.ID = "overwrite"
 			changed.ExpectedRevision = 2
@@ -42,25 +43,25 @@ func TestHostedPlanVersionCreatedAndGrantedWithoutRestart(t *testing.T) {
 	}
 	reportResponse := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
 	requireNativeStatus(t, reportResponse, http.StatusOK)
-	var report hostedEntitlementReport
+	var report hostedplans.EntitlementReport
 	if err := json.Unmarshal(reportResponse.Body.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Revision != 2 || report.Base != config.Base || !slices.ContainsFunc(report.Plans, func(p HostedPlan) bool { return p.PlanReference == plan.PlanReference }) {
+	if report.Revision != 2 || report.Base != config.Base || !slices.ContainsFunc(report.Plans, func(p hostedplans.HostedPlan) bool { return p.PlanReference == plan.PlanReference }) {
 		t.Fatalf("runtime catalog or existing assignment changed: %+v", report)
 	}
-	grant := hostedPlanCommand{ID: "runtime-grant", Action: "grant", ExpectedRevision: report.Revision, GrantID: "capacity_grant", Plan: plan.PlanReference, Scope: []string{"collaboration_bytes"}, Reason: "runtime capacity"}
+	grant := hostedplans.PlanCommand{ID: "runtime-grant", Action: "grant", ExpectedRevision: report.Revision, GrantID: "capacity_grant", Plan: plan.PlanReference, Scope: []string{"collaboration_bytes"}, Reason: "runtime capacity"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, grant), http.StatusNoContent)
-	usage, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+	usage, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 	if err != nil || usage.Allowances["collaboration_bytes"] != 1<<34 || usage.Base != config.Base {
 		t.Fatalf("allowance did not apply: %+v %v", usage, err)
 	}
 	var rows []billingstore.PlanAudit
-	if err := f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 		var err error
 		rows, err = r.BillingPlanAudits(t.Context(), 0, 100)
 		return err
-	}); err != nil {
+	})); err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) == 100 {
@@ -75,7 +76,7 @@ func TestHostedPlanVersionCreatedAndGrantedWithoutRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var command hostedPlanCommand
+		var command hostedplans.PlanCommand
 		if err := json.Unmarshal(raw, &command); err != nil {
 			t.Fatal(err)
 		}
@@ -102,7 +103,7 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			service, admin := newRuntimePostgresService(t, pilotHostedPlans(), true)
+			service, admin := newRuntimePostgresService(t, hostedplans.PilotPlans(), true)
 			f := &browserHostedFixture{service: service}
 			before := f.service.database.hostedRuntime.Load()
 			plans := *f.service.config.Hosted.Plans
@@ -115,11 +116,11 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			if test.invalid {
 				plans.ConnectedSeconds = 0
 			}
-			prices := append(slices.Clone(f.service.hostedBillingConfig().Prices), HostedBillingPrice{PriceID: "price_runtime", Label: "Extended capacity", Plan: plan.PlanReference})
+			prices := append(slices.Clone(f.service.hostedBillingConfig().Prices), hostedplans.HostedBillingPrice{PriceID: "price_runtime", Label: "Extended capacity", Plan: plan.PlanReference})
 			if test.remap {
 				prices[0].Plan = plan.PlanReference
 			}
-			update := HostedRuntimeUpdate{Plans: &plans, Prices: prices, Reason: "SIGHUP regression", ValidateOnly: test.validate}
+			update := hostedplans.HostedRuntimeUpdate{Plans: &plans, Prices: prices, Reason: "SIGHUP regression", ValidateOnly: test.validate}
 			if test.prepare {
 				f.service.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 				update.StageID = "00000000-0000-4000-8000-000000000001"
@@ -128,7 +129,7 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), http.StatusForbidden)
 			snapshot := performHubAPIRequest(t, f.service, http.MethodGet, path, testHostedPlanAdminToken, nil)
 			requireNativeStatus(t, snapshot, http.StatusOK)
-			var previous HostedRuntimeUpdate
+			var previous hostedplans.HostedRuntimeUpdate
 			if err := json.Unmarshal(snapshot.Body.Bytes(), &previous); err != nil {
 				t.Fatal(err)
 			}
@@ -157,10 +158,10 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 				return
 			}
 			readPlan := func() error {
-				return f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
-					_, err := f.service.database.readHostedPlanRecord(t.Context(), r, plan.PlanReference)
+				return hubapi.FromFeatureError(f.service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+					_, err := hubapi.FeatureResult(f.service.database.plansService().ReadPlanRecord(t.Context(), r, plan.PlanReference))
 					return err
-				})
+				}))
 			}
 			if test.prepare {
 				if f.service.database.hostedRuntime.Load() != before || len(f.service.hostedBillingConfig().Prices) != 1 {
@@ -172,7 +173,7 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 				if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", update.StageID); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.service.database.refreshRuntime(t.Context()); err != nil {
+				if err := hubapi.FromFeatureError(f.service.database.plansService().RefreshRuntime(t.Context())); err != nil {
 					t.Fatal(err)
 				}
 
@@ -182,37 +183,37 @@ func TestHostedRuntimeReloadAtomicPolicyAndPrices(t *testing.T) {
 				audits = runtimeAuditCount(t, f.service, "prepare_reload", update.Reason)
 
 			}
-			if stored != 1 || audits != 1 || f.service.database.plans().WindowSeconds != 120 || !slices.ContainsFunc(f.service.hostedBillingConfig().Prices, func(price HostedBillingPrice) bool { return price.PriceID == "price_runtime" }) {
+			if stored != 1 || audits != 1 || f.service.database.plansService().Plans().WindowSeconds != 120 || !slices.ContainsFunc(f.service.hostedBillingConfig().Prices, func(price hostedplans.HostedBillingPrice) bool { return price.PriceID == "price_runtime" }) {
 				t.Fatal("valid reload did not publish plan and prices")
 			}
-			command := hostedPlanCommand{ID: "assign-reloaded", Action: "base", ExpectedRevision: 1, Plan: plan.PlanReference, Reason: "reloaded capacity"}
-			if err := f.service.database.applyHostedPlanCommand(t.Context(), "test-operator", command); err != nil {
+			command := hostedplans.PlanCommand{ID: "assign-reloaded", Action: "base", ExpectedRevision: 1, Plan: plan.PlanReference, Reason: "reloaded capacity"}
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), "test-operator", command)); err != nil {
 				t.Fatal(err)
 			}
-			var entitlement HostedEntitlement
-			err := f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			var entitlement hostedplans.HostedEntitlement
+			err := hubapi.FromFeatureError(f.service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 				var err error
-				entitlement, err = f.service.database.hostedEntitlementRecord(t.Context(), r, time.Now())
+				entitlement, err = hubapi.FeatureResult(f.service.database.plansService().EntitlementRecord(t.Context(), r, time.Now()))
 				return err
-			})
+			}))
 			if err != nil || entitlement.Allowances["collaboration_bytes"] != 1<<34 {
 				t.Fatalf("reloaded allowance=%+v %v", entitlement, err)
 			}
 			command.ID, command.Action, command.ExpectedRevision = "stripe-ownership", "subscription", 2
-			if err := f.service.database.applyHostedPlanCommand(t.Context(), "test-operator", command); err == nil {
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), "test-operator", command)); err == nil {
 				t.Fatal("reload bypassed Stripe subscription ownership")
 			}
 			previous.Plans.Plans = append(previous.Plans.Plans, plan)
 			previous.Reason = "SIGHUP reload failed; restore previous runtime settings"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, previous), http.StatusNoContent)
-			if f.service.database.plans().WindowSeconds != before.Plans.WindowSeconds || !slices.Equal(f.service.hostedBillingConfig().Prices, previous.Prices) {
+			if f.service.database.plansService().Plans().WindowSeconds != before.Plans.WindowSeconds || !slices.Equal(f.service.hostedBillingConfig().Prices, previous.Prices) {
 				t.Fatal("rollback did not restore the prior policy and active price list")
 			}
-			err = f.service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			err = hubapi.FromFeatureError(f.service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 				var err error
-				entitlement, err = f.service.database.hostedEntitlementRecord(t.Context(), r, time.Now())
+				entitlement, err = hubapi.FeatureResult(f.service.database.plansService().EntitlementRecord(t.Context(), r, time.Now()))
 				return err
-			})
+			}))
 			if err != nil || entitlement.Base != plan.PlanReference || entitlement.Allowances["collaboration_bytes"] != 1<<34 {
 				t.Fatalf("rollback changed an independently assigned version: %+v %v", entitlement, err)
 			}
@@ -228,11 +229,11 @@ func TestHostedRuntimeReloadCatalogTransitions(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name  string
-		plans *HostedPlansConfig
+		plans *hostedplans.HostedPlansConfig
 	}{
 		{name: "omitted catalog"},
-		{name: "empty catalog", plans: &HostedPlansConfig{}},
-		{name: "partial catalog", plans: &HostedPlansConfig{WindowSeconds: 120}},
+		{name: "empty catalog", plans: &hostedplans.HostedPlansConfig{}},
+		{name: "partial catalog", plans: &hostedplans.HostedPlansConfig{WindowSeconds: 120}},
 	} {
 		for _, prepare := range []bool{false, true} {
 			name := test.name
@@ -241,14 +242,14 @@ func TestHostedRuntimeReloadCatalogTransitions(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				s, _ := newRuntimePostgresService(t, capacityHostedPlans(), false)
-				before := s.database.runtimeState()
-				update := HostedRuntimeUpdate{Plans: test.plans, Reason: "catalog transition"}
+				s, _ := newRuntimePostgresService(t, hostedplans.CapacityPlans(), false)
+				before := s.database.plansService().RuntimeState()
+				update := hostedplans.HostedRuntimeUpdate{Plans: test.plans, Reason: "catalog transition"}
 				if prepare {
 					s.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 					update.StageID = "00000000-0000-4000-8000-000000000002"
 				}
-				if err := s.applyHostedRuntime(t.Context(), &update); err == nil || s.database.runtimeState() != before {
+				if err := s.applyHostedRuntime(t.Context(), &update); err == nil || s.database.plansService().RuntimeState() != before {
 					t.Fatalf("invalid catalog changed runtime: %v", err)
 				}
 			})

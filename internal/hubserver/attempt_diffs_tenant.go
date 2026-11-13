@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -132,7 +133,7 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.Nati
 			return err
 		}
 		if !usage.Allowed {
-			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+			return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 		}
 		if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "attempt-diff", ID: diffID, CreatedAt: now}); err != nil {
 			return err
@@ -183,7 +184,7 @@ func (s *Service) checkAttemptDiffStorageAdmission(ctx context.Context, scope hu
 			return err
 		}
 		if used > limit || ref.CompressedSize > limit-used {
-			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
+			return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
 		}
 		return nil
 	})

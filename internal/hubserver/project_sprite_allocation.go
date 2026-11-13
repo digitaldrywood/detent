@@ -350,7 +350,7 @@ func (s *Service) setProjectSpriteAllocationRecord(ctx context.Context, scope hu
 	result.Managed, result.DesiredCount, result.ProvisionFailures, result.Revision = true, request.DesiredCount, 0, current.Revision+1
 	result.Shortfall = max(result.DesiredCount-result.AllocatedCount, 0)
 	return s.tenantReceiptMutation(ctx, scope, operation, request.Mutation, request, result, func(w tenantstore.Writer) error {
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
 			return err
 		}
 		owner, ok := w.(postgres.SpriteWriter)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -34,7 +35,7 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 	}
 	selected := make(map[string]bool, len(grants))
 	for _, grant := range grants {
-		if !hostedSafeID(grant.ProjectID) || selected[grant.ProjectID] {
+		if !hostedplans.SafeID(grant.ProjectID) || selected[grant.ProjectID] {
 			return hubapi.NativePublicInvalid("Select each project only once")
 		}
 		selected[grant.ProjectID] = true
@@ -348,11 +349,11 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential hubapi.
 }
 
 func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential hubapi.APICredential, email string) (bool, error) {
-	runtimePlans := s.database.plans()
+	runtimePlans := s.database.plansService().Plans()
 	if runtimePlans == nil {
 		return false, errors.New("hosted entitlements are disabled")
 	}
-	entitlement, err := s.database.hostedEntitlement(ctx, nil, s.config.now())
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().Entitlement(ctx, nil, s.config.now()))
 	if err != nil {
 		return false, err
 	}
@@ -361,7 +362,7 @@ func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential hu
 		limit = 0
 	}
 	created := false
-	var limitErr *hostedLimitError
+	var limitErr *hostedplans.LimitError
 	err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
@@ -382,7 +383,7 @@ func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential hu
 			if countErr != nil {
 				return countErr
 			}
-			limitErr = &hostedLimitError{Resource: "members", Allowance: limit, Consumption: members + reservations}
+			limitErr = &hostedplans.LimitError{Resource: "members", Allowance: limit, Consumption: members + reservations}
 			return nil
 		}
 		return err

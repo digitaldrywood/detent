@@ -37,7 +37,7 @@ func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope hub
 		if err := s.authorizeReleaseScope(ctx, w, scope); err != nil {
 			return err
 		}
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
 			return err
 		}
 		prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)

@@ -41,8 +41,8 @@ type processLauncher struct {
 	clientFS          fs.FS
 	configureDatabase func(*hubserver.Config)
 	databases         map[string]*sql.DB
-	billing           func() *hubserver.HostedBillingConfig
-	plans             *hubserver.HostedPlansConfig
+	billing           func() *hostedplans.HostedBillingConfig
+	plans             *hostedplans.HostedPlansConfig
 	provider          *fakeProvider
 	key               ed25519.PrivateKey
 	mu                sync.Mutex
@@ -75,7 +75,7 @@ func (l *processLauncher) Start(_ context.Context, spec TenantSpec) error {
 		},
 	}
 	if spec.Organization.CheckoutPrice != "" {
-		config.Hosted.Plans = hubserver.CheckoutHostedPlans(config.Hosted.Plans)
+		config.Hosted.Plans = hostedplans.CheckoutHostedPlans(config.Hosted.Plans)
 	}
 	if l.billing != nil {
 		config.Hosted.Billing = l.billing()
@@ -729,7 +729,7 @@ func TestProvisioningResumesInterruptedDeletionAndMemoryFloor(t *testing.T) {
 func TestEntryServesClientAndJSON(t *testing.T) {
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) {
-		a.Prices = []hubserver.HostedBillingPrice{{PriceID: "price_starter", Label: "Starter", Plan: hubserver.PlanReference{ID: "starter", Version: 1}}}
+		a.Prices = []hostedplans.HostedBillingPrice{{PriceID: "price_starter", Label: "Starter", Plan: hostedplans.PlanReference{ID: "starter", Version: 1}}}
 	})
 	f.service.config.Billing = &BillingConfig{}
 	f.service.config.ClientFS = fstest.MapFS{"app/conversation/index.html": {Data: []byte(`<html><head><script src="/static/app/conversation/app.js"></script></head><body><div id="root"></div></body></html>`)}}
@@ -862,7 +862,7 @@ func TestOwnerFreeAllowance(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newEntryFixture(t)
-			plans := hubserver.CheckoutHostedPlans(nil)
+			plans := hostedplans.CheckoutHostedPlans(nil)
 			repository := tenantPostgresRepository(t, f.fixtures["org_alpha"])
 			if err := repository.WriteTenant(t.Context(), "org_alpha", corestore.Serving, func(w tenantstore.Writer) error {
 				for _, plan := range plans.Plans {
@@ -913,7 +913,7 @@ func TestOwnerFreeAllowance(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			f.service.config.Allocation = &AllocationConfig{SocketRoot: filepath.Join(t.TempDir(), "s"), Prices: []hubserver.HostedBillingPrice{{PriceID: "price_starter", Label: "Starter", Plan: hubserver.PlanReference{ID: "starter", Version: 1}}}}
+			f.service.config.Allocation = &AllocationConfig{SocketRoot: filepath.Join(t.TempDir(), "s"), Prices: []hostedplans.HostedBillingPrice{{PriceID: "price_starter", Label: "Starter", Plan: hostedplans.PlanReference{ID: "starter", Version: 1}}}}
 			f.service.config.Billing = &BillingConfig{}
 			session := accountSession{Subject: test.subject, Email: email}
 			attempts := 1

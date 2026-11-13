@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -1571,7 +1572,7 @@ func (s *Service) retainRelayArchive(ctx context.Context, writer tenantstore.Wri
 			return err
 		}
 		if !usage.Allowed {
-			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: math.MaxInt64, Consumption: usage.Used}
+			return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: math.MaxInt64, Consumption: usage.Used}
 		}
 	}
 	return writer.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: organization, ArchiveID: object.ID, Kind: kind, ID: actionstore.ArchiveOwnerID(project, id), CreatedAt: at})

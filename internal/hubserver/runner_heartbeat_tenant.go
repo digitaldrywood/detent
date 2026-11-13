@@ -337,7 +337,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		if err != nil {
 			return err
 		}
-		if plans := s.database.plans(); plans != nil && !hasActiveLease && !previous.LastHeartbeatAt.After(receivedAt.Add(-time.Duration(plans.ConnectedSeconds)*time.Second)) {
+		if plans := s.database.plansService().Plans(); plans != nil && !hasActiveLease && !previous.LastHeartbeatAt.After(receivedAt.Add(-time.Duration(plans.ConnectedSeconds)*time.Second)) {
 			if err := s.checkRunnerAdmission(ctx, w, receivedAt, 1, "connected_runners"); err != nil {
 				return err
 			}

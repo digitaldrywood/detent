@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -139,14 +140,14 @@ func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []
 
 func (s *Service) usageLimits(ctx context.Context) (map[string]usageLimit, error) {
 	limits := map[string]usageLimit{}
-	if s.database.plans() == nil {
+	if s.database.plansService().Plans() == nil {
 		return limits, nil
 	}
-	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now())
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().PlanUsage(ctx, s.config.now()))
 	if err != nil {
 		return nil, err
 	}
-	for _, name := range hostedAllowanceNames() {
+	for _, name := range hostedplans.AllowanceNames() {
 		limit, allowed := entitlement.Allowances[name]
 		if !allowed {
 			continue

@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -80,7 +81,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{Base: PlanReference{ID: plan.ID, Version: plan.Version}, WindowSeconds: 60, RetentionWindows: 10}})
+			service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{Base: hostedplans.PlanReference{ID: plan.ID, Version: plan.Version}, WindowSeconds: 60, RetentionWindows: 10}})
 			t.Cleanup(func() { service.database.hostedRuntime.Store(nil) })
 			var want int64
 			charged := map[string]bool{}

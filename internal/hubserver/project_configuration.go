@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -672,7 +673,7 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 			if err == nil {
 				p.policy = &observation
 			} else {
-				var limit *hostedLimitError
+				var limit *hostedplans.LimitError
 				if errors.As(err, &limit) {
 					return nil, err
 				}

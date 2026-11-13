@@ -17,6 +17,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -53,7 +55,7 @@ func (p *hostedCustomerProvider) CustomerOrganization(context.Context, string) (
 func newHostedCustomerFixture(t *testing.T, failures ...error) (*browserHostedFixture, *hostedCustomerProvider) {
 	t.Helper()
 	var provider *hostedCustomerProvider
-	f, _ := newHostedBillingFixture(t, func(cfg *HostedBillingConfig, base *hostedBillingProvider) {
+	f, _ := newHostedBillingFixture(t, func(cfg *hostedplans.HostedBillingConfig, base *hostedBillingProvider) {
 		provider = &hostedCustomerProvider{hostedBillingProvider: base, failures: failures}
 		cfg.CustomerID, cfg.Provider = "", provider
 	})
@@ -96,14 +98,14 @@ func TestHostedBillingCreatesCustomerOnFirstPaidAction(t *testing.T) {
 	live.Mode = billing.ModeLive
 	hosted := *f.service.config.Hosted
 	hosted.Billing = &live
-	if err := f.service.database.configureHostedBilling(t.Context(), &hosted); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigureBilling(t.Context(), hostedplans.PlansInput(&hosted))); err != nil {
 		t.Fatalf("test to live activation: %v", err)
 	}
 	var retired, bound int
 	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM hosted_billing_retired WHERE organization_id=$1 AND customer_id='cus_fixture' AND mode='test'), (SELECT count(*) FROM hosted_billing_accounts WHERE organization_id=$1)", f.service.accessOrganization()).Scan(&retired, &bound); err != nil || retired != 1 || bound != 0 {
 		t.Fatalf("activation retired %d test bindings and kept %d active: %v", retired, bound, err)
 	}
-	if _, err := f.service.database.hostedBillingBinding(t.Context(), &live); !errors.Is(err, errHostedBillingUnbound) {
+	if _, err := hubapi.FeatureResult(f.service.database.plansService().BillingBinding(t.Context(), &live)); !errors.Is(err, hostedplans.ErrBillingUnbound) {
 		t.Fatalf("live mode reused the test customer: %v", err)
 	}
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
@@ -114,7 +116,7 @@ func TestHostedBillingCreatesCustomerOnFirstPaidAction(t *testing.T) {
 	back := live
 	back.Mode = billing.ModeTest
 	hosted.Billing = &back
-	if err := f.service.database.configureHostedBilling(t.Context(), &hosted); err == nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigureBilling(t.Context(), hostedplans.PlansInput(&hosted))); err == nil {
 		t.Fatal("a live binding was rolled back to test mode")
 	}
 }

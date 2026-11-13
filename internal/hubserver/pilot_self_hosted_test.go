@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/labstack/echo/v4"
 )
 
@@ -17,7 +19,7 @@ func TestPilotSelfHostedStaysFree(t *testing.T) {
 		service := newClockedPostgresNativeService(t, Config{})
 		service.echo = echo.New()
 		service.registerRoutes(service.echo)
-		if service.billing != nil || service.database.plans() != nil || service.database.hostedBilling {
+		if service.billing != nil || service.database.plansService().Plans() != nil || service.database.hostedBilling {
 			t.Fatal("self-hosted Hub enabled plans or billing")
 		}
 		for _, test := range []struct{ method, path string }{
@@ -45,11 +47,11 @@ func TestPilotSelfHostedStaysFree(t *testing.T) {
 		if f.service.billing != nil || f.service.database.hostedBilling || f.service.config.Hosted.Billing != nil {
 			t.Fatal("identity provider selection enabled billing")
 		}
-		entitlement, err := f.service.database.hostedPlanUsage(t.Context(), f.service.config.now())
+		entitlement, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), f.service.config.now()))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if entitlement.Source == "subscription" || entitlement.EffectiveBase != pilotHostedPlans().Base {
+		if entitlement.Source == "subscription" || entitlement.EffectiveBase != hostedplans.PilotPlans().Base {
 			t.Fatalf("hosted identity entitlement = %+v", entitlement)
 		}
 		checkout := f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_example"}})

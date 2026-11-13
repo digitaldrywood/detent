@@ -31,7 +31,7 @@ func (s *Service) githubBindingService(scope hubscope.NativeScope) *githubbindin
 			return s.tenantReceiptMutation(ctx, scope, operation, mutation, input, value, apply)
 		},
 		RequireFeature: func(ctx context.Context, r tenantstore.Reader, feature string, now time.Time) error {
-			return s.database.requireHostedFeatureRecord(ctx, r, feature, now)
+			return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, feature, now))
 		},
 	})
 }

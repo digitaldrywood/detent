@@ -11,10 +11,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/usagereport"
 	"github.com/digitaldrywood/detent/internal/mutation"
 
@@ -115,13 +115,17 @@ func (d *database) creditDeps(deps credits.Deps) credits.Deps {
 	deps.PaymentNow = d.now
 	deps.CostMultiplier = d.aiCreditCostMultiplier
 	deps.Details = d.billingAuditStore
-	deps.ReadReason = d.readBillingReason
-	deps.ArchiveReason = d.archiveBillingReason
-	deps.SafeID = hostedSafeID
+	deps.ReadReason = func(ctx context.Context, reference billingstore.AuditReference) (string, error) {
+		return hubapi.FeatureResult(d.plansService().ReadBillingReason(ctx, reference))
+	}
+	deps.ArchiveReason = func(ctx context.Context, reason string) (billingstore.AuditReference, error) {
+		return hubapi.FeatureResult(d.plansService().ArchiveBillingReason(ctx, reason))
+	}
+	deps.SafeID = hostedplans.SafeID
 	deps.ValidateDetail = validateNativeDetailReference
-	deps.ReadIncluded = d.plans() != nil
+	deps.ReadIncluded = d.plansService().Plans() != nil
 	deps.Plan = func(ctx context.Context, r billingstore.Reader, ref billingstore.PlanReference) (credits.Plan, error) {
-		plan, err := d.readHostedPlanRecord(ctx, r, PlanReference{ID: ref.ID, Version: ref.Version})
+		plan, err := hubapi.FeatureResult(d.plansService().ReadPlanRecord(ctx, r, hostedplans.PlanReference{ID: ref.ID, Version: ref.Version}))
 		return credits.Plan{Name: plan.Name, AllowanceMicros: plan.IncludedAICreditMicros()}, err
 	}
 	return deps
@@ -131,11 +135,14 @@ func (d *database) creditsService() *credits.Service {
 }
 
 func (s *Service) creditsService() *credits.Service {
+	db := s.database
 	deps := credits.Deps{
 		Repository: s.database.billingRepository, Organization: s.database.hostedOrganization,
-		ReadIncluded: s.database.plans() != nil, Mode: s.database.aiCreditMode, Now: s.config.now, ReadReason: s.database.readBillingReason,
+		ReadIncluded: s.database.plansService().Plans() != nil, Mode: s.database.aiCreditMode, Now: s.config.now, ReadReason: func(ctx context.Context, reference billingstore.AuditReference) (string, error) {
+			return hubapi.FeatureResult(db.plansService().ReadBillingReason(ctx, reference))
+		},
 		Plan: func(ctx context.Context, r billingstore.Reader, ref billingstore.PlanReference) (credits.Plan, error) {
-			plan, err := s.database.readHostedPlanRecord(ctx, r, PlanReference{ID: ref.ID, Version: ref.Version})
+			plan, err := hubapi.FeatureResult(s.database.plansService().ReadPlanRecord(ctx, r, hostedplans.PlanReference{ID: ref.ID, Version: ref.Version}))
 			return credits.Plan{Name: plan.Name, AllowanceMicros: plan.IncludedAICreditMicros()}, err
 		},
 	}
@@ -161,33 +168,11 @@ func (d *database) includedAICreditsFromReader(ctx context.Context, r billingsto
 	return includedAICredits(value), hubapi.FromFeatureError(err)
 }
 
-func (d *database) applyCreditPaymentRecord(ctx context.Context, w billingstore.Writer, payment billing.CreditPayment) error {
-	return hubapi.FromFeatureError(d.creditsService().ApplyPayment(ctx, w, payment))
-}
-
-func (d *database) adjustAICredits(ctx context.Context, actor string, adjustment billing.CreditAdjustment) (int64, error) {
-	value, err := d.creditsService().Adjust(ctx, actor, adjustment)
-	return value, hubapi.FromFeatureError(err)
-}
-
 func (d *database) RecordConversationUsage(ctx context.Context, usage ConversationUsage) error {
 	if d.billingRepository == nil {
 		return errors.New("billing repository is unavailable")
 	}
-	return d.recordConversationUsagePostgres(ctx, usage)
-}
-
-func (d *database) recordConversationUsagePostgres(ctx context.Context, usage ConversationUsage) error {
 	return hubapi.FromFeatureError(d.creditsService().RecordUsage(ctx, credits.Usage(usage)))
-}
-
-func (d *database) prepareConversationUsagePostgres(ctx context.Context, usage ConversationUsage) (preparedConversationUsage, error) {
-	value, err := d.creditsService().PrepareUsage(ctx, credits.Usage(usage))
-	return value, hubapi.FromFeatureError(err)
-}
-
-func (d *database) writeConversationUsagePostgres(ctx context.Context, w tenantstore.Writer, prepared preparedConversationUsage) error {
-	return hubapi.FromFeatureError(d.creditsService().WriteUsage(ctx, w, prepared))
 }
 
 func chatBillingWindow(now time.Time, subscription billing.Snapshot) usageWindow {
@@ -197,9 +182,9 @@ func (d *database) chatUsageSummary(ctx context.Context, organization tracker.Or
 	value, err := d.creditsService().UsageSummary(ctx, organization, credits.Window(window), projects)
 	return chatUsageSummary{Range: usageWindow(value.Range), Input: value.Input, CachedInput: value.CachedInput, Output: value.Output, ReasoningOutput: value.ReasoningOutput, Tokens: value.Tokens, Turns: value.Turns, UnpricedTurns: value.UnpricedTurns, CostUSD: value.CostUSD}, hubapi.FromFeatureError(err)
 }
-func (s *Service) creditPack(id string) (HostedCreditPack, bool) {
+func (s *Service) creditPack(id string) (hostedplans.HostedCreditPack, bool) {
 	value, ok := s.creditWorkerService().CreditPack(id)
-	return HostedCreditPack(value), ok
+	return hostedplans.HostedCreditPack(value), ok
 }
 func (s *Service) creditWorkerService() *credits.Service {
 	cfg := s.hostedBillingConfig()
@@ -211,7 +196,9 @@ func (s *Service) creditWorkerService() *credits.Service {
 			funding.CreditPacks = append(funding.CreditPacks, credits.Pack(pack))
 		}
 	}
-	return credits.New(s.database.creditDeps(credits.Deps{Now: s.config.now, Funding: funding, NewID: s.config.newLeaseID, Binding: func(ctx context.Context) (billing.Binding, error) { return s.database.hostedBillingBinding(ctx, cfg) }, Unbound: errHostedBillingUnbound}))
+	return credits.New(s.database.creditDeps(credits.Deps{Now: s.config.now, Funding: funding, NewID: s.config.newLeaseID, Binding: func(ctx context.Context) (billing.Binding, error) {
+		return hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg))
+	}, Unbound: hostedplans.ErrBillingUnbound}))
 }
 func (w *hostedBillingWorker) creditEvent(ctx context.Context, id, kind string) error {
 	return hubapi.FromFeatureError(w.service.creditWorkerService().Event(ctx, id, kind))

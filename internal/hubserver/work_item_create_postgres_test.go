@@ -161,7 +161,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 				return values
 			}
 			details := &memoryRunDetails{}
-			plans := pilotHostedPlans()
+			plans := hostedplans.PilotPlans()
 			provider := newHostedSecurityProvider()
 			user := "example-owner-" + string(org)
 			membership := auth.Membership{ID: "membership-" + string(org), UserID: user, OrganizationID: "provider_" + string(org), Status: "active"}
@@ -173,7 +173,7 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.now))
 			service.echo.POST("/internal/v1/keys/catalog", service.entryKeyCatalog, service.hostedSharedEntry, service.operatorAuthority)
 			service.echo.POST("/internal/v1/keys/call", service.entryKeyCall, service.hostedSharedEntry, service.operatorAuthority)
-			if err := service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{OrganizationID: string(org), Plans: &plans}); err != nil {
+			if err := hubapi.FromFeatureError(service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{OrganizationID: string(org), Plans: &plans}))); err != nil {
 				t.Fatal(err)
 			}
 			project := tracker.ProjectID("project_" + string(org))

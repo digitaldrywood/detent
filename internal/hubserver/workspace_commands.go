@@ -196,7 +196,7 @@ func (s *Service) commandCreateWorkspace(ctx context.Context, scope hubscope.Nat
 			if currentSubject.ID != subject.ID || currentSubject.Revision != subject.Revision || currentReadOnly != readOnly {
 				return corestore.ErrSerializationFailure
 			}
-			if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
 				return err
 			}
 			currentPolicy, err := w.ProjectPolicy(ctx, scope.Project)

@@ -357,7 +357,7 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 	const publisherID = "credential_publisher"
 	publisherToken := "publisher_" + string(organization)
 	repository := service.config.TenantRepository
-	service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
+	service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
 	plan := billingstore.PlanReference{ID: "artifact_usage", Version: 1}
 	err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: organization, PlanReference: plan, Name: "Artifact usage", Allowances: map[string]int64{"api_mutations": 2}}); err != nil {

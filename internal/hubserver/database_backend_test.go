@@ -357,7 +357,7 @@ func TestPostgresStartupOwnsPoolWithoutSQLiteOrWorkers(t *testing.T) {
 	}
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run("restored plan "+string(organization), func(t *testing.T) {
-			plans := pilotHostedPlans()
+			plans := hostedplans.PilotPlans()
 			configured := plans.Plans[0]
 			stored := billingstore.Plan{OrganizationID: organization, PlanReference: billingstore.PlanReference{ID: configured.ID, Version: configured.Version}, Name: "Restored example plan", Allowances: map[string]int64{"collaboration_bytes": 25 << 30}, Features: configured.Features}
 			if err := service.database.postgres.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error { return w.CreateBillingPlan(t.Context(), stored) }); err != nil {

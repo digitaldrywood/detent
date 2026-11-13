@@ -268,7 +268,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	}
 	_, err = s.reserveHostedInvitationSeatFor(ctx, credential, email)
 	if err != nil {
-		var limit *hostedLimitError
+		var limit *hostedplans.LimitError
 		if errors.As(err, &limit) {
 			return s.hostedError(c, http.StatusTooManyRequests, limit.Error())
 		}
@@ -356,7 +356,7 @@ func (s *Service) changeHostedGrant(c echo.Context) error {
 		return s.hostedError(c, http.StatusForbidden, "You cannot manage project grants")
 	}
 	user, project := c.FormValue("user"), c.FormValue("project")
-	if !hostedSafeID(user) || !hostedSafeID(project) {
+	if !hostedplans.SafeID(user) || !hostedplans.SafeID(project) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Select a member and project")
 	}
 	err = s.hostedGrant(c.Request().Context(), credential, user, project, hostedFormTrue(c, "write"), hostedFormTrue(c, "runner"), hostedFormTrue(c, "revoke"))
@@ -391,7 +391,7 @@ func (s *Service) createHostedProject(c echo.Context) error {
 		if errors.Is(err, tenantauth.ErrUnavailable) {
 			return s.hostedError(c, http.StatusServiceUnavailable, "The project could not be created. Try again.")
 		}
-		var limit *hostedLimitError
+		var limit *hostedplans.LimitError
 		if errors.As(err, &limit) {
 			return s.hostedError(c, http.StatusTooManyRequests, limit.Error())
 		}

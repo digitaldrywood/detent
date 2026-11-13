@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -83,14 +84,14 @@ func (s *Service) prepareHostedCheckout(ctx context.Context, actor, price string
 	defer cancelRead()
 	var checkout hostedCheckout
 
-	err := s.database.readBillingTenant(readCtx, func(reader tenantstore.Reader) error {
+	err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(readCtx, func(reader tenantstore.Reader) error {
 		account, err := reader.BillingAccount(readCtx)
 		if err != nil {
 			return err
 		}
 		checkout = hostedCheckout{Key: account.Checkout.Key, PriceID: account.Checkout.PriceID, ExpiresAt: account.Checkout.ExpiresAt, Session: account.Checkout.Session}
 		return nil
-	})
+	}))
 	if err != nil {
 		return checkout, err
 	}
@@ -121,7 +122,7 @@ func (s *Service) saveHostedCheckout(ctx context.Context, actor string, checkout
 	if err != nil {
 		return err
 	}
-	return s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+	return hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error {
 		account, err := writer.BillingAccount(ctx)
 		if err != nil {
 			return err
@@ -131,7 +132,7 @@ func (s *Service) saveHostedCheckout(ctx context.Context, actor string, checkout
 			return err
 		}
 		return writer.CreateBillingAudit(ctx, billingstore.Audit{OrganizationID: s.database.hostedOrganization, ActorID: actor, Action: action, RecordedAt: s.config.now().UTC(), Reference: billingstore.AuditReferenceFromArchive(archive)})
-	})
+	}))
 }
 
 func (s *Service) hostedBillingPortal(c echo.Context) error {
@@ -185,18 +186,18 @@ func (s *Service) recordBillingAction(ctx context.Context, actor, action string)
 	if err != nil {
 		return err
 	}
-	return s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+	return hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error {
 		return writer.CreateBillingAudit(ctx, billingstore.Audit{OrganizationID: s.database.hostedOrganization, ActorID: actor, Action: action, RecordedAt: s.config.now().UTC(), Reference: billingstore.AuditReferenceFromArchive(archive)})
-	})
+	}))
 }
 
 func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billing.Binding, error) {
 	cfg := s.hostedBillingConfig()
 	if cfg == nil {
-		return billing.Binding{}, errHostedBillingUnbound
+		return billing.Binding{}, hostedplans.ErrBillingUnbound
 	}
-	binding, err := s.database.hostedBillingBinding(ctx, cfg)
-	if !errors.Is(err, errHostedBillingUnbound) {
+	binding, err := hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg))
+	if !errors.Is(err, hostedplans.ErrBillingUnbound) {
 		return binding, err
 	}
 	provider, ok := cfg.Provider.(billing.CustomerProvider)
@@ -208,20 +209,20 @@ func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billi
 	return s.ensureHostedCustomerRecord(ctx, actor, cfg, provider, organization)
 }
 
-func (s *Service) ensureHostedCustomerRecord(ctx context.Context, actor string, cfg *HostedBillingConfig, provider billing.CustomerProvider, organization string) (billing.Binding, error) {
+func (s *Service) ensureHostedCustomerRecord(ctx context.Context, actor string, cfg *hostedplans.HostedBillingConfig, provider billing.CustomerProvider, organization string) (billing.Binding, error) {
 	d := s.database
 	key := "detent-customer-" + cfg.AccountID + "-" + cfg.CreditMode() + "-" + organization
 	now := s.config.now().UTC()
 	intent := billingstore.CustomerIntent{OrganizationID: d.hostedOrganization, AccountID: cfg.AccountID, Mode: cfg.CreditMode(), IdempotencyKey: key, State: "pending", CreatedAt: now, UpdatedAt: now}
-	if err := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.CreateBillingCustomerIntent(ctx, intent) }); err != nil {
+	if err := hubapi.FromFeatureError(d.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.CreateBillingCustomerIntent(ctx, intent) })); err != nil {
 		return billing.Binding{}, err
 	}
 	var existing billingstore.CustomerIntent
-	if err := d.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+	if err := hubapi.FromFeatureError(d.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
 		var err error
 		existing, err = reader.BillingCustomerIntent(ctx)
 		return err
-	}); err != nil {
+	})); err != nil {
 		return billing.Binding{}, err
 	}
 	if existing.State == "conflict" {
@@ -233,7 +234,7 @@ func (s *Service) ensureHostedCustomerRecord(ctx context.Context, actor string, 
 	customer, err := provider.EnsureCustomer(ctx, billing.CustomerRequest{AccountID: cfg.AccountID, OrganizationID: organization, IdempotencyKey: key})
 	if errors.Is(err, billing.ErrCustomerConflict) {
 		existing.State, existing.UpdatedAt = "conflict", s.config.now().UTC()
-		if updateErr := d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.SetBillingCustomerIntent(ctx, existing) }); updateErr != nil {
+		if updateErr := hubapi.FromFeatureError(d.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.SetBillingCustomerIntent(ctx, existing) })); updateErr != nil {
 			return billing.Binding{}, errors.Join(err, updateErr)
 		}
 		return billing.Binding{}, err
@@ -253,7 +254,7 @@ func (s *Service) ensureHostedCustomerRecord(ctx context.Context, actor string, 
 		return billing.Binding{}, err
 	}
 	existing.State, existing.CustomerID, existing.UpdatedAt = "bound", customer, s.config.now().UTC()
-	err = d.writeBillingTenant(ctx, func(writer tenantstore.Writer) error {
+	err = hubapi.FromFeatureError(d.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error {
 		account, err := writer.BillingAccount(ctx)
 		if errors.Is(err, corestore.ErrNotFound) {
 			account = billingstore.Account{OrganizationID: d.hostedOrganization, Mode: cfg.CreditMode(), Binding: billing.Binding{OrganizationID: organization, AccountID: cfg.AccountID, CustomerID: customer}, Status: "free"}
@@ -269,11 +270,11 @@ func (s *Service) ensureHostedCustomerRecord(ctx context.Context, actor string, 
 			return err
 		}
 		return writer.CreateBillingAudit(ctx, billingstore.Audit{OrganizationID: d.hostedOrganization, ActorID: actor, Action: "customer_bound", RecordedAt: s.config.now().UTC(), Reference: billingstore.AuditReferenceFromArchive(archive)})
-	})
+	}))
 	if err != nil {
 		return billing.Binding{}, err
 	}
-	return d.hostedBillingBinding(ctx, cfg)
+	return hubapi.FeatureResult(d.plansService().BillingBinding(ctx, cfg))
 }
 
 func hostedBillingAPI(c echo.Context) bool {

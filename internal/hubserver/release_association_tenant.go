@@ -181,8 +181,8 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 		if err := s.recheckReleaseDelivery(ctx, w, scope, check); err != nil {
 			return err
 		}
-		if s.database.plans() != nil {
-			if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
+		if s.database.plansService().Plans() != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now())); err != nil {
 				return err
 			}
 		}

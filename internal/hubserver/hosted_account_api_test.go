@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
@@ -36,7 +37,7 @@ func TestHostedAccountAPI(t *testing.T) {
 		{name: "revoked session plan", account: "revoked", method: http.MethodGet, path: "/plan", status: http.StatusUnauthorized, code: "unauthorized"},
 		{name: "expired session plan", account: "expired", method: http.MethodGet, path: "/plan", status: http.StatusUnauthorized, code: "unauthorized"},
 		{name: "owner plan", account: "owner", method: http.MethodGet, path: "/plan", status: http.StatusOK, check: func(t *testing.T, body []byte) {
-			var plan HostedEntitlement
+			var plan hostedplans.HostedEntitlement
 			if err := json.Unmarshal(body, &plan); err != nil {
 				t.Fatal(err)
 			}
@@ -139,7 +140,7 @@ func TestHostedAccountContractFixtures(t *testing.T) {
 		target   func() any
 		optional []string
 	}{
-		{fixture: "account-plan.json", target: func() any { return &HostedEntitlement{} }, optional: []string{"grants[].revoked_at"}},
+		{fixture: "account-plan.json", target: func() any { return &hostedplans.HostedEntitlement{} }, optional: []string{"grants[].revoked_at"}},
 		{fixture: "account-next.json", target: func() any { return &hostedNextResponse{} }},
 		{fixture: "account-support.json", target: func() any { return &hostedSupportResponse{} }},
 	} {

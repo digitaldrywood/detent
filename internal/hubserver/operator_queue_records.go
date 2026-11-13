@@ -147,7 +147,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope hubscope.NativeSc
 		if row.Revision != source.Revision || name == operatortool.SetQueuePriority && project.Settings.Revision != sourceProject.Settings.Revision {
 			return hubapi.NativeConflict(tracker.Revision(row.Revision))
 		}
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", now)); err != nil {
 			return err
 		}
 		validState := false

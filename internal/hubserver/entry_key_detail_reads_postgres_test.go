@@ -33,7 +33,7 @@ func TestPostgresEntryKeyDetailReads(t *testing.T) {
 	key := hostedSharedKey(38)
 	cfg := startupConfig(connection)
 	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
-	plans := pilotHostedPlans()
+	plans := hostedplans.PilotPlans()
 	cfg.Hosted.Plans = &plans
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}

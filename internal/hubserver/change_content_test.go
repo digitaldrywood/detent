@@ -434,7 +434,7 @@ func TestAttachmentReceiptSharedContentBilling(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository := projectRecordPostgres(t)
-			plans := pilotHostedPlans()
+			plans := hostedplans.PilotPlans()
 			for i := range plans.Plans {
 				plans.Plans[i].Allowances["collaboration_bytes"] = test.allowance
 				plans.Plans[i].Allowances["api_mutations"] = 10000
@@ -469,7 +469,7 @@ func TestAttachmentReceiptSharedContentBilling(t *testing.T) {
 						} else {
 							ref, err = prepareMeteredContent(ctx, string(organization), []byte("shared attachment metadata"), billable)
 						}
-						var limit *hostedLimitError
+						var limit *hostedplans.LimitError
 						if test.wantLimit != "" {
 							if !errors.As(err, &limit) || limit.Resource != test.wantLimit {
 								t.Fatalf("billable=%t limit=%v err=%v", billable, limit, err)

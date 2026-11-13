@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -79,11 +80,11 @@ func TestConversationAttachmentStagingChecksAllowanceBeforePublication(t *testin
 				t.Fatal(err)
 			}
 			database.hostedOrganization = f.project.OrganizationID
-			plans := capacityHostedPlans()
+			plans := hostedplans.CapacityPlans()
 			for i := range plans.Plans {
 				plans.Plans[i].Allowances["collaboration_bytes"] = before + ref.CompressedSize + test.allowance
 			}
-			if err := database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+			if err := hubapi.FromFeatureError(database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 				t.Fatal(err)
 			}
 			objects.mu.Lock()
@@ -158,11 +159,11 @@ func TestConversationAttachmentStagingChecksAllowanceBeforePublication(t *testin
 			t.Fatal(err)
 		}
 		f.service.database.hostedOrganization = f.project.OrganizationID
-		plans := capacityHostedPlans()
+		plans := hostedplans.CapacityPlans()
 		for index := range plans.Plans {
 			plans.Plans[index].Allowances["collaboration_bytes"] = before + ref.CompressedSize
 		}
-		if err := f.service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+		if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 			t.Fatal(err)
 		}
 		arrived := make(chan struct{}, 2)

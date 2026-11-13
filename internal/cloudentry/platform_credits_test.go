@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -47,11 +48,11 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 			if err := alpha.Service.Close(); err != nil {
 				t.Fatal(err)
 			}
-			alpha.Config.Hosted.Billing = &hubserver.HostedBillingConfig{
+			alpha.Config.Hosted.Billing = &hostedplans.HostedBillingConfig{
 				AccountID: "acct_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_0123456789"), ReconcileSeconds: 60,
 				Provider:    &platformCreditProvider{},
-				Prices:      []hubserver.HostedBillingPrice{{PriceID: "price_plus", Label: "Plus", Plan: alpha.Config.Hosted.Plans.Plans[1].PlanReference}},
-				CreditPacks: []hubserver.HostedCreditPack{{PriceID: "price_credit", Label: "AI credits", USDCents: 500}},
+				Prices:      []hostedplans.HostedBillingPrice{{PriceID: "price_plus", Label: "Plus", Plan: alpha.Config.Hosted.Plans.Plans[1].PlanReference}},
+				CreditPacks: []hostedplans.HostedCreditPack{{PriceID: "price_credit", Label: "AI credits", USDCents: 500}},
 			}
 			service, err := hubserver.Open(t.Context(), alpha.Config)
 			if err != nil {

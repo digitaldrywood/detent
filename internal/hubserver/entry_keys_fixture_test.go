@@ -29,7 +29,7 @@ func newEntryKeyFixture(t *testing.T, configure ...func(*Config)) entryKeyFixtur
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	cfg.Hosted.OrganizationID, cfg.Hosted.WorkOSOrganizationID = "org_security", "provider_org_security"
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
-	plans := pilotHostedPlans()
+	plans := hostedplans.PilotPlans()
 	cfg.Hosted.Plans = &plans
 	key := hostedSharedKey(7)
 	cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}

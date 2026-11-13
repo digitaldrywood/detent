@@ -15,7 +15,7 @@ func (s *Service) refreshHostedRuntime(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 		defer cancel()
-		if err := s.database.refreshRuntime(ctx); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RefreshRuntime(ctx)); err != nil {
 			s.config.Logger.WarnContext(ctx, "hosted runtime refresh failed; retaining last snapshot", "error", err)
 		}
 		return next(c)

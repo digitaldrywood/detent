@@ -865,7 +865,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 				hostedTestPlans(t, f.service, map[string]int64{"api_mutations": test.apiLimit, "ingested_events": 0, "collaboration_bytes": 0, "history_records": 0})
 				f.service.config.Hosted = nil
 				metrics := hostedRunnerTransactionMetrics(hubapi.NativeBase + "/leases/:lease/validate")
-				before, err := d.hostedConsumption(t.Context(), nil, now, metrics...)
+				before, err := hubapi.FeatureResult(d.plansService().Consumption(t.Context(), nil, now, metrics...))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -878,7 +878,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 						t.Fatalf("refusal=%s want=%s", failure.Code, test.code)
 					}
 				}
-				after, err := d.hostedConsumption(t.Context(), nil, now, metrics...)
+				after, err := hubapi.FeatureResult(d.plansService().Consumption(t.Context(), nil, now, metrics...))
 				if err != nil {
 					t.Fatal(err)
 				}

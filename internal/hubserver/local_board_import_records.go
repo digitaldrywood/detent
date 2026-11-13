@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -503,14 +504,14 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.Nat
 }
 
 func (s *Service) localBoardAllowances(ctx context.Context, scope hubscope.NativeScope, r tenantstore.Reader, w tenantstore.Writer, plan localBoardImportPlan) error {
-	if s.database.plans() == nil {
+	if s.database.plansService().Plans() == nil {
 		return nil
 	}
 	now := s.config.now()
-	if err := s.database.requireHostedFeatureRecord(ctx, r, "collaboration", now); err != nil {
+	if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "collaboration", now)); err != nil {
 		return err
 	}
-	entitlement, err := s.database.hostedEntitlementRecord(ctx, r, now)
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, now))
 	if err != nil {
 		return err
 	}
@@ -523,7 +524,7 @@ func (s *Service) localBoardAllowances(ctx context.Context, scope hubscope.Nativ
 		return err
 	}
 	if limit, limited := entitlement.Allowances["collaboration_bytes"]; limited && usage+bytes > limit {
-		return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage}
+		return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage}
 	}
 	if w != nil {
 		limit := int64(math.MaxInt64)
@@ -535,10 +536,10 @@ func (s *Service) localBoardAllowances(ctx context.Context, scope hubscope.Nativ
 			return err
 		}
 		if !result.Allowed {
-			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: result.Used}
+			return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: result.Used}
 		}
 	}
-	plans := s.database.plans()
+	plans := s.database.plansService().Plans()
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 	for _, value := range []struct {
 		metric string
@@ -556,7 +557,7 @@ func (s *Service) localBoardAllowances(ctx context.Context, scope hubscope.Nativ
 		}
 		limit := entitlement.Allowances[value.metric]
 		if used+value.amount > limit {
-			return &hostedLimitError{Resource: value.metric, Allowance: limit, Consumption: used}
+			return &hostedplans.LimitError{Resource: value.metric, Allowance: limit, Consumption: used}
 		}
 		if w != nil {
 			result, err := w.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: scope.Organization, ID: "local_import/" + string(scope.Project) + "/" + plan.digest + "/" + value.metric, WindowStart: window, Metric: value.metric, Amount: value.amount}, limit)
@@ -564,7 +565,7 @@ func (s *Service) localBoardAllowances(ctx context.Context, scope hubscope.Nativ
 				return err
 			}
 			if !result.Allowed {
-				return &hostedLimitError{Resource: value.metric, Allowance: limit, Consumption: result.Used}
+				return &hostedplans.LimitError{Resource: value.metric, Allowance: limit, Consumption: result.Used}
 			}
 		}
 	}
@@ -601,7 +602,7 @@ func (s *Service) localBoardAllowances(ctx context.Context, scope hubscope.Nativ
 		used, delta int64
 	}{{"unarchived_issues", issues, growth}, {"history_records", history, 2 * int64(len(plan.mutations))}} {
 		if limit, limited := entitlement.Allowances[value.metric]; limited && value.delta > 0 && value.used+value.delta > limit {
-			return &hostedLimitError{Resource: value.metric, Allowance: limit, Consumption: value.used}
+			return &hostedplans.LimitError{Resource: value.metric, Allowance: limit, Consumption: value.used}
 		}
 	}
 	return nil

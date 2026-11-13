@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -66,7 +67,7 @@ func (p runtimeWriteProbe) MissingConfiguredBillingPlan(context.Context, []billi
 }
 
 func (p runtimeWriteProbe) BillingPlan(_ context.Context, ref billingstore.PlanReference) (billingstore.Plan, error) {
-	for _, plan := range pilotHostedPlans().Plans {
+	for _, plan := range hostedplans.PilotPlans().Plans {
 		if plan.ID == ref.ID && plan.Version == ref.Version {
 			return billingstore.Plan{PlanReference: ref, RuntimeID: p.revision, Features: plan.Features, Allowances: plan.Allowances}, nil
 		}
@@ -93,7 +94,7 @@ func (p runtimeRevisionProbe) MissingConfiguredBillingPlan(context.Context, []bi
 
 func runtimeProbeService(repo tenantstore.Repository) *Service {
 	d := &database{billingRepository: repo, postgres: &postgres.Repository{}, logger: discardLogger(), now: time.Now}
-	d.hostedRuntime.Store(&hostedRuntimeConfig{Revision: "loaded", Plans: pilotHostedPlans()})
+	d.hostedRuntime.Store(&hostedplans.RuntimeConfig{Revision: "loaded", Plans: hostedplans.PilotPlans()})
 	return &Service{database: d, config: Config{Logger: discardLogger(), now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_example", EntitlementAdminToken: []byte(testHostedPlanAdminToken)}}}
 }
 func TestRuntimeRefreshRequestsOverlap(t *testing.T) {
@@ -138,31 +139,31 @@ func TestRuntimeRefreshExcludesUnrelatedRoutes(t *testing.T) {
 func TestRuntimeRefreshRetainsSnapshotOnError(t *testing.T) {
 	probe := &runtimeReadProbe{err: errors.New("runtime storage unavailable")}
 	s := runtimeProbeService(probe)
-	before := s.database.runtimeState()
+	before := s.database.plansService().RuntimeState()
 	e := echo.New()
 	e.GET("/api/v2/organizations/:organization/entitlements/runtime", s.readHostedRuntime, s.refreshHostedRuntime)
 	req := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/org_example/entitlements/runtime", nil)
 	req.Header.Set("Authorization", "Bearer "+testHostedPlanAdminToken)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || s.database.runtimeState() != before {
+	if rec.Code != http.StatusOK || s.database.plansService().RuntimeState() != before {
 		t.Fatalf("last good snapshot lost: status=%d", rec.Code)
 	}
 }
 
 func TestRuntimeRefreshRejectsInvalidPublishedSnapshot(t *testing.T) {
 	s := runtimeProbeService(&runtimeReadProbe{revision: "invalid"})
-	before := s.database.runtimeState()
-	plans := pilotHostedPlans()
+	before := s.database.plansService().RuntimeState()
+	plans := hostedplans.PilotPlans()
 	plans.WindowSeconds = 61
-	raw, err := json.Marshal(HostedRuntimeUpdate{Plans: &plans})
+	raw, err := json.Marshal(hostedplans.HostedRuntimeUpdate{Plans: &plans})
 	if err != nil {
 		t.Fatal(err)
 	}
 	release := make(chan struct{})
 	close(release)
 	s.database.billingAuditStore = &runtimeObjectProbe{release: release, raw: raw}
-	if err := s.database.refreshRuntime(t.Context()); err == nil || s.database.runtimeState() != before {
+	if err := hubapi.FromFeatureError(s.database.plansService().RefreshRuntime(t.Context())); err == nil || s.database.plansService().RuntimeState() != before {
 		t.Fatalf("invalid publication replaced valid snapshot: %v", err)
 	}
 }
@@ -190,9 +191,9 @@ func TestRuntimeRefreshSharesChangedObjectLoad(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				probe := &runtimeReadProbe{revision: "changed"}
 				s := runtimeProbeService(probe)
-				original := s.database.runtimeState()
-				plans := pilotHostedPlans()
-				raw, err := json.Marshal(HostedRuntimeUpdate{Plans: &plans})
+				original := s.database.plansService().RuntimeState()
+				plans := hostedplans.PilotPlans()
+				raw, err := json.Marshal(hostedplans.HostedRuntimeUpdate{Plans: &plans})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -234,10 +235,10 @@ func TestRuntimeRefreshSharesChangedObjectLoad(t *testing.T) {
 					t.Errorf("object loaded %d times", objects.calls.Load())
 				}
 				if failed {
-					if s.database.runtimeState() != original {
+					if s.database.plansService().RuntimeState() != original {
 						t.Error("failed object read replaced snapshot")
 					}
-				} else if s.database.runtimeState().Revision != "changed" {
+				} else if s.database.plansService().RuntimeState().Revision != "changed" {
 					t.Error("changed revision not applied")
 				}
 			})

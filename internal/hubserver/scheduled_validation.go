@@ -127,7 +127,7 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope hubscope.
 			return err
 		}
 		if s.config.Hosted != nil {
-			if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", now)); err != nil {
 				return err
 			}
 		}

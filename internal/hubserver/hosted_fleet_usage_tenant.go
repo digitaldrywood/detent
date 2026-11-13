@@ -5,34 +5,36 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-func (s *Service) hostedPlanUsageTenant(ctx context.Context, unlimited ...string) (HostedEntitlement, error) {
+func (s *Service) hostedPlanUsageTenant(ctx context.Context, unlimited ...string) (hostedplans.HostedEntitlement, error) {
 	now := s.config.now().UTC()
-	var result HostedEntitlement
-	err := s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+	var result hostedplans.HostedEntitlement
+	err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
 		var err error
-		result, err = s.database.hostedEntitlementRecord(ctx, reader, now)
-		if errors.Is(err, errHostedEntitlementsDisabled) {
-			result, err = HostedEntitlement{OrganizationID: string(s.database.hostedOrganization), Source: "base", Grants: []HostedGrant{}}, nil
+		result, err = hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, reader, now))
+		if errors.Is(err, hostedplans.ErrEntitlementsDisabled) {
+			result, err = hostedplans.HostedEntitlement{OrganizationID: string(s.database.hostedOrganization), Source: "base", Grants: []hostedplans.HostedGrant{}}, nil
 		}
 		if err != nil {
 			return err
 		}
 		metrics := append([]string{"usage_windows", "artifact_retained_bytes", "artifact_reserved_bytes"}, unlimited...)
-		for _, metric := range hostedAllowanceNames() {
+		for _, metric := range hostedplans.AllowanceNames() {
 			if _, limited := result.Allowances[metric]; limited && metric != "artifact_retained_bytes" && metric != "artifact_reserved_bytes" {
 				metrics = append(metrics, metric)
 			}
 		}
-		usage, err := s.database.readHostedConsumptionRecord(ctx, reader, now, metrics...)
+		usage, err := hubapi.FeatureResult(s.database.plansService().ReadConsumptionRecord(ctx, reader, now, metrics...))
 		if err != nil {
 			return err
 		}
 		result.Usage, result.Unavailable = usage.Usage, usage.Unavailable
 		return nil
-	})
+	}))
 	return result, err
 }
 

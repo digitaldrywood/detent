@@ -18,6 +18,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -39,11 +41,11 @@ func TestHostedBillingDowngradePreservesGrantsAndData(t *testing.T) {
 			}
 			project := f.createProject(t, "Paid project")
 			if test.grant {
-				entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+				entitlement, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := f.service.database.applyHostedPlanCommand(t.Context(), "operator_fixture", hostedPlanCommand{ID: "grant_fixture", GrantID: "complimentary_fixture", Action: "grant", ExpectedRevision: entitlement.Revision, Plan: PlanReference{ID: "test_paid", Version: 1}, Scope: []string{"projects"}, Reason: "Approved complimentary pilot access"}); err != nil {
+				if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), "operator_fixture", hostedplans.PlanCommand{ID: "grant_fixture", GrantID: "complimentary_fixture", Action: "grant", ExpectedRevision: entitlement.Revision, Plan: hostedplans.PlanReference{ID: "test_paid", Version: 1}, Scope: []string{"projects"}, Reason: "Approved complimentary pilot access"})); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -73,7 +75,7 @@ func TestHostedBillingDowngradePreservesGrantsAndData(t *testing.T) {
 			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
 				reader, ok := r.(billingstore.PopulationReader)
 				if !ok {
-					return ErrBillingUsageUnavailable
+					return hostedplans.ErrBillingUsageUnavailable
 				}
 				var err error
 				projects, complete, err = reader.BillingPopulation(t.Context(), "projects", f.service.config.now(), time.Minute)
@@ -100,11 +102,11 @@ func TestHostedBillingDowngradePreservesGrantsAndData(t *testing.T) {
 			}); err != nil || !complete || projects < 3 {
 				t.Fatalf("downgrade removed project data: %d complete=%t error=%v", projects, complete, err)
 			}
-			entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+			entitlement, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 			if err != nil || entitlement.Source != "base" {
 				t.Fatalf("fallback=%+v %v", entitlement, err)
 			}
-			if err := f.service.database.applyHostedPlanCommand(t.Context(), "operator_fixture", hostedPlanCommand{ID: "override", Action: "subscription", ExpectedRevision: entitlement.Revision, Reason: "Attempted bypass"}); err == nil {
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), "operator_fixture", hostedplans.PlanCommand{ID: "override", Action: "subscription", ExpectedRevision: entitlement.Revision, Reason: "Attempted bypass"})); err == nil {
 				t.Fatal("manual subscription override bypassed Stripe")
 			}
 		})
@@ -122,21 +124,21 @@ func TestHostedBillingPreservesRunningLease(t *testing.T) {
 	plans.Base = free.PlanReference
 	hosted := *f.service.config.Hosted
 	hosted.Plans = &plans
-	if err := f.service.database.configureHostedPlans(t.Context(), &hosted); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hosted))); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.database.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "free-base", Action: "base", ExpectedRevision: 1, Plan: plans.Base, Reason: "Free has no execution"}); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "free-base", Action: "base", ExpectedRevision: 1, Plan: plans.Base, Reason: "Free has no execution"})); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	f.service.config.Hosted.Plans = &plans
-	cfg := &HostedBillingConfig{Prices: []HostedBillingPrice{{PriceID: "price_fixture", Plan: plans.Plans[1].PlanReference}}, AccountID: "acct_fixture", CustomerID: "cus_fixture"}
+	cfg := &hostedplans.HostedBillingConfig{Prices: []hostedplans.HostedBillingPrice{{PriceID: "price_fixture", Plan: plans.Plans[1].PlanReference}}, AccountID: "acct_fixture", CustomerID: "cus_fixture"}
 	f.service.config.Hosted.Billing = cfg
-	if err := f.service.database.configureHostedBilling(t.Context(), f.service.config.Hosted); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigureBilling(t.Context(), hostedplans.PlansInput(f.service.config.Hosted))); err != nil {
 		t.Fatal(err)
 	}
-	paid := resolveHostedBilling(cfg, hostedBillingState{}, activeBillingSnapshot(now), now)
-	if err := f.service.database.commitHostedBilling(t.Context(), paid, 0, nil, now); err != nil {
+	paid := hostedplans.ResolveBilling(cfg, hostedplans.BillingState{}, activeBillingSnapshot(now), now)
+	if err := hubapi.FromFeatureError(f.service.database.plansService().CommitBilling(t.Context(), paid, 0, nil, now)); err != nil {
 		t.Fatal(err)
 	}
 	work := newNativeFixture(t, f.service, f.service.accessOrganization(), "billing-lease-work")
@@ -150,8 +152,8 @@ func TestHostedBillingPreservesRunningLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	canceled := resolveHostedBilling(cfg, paid, billing.Snapshot{Status: "canceled"}, now)
-	if err := f.service.database.commitHostedBilling(t.Context(), canceled, 0, nil, now); err != nil {
+	canceled := hostedplans.ResolveBilling(cfg, paid, billing.Snapshot{Status: "canceled"}, now)
+	if err := hubapi.FromFeatureError(f.service.database.plansService().CommitBilling(t.Context(), canceled, 0, nil, now)); err != nil {
 		t.Fatal(err)
 	}
 	replay, err := claimHostedPlanWork(t, work, tokens[0], requests[0])
@@ -182,22 +184,22 @@ func TestHostedBillingConfiguration(t *testing.T) {
 	f, _ := newHostedBillingFixture(t)
 	for _, test := range []struct {
 		name string
-		edit func(*HostedBillingConfig)
+		edit func(*hostedplans.HostedBillingConfig)
 	}{
-		{"missing provider", func(c *HostedBillingConfig) { c.Provider = nil }},
-		{"missing account", func(c *HostedBillingConfig) { c.AccountID = "" }},
-		{"missing customer", func(c *HostedBillingConfig) { c.CustomerID = "" }},
-		{"missing portal", func(c *HostedBillingConfig) { c.PortalConfigurationID = "" }},
-		{"missing secret", func(c *HostedBillingConfig) { c.WebhookSecret = nil }},
-		{"negative multiplier", func(c *HostedBillingConfig) { c.CreditCostMultiplier = -1 }},
-		{"NaN multiplier", func(c *HostedBillingConfig) { c.CreditCostMultiplier = math.NaN() }},
-		{"infinite multiplier", func(c *HostedBillingConfig) { c.CreditCostMultiplier = math.Inf(1) }},
-		{"negative grace", func(c *HostedBillingConfig) { c.GraceSeconds = -1 }},
-		{"excess grace", func(c *HostedBillingConfig) { c.GraceSeconds = 8 * 86400 }},
-		{"unbounded polling", func(c *HostedBillingConfig) { c.ReconcileSeconds = 1 }},
-		{"unknown plan", func(c *HostedBillingConfig) { c.Prices[0].Plan.ID = "unknown" }},
-		{"base plan purchase", func(c *HostedBillingConfig) { c.Prices[0].Plan.ID = "test_free" }},
-		{"duplicate price", func(c *HostedBillingConfig) { c.Prices = append(c.Prices, c.Prices[0]) }},
+		{"missing provider", func(c *hostedplans.HostedBillingConfig) { c.Provider = nil }},
+		{"missing account", func(c *hostedplans.HostedBillingConfig) { c.AccountID = "" }},
+		{"missing customer", func(c *hostedplans.HostedBillingConfig) { c.CustomerID = "" }},
+		{"missing portal", func(c *hostedplans.HostedBillingConfig) { c.PortalConfigurationID = "" }},
+		{"missing secret", func(c *hostedplans.HostedBillingConfig) { c.WebhookSecret = nil }},
+		{"negative multiplier", func(c *hostedplans.HostedBillingConfig) { c.CreditCostMultiplier = -1 }},
+		{"NaN multiplier", func(c *hostedplans.HostedBillingConfig) { c.CreditCostMultiplier = math.NaN() }},
+		{"infinite multiplier", func(c *hostedplans.HostedBillingConfig) { c.CreditCostMultiplier = math.Inf(1) }},
+		{"negative grace", func(c *hostedplans.HostedBillingConfig) { c.GraceSeconds = -1 }},
+		{"excess grace", func(c *hostedplans.HostedBillingConfig) { c.GraceSeconds = 8 * 86400 }},
+		{"unbounded polling", func(c *hostedplans.HostedBillingConfig) { c.ReconcileSeconds = 1 }},
+		{"unknown plan", func(c *hostedplans.HostedBillingConfig) { c.Prices[0].Plan.ID = "unknown" }},
+		{"base plan purchase", func(c *hostedplans.HostedBillingConfig) { c.Prices[0].Plan.ID = "test_free" }},
+		{"duplicate price", func(c *hostedplans.HostedBillingConfig) { c.Prices = append(c.Prices, c.Prices[0]) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -225,11 +227,11 @@ func TestHostedBillingConfiguration(t *testing.T) {
 			config.Billing = &changed
 			changed.CreditCostMultiplier = test.multiplier
 			changed.Provider = &hostedCreditProvider{hostedBillingProvider: &hostedBillingProvider{}}
-			changed.CreditPacks = []HostedCreditPack{{PriceID: "price_credit", Label: "AI credit pack", USDCents: 500}}
+			changed.CreditPacks = []hostedplans.HostedCreditPack{{PriceID: "price_credit", Label: "AI credit pack", USDCents: 500}}
 			if err := changed.Validate(config.Plans); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.database.configureHostedBilling(t.Context(), &config); err != nil {
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigureBilling(t.Context(), hostedplans.PlansInput(&config))); err != nil {
 				t.Fatal(err)
 			}
 			if changed.CreditCostMultiplier != test.want || f.service.database.aiCreditCostMultiplier != test.want {
@@ -241,16 +243,16 @@ func TestHostedBillingConfiguration(t *testing.T) {
 	changed := *config.Billing
 	config.Billing = &changed
 	changed.CustomerID = "cus_other"
-	if err := f.service.database.configureHostedBilling(t.Context(), &config); err == nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigureBilling(t.Context(), hostedplans.PlansInput(&config))); err == nil {
 		t.Fatal("customer binding changed")
 	}
 	changed.CustomerID = "cus_fixture"
 	changed.Prices = slices.Clone(changed.Prices)
 	changed.Prices[0].Plan.ID = "test_free"
-	if err := f.service.database.configureHostedBilling(t.Context(), &config); err == nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigureBilling(t.Context(), hostedplans.PlansInput(&config))); err == nil {
 		t.Fatal("price was repointed to another plan")
 	}
-	if err := f.service.database.configureHostedBilling(t.Context(), f.service.config.Hosted); err != nil {
+	if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigureBilling(t.Context(), hostedplans.PlansInput(f.service.config.Hosted))); err != nil {
 		t.Fatalf("same configuration could not reopen: %v", err)
 	}
 }
@@ -271,11 +273,11 @@ func TestHostedBillingCommitIsAtomic(t *testing.T) {
 	if err := f.service.billing.reconcile(t.Context()); !errors.As(err, &acknowledgment) || acknowledgment.Code != "23514" || acknowledgment.Message != "fixture acknowledgment failure" {
 		t.Fatalf("failed acknowledgment committed or fault was not reached: %v", err)
 	}
-	state, err := f.service.database.readHostedBilling(t.Context())
+	state, err := hubapi.FeatureResult(f.service.database.plansService().ReadBilling(t.Context()))
 	if err != nil || state.Status != "free" {
 		t.Fatalf("state partially committed: %+v %v", state, err)
 	}
-	entitlement, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+	entitlement, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 	if err != nil || entitlement.Source != "base" {
 		t.Fatal("entitlement partially committed")
 	}

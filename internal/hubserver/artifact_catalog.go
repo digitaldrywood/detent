@@ -83,12 +83,12 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 		p := artifact.Policy{ID: row.CatalogPolicyID, Limits: artifact.Limits{RetainedBytes: row.CatalogRetainedLimit, ReservedBytes: row.CatalogReservedLimit, ArtifactBytes: row.CatalogArtifactLimit, UploadBytes: row.CatalogUploadLimit, RetentionSeconds: row.CatalogRetentionSeconds}, AbandonedUploadSeconds: row.CatalogAbandonedSeconds, DeletionRecordSeconds: row.CatalogDeletionSeconds, BackupSeconds: row.CatalogBackupSeconds}
 		orgRetained, orgReserved := int64(1<<60), int64(1<<60)
 		if binding.Mode == "hosted" {
-			plans := s.database.plans()
+			plans := s.database.plansService().Plans()
 			billing, ok := r.(billingstore.Reader)
 			if !ok || plans == nil || plans.WindowSeconds <= 0 {
 				return artifact.Config{}, artifact.ErrQuota
 			}
-			entitlement, err := s.database.hostedEntitlementRecord(ctx, billing, s.config.now())
+			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, billing, s.config.now()))
 			if err != nil {
 				return artifact.Config{}, err
 			}

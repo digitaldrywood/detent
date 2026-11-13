@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -538,7 +539,7 @@ func TestLocalBoardImportHostedAuthorityAndAllowances(t *testing.T) {
 			if test.name == "mutation allowance" {
 				if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 					now := f.service.config.now()
-					plans := f.service.database.plans()
+					plans := f.service.database.plansService().Plans()
 					window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 					_, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: organization, ID: "existing-api-mutation", WindowStart: window, Metric: "api_mutations", Amount: 1}, 1)
 					return err
@@ -643,9 +644,9 @@ func TestLocalBoardGitHubMatchRefusals(t *testing.T) {
 
 func localBoardHostedPlans(t *testing.T, service *Service, limits map[string]int64) {
 	t.Helper()
-	plans := *service.database.plans()
+	plans := *service.database.plansService().Plans()
 	plans.Plans = slices.Clone(plans.Plans)
-	var base HostedPlan
+	var base hostedplans.HostedPlan
 	for _, plan := range plans.Plans {
 		if plan.PlanReference == plans.Base {
 			base = plan
@@ -658,7 +659,7 @@ func localBoardHostedPlans(t *testing.T, service *Service, limits map[string]int
 	plans.Base = base.PlanReference
 	cfg := *service.config.Hosted
 	cfg.Plans = &plans
-	if err := service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+	if err := hubapi.FromFeatureError(service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg))); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), tracker.OrganizationID(cfg.OrganizationID), corestore.Serving, func(w tenantstore.Writer) error {
@@ -691,7 +692,7 @@ func localBoardHostedUsage(t *testing.T, service *Service) (map[string]int64, er
 	}
 	organization := service.accessOrganization()
 	now := service.config.now()
-	plans := service.database.plans()
+	plans := service.database.plansService().Plans()
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 	if err := service.config.TenantRepository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 		for _, metric := range []string{"api_mutations", "ingested_events"} {

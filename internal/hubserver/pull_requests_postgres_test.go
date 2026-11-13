@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -26,7 +27,7 @@ func newExportPostgresFixtureInOrganization(t *testing.T, admin *sql.DB, organiz
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	cfg.Hosted.OrganizationID = string(organization)
 	cfg.Hosted.WorkOSOrganizationID = "org_provider"
-	plans := pilotHostedPlans()
+	plans := hostedplans.PilotPlans()
 	cfg.Hosted.Plans = &plans
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
 	now := time.Now().UTC().Truncate(time.Microsecond)

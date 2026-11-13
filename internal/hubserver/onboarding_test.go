@@ -23,6 +23,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -266,7 +267,7 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newPostgresArtifactFixture(t, func(cfg *Config) {
-				plans := pilotHostedPlans()
+				plans := hostedplans.PilotPlans()
 				cfg.Hosted.Plans = &plans
 				cfg.Hosted.PublicURL = "http://127.0.0.1:7777"
 			})
@@ -476,7 +477,7 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 func TestOnboardingCustomerBindingValidation(t *testing.T) {
 	t.Parallel()
 	f := newPostgresArtifactFixture(t, func(cfg *Config) {
-		plans := pilotHostedPlans()
+		plans := hostedplans.PilotPlans()
 		cfg.Hosted.Plans = &plans
 		cfg.Hosted.PublicURL = "http://127.0.0.1:7777"
 	})

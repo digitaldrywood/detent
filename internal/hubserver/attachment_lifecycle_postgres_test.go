@@ -57,7 +57,7 @@ func TestPostgresAttachmentDeletionReleasesQuotaOnce(t *testing.T) {
 	}
 	service.database.billingRepository = repository
 	service.config.BillingRepository = repository
-	service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{Base: PlanReference{ID: "example", Version: 1}, WindowSeconds: 60, RetentionWindows: 10}})
+	service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{Base: hostedplans.PlanReference{ID: "example", Version: 1}, WindowSeconds: 60, RetentionWindows: 10}})
 	for i := range 2 {
 		t.Run(fmt.Sprintf("tenant_%d", i), func(t *testing.T) {
 			org := tracker.OrganizationID(fmt.Sprintf("org_delete_%d", i))

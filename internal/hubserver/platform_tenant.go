@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
@@ -31,7 +32,7 @@ type platformTenantUsage struct {
 
 func (s *Service) platformTenantUsage(c echo.Context) error {
 	usage := platformTenantUsage{Allowances: map[string]platformTenantAllowance{}}
-	if s.database.plans() == nil {
+	if s.database.plansService().Plans() == nil {
 		return c.JSON(http.StatusOK, usage)
 	}
 	if s.database.postgres != nil {
@@ -54,12 +55,12 @@ func (s *Service) platformTenantUsage(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, usage)
 	}
-	entitlement, err := s.database.hostedPlanUsage(c.Request().Context(), s.config.now())
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().PlanUsage(c.Request().Context(), s.config.now()))
 	if err != nil {
 		return s.internalAPIError(c, "usage_unavailable", "Usage is unavailable", err)
 	}
 	usage.WindowEndsAt = entitlement.WindowEndsAt.UTC().Format(time.RFC3339)
-	for _, name := range hostedAllowanceNames() {
+	for _, name := range hostedplans.AllowanceNames() {
 		row := platformTenantAllowance{Used: entitlement.Usage[name]}
 		if limit, limited := entitlement.Allowances[name]; limited {
 			row.Limit = &limit

@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -64,11 +65,11 @@ func openWorkItemState(project projectstore.Record, archived bool, state string)
 
 func (s *Service) applyWorkItemGrowth(ctx context.Context, w tenantstore.Writer, organization tracker.OrganizationID, receiptID string, growth workItemGrowth, completion bool) error {
 	now := s.config.now()
-	plans := s.database.plans()
-	var entitlement HostedEntitlement
+	plans := s.database.plansService().Plans()
+	var entitlement hostedplans.HostedEntitlement
 	if plans != nil {
 		var err error
-		entitlement, err = s.database.hostedEntitlementRecord(ctx, w, now)
+		entitlement, err = hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
 		if err != nil {
 			return err
 		}
@@ -96,7 +97,7 @@ func (s *Service) applyWorkItemGrowth(ctx context.Context, w tenantstore.Writer,
 			return err
 		}
 		if !usage.Allowed {
-			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+			return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 		}
 	}
 	if plans == nil {
@@ -116,7 +117,7 @@ func (s *Service) applyWorkItemGrowth(ctx context.Context, w tenantstore.Writer,
 				return err
 			}
 			if known && used+population.growth > limit {
-				return &hostedLimitError{Resource: population.name, Allowance: limit, Consumption: used}
+				return &hostedplans.LimitError{Resource: population.name, Allowance: limit, Consumption: used}
 			}
 		}
 	}
@@ -137,7 +138,7 @@ func (s *Service) applyWorkItemGrowth(ctx context.Context, w tenantstore.Writer,
 			return err
 		}
 		if !usage.Allowed {
-			return &hostedLimitError{Resource: sample.metric, Allowance: limit, Consumption: usage.Used}
+			return &hostedplans.LimitError{Resource: sample.metric, Allowance: limit, Consumption: usage.Used}
 		}
 	}
 	return nil
@@ -147,13 +148,13 @@ type runEventGrowth struct {
 	enabled      bool
 	completion   bool
 	window       time.Time
-	entitlement  HostedEntitlement
+	entitlement  hostedplans.HostedEntitlement
 	history      int64
 	historyKnown bool
 }
 
 func (s *Service) prepareRunEventGrowth(ctx context.Context, w tenantstore.Writer, completion bool) (runEventGrowth, error) {
-	plans := s.database.plans()
+	plans := s.database.plansService().Plans()
 	if plans == nil {
 		return runEventGrowth{}, nil
 	}
@@ -162,7 +163,7 @@ func (s *Service) prepareRunEventGrowth(ctx context.Context, w tenantstore.Write
 	if completion {
 		return runEventGrowth{enabled: true, completion: true, window: window}, nil
 	}
-	entitlement, err := s.database.hostedEntitlementRecord(ctx, w, now)
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
 	if err != nil {
 		return runEventGrowth{}, err
 	}
@@ -183,7 +184,7 @@ func (g runEventGrowth) apply(ctx context.Context, w tenantstore.Writer, organiz
 		return nil
 	}
 	if limit, limited := g.entitlement.Allowances["history_records"]; limited && !g.completion && g.historyKnown && g.history+2*events > limit {
-		return &hostedLimitError{Resource: "history_records", Allowance: limit, Consumption: g.history}
+		return &hostedplans.LimitError{Resource: "history_records", Allowance: limit, Consumption: g.history}
 	}
 	limit := g.entitlement.Allowances["ingested_events"]
 	if g.completion {
@@ -194,7 +195,7 @@ func (g runEventGrowth) apply(ctx context.Context, w tenantstore.Writer, organiz
 		return err
 	}
 	if !usage.Allowed {
-		return &hostedLimitError{Resource: "ingested_events", Allowance: limit, Consumption: usage.Used}
+		return &hostedplans.LimitError{Resource: "ingested_events", Allowance: limit, Consumption: usage.Used}
 	}
 	return nil
 }

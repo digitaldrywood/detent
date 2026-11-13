@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -105,7 +106,7 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope hubscope.Nativ
 		} else if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", now)); err != nil {
 			return err
 		}
 		if scope.Project != "" {
@@ -143,17 +144,17 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope hubscope.Nativ
 			return err
 		}
 		if !usage.Allowed {
-			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+			return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 		}
-		if s.database.plans() == nil {
+		if s.database.plansService().Plans() == nil {
 			return nil
 		}
-		entitlement, err := s.database.hostedEntitlementRecord(ctx, w, now)
+		entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
 		if err != nil {
 			return err
 		}
 		if limit, limited := entitlement.Allowances["api_mutations"]; limited {
-			plans := s.database.plans()
+			plans := s.database.plansService().Plans()
 			window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 			usageID := artifact.Digest([]byte(scope.Credential.ID + "\x00" + operation + "\x00" + request.IdempotencyKey))
 			usage, err := w.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: scope.Organization, ID: "monthly-budget/" + usageID, WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
@@ -161,7 +162,7 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope hubscope.Nativ
 				return err
 			}
 			if !usage.Allowed {
-				return &hostedLimitError{Resource: "api_mutations", Allowance: limit, Consumption: usage.Used}
+				return &hostedplans.LimitError{Resource: "api_mutations", Allowance: limit, Consumption: usage.Used}
 			}
 		}
 		return nil

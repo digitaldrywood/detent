@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 )
 
 type configurationLog struct{ records chan slog.Record }
@@ -65,11 +66,11 @@ func TestCloudReloadSignupAllowlist(t *testing.T) {
 		TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5,
 		Launcher: launcher, AllowedEmails: []string{"alice@example.test"},
 	}
-	f.service.config.ConfigureRuntime = func(update hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
+	f.service.config.ConfigureRuntime = func(update hostedplans.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
 		return func(TenantSpec) ([]byte, error) { return json.Marshal(update) }
 	}
 	next := f.service.config
-	next.Runtime = &hubserver.HostedRuntimeUpdate{}
+	next.Runtime = &hostedplans.HostedRuntimeUpdate{}
 	f.service.config.Reload = func() (Config, error) { return next, nil }
 	f.provider.Users["user_staff"] = "staff@example.test"
 	staff := newBrowser(t, f.service.Handler())
@@ -174,16 +175,16 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	f, admin := runtimePublicationFixture(t)
 	const token = "runtime-entitlement-admin-0123456789abcdef"
 	for id, tenant := range f.fixtures {
-		tenant.Config.Hosted.Billing = &hubserver.HostedBillingConfig{
+		tenant.Config.Hosted.Billing = &hostedplans.HostedBillingConfig{
 			Mode: "test", AccountID: "acct_runtime", CustomerID: "cus_" + id, PortalConfigurationID: "bpc_runtime",
 			WebhookSecret: []byte(testWebhookSecret), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: &fakeBilling{},
-			Prices: []hubserver.HostedBillingPrice{{PriceID: "price_initial", Label: "Initial plan", Plan: tenant.Config.Hosted.Plans.Plans[1].PlanReference}},
+			Prices: []hostedplans.HostedBillingPrice{{PriceID: "price_initial", Label: "Initial plan", Plan: tenant.Config.Hosted.Plans.Plans[1].PlanReference}},
 		}
 	}
 	entitlementFixture(t, f, token)
 	allocation := &AllocationConfig{TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5, Launcher: &ExecLauncher{}, EntitlementAdminToken: []byte(token)}
 	f.service.config.Allocation = allocation
-	f.service.config.ConfigureRuntime = func(update hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
+	f.service.config.ConfigureRuntime = func(update hostedplans.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
 		return func(TenantSpec) ([]byte, error) { return json.Marshal(update) }
 	}
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true"); err != nil {
@@ -231,7 +232,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		t.Fatal("invalid file replaced runtime")
 	}
 	plans := *f.fixtures["org_alpha"].Config.Hosted.Plans
-	plans.Plans = append([]hubserver.HostedPlan(nil), plans.Plans...)
+	plans.Plans = append([]hostedplans.HostedPlan(nil), plans.Plans...)
 	plans.Plans[0].Allowances = maps.Clone(plans.Plans[0].Allowances)
 	plans.Plans[0].Allowances["api_mutations"] = 123456
 	plans.Plans[0].Allowances["ingested_events"] = 234567
@@ -240,7 +241,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	plans.Plans = append(plans.Plans, plan)
 	next := f.service.config
 	next.PublicURL = "https://changed.example.test"
-	next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans, Prices: f.fixtures["org_alpha"].Config.Hosted.Billing.Prices}
+	next.Runtime = &hostedplans.HostedRuntimeUpdate{Plans: &plans, Prices: f.fixtures["org_alpha"].Config.Hosted.Billing.Prices}
 	readings <- reading{config: next}
 	signals <- syscall.SIGHUP
 	awaitLog("configuration reloaded")
@@ -267,14 +268,14 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 			t.Fatalf("%s did not receive reloaded plan", id)
 		}
 	}
-	readRuntime := func(id string) hubserver.HostedRuntimeUpdate {
+	readRuntime := func(id string) hostedplans.HostedRuntimeUpdate {
 		t.Helper()
 		organization, err := f.service.registry.Organization(t.Context(), id)
 		if err != nil {
 			t.Fatal(err)
 		}
 		status, body, err := f.service.machineCall(t.Context(), organization, http.MethodGet, tenantEntitlementsPath(id)+"/runtime", nil, token)
-		var result hubserver.HostedRuntimeUpdate
+		var result hostedplans.HostedRuntimeUpdate
 		if err != nil || status != http.StatusOK {
 			t.Fatalf("read runtime: %d %v", status, err)
 		}
@@ -326,16 +327,16 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	}
 	for _, failure := range []string{"later tenant refused", "reply lost after commit", "request canceled after commit", "persistent outage after prepare", "publication transaction refused"} {
 		t.Run(failure, func(t *testing.T) {
-			before := map[string]hubserver.HostedRuntimeUpdate{"org_alpha": readRuntime("org_alpha"), "org_beta": readRuntime("org_beta")}
+			before := map[string]hostedplans.HostedRuntimeUpdate{"org_alpha": readRuntime("org_alpha"), "org_beta": readRuntime("org_beta")}
 			entryBefore := f.service.runtime.Load()
 			candidate := *next.Runtime.Plans
-			candidate.Plans = append([]hubserver.HostedPlan(nil), candidate.Plans...)
+			candidate.Plans = append([]hostedplans.HostedPlan(nil), candidate.Plans...)
 			stagedPlan := candidate.Plans[1]
 			stagedPlan.Version += 10
 			candidate.Plans = append(candidate.Plans, stagedPlan)
 			candidate.WindowSeconds = 240
 			attempt := next
-			attempt.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate, Prices: next.Runtime.Prices}
+			attempt.Runtime = &hostedplans.HostedRuntimeUpdate{Plans: &candidate, Prices: next.Runtime.Prices}
 			attemptCtx, cancelAttempt := context.WithCancel(t.Context())
 			defer cancelAttempt()
 			original := f.service.config.Transport
@@ -369,7 +370,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 						return nil, err
 					}
 					r.Body = io.NopCloser(bytes.NewReader(body))
-					var update hubserver.HostedRuntimeUpdate
+					var update hostedplans.HostedRuntimeUpdate
 					if json.Unmarshal(body, &update) == nil && !update.ValidateOnly && !failed && failure != "publication transaction refused" {
 						failed = true
 						if applied := readRuntime("org_alpha"); applied.Plans.WindowSeconds != before["org_alpha"].Plans.WindowSeconds {
@@ -435,12 +436,12 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	}
 	retry := next
 	candidate := *next.Runtime.Plans
-	candidate.Plans = append([]hubserver.HostedPlan(nil), candidate.Plans...)
+	candidate.Plans = append([]hostedplans.HostedPlan(nil), candidate.Plans...)
 	stagedPlan := candidate.Plans[1]
 	stagedPlan.Version += 10
 	candidate.Plans = append(candidate.Plans, stagedPlan)
 	candidate.WindowSeconds = 240
-	retry.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate, Prices: next.Runtime.Prices}
+	retry.Runtime = &hostedplans.HostedRuntimeUpdate{Plans: &candidate, Prices: next.Runtime.Prices}
 	readings <- reading{config: retry}
 	if err := f.service.reloadConfiguration(t.Context()); err != nil {
 		t.Fatal(err)
@@ -529,14 +530,14 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 				t.Fatal(ctx.Err())
 			}
 			candidate := *retry.Runtime.Plans
-			candidate.Plans = append([]hubserver.HostedPlan(nil), candidate.Plans...)
+			candidate.Plans = append([]hostedplans.HostedPlan(nil), candidate.Plans...)
 			plan := stagedPlan
 			plan.Version += 20 + int64(index)
 			candidate.Plans = append(candidate.Plans, plan)
 			candidate.WindowSeconds = before.Plans.WindowSeconds + 120
 			attempt := next
-			price := hubserver.HostedBillingPrice{PriceID: "price_join_" + strconv.FormatInt(plan.Version, 10), Label: "Published plan", Plan: plan.PlanReference}
-			attempt.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate, Prices: append(append([]hubserver.HostedBillingPrice(nil), next.Runtime.Prices...), price)}
+			price := hostedplans.HostedBillingPrice{PriceID: "price_join_" + strconv.FormatInt(plan.Version, 10), Label: "Published plan", Plan: plan.PlanReference}
+			attempt.Runtime = &hostedplans.HostedRuntimeUpdate{Plans: &candidate, Prices: append(append([]hostedplans.HostedBillingPrice(nil), next.Runtime.Prices...), price)}
 			readings <- reading{config: attempt}
 			if err := f.service.reloadConfiguration(t.Context()); err != nil {
 				t.Fatal(err)

@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -184,9 +185,9 @@ func TestRuntimeAdoptionWorkDoesNotGrowWithPlans(t *testing.T) {
 	}
 	var baselineStatements, baselineExchanges int
 	for _, size := range []int{4, 100} {
-		plans := hubserver.HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 1, ConnectedSeconds: 30, InvitationSeconds: 60}
+		plans := hostedplans.HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 1, ConnectedSeconds: 30, InvitationSeconds: 60}
 		for i := range size {
-			plans.Plans = append(plans.Plans, hubserver.HostedPlan{PlanReference: hubserver.PlanReference{ID: fmt.Sprintf("plan_%d", i), Version: 1}, Name: "Example", Features: []string{"collaboration"}, Allowances: map[string]int64{"api_mutations": 1000000, "ingested_events": 1000000}})
+			plans.Plans = append(plans.Plans, hostedplans.HostedPlan{PlanReference: hostedplans.PlanReference{ID: fmt.Sprintf("plan_%d", i), Version: 1}, Name: "Example", Features: []string{"collaboration"}, Allowances: map[string]int64{"api_mutations": 1000000, "ingested_events": 1000000}})
 		}
 		plans.Base = plans.Plans[0].PlanReference
 		revision := uuid.NewString()
@@ -201,7 +202,7 @@ func TestRuntimeAdoptionWorkDoesNotGrowWithPlans(t *testing.T) {
 				t.Fatal(err)
 			}
 			counts.take()
-			update := hubserver.HostedRuntimeUpdate{Plans: &plans, StageID: revision, Reason: "bounded catalog adoption"}
+			update := hostedplans.HostedRuntimeUpdate{Plans: &plans, StageID: revision, Reason: "bounded catalog adoption"}
 			if err := snapshots.Adopt(t.Context(), hubmaintenance.Tenant{Organization: string(org), Generation: 1}, "", update); err != nil {
 				t.Fatal(err)
 			}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -173,7 +174,7 @@ func TestPilotHostedWorkloads(t *testing.T) {
 			if after["heartbeats"] != int64(test.runners*10) || after["ingested_events"] != int64(test.jobs*4) {
 				t.Fatalf("usage does not match admitted workload: %v", after)
 			}
-			usage, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+			usage, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), time.Now()))
 			if err != nil || usage.Usage["concurrent_work"] != 0 {
 				t.Fatalf("completed workload retained reservations: %v, %v", usage.Usage, err)
 			}

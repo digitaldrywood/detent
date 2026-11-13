@@ -95,7 +95,7 @@ func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope hubsc
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now().UTC()); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", s.config.now().UTC())); err != nil {
 			return err
 		}
 		writer, ok := w.(projectstore.OnboardingPageWriter)

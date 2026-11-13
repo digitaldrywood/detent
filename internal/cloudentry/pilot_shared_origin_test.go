@@ -123,8 +123,8 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 	if l.billing != nil {
 		config.Conversation = &hubserver.ConversationConfig{Enabled: true}
 		plans := pilotPlans()
-		config.Hosted.Billing = &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_fixture", CustomerID: "cus_fixture_" + spec.Organization.ID, PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_e2e_secret_value"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: l.billing,
-			Prices: []hubserver.HostedBillingPrice{{PriceID: "price_fixture_plus", Label: "Pilot plus", Plan: plans.Plans[len(plans.Plans)-1].PlanReference}}}
+		config.Hosted.Billing = &hostedplans.HostedBillingConfig{Mode: "test", AccountID: "acct_fixture", CustomerID: "cus_fixture_" + spec.Organization.ID, PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_e2e_secret_value"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: l.billing,
+			Prices: []hostedplans.HostedBillingPrice{{PriceID: "price_fixture_plus", Label: "Pilot plus", Plan: plans.Plans[len(plans.Plans)-1].PlanReference}}}
 	}
 	l.configureDatabase(&config)
 	if l.useUnix {
@@ -952,11 +952,11 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		}
 		second := alpha.owner.form("/organizations/"+alpha.id+"/projects", url.Values{"name": {"Alpha second project"}, "grant_access": {"true"}, "csrf": {alpha.ownerCSRF}})
 		pilotStatus(t, "free plan second project", second, http.StatusTooManyRequests)
-		var before hubserver.HostedEntitlement
+		var before hostedplans.HostedEntitlement
 		report := alpha.owner.get(alpha.api() + "/billing")
 		pilotStatus(t, "alpha entitlement", report, http.StatusOK)
 		var usage struct {
-			Entitlement hubserver.HostedEntitlement `json:"entitlement"`
+			Entitlement hostedplans.HostedEntitlement `json:"entitlement"`
 		}
 		pilotDecode(t, report, &usage)
 		before = usage.Entitlement

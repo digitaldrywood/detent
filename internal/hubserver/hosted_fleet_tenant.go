@@ -53,8 +53,8 @@ func (s *Service) readHostedFleetTenant(ctx context.Context, credential hubapi.A
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
-	if s.database.plans() != nil {
-		entitlement, readErr := s.database.hostedEntitlement(ctx, nil, now)
+	if s.database.plansService().Plans() != nil {
+		entitlement, readErr := hubapi.FeatureResult(s.database.plansService().Entitlement(ctx, nil, now))
 		if readErr != nil {
 			return hostedFleetResponse{}, readErr
 		}

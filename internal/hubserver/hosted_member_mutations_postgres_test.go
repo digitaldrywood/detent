@@ -34,7 +34,7 @@ func TestPostgresHostedEntitlementRoutesUseCurrentTenant(t *testing.T) {
 	tokens := map[string]string{"org_first": strings.Repeat("a", 32), "org_second": strings.Repeat("b", 32)}
 
 	for _, organization := range organizations {
-		plans := pilotHostedPlans()
+		plans := hostedplans.PilotPlans()
 		database := &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: tracker.OrganizationID(organization), now: func() time.Time { return now }, logger: discardLogger()}
 		hosted := &hostedplans.HostedConfig{OrganizationID: organization, EntitlementAdministrator: "operator_example", EntitlementAdminToken: []byte(tokens[organization]), Plans: &plans}
 		service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: database, config: Config{Logger: discardLogger(), now: func() time.Time { return now }, RunDetails: details, Hosted: hosted}}
@@ -46,7 +46,7 @@ func TestPostgresHostedEntitlementRoutesUseCurrentTenant(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("create tenant %s: %v", organization, err)
 		}
-		if err := database.configureHostedPlans(t.Context(), hosted); err != nil {
+		if err := hubapi.FromFeatureError(database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(hosted))); err != nil {
 			t.Fatalf("configure plans for %s: %v", organization, err)
 		}
 		service.registerRoutes(service.echo)
@@ -83,7 +83,7 @@ func TestPostgresHostedEntitlementRoutesUseCurrentTenant(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("authorized GET for %s status=%d body=%s", organization, response.Code, response.Body)
 		}
-		var report hostedEntitlementReport
+		var report hostedplans.EntitlementReport
 		if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
 			t.Fatalf("decode GET for %s: %v", organization, err)
 		}
@@ -108,19 +108,19 @@ func TestPostgresHostedEntitlementRoutesUseCurrentTenant(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("read updated report for %s status=%d body=%s", organization, response.Code, response.Body)
 		}
-		var report hostedEntitlementReport
+		var report hostedplans.EntitlementReport
 		if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
 			t.Fatalf("decode updated report for %s: %v", organization, err)
 		}
 		if report.OrganizationID != organization || report.Revision != 2 || len(report.Grants) != 1 || report.Grants[0].ID != "grant-"+organization || len(report.Grants[0].Scope) != 1 || report.Grants[0].Scope[0] != "collaboration_bytes" || !report.Grants[0].StartsAt.Equal(time.Date(2026, time.November, 3, 0, 0, 0, 0, time.UTC)) || report.Grants[0].ExpiresAt != nil {
 			t.Fatalf("unexpected updated report for %s: %#v", organization, report)
 		}
-		if !slices.ContainsFunc(report.Plans, func(plan HostedPlan) bool {
-			return plan.PlanReference == (PlanReference{ID: "comp_team", Version: 1}) && plan.Allowances["collaboration_bytes"] == 128<<20
+		if !slices.ContainsFunc(report.Plans, func(plan hostedplans.HostedPlan) bool {
+			return plan.PlanReference == (hostedplans.PlanReference{ID: "comp_team", Version: 1}) && plan.Allowances["collaboration_bytes"] == 128<<20
 		}) {
 			t.Fatalf("updated report for %s omitted the effective grant plan", organization)
 		}
-		entitlement, err := services[organization].database.hostedEntitlement(t.Context(), nil, now)
+		entitlement, err := hubapi.FeatureResult(services[organization].database.plansService().Entitlement(t.Context(), nil, now))
 		if err != nil {
 			t.Fatalf("read effective entitlement for %s: %v", organization, err)
 		}
@@ -134,7 +134,7 @@ func TestPostgresMemberMutationRoutesPreserveCurrentAuthority(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	provider := newHostedSecurityProvider()
 	details := &memoryRunDetails{}
-	plans := pilotHostedPlans()
+	plans := hostedplans.PilotPlans()
 	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository, billingRepository: repository, billingAuditStore: details, hostedOrganization: "org_security", now: time.Now, logger: discardLogger()}, config: Config{Logger: discardLogger(), now: time.Now, generateToken: apikey.GenerateToken, AccessRepository: repository, TenantRepository: repository, RunDetails: details, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "http://127.0.0.1:7777", Provider: provider, Plans: &plans}}}
 	sessions, err := auth.NewSessionService(auth.SessionConfig{SessionTTL: 24 * time.Hour, PublicURL: service.config.Hosted.PublicURL}, service)
 	if err != nil {
@@ -160,7 +160,7 @@ func TestPostgresMemberMutationRoutesPreserveCurrentAuthority(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.database.configureHostedPlans(t.Context(), service.config.Hosted); err != nil {
+	if err := hubapi.FromFeatureError(service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(service.config.Hosted))); err != nil {
 		t.Fatal(err)
 	}
 	owner := f.user(t, "member_operator", "owner", "operator@example.test", "", "")

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -70,7 +71,7 @@ func (s *Service) writeVerificationComment(ctx context.Context, w tenantstore.Wr
 		return err
 	}
 	if !usage.Allowed {
-		return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+		return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 	}
 	if err := hubrecords.WriteWorkItemRecord(ctx, w, comment.Plan, comment.Fields); err != nil {
 		return err

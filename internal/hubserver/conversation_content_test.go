@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -548,8 +549,8 @@ func TestConversationRejectedCreateDoesNotPublish(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				if f.service.database.plans() == nil {
-					f.service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{Base: PlanReference{ID: featureless.ID, Version: featureless.Version}, WindowSeconds: 60, RetentionWindows: 10}})
+				if f.service.database.plansService().Plans() == nil {
+					f.service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{Base: hostedplans.PlanReference{ID: featureless.ID, Version: featureless.Version}, WindowSeconds: 60, RetentionWindows: 10}})
 				}
 			}
 			before := objects.publications

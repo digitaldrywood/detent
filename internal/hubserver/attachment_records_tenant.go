@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -44,13 +45,13 @@ func attachmentUploadIdentity(input attachment.UploadRequest) any {
 	}{metadata, input.Evidence}
 }
 func (s *Service) attachmentQuotaLimit(ctx context.Context, r tenantstore.Reader) (int64, error) {
-	if s.database.plans() == nil {
+	if s.database.plansService().Plans() == nil {
 		return math.MaxInt64, nil
 	}
-	if err := s.database.requireHostedFeatureRecord(ctx, r, "collaboration", s.config.now()); err != nil {
+	if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, "collaboration", s.config.now())); err != nil {
 		return 0, err
 	}
-	entitlement, err := s.database.hostedEntitlementRecord(ctx, r, s.config.now())
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, s.config.now()))
 	if err != nil {
 		return 0, err
 	}
@@ -223,7 +224,7 @@ func (s *Service) prepareCloudAttachmentTenant(c echo.Context, input attachment.
 					return err
 				}
 				if metadata.Size > limit-used {
-					return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
+					return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
 				}
 			}
 			if err := s.database.chargeAttachmentAPIMutationsPostgres(ctx, w, "attachment/"+scope.Credential.ID+"/"+operation+"/"+input.RequestID, s.config.now(), "mutation"); err != nil {
@@ -419,7 +420,7 @@ func (s *Service) recordCloudAttachmentTenant(c echo.Context, input attachment.U
 					return err
 				}
 				if !usage.Allowed {
-					return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+					return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 				}
 			}
 			if err := s.database.chargeAttachmentAPIMutationsPostgres(ctx, w, "attachment/"+scope.Credential.ID+"/"+operation+"/"+key, s.config.now(), "record", "mutation"); err != nil {

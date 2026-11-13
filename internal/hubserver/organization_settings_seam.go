@@ -41,7 +41,7 @@ func (s *Service) organizationSettingsService(scope hubscope.NativeScope) *orgse
 			return s.tenantReceiptMutation(ctx, scope, operation, mutation, input, value, apply)
 		},
 		RequireFeature: func(ctx context.Context, r tenantstore.Reader, feature string, now time.Time) error {
-			return s.database.requireHostedFeatureRecord(ctx, r, feature, now)
+			return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, r, feature, now))
 		},
 		CreateIcon: func(ctx context.Context, w tenantstore.Writer, metadata attachment.Metadata) error {
 			return s.createIconAttachment(ctx, w, scope, metadata)

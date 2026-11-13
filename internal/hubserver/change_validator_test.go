@@ -680,9 +680,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			if test.name == "object-backed storage exhausted" {
 				f.service.database.hostedOrganization = f.project.OrganizationID
-				plans := pilotHostedPlans()
+				plans := hostedplans.PilotPlans()
 				plans.Plans[0].Allowances["collaboration_bytes"] = contentBefore
-				if err := f.service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+				if err := serverapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -57,7 +57,7 @@ func (s *Service) createHostedOrganizationFor(ctx context.Context, credential hu
 	}
 	if providerID == "" {
 		organization, err := s.config.Hosted.Provider.CreateOrganization(ctx, s.config.Hosted.OrganizationID, name)
-		if err != nil || organization.ExternalID != s.config.Hosted.OrganizationID || !hostedSafeID(organization.ID) {
+		if err != nil || organization.ExternalID != s.config.Hosted.OrganizationID || !hostedplans.SafeID(organization.ID) {
 			return "", auth.ErrHostedIdentity
 		}
 		providerID = organization.ID

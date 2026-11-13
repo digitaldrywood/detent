@@ -21,7 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/chat"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -99,24 +99,24 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 		return map[string]int64{"members": 10, "projects": projects, "repositories": 10, "registered_runners": 10, "connected_runners": 10, "concurrent_work": 5,
 			"api_mutations": 10000, "ingested_events": 10000, "collaboration_bytes": 64 << 20, "history_records": 10000}
 	}
-	plans := &hubserver.HostedPlansConfig{
-		Base: hubserver.PlanReference{ID: "free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400,
-		Plans: []hubserver.HostedPlan{
-			{PlanReference: hubserver.PlanReference{ID: "free", Version: 1}, Features: []string{"collaboration"}, Allowances: allowances(3)},
-			{PlanReference: hubserver.PlanReference{ID: "team", Version: 1}, Features: []string{"collaboration"}, Allowances: allowances(30)},
+	plans := &hostedplans.HostedPlansConfig{
+		Base: hostedplans.PlanReference{ID: "free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400,
+		Plans: []hostedplans.HostedPlan{
+			{PlanReference: hostedplans.PlanReference{ID: "free", Version: 1}, Features: []string{"collaboration"}, Allowances: allowances(3)},
+			{PlanReference: hostedplans.PlanReference{ID: "team", Version: 1}, Features: []string{"collaboration"}, Allowances: allowances(30)},
 		},
 	}
 	f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) {
-		a.Prices = []hubserver.HostedBillingPrice{{PriceID: "price_team", Label: "Team", Plan: hubserver.PlanReference{ID: "team", Version: 1}}}
+		a.Prices = []hostedplans.HostedBillingPrice{{PriceID: "price_team", Label: "Team", Plan: hostedplans.PlanReference{ID: "team", Version: 1}}}
 	}, func(f *provisioningFixture) {
 		f.launcher.clientFS = fstest.MapFS{
 			"app/conversation/index.html": {Data: []byte(`<!doctype html><html><head><script src="/static/app/conversation/app.js"></script></head><body><div id="root"></div></body></html>`)},
 			"app/conversation/app.js":     {Data: []byte(`console.log("billing fixture");`)},
 		}
 		f.launcher.plans = plans
-		f.launcher.billing = func() *hubserver.HostedBillingConfig {
-			return &hubserver.HostedBillingConfig{Mode: "test", AccountID: "acct_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte(testWebhookSecret),
-				GraceSeconds: 3600, ReconcileSeconds: 60, Provider: stripe, Prices: []hubserver.HostedBillingPrice{{PriceID: "price_team", Label: "Team", Plan: hubserver.PlanReference{ID: "team", Version: 1}}}}
+		f.launcher.billing = func() *hostedplans.HostedBillingConfig {
+			return &hostedplans.HostedBillingConfig{Mode: "test", AccountID: "acct_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte(testWebhookSecret),
+				GraceSeconds: 3600, ReconcileSeconds: 60, Provider: stripe, Prices: []hostedplans.HostedBillingPrice{{PriceID: "price_team", Label: "Team", Plan: hostedplans.PlanReference{ID: "team", Version: 1}}}}
 		}
 		f.billing = &BillingConfig{Mode: "test", AccountID: "acct_fixture", WebhookSecret: []byte(testWebhookSecret), Provider: stripe}
 	}, configureStorage)
@@ -291,7 +291,7 @@ func testSharedBillingJourney(t *testing.T, configureStorage func(*Config)) {
 	}
 	view := member.Do(http.MethodGet, "/api/v2/organizations/"+secondID+"/billing", nil, map[string]string{"Accept": "application/json"})
 	var report struct {
-		Entitlement hubserver.HostedEntitlement `json:"entitlement"`
+		Entitlement hostedplans.HostedEntitlement `json:"entitlement"`
 	}
 	if view.StatusCode != http.StatusOK || json.Unmarshal([]byte(view.Body), &report) != nil || report.Entitlement.Base.ID != "payment_pending" || report.Entitlement.Allowances["projects"] != 0 || report.Entitlement.Allowances["unarchived_issues"] != 0 || slices.Contains(report.Entitlement.Features, "native_execution") {
 		t.Fatalf("unpaid creation allowances = %d %s", view.StatusCode, view.Body)

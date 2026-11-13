@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -346,13 +347,13 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 				Report      usageReport `json:"report"`
 			}{now, data})
 		case operatortool.HostedPlan:
-			data, err := s.database.hostedPlanUsage(ctx, now)
+			data, err := hubapi.FeatureResult(s.database.plansService().PlanUsage(ctx, now))
 			if err != nil {
 				return result, err
 			}
 			return billingResult(struct {
-				GeneratedAt time.Time         `json:"generated_at"`
-				Plan        HostedEntitlement `json:"plan"`
+				GeneratedAt time.Time                     `json:"generated_at"`
+				Plan        hostedplans.HostedEntitlement `json:"plan"`
 			}{now, data})
 		case operatortool.BillingUsage:
 			data, err := s.operatorBillingUsage(ctx, now)
@@ -521,7 +522,7 @@ func (s *Service) billingActionBinding(price string) string {
 	}
 	raw, _ := json.Marshal(struct { //nolint:errcheck // The binding contains only strings and concrete plan references.
 		Account, Mode, Portal, Return string
-		Prices                        []HostedBillingPrice
+		Prices                        []hostedplans.HostedBillingPrice
 		Price                         string
 	}{cfg.AccountID, cfg.CreditMode(), cfg.PortalConfigurationID, s.hostedBillingReturn(true), cfg.Prices, price})
 	sum := sha256.Sum256(raw)
@@ -540,10 +541,10 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 	}
 	pack, _ := s.creditPack(request.Price)
 	material := struct {
-		Organization string           `json:"organization_id"`
-		Pack         HostedCreditPack `json:"credit_pack"`
-		Enabled      *bool            `json:"enabled,omitempty"`
-		Threshold    *int64           `json:"threshold_cents,omitempty"`
+		Organization string                       `json:"organization_id"`
+		Pack         hostedplans.HostedCreditPack `json:"credit_pack"`
+		Enabled      *bool                        `json:"enabled,omitempty"`
+		Threshold    *int64                       `json:"threshold_cents,omitempty"`
 	}{s.config.Hosted.OrganizationID, pack, request.Enabled, request.Threshold}
 	preview, err := json.Marshal(material)
 	if err != nil {
@@ -553,24 +554,24 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 		Account, Mode, Return, Customer, Method, SavedMethod, Price string
 		Disabled, Enabled                                           bool
 		Threshold                                                   int64
-		Pack                                                        HostedCreditPack
+		Pack                                                        hostedplans.HostedCreditPack
 	}{Account: cfg.AccountID, Mode: cfg.CreditMode(), Return: s.hostedBillingReturn(true), Customer: cfg.CustomerID, Disabled: cfg.CheckoutDisabled, Pack: pack}
 	if name == operatortool.CreditAutoFund {
 		{
-			err := s.database.readBillingTenant(readCtx, func(reader tenantstore.Reader) error {
+			err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(readCtx, func(reader tenantstore.Reader) error {
 				account, err := reader.BillingCreditAccount(readCtx, s.database.aiCreditMode)
 				if err != nil {
 					return err
 				}
 				state.Enabled, state.Threshold, state.Price, state.Method = account.AutoEnabled, account.ThresholdCents, account.PriceID, account.PaymentMethod
 				return nil
-			})
+			}))
 			if err != nil {
 				return "", "", err
 			}
 		}
 		if *request.Enabled {
-			binding, err := s.database.hostedBillingBinding(ctx, cfg)
+			binding, err := hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg))
 			if err != nil {
 				return "", "", errBillingUnavailable
 			}
@@ -780,7 +781,7 @@ func (s *Service) operatorBillingUsage(ctx context.Context, now time.Time) (oper
 	if report.ChatUsage.UnpricedTurns == 0 {
 		out.CostDrivers.OperatorAICostUSD = &out.ChatUsage.CostUSD
 	}
-	window, err := s.database.hostedConsumption(ctx, nil, now, "usage_windows")
+	window, err := hubapi.FeatureResult(s.database.plansService().Consumption(ctx, nil, now, "usage_windows"))
 	if err != nil {
 		return operatorBillingUsageReport{}, err
 	}
@@ -809,7 +810,7 @@ func (s *Service) operatorBillingUsage(ctx context.Context, now time.Time) (oper
 	}
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
-		return operatorBillingUsageReport{}, ErrBillingUsageUnavailable
+		return operatorBillingUsageReport{}, hostedplans.ErrBillingUsageUnavailable
 	}
 	err = repository.ReadTenantSnapshot(ctx, s.accessOrganization(), corestore.Serving, func(reader tenantstore.Reader) error {
 		tenant, err := reader.AccessTenant(ctx)
@@ -819,7 +820,7 @@ func (s *Service) operatorBillingUsage(ctx context.Context, now time.Time) (oper
 		out.ProviderOrganizationID = tenant.ProviderID
 		owner, ok := reader.(billingIssuePopulationReader)
 		if !ok {
-			return ErrBillingUsageUnavailable
+			return hostedplans.ErrBillingUsageUnavailable
 		}
 		active, archived, known, err := owner.BillingIssuePopulation(ctx)
 		if err != nil {
@@ -832,7 +833,7 @@ func (s *Service) operatorBillingUsage(ctx context.Context, now time.Time) (oper
 		}
 		populations, ok := reader.(billingstore.PopulationReader)
 		if !ok {
-			return ErrBillingUsageUnavailable
+			return hostedplans.ErrBillingUsageUnavailable
 		}
 		for _, field := range []struct {
 			name   string

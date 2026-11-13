@@ -240,7 +240,7 @@ func testPostgresAttemptEvidence(t *testing.T, service *Service, admin *sql.DB, 
 			}
 		})
 	}
-	service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
+	service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{WindowSeconds: 60, RetentionWindows: 10}})
 	if _, err := admin.ExecContext(t.Context(), `DELETE FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'`, organization.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func testPostgresAttemptEvidence(t *testing.T, service *Service, admin *sql.DB, 
 	service.database.hostedOrganization = organization.ID
 	service.database.billingRepository = repository
 	service.config.BillingRepository = repository
-	service.database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{Base: PlanReference{ID: planRef.ID, Version: planRef.Version}, WindowSeconds: 60, RetentionWindows: 10}})
+	service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{Base: hostedplans.PlanReference{ID: planRef.ID, Version: planRef.Version}, WindowSeconds: 60, RetentionWindows: 10}})
 	positiveCheck := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"size": 100, "evidence": input})
 	requireNativeStatus(t, positiveCheck, http.StatusOK)
 	quotaCheck := performHubAPIRequest(t, service, http.MethodPost, path, secret, map[string]any{"size": attachment.MaxBytes, "evidence": input})

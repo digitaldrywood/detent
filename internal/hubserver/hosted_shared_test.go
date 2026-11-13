@@ -39,7 +39,7 @@ func hostedSharedKey(seed byte) ed25519.PrivateKey {
 }
 
 func hostedSharedTestConfig(provider auth.HostedProvider, key ed25519.PrivateKey, generation int64) Config {
-	legacyPlans := pilotHostedPlans()
+	legacyPlans := hostedplans.PilotPlans()
 	return Config{Hosted: &hostedplans.HostedConfig{
 		Plans: &legacyPlans, OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner",
 		PublicURL: "https://hub.example.test", StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, Provider: provider,

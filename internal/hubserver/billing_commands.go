@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/mutation"
 )
@@ -86,7 +87,7 @@ func (s *Service) checkoutBilling(ctx context.Context, authorize billingAuthoriz
 	if err := w.reconcile(ctx); err != nil {
 		return billingDestination{}, checkoutProviderFailure("Billing is temporarily unavailable", fmt.Errorf("reconcile billing: %w", err))
 	}
-	state, err := s.database.readHostedBilling(ctx)
+	state, err := hubapi.FeatureResult(s.database.plansService().ReadBilling(ctx))
 	if err != nil {
 		return billingDestination{}, err
 	}
@@ -136,8 +137,8 @@ func (s *Service) portalBilling(ctx context.Context, authorize billingAuthorizat
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	binding, err := s.database.hostedBillingBinding(ctx, cfg)
-	if errors.Is(err, errHostedBillingUnbound) {
+	binding, err := hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg))
+	if errors.Is(err, hostedplans.ErrBillingUnbound) {
 		return billingDestination{}, billingFailure(http.StatusConflict, "There is no subscription to manage")
 	}
 	if err != nil {

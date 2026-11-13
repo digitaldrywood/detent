@@ -11,10 +11,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-func newRuntimePostgresService(t *testing.T, plans HostedPlansConfig, billing bool) (*Service, *sql.DB) {
+func newRuntimePostgresService(t *testing.T, plans hostedplans.HostedPlansConfig, billing bool) (*Service, *sql.DB) {
 	t.Helper()
 	repo, admin := projectRecordPostgresWithAdmin(t, 4)
 	if err := repo.WriteTenant(t.Context(), "org_browser_preview", corestore.Serving, func(w tenantstore.Writer) error {
@@ -24,14 +25,14 @@ func newRuntimePostgresService(t *testing.T, plans HostedPlansConfig, billing bo
 	}
 	cfg := Config{Logger: discardLogger(), now: time.Now, Hosted: &hostedplans.HostedConfig{OrganizationID: "org_browser_preview", Plans: &plans, EntitlementAdministrator: "test-operator", EntitlementAdminToken: []byte(testHostedPlanAdminToken)}}
 	if billing {
-		cfg.Hosted.Billing = &HostedBillingConfig{AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_2196_secret"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: &hostedBillingProvider{}, Prices: []HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}}}
+		cfg.Hosted.Billing = &hostedplans.HostedBillingConfig{AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_2196_secret"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: &hostedBillingProvider{}, Prices: []hostedplans.HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}}}
 	}
 	d := &database{postgres: repo, billingRepository: repo, hostedOrganization: "org_browser_preview", billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger(), runtimeBilling: cfg.Hosted.Billing}
-	if err := d.configureHostedPlans(t.Context(), cfg.Hosted); err != nil {
+	if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(cfg.Hosted))); err != nil {
 		t.Fatal(err)
 	}
 	if billing {
-		if err := d.configureHostedBilling(t.Context(), cfg.Hosted); err != nil {
+		if err := hubapi.FromFeatureError(d.plansService().ConfigureBilling(t.Context(), hostedplans.PlansInput(cfg.Hosted))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -44,7 +45,7 @@ func newRuntimePostgresService(t *testing.T, plans HostedPlansConfig, billing bo
 func runtimeAuditCount(t *testing.T, s *Service, action, reason string) int {
 	t.Helper()
 	count := 0
-	if err := s.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+	if err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 		rows, err := r.BillingPlanAudits(t.Context(), 0, 100)
 		if err != nil {
 			return err
@@ -57,7 +58,7 @@ func runtimeAuditCount(t *testing.T, s *Service, action, reason string) int {
 			if err != nil {
 				return err
 			}
-			var command hostedPlanCommand
+			var command hostedplans.PlanCommand
 			if err := json.Unmarshal(raw, &command); err != nil {
 				return err
 			}
@@ -66,7 +67,7 @@ func runtimeAuditCount(t *testing.T, s *Service, action, reason string) int {
 			}
 		}
 		return nil
-	}); err != nil {
+	})); err != nil {
 		t.Fatal(err)
 	}
 	return count

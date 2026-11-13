@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -240,7 +241,7 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 	defer cancelRead()
 	cfg := s.hostedBillingConfig()
 	result := hostedSharedBilling{Status: "free"}
-	entitlement, err := s.database.hostedEntitlement(readCtx, nil, s.config.now())
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().Entitlement(readCtx, nil, s.config.now()))
 	if err != nil {
 		return s.internalAPIError(c, "entitlements_unavailable", "Organization entitlements are unavailable", err)
 	}
@@ -252,8 +253,8 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 	}
 	if cfg != nil {
 		result.Enabled, result.AccountID, result.Mode = true, cfg.AccountID, cfg.CreditMode()
-		binding, err := s.database.hostedBillingBinding(ctx, cfg)
-		if err != nil && !errors.Is(err, errHostedBillingUnbound) {
+		binding, err := hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg))
+		if err != nil && !errors.Is(err, hostedplans.ErrBillingUnbound) {
 			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
 		}
 		result.CustomerID = binding.CustomerID
@@ -272,7 +273,7 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 		}
 		checkoutCtx, cancelCheckout := context.WithTimeout(ctx, hubapi.ReadTimeout)
 		defer cancelCheckout()
-		if err := s.database.readBillingTenant(checkoutCtx, func(reader tenantstore.Reader) error {
+		if err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(checkoutCtx, func(reader tenantstore.Reader) error {
 			account, err := reader.BillingAccount(checkoutCtx)
 			if errors.Is(err, corestore.ErrNotFound) {
 				return nil
@@ -281,10 +282,10 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 				result.CheckoutPending = account.Checkout.ExpiresAt.After(s.config.now())
 			}
 			return err
-		}); err != nil {
+		})); err != nil {
 			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
 		}
-		state, err := s.database.readHostedBilling(ctx)
+		state, err := hubapi.FeatureResult(s.database.plansService().ReadBilling(ctx))
 		if err != nil {
 			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
 		}
@@ -312,20 +313,20 @@ func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 	}
 	cfg := s.hostedBillingConfig()
 	var request hostedSharedBillingEventRequest
-	if err := hubapi.DecodeAPIJSON(c, &request); err != nil || cfg == nil || !strings.HasPrefix(request.EventID, "evt_") || !hostedSafeID(request.EventID) || request.EventType == "" || len(request.EventType) > 128 {
+	if err := hubapi.DecodeAPIJSON(c, &request); err != nil || cfg == nil || !strings.HasPrefix(request.EventID, "evt_") || !hostedplans.SafeID(request.EventID) || request.EventType == "" || len(request.EventType) > 128 {
 		return s.invalidAPIRequest(c, errors.New("invalid billing event"))
 	}
-	binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
-	if err != nil && !errors.Is(err, errHostedBillingUnbound) {
+	binding, err := hubapi.FeatureResult(s.database.plansService().BillingBinding(c.Request().Context(), cfg))
+	if err != nil && !errors.Is(err, hostedplans.ErrBillingUnbound) {
 		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 	}
 	if err != nil || binding.CustomerID != request.CustomerID {
 		return s.refusedAPIError(c, http.StatusConflict, "customer_mismatch", "The event customer is not bound to this organization", hubapi.APIErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
 	}
-	err = s.database.writeBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
+	err = hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
 		_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: request.EventID, Type: request.EventType, ReceivedAt: s.config.now().UTC()})
 		return err
-	})
+	}))
 	if err != nil {
 		return s.internalAPIError(c, "billing_unavailable", "Billing event could not be recorded", err)
 	}

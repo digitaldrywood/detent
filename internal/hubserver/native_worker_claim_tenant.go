@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -811,18 +812,18 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 				return err
 			}
 		}
-		if replay == nil && s.database.plans() != nil {
-			entitlement, err := s.database.hostedEntitlementRecord(ctx, w, authoritativeNow)
+		if replay == nil && s.database.plansService().Plans() != nil {
+			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, authoritativeNow))
 			if err != nil {
 				return err
 			}
 			if !slices.Contains(entitlement.Features, "native_execution") {
-				return &hostedLimitError{Resource: "native_execution"}
+				return &hostedplans.LimitError{Resource: "native_execution"}
 			}
 			if limit, limited := entitlement.Allowances["concurrent_work"]; limited {
 				populations, ok := w.(billingstore.PopulationReader)
 				if !ok {
-					return ErrBillingUsageUnavailable
+					return hostedplans.ErrBillingUsageUnavailable
 				}
 				used, known, err := populations.BillingPopulation(ctx, "concurrent_work", authoritativeNow, 0)
 				if err != nil {
@@ -832,7 +833,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubs
 					return &hubapi.NativeError{Code: "plan_capacity", Message: fmt.Sprintf("The plan's concurrent work limit is reached (%d of %d); work stays queued until a slot frees", used, limit), Status: http.StatusConflict, PublicMessage: true}
 				}
 				if !known {
-					return ErrBillingUsageUnavailable
+					return hostedplans.ErrBillingUsageUnavailable
 				}
 			}
 		}

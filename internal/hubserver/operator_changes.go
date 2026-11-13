@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -298,7 +299,7 @@ func hubSafeChangeError(err error) error {
 	if errors.As(err, &allowance) {
 		return allowance
 	}
-	var limit *hostedLimitError
+	var limit *hostedplans.LimitError
 	if errors.As(err, &limit) {
 		return &operatortool.AllowanceError{
 			Code: "allowance_exhausted", HTTPStatus: http.StatusTooManyRequests,

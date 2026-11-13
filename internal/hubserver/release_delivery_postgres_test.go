@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -48,7 +49,7 @@ func newReleaseTenantFixtureFor(t *testing.T, repo tenantstore.Repository, f hos
 	t.Helper()
 	organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
 	fixture := &releaseTenantFixture{repository: repo, f: f, owner: owner}
-	f.service.database.hostedRuntime.Store(&hostedRuntimeConfig{})
+	f.service.database.hostedRuntime.Store(&hostedplans.RuntimeConfig{})
 	if err := repo.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), f.project)
 		if err != nil {

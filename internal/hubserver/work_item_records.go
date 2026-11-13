@@ -1161,7 +1161,7 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 				if err != nil {
 					return err
 				}
-				if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, now); err != nil {
+				if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, options.Feature, now)); err != nil {
 					return err
 				}
 			}
@@ -1627,7 +1627,7 @@ func (s *Service) mutateCompatibilityDependency(ctx context.Context, scope hubsc
 		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(target.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", now)); err != nil {
 			return err
 		}
 		relationship := corestore.Relationship{

@@ -68,7 +68,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope hubscope.Na
 		next.Revision++
 	}
 	return s.tenantReceiptMutation(ctx, scope, operation, request.Mutation, request, importJobResponse(next), func(w tenantstore.Writer) error {
-		if err := s.database.requireHostedFeatureRecord(ctx, w, "github_integration", s.config.now()); err != nil {
+		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "github_integration", s.config.now())); err != nil {
 			return err
 		}
 		latest, err := w.ProjectRecord(ctx, scope.Project)

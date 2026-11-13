@@ -1949,12 +1949,12 @@ func TestGitHubBatchUsesCatalogJobCap(t *testing.T) {
 	}{{"free", 10000}, {"starter", 10000}} {
 		t.Run(test.plan, func(t *testing.T) {
 			f := newBatchFixture(t)
-			plans := capacityHostedPlans()
-			if err := f.service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+			plans := hostedplans.CapacityPlans()
+			if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 				t.Fatal(err)
 			}
 			if test.plan != "free" {
-				if err := f.service.database.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "paid-plan", Action: "base", ExpectedRevision: 1, Plan: PlanReference{ID: test.plan, Version: 1}, Reason: "fixture paid plan"}); err != nil {
+				if err := hubapi.FromFeatureError(f.service.database.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "paid-plan", Action: "base", ExpectedRevision: 1, Plan: hostedplans.PlanReference{ID: test.plan, Version: 1}, Reason: "fixture paid plan"})); err != nil {
 					t.Fatal(err)
 				}
 			}

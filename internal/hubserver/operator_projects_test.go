@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -418,7 +419,7 @@ func TestHostedProjectTools(t *testing.T) {
 				}
 				requestID := "onboarding-without-collaboration"
 				denied := projectCall(t, "save_onboarding", id, requestID, operatortool.OnboardingInput{Progress: onboarding.Progress{Revision: saved.Revision, Repository: "generate"}})
-				var limited *hostedLimitError
+				var limited *hostedplans.LimitError
 				if raw, err := e.command(ctx, denied, projectCommandExecute); !errors.As(err, &limited) || limited.Resource != "collaboration" || raw != nil {
 					t.Fatalf("unentitled onboarding save=%s err=%v", raw, err)
 				}
@@ -497,7 +498,7 @@ func TestHostedProjectTools(t *testing.T) {
 				if err := json.Unmarshal(created, &issue); err != nil || issue.WorkItemID == "" {
 					t.Fatalf("issue=%s err=%v", created, err)
 				}
-				usage, err := f.service.database.hostedPlanUsage(t.Context(), f.service.config.now())
+				usage, err := hubapi.FeatureResult(f.service.database.plansService().PlanUsage(t.Context(), f.service.config.now()))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -549,7 +550,7 @@ func TestHostedProjectTools(t *testing.T) {
 										}
 									})
 								} else {
-									window := usage.WindowEndsAt.Add(-time.Duration(f.service.database.plans().WindowSeconds) * time.Second)
+									window := usage.WindowEndsAt.Add(-time.Duration(f.service.database.plansService().Plans().WindowSeconds) * time.Second)
 									admin := hostedPostgresAdmin(t, f.service)
 									var before int64
 									if err := admin.QueryRowContext(t.Context(), "SELECT COALESCE((SELECT amount FROM hosted_usage_windows WHERE organization_id=$1 AND window_start=$2 AND metric=$3),0)", "org_security", window, test.resource).Scan(&before); err != nil {

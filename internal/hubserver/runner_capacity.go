@@ -155,8 +155,8 @@ func (s *Service) updateRunnerCapacity(c echo.Context) error {
 
 func (s *Service) runnerCapacityView(ctx context.Context, query hubapi.NativeQueryer, r runnerauth.Runner, backend string, now time.Time) (runnerauth.CapacityView, error) {
 	view := r.CapacityView(backend, now)
-	if s.database.plans() != nil {
-		entitlement, err := s.database.hostedEntitlement(ctx, query, now)
+	if s.database.plansService().Plans() != nil {
+		entitlement, err := hubapi.FeatureResult(s.database.plansService().Entitlement(ctx, query, now))
 		if err != nil {
 			return view, err
 		}

@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -170,10 +171,10 @@ func TestSetProjectIconRefusals(t *testing.T) {
 			defer cancel()
 			switch test.failure {
 			case "quota":
-				plans := pilotHostedPlans()
+				plans := hostedplans.PilotPlans()
 				plans.Plans[0].Allowances["collaboration_bytes"] = 1
 				f.service.database.hostedOrganization = f.project.OrganizationID
-				if err := f.service.database.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+				if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 					t.Fatal(err)
 				}
 			case "mutation":

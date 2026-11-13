@@ -31,8 +31,8 @@ type hostedBillingWorker struct {
 type BillingTenant struct {
 	Tenant   hubmaintenance.Tenant
 	Revision string
-	Plans    HostedPlansConfig
-	Config   *HostedBillingConfig
+	Plans    hostedplans.HostedPlansConfig
+	Config   *hostedplans.HostedBillingConfig
 }
 
 type maintenanceBillingRepository struct{ tenantstore.Repository }
@@ -63,7 +63,7 @@ func (s *Service) billingMaintenance(ctx context.Context, tenant BillingTenant) 
 		leaseID = func() string { return hubapi.NewID("billing") }
 	}
 	d := &database{billingRepository: maintenanceBillingRepository{s.database.billingRepository}, billingAuditStore: hubmaintenance.LimitDetails(s.database.billingAuditStore), hostedOrganization: tracker.OrganizationID(tenant.Tenant.Organization), now: now, newLeaseID: leaseID}
-	d.hostedRuntime.Store(&hostedRuntimeConfig{Revision: tenant.Revision, Plans: tenant.Plans, Billing: tenant.Config})
+	d.hostedRuntime.Store(&hostedplans.RuntimeConfig{Revision: tenant.Revision, Plans: tenant.Plans, Billing: tenant.Config})
 	if tenant.Config != nil {
 		d.aiCreditMode = tenant.Config.CreditMode()
 	}
@@ -199,7 +199,7 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	s := w.service
-	if err := s.database.refreshRuntime(ctx); err != nil {
+	if err := hubapi.FromFeatureError(s.database.plansService().RefreshRuntime(ctx)); err != nil {
 		return err
 	}
 	var through int64
@@ -207,7 +207,7 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 	type pendingEvent struct{ id, kind string }
 	var events []pendingEvent
 
-	if err := s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+	if err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
 		unprocessed, err := reader.UnprocessedBillingEvents(ctx, corestore.MaxPageSize)
 		if err != nil {
 			return err
@@ -227,7 +227,7 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 			events = append(events, pendingEvent{id: row.ID, kind: row.Type})
 		}
 		return nil
-	}); err != nil {
+	})); err != nil {
 		return err
 	}
 
@@ -238,7 +238,7 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 			continue
 		}
 		{
-			if err := s.database.writeBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.SetBillingEventCreditProcessed(ctx, event.id) }); err != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(ctx, func(writer tenantstore.Writer) error { return writer.SetBillingEventCreditProcessed(ctx, event.id) })); err != nil {
 				return err
 			}
 		}
@@ -249,7 +249,7 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 
 func (w *hostedBillingWorker) reconcileSubscription(ctx context.Context, through int64, unprocessedEventIDs []string) error {
 	s := w.service
-	previous, err := s.database.readHostedBilling(ctx)
+	previous, err := hubapi.FeatureResult(s.database.plansService().ReadBilling(ctx))
 	if err != nil {
 		return err
 	}
@@ -257,8 +257,8 @@ func (w *hostedBillingWorker) reconcileSubscription(ctx context.Context, through
 	if cfg == nil {
 		return nil
 	}
-	binding, err := s.database.hostedBillingBinding(ctx, cfg)
-	if errors.Is(err, errHostedBillingUnbound) {
+	binding, err := hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg))
+	if errors.Is(err, hostedplans.ErrBillingUnbound) {
 		return nil
 	}
 	if err != nil {
@@ -269,7 +269,7 @@ func (w *hostedBillingWorker) reconcileSubscription(ctx context.Context, through
 		return err
 	}
 	now := s.config.now().UTC()
-	return s.database.commitHostedBilling(ctx, resolveHostedBilling(cfg, previous, snapshot, now), through, unprocessedEventIDs, now)
+	return hubapi.FromFeatureError(s.database.plansService().CommitBilling(ctx, hostedplans.ResolveBilling(cfg, previous, snapshot, now), through, unprocessedEventIDs, now))
 }
 
 func (s *Service) hostedStripeWebhook(c echo.Context) error {
@@ -289,10 +289,10 @@ func (s *Service) hostedStripeWebhook(c echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	}
 
-	err = s.database.writeBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
+	err = hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(c.Request().Context(), func(writer tenantstore.Writer) error {
 		_, err := writer.CreateBillingEvent(c.Request().Context(), billingstore.Event{OrganizationID: s.database.hostedOrganization, ID: event.ID, Type: event.Type, ReceivedAt: s.config.now().UTC()})
 		return err
-	})
+	}))
 	if err != nil {
 		return c.NoContent(http.StatusServiceUnavailable)
 	}

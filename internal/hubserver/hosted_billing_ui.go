@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -26,8 +27,8 @@ type hostedBillingReport struct {
 	AICredits        *aiCreditView                  `json:"ai_credits,omitempty"`
 	ChatUsage        chatUsageSummary               `json:"chat_usage"`
 	OrganizationID   string                         `json:"organization_id"`
-	State            hostedBillingState             `json:"state"`
-	Entitlement      HostedEntitlement              `json:"entitlement"`
+	State            hostedplans.BillingState       `json:"state"`
+	Entitlement      hostedplans.HostedEntitlement  `json:"entitlement"`
 	ReconciledAt     string                         `json:"reconciled_at"`
 	PendingEvents    int64                          `json:"pending_events"`
 	Audit            []templates.HostedBillingAudit `json:"recent_audit"`
@@ -37,11 +38,11 @@ func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRe
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.Hosted == nil || s.config.TenantRepository == nil || s.database == nil || s.database.billingRepository == nil {
-		return hostedBillingReport{}, ErrBillingUsageUnavailable
+		return hostedBillingReport{}, hostedplans.ErrBillingUsageUnavailable
 	}
 	report := hostedBillingReport{OrganizationID: s.config.Hosted.OrganizationID, Audit: []templates.HostedBillingAudit{}}
 	var err error
-	report.State, err = s.database.readHostedBilling(ctx)
+	report.State, err = hubapi.FeatureResult(s.database.plansService().ReadBilling(ctx))
 	if err != nil {
 		return report, err
 	}
@@ -64,11 +65,11 @@ func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRe
 			return report, err
 		}
 		{
-			err = s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			err = hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
 				var err error
 				report.ChargedAIMicros, err = reader.BillingCreditUsage(ctx, s.database.aiCreditMode, report.ChatUsage.Range.From, report.ChatUsage.Range.To)
 				return err
-			})
+			}))
 		}
 		if err != nil {
 			return report, err
@@ -81,7 +82,7 @@ func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRe
 	var account billingstore.Account
 	var pending []billingstore.Event
 	var audits []billingstore.Audit
-	err = s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+	err = hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
 		var err error
 		account, err = reader.BillingAccount(ctx)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -93,7 +94,7 @@ func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRe
 		}
 		audits, err = reader.BillingAudits(ctx, int64(^uint64(0)>>1), 50)
 		return err
-	})
+	}))
 	if err != nil {
 		return report, err
 	}
@@ -150,7 +151,7 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 	now := s.config.now()
 	data := templates.HostedPageData{Mode: "billing", Title: "Organization billing", CanManage: true, CanManageOwnership: true}
 	data.PlanName = report.Entitlement.Name
-	data.PlanPrice = hostedPlanPrice(report.Entitlement.MonthlyUSDCents)
+	data.PlanPrice = hostedplans.PlanPrice(report.Entitlement.MonthlyUSDCents)
 	for _, row := range [][2]string{{"concurrent_work", "concurrent work"}, {"unarchived_issues", "open issues"}} {
 		name, label := row[0], row[1]
 		limit, limited := report.Entitlement.Allowances[name]
@@ -215,7 +216,7 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 	return s.renderHosted(c, http.StatusOK, data)
 }
 
-func hostedBillingMessage(state hostedBillingState, now time.Time) (string, string) {
+func hostedBillingMessage(state hostedplans.BillingState, now time.Time) (string, string) {
 	if !state.AccessUntil.IsZero() && !state.AccessUntil.After(now) {
 		return "Subscription access ended", "The base plan and valid complimentary grants apply. Update your subscription in the portal to recover paid allowances."
 	}
@@ -262,28 +263,28 @@ type hostedBillingView struct {
 
 type hostedComparisonPlan struct {
 	IncludedAICreditMicros *int64 `json:"included_ai_credit_micros"`
-	HostedPlan
+	hostedplans.HostedPlan
 	PriceID string `json:"price_id"`
 }
 
 type hostedBillingUsageView struct {
-	IncludedAICreditMicros *int64                 `json:"included_ai_credit_micros"`
-	OrganizationID         string                 `json:"organization_id"`
-	EffectiveBase          PlanReference          `json:"effective_base"`
-	Name                   string                 `json:"name"`
-	MonthlyUSDCents        *int64                 `json:"monthly_usd_cents"`
-	Complimentary          bool                   `json:"complimentary"`
-	ExpiresAt              *time.Time             `json:"expires_at"`
-	RenewsAt               *time.Time             `json:"renews_at"`
-	CancelsAt              *time.Time             `json:"cancels_at"`
-	ChatUsage              chatUsageSummary       `json:"chat_usage"`
-	ChargedAIMicros        int64                  `json:"charged_ai_micros"`
-	AICredits              *aiCreditView          `json:"ai_credits,omitempty"`
-	ComparisonPlans        []hostedComparisonPlan `json:"comparison_plans"`
-	CanCheckout            bool                   `json:"can_checkout"`
-	CanManage              bool                   `json:"can_manage"`
-	CanBuyCredits          bool                   `json:"can_buy_credits"`
-	CheckoutPending        bool                   `json:"checkout_pending"`
+	IncludedAICreditMicros *int64                    `json:"included_ai_credit_micros"`
+	OrganizationID         string                    `json:"organization_id"`
+	EffectiveBase          hostedplans.PlanReference `json:"effective_base"`
+	Name                   string                    `json:"name"`
+	MonthlyUSDCents        *int64                    `json:"monthly_usd_cents"`
+	Complimentary          bool                      `json:"complimentary"`
+	ExpiresAt              *time.Time                `json:"expires_at"`
+	RenewsAt               *time.Time                `json:"renews_at"`
+	CancelsAt              *time.Time                `json:"cancels_at"`
+	ChatUsage              chatUsageSummary          `json:"chat_usage"`
+	ChargedAIMicros        int64                     `json:"charged_ai_micros"`
+	AICredits              *aiCreditView             `json:"ai_credits,omitempty"`
+	ComparisonPlans        []hostedComparisonPlan    `json:"comparison_plans"`
+	CanCheckout            bool                      `json:"can_checkout"`
+	CanManage              bool                      `json:"can_manage"`
+	CanBuyCredits          bool                      `json:"can_buy_credits"`
+	CheckoutPending        bool                      `json:"checkout_pending"`
 }
 
 func (s *Service) hostedBillingJSON(c echo.Context) error {
@@ -350,10 +351,10 @@ func (s *Service) hostedBillingUsageJSON(c echo.Context) error {
 	})
 }
 
-func (s *Service) billingUsagePlan(ctx context.Context, entitlement HostedEntitlement) (HostedPlan, bool, *time.Time, error) {
-	plan, err := s.database.readHostedPlan(ctx, nil, entitlement.EffectiveBase)
+func (s *Service) billingUsagePlan(ctx context.Context, entitlement hostedplans.HostedEntitlement) (hostedplans.HostedPlan, bool, *time.Time, error) {
+	plan, err := hubapi.FeatureResult(s.database.plansService().ReadPlan(ctx, nil, entitlement.EffectiveBase))
 	if err != nil {
-		return HostedPlan{}, false, nil, err
+		return hostedplans.HostedPlan{}, false, nil, err
 	}
 	if plan.Name == "" {
 		plan.Name = "Current plan"
@@ -366,11 +367,11 @@ func (s *Service) billingUsagePlan(ctx context.Context, entitlement HostedEntitl
 		if grant.RevokedAt != nil || grant.StartsAt.After(now) || grant.ExpiresAt != nil && !grant.ExpiresAt.After(now) {
 			continue
 		}
-		candidate, err := s.database.readHostedPlan(ctx, nil, grant.Plan)
+		candidate, err := hubapi.FeatureResult(s.database.plansService().ReadPlan(ctx, nil, grant.Plan))
 		if err != nil {
-			return HostedPlan{}, false, nil, err
+			return hostedplans.HostedPlan{}, false, nil, err
 		}
-		if hostedCapacityPlan(grant.Plan) && candidate.Allowances["concurrent_work"] > plan.Allowances["concurrent_work"] {
+		if hostedplans.CapacityPlan(grant.Plan) && candidate.Allowances["concurrent_work"] > plan.Allowances["concurrent_work"] {
 			plan, complimentary, expiry, matched = candidate, true, grant.ExpiresAt, true
 		} else if grant.Plan == plan.PlanReference && (entitlement.Source != "subscription" || matched) {
 			if !matched || expiry != nil && (grant.ExpiresAt == nil || grant.ExpiresAt.After(*expiry)) {
@@ -382,12 +383,12 @@ func (s *Service) billingUsagePlan(ctx context.Context, entitlement HostedEntitl
 	return plan, complimentary, expiry, nil
 }
 
-func (s *Service) hostedPriceLabel(ctx context.Context, price HostedBillingPrice) string {
-	plan, err := s.database.readHostedPlan(ctx, nil, price.Plan)
+func (s *Service) hostedPriceLabel(ctx context.Context, price hostedplans.HostedBillingPrice) string {
+	plan, err := hubapi.FeatureResult(s.database.plansService().ReadPlan(ctx, nil, price.Plan))
 	if err != nil || plan.MonthlyUSDCents == nil {
 		return price.Label
 	}
-	return plan.Name + " · " + hostedPlanPrice(plan.MonthlyUSDCents)
+	return plan.Name + " · " + hostedplans.PlanPrice(plan.MonthlyUSDCents)
 }
 
 func (s *Service) readBillingView(ctx context.Context, pages ...creditPageRequest) (hostedBillingView, error) {
@@ -400,12 +401,12 @@ func (s *Service) readBillingView(ctx context.Context, pages ...creditPageReques
 
 	view := hostedBillingView{hostedBillingReport: report, Prices: []hostedBillingPriceView{}}
 	view.ComparisonPlans = []hostedComparisonPlan{}
-	if runtimePlans := s.database.plans(); runtimePlans != nil {
-		for _, tier := range hostedTiers() {
-			if !tier.Offered || !slices.ContainsFunc(runtimePlans.Plans, func(plan HostedPlan) bool { return plan.PlanReference == tier.PlanReference }) {
+	if runtimePlans := s.database.plansService().Plans(); runtimePlans != nil {
+		for _, tier := range hostedplans.Tiers() {
+			if !tier.Offered || !slices.ContainsFunc(runtimePlans.Plans, func(plan hostedplans.HostedPlan) bool { return plan.PlanReference == tier.PlanReference }) {
 				continue
 			}
-			plan, err := s.database.readHostedPlan(ctx, nil, tier.PlanReference)
+			plan, err := hubapi.FeatureResult(s.database.plansService().ReadPlan(ctx, nil, tier.PlanReference))
 			if err != nil {
 				return hostedBillingView{}, err
 			}
@@ -426,19 +427,19 @@ func (s *Service) readBillingView(ctx context.Context, pages ...creditPageReques
 			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: s.hostedPriceLabel(ctx, price)})
 		}
 		view.CanCheckout = !cfg.CheckoutDisabled && report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
-		if _, err := s.database.hostedBillingBinding(ctx, cfg); err == nil {
+		if _, err := hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg)); err == nil {
 			view.CanManage = true
 		}
 		{
 			var account billingstore.Account
-			if err := s.database.readBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			if err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
 				var err error
 				account, err = reader.BillingAccount(ctx)
 				if errors.Is(err, corestore.ErrNotFound) {
 					return nil
 				}
 				return err
-			}); err != nil {
+			})); err != nil {
 				return hostedBillingView{}, err
 			}
 			view.CheckoutPending = account.Checkout.ExpiresAt.After(s.config.now())

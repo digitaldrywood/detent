@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventbroker"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -141,7 +142,7 @@ func (s *Service) conversationDeps() conversations.Deps {
 			return limit, toFeatureError(err)
 		},
 		LimitError: func(resource string, allowance, consumption int64) error {
-			return &hostedLimitError{Resource: resource, Allowance: allowance, Consumption: consumption}
+			return &hostedplans.LimitError{Resource: resource, Allowance: allowance, Consumption: consumption}
 		},
 		ReadProject: func(ctx context.Context, scope hubauth.Input) (tracker.NativeProject, error) {
 			record, err := s.readProjectRecord(ctx, nativeAuthInput(scope))
@@ -177,13 +178,13 @@ func (s *Service) conversationDeps() conversations.Deps {
 		},
 		ProjectParticipantsUnavailable: hubapi.ErrProjectParticipants,
 		RequireFeature: func(ctx context.Context, reader tenantstore.Reader, feature string, now time.Time) error {
-			return toFeatureError(s.database.requireHostedFeatureRecord(ctx, reader, feature, now))
+			return toFeatureError(hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, reader, feature, now)))
 		},
 		ModelChoiceGranted: func(ctx context.Context, reader tenantstore.Reader, organization tracker.OrganizationID, now time.Time) (bool, error) {
-			if s.database.plans() == nil || s.database.hostedOrganization != organization {
+			if s.database.plansService().Plans() == nil || s.database.hostedOrganization != organization {
 				return false, nil
 			}
-			entitlement, err := s.database.hostedEntitlementRecord(ctx, reader, now)
+			entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, reader, now))
 			if err != nil {
 				return false, toFeatureError(err)
 			}

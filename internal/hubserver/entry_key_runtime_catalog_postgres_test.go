@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -28,7 +29,7 @@ import (
 
 func TestPostgresEntryKeyRuntimeCatalog(t *testing.T) {
 	f := newSharedRouteFixture(t, func(cfg *Config) {
-		plans := pilotHostedPlans()
+		plans := hostedplans.PilotPlans()
 		cfg.Hosted.Plans = &plans
 		cfg.Hosted.SharedEntry.ResolveKey = func(_ context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
 			org := cfg.Hosted.OrganizationID

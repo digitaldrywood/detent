@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -23,7 +24,7 @@ import (
 func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 	for _, mode := range []string{"startup", "startup unpublished", "startup unbound", "reload", "publication", "audit refusal"} {
 		t.Run(mode, func(t *testing.T) {
-			plans := pilotHostedPlans()
+			plans := hostedplans.PilotPlans()
 			plans.Plans[0].ID = "configured_free"
 			plans.Base = plans.Plans[0].PlanReference
 			plans.Plans[0].Allowances["api_mutations"] = 0
@@ -33,16 +34,16 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 			repo, admin := projectRecordPostgresWithAdmin(t, 4)
 			services := configuredPlanPostgresServices(t, plans, repo)
 			for _, s := range services {
-				if err := s.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+				if err := hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 					return w.CreateBillingGrant(t.Context(), billingstore.Grant{OrganizationID: s.database.hostedOrganization, ID: "grant_" + string(s.database.hostedOrganization), Plan: billingstore.PlanReference{ID: plans.Plans[1].ID, Version: 1}, Scope: []string{"api_mutations", "ingested_events"}, StartsAt: time.Now().Add(-time.Hour)})
-				}); err != nil {
+				})); err != nil {
 					t.Fatal(err)
 				}
 			}
 			denied := errors.New("usage refused")
 			request := func(s *Service, id string) error {
-				return s.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
-					entitlement, err := s.database.hostedEntitlementRecord(t.Context(), w, time.Now())
+				return hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+					entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(t.Context(), w, time.Now()))
 					if err != nil {
 						return err
 					}
@@ -51,7 +52,7 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 						return denied
 					}
 					return err
-				})
+				}))
 			}
 			for _, s := range services {
 				if err := request(s, "before"); !errors.Is(err, denied) {
@@ -82,14 +83,14 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 						staged.Plans = slices.Clone(plans.Plans)
 						staged.Plans[len(staged.Plans)-1] = stored
 						s.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
-						update := HostedRuntimeUpdate{Plans: &staged, Reason: "unpublished conflicting version", StageID: "00000000-0000-4000-8000-000000000011"}
+						update := hostedplans.HostedRuntimeUpdate{Plans: &staged, Reason: "unpublished conflicting version", StageID: "00000000-0000-4000-8000-000000000011"}
 						if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
 							t.Fatal(err)
 						}
 						s.config.Hosted.SharedEntry = nil
-					} else if err := s.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+					} else if err := hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 						return w.CreateBillingPlan(t.Context(), billingstore.Plan{OrganizationID: s.database.hostedOrganization, PlanReference: billingstore.PlanReference{ID: stored.ID, Version: stored.Version}, Name: stored.Name, MonthlyUSDCents: stored.MonthlyUSDCents, Features: stored.Features, Allowances: stored.Allowances})
-					}); err != nil {
+					})); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -109,7 +110,7 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 			readStoredPlans := func(s *Service) []billingstore.Plan {
 				t.Helper()
 				stored := make([]billingstore.Plan, 0, len(plans.Plans))
-				if err := s.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+				if err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 					for _, configured := range plans.Plans {
 						plan, err := r.BillingPlan(t.Context(), billingstore.PlanReference{ID: configured.ID, Version: configured.Version})
 						if err != nil {
@@ -118,7 +119,7 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 						stored = append(stored, plan)
 					}
 					return nil
-				}); err != nil {
+				})); err != nil {
 					t.Fatal(err)
 				}
 				return stored
@@ -133,11 +134,11 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 						}
 						if mode == "startup unpublished" {
 							var published bool
-							if err := s.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+							if err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 								var err error
 								published, err = r.RuntimePublished(t.Context(), last.RuntimeID)
 								return err
-							}); err != nil {
+							})); err != nil {
 								t.Fatal(err)
 							}
 							if published || last.RuntimeID != "00000000-0000-4000-8000-000000000011" {
@@ -151,18 +152,18 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 							t.Fatal("legacy startup fixture did not retain an empty runtime binding")
 						}
 					}
-					if err := s.database.configureHostedPlans(t.Context(), s.config.Hosted); err != nil {
+					if err := hubapi.FromFeatureError(s.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(s.config.Hosted))); err != nil {
 						t.Fatal(err)
 					}
 					for read := range 2 {
 						if read != 0 {
 							s.database.hostedRuntime.Store(nil)
-							if err := s.database.refreshRuntime(t.Context()); err != nil {
+							if err := hubapi.FromFeatureError(s.database.plansService().RefreshRuntime(t.Context())); err != nil {
 								t.Fatal(err)
 							}
 						}
 						retained := readStoredPlans(s)
-						state := s.database.runtimeState()
+						state := s.database.plansService().RuntimeState()
 						if state == nil {
 							t.Fatal("startup did not retain its runtime snapshot")
 						}
@@ -179,28 +180,28 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 					if err := request(s, "startup-preserved"); !errors.Is(err, denied) {
 						t.Fatalf("startup replaced the existing allowance: %v", err)
 					}
-					update := HostedRuntimeUpdate{Plans: &plans, Reason: "explicit startup catalog update"}
+					update := hostedplans.HostedRuntimeUpdate{Plans: &plans, Reason: "explicit startup catalog update"}
 					if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
 						t.Fatal(err)
 					}
 				} else {
-					update := HostedRuntimeUpdate{Plans: &plans, Reason: "configuration edit"}
+					update := hostedplans.HostedRuntimeUpdate{Plans: &plans, Reason: "configuration edit"}
 					if mode == "publication" {
 						s.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 						update.StageID = stage
 					}
-					before := s.database.runtimeState()
+					before := s.database.plansService().RuntimeState()
 					validation := update
 					validation.ValidateOnly = true
 					if err := s.applyHostedRuntime(t.Context(), &validation); err != nil {
 						t.Fatal(err)
 					}
-					if err := request(s, "validation"); !errors.Is(err, denied) || s.database.runtimeState() != before {
+					if err := request(s, "validation"); !errors.Is(err, denied) || s.database.plansService().RuntimeState() != before {
 						t.Fatalf("validation changed active definition: %v", err)
 					}
 					err := s.applyHostedRuntime(t.Context(), &update)
 					if mode == "audit refusal" {
-						if err == nil || s.database.runtimeState() != before {
+						if err == nil || s.database.plansService().RuntimeState() != before {
 							t.Fatalf("audit refusal activated runtime: %v", err)
 						}
 						if err := request(s, "refused"); !errors.Is(err, denied) {
@@ -218,7 +219,7 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 			}
 			if mode == "audit refusal" {
 				for _, s := range services {
-					update := HostedRuntimeUpdate{Plans: &plans, Reason: "retry configuration edit"}
+					update := hostedplans.HostedRuntimeUpdate{Plans: &plans, Reason: "retry configuration edit"}
 					if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
 						t.Fatal(err)
 					}
@@ -234,17 +235,17 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, s := range services {
-					if err := s.database.refreshRuntime(t.Context()); err != nil {
+					if err := hubapi.FromFeatureError(s.database.plansService().RefreshRuntime(t.Context())); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
 			for _, s := range services {
-				if err := s.database.refreshRuntime(t.Context()); err != nil {
+				if err := hubapi.FromFeatureError(s.database.plansService().RefreshRuntime(t.Context())); err != nil {
 					t.Fatal(err)
 				}
-				if err := s.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
-					entitlement, err := s.database.hostedEntitlementRecord(t.Context(), r, time.Now())
+				if err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+					entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(t.Context(), r, time.Now()))
 					if err != nil {
 						return err
 					}
@@ -278,12 +279,12 @@ func TestPostgresConfiguredPlanReplacement(t *testing.T) {
 							return fmt.Errorf("explicit reload did not apply configured startup version: %+v", plan)
 						}
 					}
-					var limited *hostedLimitError
-					if err := s.database.requireHostedFeatureRecord(t.Context(), r, "native_execution", time.Now()); !errors.As(err, &limited) {
+					var limited *hostedplans.LimitError
+					if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(t.Context(), r, "native_execution", time.Now())); !errors.As(err, &limited) {
 						return fmt.Errorf("removed feature allowed: %v", err)
 					}
-					return s.database.requireHostedFeatureRecord(t.Context(), r, "model_choice", time.Now())
-				}); err != nil {
+					return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(t.Context(), r, "model_choice", time.Now()))
+				})); err != nil {
 					t.Fatal(err)
 				}
 				if err := request(s, "after"); err != nil {
@@ -304,12 +305,12 @@ func TestPostgresRuntimeValidationDoesNotPublish(t *testing.T) {
 		}
 		d := &database{billingRepository: repo, hostedOrganization: org, billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
 		s := &Service{database: d, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), EntitlementAdministrator: "actor"}, now: time.Now, Logger: discardLogger()}}
-		plans := pilotHostedPlans()
-		update := HostedRuntimeUpdate{Plans: &plans, Reason: "Test runtime", ValidateOnly: true}
+		plans := hostedplans.PilotPlans()
+		update := hostedplans.HostedRuntimeUpdate{Plans: &plans, Reason: "Test runtime", ValidateOnly: true}
 		if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
 			t.Fatal(err)
 		}
-		if d.plans() != nil {
+		if d.plansService().Plans() != nil {
 			t.Fatal("validation published runtime")
 		}
 		if err := repo.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
@@ -330,17 +331,17 @@ func TestPostgresRuntimeValidationDoesNotPublish(t *testing.T) {
 			t.Fatal(err)
 		}
 		if update.StageID != "" {
-			if d.plans() != nil {
+			if d.plansService().Plans() != nil {
 				t.Fatal("first preparation was visible before publication")
 			}
 			if _, err := admin.ExecContext(t.Context(), "INSERT INTO hosted_runtime_publications(id) VALUES($1)", update.StageID); err != nil {
 				t.Fatal(err)
 			}
-			if err := d.refreshRuntime(t.Context()); err != nil {
+			if err := hubapi.FromFeatureError(d.plansService().RefreshRuntime(t.Context())); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if d.plans() == nil {
+		if d.plansService().Plans() == nil {
 			t.Fatal("runtime not published")
 		}
 		if err := repo.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
@@ -362,7 +363,7 @@ func TestPostgresRuntimeValidationDoesNotPublish(t *testing.T) {
 	}
 }
 
-func configuredPlanPostgresServices(t *testing.T, plans HostedPlansConfig, repo *postgres.Repository) []*Service {
+func configuredPlanPostgresServices(t *testing.T, plans hostedplans.HostedPlansConfig, repo *postgres.Repository) []*Service {
 	t.Helper()
 	var services []*Service
 	suffix := sha256.Sum256([]byte(t.Name()))
@@ -375,7 +376,7 @@ func configuredPlanPostgresServices(t *testing.T, plans HostedPlansConfig, repo 
 		}
 		d := &database{postgres: repo, billingRepository: repo, hostedOrganization: org, billingAuditStore: &memoryRunDetails{}, now: time.Now, logger: discardLogger()}
 		s := &Service{database: d, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org), Plans: &plans, EntitlementAdministrator: "operator"}, now: time.Now, Logger: discardLogger()}}
-		if err := d.configureHostedPlans(t.Context(), s.config.Hosted); err != nil {
+		if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(s.config.Hosted))); err != nil {
 			t.Fatal(err)
 		}
 		services = append(services, s)

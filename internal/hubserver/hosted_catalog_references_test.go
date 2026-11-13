@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -17,9 +18,9 @@ func TestPostgresCatalogRemovalChecksReferences(t *testing.T) {
 	for _, mode := range []string{"startup", "validation", "reload", "prepare", "publication"} {
 		for _, kind := range []string{"base", "subscription", "grant", "future grant", "expired grant", "revoked grant", "unreferenced", "administrator", "payment pending", "disable catalog"} {
 			t.Run(mode+"/"+kind, func(t *testing.T) {
-				plans := pilotHostedPlans()
+				plans := hostedplans.PilotPlans()
 				if kind == "payment pending" {
-					plans = *CheckoutHostedPlans(&plans)
+					plans = *hostedplans.CheckoutHostedPlans(&plans)
 				}
 				services := configuredPlanPostgresServices(t, plans, repo)
 				stageID := uuid.NewString()
@@ -27,7 +28,7 @@ func TestPostgresCatalogRemovalChecksReferences(t *testing.T) {
 				candidate.Plans = candidate.Plans[:1]
 				candidate.Base = candidate.Plans[0].PlanReference
 				if kind == "disable catalog" {
-					candidate = HostedPlansConfig{}
+					candidate = hostedplans.HostedPlansConfig{}
 				}
 				ref := billingstore.PlanReference{ID: "comp_team", Version: 1}
 				if kind == "administrator" {
@@ -39,7 +40,7 @@ func TestPostgresCatalogRemovalChecksReferences(t *testing.T) {
 				if mode == "publication" && kind != "disable catalog" {
 					for _, s := range services {
 						s.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
-						update := HostedRuntimeUpdate{Plans: &candidate, Reason: "prepare removal", StageID: stageID}
+						update := hostedplans.HostedRuntimeUpdate{Plans: &candidate, Reason: "prepare removal", StageID: stageID}
 						if err := s.applyHostedRuntime(t.Context(), &update); err != nil {
 							t.Fatal(err)
 						}
@@ -47,14 +48,14 @@ func TestPostgresCatalogRemovalChecksReferences(t *testing.T) {
 				}
 				for _, s := range services {
 					if kind == "administrator" {
-						plan := HostedPlan{PlanReference: PlanReference{ID: ref.ID, Version: ref.Version}, Features: []string{"collaboration"}, Allowances: map[string]int64{"api_mutations": 7}}
-						if err := s.database.applyHostedPlanCommand(t.Context(), "operator", hostedPlanCommand{ID: "admin_create", Action: "create_plan", ExpectedRevision: 1, Plan: plan.PlanReference, Definition: &plan, Reason: "administrator plan"}); err != nil {
+						plan := hostedplans.HostedPlan{PlanReference: hostedplans.PlanReference{ID: ref.ID, Version: ref.Version}, Features: []string{"collaboration"}, Allowances: map[string]int64{"api_mutations": 7}}
+						if err := hubapi.FromFeatureError(s.database.plansService().ApplyPlanCommand(t.Context(), "operator", hostedplans.PlanCommand{ID: "admin_create", Action: "create_plan", ExpectedRevision: 1, Plan: plan.PlanReference, Definition: &plan, Reason: "administrator plan"})); err != nil {
 							t.Fatal(err)
 						}
 					}
 					setReference := func() {
 						t.Helper()
-						if err := s.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+						if err := hubapi.FromFeatureError(s.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 							assignment, err := w.BillingAssignment(t.Context())
 							if err != nil {
 								return err
@@ -78,23 +79,23 @@ func TestPostgresCatalogRemovalChecksReferences(t *testing.T) {
 								return w.CreateBillingGrant(t.Context(), grant)
 							}
 							return w.SetBillingAssignment(t.Context(), assignment, assignment.Revision)
-						}); err != nil {
+						})); err != nil {
 							t.Fatal(err)
 						}
 					}
-					update := HostedRuntimeUpdate{Plans: &candidate, Reason: "remove configured plan", ValidateOnly: mode == "validation"}
+					update := hostedplans.HostedRuntimeUpdate{Plans: &candidate, Reason: "remove configured plan", ValidateOnly: mode == "validation"}
 					if mode == "prepare" || mode == "publication" {
 						s.config.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{}
 						update.StageID = stageID
 					}
-					before := s.database.runtimeState()
+					before := s.database.plansService().RuntimeState()
 					setReference()
 					var err error
 					switch mode {
 					case "startup":
 						cfg := *s.config.Hosted
 						cfg.Plans = &candidate
-						err = s.database.configureHostedPlans(t.Context(), &cfg)
+						err = hubapi.FromFeatureError(s.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&cfg)))
 					case "publication":
 						if kind == "disable catalog" {
 							err = s.applyHostedRuntime(t.Context(), &update)
@@ -104,15 +105,15 @@ func TestPostgresCatalogRemovalChecksReferences(t *testing.T) {
 									t.Fatal(err)
 								}
 							}
-							err = s.database.refreshRuntime(t.Context())
+							err = hubapi.FromFeatureError(s.database.plansService().RefreshRuntime(t.Context()))
 						}
 					default:
 						err = s.applyHostedRuntime(t.Context(), &update)
 					}
 					wantError := kind == "base" || kind == "subscription" || kind == "grant" || kind == "future grant" || kind == "disable catalog"
 					if wantError {
-						if err == nil || !strings.Contains(err.Error(), "configuration omits referenced plan") || s.database.runtimeState() != before {
-							t.Fatalf("%s removal error=%v; snapshot retained=%t", s.database.hostedOrganization, err, s.database.runtimeState() == before)
+						if err == nil || !strings.Contains(err.Error(), "configuration omits referenced plan") || s.database.plansService().RuntimeState() != before {
+							t.Fatalf("%s removal error=%v; snapshot retained=%t", s.database.hostedOrganization, err, s.database.plansService().RuntimeState() == before)
 						}
 					} else if err != nil {
 						t.Fatalf("%s exempt/unreferenced plan blocked: %v", s.database.hostedOrganization, err)

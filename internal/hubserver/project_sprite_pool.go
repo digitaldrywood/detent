@@ -281,7 +281,7 @@ func (s *Service) executeSpritePoolSettingsCommand(ctx context.Context, scope hu
 		}
 		if keyed {
 			now := s.config.now()
-			if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
+			if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", now)); err != nil {
 				return err
 			}
 			usageID := "sprite-pool/" + artifact.Digest([]byte(scope.Credential.ID+"\x00set_sprite_pool\x00"+command.IdempotencyKey))

@@ -162,7 +162,7 @@ func (s *Service) changeHostedGrantFor(ctx context.Context, credential hubapi.AP
 		}
 		return hostedMemberView{}, hubapi.NativeNotFound()
 	}
-	if !hostedSafeID(member.UserID) || !hostedSafeID(project) {
+	if !hostedplans.SafeID(member.UserID) || !hostedplans.SafeID(project) {
 		return hostedMemberView{}, hubapi.NativePublicInvalid("Select a member and project")
 	}
 	if err := s.hostedGrant(ctx, credential, member.UserID, project, write, runner, revoke); err != nil {
@@ -218,7 +218,7 @@ func (s *Service) validateHostedGrants(ctx context.Context, credential hubapi.AP
 		}
 		seen := map[string]bool{}
 		for _, grant := range grants {
-			if !hostedSafeID(grant.ProjectID) || seen[grant.ProjectID] {
+			if !hostedplans.SafeID(grant.ProjectID) || seen[grant.ProjectID] {
 				return hubapi.NativePublicInvalid("Select each project only once")
 			}
 			seen[grant.ProjectID] = true

@@ -11,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/profiling"
@@ -23,7 +22,7 @@ type hostedFileConfig struct {
 	Billing                  *hostedBillingFileConfig        `yaml:"billing"`
 	EntitlementAdministrator string                          `yaml:"entitlement_administrator"`
 	EntitlementAdminTokenEnv string                          `yaml:"entitlement_admin_token_env"`
-	Plans                    *hubserver.HostedPlansConfig    `yaml:"entitlements"`
+	Plans                    *hostedplans.HostedPlansConfig  `yaml:"entitlements"`
 	OrganizationID           string                          `yaml:"organization_id"`
 	WorkOSOrganizationID     string                          `yaml:"workos_organization_id"`
 	BootstrapSubject         string                          `yaml:"bootstrap_subject"`
@@ -95,21 +94,21 @@ func readHostedSharedEntry(config *hostedSharedEntryFileConfig) (*hostedplans.Ho
 }
 
 type hostedBillingFileConfig struct {
-	Mode                  string                         `yaml:"mode,omitempty"`
-	CheckoutDisabled      bool                           `yaml:"checkout_disabled,omitempty"`
-	AccountID             string                         `yaml:"account_id"`
-	CustomerID            string                         `yaml:"customer_id"`
-	PortalConfigurationID string                         `yaml:"portal_configuration_id"`
-	APIKeyEnv             string                         `yaml:"api_key_env"`
-	WebhookSecretEnv      string                         `yaml:"webhook_secret_env"`
-	GraceSeconds          int64                          `yaml:"grace_seconds"`
-	ReconcileSeconds      int64                          `yaml:"reconcile_seconds"`
-	CreditCostMultiplier  float64                        `yaml:"credit_cost_multiplier,omitempty"`
-	CreditPacks           []hubserver.HostedCreditPack   `yaml:"credit_packs"`
-	Prices                []hubserver.HostedBillingPrice `yaml:"prices"`
+	Mode                  string                           `yaml:"mode,omitempty"`
+	CheckoutDisabled      bool                             `yaml:"checkout_disabled,omitempty"`
+	AccountID             string                           `yaml:"account_id"`
+	CustomerID            string                           `yaml:"customer_id"`
+	PortalConfigurationID string                           `yaml:"portal_configuration_id"`
+	APIKeyEnv             string                           `yaml:"api_key_env"`
+	WebhookSecretEnv      string                           `yaml:"webhook_secret_env"`
+	GraceSeconds          int64                            `yaml:"grace_seconds"`
+	ReconcileSeconds      int64                            `yaml:"reconcile_seconds"`
+	CreditCostMultiplier  float64                          `yaml:"credit_cost_multiplier,omitempty"`
+	CreditPacks           []hostedplans.HostedCreditPack   `yaml:"credit_packs"`
+	Prices                []hostedplans.HostedBillingPrice `yaml:"prices"`
 }
 
-func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(string) string) (*hubserver.HostedBillingConfig, error) {
+func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(string) string) (*hostedplans.HostedBillingConfig, error) {
 	if config == nil {
 		return nil, errors.New("billing configuration is required")
 	}
@@ -124,7 +123,7 @@ func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(str
 	if len(secret) < 16 || !strings.HasPrefix(secret, "whsec_") {
 		return nil, errors.New("billing webhook secret is unavailable or invalid")
 	}
-	return &hubserver.HostedBillingConfig{
+	return &hostedplans.HostedBillingConfig{
 		Mode: config.Mode, CheckoutDisabled: config.CheckoutDisabled, AccountID: config.AccountID, CustomerID: config.CustomerID, PortalConfigurationID: config.PortalConfigurationID,
 		WebhookSecret: []byte(secret), GraceSeconds: config.GraceSeconds, ReconcileSeconds: config.ReconcileSeconds,
 		Prices: config.Prices, CreditPacks: config.CreditPacks, CreditCostMultiplier: config.CreditCostMultiplier, Provider: provider,
@@ -191,7 +190,7 @@ func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hosted
 			return nil, err
 		}
 	}
-	var billingConfig *hubserver.HostedBillingConfig
+	var billingConfig *hostedplans.HostedBillingConfig
 	if config.Billing != nil {
 		billingConfig, err = readHostedBillingConfig(config.Billing, lookupEnv)
 		if err != nil {

@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -357,7 +358,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	view, err := s.inviteHostedMemberFor(c.Request().Context(), credential, request.Email, request.Role, request.IdempotencyKey, request.Grants)
 	if err != nil {
 		var application *hubapi.NativeError
-		var limit *hostedLimitError
+		var limit *hostedplans.LimitError
 		switch {
 		case errors.Is(err, tenantauth.ErrUnavailable):
 			return s.nativeAPIError(c, err)

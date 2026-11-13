@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -33,7 +34,7 @@ func TestBillingMaintenanceCreditStepAdvancesOneTenantEvent(t *testing.T) {
 	}
 	service := &Service{database: &database{billingRepository: repository, hostedOrganization: "org_unselected"}, config: Config{now: func() time.Time { return now }}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
-		tenant := BillingTenant{Tenant: hubmaintenance.Tenant{Organization: string(org), Generation: 1}, Revision: "runtime_" + string(org), Config: &HostedBillingConfig{Provider: &maintenanceBillingProvider{org: string(org)}}}
+		tenant := BillingTenant{Tenant: hubmaintenance.Tenant{Organization: string(org), Generation: 1}, Revision: "runtime_" + string(org), Config: &hostedplans.HostedBillingConfig{Provider: &maintenanceBillingProvider{org: string(org)}}}
 		ctx := (hubmaintenance.Budget{Items: 1, Bytes: hubmaintenance.ByteLimit}).Context(t.Context(), tenant.Tenant)
 		mismatch := tenant
 		mismatch.Tenant.Generation++
@@ -120,7 +121,7 @@ func TestBillingMaintenanceSubscriptionReceiptsAndDueCheck(t *testing.T) {
 		providers[string(org)] = provider
 		tenant := hubmaintenance.Tenant{Organization: string(org), Generation: int64(len(registry) + 1)}
 		registry = append(registry, tenant)
-		tenants[string(org)] = BillingTenant{Tenant: tenant, Revision: "runtime_" + string(org), Config: &HostedBillingConfig{AccountID: account, ReconcileSeconds: 60, Provider: provider}}
+		tenants[string(org)] = BillingTenant{Tenant: tenant, Revision: "runtime_" + string(org), Config: &hostedplans.HostedBillingConfig{AccountID: account, ReconcileSeconds: 60, Provider: provider}}
 	}
 	scheduler, err := hubmaintenance.New(registry, []hubmaintenance.Feature{{Name: "billing", Bytes: 1 << 20, Step: func(ctx context.Context, tenant hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
 		return service.MaintainBillingSubscription(ctx, tenants[tenant.Organization])

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -173,14 +174,14 @@ func TestConversationModelChoicesOfferLunaEfforts(t *testing.T) {
 	requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
 	d := f.service.database
 	d.hostedOrganization = f.project.OrganizationID
-	plans := capacityHostedPlans()
-	plans.Base = PlanReference{ID: "starter", Version: 1}
-	if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+	plans := hostedplans.CapacityPlans()
+	plans.Base = hostedplans.PlanReference{ID: "starter", Version: 1}
+	if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 		t.Fatal(err)
 	}
 	for _, granted := range []bool{false, true} {
 		if granted {
-			if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "grant-model", Action: "grant", ExpectedRevision: 1, GrantID: "model", Plan: plans.Base, Scope: []string{"model_choice"}, Reason: "approved model choice"}); err != nil {
+			if err := hubapi.FromFeatureError(d.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "grant-model", Action: "grant", ExpectedRevision: 1, GrantID: "model", Plan: plans.Base, Scope: []string{"model_choice"}, Reason: "approved model choice"})); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -199,7 +200,7 @@ func TestConversationModelChoicesOfferLunaEfforts(t *testing.T) {
 		}
 	}
 	conversationPatch(t, f, f.token, record.ID, map[string]any{"preferences": map[string]any{"model": "auto", "reasoning_effort": "low"}})
-	if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "revoke-model", Action: "revoke", ExpectedRevision: 2, GrantID: "model", Reason: "revoked model choice"}); err != nil {
+	if err := hubapi.FromFeatureError(d.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "revoke-model", Action: "revoke", ExpectedRevision: 2, GrantID: "model", Reason: "revoked model choice"})); err != nil {
 		t.Fatal(err)
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/link", f.token, map[string]any{

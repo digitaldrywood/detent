@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/tracker"
 
 	"github.com/google/uuid"
@@ -21,8 +22,8 @@ import (
 )
 
 type entryRuntime struct {
-	Update         hubserver.HostedRuntimeUpdate
-	Prices         []hubserver.HostedBillingPrice
+	Update         hostedplans.HostedRuntimeUpdate
+	Prices         []hostedplans.HostedBillingPrice
 	Configure      func(TenantSpec) ([]byte, error)
 	Revision       string
 	AllowedEmails  []string
@@ -30,11 +31,11 @@ type entryRuntime struct {
 }
 
 type RuntimeAdopter interface {
-	AdoptRuntime(context.Context, Organization, string, hubserver.HostedRuntimeUpdate) error
+	AdoptRuntime(context.Context, Organization, string, hostedplans.HostedRuntimeUpdate) error
 }
 
 type entryRuntimeObject struct {
-	hubserver.HostedRuntimeUpdate
+	hostedplans.HostedRuntimeUpdate
 	AllowedEmails  []string `json:"allowed_emails"`
 	AllowedDomains []string `json:"allowed_domains"`
 }
@@ -84,7 +85,7 @@ func (s *Service) AdoptPublishedRuntime(ctx context.Context, tenant hubmaintenan
 	return adopter.AdoptRuntime(ctx, organization, target.PreparedRevision, payload.HostedRuntimeUpdate)
 }
 
-func (s *Service) allocationPrices(ctx context.Context) []hubserver.HostedBillingPrice {
+func (s *Service) allocationPrices(ctx context.Context) []hostedplans.HostedBillingPrice {
 	if state := s.currentRuntime(ctx); state != nil {
 		return state.Prices
 	}
@@ -203,7 +204,7 @@ func (s *Service) publishSharedRuntimeConfiguration(ctx context.Context, next Co
 	update.ValidateOnly = false
 	update.StageID = uuid.NewString()
 	if update.Plans == nil {
-		update.Plans = &hubserver.HostedPlansConfig{}
+		update.Plans = &hostedplans.HostedPlansConfig{}
 	}
 	if err := hubserver.ValidateHostedRuntimeUpdate(update); err != nil {
 		return err
@@ -313,7 +314,7 @@ func (s *Service) currentRuntime(ctx context.Context) *entryRuntime {
 	return state
 }
 
-func (s *Service) changeTenantRuntime(ctx context.Context, organization Organization, update *hubserver.HostedRuntimeUpdate) error {
+func (s *Service) changeTenantRuntime(ctx context.Context, organization Organization, update *hostedplans.HostedRuntimeUpdate) error {
 	body, err := json.Marshal(update)
 	if err != nil {
 		return err

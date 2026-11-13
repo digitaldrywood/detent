@@ -1613,21 +1613,21 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 			d := f.service.database
 			if test.hosted {
 				d.hostedOrganization = f.organization
-				plans := capacityHostedPlans()
+				plans := hostedplans.CapacityPlans()
 				if !test.free {
-					plans.Base = PlanReference{ID: "starter", Version: 1}
+					plans.Base = hostedplans.PlanReference{ID: "starter", Version: 1}
 				}
-				if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+				if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 					t.Fatal(err)
 				}
 				if test.granted {
-					if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "grant-model", Action: "grant", GrantID: "model", ExpectedRevision: 1, Plan: plans.Base, Scope: []string{"model_choice"}, Reason: "approved model choice"}); err != nil {
+					if err := hubapi.FromFeatureError(d.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "grant-model", Action: "grant", GrantID: "model", ExpectedRevision: 1, Plan: plans.Base, Scope: []string{"model_choice"}, Reason: "approved model choice"})); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
 			if test.credits {
-				d.aiCreditMode, d.aiCreditCostMultiplier = "test", defaultAICreditCostMultiplier
+				d.aiCreditMode, d.aiCreditCostMultiplier = "test", hostedplans.DefaultAICreditCostMultiplier
 				f.write(t, func(w tenantstore.Writer) error {
 					return w.CreateBillingCreditAccount(t.Context(), billingstore.CreditAccount{OrganizationID: f.organization, Mode: "test", BalanceMicros: test.balance})
 				})
@@ -1657,7 +1657,7 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 				if !strings.Contains(reply.Text+string(reply.Data), "AI credits are exhausted") || f.backend.turns() != 0 {
 					t.Fatalf("exhausted reply=%#v backend calls=%d", reply, f.backend.turns())
 				}
-				if _, err := d.adjustAICredits(t.Context(), "staff@example.test", billing.CreditAdjustment{IdempotencyKey: "luna-comp", AmountUSD: "5", Reason: "complimentary pilot"}); err != nil {
+				if _, err := hubapi.FeatureResult(d.creditsService().Adjust(t.Context(), "staff@example.test", billing.CreditAdjustment{IdempotencyKey: "luna-comp", AmountUSD: "5", Reason: "complimentary pilot"})); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1695,7 +1695,7 @@ func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 				}
 			}
 			if test.revoked {
-				if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "revoke-model", Action: "revoke", GrantID: "model", ExpectedRevision: 2, Reason: "revoked model choice"}); err != nil {
+				if err := hubapi.FromFeatureError(d.plansService().ApplyPlanCommand(t.Context(), bootstrapTokenID, hostedplans.PlanCommand{ID: "revoke-model", Action: "revoke", GrantID: "model", ExpectedRevision: 2, Reason: "revoked model choice"})); err != nil {
 					t.Fatal(err)
 				}
 				f.say(t, &record, "And now?")
@@ -2192,7 +2192,7 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 		{name: "exhausted viewer sees owner action", credits: true, want: "Ask an organization owner", hidden: "Auto-fund"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			plans := capacityHostedPlans()
+			plans := hostedplans.CapacityPlans()
 			f := newConfiguredCoordinatorFixture(t, "free-chat", func(cfg *Config) {
 				if test.credits {
 					cfg.Hosted = &hostedplans.HostedConfig{Plans: &plans, OrganizationID: "org_credit", WorkOSOrganizationID: "provider_org_credit", BootstrapSubject: "user_owner", PublicURL: "http://127.0.0.1:7777", Provider: newHostedSecurityProvider()}
@@ -2200,12 +2200,12 @@ func TestCoordinatorFreeRefusesLuna(t *testing.T) {
 			})
 			d := f.service.database
 			d.hostedOrganization = f.organization
-			if err := d.configureHostedPlans(t.Context(), &hostedplans.HostedConfig{Plans: &plans}); err != nil {
+			if err := hubapi.FromFeatureError(d.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 				t.Fatal(err)
 			}
 			f.conversations.Config.Model = "gpt-6-luna"
 			if test.credits {
-				d.aiCreditMode, d.aiCreditCostMultiplier = "test", defaultAICreditCostMultiplier
+				d.aiCreditMode, d.aiCreditCostMultiplier = "test", hostedplans.DefaultAICreditCostMultiplier
 				role := "viewer"
 				if test.owner {
 					role = "owner"

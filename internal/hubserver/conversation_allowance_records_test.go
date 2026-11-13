@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -50,7 +51,7 @@ func TestConversationCollaborationGrowthAllowancePostgres(t *testing.T) {
 				err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
 					return database.checkConversationCollaborationGrowthPostgres(t.Context(), writer, "receipt_example", test.before, test.after, now, test.completion)
 				})
-				var limit *hostedLimitError
+				var limit *hostedplans.LimitError
 				if errors.As(err, &limit) {
 					gotLimit = limit.Resource
 					continue
@@ -142,9 +143,9 @@ func seedConversationAllowancePostgres(t *testing.T, repository tenantstore.Repo
 }
 
 func conversationAllowanceDatabase(organization tracker.OrganizationID, ref billingstore.PlanReference, allowances map[string]int64, repository tenantstore.Repository) *database {
-	plan := HostedPlan{PlanReference: PlanReference{ID: ref.ID, Version: ref.Version}, Name: "Example", Features: []string{}, Allowances: allowances}
+	plan := hostedplans.HostedPlan{PlanReference: hostedplans.PlanReference{ID: ref.ID, Version: ref.Version}, Name: "Example", Features: []string{}, Allowances: allowances}
 	database := &database{billingRepository: repository, hostedOrganization: organization}
-	database.hostedRuntime.Store(&hostedRuntimeConfig{Plans: HostedPlansConfig{Base: plan.PlanReference, Plans: []HostedPlan{plan}, WindowSeconds: 60}})
+	database.hostedRuntime.Store(&hostedplans.RuntimeConfig{Plans: hostedplans.HostedPlansConfig{Base: plan.PlanReference, Plans: []hostedplans.HostedPlan{plan}, WindowSeconds: 60}})
 	return database
 }
 
@@ -175,7 +176,7 @@ func TestAttachmentAPIMutationChargesPostgres(t *testing.T) {
 		{organizations[1], "upload_example", -1, 2},
 	} {
 		err := charge(step.organization, step.receiptID)
-		var limit *hostedLimitError
+		var limit *hostedplans.LimitError
 		switch {
 		case step.wantRefused < 0 && err != nil:
 			t.Fatalf("%s %s charge=%v", step.organization, step.receiptID, err)
@@ -221,7 +222,7 @@ func TestRunEventGrowthCountsCompletionEventsPostgres(t *testing.T) {
 			growth.historyKnown = true
 			return growth.apply(t.Context(), writer, test.organization, "run-event/example", 2)
 		})
-		var limit *hostedLimitError
+		var limit *hostedplans.LimitError
 		if test.wantLimit != "" && (!errors.As(err, &limit) || limit.Resource != test.wantLimit) || test.wantLimit == "" && err != nil {
 			t.Fatalf("%s growth error=%v want limit %q", test.organization, err, test.wantLimit)
 		}

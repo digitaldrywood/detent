@@ -15,7 +15,7 @@ import (
 func TestLocalBoardMigrationToLanding(t *testing.T) {
 	t.Parallel()
 	f := localBoardTarget(t, nil, "Example migration")
-	if f.service.config.Hosted != nil || f.service.database.hostedBilling || f.service.database.plans() != nil {
+	if f.service.config.Hosted != nil || f.service.database.hostedBilling || f.service.database.plansService().Plans() != nil {
 		t.Fatal("local migration enabled hosted identity or Cloud plans")
 	}
 	server := httptest.NewServer(f.service.Handler())

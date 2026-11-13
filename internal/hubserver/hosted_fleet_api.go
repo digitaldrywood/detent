@@ -237,7 +237,7 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 // hostedFleetUsage pairs the current consumption with the effective allowance.
 // A hub without hosted plans reports an empty window rather than failing.
 func (s *Service) hostedFleetUsage(ctx context.Context) (hostedFleetUsage, error) {
-	if s.database.plans() == nil {
+	if s.database.plansService().Plans() == nil {
 		return hostedFleetUsage{Allowances: map[string]hostedFleetAllowance{}}, nil
 	}
 	if s.config.TenantRepository == nil {

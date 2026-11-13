@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -31,7 +32,7 @@ func TestPostgresMissingOperatorCatalog(t *testing.T) {
 		return &apikey.KeyAuthority{ID: id, CredentialBinding: binding, Kind: "personal", Permission: permission, ProjectContext: access}
 	}
 	f := newSharedRouteFixture(t, func(cfg *Config) {
-		plans := pilotHostedPlans()
+		plans := hostedplans.PilotPlans()
 		cfg.Hosted.Plans = &plans
 		org := cfg.Hosted.OrganizationID
 		cfg.Hosted.SharedEntry.ResolveKey = func(_ context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {

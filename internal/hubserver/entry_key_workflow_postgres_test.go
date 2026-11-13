@@ -98,7 +98,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	cfg.now = func() time.Time { return clock }
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
-	plans := capacityHostedPlans()
+	plans := hostedplans.CapacityPlans()
 	cfg.Hosted.Plans = &plans
 	cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	resolver := func(organization string) entryauthority.Resolver {
@@ -1993,7 +1993,7 @@ func TestPostgresEntryKeyWorkCommandCatalog(t *testing.T) {
 		return &apikey.KeyAuthority{ID: id, CredentialBinding: binding, Kind: "personal", Permission: permissions[user], ProjectContext: apikey.ProjectContext{Access: "selected", Projects: []string{"project"}}}
 	}
 	f := newSharedRouteFixture(t, func(cfg *Config) {
-		plans := pilotHostedPlans()
+		plans := hostedplans.PilotPlans()
 		cfg.Hosted.Plans = &plans
 		org := cfg.Hosted.OrganizationID
 		cfg.Hosted.SharedEntry.ResolveKey = func(_ context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
@@ -2158,7 +2158,7 @@ func TestPostgresMutationReferencesWithoutLegacyDatabase(t *testing.T) {
 	cfg.Hosted.WorkOSOrganizationID = "provider_" + cfg.Hosted.OrganizationID
 	cfg.now = func() time.Time { return clock }
 	cfg.SecretKeys = secretTestKeys(t, "1", "1")
-	plans := capacityHostedPlans()
+	plans := hostedplans.CapacityPlans()
 	cfg.Hosted.Plans = &plans
 	cfg.Hosted.SharedEntry = &hostedplans.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
 	resolver := func(organization string) entryauthority.Resolver {

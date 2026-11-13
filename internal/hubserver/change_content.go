@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -177,11 +178,11 @@ func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore
 	completion := changeContentCompletion(ctx)
 	now := s.config.now().UTC()
 	limit := int64(math.MaxInt64)
-	plans := s.database.plans()
-	var entitlement HostedEntitlement
+	plans := s.database.plansService().Plans()
+	var entitlement hostedplans.HostedEntitlement
 	if plans != nil {
 		var err error
-		entitlement, err = s.database.hostedEntitlementRecord(ctx, w, now)
+		entitlement, err = hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, w, now))
 		if err != nil {
 			return err
 		}
@@ -207,7 +208,7 @@ func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore
 			return err
 		}
 		if !usage.Allowed {
-			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+			return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 		}
 	}
 	if plans != nil && !completion && ctx.Value(runnerRequestBudgetContext{}) != true {
@@ -217,7 +218,7 @@ func (s *Service) registerChangeContentRecord(ctx context.Context, w tenantstore
 			return err
 		}
 		if used >= entitlement.Allowances["api_mutations"] {
-			return &hostedLimitError{Resource: "api_mutations", Allowance: entitlement.Allowances["api_mutations"], Consumption: used}
+			return &hostedplans.LimitError{Resource: "api_mutations", Allowance: entitlement.Allowances["api_mutations"], Consumption: used}
 		}
 	}
 	return nil
@@ -227,13 +228,13 @@ func (s *Service) checkChangeContentAllowance(ctx context.Context, organization 
 	if s.config.TenantRepository == nil {
 		return hubapi.AttachmentAccountingUnavailable()
 	}
-	plans := s.database.plans()
+	plans := s.database.plansService().Plans()
 	if plans == nil || changeContentCompletion(ctx) {
 		return nil
 	}
 	now := s.config.now().UTC()
 	return s.config.TenantRepository.ReadTenant(ctx, tracker.OrganizationID(organization), corestore.Serving, func(r tenantstore.Reader) error {
-		entitlement, err := s.database.hostedEntitlementRecord(ctx, r, now)
+		entitlement, err := hubapi.FeatureResult(s.database.plansService().EntitlementRecord(ctx, r, now))
 		if err != nil {
 			return err
 		}
@@ -260,7 +261,7 @@ func (s *Service) checkChangeContentAllowance(ctx context.Context, organization 
 					continue
 				}
 				if ref.CompressedSize > math.MaxInt64-used || used+ref.CompressedSize > limit {
-					return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
+					return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: used}
 				}
 				used += ref.CompressedSize
 			}
@@ -272,7 +273,7 @@ func (s *Service) checkChangeContentAllowance(ctx context.Context, organization 
 				return err
 			}
 			if used >= entitlement.Allowances["api_mutations"] {
-				return &hostedLimitError{Resource: "api_mutations", Allowance: entitlement.Allowances["api_mutations"], Consumption: used}
+				return &hostedplans.LimitError{Resource: "api_mutations", Allowance: entitlement.Allowances["api_mutations"], Consumption: used}
 			}
 		}
 		return nil

@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 )
 
 type platformMailSender struct {
@@ -88,9 +88,9 @@ func TestPlatformNotifications(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			s.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}, SocketRoot: filepath.Join(t.TempDir(), "s"), Prices: []hubserver.HostedBillingPrice{{PriceID: "price_team", Plan: hubserver.PlanReference{ID: "team", Version: 1}}}}
+			s.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}, SocketRoot: filepath.Join(t.TempDir(), "s"), Prices: []hostedplans.HostedBillingPrice{{PriceID: "price_team", Plan: hostedplans.PlanReference{ID: "team", Version: 1}}}}
 			if test.customBase {
-				s.config.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &hubserver.HostedPlansConfig{Base: hubserver.PlanReference{ID: "pilot_free", Version: 1}}}
+				s.config.Runtime = &hostedplans.HostedRuntimeUpdate{Plans: &hostedplans.HostedPlansConfig{Base: hostedplans.PlanReference{ID: "pilot_free", Version: 1}}}
 			}
 			if test.paid {
 				s.config.Billing = &BillingConfig{}

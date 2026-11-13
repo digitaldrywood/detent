@@ -68,7 +68,7 @@ func (s *Service) costService() *usagecosts.Service {
 	}, RecordError: hubapi.ProjectRecordError, ValidateDetail: validateNativeDetailReference}
 	if s.database != nil && s.database.billingRepository != nil {
 		deps.RequireCollaboration = func(ctx context.Context, w tenantstore.Writer, now time.Time) error {
-			return s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now)
+			return hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, "collaboration", now))
 		}
 	}
 	deps.AccountUsage = func(ctx context.Context, w tenantstore.Writer, now time.Time, id string) error {

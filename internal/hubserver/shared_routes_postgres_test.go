@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -196,14 +197,14 @@ func TestPostgresSharedPlatformReadRoutes(t *testing.T) {
 }
 
 func sharedRouteBillingConfig(cfg *Config) {
-	plans := pilotHostedPlans()
+	plans := hostedplans.PilotPlans()
 	cfg.Hosted.Plans = &plans
-	cfg.Hosted.Billing = &HostedBillingConfig{
+	cfg.Hosted.Billing = &hostedplans.HostedBillingConfig{
 		Mode: "test", AccountID: "acct_fixture", CustomerID: "cus_" + cfg.Hosted.OrganizationID,
 		PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_2196_secret"), GraceSeconds: 3600, ReconcileSeconds: 60,
 		Provider:    &hostedCreditProvider{hostedBillingProvider: &hostedBillingProvider{}},
-		Prices:      []HostedBillingPrice{{PriceID: "price_fixture", Label: "Example", Plan: plans.Plans[1].PlanReference}},
-		CreditPacks: []HostedCreditPack{{PriceID: "price_credit", Label: "AI credits", USDCents: 500}},
+		Prices:      []hostedplans.HostedBillingPrice{{PriceID: "price_fixture", Label: "Example", Plan: plans.Plans[1].PlanReference}},
+		CreditPacks: []hostedplans.HostedCreditPack{{PriceID: "price_credit", Label: "AI credits", USDCents: 500}},
 	}
 }
 
@@ -291,13 +292,13 @@ func TestPostgresSharedBillingRoutes(t *testing.T) {
 					t.Fatalf("event=%d %s want=%d", response.Code, response.Body, want)
 				}
 			}
-			if err := f.services[org].database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+			if err := hubapi.FromFeatureError(f.services[org].database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 				event, err := r.BillingEvent(t.Context(), "evt_example")
 				if err == nil && (string(event.OrganizationID) != org || event.Type != "invoice.paid") {
 					t.Fatalf("event=%+v", event)
 				}
 				return err
-			}); err != nil {
+			})); err != nil {
 				t.Fatal(err)
 			}
 		})

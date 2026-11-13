@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -49,13 +50,13 @@ func TestPostgresCreditCheckoutClassifiesProviderOutcome(t *testing.T) {
 						t.Errorf("provider result = %d, want %d", got, test.status)
 					}
 					purchase := provider.creditCheckouts[len(provider.creditCheckouts)-1]
-					if err := service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+					if err := hubapi.FromFeatureError(service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 						stored, err := r.BillingCreditPurchase(t.Context(), purchase.IdempotencyKey)
 						if err == nil && stored.State != test.state {
 							return fmt.Errorf("purchase state=%s, want %s", stored.State, test.state)
 						}
 						return err
-					}); err != nil {
+					})); err != nil {
 						t.Error(err)
 					}
 					provider.checkoutError = nil
@@ -137,9 +138,9 @@ func TestPostgresAutoFundClassifiesProviderOutcome(t *testing.T) {
 					service.billing = &hostedBillingWorker{service: service, cancel: func() {}, done: done}
 					provider := service.config.Hosted.Billing.Provider.(*hostedCreditProvider)
 					provider.chargeStatus, provider.chargeError = "succeeded", test.err
-					if err := service.database.writeBillingTenant(t.Context(), func(w tenantstore.Writer) error {
+					if err := hubapi.FromFeatureError(service.database.plansService().WriteBillingTenant(t.Context(), func(w tenantstore.Writer) error {
 						return w.SetBillingCreditFunding(t.Context(), billingstore.CreditAccount{OrganizationID: service.database.hostedOrganization, Mode: billing.ModeTest, AutoEnabled: true, ThresholdCents: 100, PriceID: "price_credit", PaymentMethod: "pm_example"})
-					}); err != nil {
+					})); err != nil {
 						t.Fatal(err)
 					}
 					err := service.billing.autoFund(t.Context())
@@ -149,7 +150,7 @@ func TestPostgresAutoFundClassifiesProviderOutcome(t *testing.T) {
 					key := provider.chargeKeys[0]
 					check := func(state string, balance int64, enabled bool) {
 						t.Helper()
-						if err := service.database.readBillingTenant(t.Context(), func(r tenantstore.Reader) error {
+						if err := hubapi.FromFeatureError(service.database.plansService().ReadBillingTenant(t.Context(), func(r tenantstore.Reader) error {
 							purchase, err := r.BillingCreditPurchase(t.Context(), key)
 							if err != nil {
 								return err
@@ -159,7 +160,7 @@ func TestPostgresAutoFundClassifiesProviderOutcome(t *testing.T) {
 								return fmt.Errorf("auto-fund purchase=%+v account=%+v", purchase, account)
 							}
 							return err
-						}); err != nil {
+						})); err != nil {
 							t.Fatal(err)
 						}
 					}

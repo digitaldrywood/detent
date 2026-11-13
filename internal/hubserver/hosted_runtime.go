@@ -9,14 +9,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
-func (s *Service) hostedBillingConfig() *HostedBillingConfig {
+func (s *Service) hostedBillingConfig() *hostedplans.HostedBillingConfig {
 	if s.config.Hosted == nil {
 		return nil
 	}
-	if state := s.database.runtimeState(); state != nil && state.Billing != nil {
+	if state := s.database.plansService().RuntimeState(); state != nil && state.Billing != nil {
 		return state.Billing
 	}
 	return s.config.Hosted.Billing
@@ -26,7 +27,7 @@ func (s *Service) reloadHostedRuntime(c echo.Context) error {
 	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
 		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
 	}
-	var update HostedRuntimeUpdate
+	var update hostedplans.HostedRuntimeUpdate
 	if err := hubapi.DecodeAPIJSON(c, &update); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
@@ -43,8 +44,8 @@ func (s *Service) readHostedRuntime(c echo.Context) error {
 	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
 		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
 	}
-	var update HostedRuntimeUpdate
-	if state := s.database.runtimeState(); state != nil {
+	var update hostedplans.HostedRuntimeUpdate
+	if state := s.database.plansService().RuntimeState(); state != nil {
 		update.Plans = &state.Plans
 		if state.Billing != nil {
 			update.Prices = state.Billing.Prices
@@ -53,13 +54,13 @@ func (s *Service) readHostedRuntime(c echo.Context) error {
 	return c.JSON(http.StatusOK, update)
 }
 
-func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeUpdate) error {
+func (s *Service) applyHostedRuntime(ctx context.Context, update *hostedplans.HostedRuntimeUpdate) error {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
 	if update.Reason == "" || len(update.Reason) > 500 {
 		return hubapi.NativePublicInvalid("A bounded reload reason is required")
 	}
-	plans := defaultHostedPlans(s.config.Hosted)
+	plans := hostedplans.DefaultPlans(hostedplans.PlansInput(s.config.Hosted))
 	if !update.Plans.IsZero() {
 		raw, err := json.Marshal(update.Plans)
 		if err != nil {
@@ -74,7 +75,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 			return hubapi.NativePublicInvalid("Reloaded entitlement configuration is invalid")
 		}
 	}
-	var config *HostedBillingConfig
+	var config *hostedplans.HostedBillingConfig
 	if current := s.hostedBillingConfig(); current != nil {
 		next := *current
 		next.Prices = slices.Clone(update.Prices)
@@ -92,13 +93,13 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 		}
 	}
 	update.Plans = &plans
-	if err := s.database.applyRuntimeRecords(ctx, plans, update.Prices, actor, update.Reason, update.StageID, update.ValidateOnly); err != nil {
+	if err := hubapi.FromFeatureError(s.database.plansService().ApplyRuntimeRecords(ctx, plans, update.Prices, actor, update.Reason, update.StageID, update.ValidateOnly)); err != nil {
 		return err
 	}
 	if update.ValidateOnly {
 		return nil
 	}
-	if err := s.database.refreshRuntime(ctx); err != nil {
+	if err := hubapi.FromFeatureError(s.database.plansService().RefreshRuntime(ctx)); err != nil {
 		return err
 	}
 	message := "hosted runtime configuration prepared"

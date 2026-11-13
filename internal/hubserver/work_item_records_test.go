@@ -1493,7 +1493,7 @@ func TestWorkItemRecordMutationRequiresHostedFeature(t *testing.T) {
 	}
 	scope := hubscope.NativeScope{Organization: tracker.OrganizationID("org_security"), Project: f.project}
 
-	free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
+	free := hostedplans.NormalizePlan(hostedplans.PilotPlans().Plans[0])
 	freePG := billingstore.Plan{OrganizationID: scope.Organization, PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, MonthlyUSDCents: free.MonthlyUSDCents, RuntimeID: free.ID, Allowances: free.Allowances, Features: free.Features}
 	withoutCollaboration := freePG
 	withoutCollaboration.PlanReference = billingstore.PlanReference{ID: "test_free_without_collaboration", Version: 1}
