@@ -502,18 +502,23 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 		if scope.credential.HostedRole == "reporter" && (request.Type != nil || request.Priority.Present() || request.Labels != nil || request.Assignees != nil) {
 			return plan, operatortool.ErrAccessDenied
 		}
+		if request.Type == nil && request.Title == nil && request.Body == nil && !request.Priority.Present() && request.Labels == nil && request.Assignees == nil {
+			return plan, nativePublicInvalid("At least one field must be supplied")
+		}
 		if request.Type != nil {
 			if err := validateNativeIssueType(*request.Type, true); err != nil {
 				return plan, err
 			}
-			plan.issue.Type = *request.Type
-			plan.fields = append(plan.fields, "type")
+			if plan.issue.Type != *request.Type {
+				plan.issue.Type = *request.Type
+				plan.fields = append(plan.fields, "type")
+			}
 		}
-		if request.Title != nil {
+		if request.Title != nil && plan.issue.Title != *request.Title {
 			plan.issue.Title = *request.Title
 			plan.fields = append(plan.fields, "title")
 		}
-		if request.Body != nil {
+		if request.Body != nil && plan.issue.Body != *request.Body {
 			bodyChanged := plan.issue.Body != *request.Body
 			plan.issue.Body = *request.Body
 			contractChanged := false
@@ -548,25 +553,31 @@ func (s *Service) planWorkItemRecord(ctx context.Context, scope nativeScope, pla
 			}
 		}
 		if request.Priority.Present() {
-			plan.issue.Priority = request.Priority.Level()
-			plan.fields = append(plan.fields, "priority")
+			priority := request.Priority.Level()
+			if (plan.issue.Priority == nil) != (priority == nil) || plan.issue.Priority != nil && priority != nil && *plan.issue.Priority != *priority {
+				plan.issue.Priority = priority
+				plan.fields = append(plan.fields, "priority")
+			}
 		}
 		if request.Labels != nil {
 			if err := requireUnreservedLabels(ctx, *request.Labels); err != nil {
 				return plan, err
 			}
-			plan.issue.Labels = *request.Labels
-			plan.fields = append(plan.fields, "labels")
+			if !slices.Equal(plan.issue.Labels, *request.Labels) {
+				plan.issue.Labels = *request.Labels
+				plan.fields = append(plan.fields, "labels")
+			}
 		}
-		if request.Assignees != nil {
+		if request.Assignees != nil && !slices.Equal(plan.issue.Assignees, *request.Assignees) {
 			plan.issue.Assignees = *request.Assignees
 			plan.fields = append(plan.fields, "assignees")
 		}
-		if len(plan.fields) == 0 {
-			return plan, nativePublicInvalid("At least one field must be supplied")
-		}
 		if err := validateNativeContent(plan.issue.Title, plan.issue.Body, plan.issue.Labels, plan.issue.Assignees, plan.issue.Priority); err != nil {
 			return plan, err
+		}
+		if len(plan.fields) == 0 {
+			plan.existing = true
+			return plan, nil
 		}
 		plan.issue.Revision++
 		plan.issue.UpdatedAt = now
@@ -1286,6 +1297,14 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope nativeSco
 			}
 			if plan.existing {
 				switch request := input.(type) {
+				case tracker.UpdateIssue:
+					current, err := w.WorkItem(ctx, scope.project, plan.issue.WorkItemID)
+					if err != nil {
+						return err
+					}
+					if current.Revision != int64(request.ExpectedRevision) {
+						return nativeConflict(tracker.Revision(current.Revision))
+					}
 				case tracker.UpdateComment:
 					current, err := w.Comment(ctx, scope.project, plan.comment.WorkItemID, plan.comment.ID)
 					if err != nil {
