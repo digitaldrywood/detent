@@ -1523,21 +1523,22 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			})
 		}
 		t.Run("linked foreign item with its own lease", func(t *testing.T) {
-			foreignLease := claimNativeAttempt(t, f.nativeFixture, worker, "linked-machine", "linked-session", foreignItem.WorkItemID, descriptor.ID)
+			foreignWorker := f.worker(t, "linked-push-worker")
+			foreignLease := claimNativeAttempt(t, f.nativeFixture, foreignWorker, "linked-machine", "linked-session", foreignItem.WorkItemID, descriptor.ID)
 			foreignStart := nativeStartedEvent(foreignLease)
 			foreignStart.Data.Identity.Role, foreignStart.Data.MachineID = "code", foreignLease.MachineID
 			foreignPath := f.base + "/work-items/" + string(foreignItem.WorkItemID) + "/events"
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreignPath, worker, foreignStart), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreignPath, foreignWorker, foreignStart), http.StatusOK)
 			foreignCheckpoint := foreignStart
 			foreignCheckpoint.IdempotencyKey, foreignCheckpoint.Type, foreignCheckpoint.Data.Sequence = "linked-confirmed-effect", "run.checkpointed", 2
 			foreignHandoff := *checkpoint.Data.Handoff
 			foreignCheckpoint.Data.Handoff = &foreignHandoff
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreignPath, worker, foreignCheckpoint), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, foreignPath, foreignWorker, foreignCheckpoint), http.StatusOK)
 			foreignDiff := diff
 			foreignDiff.Producer = tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: foreignStart.Data.AttemptID, LeaseID: foreignLease.ID, FencingToken: foreignLease.FencingToken}
 			foreignDiff.Generation.Seq = 3
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+foreignStart.Data.AttemptID+"/diff", worker, foreignDiff), http.StatusAccepted)
-			credential, _, err := f.service.authenticateAPIToken(t.Context(), worker, "", "")
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+foreignStart.Data.AttemptID+"/diff", foreignWorker, foreignDiff), http.StatusAccepted)
+			credential, _, err := f.service.authenticateAPIToken(t.Context(), foreignWorker, "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
