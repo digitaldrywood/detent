@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1619,7 +1620,14 @@ func (*hostedConsumptionQueries) TraceBatchEnd(context.Context, *pgx.Conn, pgx.T
 
 func TestHostedNativeMutationConsumption(t *testing.T) {
 	t.Parallel()
-	f := newNativeFixture(t, nil, "", "accounting")
+	var pinnedClock atomic.Pointer[time.Time]
+	clock := func() time.Time {
+		if pinned := pinnedClock.Load(); pinned != nil {
+			return *pinned
+		}
+		return time.Now()
+	}
+	f := newNativeFixture(t, newPostgresNativeService(t, Config{now: clock}), "", "accounting")
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	f.worker(t, "worker")
 	d := f.service.database
@@ -1998,7 +2006,9 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 				}
 				assertSelective(t, statements, limited)
 				queries.reset()
+				pinnedClock.Store(&at)
 				fleet, err := f.service.hostedPlanUsageTenant(ctx)
+				pinnedClock.Store(nil)
 				if err != nil {
 					t.Fatal(err)
 				}
