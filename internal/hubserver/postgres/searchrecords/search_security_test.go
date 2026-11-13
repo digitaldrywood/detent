@@ -590,8 +590,8 @@ func seedSearchThreadPlanHistory(t *testing.T, f searchFixture, d searchstore.Do
  WHERE p.organization_id='org_first' AND p.id='other_1'`, count); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
- SELECT p.organization_id,p.scope,p.term,'other_'||n,p.impact,p.updated_at,p.updated_at_submicrosecond FROM search_postings p CROSS JOIN generate_series(2,$1::int) n
+	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_postings(organization_id,scope,term,document_id,principal_id,thread,impact,updated_at,updated_at_submicrosecond)
+ SELECT p.organization_id,p.scope,p.term,'other_'||n,p.principal_id,p.thread,p.impact,p.updated_at,p.updated_at_submicrosecond FROM search_postings p CROSS JOIN generate_series(2,$1::int) n
  WHERE p.organization_id='org_first' AND p.document_id='other_1'`, count); err != nil {
 		t.Fatal(err)
 	}
@@ -754,8 +754,8 @@ func seedSearchPlanHistory(t *testing.T, f searchFixture, d searchstore.Document
  WHERE p.organization_id='org_first' AND p.project_id='prj_first' AND p.work_item_id IN ('','wi_first_1') AND p.id='history_1'`, start, end); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
- SELECT p.organization_id,p.scope,p.term,'history_'||n,p.impact,d.updated_at,d.updated_at_submicrosecond FROM search_postings p CROSS JOIN generate_series($1::int,$2::int) n
+	if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_postings(organization_id,scope,term,document_id,principal_id,thread,impact,updated_at,updated_at_submicrosecond)
+ SELECT p.organization_id,p.scope,p.term,'history_'||n,p.principal_id,p.thread,p.impact,d.updated_at,d.updated_at_submicrosecond FROM search_postings p CROSS JOIN generate_series($1::int,$2::int) n
  JOIN search_documents d ON d.organization_id=p.organization_id AND d.id='history_'||n
  WHERE p.organization_id='org_first' AND p.document_id='history_1'`, start, end); err != nil {
 		t.Fatal(err)
@@ -951,7 +951,7 @@ func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
 		t.Run(string(org), func(t *testing.T) {
 			tx := pgstoretest.TenantTx(t, runtime, f.pool, string(org))
 			queries := pgquery.New(tx)
-			terms := []string{searchstore.Prefix(org, "") + "g" + searchstore.LiteralHex("exa"), searchstore.Prefix(org, "prj_first") + "g" + searchstore.LiteralHex("exa")}
+			terms := []string{searchstore.Prefix(org, "prj_first") + "g" + searchstore.LiteralHex("exa")}
 			var scopes int64
 			if err := tx.QueryRow(t.Context(), `SELECT count(*) FROM search_postings WHERE organization_id=$1 AND document_id='issue/wi_first_1' AND term='~all'`, org).Scan(&scopes); err != nil {
 				t.Fatal(err)
@@ -978,9 +978,9 @@ func TestSearchLiteralPublicationAvoidsUnchangedWrites(t *testing.T) {
 				inserts   int64
 				updates   int64
 			}{
-				{"unchanged", terms, []string{"{}", "{0,4294967296}"}, 0, 0},
-				{"changed and missing", append(slices.Clone(terms), searchstore.Prefix(org, "prj_first")+"g"+searchstore.LiteralHex("zzz")), []string{"{}", "{0,4294967296,4294967304}", "{}"}, scopes, scopes},
-				{"unchanged after change", terms, []string{"{}", "{0,4294967296,4294967304}"}, 0, 0},
+				{"unchanged", terms, []string{"{0,4294967296}"}, 0, 0},
+				{"changed and missing", append(slices.Clone(terms), searchstore.Prefix(org, "prj_first")+"g"+searchstore.LiteralHex("zzz")), []string{"{0,4294967296,4294967304}", "{}"}, scopes, scopes},
+				{"unchanged after change", terms, []string{"{0,4294967296,4294967304}"}, 0, 0},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					beforeInserts, beforeUpdates := counts()
@@ -1033,7 +1033,7 @@ func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
 		}
 		for _, document := range documents(org) {
 			var body strings.Builder
-			for index := range 300 {
+			for index := range 500 {
 				fmt.Fprintf(&body, "exampleterm%04d ", index)
 			}
 			title := "example"
@@ -1051,7 +1051,7 @@ func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, document := range documents(org) {
 			t.Run(string(org)+"/"+document.Kind, func(t *testing.T) {
-				markerCap := 32
+				markerCap := 2
 				if document.Kind == "thread" {
 					document.Status = "resolved"
 					markerCap = 64
@@ -1128,8 +1128,12 @@ func TestSearchPendingUpdatesAvoidBulkPostings(t *testing.T) {
 				if document.Kind == "thread" {
 					kind, item, oldReporter, newReporter = "thread", string(document.WorkItemID), "", ""
 				}
+				scope := "issue"
+				if kind == "work" {
+					scope, oldReporter = "", ""
+				}
 				var markers, oldScope, newScope int
-				if err := tx.QueryRow(t.Context(), `SELECT count(*),count(*) FILTER(WHERE scope=public.search_scope_key('prj_first',$3,$4,'issue',$5,'false',$6)),count(*) FILTER(WHERE scope=public.search_scope_key('prj_first',$3,$4,'issue',$5,'true',$7)) FROM search_postings WHERE organization_id=$1 AND document_id=$2 AND term IN ('~all','~pending')`, org, document.ID, item, kind, document.Status, oldReporter, newReporter).Scan(&markers, &oldScope, &newScope); err != nil {
+				if err := tx.QueryRow(t.Context(), `SELECT count(*),count(*) FILTER(WHERE scope=public.search_scope_key('prj_first',$3,$4,$8,$5,'false',$6)),count(*) FILTER(WHERE scope=public.search_scope_key('prj_first',$3,$4,$8,$5,'true',CASE WHEN $4='work' THEN '' ELSE $7 END) AND principal_id=$7) FROM search_postings WHERE organization_id=$1 AND document_id=$2 AND term IN ('~all','~pending')`, org, document.ID, item, kind, document.Status, oldReporter, newReporter, scope).Scan(&markers, &oldScope, &newScope); err != nil {
 					t.Fatal(err)
 				}
 				if markers != markerCap || oldScope != 0 || newScope != 2 {

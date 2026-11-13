@@ -79,13 +79,15 @@ SELECT encode(sha256(convert_to(encode(convert_to(COALESCE($1,''),'UTF8'),'hex')
 $key$;
 CREATE OR REPLACE FUNCTION public.search_scope_keys(project_id text,work_item_id text,kind text,scope text,status text,archived boolean,principal_id text)
 RETURNS SETOF text LANGUAGE sql IMMUTABLE SET search_path=pg_catalog AS $keys$
-SELECT DISTINCT public.search_scope_key(p,w,CASE WHEN $3='thread' THEN 'thread' ELSE 'work' END,s,t,a,r)
-FROM unnest(CASE WHEN $3='thread' THEN ARRAY['',COALESCE($1,'')] ELSE ARRAY[$1] END) p
+SELECT public.search_scope_key($1,'','work','','',CASE WHEN $6 THEN 'true' ELSE 'false' END,'') WHERE $3<>'thread'
+UNION
+SELECT public.search_scope_key(p,w,'thread',s,t,a,'')
+FROM unnest(ARRAY['',COALESCE($1,'')]) p
 CROSS JOIN unnest(ARRAY['',COALESCE($2,'')]) w
 CROSS JOIN unnest(ARRAY['',$4]) s
 CROSS JOIN unnest(ARRAY['',$5]) t
 CROSS JOIN unnest(ARRAY['all',CASE WHEN $6 THEN 'true' ELSE 'false' END]) a
-CROSS JOIN unnest(CASE WHEN $3='thread' THEN ARRAY[''] ELSE ARRAY['',COALESCE($7,'')] END) r
+WHERE $3='thread'
 $keys$;
 
 DROP FUNCTION IF EXISTS public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint);
@@ -103,9 +105,11 @@ CREATE OR REPLACE FUNCTION public.search_index_candidates(
 BEGIN
  RETURN QUERY
  WITH scopes AS MATERIALIZED (
-    SELECT DISTINCT public.search_scope_key(p,$5,$6,CASE WHEN $4 AND p='' THEN 'general' ELSE $7 END,$8,
-        CASE WHEN $9='all' THEN 'all' WHEN $9='true' THEN 'true' ELSE 'false' END,CASE WHEN $10 THEN $11 ELSE '' END) AS key,p AS project
+    SELECT DISTINCT CASE WHEN $6='work' THEN public.search_scope_key(p,'','work',CASE WHEN $7='issue' THEN '' ELSE $7 END,$8,a,'')
+        ELSE public.search_scope_key(p,$5,$6,CASE WHEN $4 AND p='' THEN 'general' ELSE $7 END,$8,
+        CASE WHEN $9='all' THEN 'all' WHEN $9='true' THEN 'true' ELSE 'false' END,'') END AS key,p AS project
     FROM unnest(CASE WHEN $4 THEN array_append($3,'') ELSE ARRAY[$2] END) p
+    CROSS JOIN unnest(CASE WHEN $6<>'work' THEN ARRAY[''] WHEN $9='all' THEN ARRAY['false','true'] WHEN $9='true' THEN ARRAY['true'] ELSE ARRAY['false'] END) a
     WHERE ($2='' OR p=$2) AND (NOT $4 OR p<>'' OR $7 IN ('','general'))
  ), requested AS MATERIALIZED (
     SELECT key,term FROM scopes CROSS JOIN unnest(CASE WHEN $1::tsquery IS NULL THEN ARRAY['~pending'] WHEN numnode($1::tsquery)=0 THEN ARRAY['~all'] ELSE $15::text[] END) term
@@ -123,28 +127,51 @@ BEGIN
             (SELECT p.term AS lexeme,1 AS ordinal FROM (
                 (SELECT p.term FROM public.search_postings p
                  WHERE ($16 OR left(r.term,1)='~') AND (r.first_active IS NOT NULL OR r.last_lexeme IS NULL)
-                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND p.term=r.term COLLATE "C"
+                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND NOT $10 AND p.term=r.term COLLATE "C"
+                 ORDER BY p.term LIMIT 1)
+                UNION ALL
+                (SELECT p.term FROM public.search_postings p
+                 WHERE ($16 OR left(r.term,1)='~') AND (r.first_active IS NOT NULL OR r.last_lexeme IS NULL)
+                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND $10 AND p.principal_id=$11 AND p.term=r.term COLLATE "C"
                  ORDER BY p.term LIMIT 1)
                 UNION ALL
                 (SELECT p.term FROM public.search_postings p
                  WHERE NOT $16 AND left(r.term,1)<>'~' AND (r.first_active IS NOT NULL OR r.last_lexeme IS NULL)
-                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key
+                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND NOT $10
+                    AND p.term>=COALESCE(r.first_active,r.term) COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C"
+                 ORDER BY p.term LIMIT 1)
+                UNION ALL
+                (SELECT p.term FROM public.search_postings p
+                 WHERE NOT $16 AND left(r.term,1)<>'~' AND (r.first_active IS NOT NULL OR r.last_lexeme IS NULL)
+                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND $10 AND p.principal_id=$11
                     AND p.term>=COALESCE(r.first_active,r.term) COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C"
                  ORDER BY p.term LIMIT 1)
                 UNION ALL
                 (SELECT p.term FROM public.search_postings p
                  WHERE NOT $16 AND left(r.term,1)<>'~' AND r.first_active IS NULL AND r.last_lexeme IS NOT NULL
-                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key
+                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND NOT $10
+                    AND p.term>r.last_lexeme COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C"
+                 ORDER BY p.term LIMIT 1)
+                UNION ALL
+                (SELECT p.term FROM public.search_postings p
+                 WHERE NOT $16 AND left(r.term,1)<>'~' AND r.first_active IS NULL AND r.last_lexeme IS NOT NULL
+                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND $10 AND p.principal_id=$11
                     AND p.term>r.last_lexeme COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C"
                  ORDER BY p.term LIMIT 1)
             ) p ORDER BY p.term LIMIT 1)
             UNION ALL
             SELECT p.term,w.ordinal+1 FROM walk w CROSS JOIN LATERAL (
-                SELECT p.term FROM public.search_postings p
+                (SELECT p.term FROM public.search_postings p
                 WHERE NOT $16 AND left(r.term,1)<>'~' AND w.ordinal<129
-                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key
+                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND NOT $10
                     AND p.term>w.lexeme COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C"
-                ORDER BY p.term LIMIT 1
+                ORDER BY p.term LIMIT 1)
+                UNION ALL
+                (SELECT p.term FROM public.search_postings p
+                WHERE NOT $16 AND left(r.term,1)<>'~' AND w.ordinal<129
+                    AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND $10 AND p.principal_id=$11
+                    AND p.term>w.lexeme COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C"
+                ORDER BY p.term LIMIT 1)
             ) p
         ) SELECT * FROM walk
     ) l
@@ -158,30 +185,46 @@ BEGIN
     FROM streams r CROSS JOIN LATERAL (
         SELECT p.* FROM (
             (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p
-             WHERE $6='work' AND NOT r.done AND r.after_id IS NULL AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND p.term=r.lexeme
+             WHERE $6='work' AND NOT r.done AND r.after_id IS NULL AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND NOT $10 AND p.term=r.lexeme
                 AND ($6<>'thread' OR $13='' OR (p.updated_at,p.updated_at_submicrosecond,p.document_id COLLATE "C")<($12::timestamptz,$14::bigint,$13 COLLATE "C"))
              ORDER BY p.impact DESC,p.document_id COLLATE "C" LIMIT r.budget+1)
             UNION ALL
             (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p
-             WHERE $6='work' AND NOT r.done AND r.after_id IS NOT NULL AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND p.term=r.lexeme
+             WHERE $6='work' AND NOT r.done AND r.after_id IS NULL AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND $10 AND p.principal_id=$11 AND p.term=r.lexeme
+                AND ($6<>'thread' OR $13='' OR (p.updated_at,p.updated_at_submicrosecond,p.document_id COLLATE "C")<($12::timestamptz,$14::bigint,$13 COLLATE "C"))
+             ORDER BY p.impact DESC,p.document_id COLLATE "C" LIMIT r.budget+1)
+            UNION ALL
+            (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p
+             WHERE $6='work' AND NOT r.done AND r.after_id IS NOT NULL AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND NOT $10 AND p.term=r.lexeme
                 AND p.impact=r.after_impact AND p.document_id COLLATE "C">r.after_id COLLATE "C"
                 AND ($6<>'thread' OR $13='' OR (p.updated_at,p.updated_at_submicrosecond,p.document_id COLLATE "C")<($12::timestamptz,$14::bigint,$13 COLLATE "C"))
              ORDER BY p.impact DESC,p.document_id COLLATE "C" LIMIT r.budget+1)
             UNION ALL
             (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p
-             WHERE $6='work' AND NOT r.done AND r.after_id IS NOT NULL AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND p.term=r.lexeme AND p.impact<r.after_impact
+             WHERE $6='work' AND NOT r.done AND r.after_id IS NOT NULL AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND $10 AND p.principal_id=$11 AND p.term=r.lexeme
+                AND p.impact=r.after_impact AND p.document_id COLLATE "C">r.after_id COLLATE "C"
+                AND ($6<>'thread' OR $13='' OR (p.updated_at,p.updated_at_submicrosecond,p.document_id COLLATE "C")<($12::timestamptz,$14::bigint,$13 COLLATE "C"))
+             ORDER BY p.impact DESC,p.document_id COLLATE "C" LIMIT r.budget+1)
+            UNION ALL
+            (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p
+             WHERE $6='work' AND NOT r.done AND r.after_id IS NOT NULL AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND NOT $10 AND p.term=r.lexeme AND p.impact<r.after_impact
+                AND ($6<>'thread' OR $13='' OR (p.updated_at,p.updated_at_submicrosecond,p.document_id COLLATE "C")<($12::timestamptz,$14::bigint,$13 COLLATE "C"))
+             ORDER BY p.impact DESC,p.document_id COLLATE "C" LIMIT r.budget+1)
+            UNION ALL
+            (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p
+             WHERE $6='work' AND NOT r.done AND r.after_id IS NOT NULL AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND $10 AND p.principal_id=$11 AND p.term=r.lexeme AND p.impact<r.after_impact
                 AND ($6<>'thread' OR $13='' OR (p.updated_at,p.updated_at_submicrosecond,p.document_id COLLATE "C")<($12::timestamptz,$14::bigint,$13 COLLATE "C"))
              ORDER BY p.impact DESC,p.document_id COLLATE "C" LIMIT r.budget+1)
             UNION ALL
             (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p
              WHERE $6='thread' AND NOT r.done AND r.after_id IS NULL
-                AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND p.term=r.lexeme
+                AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND p.thread AND p.term=r.lexeme
                 AND ($13='' OR (p.updated_at,p.updated_at_submicrosecond,p.document_id COLLATE "C")<($12::timestamptz,$14::bigint,$13 COLLATE "C"))
              ORDER BY p.updated_at DESC,p.updated_at_submicrosecond DESC,p.document_id COLLATE "C" DESC LIMIT r.budget+1)
             UNION ALL
             (SELECT p.document_id,p.impact,p.updated_at,p.updated_at_submicrosecond FROM public.search_postings p
              WHERE $6='thread' AND NOT r.done AND r.after_id IS NOT NULL
-                AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND p.term=r.lexeme
+                AND p.organization_id=NULLIF(current_setting('detent.organization_id',true),'') AND p.scope=r.key AND p.thread AND p.term=r.lexeme
                 AND (p.updated_at,p.updated_at_submicrosecond,p.document_id COLLATE "C")<(r.after_at,r.after_submicrosecond,r.after_id COLLATE "C")
              ORDER BY p.updated_at DESC,p.updated_at_submicrosecond DESC,p.document_id COLLATE "C" DESC LIMIT r.budget+1)
         ) p ORDER BY CASE WHEN $6='thread' THEN p.updated_at END DESC,CASE WHEN $6='thread' THEN p.updated_at_submicrosecond END DESC,
@@ -196,17 +239,17 @@ BEGIN
  ), postings AS MATERIALIZED (
     SELECT w.key,w.document_id,w.term AS requested,w.lexeme,w.impact FROM windows w WHERE w.position<=w.budget
  ), refreshing AS MATERIALIZED (
-    SELECT q.* FROM scopes s CROSS JOIN unnest(CASE WHEN $9='all' THEN ARRAY[false,true] ELSE ARRAY[$9='true'] END) a(archived)
+    SELECT q.* FROM (SELECT DISTINCT project FROM scopes) s CROSS JOIN unnest(CASE WHEN $9='all' THEN ARRAY[false,true] ELSE ARRAY[$9='true'] END) a(archived)
     CROSS JOIN LATERAL (
       (SELECT q.* FROM public.search_scope_refresh q
        WHERE $5='' AND NOT $10 AND s.project<>'' AND q.organization_id=NULLIF(current_setting('detent.organization_id',true),'')
          AND q.project_id=s.project AND q.archived=a.archived AND ($5='' OR q.work_item_id=$5)
-       ORDER BY q.refresh_order LIMIT greatest(1,1000/greatest(1,(SELECT count(*)::int FROM scopes))))
+       ORDER BY q.refresh_order LIMIT greatest(1,1000/greatest(1,(SELECT count(DISTINCT project)::int FROM scopes))))
       UNION ALL
       (SELECT q.* FROM public.search_scope_refresh q
        WHERE $5='' AND $10 AND s.project<>'' AND q.organization_id=NULLIF(current_setting('detent.organization_id',true),'')
          AND q.project_id=s.project AND q.principal_id=$11 AND q.archived=a.archived AND ($5='' OR q.work_item_id=$5)
-       ORDER BY q.refresh_order LIMIT greatest(1,1000/greatest(1,(SELECT count(*)::int FROM scopes))))
+       ORDER BY q.refresh_order LIMIT greatest(1,1000/greatest(1,(SELECT count(DISTINCT project)::int FROM scopes))))
       UNION ALL
       (SELECT q.* FROM public.search_scope_refresh q
        WHERE $5='' AND NOT $10 AND s.project='' AND NOT $4 AND q.organization_id=NULLIF(current_setting('detent.organization_id',true),'')
@@ -266,9 +309,13 @@ BEGIN
           OR NOT $16 AND left(r.term,1)<>'~' AND p.term>=r.term COLLATE "C" AND p.term<(r.term||chr(1114111)) COLLATE "C")
        ORDER BY p.impact DESC,p.term COLLATE "C" LIMIT 1
       ) p CROSS JOIN LATERAL (
-       SELECT front.document_id,front.impact FROM public.search_postings front
-       WHERE front.organization_id=d.organization_id AND front.scope=r.key AND front.term=p.term
-       ORDER BY front.impact DESC,front.document_id COLLATE "C" LIMIT 1
+       (SELECT front.document_id,front.impact FROM public.search_postings front
+       WHERE NOT $10 AND front.organization_id=d.organization_id AND front.scope=r.key AND front.term=p.term
+       ORDER BY front.impact DESC,front.document_id COLLATE "C" LIMIT 1)
+       UNION ALL
+       (SELECT front.document_id,front.impact FROM public.search_postings front
+       WHERE $10 AND front.organization_id=d.organization_id AND front.scope=r.key AND front.principal_id=$11 AND front.term=p.term
+       ORDER BY front.impact DESC,front.document_id COLLATE "C" LIMIT 1)
       ) front
       ORDER BY (left(split_part(r.term,'_',2),1)='w') DESC,(front.document_id=d.id) DESC,
        p.impact/greatest(front.impact,0.000001) DESC,r.term DESC,p.term COLLATE "C" LIMIT 1

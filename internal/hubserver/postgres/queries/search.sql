@@ -65,13 +65,14 @@ WITH document AS MATERIALIZED (
   AND d.payload_object_key=sqlc.arg(payload_object_key) AND d.payload_sha256=sqlc.arg(payload_sha256) AND d.generation=sqlc.arg(generation)
 ), prefixes AS (
  SELECT DISTINCT 's'||encode(convert_to(d.organization_id,'UTF8'),'hex')||'z'||encode(convert_to(p,'UTF8'),'hex')||'_' AS prefix
- FROM document d CROSS JOIN LATERAL unnest(ARRAY['',coalesce(d.project_id,'')]) p
+ FROM document d CROSS JOIN LATERAL unnest(CASE WHEN d.kind='thread' THEN ARRAY['',coalesce(d.project_id,'')] ELSE ARRAY[coalesce(d.project_id,'')] END) p
 ), words AS (
  SELECT prefix||'w'||term AS lexeme,frequency::double precision/(1+sqlc.arg(token_count)::bigint) AS impact
  FROM prefixes CROSS JOIN ROWS FROM(unnest(sqlc.arg(terms)::text[]),unnest(sqlc.arg(term_frequencies)::bigint[])) AS t(term,frequency)
 ), lexemes AS (
  SELECT term,coalesce(w.impact,0) AS impact FROM (
-  SELECT unnest(tsvector_to_array(sqlc.arg(vector)::tsvector || CASE WHEN d.kind='issue' THEN public.search_metadata_vector(d.organization_id,d.project_id,d.metadata_labels) ELSE ''::tsvector END)) AS term FROM document d UNION SELECT lexeme FROM words
+  SELECT v.term FROM document d CROSS JOIN LATERAL unnest(tsvector_to_array(sqlc.arg(vector)::tsvector || CASE WHEN d.kind='issue' THEN public.search_metadata_vector(d.organization_id,d.project_id,d.metadata_labels) ELSE ''::tsvector END)) v(term)
+  WHERE EXISTS(SELECT 1 FROM prefixes x WHERE starts_with(v.term,x.prefix)) UNION SELECT lexeme FROM words
  ) terms LEFT JOIN words w ON w.lexeme=term
 ), visibility AS MATERIALIZED (
  SELECT d.organization_id,d.id,key FROM document d
@@ -84,26 +85,27 @@ WITH document AS MATERIALIZED (
 ), obsolete_keys AS MATERIALIZED (
  SELECT p.organization_id,p.scope,p.term,p.document_id
  FROM search_postings p CROSS JOIN document d
+ LEFT JOIN current_terms t ON t.term=p.term
+ LEFT JOIN visibility v ON v.key=p.scope
  WHERE p.organization_id=d.organization_id AND p.document_id=d.id AND p.term NOT IN ('~all','~pending')
   AND d.kind IN ('issue','thread')
-  AND (NOT EXISTS(SELECT 1 FROM visibility v WHERE v.key=p.scope)
-   OR p.term NOT IN (SELECT t.term FROM current_terms t WHERE t.term IS NOT NULL))
+  AND (v.key IS NULL OR t.term IS NULL)
 ), removed AS (
  DELETE FROM search_postings p USING obsolete_keys k
  WHERE p.organization_id=k.organization_id AND p.scope=k.scope AND p.term=k.term AND p.document_id=k.document_id
  RETURNING 1
 ), inserted AS (
- INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond)
- SELECT d.organization_id,key,l.term,d.id,l.impact,d.updated_at,d.updated_at_submicrosecond
+ INSERT INTO search_postings(organization_id,scope,term,document_id,principal_id,thread,impact,updated_at,updated_at_submicrosecond)
+ SELECT d.organization_id,key,l.term,d.id,CASE WHEN d.kind='thread' THEN '' ELSE d.parent_principal END,d.kind='thread',l.impact,d.updated_at,d.updated_at_submicrosecond
  FROM document d
  CROSS JOIN LATERAL public.search_scope_keys(d.project_id,d.work_item_id,d.kind,d.scope,d.status,d.parent_archived,d.parent_principal) key
  CROSS JOIN lexemes l
  WHERE d.kind IN ('issue','thread') AND NOT d.project_hidden
  ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE
- SET impact=EXCLUDED.impact,updated_at=EXCLUDED.updated_at,updated_at_submicrosecond=EXCLUDED.updated_at_submicrosecond,
+ SET impact=EXCLUDED.impact,updated_at=EXCLUDED.updated_at,updated_at_submicrosecond=EXCLUDED.updated_at_submicrosecond,principal_id=EXCLUDED.principal_id,
   literal_positions=CASE WHEN search_postings.term IN (SELECT term FROM literal_terms) THEN search_postings.literal_positions ELSE ARRAY[]::bigint[] END
- WHERE (search_postings.impact,search_postings.updated_at,search_postings.updated_at_submicrosecond,search_postings.literal_positions)
-  IS DISTINCT FROM (EXCLUDED.impact,EXCLUDED.updated_at,EXCLUDED.updated_at_submicrosecond,
+ WHERE (search_postings.impact,search_postings.updated_at,search_postings.updated_at_submicrosecond,search_postings.principal_id,search_postings.literal_positions)
+  IS DISTINCT FROM (EXCLUDED.impact,EXCLUDED.updated_at,EXCLUDED.updated_at_submicrosecond,EXCLUDED.principal_id,
    CASE WHEN search_postings.term IN (SELECT term FROM literal_terms) THEN search_postings.literal_positions ELSE ARRAY[]::bigint[] END)
  RETURNING 1
 )
@@ -132,8 +134,8 @@ WITH literals AS MATERIALIZED (
     SELECT l.term,l.positions::bigint[] AS positions
     FROM ROWS FROM(unnest(sqlc.arg(literals)::text[]),unnest(sqlc.arg(positions)::text[])) l(term,positions)
 )
-INSERT INTO search_postings(organization_id,scope,term,document_id,impact,updated_at,updated_at_submicrosecond,literal_positions)
-SELECT d.organization_id,p.scope,l.term,d.id,0,d.updated_at,d.updated_at_submicrosecond,l.positions
+INSERT INTO search_postings(organization_id,scope,term,document_id,principal_id,impact,updated_at,updated_at_submicrosecond,literal_positions)
+SELECT d.organization_id,p.scope,l.term,d.id,sqlc.arg(principal_id),0,d.updated_at,d.updated_at_submicrosecond,l.positions
 FROM search_documents d CROSS JOIN literals l
 CROSS JOIN LATERAL (
     SELECT unnest(sqlc.arg(scopes)::text[]) AS scope
@@ -143,6 +145,7 @@ CROSS JOIN LATERAL (
   AND previous.updated_at=d.updated_at AND previous.updated_at_submicrosecond=d.updated_at_submicrosecond
 ) p
 WHERE d.organization_id=sqlc.arg(organization_id) AND d.id=sqlc.arg(id) AND d.revision=sqlc.arg(revision)
+ AND starts_with(l.term,'s'||encode(convert_to(d.organization_id,'UTF8'),'hex')||'z'||encode(convert_to(coalesce(d.project_id,''),'UTF8'),'hex')||'_')
 ON CONFLICT(organization_id,scope,term,document_id) DO UPDATE SET literal_positions=EXCLUDED.literal_positions,
  updated_at=EXCLUDED.updated_at,updated_at_submicrosecond=EXCLUDED.updated_at_submicrosecond
 WHERE (search_postings.literal_positions,search_postings.updated_at,search_postings.updated_at_submicrosecond)

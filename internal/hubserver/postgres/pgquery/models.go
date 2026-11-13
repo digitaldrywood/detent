@@ -5366,6 +5366,8 @@ type SearchPosting struct {
 	Scope                   string
 	Term                    string
 	DocumentID              string
+	PrincipalID             string
+	Thread                  bool
 	Impact                  float64
 	UpdatedAt               time.Time
 	UpdatedAtSubmicrosecond int64

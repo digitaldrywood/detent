@@ -2,7 +2,7 @@
 SELECT (p.duplicate_source_sequence+p.content_settings_revision)::bigint AS source_sequence,
 (NOT EXISTS (
  SELECT 1 FROM search_postings WHERE organization_id=p.organization_id
- AND scope=public.search_scope_key(p.id,'','work','','','all','') AND term='~pending'
+ AND scope IN (public.search_scope_key(p.id,'','work','','','false',''),public.search_scope_key(p.id,'','work','','','true','')) AND term='~pending'
 ) AND NOT EXISTS (
  SELECT 1 FROM search_scope_refresh WHERE organization_id=p.organization_id AND project_id=p.id
 ))::boolean AS ready

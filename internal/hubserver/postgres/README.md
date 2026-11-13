@@ -982,8 +982,14 @@ Each cursor retains at most 128 lexeme positions per term and scope; exhausted
 lexemes advance to the next window without discarding remaining matches.
 
 `search_postings` has tenant-leading indexes over scope, lexeme and either impact
-or thread time. Scope keys encode project, work-item, search kind, thread scope
-and status, archive selection and reporter identity. Each term window divides
+or thread time, plus a reporter index over scope, reporter principal, lexeme and
+impact. A work-item document has one posting per project-prefixed lexeme under
+one scope key that encodes its project and archive state; an all-archive search
+reads both archive keys as separate streams. Thread scope keys encode project,
+work item, thread scope, status and archive selection. Reporter-limited searches
+seek the reporter index, so documents of other reporters never consume their
+windows. Work-item filters on work searches are rechecked after the project
+window. Each term window divides
 its 2,000-candidate budget among the expanded lexemes. Each lexeme seek includes
 one lookahead; work continuation uses separate bounded seeks for the current
 impact's remaining IDs and lower impacts. Rare terms keep independent windows

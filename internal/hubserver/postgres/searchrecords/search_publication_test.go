@@ -49,7 +49,7 @@ CREATE TRIGGER count_search_publication_deletes AFTER DELETE ON search_postings
 		}
 		d := searchIssue(org, "wi_first_1")
 		text := searchstore.Text{Title: "Example source", Body: "path-name "}
-		for i := 0; i < 60; i++ {
+		for i := 0; i < 700; i++ {
 			text.Body += fmt.Sprintf("exampleword%03d ", i)
 		}
 		d = f.put(t, d, text, 0)

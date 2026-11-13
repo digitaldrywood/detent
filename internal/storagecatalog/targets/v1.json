@@ -715,8 +715,10 @@
         "impact": "double precision",
         "literal_positions": "bigint[]",
         "organization_id": "text",
+        "principal_id": "text",
         "scope": "text",
         "term": "text",
+        "thread": "boolean",
         "updated_at": "timestamp with time zone",
         "updated_at_submicrosecond": "bigint"
       },

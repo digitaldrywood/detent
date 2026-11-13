@@ -54,7 +54,7 @@ func (c *Content) Find(ctx context.Context, repository Repository, organization 
 	fingerprint := sha256.Sum256(encoded)
 	if query.Cursor != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(query.Cursor)
-		if err != nil || json.Unmarshal(raw, &position) != nil || position.Version != 4 || position.Fingerprint != fingerprint || len(position.Streams) > (TermLimit*2+2)*(len(query.ProjectIDs)+1)*LexemeLimit {
+		if err != nil || json.Unmarshal(raw, &position) != nil || position.Version != 4 || position.Fingerprint != fingerprint || len(position.Streams) > (TermLimit*2+2)*(len(query.ProjectIDs)+1)*archiveKeys(query)*LexemeLimit {
 			return page, corestore.ErrInvalidCursor
 		}
 		query.Streams = position.Streams
@@ -247,6 +247,13 @@ func (c *Content) Find(ctx context.Context, repository Repository, organization 
 		page.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
 	}
 	return page, nil
+}
+
+func archiveKeys(query Query) int {
+	if query.Kind == "work" && query.Archived == "all" {
+		return 2
+	}
+	return 1
 }
 
 func boolInt(value bool) int {

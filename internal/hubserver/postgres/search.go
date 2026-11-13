@@ -140,11 +140,15 @@ func (s *session) PublishSearch(ctx context.Context, value searchstore.Prepared)
 		params.AggregateBytes = pgtype.Int8{Int64: value.Payload.CompressedSize, Valid: true}
 		params.AggregateContentBytes = pgtype.Int8{Int64: value.Payload.UncompressedSize, Valid: true}
 	}
-	terms := make([]string, len(value.Literals))
-	positions := make([]string, len(value.Literals))
-	for index, posting := range value.Literals {
-		terms[index] = posting.Term
-		positions[index] = literalPositionsArray(posting.Positions)
+	prefix := searchstore.Prefix(d.OrganizationID, d.ProjectID)
+	terms := make([]string, 0, len(value.Literals))
+	positions := make([]string, 0, len(value.Literals))
+	for _, posting := range value.Literals {
+		if d.Kind == "issue" && !strings.HasPrefix(posting.Term, prefix) {
+			continue
+		}
+		terms = append(terms, posting.Term)
+		positions = append(positions, literalPositionsArray(posting.Positions))
 	}
 	if _, err := transaction.DB.Exec(ctx, "SAVEPOINT search_publication"); err != nil {
 		return false, mapError(ctx, err)
@@ -166,7 +170,7 @@ func (s *session) PublishSearch(ctx context.Context, value searchstore.Prepared)
 		return false, mapError(ctx, err)
 	}
 	if len(terms) > 0 {
-		if err := transaction.Queries.SearchPublishLiterals(ctx, pgquery.SearchPublishLiteralsParams{OrganizationID: transaction.Organization, ID: d.ID, Revision: d.Revision, Literals: terms, Positions: positions, Scopes: captured.VisibilityScopes}); err != nil {
+		if err := transaction.Queries.SearchPublishLiterals(ctx, pgquery.SearchPublishLiteralsParams{OrganizationID: transaction.Organization, ID: d.ID, Revision: d.Revision, Literals: terms, Positions: positions, Scopes: captured.VisibilityScopes, PrincipalID: captured.ParentPrincipal}); err != nil {
 			return false, mapError(ctx, err)
 		}
 	}
