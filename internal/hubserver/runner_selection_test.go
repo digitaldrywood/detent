@@ -34,6 +34,7 @@ import (
 
 func TestRunnerAllowedProviderEligibility(t *testing.T) {
 	t.Parallel()
+	providerHydrationReads := make(map[string]int)
 	for _, scenario := range []struct {
 		name         string
 		unavailable  int
@@ -51,6 +52,8 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 		{"higher project pending scan beats lower project in progress", claimPreparationLimit/2 + 1, true, "rank quota", "", false},
 		{"lower project pending scan yields to higher project todo", claimPreparationLimit/2 + 1, false, "lower rank quota", "", false},
 		{"provider page hydration exhaustion", 99, true, "hydration", "", true},
+		{"provider page hydration exhaustion with deeper history", 99, true, "deep hydration", "", true},
+		{"provider page hydration beyond the candidate budget", 99, true, "hydration budget", "", true},
 		{"rejected prefix beyond budget in one project", 125, true, "missing", "", false},
 		{"rejected prefix beyond budget across projects", 125, false, "missing", "", false},
 		{"hydration exhaustion advances to next candidate", 125, true, "hydration", "", false},
@@ -64,8 +67,10 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 		{"unoccupied foreign landing retains project ranking", 0, false, "", "unoccupied", false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
+			hydrationAttempts := map[string]int{"hydration": 1, "deep hydration": 3, "hydration budget": 1}[scenario.contract]
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-			preferred := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }}), "", "preferred-provider")
+			details := &memoryRunDetails{}
+			preferred := newNativeFixture(t, newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }, RunDetails: details}), "", "preferred-provider")
 			var landing landingCapacityFixture
 			if scenario.landing != "" {
 				landing = newLandingCapacityFixture(t, preferred.service, "preferred-landings", true)
@@ -156,7 +161,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				if i == 0 {
 					rejected = issue
 				}
-				if scenario.contract == "hydration" {
+				for range hydrationAttempts {
 					recordSelectionFixtureAttempt(t, preferred, r, issue, "succeeded", nil)
 				}
 				if scenario.contract != "" {
@@ -241,7 +246,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				target, want := general, generalIssue
 				if scenario.ready {
 					target, want = preferred, preferredIssue
-					if !scenario.providerPage || scenario.contract == "hydration" {
+					if !scenario.providerPage || hydrationAttempts > 0 && scenario.contract != "hydration budget" {
 						routing.ExpectedRevision = 2
 						routing.ProjectIDs = []tracker.ProjectID{preferred.project.ID}
 						requireNativeStatus(t, performHubAPIRequest(t, preferred.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
@@ -250,7 +255,20 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				claimed := false
 				for attempt := range 5 {
 					claim.SessionID = fmt.Sprintf("bounded-%d", attempt)
+					details.mu.Lock()
+					reads := details.reads
+					details.mu.Unlock()
 					response := performHubAPIRequest(t, preferred.service, http.MethodPost, target.base+"/claims", r.redemption.Credential, claim)
+					details.mu.Lock()
+					reads = details.reads - reads
+					writerReads := details.writerReads
+					details.mu.Unlock()
+					if writerReads != 0 {
+						t.Fatalf("claim read %d objects under the claim writer", writerReads)
+					}
+					if scenario.providerPage && hydrationAttempts > 0 {
+						providerHydrationReads[fmt.Sprintf("%s/%d", scenario.contract, attempt)] = reads
+					}
 					if response.Code == http.StatusConflict {
 						continue
 					}
@@ -260,7 +278,16 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 					if lease.WorkItemID != want.WorkItemID {
 						t.Fatalf("claimed %s, want %s", lease.WorkItemID, want.WorkItemID)
 					}
-					if scenario.ready && attempt == 0 {
+					switch {
+					case scenario.contract == "hydration budget":
+						if attempt != 1 {
+							t.Fatalf("provider page beyond the candidate budget claimed on request %d, want the request after the exhausted page", attempt+1)
+						}
+					case scenario.providerPage && hydrationAttempts > 0:
+						if attempt != 0 {
+							t.Fatalf("provider page within the candidate budget claimed on request %d, want the first", attempt+1)
+						}
+					case scenario.ready && attempt == 0:
 						t.Fatal("claim exceeded the request budget")
 					}
 					claimed = true
@@ -323,6 +350,11 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				t.Fatalf("provider selection = %#v", lease)
 			}
 		})
+	}
+	shallow, deep := providerHydrationReads["hydration/0"], providerHydrationReads["deep hydration/0"]
+	exhausted, following := providerHydrationReads["hydration budget/0"], providerHydrationReads["hydration budget/1"]
+	if shallow == 0 || shallow != deep || exhausted == 0 || exhausted > shallow || following > shallow {
+		t.Fatalf("provider page object reads=%v, want equal reads at both history sizes and no request above the full candidate page", providerHydrationReads)
 	}
 }
 
