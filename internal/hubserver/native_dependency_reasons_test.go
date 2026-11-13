@@ -236,7 +236,7 @@ func TestNativeDependencyBatchReadCost(t *testing.T) {
 					t.Fatalf("dependent hydration: %+v", issue)
 				}
 			}
-			if queries != 3 {
+			if queries != 2 {
 				t.Fatalf("dependency query count scales with cards: %d", queries)
 			}
 		})
