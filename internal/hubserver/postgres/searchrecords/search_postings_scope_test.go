@@ -148,6 +148,42 @@ func TestSearchReporterWindowIgnoresOtherReporters(t *testing.T) {
 	}
 }
 
+func TestSearchRebuildMarkersKeepDocumentsFindable(t *testing.T) {
+	f := newSearchFixture(t)
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		t.Run(string(org), func(t *testing.T) {
+			f.put(t, searchIssue(org, "wi_first_1"), searchstore.Text{Title: "unrelated"}, 0)
+			f.put(t, searchIssue(org, "wi_first_2"), searchstore.Text{Title: "rebuildmarkerterm", Body: postingScopeBody}, 0)
+			f.drain(t, org)
+			if _, err := f.admin.ExecContext(t.Context(), `DELETE FROM search_postings WHERE organization_id=$1`, org); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_postings(organization_id,scope,term,document_id,principal_id,thread,impact,updated_at,updated_at_submicrosecond)
+ SELECT d.organization_id,k.key,m.term,d.id,COALESCE(i.actor_principal_id,''),false,0,d.updated_at,d.updated_at_submicrosecond
+ FROM search_documents d JOIN issues i ON i.organization_id=d.organization_id AND i.project_id=d.project_id AND i.native_id=d.work_item_id
+ CROSS JOIN LATERAL public.search_scope_keys(d.project_id,d.work_item_id,d.kind,d.scope,d.status,i.archived,COALESCE(i.actor_principal_id,'')) k(key)
+ CROSS JOIN (VALUES ('~all'),('~pending')) m(term) WHERE d.organization_id=$1 AND d.kind='issue'`, org); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.admin.ExecContext(t.Context(), `INSERT INTO search_scope_refresh(organization_id,project_id,work_item_id,archived,principal_id) VALUES($1,'prj_first','',false,'')`, org); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range []string{"rebuilding", "rebuilt"} {
+				if state == "rebuilt" {
+					f.drain(t, org)
+				}
+				if got := fmt.Sprint(searchIDs(f.find(t, org, searchstore.Query{Text: "rebuildmarkerterm"}))); got != "[wi_first_2]" {
+					t.Fatalf("%s search=%s", state, got)
+				}
+			}
+			var pending, terms int
+			if err := f.admin.QueryRowContext(t.Context(), `SELECT count(*) FILTER(WHERE term='~pending'),count(*) FILTER(WHERE left(term,1)<>'~') FROM search_postings WHERE organization_id=$1`, org).Scan(&pending, &terms); err != nil || pending != 0 || terms == 0 {
+				t.Fatalf("rebuilt postings pending=%d terms=%d error=%v", pending, terms, err)
+			}
+		})
+	}
+}
+
 func projectIssue(org tracker.OrganizationID, project tracker.ProjectID, item string) searchstore.Document {
 	d := searchIssue(org, item)
 	d.ProjectID = project
