@@ -48,6 +48,7 @@ type writerReadGuard struct {
 
 var writerReadAllowlist = map[string]string{
 	"recordHostedRequest": "Hosted GET request accounting updates consumption in its own write transaction.",
+	"recordAccessAudit":   "Support-session GETs record their access audit in its own write transaction.",
 }
 
 func (g *writerReadGuard) check(ctx context.Context, operation string) error {
