@@ -533,13 +533,19 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 					}
 					raw, err = f.service.publishChangeVersionRecordCommand(ctx, scope, string(item.WorkItemID), change.ID, "key-transfer-publish", tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "transfer-version"}, ChangeVersionInput: input, SourceBundle: bundle})
 					if err != nil {
-						t.Fatal(err)
+						t.Fatalf("publish source version: %#v", err)
 					}
 					var version tracker.ChangeVersion
 					if err := json.Unmarshal(raw, &version); err != nil {
 						t.Fatal(err)
 					}
 					fields["version_id"] = version.ID
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), orgID, corestore.Serving, func(w tenantstore.Writer) error {
+						_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "source finished")
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
 				case operatortool.RestoreItem:
 					_, err := f.service.setNativeArchiveCommand(t.Context(), scope, string(item.WorkItemID), archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive"}, ExpectedRevision: item.Revision}, true)
 					if err != nil {
