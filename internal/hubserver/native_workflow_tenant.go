@@ -249,6 +249,16 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if stop != nil {
 			stopState = request.State
 		}
+		var cancellation *preparedNativeLeaseCancellation
+		if human {
+			prepared, present, err := s.prepareHumanWorkflowCancellation(ctx, scope, row.ID, request, stopState)
+			if err != nil {
+				return nil, err
+			}
+			if present {
+				cancellation = prepared
+			}
+		}
 		currentContract, err := json.Marshal(issue.IssueContract)
 		if err != nil {
 			return nil, err
@@ -320,16 +330,6 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 			fields.Contract = &prepared.PayloadObjectKey
 			contractPayload = &prepared
-		}
-		var cancellation *preparedNativeLeaseCancellation
-		if human {
-			prepared, present, err := s.prepareHumanWorkflowCancellation(ctx, scope, row.ID, request, stopState)
-			if err != nil {
-				return nil, err
-			}
-			if present {
-				cancellation = prepared
-			}
 		}
 		var sourceCancellation *projectstore.GitHubOutbound
 		if human && linkedSource != nil && previousState != request.State && request.State == "Cancelled" {
