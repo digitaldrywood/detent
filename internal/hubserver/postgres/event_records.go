@@ -804,7 +804,23 @@ func (s *session) UpdateChange(ctx context.Context, record eventstore.Change) (e
 		return eventstore.Change{}, err
 	}
 	row, err := s.queries.RecordUpdateChange(ctx, pgquery.RecordUpdateChangeParams{OrganizationID: s.organization, ID: record.ID, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ExpectedRevision: record.Revision, Title: record.Title, CurrentVersionID: record.CurrentVersionID, UpdatedAt: recordTime(record.UpdatedAt), PayloadObjectKey: record.PayloadObjectKey, PayloadSHA256: record.PayloadSHA256, PayloadBytes: record.PayloadBytes, PayloadContentBytes: record.PayloadContentBytes, LandedVersionID: record.LandedVersionID, LandedAt: recordTimePointer(record.LandedAt), LandedHeadSHA: record.LandedHeadSHA, LandedMergeSHA: record.LandedMergeSHA, LandedBaseRef: record.LandedBaseRef})
-	return eventstore.Change(row), updated(ctx, err)
+	if err := updated(ctx, err); err != nil {
+		return eventstore.Change{}, err
+	}
+	if err := s.advanceLinkedIssueActivity(ctx, row.ProjectID, row.ID, row.UpdatedAt); err != nil {
+		return eventstore.Change{}, err
+	}
+	return eventstore.Change(row), nil
+}
+
+func (s *session) advanceLinkedIssueActivity(ctx context.Context, project tracker.ProjectID, change string, at time.Time) error {
+	_, err := s.db.Exec(ctx, `WITH linked AS MATERIALIZED (
+ SELECT i.id FROM change_issue_links l JOIN issues i ON i.organization_id=l.organization_id AND i.project_id=l.project_id AND i.native_id=l.work_item_id
+ WHERE l.organization_id=$1 AND l.project_id=$2 AND l.change_id=$3 AND i.last_activity_at<$4
+ ORDER BY i.native_id FOR NO KEY UPDATE OF i
+)
+UPDATE issues SET last_activity_at=$4 FROM linked WHERE issues.organization_id=$1 AND issues.id=linked.id`, s.organization, project, change, at)
+	return mapError(ctx, err)
 }
 
 func (s *session) CreateVersion(ctx context.Context, record eventstore.Version) (eventstore.Version, error) {
@@ -921,7 +937,14 @@ func (s *session) AppendEvidence(ctx context.Context, record eventstore.Evidence
 		record.Sequence = sequence
 	}
 	record.CreatedAt = recordTime(record.CreatedAt)
-	return s.insertRecordEvidence(ctx, record, lockedChange.EvidenceSequence)
+	stored, err := s.insertRecordEvidence(ctx, record, lockedChange.EvidenceSequence)
+	if err != nil {
+		return eventstore.Evidence{}, err
+	}
+	if err := s.advanceLinkedIssueActivity(ctx, lockedChange.ProjectID, lockedChange.ID, stored.CreatedAt); err != nil {
+		return eventstore.Evidence{}, err
+	}
+	return stored, nil
 }
 
 func (s *session) LinkIssue(ctx context.Context, record eventstore.Link) error {
