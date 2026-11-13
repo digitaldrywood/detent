@@ -383,6 +383,15 @@ func (s *session) LockLease(ctx context.Context, leaseID string) (leasestore.Lea
 	return leasestore.Lease(row), mapError(ctx, err)
 }
 
+func (s *session) HasUnreleasedIssueLease(ctx context.Context, issueID int64) (bool, error) {
+	if issueID <= 0 {
+		return false, tracker.ErrInvalidWorkItemID
+	}
+	var exists bool
+	err := s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM leases WHERE organization_id=$1 AND issue_id=$2 AND released_at IS NULL)", s.organization, issueID).Scan(&exists)
+	return exists, mapError(ctx, err)
+}
+
 func (s *session) LockUnreleasedIssueLease(ctx context.Context, issueID int64) (leasestore.Lease, error) {
 	if issueID <= 0 {
 		return leasestore.Lease{}, tracker.ErrInvalidWorkItemID

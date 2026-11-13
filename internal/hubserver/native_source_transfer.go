@@ -46,12 +46,13 @@ func (s *Service) getNativeSourceRecovery(c echo.Context) error {
 }
 
 type nativeSourceRecoverySnapshot struct {
-	item         corestore.WorkItem
-	itemVersion  eventstore.CollaborationVersion
-	version      *eventstore.Version
-	attempt      tenantAttemptSnapshot
-	attemptFound bool
-	runnerName   string
+	item            corestore.WorkItem
+	itemVersion     eventstore.CollaborationVersion
+	version         *eventstore.Version
+	attempt         tenantAttemptSnapshot
+	attemptFound    bool
+	unreleasedLease bool
+	runnerName      string
 }
 
 func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nativeScope, item string, supplied ...tracker.NativeIssue) (sourceRecoveryView, error) {
@@ -72,6 +73,14 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 			return corestore.ErrNotFound
 		}
 		snapshot.item, err = r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		if err != nil {
+			return err
+		}
+		leases, ok := r.(leasestore.UnreleasedIssueLeaseReader)
+		if !ok {
+			return nativeRunEventStorageUnavailable()
+		}
+		snapshot.unreleasedLease, err = leases.HasUnreleasedIssueLease(ctx, snapshot.item.ID)
 		if err != nil {
 			return err
 		}
@@ -221,7 +230,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 	if snapshot.item.RecoveryVersionID == view.VersionID {
 		view.DestinationRunnerID = snapshot.item.RecoveryRunnerID
 	}
-	view.Quiesced = view.Quiesced && !issue.Archived && !issue.Terminal
+	view.Quiesced = view.Quiesced && !snapshot.unreleasedLease && !issue.Archived && !issue.Terminal
 	switch {
 	case issue.Archived || issue.Terminal:
 		view.Reason = "Restore or explicitly reopen this work item before changing recovery ownership"

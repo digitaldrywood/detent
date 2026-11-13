@@ -79,6 +79,10 @@ type Writer interface {
 	LockAttemptDiffGeneration(context.Context, string, string, string, string, string) (int64, error)
 }
 
+type UnreleasedIssueLeaseReader interface {
+	HasUnreleasedIssueLease(context.Context, int64) (bool, error)
+}
+
 type UnreleasedIssueLeaseLocker interface {
 	LockUnreleasedIssueLease(context.Context, int64) (Lease, error)
 }
