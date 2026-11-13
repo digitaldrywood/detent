@@ -52,8 +52,6 @@ func nativeClaimOutranks(left, right nativeClaimRankPosition) bool {
 		l.CreatedAt.Compare(r.CreatedAt),
 		cmp.Compare(l.StateRank, r.StateRank),
 		cmp.Compare(l.LabelRank, r.LabelRank),
-		cmp.Compare(l.ProjectID, r.ProjectID),
-		cmp.Compare(l.WorkItemID, r.WorkItemID),
 	) < 0
 }
 
