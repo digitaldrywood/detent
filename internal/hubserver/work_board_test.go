@@ -44,19 +44,20 @@ func TestWorkBoardWorkingSet(t *testing.T) {
 	ids := []string{string(second.ID), string(f.project)}
 	state := savedWorkState{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h"}
 	for _, test := range []struct {
-		name   string
-		change func(*savedWorkState)
-		count  int
+		name     string
+		change   func(*savedWorkState)
+		count    int
+		filtered bool
 	}{
-		{"board", func(*savedWorkState) {}, 1},
-		{"selected lane", func(s *savedWorkState) { s.Lanes = []string{"Todo"} }, 1},
-		{"hidden lanes", func(s *savedWorkState) { s.Lanes = []string{} }, 0},
-		{"state filter", func(s *savedWorkState) { s.State = []string{"Backlog"} }, 0},
-		{"search", func(s *savedWorkState) { s.Q = "no matching title" }, 0},
-		{"list", func(s *savedWorkState) { s.View, s.Tab = "list", "all" }, 1},
-		{"completed from", func(s *savedWorkState) { s.View, s.Tab, s.CompletedFrom = "list", "all", "2026-10-26T00:00:00Z" }, 0},
-		{"completed to", func(s *savedWorkState) { s.View, s.Tab, s.CompletedTo = "list", "all", "2026-10-27T00:00:00Z" }, 0},
-		{"closed list", func(s *savedWorkState) { s.View, s.Tab = "list", "closed" }, 0},
+		{"board", func(*savedWorkState) {}, 1, false},
+		{"selected lane", func(s *savedWorkState) { s.Lanes = []string{"Todo"} }, 1, false},
+		{"hidden lanes", func(s *savedWorkState) { s.Lanes = []string{} }, 0, false},
+		{"state filter", func(s *savedWorkState) { s.State = []string{"Backlog"} }, 0, false},
+		{"search", func(s *savedWorkState) { s.Q = "no matching title" }, 0, true},
+		{"list", func(s *savedWorkState) { s.View, s.Tab = "list", "all" }, 1, false},
+		{"completed from", func(s *savedWorkState) { s.View, s.Tab, s.CompletedFrom = "list", "all", "2026-10-26T00:00:00Z" }, 0, true},
+		{"completed to", func(s *savedWorkState) { s.View, s.Tab, s.CompletedTo = "list", "all", "2026-10-27T00:00:00Z" }, 0, true},
+		{"closed list", func(s *savedWorkState) { s.View, s.Tab = "list", "closed" }, 0, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			selected := state
@@ -69,7 +70,7 @@ func TestWorkBoardWorkingSet(t *testing.T) {
 				t.Fatalf("projects=%d, want 2", len(projects))
 			}
 			for i, project := range projects {
-				if string(project.Project.ID) != ids[i] || len(project.Issues) != test.count || len(project.Cards) != test.count || project.Work == nil || project.Sequence == 0 || project.GrantVersion == "" {
+				if string(project.Project.ID) != ids[i] || len(project.Issues) != test.count || len(project.Cards) != test.count || (project.Work == nil) != test.filtered || project.Sequence == 0 || project.GrantVersion == "" {
 					t.Fatalf("project %d=%+v", i, project)
 				}
 				for _, issue := range project.Issues {
