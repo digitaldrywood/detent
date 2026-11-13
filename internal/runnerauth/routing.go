@@ -181,6 +181,9 @@ func (r Routing) Normalized() Routing {
 	}
 	r.ProjectCapacityLimits = maps.Clone(r.ProjectCapacityLimits)
 	r.ProjectIDs = slices.Clone(r.ProjectIDs)
+	if r.ProjectIDs == nil {
+		r.ProjectIDs = []tracker.ProjectID{}
+	}
 	slices.Sort(r.ProjectIDs)
 	if r.IsolationTier == "" {
 		r.IsolationTier = "sandbox"
