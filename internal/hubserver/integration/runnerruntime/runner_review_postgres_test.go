@@ -1,4 +1,4 @@
-package hubserver
+package runnerruntime_test
 
 import (
 	"encoding/json"
@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -103,7 +104,7 @@ func TestPostgresRunnerPublishesReviewsAndCompletesSuccessfully(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx = api.WithMutationAuthority(t.Context(), native.Scope(), f.leases[0], nil)
-	active := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), Sequence: 1, LeaseID: f.leases[0].ID, FencingToken: f.leases[0].FencingToken, PolicyID: f.policy.PolicyID, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "example-backend", Model: "example-model"}}
+	active := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), Sequence: 1, LeaseID: f.leases[0].ID, FencingToken: f.leases[0].FencingToken, PolicyID: f.policy.PolicyID, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "example-backend", Model: "example-model"}}
 	if err := native.AppendEvent(ctx, old.WorkItemID, tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "review_started"}, Type: "run.started", SchemaVersion: 1, Data: active}); err != nil {
 		t.Fatal(err)
 	}

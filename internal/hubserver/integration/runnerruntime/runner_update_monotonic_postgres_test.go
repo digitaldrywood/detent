@@ -1,4 +1,4 @@
-package hubserver
+package runnerruntime_test
 
 import (
 	"fmt"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerupdate"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
@@ -96,7 +97,7 @@ func writeMonotonicReceipt(t *testing.T, f runnerPGFixture, index int, writer st
 	t.Helper()
 	path := "/api/v2/organizations/org_startup/runners/" + f.bindings[index].RunnerID + "/update/receipt"
 	method := http.MethodPut
-	var body any = runnerReceiptWrite{Receipt: receipt, Running: build}
+	var body any = runnerupdate.ReceiptWrite{Receipt: receipt, Running: build}
 	status := http.StatusNoContent
 	if writer == "heartbeat" {
 		observation := runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: build, Receipt: &receipt, ObservedAt: build.ObservedAt}

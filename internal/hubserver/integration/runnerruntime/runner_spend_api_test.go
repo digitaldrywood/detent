@@ -1,4 +1,4 @@
-package hubserver
+package runnerruntime_test
 
 import (
 	"fmt"
