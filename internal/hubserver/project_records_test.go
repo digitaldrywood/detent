@@ -135,6 +135,7 @@ func openLocalPostgresHubTestService(t *testing.T, repository *postgres.Reposito
 	t.Helper()
 	service := openPostgresHubTestService(t, repository, config)
 	service.config.Hosted = nil
+	service.database.hostedRuntime.Store(nil)
 	if config.Logger != nil {
 		service.config.Logger = config.Logger
 	}
