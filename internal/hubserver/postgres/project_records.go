@@ -245,8 +245,10 @@ func (s *session) UpdateProjectRecord(ctx context.Context, record projectstore.R
 	if err != nil {
 		return projectstore.Record{}, updated(ctx, err)
 	}
-	if err := s.replaceProjectStates(ctx, record.Core.ID, record.States); err != nil {
-		return projectstore.Record{}, err
+	if !reflect.DeepEqual(current.States, record.States) {
+		if err := s.replaceProjectStates(ctx, record.Core.ID, record.States); err != nil {
+			return projectstore.Record{}, err
+		}
 	}
 	updated, err := s.ProjectRecord(ctx, record.Core.ID)
 	if err != nil {
