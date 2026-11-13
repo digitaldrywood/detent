@@ -115,7 +115,6 @@ func publishSearchBody(ctx context.Context, f searchFixture, w tenantstore.Write
 }
 
 func TestBoardSearchBoundsHostileReporterAcrossTenants(t *testing.T) {
-	t.Parallel()
 	f := newBoardSearchFixture(t)
 	ctx := t.Context()
 	trace := &boardSearchSessionTrace{}
