@@ -254,8 +254,6 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", "Current Change version is not ready for native landing"
 		case landingRequired && !landingReady && landingLimit != nativeLandingCapacityUnknown:
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "landing_capacity", "Project landing capacity is full"
-		case !found:
-			entry.Unavailable = append(entry.Unavailable, "runner_specific_candidate_selection")
 		case len(candidates.Items) == 0:
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", "Current native candidate facts exclude this item"
 			entry.UnresolvedDependencies = unresolved
@@ -267,6 +265,8 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 			if dependencyPartial {
 				entry.Unavailable = append(entry.Unavailable, "unresolved_dependencies")
 			}
+		case !found:
+			entry.Unavailable = append(entry.Unavailable, "runner_specific_candidate_selection")
 		case !runtimeAdmissionSelects(selected, candidates.Items[0]):
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", "Current claim selectors do not select this item"
 		case workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered:
