@@ -177,6 +177,8 @@ type BoardDeliveryReader interface {
 	BoardDeliveryState(context.Context, tracker.ProjectID, []BoardDeliverySubject, time.Time) (BoardDeliveryState, error)
 }
 
+const BoardDeltaRelationshipsOnly = "relationships"
+
 type BoardDelta struct {
 	Sequence       int64
 	WorkItemID     tracker.NativeWorkItemID

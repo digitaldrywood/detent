@@ -238,6 +238,9 @@ func (s *Service) dashboardRecordFrame(ctx context.Context, r tenantstore.Reader
 		return frame, true, nil
 	}
 	if row.Topic == "card" {
+		if row.Status == viewstore.BoardDeltaRelationshipsOnly {
+			return frame, false, nil
+		}
 		frame.event = "work_item"
 		kind := "upsert"
 		if row.Current == nil {

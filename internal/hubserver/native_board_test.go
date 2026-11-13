@@ -1222,6 +1222,132 @@ func TestHostedBoardStreamHidesHiddenNeighborRefresh(t *testing.T) {
 	}
 }
 
+func TestHostedProjectStreamOmitsNeighborRefresh(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	viewer := f.user(t, "partial-viewer", "member", "partial@example.test", "write", "")
+	full := f.user(t, "full-viewer", "member", "full@example.test", "write", "")
+	hiddenDependent, visibleDependent, visibleBlocker := f.seedIssue(t, 1), f.seedIssue(t, 2), f.seedIssue(t, 3)
+	private := f
+	private.project = "prj_hidden_blocker"
+	private.base = strings.Replace(f.base, string(f.project), string(private.project), 1)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+		source, err := w.ProjectRecord(t.Context(), f.project)
+		if err != nil {
+			return err
+		}
+		source.Core.ID, source.Core.Name, source.Core.Slug = private.project, "Hidden blocker", ""
+		source.Settings.ProjectID = private.project
+		source.Settings.RepositoryEnabled = false
+		_, err = w.CreateProjectRecord(t.Context(), source)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	private.grant(t, full, true, false)
+	hiddenBlocker := private.seedIssue(t, 1)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
+		for _, edge := range []struct {
+			dependent tracker.NativeWorkItemID
+			project   tracker.ProjectID
+			blocker   tracker.NativeWorkItemID
+		}{{hiddenDependent, private.project, hiddenBlocker}, {visibleDependent, f.project, visibleBlocker}} {
+			if err := w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.service.accessOrganization(), ProjectID: f.project, WorkItemID: edge.dependent, RelatedProjectID: edge.project, RelatedWorkItemID: edge.blocker, Type: "dependency", Provenance: "native"}, "add", f.service.config.Clock()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	drainTestNativeBoard(t, f.service)
+	head := func(t *testing.T) int64 {
+		t.Helper()
+		var sequence int64
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+			watermark, err := r.BoardSequence(t.Context(), f.project)
+			sequence = watermark.Sequence
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return sequence
+	}
+	workItemEvents := func(t *testing.T, query string, since, until int64) []string {
+		t.Helper()
+		stream := openHostedTestStream(t, f, viewer, query+"&since="+strconv.FormatInt(since, 10))
+		var named []string
+		for {
+			frame, err := readSSEFrame(stream)
+			if err != nil {
+				t.Fatalf("read project stream: %v", err)
+			}
+			if frame.ID == "" {
+				continue
+			}
+			if frame.Event == "work_item" {
+				named = append(named, projectEventEntity(t, frame.Data))
+			}
+			sequence, err := strconv.ParseInt(frame.ID, 10, 64)
+			if err != nil {
+				t.Fatalf("frame id %q: %v", frame.ID, err)
+			}
+			if sequence >= until {
+				return named
+			}
+		}
+	}
+	since := head(t)
+	for _, test := range []struct {
+		name      string
+		base      string
+		blocker   tracker.NativeWorkItemID
+		dependent tracker.NativeWorkItemID
+		own       []string
+	}{
+		{"hidden neighbor", private.base, hiddenBlocker, hiddenDependent, nil},
+		{"visible neighbor", f.base, visibleBlocker, visibleDependent, []string{string(visibleBlocker)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			read := f.request(t, full, http.MethodGet, test.base+"/work-items/"+string(test.blocker), nil)
+			requireNativeStatus(t, read, http.StatusOK)
+			var current tracker.NativeIssue
+			decodeHubResponse(t, read, &current)
+			transition := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "done-" + test.name}, ExpectedRevision: current.Revision, State: "Done", Reason: "user_requested"}
+			requireNativeStatus(t, f.request(t, full, http.MethodPost, test.base+"/work-items/"+string(test.blocker)+"/workflow", transition), http.StatusOK)
+			drainTestNativeBoard(t, f.service)
+			until := head(t)
+			if until <= since {
+				t.Fatalf("neighbor refresh did not advance the project sequence: %d -> %d", since, until)
+			}
+			got := workItemEvents(t, "?", since, until)
+			if slices.Contains(got, string(test.dependent)) {
+				t.Errorf("project stream named the dependent after only its neighbor changed: %v", got)
+			}
+			for _, own := range test.own {
+				if !slices.Contains(got, own) {
+					t.Errorf("project stream lost the changed item's own work_item event: %v, want %s", got, own)
+				}
+			}
+			if got := workItemEvents(t, "?work_item="+string(test.dependent), since, until); len(got) != 0 {
+				t.Errorf("dependent stream work_item events=%v, want none", got)
+			}
+			since = until
+		})
+	}
+}
+
+func projectEventEntity(t *testing.T, data string) string {
+	t.Helper()
+	var event struct {
+		EntityID string `json:"entity_id"`
+	}
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		t.Fatalf("decode work_item event %q: %v", data, err)
+	}
+	return event.EntityID
+}
+
 func normalizeTestDashboardWatermark(t *testing.T, before, after map[string]any) {
 	t.Helper()
 	if before == nil || after == nil {

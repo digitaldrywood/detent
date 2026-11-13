@@ -134,6 +134,9 @@ func (s *session) ReplaceBoardItem(ctx context.Context, u viewstore.BoardUpdate)
 	}
 	if !same {
 		delta := viewstore.BoardDelta{WorkItemID: u.WorkItemID, Topic: "card", EntityID: string(u.WorkItemID), EntityRevision: new(u.ExpectedRevision), Kind: "upsert"}
+		if boardRelationshipsOnly(previous, next) {
+			delta.Status = viewstore.BoardDeltaRelationshipsOnly
+		}
 		if previous != nil {
 			value := previous.Payload
 			delta.Previous = &value

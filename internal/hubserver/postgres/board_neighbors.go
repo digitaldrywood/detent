@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -87,4 +88,31 @@ func (s *session) queueBoardNeighbors(ctx context.Context, previous, next *views
  WHERE EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=$1 AND i.project_id=n.project AND i.native_id=n.item)
  ON CONFLICT DO NOTHING`, s.organization, projects, items)
 	return mapError(ctx, err)
+}
+
+func boardRelationshipsOnly(previous, next *viewstore.BoardRecord) bool {
+	if previous == nil || next == nil {
+		return false
+	}
+	before, after := withoutBoardRelationships(*previous), withoutBoardRelationships(*next)
+	return sameBoardContent(&before, &after)
+}
+
+func withoutBoardRelationships(record viewstore.BoardRecord) viewstore.BoardRecord {
+	record.Payload = attachment.ArchiveReference{}
+	record.ListBytes = 0
+	for _, issue := range []**tracker.NativeIssue{&record.PageIssue, &record.ListIssue} {
+		if *issue == nil {
+			continue
+		}
+		copied := **issue
+		copied.Dependencies, copied.Blockers, copied.Dependents, copied.Related = nil, nil, nil, nil
+		copied.DependencyReady = false
+		copied.BlockedReason, copied.UnblocksReason = tracker.DependencyReason{}, tracker.DependencyReason{}
+		*issue = &copied
+	}
+	if record.ReporterRelations != nil {
+		record.ReporterRelations = &viewstore.BoardReporterRelations{ReporterStatus: record.ReporterRelations.ReporterStatus}
+	}
+	return record
 }
