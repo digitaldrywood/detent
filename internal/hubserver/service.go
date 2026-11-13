@@ -48,7 +48,6 @@ type Service struct {
 	changeSessionAfter      string
 	dashboard               *dashboardDelivery
 	releaseNotes            []releasenotes.Build
-	activityDurations       activityDurationCache
 	issuePages              nativeIssuePageCache
 	writerStatsAt           atomic.Int64
 	writerWaits             atomic.Int64
