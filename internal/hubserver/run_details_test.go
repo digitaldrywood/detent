@@ -1295,13 +1295,14 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 							reads += count
 						}
 						payloadReads := store.reads[latest.payload.Key]
+						readKeys := maps.Clone(store.reads)
 						store.mu.Unlock()
 						t.Logf("%s history=%d preserves=%v reads=%d modeled_serial_latency=%s", endpoint, history, preserves, reads, time.Duration(reads)*250*time.Millisecond)
 						expectedReads := 4
+						if preserves && history > 1 {
+							expectedReads += 2
+						}
 						if endpoint == "explanation" {
-							if preserves && history > 1 {
-								expectedReads += 2
-							}
 							var result explain.IssueExplanation
 							decodeHubResponse(t, response, &result)
 							if result.Attempt == nil || result.Attempt.NativeID != latest.attempt.ID || !result.Found || result.Identity.IssueID != string(issue.WorkItemID) {
@@ -1331,12 +1332,25 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 							if preserves && (evidence.SourceRecovery == nil || evidence.SourceRecovery.AttemptID != first) {
 								t.Error("older preserved source lost")
 							}
-							if !preserves && evidence.SourceRecovery != nil {
+							if !preserves && evidence.SourceRecovery != nil && (evidence.SourceRecovery.Available || evidence.SourceRecovery.AttemptID != latest.attempt.ID) {
 								t.Error("clean checkpoint became preserved source")
 							}
 						}
 						if reads != expectedReads || payloadReads != 1 {
 							t.Errorf("object reads grew with checkpoint history: reads=%d want=%d registered payload=%d want=1", reads, expectedReads, payloadReads)
+						}
+						var recordKey, policyKey string
+						if err := admin.QueryRowContext(t.Context(), `SELECT v.payload_object_key,r.payload_object_key FROM issues i JOIN collaboration_versions v ON v.organization_id=i.organization_id AND v.record_id=i.native_id AND v.revision=i.revision JOIN lease_policy_bindings b ON b.organization_id=i.organization_id AND b.lease_id=$3 JOIN policy_revisions r ON r.organization_id=b.organization_id AND r.project_id=b.project_id AND r.policy_id=b.policy_id WHERE i.organization_id=$1 AND i.native_id=$2`, organization.ID, issue.WorkItemID, latest.attempt.LeaseID).Scan(&recordKey, &policyKey); err != nil {
+							t.Fatal(err)
+						}
+						for _, key := range []string{recordKey, latest.payload.Key, latest.checkpoint.Key, policyKey} {
+							if readKeys[key] != 1 {
+								t.Errorf("required object %s read %d times, want once: %v", key, readKeys[key], readKeys)
+							}
+							delete(readKeys, key)
+						}
+						if extra := len(readKeys); extra != expectedReads-4 {
+							t.Errorf("unexpected object reads beyond record, attempt payload, attempt checkpoint and bound policy: %v", readKeys)
 						}
 					})
 				}

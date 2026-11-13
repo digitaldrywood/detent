@@ -256,9 +256,6 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 }
 
 func (s *Service) readRuntimeSourceRecoveryTenant(ctx context.Context, scope hubscope.NativeScope, item string, evidence *tracker.NativeRuntimeEvidence) error {
-	if !hubcontent.ExplanationRead(ctx) {
-		return nil
-	}
 	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, item, evidence.Issue)
 	if err == nil && evidence.CurrentVersion != nil && evidence.CurrentVersion.VersionID != view.VersionID {
 		err = corestore.ErrSerializationFailure

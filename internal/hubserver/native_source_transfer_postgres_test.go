@@ -339,8 +339,8 @@ func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusOK)
 					var runtime tracker.NativeRuntimeEvidence
 					decodeHubResponse(t, response, &runtime)
-					if runtime.SourceRecovery != nil || runtime.Attempt == nil || runtime.Attempt.AttemptID != latest.ID {
-						t.Fatalf("ordinary runtime acquired source dependency: %+v", runtime)
+					if runtime.SourceRecovery != nil || !slices.Contains(runtime.Unavailable, "source_recovery_projection") || runtime.Attempt == nil || runtime.Attempt.AttemptID != latest.ID {
+						t.Fatalf("unknown optional source destroyed plain runtime evidence: %+v", runtime)
 					}
 
 				})
@@ -377,9 +377,10 @@ func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusOK)
 					var runtime tracker.NativeRuntimeEvidence
 					decodeHubResponse(t, response, &runtime)
-					if runtime.SourceRecovery != nil || runtime.Attempt == nil || runtime.Attempt.AttemptID != latest.ID || intercepted.afterRead == nil {
-						t.Fatal("ordinary runtime read the optional source bundle or lost its attempt")
+					if runtime.SourceRecovery != nil || !slices.Contains(runtime.Unavailable, "source_recovery_projection") || runtime.Attempt == nil || runtime.Attempt.AttemptID != latest.ID || intercepted.afterRead != nil {
+						t.Fatalf("source outage changed plain runtime evidence: %+v", runtime)
 					}
+					intercepted.afterRead = fail
 					response = performHubAPIRequest(t, service, http.MethodGet, itemPath+"/explanation", string(org)+"_token", nil)
 					requireNativeStatus(t, response, http.StatusOK)
 					var explanation struct {

@@ -9,7 +9,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -62,7 +61,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.Na
 		if err := s.readRuntimeAdmissionTenant(ctx, scope, issue, &evidence, admission); err != nil {
 			return tracker.NativeRuntimeEvidence{}, err
 		}
-		if hubcontent.ExplanationRead(ctx) && evidence.Attempt == nil {
+		if evidence.Attempt == nil {
 			if err := s.readRuntimeSourceRecoveryTenant(ctx, scope, item, &evidence); err != nil {
 				return evidence, err
 			}
@@ -416,10 +415,8 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 	if attempt.TerminalFailure == nil {
 		result.Unavailable = append(result.Unavailable, "terminal_failure")
 	}
-	if hubcontent.ExplanationRead(ctx) {
-		if err := s.readRuntimeSourceRecoveryTenant(ctx, scope, item, &result); err != nil {
-			return result, 0, false, err
-		}
+	if err := s.readRuntimeSourceRecoveryTenant(ctx, scope, item, &result); err != nil {
+		return result, 0, false, err
 	}
 	return result, snapshot.boardSequence, true, nil
 }
