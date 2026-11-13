@@ -3,8 +3,8 @@ package searchrecords_test
 import (
 	"database/sql"
 	"encoding/base64"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
