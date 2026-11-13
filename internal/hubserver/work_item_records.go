@@ -1719,7 +1719,7 @@ func (s *Service) workItemRecordReceipt(ctx context.Context, scope nativeScope, 
 	var receipt eventstore.Receipt
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		receipt, err = r.Receipt(ctx, scope.credential.ID, operation, key)
+		receipt, err = r.ReplayReceipt(ctx, scope.credential.ID, operation, key)
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -1746,7 +1746,7 @@ func (s *Service) workItemRecordReceipt(ctx context.Context, scope nativeScope, 
 				}
 			}
 			var err error
-			receipt, err = w.Receipt(ctx, scope.credential.ID, operation, key)
+			receipt, err = w.ReplayReceipt(ctx, scope.credential.ID, operation, key)
 			if err != nil {
 				return err
 			}
