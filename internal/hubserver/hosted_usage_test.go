@@ -1149,3 +1149,111 @@ func TestRecordAttemptUsageKeepsCurrenciesApart(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordAttemptUsageDelta(t *testing.T) {
+	t.Parallel()
+	prices := usageTestPrices()
+	recordedAt := time.Date(2026, 9, 10, 9, 50, 0, 0, time.UTC)
+	totalAt := time.Date(2026, 9, 10, 10, 10, 0, 0, time.UTC)
+	clock := &leaseTestClock{value: recordedAt.Add(-time.Minute)}
+	service := newClockedPostgresNativeService(t, Config{Usage: &prices, Clock: clock.Now})
+	cases := []struct {
+		name     string
+		total    tracker.NativeUsage
+		recorded tracker.NativeUsage
+		want     tracker.NativeUsage
+		status   int
+	}{
+		{
+			name:  "first report",
+			total: tracker.NativeUsage{Model: "gpt-6-astra", Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25, Currency: "USD"},
+			want:  tracker.NativeUsage{Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25},
+		},
+		{
+			name:     "increment over recorded",
+			total:    tracker.NativeUsage{Model: "gpt-6-astra", Input: 3000, CachedInput: 1200, Output: 300, CostEstimate: 0.75, Currency: "USD"},
+			recorded: tracker.NativeUsage{Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25},
+			want:     tracker.NativeUsage{Input: 2000, CachedInput: 800, Output: 200, CostEstimate: 0.5},
+		},
+		{
+			name:     "redelivered total adds nothing",
+			total:    tracker.NativeUsage{Model: "gpt-6-astra", Input: 1000, Output: 100, CostEstimate: 0.25, Currency: "USD"},
+			recorded: tracker.NativeUsage{Input: 1000, Output: 100, CostEstimate: 0.25},
+		},
+		{
+			name:     "total that went backwards is not debt",
+			total:    tracker.NativeUsage{Model: "gpt-6-astra", Input: 500, Output: 50},
+			recorded: tracker.NativeUsage{Input: 1000, Output: 100, CostEstimate: 0.25},
+			status:   http.StatusConflict,
+		},
+		{
+			name:     "unpriced increment priced by the hub",
+			total:    tracker.NativeUsage{Model: "claude-opus-5", Input: 3_000_000, Output: 1_000_000},
+			recorded: tracker.NativeUsage{Input: 2_000_000},
+			want:     tracker.NativeUsage{Input: 1_000_000, Output: 1_000_000, CostEstimate: 20 + 100},
+		},
+		{
+			name:  "foreign currency repriced by the hub",
+			total: tracker.NativeUsage{Model: "gpt-6-astra", Input: 1_000_000, CostEstimate: 99, Currency: "EUR"},
+			want:  tracker.NativeUsage{Input: 1_000_000, CostEstimate: 10},
+		},
+	}
+	for i, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			clock.Advance(recordedAt.Add(-time.Minute).Sub(clock.Now()))
+			org := []tracker.OrganizationID{"org_first", "org_first_second"}[i%2]
+			f := claimAttemptDiffFixture(t, false, newNativeFixture(t, service, org, fmt.Sprintf("usage-delta-%d", i)))
+			f.start(t)
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 3600}), http.StatusOK)
+			recorded, total := test.recorded, test.total
+			recorded.Provider, recorded.Model, total.Provider = "codex", test.total.Model, "codex"
+			reports := []struct {
+				at    time.Time
+				usage tracker.NativeUsage
+			}{{at: totalAt, usage: total}}
+			if test.recorded != (tracker.NativeUsage{}) {
+				reports = append([]struct {
+					at    time.Time
+					usage tracker.NativeUsage
+				}{{at: recordedAt, usage: recorded}}, reports...)
+			}
+			for j, report := range reports {
+				clock.Advance(report.at.Sub(clock.Now()))
+				event := nativeStartedEvent(f.lease)
+				event.Type, event.IdempotencyKey, event.OccurredAt = "run.checkpointed", fmt.Sprintf("usage-delta-%d-%d", i, j), report.at
+				event.Data.Identity.Model = "gpt-6-astra"
+				event.Data.AttemptID, event.Data.RunID, event.Data.Sequence = f.attempt, f.run, int64(j+2)
+				event.Data.Handoff = nativeTestCheckpoint()
+				event.Data.Usage = []tracker.NativeUsage{report.usage}
+				status := http.StatusOK
+				if j == len(reports)-1 && test.status != 0 {
+					status = test.status
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, pendingEventPath(f), f.worker, event), status)
+			}
+			rows, err := usagePostgresAdmin(t, service).QueryContext(t.Context(), `SELECT input,cached_input,output,cost_estimate FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2 AND period=$3`, org, f.attempt, totalAt.Truncate(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var got tracker.NativeUsage
+			for rows.Next() {
+				var delta tracker.NativeUsage
+				if err := rows.Scan(&delta.Input, &delta.CachedInput, &delta.Output, &delta.CostEstimate); err != nil {
+					t.Fatal(err)
+				}
+				got.Input, got.CachedInput, got.Output, got.CostEstimate = got.Input+delta.Input, got.CachedInput+delta.CachedInput, got.Output+delta.Output, got.CostEstimate+delta.CostEstimate
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if diff := got.CostEstimate - test.want.CostEstimate; diff > 1e-9 || diff < -1e-9 {
+				t.Fatalf("recorded delta cost = %v, want %v", got.CostEstimate, test.want.CostEstimate)
+			}
+			got.CostEstimate = test.want.CostEstimate
+			if got != test.want {
+				t.Fatalf("recorded delta = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
