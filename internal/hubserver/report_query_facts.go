@@ -35,35 +35,6 @@ func reportAttemptFailure(data tracker.NativeRunData, status, updated string) (s
 	return failed, nil
 }
 
-func updateReportAttemptProjection(ctx context.Context, tx *sql.Tx, id string, data tracker.NativeRunData) error {
-	var status, updated string
-	if err := tx.QueryRowContext(ctx, "SELECT status,updated_at FROM native_attempts WHERE id=?", id).Scan(&status, &updated); err != nil {
-		return err
-	}
-	requested, resolved := reportAttemptModels(data)
-	failed, err := reportAttemptFailure(data, status, updated)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE native_attempts SET report_projection_version=1,report_requested_model=?,report_resolved_model=?,report_failed_at=?,has_landing_receipt=? WHERE id=?`, requested, resolved, failed, data.Runtime != nil && data.Runtime.Landing != nil, id)
-	return err
-}
-
-func prepareReportsQuery(ctx context.Context, q nativeQueryer, scope nativeScope, families ...string) (nativeQueryer, error) {
-	if ownership, ok := reportsScopeFrom(ctx); ok {
-		for _, family := range []string{"native_issue_actors", "native_issue_page_filter_values"} {
-			if strings.Contains(ownership.issues, family) {
-				families = append(families, family)
-			}
-		}
-	}
-	prepared, err := prepareNativePageQuery(ctx, q, scope, "", families...)
-	if err != nil {
-		return nil, err
-	}
-	return prepared, nil
-}
-
 func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScope, family string) (_ nativePageFact, resultErr error) {
 	f := nativePageFact{name: family, override: true}
 	var query string
@@ -171,16 +142,4 @@ func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScop
 		f.values = append(f.values, values)
 	}
 	return f, nil
-}
-
-func reportModelColumn(alias string) string {
-	return "coalesce(nullif(trim(" + alias + ".report_resolved_model),''),nullif(trim(" + alias + ".report_requested_model),''),'" + reportsUnavailableName + "')"
-}
-
-func reportRoleColumn(alias string) string {
-	return "coalesce(nullif(trim(" + alias + ".role),''),'" + reportsUnavailableName + "')"
-}
-
-func reportRunnerColumn(alias string) string {
-	return strings.ReplaceAll("coalesce((SELECT lr.runner_id FROM lease_runners lr WHERE lr.lease_id=@.lease_id),@.runner_id,'')", "@", alias)
 }

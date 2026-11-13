@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -406,75 +405,6 @@ func (s *Service) createHostedProject(c echo.Context) error {
 func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
 
 	return s.createHostedTenantProject(ctx, credential, name, states)
-}
-func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
-	if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
-		return "", err
-	}
-	if states != nil {
-		if err := validateNativeStates(states); err != nil {
-			return "", err
-		}
-	}
-	err := tx.QueryRowContext(ctx, `SELECT p.id FROM projects p JOIN hosted_project_grants g ON g.project_id=p.id WHERE p.organization_id=? AND p.name=? AND g.user_id=? AND g.can_write=1`, s.config.Hosted.OrganizationID, name, credential.Hosted.Subject).Scan(&project)
-	if err == nil {
-		return project, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return "", err
-	}
-	stamp := payloadTimestamp(ctx, s.config.now())
-	before, err := s.database.hostedConsumption(ctx, tx, stamp)
-	if err != nil {
-		return "", err
-	}
-	if err := s.database.requireHostedFeature(ctx, tx, "collaboration", stamp); err != nil {
-		return "", err
-	}
-	project = payloadNativeID(ctx, "prj")
-	if states == nil {
-		states = HostedProjectStates()
-	}
-	states = nativeTriageStates(states)
-	if err := validateNativeStates(states); err != nil {
-		return "", err
-	}
-	now := formatHubTime(payloadTimestamp(ctx, s.config.now()))
-	encoded, err := marshalNative(states)
-	if err != nil {
-		return "", err
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled,scheduling_rank) VALUES (?,?,?,'native',?,?,0,(SELECT COALESCE(max(scheduling_rank),-1)+1 FROM projects WHERE deleted_at IS NULL AND organization_id=?))", project, s.config.Hosted.OrganizationID, name, encoded, now, s.config.Hosted.OrganizationID); err != nil {
-		return "", err
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE organizations SET scheduling_revision = scheduling_revision + 1 WHERE id = ?", s.config.Hosted.OrganizationID); err != nil {
-		return "", err
-	}
-	for _, state := range states {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", project, state.Name, state.Name, state.Terminal, state.Dispatchable, now, now); err != nil {
-			return "", err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,?,?) ON CONFLICT DO NOTHING", credential.ID, s.config.Hosted.OrganizationID, project); err != nil {
-		return "", err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner)
-SELECT user_id,?,?,1,1 FROM hosted_members WHERE active=1 AND role IN ('owner','admin')
-ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=1,manage_runner=1`, s.config.Hosted.OrganizationID, project); err != nil {
-		return "", err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO token_grants(token_id,organization_id,project_id)
-SELECT principal_id,?,? FROM hosted_members WHERE active=1 AND role IN ('owner','admin')
-ON CONFLICT(token_id,organization_id,project_id) DO NOTHING`, s.config.Hosted.OrganizationID, project); err != nil {
-		return "", err
-	}
-	if err := s.database.checkHostedGrowth(ctx, tx, before, stamp, false); err != nil {
-		return "", err
-	}
-	if err := s.hostedAuditWith(ctx, tx, credential.Hosted, "project_created", "create_hosted_project", project, http.StatusCreated); err != nil {
-		return "", err
-	}
-	return project, nil
 }
 
 // HostedProjectStates is the workflow a new hosted project starts with. A

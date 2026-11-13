@@ -511,17 +511,6 @@ func (e *hostedLimitError) Error() string {
 	return fmt.Sprintf("Hosted %s allowance reached (%d of %d). Existing data, reading, export and billing remain available.", e.Resource, e.Consumption, e.Allowance)
 }
 
-func (d *database) requireHostedFeature(ctx context.Context, query nativeQueryer, feature string, now time.Time) error {
-	if d.plans() == nil {
-		return nil
-	}
-	entitlement, err := d.hostedEntitlement(ctx, query, now)
-	if err != nil {
-		return err
-	}
-	return requireHostedFeatureInEntitlement(entitlement, feature)
-}
-
 func (d *database) requireHostedFeatureRecord(ctx context.Context, reader billingstore.Reader, feature string, now time.Time) error {
 	if d.plans() == nil {
 		return nil

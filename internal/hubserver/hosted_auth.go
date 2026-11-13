@@ -70,10 +70,6 @@ func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Sess
 	return nativeCredentialResult(s.requestAuth().SessionCredential(ctx, session, hash))
 }
 
-func (s *Service) hostedMemberCredential(ctx context.Context, session auth.Session, hash string, membership auth.Membership) (apiCredential, int, error) {
-	return s.accessMemberCredential(ctx, session, hash, membership)
-}
-
 func hostedCSRF(token string) string {
 	sum := sha256.Sum256([]byte("detent-hosted-csrf:" + token))
 	return hex.EncodeToString(sum[:])
@@ -150,10 +146,6 @@ func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCred
 	return identity, membership, fromFeatureError(err)
 }
 
-func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope *nativeScope) error {
-	return s.recheckHostedAuthority(ctx, tx, scope, apikey.ScopeWrite)
-}
-
 func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope *nativeScope, required apikey.Scope) error {
 	return accessstore.ErrTransactionRequired
 }
@@ -164,8 +156,4 @@ type hostedExecer interface {
 
 func (s *Service) hostedAudit(ctx context.Context, identity *auth.HostedIdentity, event, route, project string, status int) error {
 	return s.recordAccessAudit(ctx, identity, event, route, project, status)
-}
-
-func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identity *auth.HostedIdentity, event, route, project string, status int) error {
-	return accessstore.ErrTransactionRequired
 }

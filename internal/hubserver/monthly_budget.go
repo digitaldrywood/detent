@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
-	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -37,17 +36,6 @@ func readBillingMonthlySettings(ctx context.Context, repository tenantstore.Repo
 		return nil
 	})
 	return settings, err
-}
-
-func selectedBillingBudgetState(ctx context.Context, repository tenantstore.Repository, scope nativeScope) (monthlyBudgetSettings, monthlyBudgetSettings, error) {
-	orgScope := scope
-	orgScope.project = ""
-	organization, err := readBillingMonthlySettings(ctx, repository, orgScope)
-	if err != nil {
-		return monthlyBudgetSettings{}, monthlyBudgetSettings{}, err
-	}
-	project, err := readBillingMonthlySettings(ctx, repository, scope)
-	return organization, project, err
 }
 
 func readMonthlyBudgetSettings(ctx context.Context, q nativeQueryer, scope nativeScope) (monthlyBudgetSettings, error) {
@@ -172,78 +160,6 @@ func monthlyBudgetRefusal(decision budget.MonthlyDecision) string {
 	return "Monthly budget admission requires ready Todo or a durably admitted issue"
 }
 
-func monthlyClaimExposure(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, workspace bool) (budget.CostExposure, error) {
-	var exposure budget.CostExposure
-	facts, err := readMachineSpriteFacts(ctx, q, scope.organization, machine)
-	if err != nil {
-		return exposure, err
-	}
-	var hostname string
-	err = q.QueryRowContext(ctx, `SELECT hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&hostname)
-	exposure.SpriteInfrastructure = facts.Name != nil && *facts.Name == hostname && hostname != ""
-	if err != nil {
-		return exposure, err
-	}
-	if workspace {
-		return exposure, nil
-	}
-	approval, err := requireProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
-	if err != nil {
-		return exposure, err
-	}
-	if approval.Policy.Configuration == nil {
-		exposure.RunnerAPI = true
-		return exposure, nil
-	}
-	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
-	if err != nil {
-		return exposure, err
-	}
-	exposure.RunnerAPI = workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered
-	return exposure, nil
-}
-
-func monthlyIssueAdmitted(ctx context.Context, q nativeQueryer, id tracker.WorkItemID) (bool, error) {
-	var admitted bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM monthly_budget_admissions a JOIN issues i ON i.id=a.issue_id JOIN workflow_states w ON w.id=i.workflow_state_id WHERE a.issue_id=? AND i.archived=0 AND w.terminal=0 AND lower(w.detent_state) NOT IN ('blocked','backlog','cancelled'))`, id).Scan(&admitted)
-	return admitted, err
-}
-
-func checkMonthlyClaim(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, workspace bool, now time.Time, selected ...tenantstore.Repository) (budget.MonthlyDecision, budget.CostExposure, error) {
-	if len(selected) > 0 && selected[0] != nil {
-		organization, project, err := selectedBillingBudgetState(ctx, selected[0], scope)
-		if err != nil {
-			return budget.MonthlyDecision{}, budget.CostExposure{}, err
-		}
-		if organization.Policy.Enabled || project.Policy.Enabled {
-			return budget.MonthlyDecision{}, budget.CostExposure{}, ErrBillingBudgetUnavailable
-		}
-		return budget.MonthlyDecision{Allowed: true}, budget.CostExposure{}, nil
-	}
-	exposure, err := monthlyClaimExposure(ctx, q, scope, machine, workspace)
-	if err != nil {
-		return budget.MonthlyDecision{}, exposure, err
-	}
-	admitted, err := monthlyIssueAdmitted(ctx, q, id)
-	if err != nil {
-		return budget.MonthlyDecision{}, exposure, err
-	}
-	decision, err := checkMonthlyIssueBudget(ctx, q, scope, id, exposure, admitted, now)
-	return decision, exposure, err
-}
-
-func recordMonthlyAdmission(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, lease tracker.LeaseID, exposure budget.CostExposure, now time.Time) error {
-	if _, err := tx.ExecContext(ctx, `INSERT INTO monthly_budget_admissions(issue_id,admitted_at) SELECT i.id,? FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id WHERE i.id=? AND i.archived=0 AND w.terminal=0 AND lower(w.detent_state) NOT IN ('blocked','backlog','cancelled') ON CONFLICT(issue_id) DO NOTHING`, formatHubTime(now), id); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(exposure)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO monthly_budget_leases(lease_id,exposure_json) VALUES(?,?)`, lease, string(raw))
-	return err
-}
-
 func monthlySpriteAllowed(ctx context.Context, _ nativeQueryer, scope nativeScope, now time.Time, selected ...tenantstore.Repository) (bool, error) {
 	if len(selected) == 0 || selected[0] == nil {
 		return false, ErrBillingBudgetUnavailable
@@ -320,36 +236,6 @@ func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organizatio
 		}
 		s.spriteWakeMu.Unlock()
 	}
-}
-
-func checkMonthlyIssueBudget(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID, exposure budget.CostExposure, admitted bool, now time.Time, selected ...tenantstore.Repository) (budget.MonthlyDecision, error) {
-	decision, err := checkMonthlyBudget(ctx, q, scope, exposure, admitted, now, selected...)
-	if len(selected) > 0 && selected[0] != nil {
-		return decision, err
-	}
-	if err != nil || !decision.Allowed || admitted {
-		return decision, err
-	}
-	orgScope := scope
-	orgScope.project = ""
-	orgPolicy, err := readMonthlyBudgetSettings(ctx, q, orgScope)
-	if err != nil {
-		return decision, err
-	}
-	projectPolicy, err := readMonthlyBudgetSettings(ctx, q, scope)
-	if err != nil {
-		return decision, err
-	}
-	if orgPolicy.Policy.Enabled || projectPolicy.Policy.Enabled {
-		var state string
-		if err := q.QueryRowContext(ctx, `SELECT lower(w.detent_state) FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id WHERE i.id=?`, id).Scan(&state); err != nil {
-			return decision, err
-		}
-		if state != "todo" {
-			decision.Allowed = false
-		}
-	}
-	return decision, nil
 }
 
 func monthlyBudgetRetainsRunner(ctx context.Context, _ nativeQueryer, scope nativeScope, machine tracker.MachineID, selected ...tenantstore.Repository) (bool, error) {

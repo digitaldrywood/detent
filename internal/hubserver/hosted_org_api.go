@@ -2,9 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -390,15 +388,6 @@ type hostedCommand struct {
 	organization          string
 	actor, operation, key string
 	input                 any
-}
-
-func (command hostedCommand) hash() (string, error) {
-	encoded, err := json.Marshal(command.input)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(encoded)
-	return hex.EncodeToString(sum[:]), nil
 }
 
 // hostedPendingCommand is the response a claimed key holds until its

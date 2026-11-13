@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -360,39 +359,6 @@ func validateHostedGrantCommand(command hostedPlanCommand, now time.Time) (time.
 		return time.Time{}, nativePublicInvalid("Grant expiry must follow its start and the current time")
 	}
 	return startsAt, nil
-}
-
-func (d *database) auditHostedPlanCommand(ctx context.Context, tx *sql.Tx, actor string, command hostedPlanCommand, now time.Time) error {
-	raw, err := json.Marshal(command)
-	if err != nil {
-		return err
-	}
-	digest := sha256.Sum256(raw)
-	_, err = tx.ExecContext(ctx, "INSERT INTO hosted_plan_audit(command_id,request_hash,actor_id,reason,action,recorded_at,record_json) VALUES(?,?,?,?,?,?,?)", command.ID, hex.EncodeToString(digest[:]), actor, command.Reason, command.Action, formatHubTime(now), string(raw))
-	return err
-}
-
-func insertHostedComplimentaryGrant(ctx context.Context, tx *sql.Tx, command hostedPlanCommand, now time.Time) error {
-	if !hostedSafeID(command.GrantID) || len(command.Scope) == 0 || len(command.Scope) > len(hostedAllowanceNames())+len(hostedFeatureNames()) {
-		return nativePublicInvalid("A grant ID and explicit allowance or feature scope are required")
-	}
-	for _, scope := range command.Scope {
-		if !slices.Contains(hostedAllowanceNames(), scope) && !slices.Contains(hostedFeatureNames(), scope) {
-			return nativePublicInvalid("Grant scope is unknown")
-		}
-	}
-	if command.StartsAt.IsZero() {
-		command.StartsAt = now.UTC()
-	}
-	if command.ExpiresAt != nil && (!command.ExpiresAt.After(now) || !command.ExpiresAt.After(command.StartsAt)) {
-		return nativePublicInvalid("Grant expiry must follow its start and the current time")
-	}
-	raw, err := json.Marshal(HostedGrant{ID: command.GrantID, Plan: command.Plan, Scope: command.Scope, StartsAt: command.StartsAt, ExpiresAt: command.ExpiresAt})
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO hosted_complimentary_grants(id,record_json) VALUES(?,?)", command.GrantID, string(raw))
-	return err
 }
 
 func hostedRunnerTransactionMetrics(path string) []string {

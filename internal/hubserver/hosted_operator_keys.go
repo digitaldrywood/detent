@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net/http"
 	"time"
@@ -82,11 +81,6 @@ func hostedKeyAllows(scope, required apikey.Scope) bool {
 
 func hostedRoleAllows(role string, scope apikey.Scope, action ...string) bool {
 	return hubauth.RoleAllows(role, scope, action...)
-}
-
-func (s *Service) hostedAPITokenCredential(ctx context.Context, credential apiCredential, created string, expires sql.NullString) (apiCredential, error) {
-	result, _, err := s.authenticateAccessHash(ctx, credential.Hash, "", "")
-	return result, err
 }
 
 func (s *Service) hostedKeyBrowser(c echo.Context) (apiCredential, error) {

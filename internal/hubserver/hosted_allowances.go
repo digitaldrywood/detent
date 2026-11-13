@@ -4,9 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"maps"
-	"net/http"
 	"slices"
 	"time"
 
@@ -271,92 +269,4 @@ func (d *database) recordHostedUsage(ctx context.Context, tx *sql.Tx, now time.T
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO hosted_usage_windows(window_start,metric,amount) VALUES(?,?,?) ON CONFLICT(window_start,metric) DO UPDATE SET amount = min(amount+excluded.amount,1125899906842624)`, window, metric, amount)
 	return err
-}
-
-func (d *database) checkHostedGrowth(ctx context.Context, tx *sql.Tx, before map[string]int64, now time.Time, completion bool, metrics ...string) error {
-	if d.plans() == nil {
-		return nil
-	}
-	after, err := d.hostedConsumption(ctx, tx, now, metrics...)
-	if err != nil {
-		return err
-	}
-	return d.checkHostedConsumptionGrowth(ctx, tx, before, after, now, completion)
-}
-
-func (d *database) checkHostedConsumptionGrowth(ctx context.Context, tx *sql.Tx, before, after map[string]int64, now time.Time, completion bool) error {
-	if err := d.validateHostedConsumptionGrowth(ctx, tx, before, after, now, completion); err != nil {
-		return err
-	}
-	if ctx.Value(runnerRequestBudgetContext{}) != true {
-		if err := d.recordHostedUsage(ctx, tx, now, "api_mutations", 1); err != nil {
-			return err
-		}
-	}
-	return d.recordHostedUsage(ctx, tx, now, "ingested_events", max(int64(0), after["events_total"]-before["events_total"]))
-}
-
-func (d *database) validateHostedConsumptionGrowth(ctx context.Context, query nativeQueryer, before, after map[string]int64, now time.Time, completion bool) error {
-	entitlement, err := d.hostedEntitlement(ctx, query, now)
-	if err != nil {
-		return err
-	}
-	for _, name := range []string{"unarchived_issues", "projects", "repositories", "registered_runners", "connected_runners", "collaboration_bytes", "history_records"} {
-		if completion && (name == "collaboration_bytes" || name == "history_records" || name == "connected_runners") {
-			continue
-		}
-		limit, limited := entitlement.Allowances[name]
-		if limited && after[name] > before[name] && after[name] > limit {
-			return &hostedLimitError{Resource: name, Allowance: entitlement.Allowances[name], Consumption: before[name]}
-		}
-	}
-	for _, sample := range []struct {
-		name   string
-		amount int64
-	}{
-		{"api_mutations", 1}, {"ingested_events", max(int64(0), after["events_total"]-before["events_total"])},
-	} {
-		if sample.name == "api_mutations" && ctx.Value(runnerRequestBudgetContext{}) == true {
-			continue
-		}
-		if !completion && sample.amount > 0 && sample.amount > entitlement.Allowances[sample.name]-after[sample.name] {
-			return &hostedLimitError{Resource: sample.name, Allowance: entitlement.Allowances[sample.name], Consumption: after[sample.name]}
-		}
-	}
-	return nil
-}
-
-func (d *database) checkHostedClaim(ctx context.Context, tx *sql.Tx, now time.Time) error {
-	runtimePlans := d.plans()
-	if runtimePlans == nil {
-		return nil
-	}
-	entitlement, err := d.hostedEntitlement(ctx, tx, now)
-	if err != nil {
-		return err
-	}
-	if !slices.Contains(entitlement.Features, "native_execution") {
-		return &hostedLimitError{Resource: "native_execution"}
-	}
-	if limit, limited := entitlement.Allowances["concurrent_work"]; limited {
-		usage, err := d.hostedConsumption(ctx, tx, now, "concurrent_work")
-		if err != nil {
-			return err
-		}
-		if usage["concurrent_work"] >= limit {
-			return &nativeError{Code: "plan_capacity", Message: fmt.Sprintf("The plan's concurrent work limit is reached (%d of %d); work stays queued until a slot frees", usage["concurrent_work"], limit), status: http.StatusConflict, publicMessage: true}
-		}
-	}
-	if ctx.Value(runnerRequestBudgetContext{}) == true {
-		return nil
-	}
-	usage, err := d.hostedConsumption(ctx, tx, now, "usage_windows")
-	if err != nil {
-		return err
-	}
-	used := usage["api_mutations"]
-	if used >= entitlement.Allowances["api_mutations"] {
-		return &hostedLimitError{Resource: "api_mutations", Allowance: entitlement.Allowances["api_mutations"], Consumption: used}
-	}
-	return d.recordHostedUsage(ctx, tx, now, "api_mutations", 1)
 }

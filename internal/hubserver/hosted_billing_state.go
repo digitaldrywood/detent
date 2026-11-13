@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +12,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
 type hostedBillingState struct {
@@ -182,21 +180,4 @@ func (d *database) commitHostedBilling(ctx context.Context, state hostedBillingS
 		}
 		return nil
 	})
-}
-
-func (d *database) insertBillingAudit(ctx context.Context, tx *sql.Tx, actor, action, raw string, now time.Time) error {
-	if m, ok := mutation.FromContext(ctx); ok {
-		m.OrganizationID = string(d.hostedOrganization)
-		m.RetryIdentity, m.InputHash = "", ""
-		summary, err := json.Marshal(struct {
-			mutation.Metadata
-			Outcome string `json:"outcome"`
-		}{m, action})
-		if err != nil {
-			return err
-		}
-		raw = string(summary)
-	}
-	_, err := tx.ExecContext(ctx, "INSERT INTO hosted_billing_audit(organization_id,actor_id,action,record_json,recorded_at) VALUES(?,?,?,?,?)", d.hostedOrganization, actor, action, raw, formatHubTime(now))
-	return err
 }

@@ -164,44 +164,6 @@ func reportsIssueClause(ctx context.Context, column string) (string, []any) {
 	return " AND " + column + " IN (" + scope.issues + ")", slices.Clone(scope.issueArgs)
 }
 
-// reportsAttemptClause narrows a read of native_attempts, under alias, to the
-// report's runners, models and stages.
-func reportsAttemptClause(ctx context.Context, alias string) (string, []any, error) {
-	scope, ok := reportsScopeFrom(ctx)
-	if !ok {
-		return "", nil, nil
-	}
-	var clause strings.Builder
-	var args []any
-	for _, filter := range []struct {
-		values     []string
-		expression string
-	}{
-		{scope.attempts.Runners, reportRunnerColumn(alias)},
-		{scope.attempts.Models, reportModelColumn(alias)},
-		{scope.attempts.Stages, reportRoleColumn(alias)},
-	} {
-		if len(filter.values) == 0 {
-			continue
-		}
-		encoded, err := sqlList(filter.values)
-		if err != nil {
-			return "", nil, fmt.Errorf("encode report attempt filter: %w", err)
-		}
-		clause.WriteString(" AND " + filter.expression + " IN (SELECT value FROM sql_rows(?))")
-		args = append(args, encoded)
-	}
-	return bindSQLParameters(clause.String(), args)
-}
-
-// reportsScopedClause is the issue and attempt narrowing of a read whose
-// rows each belong to one attempt.
-func reportsScopedClause(ctx context.Context, alias string) (string, []any, error) {
-	issue, issueArgs := reportsIssueClause(ctx, alias+".work_item_id")
-	attempt, attemptArgs, err := reportsAttemptClause(ctx, alias)
-	return issue + attempt, append(issueArgs, attemptArgs...), err
-}
-
 type reportsFacet struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`

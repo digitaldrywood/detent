@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const defaultAICreditCostMultiplier = 1.5
@@ -129,21 +127,6 @@ func (d *database) hostedBillingBinding(ctx context.Context, c *HostedBillingCon
 		return billing.Binding{}, errHostedBillingUnbound
 	}
 	return result, err
-}
-
-func readHostedBillingBinding(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, c *HostedBillingConfig) (billing.Binding, error) {
-	var account, customer, mode string
-	err := query.QueryRowContext(ctx, "SELECT account_id,customer_id,mode FROM hosted_billing_accounts WHERE organization_id=?", organization).Scan(&account, &customer, &mode)
-	if errors.Is(err, sql.ErrNoRows) {
-		return billing.Binding{}, errHostedBillingUnbound
-	}
-	if err != nil {
-		return billing.Binding{}, err
-	}
-	if account != c.AccountID || mode != c.mode() {
-		return billing.Binding{}, errors.New("hosted Stripe binding belongs to a different account or mode")
-	}
-	return billing.Binding{AccountID: account, CustomerID: customer, OrganizationID: string(organization)}, nil
 }
 
 func (d *database) configureHostedBilling(ctx context.Context, cfg *HostedConfig) error {
@@ -287,23 +270,6 @@ func (d *database) configureHostedBillingRecords(ctx context.Context, config *Ho
 		d.aiCreditCostMultiplier = config.CreditCostMultiplier
 	} else {
 		d.aiCreditMode = ""
-	}
-	return nil
-}
-
-func seedHostedBillingPrices(ctx context.Context, tx *sql.Tx, prices []HostedBillingPrice) error {
-	for _, price := range prices {
-		var existing PlanReference
-		err := tx.QueryRowContext(ctx, "SELECT plan_id,plan_version FROM hosted_billing_prices WHERE price_id=?", price.PriceID).Scan(&existing.ID, &existing.Version)
-		if err == nil && existing != price.Plan {
-			return errors.New("hosted Stripe price mappings are immutable; configure a new price")
-		}
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_billing_prices(price_id,plan_id,plan_version) VALUES(?,?,?) ON CONFLICT DO NOTHING", price.PriceID, price.Plan.ID, price.Plan.Version); err != nil {
-			return err
-		}
 	}
 	return nil
 }
