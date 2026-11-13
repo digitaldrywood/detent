@@ -162,8 +162,8 @@ func TestProjectPageSchedulerAndLiveRoute(t *testing.T) {
 				read(fixture.project.ID)
 				exchanges, statements := wire.stop()
 				t.Logf("%s/%dx project GET statements=%d exchanges=%d object reads=%d", org, size, statements, exchanges, reads)
-				if statements != 14 || exchanges != 12 {
-					t.Errorf("project GET budget changed: %d statements / %d exchanges; want 14 / 12", statements, exchanges)
+				if statements != 11 || exchanges != 7 {
+					t.Errorf("project GET budget changed: %d statements / %d exchanges; want 11 / 7", statements, exchanges)
 				}
 				if reads != 0 {
 					t.Errorf("ready project GET read %d objects; want 0", reads)
