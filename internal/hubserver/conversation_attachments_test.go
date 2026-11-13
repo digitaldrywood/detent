@@ -3,7 +3,6 @@ package hubserver
 import (
 	"bytes"
 	"context"
-	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -211,8 +210,8 @@ func TestConversationAttachmentDelete(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusNoContent)
 	response = performHubAPIRequest(t, f.service, http.MethodGet, upload.URL, f.token, nil)
 	requireNativeStatus(t, response, http.StatusNotFound)
-	if _, err := f.storedConversationAttachmentContent(t.Context(), stored); !errors.Is(err, corestore.ErrNotFound) {
-		t.Fatalf("deleted attachment content remains readable: %v", err)
+	if content, err := f.storedConversationAttachmentContent(t.Context(), stored); err != nil || string(content) != "# Notes\n" {
+		t.Fatalf("last charged attachment lost its retained content: %q %v", content, err)
 	}
 	// Deleting twice is still not found.
 	response = performHubAPIRequest(t, f.service, http.MethodDelete, upload.URL, f.token, nil)

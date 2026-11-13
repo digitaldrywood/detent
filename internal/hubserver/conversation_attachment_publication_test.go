@@ -84,7 +84,7 @@ func TestConversationAttachmentStagingChecksAllowanceBeforePublication(t *testin
 			database.hostedOrganization = f.project.OrganizationID
 			plans := hostedplans.CapacityPlans()
 			for i := range plans.Plans {
-				plans.Plans[i].Allowances["collaboration_bytes"] = before + ref.CompressedSize + test.allowance
+				plans.Plans[i].Allowances["collaboration_bytes"] = before + int64(len(content)) + test.allowance
 			}
 			if err := hubapi.FromFeatureError(database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 				t.Fatal(err)
@@ -97,14 +97,15 @@ func TestConversationAttachmentStagingChecksAllowanceBeforePublication(t *testin
 				if database.postgres.Stats().AcquiredConns() != 0 {
 					return errors.New("object I/O held writer transaction")
 				}
-				var size int64
-				object, err := f.stagedConversationArchive(t.Context(), ref)
-				if err != nil {
-					return fmt.Errorf("read staged byte accounting: %w", err)
+				if _, err := f.stagedConversationArchive(t.Context(), ref); err != nil {
+					return fmt.Errorf("read staged archive owner: %w", err)
 				}
-				size = object.CollaborationBytes
-				if size != ref.CompressedSize {
-					return errors.New("staged bytes were not accounted before publication")
+				var used int64
+				if err := f.readConversationAttachmentUsage(t.Context(), &used); err != nil {
+					return fmt.Errorf("read upload charge: %w", err)
+				}
+				if used != before {
+					return errors.New("upload was charged before its attachment row existed")
 				}
 				return nil
 			}
@@ -120,8 +121,8 @@ func TestConversationAttachmentStagingChecksAllowanceBeforePublication(t *testin
 			if err := f.readConversationAttachmentUsage(t.Context(), &after); err != nil {
 				t.Fatal(err)
 			}
-			charged := ref.CompressedSize
-			if test.status == http.StatusTooManyRequests {
+			charged := int64(len(content))
+			if test.status != http.StatusCreated {
 				charged = 0
 			}
 			if after-before != charged {
@@ -135,12 +136,12 @@ func TestConversationAttachmentStagingChecksAllowanceBeforePublication(t *testin
 				requireNativeStatus(t, retry, http.StatusCreated)
 				var recovered conversation.AttachmentUpload
 				decodeHubResponse(t, retry, &recovered)
-				if err := f.readConversationAttachmentUsage(t.Context(), &after); err != nil || after-before != charged {
-					t.Fatalf("uncertain upload retry changed charge: charge=%d want=%d error=%v", after-before, charged, err)
+				if err := f.readConversationAttachmentUsage(t.Context(), &after); err != nil || after-before != int64(len(content)) {
+					t.Fatalf("uncertain upload retry charge=%d want=%d error=%v", after-before, len(content), err)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, recovered.URL, f.token, nil), http.StatusNoContent)
-				if err := f.readConversationAttachmentUsage(t.Context(), &after); err != nil || after != before {
-					t.Fatalf("recovered upload retained stage ownership: charge=%d error=%v", after-before, err)
+				if err := f.readConversationAttachmentUsage(t.Context(), &after); err != nil || after-before != int64(len(content)) {
+					t.Fatalf("deleting the last charged upload released its retained charge: charge=%d error=%v", after-before, err)
 				}
 			}
 		})
@@ -163,7 +164,7 @@ func TestConversationAttachmentStagingChecksAllowanceBeforePublication(t *testin
 		f.service.database.hostedOrganization = f.project.OrganizationID
 		plans := hostedplans.CapacityPlans()
 		for index := range plans.Plans {
-			plans.Plans[index].Allowances["collaboration_bytes"] = before + ref.CompressedSize
+			plans.Plans[index].Allowances["collaboration_bytes"] = before + 2*int64(len(content))
 		}
 		if err := hubapi.FromFeatureError(f.service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{Plans: &plans}))); err != nil {
 			t.Fatal(err)
@@ -223,12 +224,11 @@ func TestConversationAttachmentStagingChecksAllowanceBeforePublication(t *testin
 		}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, committed.URL, f.token, nil), http.StatusNoContent)
 		var after int64
-		if err := f.readConversationAttachmentUsage(t.Context(), &after); err != nil || after-before != ref.CompressedSize {
-			t.Fatalf("pending upload lost shared archive charge: charge=%d want=%d error=%v", after-before, ref.CompressedSize, err)
+		if err := f.readConversationAttachmentUsage(t.Context(), &after); err != nil || after-before != int64(len(content)) {
+			t.Fatalf("deleted last charged upload changed its retained charge: charge=%d want=%d error=%v", after-before, len(content), err)
 		}
-		object, err := f.stagedConversationArchive(t.Context(), ref)
-		if err != nil || object.CollaborationBytes != ref.CompressedSize {
-			t.Fatalf("pending upload lost shared archive: %+v error=%v", object, err)
+		if _, err := f.stagedConversationArchive(t.Context(), ref); err != nil {
+			t.Fatalf("pending upload lost shared archive: %v", err)
 		}
 		releaseOnce[1].Do(func() { close(release[1]) })
 		select {
@@ -240,11 +240,11 @@ func TestConversationAttachmentStagingChecksAllowanceBeforePublication(t *testin
 		}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, committed.URL, f.token, nil), http.StatusOK)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, committed.URL, f.token, nil), http.StatusNoContent)
-		if err := f.readConversationAttachmentUsage(t.Context(), &after); err != nil || after != before {
-			t.Fatalf("last concurrent upload retained archive charge: charge=%d error=%v", after-before, err)
+		if err := f.readConversationAttachmentUsage(t.Context(), &after); err != nil || after-before != int64(len(content)) {
+			t.Fatalf("shared duplicate kept its charge: charge=%d want=%d error=%v", after-before, len(content), err)
 		}
-		if _, err := f.stagedConversationArchive(t.Context(), ref); !errors.Is(err, corestore.ErrNotFound) {
-			t.Fatalf("last concurrent upload retained archive ownership: %v", err)
+		if _, err := f.stagedConversationArchive(t.Context(), ref); err != nil {
+			t.Fatalf("retained tombstone lost archive ownership: %v", err)
 		}
 	})
 }
@@ -304,17 +304,22 @@ func TestConversationAttachmentPublicationRechecksRevision(t *testing.T) {
 			return err
 		})
 	}
+	var before int64
+	if err := f.readConversationAttachmentUsage(t.Context(), &before); err != nil {
+		t.Fatal(err)
+	}
 	response := postConversationAttachment(t, f.service, f.base, f.token, record.ID, "example.png", "image/png", attachmentPNG(), "upload")
 	requireNativeError(t, response, http.StatusConflict, "revision_conflict")
 	ref, _, err := attachment.PrepareArchive(string(record.OrganizationID), 1, bytes.NewReader(attachmentPNG()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var accounted int64
-	object, err := f.stagedConversationArchive(t.Context(), ref)
-	accounted = object.CollaborationBytes
-	if err != nil || accounted != ref.CompressedSize {
-		t.Fatalf("rejected upload left unaccounted staged bytes: size=%d err=%v", accounted, err)
+	if _, err := f.stagedConversationArchive(t.Context(), ref); err != nil {
+		t.Fatalf("rejected upload lost its staged archive owner: %v", err)
+	}
+	var after int64
+	if err := f.readConversationAttachmentUsage(t.Context(), &after); err != nil || after != before {
+		t.Fatalf("rejected upload charged %d bytes: %v", after-before, err)
 	}
 	var rows int
 	if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_attachments WHERE organization_id=$1 AND conversation_id=$2", record.OrganizationID, record.ID).Scan(&rows); err != nil || rows != 0 {
@@ -365,8 +370,13 @@ func TestConversationUnsentAttachmentReclaimsArchiveCharge(t *testing.T) {
 			if test.shared {
 				other = f.upload(t, f.token, second.Conversation.ID, "example.txt", "text/plain", content)
 			}
-			if got := usage() - before; got != ref.CompressedSize {
-				t.Fatalf("upload charge=%d; want %d", got, ref.CompressedSize)
+			size := int64(len(content))
+			charged := size
+			if test.shared {
+				charged = 2 * size
+			}
+			if got := usage() - before; got != charged {
+				t.Fatalf("upload charge=%d; want %d", got, charged)
 			}
 			if test.expire {
 				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversation_attachments SET expires_at=$3 WHERE organization_id=$1 AND id=$2", f.project.OrganizationID, upload.ID, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
@@ -378,9 +388,8 @@ func TestConversationUnsentAttachmentReclaimsArchiveCharge(t *testing.T) {
 			} else {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, upload.URL, f.token, nil), http.StatusNoContent)
 			}
-			want := int64(0)
+			want := size
 			if test.shared {
-				want = ref.CompressedSize
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, other.URL, f.token, nil), http.StatusOK)
 			}
 			if got := usage() - before; got != want {
@@ -389,14 +398,11 @@ func TestConversationUnsentAttachmentReclaimsArchiveCharge(t *testing.T) {
 			if test.shared {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, other.URL, f.token, nil), http.StatusNoContent)
 			}
-			if got := usage() - before; got != 0 {
-				t.Fatalf("last upload left archive charge=%d; want 0", got)
+			if got := usage() - before; got != size {
+				t.Fatalf("last charged upload retained charge=%d; want %d", got, size)
 			}
-			var rows int
-			_, err = f.stagedConversationArchive(t.Context(), ref)
-			if !errors.Is(err, corestore.ErrNotFound) {
-				rows = 1
-				t.Fatalf("unreferenced archive rows=%d; want 0: %v", rows, err)
+			if _, err := f.stagedConversationArchive(t.Context(), ref); err != nil {
+				t.Fatalf("last charged upload lost its retained archive: %v", err)
 			}
 		})
 	}
