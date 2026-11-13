@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -77,6 +78,17 @@ func (s *Service) MaintainProjectPage(ctx context.Context, org tracker.Organizat
 		return next, false, err
 	}
 	page.Model = selection.Effective
+	page.ReporterTemplates = config.DefaultReporterContracts()
+	if candidate.Policy != nil {
+		approval, err := s.decodeTenantProjectPolicy(ctx, org, candidate.ProjectID, *candidate.Policy)
+		if err != nil {
+			return next, false, err
+		}
+		page.ReporterTemplates, err = approvedReporterTemplates(ctx, org, candidate.ProjectID, approval)
+		if err != nil {
+			return next, false, err
+		}
+	}
 	published := false
 	err = s.config.TenantRepository.WriteTenant(ctx, org, corestore.Background, func(w tenantstore.Writer) error {
 		owner, ok := w.(projectstore.PageMaintainer)

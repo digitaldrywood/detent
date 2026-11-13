@@ -315,12 +315,16 @@ func (s *Service) readTenantProjectPolicyRevision(ctx context.Context, organizat
 	if err != nil {
 		return policy.Approval{}, policystore.Revision{}, err
 	}
+	approval, err := s.decodeTenantProjectPolicy(ctx, organization, project, revision)
+	return approval, revision, err
+}
+
+func (s *Service) decodeTenantProjectPolicy(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, revision policystore.Revision) (policy.Approval, error) {
 	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, eventstore.Receipt{OrganizationID: organization, PayloadObjectKey: revision.PayloadObjectKey, PayloadSHA256: revision.PayloadSHA256, PayloadBytes: revision.PayloadBytes, PayloadContentBytes: revision.PayloadContentBytes})
 	if err != nil {
-		return policy.Approval{}, policystore.Revision{}, err
+		return policy.Approval{}, err
 	}
-	approval, err := decodeProjectPolicy(ctx, string(organization)+"/"+string(project), revision.PolicyID, string(raw), policy.Approval{ApprovedBy: revision.ApprovedBy, ApprovedAt: formatHubTime(revision.ApprovedAt)})
-	return approval, revision, err
+	return decodeProjectPolicy(ctx, string(organization)+"/"+string(project), revision.PolicyID, string(raw), policy.Approval{ApprovedBy: revision.ApprovedBy, ApprovedAt: formatHubTime(revision.ApprovedAt)})
 }
 
 func (s *Service) approveProjectPolicy(c echo.Context) error {

@@ -563,10 +563,14 @@ func (s *Service) getProjectRecord(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	templates, err := s.projectReporterTemplates(c.Request().Context(), scope, record.Page)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	return c.JSON(http.StatusOK, struct {
 		tracker.NativeProject
 		ReporterTemplates config.ReporterContracts `json:"reporter_templates"`
-	}{project, config.DefaultReporterContracts()})
+	}{project, templates})
 }
 
 func isProjectCreation(input any) bool {

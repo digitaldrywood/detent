@@ -224,9 +224,24 @@ func testProjectPagePublication(t *testing.T, service *Service, f nativeFixture)
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if candidate.Policy == nil {
+		t.Fatal("project page candidate lost the approved policy")
+	}
+	stale := candidate
+	stale.Policy = &policystore.Revision{PolicyID: "policy_stale"}
+	if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+		published, err := w.(projectstore.PageMaintainer).PublishProjectPage(t.Context(), stale, projectstore.Page{})
+		if published {
+			t.Error("project page published for a policy that is no longer approved")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	templates := config.ReporterContracts{"bug": {"Example section"}}
 	for range 2 {
 		if err := repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
-			published, err := w.(projectstore.PageMaintainer).PublishProjectPage(t.Context(), candidate, projectstore.Page{Body: string(org), Model: config.ModelSelection{Levels: map[string]config.ModelSelectionDefaults{}, Stages: map[string]config.ModelSelectionStage{}, Rules: &[]config.ModelSelectionRule{}}})
+			published, err := w.(projectstore.PageMaintainer).PublishProjectPage(t.Context(), candidate, projectstore.Page{Body: string(org), Model: config.ModelSelection{Levels: map[string]config.ModelSelectionDefaults{}, Stages: map[string]config.ModelSelectionStage{}, Rules: &[]config.ModelSelectionRule{}}, ReporterTemplates: templates})
 			if !published {
 				t.Error("current or replayed project source rejected")
 			}
@@ -246,6 +261,9 @@ func testProjectPagePublication(t *testing.T, service *Service, f nativeFixture)
 		}
 		if !ready || page.Body != string(org) || page.Model.Levels == nil || page.Model.Stages == nil || page.Model.Rules == nil {
 			t.Errorf("project page lost tenant or explicit empty overrides: %+v", page)
+		}
+		if !reflect.DeepEqual(page.ReporterTemplates, templates) {
+			t.Errorf("project page reporter templates=%v, want %v", page.ReporterTemplates, templates)
 		}
 		return nil
 	}); err != nil {

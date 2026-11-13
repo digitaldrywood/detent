@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -16,12 +17,13 @@ func (s *session) ProjectPage(ctx context.Context, record projectstore.Record) (
 	if record.Core.OrganizationID != s.organization {
 		return projectstore.Page{}, false, corestore.ErrTenantMismatch
 	}
-	rows, err := s.db.Query(ctx, `SELECT CASE WHEN m.ordinal=0 THEN p.body ELSE '' END,`+"m."+strings.ReplaceAll(projectPartColumns, ",", ",m.")+` FROM project_page_read_model p
+	rows, err := s.db.Query(ctx, `SELECT p.reporter_bug,p.reporter_change_request,CASE WHEN m.ordinal=0 THEN p.body ELSE '' END,`+"m."+strings.ReplaceAll(projectPartColumns, ",", ",m.")+` FROM project_page_read_model p
  JOIN organizations o ON o.organization_id=p.organization_id
  JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.project_id
  JOIN project_model_page_parts m ON m.organization_id=p.organization_id AND m.project_id=p.project_id
  WHERE p.organization_id=$1 AND p.project_id=$2 AND p.revision=$3 AND p.source_generation=$4 AND p.workflow_sha256=$5 AND p.model_sha256=$6
  AND p.revision=s.revision AND p.source_generation=s.model_revision AND p.workflow_sha256=s.workflow_sha256 AND p.model_sha256=s.model_sha256 AND p.organization_revision=o.model_selection_revision
+ AND p.policy_id=COALESCE((SELECT c.policy_id FROM project_policies c WHERE c.organization_id=p.organization_id AND c.project_id=p.project_id),'')
  ORDER BY m.ordinal LIMIT 4097`, s.organization, record.Core.ID, record.Settings.Revision, record.Settings.ModelRevision, record.Settings.WorkflowSHA256, record.Settings.ModelSHA256)
 	if err != nil {
 		return projectstore.Page{}, false, mapError(ctx, err)
@@ -31,12 +33,20 @@ func (s *session) ProjectPage(ctx context.Context, record projectstore.Record) (
 	parts := []projectstore.ModelPart{}
 	for rows.Next() {
 		var body string
-		part, err := scanProjectPart(rows, &body)
+		var bug, changeRequest []string
+		part, err := scanProjectPart(rows, &bug, &changeRequest, &body)
 		if err != nil {
 			return projectstore.Page{}, false, mapError(ctx, err)
 		}
 		if len(parts) == 0 {
 			page.Body = body
+			page.ReporterTemplates = config.ReporterContracts{}
+			if len(bug) > 0 {
+				page.ReporterTemplates["bug"] = bug
+			}
+			if len(changeRequest) > 0 {
+				page.ReporterTemplates["change_request"] = changeRequest
+			}
 		}
 		parts = append(parts, part)
 		if len(parts) > projectstore.PagePartLimit {
@@ -58,10 +68,11 @@ func (s *session) NextProjectPage(ctx context.Context, after tracker.ProjectID) 
 	err := s.db.QueryRow(ctx, `WITH selected AS MATERIALIZED (
  SELECT id FROM projects WHERE organization_id=$1 AND id>$2 AND deleted_at IS NULL ORDER BY id LIMIT 1
  ) SELECT s.project_id,GREATEST(s.page_source_at,o.model_page_source_at),
- COALESCE(p.revision=s.revision AND p.source_generation=s.model_revision AND p.workflow_sha256=s.workflow_sha256 AND p.model_sha256=s.model_sha256 AND p.organization_revision=o.model_selection_revision,false)
+ COALESCE(p.revision=s.revision AND p.source_generation=s.model_revision AND p.workflow_sha256=s.workflow_sha256 AND p.model_sha256=s.model_sha256 AND p.organization_revision=o.model_selection_revision AND p.policy_id=COALESCE(c.policy_id,''),false)
  FROM selected n JOIN project_settings s ON s.organization_id=$1 AND s.project_id=n.id
  JOIN organizations o ON o.organization_id=s.organization_id
- LEFT JOIN project_page_read_model p ON p.organization_id=s.organization_id AND p.project_id=s.project_id`, s.organization, after).Scan(&c.ProjectID, &c.SourceAt, &c.Ready)
+ LEFT JOIN project_page_read_model p ON p.organization_id=s.organization_id AND p.project_id=s.project_id
+ LEFT JOIN project_policies c ON c.organization_id=s.organization_id AND c.project_id=s.project_id`, s.organization, after).Scan(&c.ProjectID, &c.SourceAt, &c.Ready)
 	if err != nil {
 		return c, mapError(ctx, err)
 	}
@@ -73,7 +84,18 @@ func (s *session) NextProjectPage(ctx context.Context, after tracker.ProjectID) 
 		return c, err
 	}
 	c.Models, err = s.OrganizationModels(ctx)
-	return c, err
+	if err != nil {
+		return c, err
+	}
+	policy, err := s.ProjectPolicy(ctx, c.ProjectID)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return c, nil
+	}
+	if err != nil {
+		return c, err
+	}
+	c.Policy = &policy
+	return c, nil
 }
 
 func (s *session) PublishProjectPage(ctx context.Context, c projectstore.PageCandidate, page projectstore.Page) (bool, error) {
@@ -88,15 +110,23 @@ func (s *session) PublishProjectPage(ctx context.Context, c projectstore.PageCan
 	var project string
 	err = s.db.QueryRow(ctx, `SELECT s.project_id FROM project_settings s JOIN organizations o ON o.organization_id=s.organization_id JOIN projects p ON p.organization_id=s.organization_id AND p.id=s.project_id
  WHERE s.organization_id=$1 AND s.project_id=$2 AND s.revision=$3 AND s.model_revision=$4 AND s.workflow_sha256=$5 AND s.model_sha256=$6 AND o.model_selection_revision=$7 AND p.deleted_at IS NULL
- FOR SHARE OF s,o,p`, s.organization, r.Core.ID, r.Settings.Revision, r.Settings.ModelRevision, r.Settings.WorkflowSHA256, r.Settings.ModelSHA256, c.Models.Revision).Scan(&project)
+ AND COALESCE((SELECT c.policy_id FROM project_policies c WHERE c.organization_id=s.organization_id AND c.project_id=s.project_id),'')=$8
+ FOR SHARE OF s,o,p`, s.organization, r.Core.ID, r.Settings.Revision, r.Settings.ModelRevision, r.Settings.WorkflowSHA256, r.Settings.ModelSHA256, c.Models.Revision, c.PolicyID()).Scan(&project)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
-	_, err = s.db.Exec(ctx, `INSERT INTO project_page_read_model(organization_id,project_id,revision,source_generation,organization_revision,workflow_sha256,model_sha256,source_at,body)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(organization_id,project_id) DO UPDATE SET revision=EXCLUDED.revision,source_generation=EXCLUDED.source_generation,organization_revision=EXCLUDED.organization_revision,workflow_sha256=EXCLUDED.workflow_sha256,model_sha256=EXCLUDED.model_sha256,source_at=EXCLUDED.source_at,body=EXCLUDED.body,projected_at=clock_timestamp()`, s.organization, r.Core.ID, r.Settings.Revision, r.Settings.ModelRevision, c.Models.Revision, r.Settings.WorkflowSHA256, r.Settings.ModelSHA256, c.SourceAt, page.Body)
+	bug, changeRequest := page.ReporterTemplates["bug"], page.ReporterTemplates["change_request"]
+	if bug == nil {
+		bug = []string{}
+	}
+	if changeRequest == nil {
+		changeRequest = []string{}
+	}
+	_, err = s.db.Exec(ctx, `INSERT INTO project_page_read_model(organization_id,project_id,revision,source_generation,organization_revision,workflow_sha256,model_sha256,source_at,body,policy_id,reporter_bug,reporter_change_request)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(organization_id,project_id) DO UPDATE SET revision=EXCLUDED.revision,source_generation=EXCLUDED.source_generation,organization_revision=EXCLUDED.organization_revision,workflow_sha256=EXCLUDED.workflow_sha256,model_sha256=EXCLUDED.model_sha256,source_at=EXCLUDED.source_at,body=EXCLUDED.body,policy_id=EXCLUDED.policy_id,reporter_bug=EXCLUDED.reporter_bug,reporter_change_request=EXCLUDED.reporter_change_request,projected_at=clock_timestamp()`, s.organization, r.Core.ID, r.Settings.Revision, r.Settings.ModelRevision, c.Models.Revision, r.Settings.WorkflowSHA256, r.Settings.ModelSHA256, c.SourceAt, page.Body, c.PolicyID(), bug, changeRequest)
 	if err != nil {
 		return false, mapError(ctx, err)
 	}

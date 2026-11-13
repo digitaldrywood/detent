@@ -16,8 +16,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -113,14 +115,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
-		contract, err := config.ResolvePolicyIssueContract(approval.Policy)
-		if approval.Policy.Authored != nil && len(approval.Policy.Authored.Files) > 0 {
-			workflow, workflowErr := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
-			if workflowErr != nil {
-				return operatortool.Result{}, safeWorkReadError(workflowErr)
-			}
-			contract, err = config.ResolveIssueContract(workflow.SharedPrompt)
-		}
+		contract, err := approvedProjectIssueContract(ctx, scope.organization, scope.project, approval)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
@@ -462,4 +457,40 @@ func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope native
 		return nil
 	})
 	return snapshots, sequence, partial, err
+}
+
+func approvedProjectIssueContract(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, approval policy.Approval) (config.IssueContract, error) {
+	if approval.Policy.Authored != nil && len(approval.Policy.Authored.Files) > 0 {
+		workflow, err := projectPolicyWorkflow(ctx, string(organization)+"/"+string(project), approval.Policy)
+		if err != nil {
+			return config.IssueContract{}, err
+		}
+		return config.ResolveIssueContract(workflow.SharedPrompt)
+	}
+	return config.ResolvePolicyIssueContract(approval.Policy)
+}
+
+func (s *Service) projectReporterTemplates(ctx context.Context, scope nativeScope, page *projectstore.Page) (config.ReporterContracts, error) {
+	if page != nil {
+		templates := config.DefaultReporterContracts()
+		for kind, sections := range page.ReporterTemplates {
+			if len(sections) > 0 {
+				templates[kind] = sections
+			}
+		}
+		return templates, nil
+	}
+	approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+	if err != nil {
+		return nil, err
+	}
+	return approvedReporterTemplates(ctx, scope.organization, scope.project, approval)
+}
+
+func approvedReporterTemplates(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, approval policy.Approval) (config.ReporterContracts, error) {
+	contract, err := approvedProjectIssueContract(ctx, organization, project, approval)
+	if err != nil {
+		return nil, err
+	}
+	return config.ResolveReporterContracts(contract.Context)
 }

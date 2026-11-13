@@ -12,13 +12,22 @@ import (
 const PagePartLimit = 4096
 
 type Page struct {
-	Body  string
-	Model config.ModelSelection
+	Body              string
+	Model             config.ModelSelection
+	ReporterTemplates config.ReporterContracts
+}
+
+func (c PageCandidate) PolicyID() string {
+	if c.Policy == nil {
+		return ""
+	}
+	return c.Policy.PolicyID
 }
 
 type PageCandidate struct {
 	Record    Record
 	Models    policystore.OrganizationModels
+	Policy    *policystore.Revision
 	ProjectID tracker.ProjectID
 	Ready     bool
 	SourceAt  time.Time

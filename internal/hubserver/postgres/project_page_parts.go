@@ -10,9 +10,9 @@ import (
 
 const projectPartColumns = "kind,name,parent,edge,model,effort,level,duration_ms,tokens,issue_complexity,enabled,preset,normal_model,complex_model,default_level,unavailable,backend_kinds,fallback_order,levels_present,stages_present,rules_present,disabled,roles,efforts,assignees,authors,priorities,include_labels,exclude_labels,field_names,field_values"
 
-func scanProjectPart(row interface{ Scan(...any) error }, body *string) (projectstore.ModelPart, error) {
+func scanProjectPart(row interface{ Scan(...any) error }, leading ...any) (projectstore.ModelPart, error) {
 	var p projectstore.ModelPart
-	err := row.Scan(body, &p.Kind, &p.Name, &p.Parent, &p.Edge, &p.Model, &p.Effort, &p.Level, &p.Duration, &p.Tokens, &p.IssueComplexity, &p.Enabled, &p.Preset, &p.NormalModel, &p.ComplexModel, &p.DefaultLevel, &p.Unavailable, &p.BackendKinds, &p.FallbackOrder, &p.LevelsPresent, &p.StagesPresent, &p.RulesPresent, &p.Disabled, &p.Roles, &p.Efforts, &p.Assignees, &p.Authors, &p.Priorities, &p.Include, &p.Exclude, &p.FieldNames, &p.FieldValues)
+	err := row.Scan(append(leading, &p.Kind, &p.Name, &p.Parent, &p.Edge, &p.Model, &p.Effort, &p.Level, &p.Duration, &p.Tokens, &p.IssueComplexity, &p.Enabled, &p.Preset, &p.NormalModel, &p.ComplexModel, &p.DefaultLevel, &p.Unavailable, &p.BackendKinds, &p.FallbackOrder, &p.LevelsPresent, &p.StagesPresent, &p.RulesPresent, &p.Disabled, &p.Roles, &p.Efforts, &p.Assignees, &p.Authors, &p.Priorities, &p.Include, &p.Exclude, &p.FieldNames, &p.FieldValues)...)
 	return p, err
 }
 
