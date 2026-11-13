@@ -261,8 +261,8 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 		{"member managing unowned runner", "member", "write", 200, 200, 404, false, true, false},
 		{"member managing routed runner", "member", "write", 200, 200, 404, true, true, false},
 		{"member with routed runner", "member", "write", 200, 200, 404, true, false, false},
-		{"viewer", "viewer", "read", 200, 404, 404, false, false, false},
-		{"viewer with routed runner", "viewer", "read", 200, 404, 404, true, false, false},
+		{"viewer", "viewer", "read", 200, 403, 403, false, false, false},
+		{"viewer with routed runner", "viewer", "read", 200, 403, 403, true, false, false},
 		{"ungranted owner", "owner", "", 404, 404, 404, false, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -369,9 +369,33 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 					t.Fatalf("artifact binding = %+v", setup.Artifacts)
 				}
 			}
-			requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+"/onboarding", map[string]any{"idempotency_key": "save", "progress": onboarding.Progress{Repository: "existing"}}), tt.write)
+			saved := f.request(t, user, http.MethodPut, f.base+"/onboarding", map[string]any{"idempotency_key": "save", "progress": onboarding.Progress{Repository: "existing"}})
+			requireNativeStatus(t, saved, tt.write)
+			if tt.write == http.StatusForbidden {
+				var refusal struct {
+					Code string `json:"code"`
+				}
+				decodeHubResponse(t, saved, &refusal)
+				var unchanged onboarding.Project
+				read := f.request(t, user, http.MethodGet, f.base+"/onboarding", nil)
+				requireNativeStatus(t, read, http.StatusOK)
+				decodeHubResponse(t, read, &unchanged)
+				if refusal.Code != "access_denied" || unchanged.Progress.Revision != 0 || unchanged.Progress.Repository != "" {
+					t.Fatalf("visible read-only save refusal=%q progress=%+v", refusal.Code, unchanged.Progress)
+				}
+			}
 			descriptor := hubTestPolicy()
-			requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), tt.admin)
+			policySave := f.request(t, user, http.MethodPut, f.base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor})
+			requireNativeStatus(t, policySave, tt.admin)
+			if tt.admin == http.StatusForbidden {
+				var refusal struct {
+					Code string `json:"code"`
+				}
+				decodeHubResponse(t, policySave, &refusal)
+				if refusal.Code != "access_denied" {
+					t.Fatalf("visible read-only policy refusal=%q", refusal.Code)
+				}
+			}
 			if tt.role == "owner" && tt.grant != "" {
 				sibling := f
 				sibling.project = "prj_onboarding_sibling"
