@@ -299,7 +299,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 		case len(candidates.Items) == 0:
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", "Current native candidate facts exclude this item"
 			entry.UnresolvedDependencies = unresolved
-			if len(unresolved) > 0 {
+			if len(unresolved) > 0 || evidence.NativeCandidateExclusion != nil {
 				entry.Unavailable = append(entry.Unavailable, "other_native_candidate_exclusions")
 			} else {
 				entry.Unavailable = append(entry.Unavailable, "native_candidate_exclusion")
