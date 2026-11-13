@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -146,6 +148,19 @@ func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
 			if len(test.include) > 0 {
 				args["include"] = test.include
 			}
+			counts := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/board/counts", f.token, nil)
+			requireNativeStatus(t, counts, http.StatusOK)
+			var summary viewstore.BoardSummaryPage
+			decodeHubResponse(t, counts, &summary)
+			var counted int64
+			for _, row := range summary.Rows {
+				if row.Kind == "lane" {
+					counted += row.Total
+				}
+			}
+			if summary.ProjectionPending || counted != int64(len(issues)) {
+				t.Fatalf("board counts total=%d pending=%t want=%d", counted, summary.ProjectionPending, len(issues))
+			}
 			for i, want := range issues {
 				raw := hostedContextData(t, call("tools/call", operatortool.WorkList, args), false)
 				var page operatortool.WorkReadResult[tracker.Page[struct {
@@ -164,8 +179,8 @@ func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
 				if err := json.Unmarshal(raw, &envelope); err != nil {
 					t.Fatal(err)
 				}
-				if envelope.Data.Total != len(issues) {
-					t.Fatalf("bounded page total=%d want=%d", envelope.Data.Total, len(issues))
+				if envelope.Data.Total != -1 {
+					t.Fatalf("bounded page total=%d want the uncounted sentinel -1", envelope.Data.Total)
 				}
 				projections := []any{envelope.Data.Page}
 				if work := envelope.Data.Work; work != nil {
