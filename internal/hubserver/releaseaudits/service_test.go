@@ -1,4 +1,4 @@
-package hubserver
+package releaseaudits_test
 
 import (
 	"context"
@@ -20,65 +20,93 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/releaseaudits"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/releaseaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestMain(m *testing.M) { hubtest.Main(m) }
+
+type fixture struct {
+	project    tracker.NativeProject
+	token      string
+	base       string
+	credential string
+}
+
+func requireNativeStatus(t *testing.T, response *httptest.ResponseRecorder, want int) {
+	t.Helper()
+	if response.Code != want {
+		t.Fatalf("status = %d, want %d: %s", response.Code, want, response.Body.String())
+	}
+}
+
+func decodeHubResponse(t *testing.T, response *httptest.ResponseRecorder, value any) {
+	t.Helper()
+	if err := json.Unmarshal(response.Body.Bytes(), value); err != nil {
+		t.Fatalf("decode response status %d body %s: %v", response.Code, response.Body.String(), err)
+	}
+}
+
 func TestReleaseAuditProjectRecords(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-	repository, admin := projectRecordPostgresWithAdmin(t, 4)
-	service := &Service{echo: echo.New(), database: &database{postgres: repository}, localOrganization: "org_audit", config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: discardLogger(), now: func() time.Time { return now }}}
-	service.registerReleaseAuditRoutes(service.echo)
+	admin := hubtest.Database(t)
+	repository := hubtest.RepositoryOn(t, admin, hubtest.WithMaxConnections(4))
+	organization := hubtest.Organization(t, repository, hubtest.OrganizationOptions{ID: "org_audit", Name: "Example", Now: now}).OrganizationID
+	details := hubtest.NewDetails()
+	service := hubtest.NewHTTP(t, hubtest.HTTPOptions{Repository: repository, Organization: organization, Now: func() time.Time { return now }}, func(group *echo.Group, deps hubtest.HTTPDeps) {
+		audits := releaseaudits.New(releaseaudits.Deps{
+			Repository: repository, Now: func() time.Time { return now }, Details: func() attachment.DetailStore { return details },
+			Scope: hubauth.RequestScope, Decode: hubapi.DecodeJSON, Error: deps.Error,
+			InvalidRequest: func(c echo.Context, err error) error { return deps.Error(c, hubapi.Invalid(err.Error())) },
+			RecordError:    func(err error) error { return err },
+			Recheck: func(ctx context.Context, scope hubapi.Scope) error {
+				return repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { return scope.Authorize(ctx, r, true) })
+			},
+			RequireFeature: func(context.Context, tenantstore.Reader, string, time.Time) error { return nil },
+			Audit:          func(hubapi.Scope) (accessstore.Audit, bool) { return accessstore.Audit{}, false },
+		})
+		base := "/api/v2/organizations/:organization/projects/:project"
+		group.GET(base+"/release-audits", audits.List, deps.Native(hubauth.Operator))
+		group.GET(base+"/release-audits/:checkpoint", audits.Get, deps.Native(hubauth.Operator))
+		group.POST(base+"/release-audits", audits.Publish, deps.Native(hubauth.Operator))
+	})
 	perform := func(method, path, token string, payload any) *httptest.ResponseRecorder {
-		response := httptest.NewRecorder()
-		service.echo.ServeHTTP(response, newHubAPIRequest(t, method, path, token, payload))
-		return response
+		return service.Request(t, hubtest.HTTPActor{Token: token}, method, path, payload).Recorder
 	}
-	makeFixture := func(id string) nativeFixture {
-		token := "example-token-" + id
-		project := tracker.NativeProject{OrganizationID: "org_audit", ID: tracker.ProjectID(id)}
-		if err := repository.WriteTenant(t.Context(), project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-			if id == "prj_first" {
-				if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: project.OrganizationID, Name: "Example", CreatedAt: now}); err != nil {
-					return err
-				}
-				if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: project.OrganizationID, ProviderID: "example-provider"}); err != nil {
-					return err
-				}
-			}
-			record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: project.OrganizationID, ID: project.ID, Name: id, Profile: "native"}, States: nativeFixtureStates()})
+	makeFixture := func(id string) fixture {
+		project := hubtest.Project(t, repository, organization, hubtest.ProjectOptions{ID: tracker.ProjectID(id), Name: id})
+		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
+			record, err := w.ProjectRecord(t.Context(), project.ID)
 			if err != nil {
 				return err
 			}
 			record.Settings.CheckoutRepository = "example-org/example-project"
-			if _, err := w.UpdateProjectRecord(t.Context(), record); err != nil {
-				return err
-			}
-			if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: project.OrganizationID, ID: id, Name: id, Hash: apikey.HashToken(token), Scope: "operator", Kind: "service", KeyScope: "write", ProjectAccess: "selected", NativeOnly: true, CreatedAt: now, UpdatedAt: now}); err != nil {
-				return err
-			}
-			return w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: project.OrganizationID, TokenID: id, ProjectID: project.ID})
+			_, err = w.UpdateProjectRecord(t.Context(), record)
+			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
-		return nativeFixture{project: project, token: token, base: "/api/v2/organizations/org_audit/projects/" + id}
+		credential := hubtest.Credential(t, repository, organization, hubtest.CredentialOptions{KeyScope: "write", Projects: []tracker.ProjectID{project.ID}, Now: now})
+		return fixture{project: project, token: credential.Token, credential: credential.ID, base: "/api/v2/organizations/org_audit/projects/" + id}
 	}
 	first := makeFixture("prj_first")
 	second := makeFixture("prj_second")
 	blobs := map[string][]byte{}
 	metadata := map[string]attachment.Metadata{}
-	for _, fixture := range []nativeFixture{first, second} {
-		uploader := string(fixture.project.ID)
+	for _, fixture := range []fixture{first, second} {
+		uploader := fixture.credential
 		for sequence := 1; sequence <= 2; sequence++ {
 			state := releaseaudit.Snapshot{Identity: releaseaudit.Identity{ProjectID: string(fixture.project.ID), Repository: "example-org/example-project", Commit: strings.Repeat("a", 40), ReleaseSeries: "release/v1.0", RunID: "run", Attempt: "1", JobID: "audit", RunURL: "https://example.test/runs/1"}, Sequence: sequence, Status: "incomplete", BundleCommit: releaseaudit.BundleCommit, BundleDigest: releaseaudit.BundleDigest, Allowance: releaseaudit.Allowance{Invocations: 20, Usage: releaseaudit.Usage{Input: 1000, Output: 1000, Cached: 1000}}, Ledger: []byte(`[]`)}
 			raw, checkpoint, err := releaseaudit.SnapshotBytes(state)
@@ -116,7 +144,7 @@ func TestReleaseAuditProjectRecords(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusConflict)
 		}
 	}
-	for _, fixture := range []nativeFixture{first, second} {
+	for _, fixture := range []fixture{first, second} {
 		response := perform(http.MethodGet, fixture.base+"/release-audits", fixture.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		var page releaseaudit.CheckpointPage
@@ -133,10 +161,10 @@ func TestReleaseAuditProjectRecords(t *testing.T) {
 	}
 	response := perform(http.MethodGet, second.base+"/release-audits", first.token, nil)
 	requireNativeStatus(t, response, http.StatusNotFound)
-	uploader := string(first.project.ID)
+	uploader := first.credential
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, first.base+"/attachments") {
-			service.echo.ServeHTTP(w, r)
+			service.Echo.ServeHTTP(w, r)
 			return
 		}
 		if r.Header.Get("Authorization") != "Bearer "+first.token {
