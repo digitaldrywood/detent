@@ -57,6 +57,7 @@ func newWriteLoadFixture(t *testing.T, history, runners, sessions int) *writeLoa
 	})
 	config := Config{Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, now: func() time.Time { return now }, SecretKeys: secretTestKeys(t, "1", "1")}
 	service := openLocalPostgresHubTestService(t, repository, config)
+	service.registerConversationRoutes(service.echo)
 	primary := tracker.OrganizationID("org_first")
 	for _, organization := range []tracker.OrganizationID{primary, primary + "_second"} {
 		seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})
