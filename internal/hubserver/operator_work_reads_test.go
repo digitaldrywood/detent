@@ -615,7 +615,23 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 		t.Fatalf("empty=%s err=%v", result.Content, err)
 	}
 	t.Run("comment byte pages", func(t *testing.T) {
-		paged := f.create(t, "bounded comment history")
+		create := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-bounded comment history"}, Title: "bounded comment history", Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: "Todo"}
+		created := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, create)
+		if created.Code == http.StatusConflict {
+			var challenge duplicateChallenge
+			decodeHubResponse(t, created, &challenge)
+			if challenge.ChallengeToken == "" || len(challenge.PossibleDuplicates) == 0 {
+				t.Fatalf("duplicate refusal without confirmation: %s", created.Body.String())
+			}
+			create.ChallengeToken = challenge.ChallengeToken
+			for _, duplicate := range challenge.PossibleDuplicates {
+				create.NotDuplicateOf = append(create.NotDuplicateOf, duplicate.Number)
+			}
+			created = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, create)
+		}
+		requireNativeStatus(t, created, http.StatusOK)
+		var paged tracker.NativeIssue
+		decodeHubResponse(t, created, &paged)
 		path := f.base + "/work-items/" + string(paged.WorkItemID) + "/comments"
 		var expected []tracker.NativeComment
 		for index := range 208 {
