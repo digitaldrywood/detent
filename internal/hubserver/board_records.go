@@ -116,6 +116,9 @@ func (s *Service) readBoardRecordsFor(ctx context.Context, scope nativeScope, pa
 }
 
 func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, params url.Values, legacy, compact bool) (tracker.NativeIssuePage, error) {
+	if value, present := params["archive_url"]; present && (len(value) != 1 || value[0] != "true" && value[0] != "false") {
+		return tracker.NativeIssuePage{}, nativePublicInvalid("archive_url supports true or false")
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
