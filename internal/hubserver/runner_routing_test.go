@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -185,8 +186,27 @@ func TestRunnerRoutingClaims(t *testing.T) {
 				if decision.Data.Decision.Outcome != "claimed" || decision.Data.Decision.Source != "native_claim" {
 					t.Fatalf("claim evidence = %#v", decision)
 				}
-				var evaluatedLanding int
-				if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=$1 AND type='scheduler.decision'", issue.WorkItemID).Scan(&evaluatedLanding); err != nil || evaluatedLanding != 0 {
+				var rows []eventstore.Event
+				err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
+					var err error
+					rows, err = reader.Events(t.Context(), f.project.ID, issue.WorkItemID, 0, 100)
+					return err
+				})
+				if len(rows) == 100 {
+					t.Fatal("decision fixture history exceeds complete read bound")
+				}
+				evaluatedLanding := 0
+				for _, row := range rows {
+					if err != nil || row.Type != "scheduler.decision" {
+						continue
+					}
+					var event tracker.CollaborationEvent
+					event, err = eventstore.NewContent(f.service.runDetailStoreFor(t.Context())).Event(t.Context(), row)
+					if err == nil && event.Data.Decision != nil && event.Data.Decision.Source == "native_claim_eligibility" {
+						evaluatedLanding++
+					}
+				}
+				if err != nil || evaluatedLanding != 0 {
 					t.Fatalf("ordinary claim manufactured Change readiness: count=%d error=%v", evaluatedLanding, err)
 				}
 				if test.name == "empty selector" {
