@@ -179,35 +179,27 @@ func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 			}
 			f.create(t, "added-while-paging")
 			drainTestNativeBoard(t, f.service)
+			break
 		}
 		if page.NextCursor == "" {
 			break
 		}
 		params.Set("cursor", page.NextCursor)
 	}
-	for index, issue := range original {
-		if len(seen) != len(original) || seen[index] != issue.WorkItemID {
-			t.Fatalf("seen = %v, want original lane order", seen)
-		}
+	if len(seen) != 2 || seen[0] != original[0].WorkItemID || seen[1] != original[1].WorkItemID || firstCursor == "" {
+		t.Fatalf("seen = %v, want the first page of the original lane order", seen)
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=1&cursor="+url.QueryEscape(firstCursor), f.token, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	var replay tracker.NativeIssuePage
-	decodeHubResponse(t, response, &replay)
-	if len(replay.Items) != 1 || replay.Items[0].WorkItemID != original[2].WorkItemID || !replay.Items[0].Archived || !replay.Items[0].LastActivityAt.After(original[2].LastActivityAt) {
-		t.Fatalf("replayed cursor lost frozen order or current detail: %#v", replay.Items)
+	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=2&cursor="+url.QueryEscape(firstCursor), f.token, nil)
+	if failure := requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request"); failure.Message != "Work list order changed; restart the query" {
+		t.Fatalf("board change left the cursor valid: %s", response.Body.String())
 	}
-	expires := f.service.config.Clock().Add(2 * time.Hour)
-	f.service.config.Clock = func() time.Time { return expires }
 	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items", f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var fresh tracker.NativeIssuePage
 	decodeHubResponse(t, response, &fresh)
-	if len(fresh.Items) != 1 || fresh.Items[0].Title != "added-while-paging" {
-		t.Fatalf("fresh list = %#v", fresh.Items)
+	if len(fresh.Items) != 1 || fresh.Items[0].Title != "added-while-paging" || fresh.NextCursor != "" {
+		t.Fatalf("restarted list = %#v", fresh.Items)
 	}
-	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=1&cursor="+url.QueryEscape(firstCursor), f.token, nil)
-	requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request")
 	if writes() != 0 || guard.queries.Load() == 0 || guard.transactions.Load() == 0 {
 		t.Fatalf("page reads bypassed PostgreSQL read-only guard: writes=%d queries=%d transactions=%d", writes(), guard.queries.Load(), guard.transactions.Load())
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"slices"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -1447,9 +1450,25 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 
 			targeted := request
 			_, err = service.claimNativeIssueTenant(t.Context(), scope, targeted, 5*time.Minute)
-			var refusal *hubapi.NativeError
-			if !errors.As(err, &refusal) || refusal.Code != "issue_contract_unsatisfied" {
-				t.Fatalf("targeted invalid claim error = %v", err)
+			if !errors.Is(err, ErrNoClaimableWork) {
+				t.Fatalf("targeted no-dispatch claim error = %v, want no claimable work", err)
+			}
+			refused := httptest.NewRecorder()
+			if err := service.nativeAPIError(echo.New().NewContext(httptest.NewRequest(http.MethodPost, itemsPath, nil), refused), err); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeError(t, refused, http.StatusConflict, "no_claimable_work")
+			if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.WorkItem(t.Context(), project.ID, issue.WorkItemID)
+				if err != nil {
+					return err
+				}
+				if lease, err := r.ActiveLeaseForIssue(t.Context(), row.ID); !errors.Is(err, corestore.ErrNotFound) {
+					return fmt.Errorf("refused targeted claim left a lease %+v: %w", lease, err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
 
 			for index := 1; index < []int{2, 50}[fixtureIndex]; index++ {
