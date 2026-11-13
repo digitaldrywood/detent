@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 )
 
-type Query struct {
+type Index struct {
 	bundle         *Bundle
 	indexes        map[string]map[string][]indexEntry
 	schema         storagecatalog.Schema
@@ -28,14 +28,14 @@ type indexEntry struct {
 	order []string
 }
 
-func NewQuery(bundle *Bundle) *Query {
-	return &Query{bundle: bundle, schema: bundle.Schema(), indexes: make(map[string]map[string][]indexEntry)}
+func NewIndex(bundle *Bundle) *Index {
+	return &Index{bundle: bundle, schema: bundle.Schema(), indexes: make(map[string]map[string][]indexEntry)}
 }
 
-func (s *Query) Bundle() *Bundle               { return s.bundle }
-func (s *Query) Schema() storagecatalog.Schema { return s.schema }
+func (s *Index) Bundle() *Bundle               { return s.bundle }
+func (s *Index) Schema() storagecatalog.Schema { return s.schema }
 
-func (s *Query) Rows(ctx context.Context, table string, filters map[string]string, order, after []string, limit int) ([]Row, error) {
+func (s *Index) Rows(ctx context.Context, table string, filters map[string]string, order, after []string, limit int) ([]Row, error) {
 	columns := make([]string, 0, len(filters))
 	for column := range filters {
 		columns = append(columns, column)
@@ -157,7 +157,7 @@ func (s *Query) Rows(ctx context.Context, table string, filters map[string]strin
 	return result, nil
 }
 
-func (s *Query) One(ctx context.Context, table string, filters map[string]string, order []string) (Row, error) {
+func (s *Index) One(ctx context.Context, table string, filters map[string]string, order []string) (Row, error) {
 	rows, err := s.Rows(ctx, table, filters, order, nil, 2)
 	if err != nil {
 		return Row{}, err
@@ -171,7 +171,7 @@ func (s *Query) One(ctx context.Context, table string, filters map[string]string
 	return rows[0], nil
 }
 
-func (s *Query) Each(ctx context.Context, table string, filters map[string]string, order []string, read func(Row) error) error {
+func (s *Index) Each(ctx context.Context, table string, filters map[string]string, order []string, read func(Row) error) error {
 	var after []string
 	for {
 		rows, err := s.Rows(ctx, table, filters, order, after, 100)
@@ -196,7 +196,7 @@ func (s *Query) Each(ctx context.Context, table string, filters map[string]strin
 	}
 }
 
-func (s *Query) changeFilterValue(ctx context.Context, table string, row Row, column string) (storagecatalog.Cell, error) {
+func (s *Index) changeFilterValue(ctx context.Context, table string, row Row, column string) (storagecatalog.Cell, error) {
 	if column != "change_id" || table != "change_landing_receipts" && table != "change_viewed_files" && table != "quality_landings" {
 		return storagecatalog.Cell{}, ErrInvalid
 	}

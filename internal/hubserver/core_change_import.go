@@ -41,7 +41,7 @@ func ImportCoreChanges(ctx context.Context, target *postgres.Repository, source 
 		if err := validateCoreNeutralChangeImport(bundle); err != nil {
 			return err
 		}
-		tx := neutralimport.NewQuery(bundle)
+		tx := neutralimport.NewIndex(bundle)
 		if err := validateCoreQualityLandings(ctx, tx, source); err != nil {
 			return err
 		}
@@ -97,7 +97,7 @@ type coreChangeImportRow struct {
 	links  []tracker.NativeWorkItemID
 }
 
-func readCoreChangePage(ctx context.Context, tx *neutralimport.Query, source CoreChangeImportSource, after string) ([]coreChangeImportRow, error) {
+func readCoreChangePage(ctx context.Context, tx *neutralimport.Index, source CoreChangeImportSource, after string) ([]coreChangeImportRow, error) {
 	organization := source.OrganizationID
 	rows, err := tx.Rows(ctx, "change_requests", map[string]string{"organization_id": string(organization)}, []string{"id"}, []string{after}, 100)
 	if err != nil {
@@ -131,7 +131,7 @@ func readCoreChangePage(ctx context.Context, tx *neutralimport.Query, source Cor
 	return result, nil
 }
 
-func readCoreChangeLinks(ctx context.Context, tx *neutralimport.Query, organization tracker.OrganizationID, changeID, project string) ([]tracker.NativeWorkItemID, error) {
+func readCoreChangeLinks(ctx context.Context, tx *neutralimport.Index, organization tracker.OrganizationID, changeID, project string) ([]tracker.NativeWorkItemID, error) {
 	rows, err := tx.Rows(ctx, "change_issue_links", map[string]string{"organization_id": string(organization), "change_id": changeID}, []string{"work_item_id"}, nil, 33)
 	if err != nil {
 		return nil, err
@@ -153,7 +153,7 @@ func readCoreChangeLinks(ctx context.Context, tx *neutralimport.Query, organizat
 	return links, nil
 }
 
-func importCoreChange(ctx context.Context, tx *neutralimport.Query, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash string, row coreChangeImportRow) error {
+func importCoreChange(ctx context.Context, tx *neutralimport.Index, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash string, row coreChangeImportRow) error {
 	raw, err := json.Marshal(row.change)
 	if err != nil {
 		return err
@@ -230,11 +230,11 @@ func checkCoreChangeReceipt(ctx context.Context, w eventstore.Writer, receipt ev
 	return false, nil
 }
 
-func readCoreChangeObject(ctx context.Context, tx *neutralimport.Query, source CoreChangeImportSource, key string) ([]byte, error) {
+func readCoreChangeObject(ctx context.Context, tx *neutralimport.Index, source CoreChangeImportSource, key string) ([]byte, error) {
 	return readCoreNeutralObject(ctx, tx, source.OrganizationID, source.SourceObjects, key)
 }
 
-func readCoreChangePayload(ctx context.Context, tx *neutralimport.Query, source CoreChangeImportSource, raw string) ([]byte, error) {
+func readCoreChangePayload(ctx context.Context, tx *neutralimport.Index, source CoreChangeImportSource, raw string) ([]byte, error) {
 	if raw == "" {
 		return nil, eventstore.ErrInvalidRecord
 	}
@@ -250,7 +250,7 @@ type coreChangeEvidenceRow struct {
 	raw                        []byte
 }
 
-func readCoreChangeEvidencePage(ctx context.Context, tx *neutralimport.Query, source CoreChangeImportSource, changeID string, after int64) ([]coreChangeEvidenceRow, error) {
+func readCoreChangeEvidencePage(ctx context.Context, tx *neutralimport.Index, source CoreChangeImportSource, changeID string, after int64) ([]coreChangeEvidenceRow, error) {
 	rows, err := tx.Rows(ctx, "change_evidence", map[string]string{"change_id": changeID}, []string{"sequence"}, []string{strconv.FormatInt(after, 10)}, 100)
 	if err != nil {
 		return nil, err
@@ -280,7 +280,7 @@ func readCoreChangeEvidencePage(ctx context.Context, tx *neutralimport.Query, so
 	return result, nil
 }
 
-func importCoreChangeVersions(ctx context.Context, tx *neutralimport.Query, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
+func importCoreChangeVersions(ctx context.Context, tx *neutralimport.Index, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
 	var after int64
 	for {
 		rows, err := tx.Rows(ctx, "change_versions", map[string]string{"change_id": changeID}, []string{"number"}, []string{strconv.FormatInt(after, 10)}, 100)
@@ -366,7 +366,7 @@ func importCoreChangeVersions(ctx context.Context, tx *neutralimport.Query, targ
 	}
 }
 
-func importCoreChangePublications(ctx context.Context, tx *neutralimport.Query, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
+func importCoreChangePublications(ctx context.Context, tx *neutralimport.Index, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
 	after := ""
 	for {
 		rows, err := tx.Rows(ctx, "native_pr_publications", map[string]string{"change_id": changeID}, []string{"version_id"}, []string{after}, 100)
@@ -419,7 +419,7 @@ func importCoreChangePublications(ctx context.Context, tx *neutralimport.Query, 
 	}
 }
 
-func importCoreReleaseDeliveries(ctx context.Context, tx *neutralimport.Query, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash string) error {
+func importCoreReleaseDeliveries(ctx context.Context, tx *neutralimport.Index, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash string) error {
 	after := ""
 	for {
 		rows, err := tx.Rows(ctx, "release_deliveries", map[string]string{"organization_id": string(source.OrganizationID)}, []string{"work_item_id"}, []string{after}, 100)
@@ -478,7 +478,7 @@ func targetVersionForCoreImport(ctx context.Context, target *postgres.Repository
 	return record, err
 }
 
-func readCoreChangeBundle(ctx context.Context, tx *neutralimport.Query, source CoreChangeImportSource, value tracker.ChangeVersion) ([]byte, error) {
+func readCoreChangeBundle(ctx context.Context, tx *neutralimport.Index, source CoreChangeImportSource, value tracker.ChangeVersion) ([]byte, error) {
 	row, err := tx.One(ctx, "change_sources", map[string]string{"version_id": value.ID}, []string{"version_id"})
 	if errors.Is(err, sql.ErrNoRows) {
 		if value.Source != nil {
@@ -528,7 +528,7 @@ func readCoreChangeBundle(ctx context.Context, tx *neutralimport.Query, source C
 	return bundle, nil
 }
 
-func importCoreChangeEvidence(ctx context.Context, tx *neutralimport.Query, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
+func importCoreChangeEvidence(ctx context.Context, tx *neutralimport.Index, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
 	var after int64
 	for {
 		page, err := readCoreChangeEvidencePage(ctx, tx, source, changeID, after)
@@ -575,7 +575,7 @@ func importCoreChangeEvidence(ctx context.Context, tx *neutralimport.Query, targ
 	}
 }
 
-func importCoreChangeLandings(ctx context.Context, tx *neutralimport.Query, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
+func importCoreChangeLandings(ctx context.Context, tx *neutralimport.Index, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
 	type sourceLanding struct {
 		attemptID  string
 		versionID  string
@@ -637,7 +637,7 @@ func importCoreChangeLandings(ctx context.Context, tx *neutralimport.Query, targ
 	}
 }
 
-func importCoreChangeViewedFiles(ctx context.Context, tx *neutralimport.Query, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
+func importCoreChangeViewedFiles(ctx context.Context, tx *neutralimport.Index, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash, changeID string) error {
 	var afterVersion, afterPrincipal, afterManifest, afterFile string
 	for {
 		rows, err := tx.Rows(ctx, "change_viewed_files", map[string]string{"change_id": changeID}, []string{"version_id", "principal_id", "manifest_sha256", "file_sha256"}, []string{afterVersion, afterPrincipal, afterManifest, afterFile}, 100)
@@ -704,7 +704,7 @@ func importCoreChangeViewedFiles(ctx context.Context, tx *neutralimport.Query, t
 
 func coreChangeEvidenceKey(sequence int64) string { return strconv.FormatInt(sequence, 10) }
 
-func importCoreVersionLandingHistory(ctx context.Context, tx *neutralimport.Query, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash string, version tracker.ChangeVersion) error {
+func importCoreVersionLandingHistory(ctx context.Context, tx *neutralimport.Index, target *postgres.Repository, content *eventstore.Content, source CoreChangeImportSource, copyHash string, version tracker.ChangeVersion) error {
 	changeRow, err := tx.One(ctx, "change_requests", map[string]string{"id": version.ChangeID, "organization_id": string(source.OrganizationID)}, []string{"id"})
 	if err != nil {
 		return err

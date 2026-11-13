@@ -130,7 +130,7 @@ func TestCoreNeutralObjectRecoversOnlyVerifiedPendingBytes(t *testing.T) {
 				row.Values["pending_content"] = storagecatalog.Cell{Encoding: "hex", Data: []byte("zz")}
 			}
 			err := neutralimport.Read(t.Context(), fixture.Write(), fixture.Organization, func(bundle *neutralimport.Bundle) error {
-				actual, err := readCoreNeutralObject(t.Context(), neutralimport.NewQuery(bundle), fixture.Organization, &memoryRunDetails{}, reference.Key)
+				actual, err := readCoreNeutralObject(t.Context(), neutralimport.NewIndex(bundle), fixture.Organization, &memoryRunDetails{}, reference.Key)
 				switch scenario {
 				case "binary", "base64", "hex":
 					if err != nil || !bytes.Equal(actual, payload) {

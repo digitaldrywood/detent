@@ -14,7 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func prepareCoreNeutralRunDetail(ctx context.Context, source *neutralimport.Query, organization tracker.OrganizationID, objects attachment.DetailStore, raw []byte, content *hubcontent.ChangeContent, owner *hubcontent.RunDetailContext) error {
+func prepareCoreNeutralRunDetail(ctx context.Context, source *neutralimport.Index, organization tracker.OrganizationID, objects attachment.DetailStore, raw []byte, content *hubcontent.ChangeContent, owner *hubcontent.RunDetailContext) error {
 	var envelope struct {
 		Detail *hubrecords.RunDetailReference `json:"detail"`
 	}
@@ -63,7 +63,7 @@ func prepareCoreNeutralRunDetail(ctx context.Context, source *neutralimport.Quer
 	return nil
 }
 
-func validateCoreNeutralUsageScope(ctx context.Context, source *neutralimport.Query, organization tracker.OrganizationID) error {
+func validateCoreNeutralUsageScope(ctx context.Context, source *neutralimport.Index, organization tracker.OrganizationID) error {
 	var after []string
 	for {
 		rows, err := source.Bundle().Page(ctx, "attempt_usage", after, 100)

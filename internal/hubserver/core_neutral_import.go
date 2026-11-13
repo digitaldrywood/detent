@@ -15,12 +15,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readCoreNeutralObject(ctx context.Context, source *neutralimport.Query, organization tracker.OrganizationID, objects attachment.DetailStore, key string) ([]byte, error) {
+func readCoreNeutralObject(ctx context.Context, source *neutralimport.Index, organization tracker.OrganizationID, objects attachment.DetailStore, key string) ([]byte, error) {
 	_, raw, err := readCoreNeutralObjectWithReference(ctx, source, organization, objects, key)
 	return raw, err
 }
 
-func readCoreNeutralObjectWithReference(ctx context.Context, source *neutralimport.Query, organization tracker.OrganizationID, objects attachment.DetailStore, key string) (attachment.ArchiveReference, []byte, error) {
+func readCoreNeutralObjectWithReference(ctx context.Context, source *neutralimport.Index, organization tracker.OrganizationID, objects attachment.DetailStore, key string) (attachment.ArchiveReference, []byte, error) {
 	row, err := source.One(ctx, "change_content_objects", map[string]string{"organization_id": string(organization), "object_key": key}, []string{"object_key"})
 	ref := hubcontent.ContentReference()
 	if errors.Is(err, sql.ErrNoRows) {
@@ -60,7 +60,7 @@ func readCoreNeutralObjectWithReference(ctx context.Context, source *neutralimpo
 	return ref, pending, nil
 }
 
-func resolveCoreNeutralJSON(ctx context.Context, source *neutralimport.Query, organization tracker.OrganizationID, objects attachment.DetailStore, raw []byte) ([]byte, error) {
+func resolveCoreNeutralJSON(ctx context.Context, source *neutralimport.Index, organization tracker.OrganizationID, objects attachment.DetailStore, raw []byte) ([]byte, error) {
 	if strings.HasPrefix(string(raw), "orgs/") {
 		return readCoreNeutralObject(ctx, source, organization, objects, string(raw))
 	}
@@ -72,7 +72,7 @@ func resolveCoreNeutralJSON(ctx context.Context, source *neutralimport.Query, or
 	})
 }
 
-func reconstructCoreNeutralVersion(ctx context.Context, source *neutralimport.Query, objects attachment.DetailStore, organization, project, item, record string, revision int64) ([]byte, error) {
+func reconstructCoreNeutralVersion(ctx context.Context, source *neutralimport.Index, objects attachment.DetailStore, organization, project, item, record string, revision int64) ([]byte, error) {
 	if revision < 1 {
 		return nil, sql.ErrNoRows
 	}

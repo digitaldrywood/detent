@@ -38,7 +38,7 @@ func coreNeutralPayload(row neutralimport.Row) (string, error) {
 	return raw, nil
 }
 
-func hydrateCoreNeutralVersion(ctx context.Context, source *neutralimport.Query, input CoreChangeImportSource, value *tracker.ChangeVersion) error {
+func hydrateCoreNeutralVersion(ctx context.Context, source *neutralimport.Index, input CoreChangeImportSource, value *tracker.ChangeVersion) error {
 	change, err := source.One(ctx, "change_requests", map[string]string{"id": value.ChangeID, "organization_id": string(input.OrganizationID)}, []string{"id"})
 	if err != nil {
 		return err
@@ -139,7 +139,7 @@ func hydrateCoreNeutralVersion(ctx context.Context, source *neutralimport.Query,
 	return nil
 }
 
-func readCoreNeutralArchive(ctx context.Context, source *neutralimport.Query, organization tracker.OrganizationID, objects attachment.DetailStore, ref attachment.ArchiveReference) ([]byte, error) {
+func readCoreNeutralArchive(ctx context.Context, source *neutralimport.Index, organization tracker.OrganizationID, objects attachment.DetailStore, ref attachment.ArchiveReference) ([]byte, error) {
 	if ref.Validate(string(organization)) != nil {
 		return nil, artifact.ErrIntegrity
 	}
@@ -158,7 +158,7 @@ func readCoreNeutralArchive(ctx context.Context, source *neutralimport.Query, or
 	return raw, nil
 }
 
-func readCoreQualityLanding(ctx context.Context, source *neutralimport.Query, input CoreChangeImportSource, changeID, versionID string) (*tracker.ChangeLanding, error) {
+func readCoreQualityLanding(ctx context.Context, source *neutralimport.Index, input CoreChangeImportSource, changeID, versionID string) (*tracker.ChangeLanding, error) {
 	row, err := source.One(ctx, "quality_landings", map[string]string{"version_id": versionID, "change_id": changeID}, []string{"version_id"})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -204,7 +204,7 @@ func readCoreQualityLanding(ctx context.Context, source *neutralimport.Query, in
 	return &landing, nil
 }
 
-func validateCoreQualityLandings(ctx context.Context, source *neutralimport.Query, input CoreChangeImportSource) error {
+func validateCoreQualityLandings(ctx context.Context, source *neutralimport.Index, input CoreChangeImportSource) error {
 	var after []string
 	for {
 		rows, err := source.Bundle().Page(ctx, "quality_landings", after, 100)

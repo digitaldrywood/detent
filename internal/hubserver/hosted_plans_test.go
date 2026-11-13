@@ -1728,7 +1728,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 							return err
 						}
 						record := postgres.CoreWorkItemImport{Item: row}
-						if err := readCoreImportEvents(ctx, neutralimport.NewQuery(bundle), eventstore.NewContent(source.Objects), source, row, &record, make(map[string][]byte)); err != nil {
+						if err := readCoreImportEvents(ctx, neutralimport.NewIndex(bundle), eventstore.NewContent(source.Objects), source, row, &record, make(map[string][]byte)); err != nil {
 							return err
 						}
 						if len(record.Events) != 1 {

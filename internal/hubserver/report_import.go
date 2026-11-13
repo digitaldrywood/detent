@@ -60,7 +60,7 @@ func ImportCoreReportLandings(ctx context.Context, target ReportImportTarget, so
 		if err := validateCoreNeutralChangeImport(bundle); err != nil {
 			return err
 		}
-		tx := neutralimport.NewQuery(bundle)
+		tx := neutralimport.NewIndex(bundle)
 		if err := validateCoreQualityLandings(ctx, tx, source); err != nil {
 			return err
 		}
@@ -127,7 +127,7 @@ func ImportCoreReportLandings(ctx context.Context, target ReportImportTarget, so
 	return summary, err
 }
 
-func coreReportLandingProof(ctx context.Context, tx *neutralimport.Query, source CoreChangeImportSource, change tracker.ChangeRequest) (eventstore.LandingReceipt, error) {
+func coreReportLandingProof(ctx context.Context, tx *neutralimport.Index, source CoreChangeImportSource, change tracker.ChangeRequest) (eventstore.LandingReceipt, error) {
 	after := ""
 	for {
 		rows, err := tx.Rows(ctx, "change_landing_receipts", map[string]string{"version_id": change.Landed.VersionID}, []string{"attempt_id"}, []string{after}, 100)
@@ -167,7 +167,7 @@ func coreReportLandingProof(ctx context.Context, tx *neutralimport.Query, source
 	}
 }
 
-func restoreCoreReportLanding(ctx context.Context, tx *neutralimport.Query, source CoreChangeImportSource, change *tracker.ChangeRequest) error {
+func restoreCoreReportLanding(ctx context.Context, tx *neutralimport.Index, source CoreChangeImportSource, change *tracker.ChangeRequest) error {
 	if change.CurrentVersion != "" {
 		frozen, err := readCoreQualityLanding(ctx, tx, source, change.ID, change.CurrentVersion)
 		if err != nil {
@@ -234,7 +234,7 @@ func restoreCoreReportLanding(ctx context.Context, tx *neutralimport.Query, sour
 	}
 }
 
-func decodeCoreReportData(ctx context.Context, tx *neutralimport.Query, source CoreWorkItemImportSource, raw []byte, data *tracker.CollaborationData) error {
+func decodeCoreReportData(ctx context.Context, tx *neutralimport.Index, source CoreWorkItemImportSource, raw []byte, data *tracker.CollaborationData) error {
 	objects := reportImportObjects{organization: source.OrganizationID, store: source.Objects}
 	content := &hubcontent.ChangeContent{Store: objects, ReadOrganization: string(source.OrganizationID), Payloads: map[string][]byte{}, References: map[string]attachment.ArchiveReference{}}
 	owner := &hubcontent.RunDetailContext{Store: objects, Organization: string(source.OrganizationID), Cache: map[string]map[string]tracker.NativeRunData{}}
@@ -300,7 +300,7 @@ func ImportCoreReportEvents(ctx context.Context, target ReportImportTarget, sour
 		if err := neutralimport.ValidateCoreTables(bundle, "collaboration_events", "change_content_objects", "attachments"); err != nil {
 			return err
 		}
-		tx := neutralimport.NewQuery(bundle)
+		tx := neutralimport.NewIndex(bundle)
 		copyHash := bundle.Identity().SourceSHA256
 		summary.SourceSHA256 = copyHash
 		after := ""
@@ -439,7 +439,7 @@ func ImportCoreReportEscapes(ctx context.Context, target ReportImportTarget, sou
 		if err := validateCoreNeutralChangeImport(bundle); err != nil {
 			return err
 		}
-		tx := neutralimport.NewQuery(bundle)
+		tx := neutralimport.NewIndex(bundle)
 		copyHash := bundle.Identity().SourceSHA256
 		summary.SourceSHA256 = copyHash
 		changeAfter := ""
@@ -547,7 +547,7 @@ func ImportCoreReportUsage(ctx context.Context, target ReportImportTarget, sourc
 		if err := neutralimport.ValidateCoreTables(bundle, "attempt_usage", "native_attempts"); err != nil {
 			return err
 		}
-		tx := neutralimport.NewQuery(bundle)
+		tx := neutralimport.NewIndex(bundle)
 		copyHash := bundle.Identity().SourceSHA256
 		if copyHash != source.ExpectedSHA256 {
 			return errors.New("report usage source digest mismatch")

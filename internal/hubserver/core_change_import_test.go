@@ -82,7 +82,7 @@ func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
 				if err := validateCoreNeutralChangeImport(bundle); err != nil {
 					return err
 				}
-				tx := neutralimport.NewQuery(bundle)
+				tx := neutralimport.NewIndex(bundle)
 				copyHash := bundle.Identity().SourceSHA256
 				if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, objects); err != nil {
 					return err

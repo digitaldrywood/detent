@@ -700,7 +700,7 @@ func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 	original := fixture.Write()
 	if err := neutralimport.Read(t.Context(), original, f.project.OrganizationID, func(bundle *neutralimport.Bundle) error {
 		source := CoreWorkItemImportSource{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-		reader := neutralimport.NewQuery(bundle)
+		reader := neutralimport.NewIndex(bundle)
 		for _, item := range []struct {
 			id     string
 			number int
@@ -1054,7 +1054,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 		source := CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: scope.Organization, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
 		repository := service.config.TenantRepository.(*postgres.Repository)
 		err = neutralimport.Read(t.Context(), source.BundlePath, scope.Organization, func(bundle *neutralimport.Bundle) error {
-			input := neutralimport.NewQuery(bundle)
+			input := neutralimport.NewIndex(bundle)
 			rows, err := readCoreAttemptImportPage(t.Context(), input, scope.Organization, 0)
 			if err != nil {
 				return err

@@ -352,7 +352,7 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 		if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, objects); err != nil {
 			return err
 		}
-		tx := neutralimport.NewQuery(bundle)
+		tx := neutralimport.NewIndex(bundle)
 		rows, err := readCoreChangePage(t.Context(), tx, unprovenImport, "")
 		if err != nil {
 			return err
@@ -760,7 +760,7 @@ func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 				if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, objects); err != nil {
 					return err
 				}
-				tx := neutralimport.NewQuery(bundle)
+				tx := neutralimport.NewIndex(bundle)
 				rows, err := readCoreChangePage(t.Context(), tx, historicalSource, "")
 				if err != nil {
 					return err
@@ -840,7 +840,7 @@ func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 						if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, source.Objects); err != nil {
 							return err
 						}
-						return importCoreChangeEvidence(t.Context(), neutralimport.NewQuery(bundle), repository, content, source, bundle.Identity().SourceSHA256, f.change.ID)
+						return importCoreChangeEvidence(t.Context(), neutralimport.NewIndex(bundle), repository, content, source, bundle.Identity().SourceSHA256, f.change.ID)
 					}); err != nil {
 						t.Fatal(err)
 					}
@@ -1152,7 +1152,7 @@ func changeColumnImportLandingReceipts(t *testing.T, f changeFixture, versions [
 			if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, source.Objects); err != nil {
 				return err
 			}
-			return importCoreChangeLandings(t.Context(), neutralimport.NewQuery(bundle), repository, eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, f.change.ID)
+			return importCoreChangeLandings(t.Context(), neutralimport.NewIndex(bundle), repository, eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, f.change.ID)
 		}); err != nil {
 			t.Fatal(err)
 		}

@@ -647,7 +647,7 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 				invalid := input
 				invalid.BundlePath = corrupt.Write()
 				err := neutralimport.Read(t.Context(), invalid.BundlePath, org, func(bundle *neutralimport.Bundle) error {
-					reader := neutralimport.NewQuery(bundle)
+					reader := neutralimport.NewIndex(bundle)
 					rows, err := readCoreWorkItemImportPage(t.Context(), reader, invalid, 0)
 					if err != nil {
 						return err

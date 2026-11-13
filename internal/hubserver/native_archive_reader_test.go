@@ -583,7 +583,7 @@ func TestOlderArchiveViews(t *testing.T) {
 			if err := validateCoreNeutralChangeImport(bundle); err != nil {
 				return err
 			}
-			return importCoreChangeEvidence(t.Context(), neutralimport.NewQuery(bundle), f.service.config.TenantRepository.(*postgres.Repository), eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, f.change.ID)
+			return importCoreChangeEvidence(t.Context(), neutralimport.NewIndex(bundle), f.service.config.TenantRepository.(*postgres.Repository), eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, f.change.ID)
 		}); err != nil {
 			t.Fatal(err)
 		}

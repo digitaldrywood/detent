@@ -520,7 +520,7 @@ func historicalCoreAttemptReceipts(t *testing.T, source CoreExecutionImportSourc
 		if copyHash == "" {
 			copyHash = bundle.Identity().SourceSHA256
 		}
-		rows, err := readCoreAttemptImportPage(t.Context(), neutralimport.NewQuery(bundle), source.OrganizationID, 0)
+		rows, err := readCoreAttemptImportPage(t.Context(), neutralimport.NewIndex(bundle), source.OrganizationID, 0)
 		if err != nil {
 			return err
 		}
