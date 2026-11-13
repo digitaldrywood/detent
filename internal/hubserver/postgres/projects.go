@@ -65,10 +65,27 @@ func (s *session) UpdateProject(ctx context.Context, record corestore.Project) (
 	return project(row), updated(ctx, err)
 }
 
-func (s *session) DeleteProject(ctx context.Context, id tracker.ProjectID) error {
+func (s *session) lockProjectChildren(ctx context.Context, id tracker.ProjectID, active bool) error {
+	filter := ""
+	if active {
+		filter = " AND deleted_at IS NULL"
+	}
 	var locked tracker.ProjectID
-	if err := s.db.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR UPDATE`, s.organization, id).Scan(&locked); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2`+filter+` FOR NO KEY UPDATE`, s.organization, id).Scan(&locked); err != nil {
 		return mapError(ctx, err)
+	}
+	if err := s.lockOrganizationCounter(ctx); err != nil {
+		return err
+	}
+	if err := s.db.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2`+filter+` FOR UPDATE`, s.organization, id).Scan(&locked); err != nil {
+		return mapError(ctx, err)
+	}
+	return nil
+}
+
+func (s *session) DeleteProject(ctx context.Context, id tracker.ProjectID) error {
+	if err := s.lockProjectChildren(ctx, id, false); err != nil {
+		return err
 	}
 	now, err := s.queries.LeaseTime(ctx)
 	if err != nil {

@@ -223,6 +223,13 @@ func (s *session) RemoveArchiveOwner(ctx context.Context, owner artifactstore.Ar
 	return nil
 }
 
+func (s *session) lockOrganizationCounter(ctx context.Context) error {
+	if s.archiveAccountingLocked || s.archiveCounterLocked {
+		return nil
+	}
+	return s.LockArchiveAccounting(ctx)
+}
+
 func (s *session) LockArchiveAccounting(ctx context.Context) error {
 	if s.readOnly {
 		return corestore.ErrInvalidPage

@@ -256,8 +256,8 @@ func (s *session) UpdateProjectRecord(ctx context.Context, record projectstore.R
 }
 
 func (s *session) RetireProject(ctx context.Context, id tracker.ProjectID, revision int64, now time.Time) error {
-	if _, err := s.queries.LockActiveProject(ctx, pgquery.LockActiveProjectParams{OrganizationID: s.organization, ID: id}); err != nil {
-		return mapError(ctx, err)
+	if err := s.lockProjectChildren(ctx, id, true); err != nil {
+		return err
 	}
 	record, err := s.ProjectRecord(ctx, id)
 	if err != nil {
@@ -330,8 +330,8 @@ func (s *session) UpdateProjectModel(ctx context.Context, v projectstore.Setting
 }
 
 func (s *session) RequireProjectIdle(ctx context.Context, id tracker.ProjectID, _ time.Time) error {
-	if _, err := s.queries.LockActiveProject(ctx, pgquery.LockActiveProjectParams{OrganizationID: s.organization, ID: id}); err != nil {
-		return mapError(ctx, err)
+	if err := s.lockProjectChildren(ctx, id, true); err != nil {
+		return err
 	}
 	serverNow, err := s.queries.LeaseTime(ctx)
 	if err != nil {

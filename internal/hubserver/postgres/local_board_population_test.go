@@ -636,14 +636,21 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		})
 		return err
 	}
+	idle := func(ctx context.Context, w tenantstore.Writer) error {
+		return w.RequireProjectIdle(ctx, "prj_first", time.Now())
+	}
+	noop := func(context.Context, tenantstore.Writer) error { return nil }
 	for _, test := range []struct {
 		name                                         string
 		holdFirst, finishFirst, holdNext, finishNext step
+		exclusive                                    bool
 		active                                       int64
 	}{
-		{"population trigger while archive holder checks keys", lock("prj_first", "wi_first_1"), archiveItem("prj_first", "wi_first_1"), archive, converse, 3},
-		{"receipt while archive holder checks keys", lock("prj_first", "wi_first_1"), receipt, archive, converse, 4},
-		{"receipt after population write", archiveItem("prj_first", "wi_first_1"), receipt, archive, archiveItem("prj_second", "wi_second_1"), 2},
+		{"population trigger while archive holder checks keys", lock("prj_first", "wi_first_1"), archiveItem("prj_first", "wi_first_1"), archive, converse, false, 3},
+		{"receipt while archive holder checks keys", lock("prj_first", "wi_first_1"), receipt, archive, converse, false, 4},
+		{"receipt after population write", archiveItem("prj_first", "wi_first_1"), receipt, archive, archiveItem("prj_second", "wi_second_1"), false, 2},
+		{"idle project check excludes conversation insert", idle, receipt, archive, converse, true, 4},
+		{"idle project check waits for work item writer", lock("prj_first", "wi_first_1"), receipt, noop, idle, true, 4},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			admin := template.Database(t)
@@ -690,8 +697,12 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 					})
 				})
 				testenv.WaitUntil(t, t.Context(), func() error {
+					ready := nextHeld
+					if test.exclusive {
+						ready = next.done
+					}
 					select {
-					case <-nextHeld:
+					case <-ready:
 						return nil
 					default:
 					}
@@ -704,6 +715,13 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 					}
 					return nil
 				})
+				if test.exclusive {
+					select {
+					case <-next.done:
+						t.Errorf("%s next transaction committed while the first held the project: %v", organization, next.err)
+					default:
+					}
+				}
 				close(proceed)
 				for name, task := range map[string]*repositoryTask{"first": first, "next": next} {
 					if err := task.wait(t); err != nil {
