@@ -532,6 +532,9 @@ func TestCloudAttachmentRetention(t *testing.T) {
 				if test.referenced {
 					metadata.WorkItemID = string(item)
 				}
+				if _, err := w.AdjustCollaborationBytes(t.Context(), metadata.Size, math.MaxInt64); err != nil {
+					return err
+				}
 				if err := w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: "org_security", Kind: "attachment", Metadata: metadata}); err != nil {
 					return err
 				}
