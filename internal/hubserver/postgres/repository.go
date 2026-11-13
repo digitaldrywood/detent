@@ -114,11 +114,10 @@ func (r *Repository) internalWrite(ctx context.Context, organization tracker.Org
 		}
 		delay := time.Duration(10<<(attempt-1)) * time.Millisecond
 		delay = delay/2 + rand.N(delay/2+1)
-		timer := time.NewTimer(delay)
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			timer.Stop()
+		wait, cancel := context.WithTimeout(ctx, delay)
+		<-wait.Done()
+		cancel()
+		if ctx.Err() != nil {
 			return errors.Join(err, ctx.Err())
 		}
 	}
