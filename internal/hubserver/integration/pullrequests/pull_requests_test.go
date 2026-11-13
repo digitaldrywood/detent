@@ -1,4 +1,4 @@
-package hubserver
+package pullrequests_test
 
 import (
 	"fmt"
