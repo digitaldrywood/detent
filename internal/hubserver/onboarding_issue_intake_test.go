@@ -2114,9 +2114,7 @@ func newHostedBatchFixture(t *testing.T) *batchFixture {
 func bindBatchTenant(t *testing.T, f *batchFixture, hosted *hostedplans.HostedConfig) {
 	t.Helper()
 	deployment, generation := hosted.Deployment()
-	if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_tenant SET provider_id=$2,bootstrap_subject=$3,deployment=$4,public_url=$5,allocation_generation=$6 WHERE organization_id=$1", hosted.OrganizationID, hosted.WorkOSOrganizationID, hosted.BootstrapSubject, deployment, hosted.PublicURL, generation); err != nil {
-		t.Fatal(err)
-	}
+	tamperHostedBinding(t, hostedPostgresAdmin(t, f.service), "UPDATE hosted_tenant SET provider_id=$2,bootstrap_subject=$3,deployment=$4,public_url=$5,allocation_generation=$6 WHERE organization_id=$1", hosted.OrganizationID, hosted.WorkOSOrganizationID, hosted.BootstrapSubject, deployment, hosted.PublicURL, generation)
 }
 
 func seedBatchServiceKey(t *testing.T, f *batchFixture, ttl ...time.Duration) string {

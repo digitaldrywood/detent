@@ -228,7 +228,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 					return next(c)
 				}
 			})
-			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
 			r.enroll(t)
 			current := hubTestPolicy()
 			candidate := current
@@ -282,12 +282,10 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				shared := hostedSharedFixture{hostedSecurityFixture: hostedSecurityFixture{service: f.service, provider: provider, project: f.project.ID, base: f.base}}
 				f.service.config.Hosted = hostedSharedTestConfig(provider, hostedSharedKey(7), 1).Hosted
 				f.service.config.Hosted.OrganizationID = string(f.project.OrganizationID)
-				if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "INSERT INTO hosted_tenant(organization_id,provider_id,bootstrap_subject,public_url,deployment,allocation_generation) VALUES ($1,'org_provider','user_owner','https://hub.example.test','shared',1) ON CONFLICT (organization_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,bootstrap_subject=EXCLUDED.bootstrap_subject,public_url=EXCLUDED.public_url,deployment=EXCLUDED.deployment,allocation_generation=EXCLUDED.allocation_generation", f.project.OrganizationID); err != nil {
-					t.Fatal(err)
-				}
+				tamperHostedBinding(t, configurationTestDatabase(t, f), "INSERT INTO hosted_tenant(organization_id,provider_id,bootstrap_subject,public_url,deployment,allocation_generation) VALUES ($1,'org_provider','user_owner','https://hub.example.test','shared',1) ON CONFLICT (organization_id) DO UPDATE SET provider_id=EXCLUDED.provider_id,bootstrap_subject=EXCLUDED.bootstrap_subject,public_url=EXCLUDED.public_url,deployment=EXCLUDED.deployment,allocation_generation=EXCLUDED.allocation_generation", f.project.OrganizationID)
 				owner := shared.member(t, "configuration-owner", "owner", "")
 				entrySubject = owner.identity.Subject
-				if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES ($1,$2,$3,true,true)", entrySubject, f.project.OrganizationID, f.project.ID); err != nil {
+				if _, err := configurationTestDatabase(t, f).ExecContext(t.Context(), "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES ($1,$2,$3,true,true) ON CONFLICT (organization_id,user_id,project_id) DO UPDATE SET can_write=true,manage_runner=true", entrySubject, f.project.OrganizationID, f.project.ID); err != nil {
 					t.Fatal(err)
 				}
 				entryClaims = cloudassert.Claims{Issuer: "entry", Audience: string(f.project.OrganizationID), ProviderOrganization: "org_provider", Subject: entrySubject, Role: "owner", Kind: cloudassert.KindKey, Generation: 1, IssuedAt: entryNow, ExpiresAt: entryNow.Add(20 * time.Second), Key: &apikey.KeyAuthority{ID: "key_configuration", CredentialBinding: strings.Repeat("b", 64), Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}}
