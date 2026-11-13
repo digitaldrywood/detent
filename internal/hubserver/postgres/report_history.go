@@ -80,7 +80,7 @@ ORDER BY i.project_id,i.native_id LIMIT $11`, args...)
 	}
 	type location struct{ project, issue int }
 	locations := map[tracker.NativeWorkItemID]location{}
-	ids := []string{}
+	ids, itemProjects := []string{}, []string{}
 	for rows.Next() {
 		var project tracker.ProjectID
 		var issue reportstore.HistoryIssue
@@ -92,7 +92,7 @@ ORDER BY i.project_id,i.native_id LIMIT $11`, args...)
 		index := projects[project]
 		locations[issue.WorkItemID] = location{index, len(out[index].Issues)}
 		out[index].Issues = append(out[index].Issues, issue)
-		ids = append(ids, string(issue.WorkItemID))
+		ids, itemProjects = append(ids, string(issue.WorkItemID)), append(itemProjects, string(project))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, mapError(ctx, err)
@@ -105,9 +105,12 @@ ORDER BY i.project_id,i.native_id LIMIT $11`, args...)
 	}
 	eventLimit := min(query.Limit*100, 100000)
 	rows, err = s.db.Query(ctx, `SELECT e.work_item_id,e.id,e.version_id,e.recorded_at,e.type,e.from_state,e.to_state,coalesce(f.rework_class,''),coalesce(f.rework_kind,'')
-FROM collaboration_events e LEFT JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id
-WHERE e.organization_id=$1 AND e.work_item_id=ANY($2::text[]) AND e.recorded_at<$3 AND e.type IN ('workflow.transitioned','scheduler.decision')
-ORDER BY e.project_id,e.work_item_id,e.sequence LIMIT $4`, s.organization, ids, query.To.UTC(), eventLimit+1)
+FROM unnest($2::text[],$3::text[]) AS item(project_id,work_item_id)
+CROSS JOIN LATERAL (SELECT e.organization_id,e.project_id,e.work_item_id,e.sequence,e.id,e.version_id,e.recorded_at,e.type,e.from_state,e.to_state FROM collaboration_events e
+ WHERE e.organization_id=$1 AND e.project_id=item.project_id AND e.work_item_id=item.work_item_id AND e.recorded_at<$4 AND e.type IN ('workflow.transitioned','scheduler.decision')
+ ORDER BY e.sequence LIMIT $5) e
+LEFT JOIN LATERAL (SELECT f.rework_class,f.rework_kind FROM report_event_facts f WHERE f.organization_id=e.organization_id AND f.event_id=e.id LIMIT 1) f ON true
+ORDER BY e.project_id,e.work_item_id,e.sequence LIMIT $5`, s.organization, itemProjects, ids, query.To.UTC(), eventLimit+1)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
