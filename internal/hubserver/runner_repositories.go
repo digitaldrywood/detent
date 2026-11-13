@@ -215,10 +215,6 @@ func (s *Service) registerRunnerRepositoryRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/onboarding/repositories/report", s.reportRunnerRepositories, s.requireNativeScope(apiScopeWorker))
 }
 
-func runnerRepositoryRoute(path string) bool {
-	return path == nativeBase+"/onboarding/repositories" || path == nativeBase+"/onboarding/repositories/report"
-}
-
 func runnerRepositoryReportRoute(path string) bool {
 	return path == nativeBase+"/onboarding/repositories/report"
 }

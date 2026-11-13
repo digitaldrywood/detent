@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -616,25 +615,6 @@ func runnerExcluded(exclusions []runnerauth.Exclusion) error {
 		return nil
 	}
 	return &nativeError{Code: exclusions[0].Code, Message: exclusions[0].Message, status: http.StatusConflict}
-}
-
-func requireCredentialAuthority(ctx context.Context, tx *sql.Tx, credential apiCredential, now time.Time) error {
-	if credential.EntryKey != nil {
-		if !credential.EntryKey.Valid() || credential.Runner.RunnerID != "" || credential.Hosted == nil || !credential.Hosted.ExpiresAt.After(now) {
-			return runnerUnauthorized()
-		}
-		return nil
-	}
-	var hash, created string
-	var revoked, expires sql.NullString
-	err := tx.QueryRowContext(ctx, "SELECT token_hash, created_at, revoked_at, expires_at FROM api_tokens WHERE id = ?", credential.ID).Scan(&hash, &created, &revoked, &expires)
-	if err != nil {
-		return err
-	}
-	if hash != credential.Hash || revoked.Valid || !credential.timeValid(now, created, expires) {
-		return runnerUnauthorized()
-	}
-	return nil
 }
 
 func requireLeaseRunner(ctx context.Context, tx nativeQueryer, lease tracker.LeaseID, scope nativeScope) error {

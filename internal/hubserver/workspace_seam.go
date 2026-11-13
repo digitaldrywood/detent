@@ -23,10 +23,6 @@ func (r workspaceRecord) resource() workspacesession.Session {
 func workspaceTenantRecord(row postgres.WorkspaceSession) workspaceRecord {
 	return workspaceRecord(workspacehub.TenantRecord(workspacehub.Row(row)))
 }
-func workspaceTenantUpdate(row postgres.WorkspaceSession, state, reason string, now time.Time) postgres.WorkspaceUpdate {
-	return postgres.WorkspaceUpdate(workspacehub.TenantUpdate(workspacehub.Row(row), state, reason, now))
-}
-func workspaceSameTime(left, right *time.Time) bool { return workspacehub.SameTime(left, right) }
 
 type workspaceLifecycleReader struct{ postgres.WorkspaceReader }
 
@@ -110,20 +106,12 @@ func workspaceRecords(rows []workspacehub.Record) []workspaceRecord {
 	}
 	return result
 }
-func (w *workspaceService) workspacePage(ctx context.Context, after time.Time, id string) ([]workspaceRecord, error) {
-	rows, err := w.lifecycleService().Page(ctx, after, id)
-	return workspaceRecords(rows), fromFeatureError(err)
-}
 func (w *workspaceService) dueWorkspaces(ctx context.Context, now time.Time) ([]workspaceRecord, error) {
 	rows, err := w.lifecycleService().Due(ctx, now)
 	return workspaceRecords(rows), fromFeatureError(err)
 }
 func (w *workspaceService) applyDeadline(ctx context.Context, record workspaceRecord, now time.Time) (workspaceRecord, bool, error) {
 	row, changed, err := w.lifecycleService().ApplyDeadline(ctx, workspacehub.Record(record), now)
-	return workspaceRecord(row), changed, fromFeatureError(err)
-}
-func (w *workspaceService) applyWorkspaceLifecycle(ctx context.Context, record workspaceRecord, now time.Time, recovery bool) (workspaceRecord, bool, error) {
-	row, changed, err := w.lifecycleService().ApplyLifecycle(ctx, workspacehub.Record(record), now, recovery)
 	return workspaceRecord(row), changed, fromFeatureError(err)
 }
 func (w *workspaceService) recoverOpenWorkspaces(ctx context.Context) error {

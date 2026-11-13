@@ -9,9 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerenroll"
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const runnerBase = "/api/v2/organizations/:organization/runners"
@@ -72,8 +70,6 @@ func (s *Service) runnerEnrollmentService() *runnerenroll.Service {
 }
 
 func runnerUnauthorized() error { return fromFeatureError(runnerenroll.Unauthorized()) }
-func runnerCollision() error    { return fromFeatureError(runnerenroll.Collision()) }
-
 func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope nativeScope, request runnerauth.EnrollmentRequest) (any, error) {
 	scope, err := s.runnerEnrollmentScope(ctx, scope)
 	if err != nil {
@@ -102,16 +98,6 @@ func (s *Service) runnerEnrollmentScope(ctx context.Context, scope nativeScope) 
 	}
 	scope.credential.ManageRunners = true
 	return scope, nil
-}
-
-func (s *Service) runnerEnrollmentWriteTenant(ctx context.Context, scope nativeScope, write func(context.Context, tenantstore.Writer, time.Time) error) error {
-	scope.requireHostedAdmin = true
-	return fromFeatureError(s.runnerEnrollmentService().Write(ctx, s.featureScope(scope), write))
-}
-
-func (s *Service) redeemRunnerEnrollmentTenant(ctx context.Context, organization tracker.OrganizationID, token string, request runnerauth.Redemption) (runnerauth.Identity, error) {
-	value, err := s.runnerEnrollmentService().RedeemTenant(ctx, organization, token, request)
-	return value, fromFeatureError(err)
 }
 
 func (s *Service) registerRunnerEnrollmentRoutes(e *echo.Echo) {

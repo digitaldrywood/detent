@@ -1,10 +1,6 @@
 package hubserver
 
 import (
-	"context"
-	"database/sql"
-	"encoding/json"
-	"fmt"
 	"time"
 )
 
@@ -24,26 +20,4 @@ func nullTime(value *time.Time) any {
 		return nil
 	}
 	return formatHubTime(*value)
-}
-
-// insertWorkspace writes a new workspace in its requested state.
-func insertWorkspace(ctx context.Context, tx *sql.Tx, record workspaceRecord) error {
-	requires, err := json.Marshal(record.Requires)
-	if err != nil {
-		return fmt.Errorf("encode workspace requires: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO workspace_sessions (`+workspaceColumns+`)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID, record.OrganizationID, record.ProjectID, record.SubjectWorkItemID, record.AttemptID,
-		record.Ref, record.HeadSHA, record.RunnerID, record.MachineID, record.MachineHostname,
-		record.WorktreePath, record.LeaseID, record.FencingToken,
-		record.State, record.Reason, string(requires), nil, record.Isolation, record.Worktree, record.ReadOnly,
-		record.IdleTimeoutSeconds, formatHubTime(record.ExpiresAt), formatHubTime(record.RequestedExpiresAt),
-		nullTime(record.OpenedAt), nullTime(record.LastActivityAt), nullTime(record.LastHeartbeatAt),
-		nullTime(record.RebindDeadline), record.CreatedBy, record.Revision,
-		formatHubTime(record.CreatedAt), formatHubTime(record.UpdatedAt))
-	if err != nil {
-		return fmt.Errorf("insert workspace: %w", err)
-	}
-	return nil
 }

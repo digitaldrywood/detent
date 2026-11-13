@@ -2,9 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"errors"
-	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -14,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -247,45 +243,4 @@ func (w *workspaceService) sweep(ctx context.Context) {
 	if err := w.sweepRelayTickets(ctx, now); err != nil {
 		w.logger.Warn("workspace.ticket_sweep_failed", "error", err)
 	}
-}
-
-func workspaceAttemptRunning(ctx context.Context, query nativeQueryer, scope nativeScope, attemptID string) (bool, error) {
-	if attemptID == "" {
-		return false, nil
-	}
-	var status string
-	err := query.QueryRowContext(ctx, `SELECT status FROM native_attempts
-WHERE id = ? AND organization_id = ? AND project_id = ?`, attemptID, scope.organization, scope.project).Scan(&status)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read workspace attempt status: %w", err)
-	}
-	return status == "running", nil
-}
-
-// workspaceAttemptRunner reports which runner ran an attempt and when it
-// finished, so a retained worktree can be offered only to the runner that
-// holds it.
-func workspaceAttemptRunner(ctx context.Context, query nativeQueryer, scope nativeScope, attemptID string) (runnerID string, finishedAt time.Time, found bool, err error) {
-	var updated string
-	var data string
-	queryErr := query.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),data_json), updated_at FROM native_attempts
-WHERE id = ? AND organization_id = ? AND project_id = ?`, attemptID, scope.organization, scope.project).Scan(&data, &updated)
-	if errors.Is(queryErr, sql.ErrNoRows) {
-		return "", time.Time{}, false, nil
-	}
-	if queryErr != nil {
-		return "", time.Time{}, false, fmt.Errorf("read workspace attempt: %w", queryErr)
-	}
-	var execution tracker.NativeRunData
-	if err := decodeStorageJSON(ctx, []byte(data), &execution); err != nil {
-		return "", time.Time{}, false, fmt.Errorf("decode workspace attempt data: %w", err)
-	}
-	finished, err := parseTimeValue(updated)
-	if err != nil {
-		return "", time.Time{}, false, fmt.Errorf("decode workspace attempt updated_at: %w", err)
-	}
-	return execution.RunnerID, finished, true, nil
 }

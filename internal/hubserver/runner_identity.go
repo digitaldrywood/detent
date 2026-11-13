@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -25,10 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func runnerOperationAllowed(c echo.Context, operations []string) bool {
-	return hubauth.RunnerOperationAllowed(c, operations)
-}
-
 func authenticatedRunner(c echo.Context) (apiCredential, error) {
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok || credential.Runner.RunnerID == "" || credential.Runner.RunnerID != c.Param("runner") || string(credential.Runner.OrganizationID) != c.Param("organization") {
@@ -39,29 +33,6 @@ func authenticatedRunner(c echo.Context) (apiCredential, error) {
 
 func runnerProjectAccessSQL(organization, project string) string {
 	return "r.organization_id=" + organization + " AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=" + organization + " AND g.project_id=" + project + "))"
-}
-
-func readRunnerProjects(ctx context.Context, query nativeQueryer, tokenID string, limits ...int) ([]tracker.ProjectID, error) {
-	statement := "SELECT p.id FROM projects p JOIN runner_identities r ON r.organization_id=p.organization_id WHERE r.token_id=? AND (r.scope='organization' AND p.deleted_at IS NULL OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.project_id=p.id AND g.organization_id=p.organization_id)) ORDER BY p.id"
-	args := []any{tokenID}
-	if len(limits) > 0 {
-		statement += " LIMIT ?"
-		args = append(args, limits[0])
-	}
-	rows, err := query.QueryContext(ctx, statement, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	projects := []tracker.ProjectID{}
-	for rows.Next() {
-		var id tracker.ProjectID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		projects = append(projects, id)
-	}
-	return projects, rows.Err()
 }
 
 func (s *Service) getRunnerIdentity(c echo.Context) error {
@@ -238,11 +209,6 @@ func (s *Service) revokeRunnerIdentityTenant(ctx context.Context, w tenantstore.
 		return err
 	}
 	return s.applyRunnerTenantUsage(ctx, w, now, resource, true, false)
-}
-
-func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind string, now time.Time) error {
-	_, err := tx.ExecContext(ctx, "INSERT INTO runner_identity_events (runner_id, actor_id, kind, occurred_at) VALUES (?, ?, ?, ?)", runner, actor, kind, formatHubTime(now))
-	return err
 }
 
 type nativeMachineHeartbeatRequest struct {

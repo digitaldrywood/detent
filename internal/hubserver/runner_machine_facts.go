@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -30,10 +29,6 @@ func spriteFactValue(value *string) string {
 		return ""
 	}
 	return *value
-}
-
-func commandResponseFacts(raw string) (bool, string, error) {
-	return receiptstore.ResponseFacts([]byte(raw))
 }
 
 func resolveMachineSpriteFacts(facts machineSpriteFacts, legacy sql.NullString) (machineSpriteFacts, error) {

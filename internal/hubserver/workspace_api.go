@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -149,21 +148,6 @@ func (w *workspaceService) authorizeWorkspaceCreationRequires(ctx context.Contex
 		return &nativeError{Code: "forbidden", Message: "A support session may open a terminal only at container isolation", status: http.StatusForbidden, publicMessage: true}
 	}
 	return nil
-}
-
-// workspaceAttemptItem resolves the work item an attempt belongs to inside the
-// caller's scope, so an attempt from another project is simply not found.
-func workspaceAttemptItem(ctx context.Context, query nativeQueryer, scope nativeScope, attemptID string) (string, error) {
-	var item string
-	err := query.QueryRowContext(ctx, `SELECT work_item_id FROM native_attempts
-WHERE id = ? AND organization_id = ? AND project_id = ?`, attemptID, scope.organization, scope.project).Scan(&item)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nativeNotFound()
-	}
-	if err != nil {
-		return "", err
-	}
-	return item, nil
 }
 
 // listWorkspaces implements GET {nativeBase}/workspaces.
