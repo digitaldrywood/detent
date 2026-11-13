@@ -680,13 +680,25 @@ func TestHostedPlanConfigurationAndTelemetry(t *testing.T) {
 
 func TestHostedPlansDisabledWithoutNetwork(t *testing.T) {
 	t.Parallel()
-	service := newPostgresNativeService(t, Config{})
+	admin := postgresStartupTemplate.Database(t)
+	service, err := Open(t.Context(), Config{DatabaseBackend: DatabasePostgres, Postgres: startupConfig(startupConnection(t, admin, "detent_runtime_v2", "")).Postgres, SecretKeys: secretTestKeys(t, "1", "1"), RunDetails: &memoryRunDetails{}, RunnerReleaseClient: &runnerReleaseFixture{}, Logger: discardLogger(), InitialAdminToken: []byte(testHubAdminToken)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if service.config.Hosted != nil {
+		t.Fatal("self-hosted fixture opened a hosted Hub")
+	}
 	if service.database.plansService().Plans() != nil {
 		t.Fatal("self-hosted plan restrictions enabled")
 	}
 	exerciseHostedPlanUnrestrictedWork(t, service)
 	var count int
-	if err := usagePostgresAdmin(t, service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_assignments").Scan(&count); err != nil || count != 0 {
+	if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_assignments").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("local assignments %d: %v", count, err)
 	}
 }

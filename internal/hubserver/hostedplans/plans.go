@@ -522,13 +522,20 @@ func (d *Service) RequireFeatureRecord(ctx context.Context, reader billingstore.
 		}
 	}
 	enabled, err := reader.BillingFeatureEnabled(ctx, feature, now, capacityPlanRefs)
+	if err != nil || enabled {
+		return err
+	}
+	if _, err := reader.BillingAssignment(ctx); !errors.Is(err, corestore.ErrNotFound) {
+		if err != nil {
+			return err
+		}
+		return &LimitError{Resource: feature}
+	}
+	entitlement, err := d.EntitlementRecord(ctx, reader, now)
 	if err != nil {
 		return err
 	}
-	if !enabled {
-		return &LimitError{Resource: feature}
-	}
-	return nil
+	return RequireFeatureInEntitlement(entitlement, feature)
 }
 
 func RequireFeatureInEntitlement(entitlement HostedEntitlement, feature string) error {

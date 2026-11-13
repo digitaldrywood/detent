@@ -2,6 +2,7 @@ package hostedplans
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -377,4 +378,39 @@ func TestUnconfiguredHostedPlansResolveToFreeDefault(t *testing.T) {
 			}
 		})
 	}
+	t.Run("plan-less organizations on one hosted Hub", func(t *testing.T) {
+		plans := open("org_free_hub", nil).database.plansService()
+		for _, org := range []tracker.OrganizationID{"org_free_planless_first", "org_free_planless_second"} {
+			if err := repo.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: time.Now()})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+				if _, err := r.BillingAssignment(t.Context()); !errors.Is(err, corestore.ErrNotFound) {
+					return fmt.Errorf("fixture organization already has a plan: %v", err)
+				}
+				got, err := hubapi.FeatureResult(plans.EntitlementRecord(t.Context(), r, now))
+				if err != nil {
+					return fmt.Errorf("plan-less entitlement: %w", err)
+				}
+				got = UsageView(got)
+				if got.Base != free || got.EffectiveBase != free || got.Name != "Free" || !reflect.DeepEqual(got.Allowances, reference.Allowances) || !reflect.DeepEqual(got.Features, reference.Features) {
+					return fmt.Errorf("plan-less entitlement=%+v, want the free plan %+v", got, reference)
+				}
+				for _, feature := range []string{"collaboration", "native_execution", "github_integration"} {
+					if err := hubapi.FromFeatureError(plans.RequireFeatureRecord(t.Context(), r, feature, now)); err != nil {
+						return fmt.Errorf("free feature %s refused: %w", feature, err)
+					}
+				}
+				var limit *LimitError
+				if err := hubapi.FromFeatureError(plans.RequireFeatureRecord(t.Context(), r, "hosted_artifacts", now)); !errors.As(err, &limit) || limit.Resource != "hosted_artifacts" {
+					return fmt.Errorf("hosted artifacts outside the free plan: %v", err)
+				}
+				return nil
+			}); err != nil {
+				t.Fatalf("%s: %v", org, err)
+			}
+		}
+	})
 }

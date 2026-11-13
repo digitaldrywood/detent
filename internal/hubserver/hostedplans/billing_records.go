@@ -85,15 +85,24 @@ func (d *Service) EntitlementRecord(ctx context.Context, r billingstore.Reader, 
 	if d.Plans() == nil {
 		return result, errors.New("hosted entitlements are disabled")
 	}
-	assignment, err := r.BillingAssignment(ctx)
-	if err != nil {
-		return result, err
+	readPlan := func(ctx context.Context, ref PlanReference) (HostedPlan, error) {
+		return d.ReadPlanRecord(ctx, r, ref)
 	}
-	result.Base = PlanReference{ID: assignment.Base.ID, Version: assignment.Base.Version}
-	result.EffectiveBase, result.Revision = result.Base, assignment.Revision
-	if assignment.Subscription != nil && assignment.ExpiresAt != nil && assignment.ExpiresAt.After(now) {
-		result.EffectiveBase = PlanReference{ID: assignment.Subscription.ID, Version: assignment.Subscription.Version}
-		result.Source = "subscription"
+	assignment, err := r.BillingAssignment(ctx)
+	switch {
+	case errors.Is(err, corestore.ErrNotFound):
+		result.Base = d.Plans().Base
+		result.EffectiveBase = result.Base
+		readPlan = d.readRuntimePlan
+	case err != nil:
+		return result, err
+	default:
+		result.Base = PlanReference{ID: assignment.Base.ID, Version: assignment.Base.Version}
+		result.EffectiveBase, result.Revision = result.Base, assignment.Revision
+		if assignment.Subscription != nil && assignment.ExpiresAt != nil && assignment.ExpiresAt.After(now) {
+			result.EffectiveBase = PlanReference{ID: assignment.Subscription.ID, Version: assignment.Subscription.Version}
+			result.Source = "subscription"
+		}
 	}
 	grants, err := r.BillingEffectiveGrants(ctx, now)
 	if err != nil {
@@ -102,7 +111,16 @@ func (d *Service) EntitlementRecord(ctx context.Context, r billingstore.Reader, 
 	for _, grant := range grants {
 		result.Grants = append(result.Grants, HostedGrant{ID: grant.ID, Plan: PlanReference{ID: grant.Plan.ID, Version: grant.Plan.Version}, Scope: grant.Scope, StartsAt: grant.StartsAt, ExpiresAt: grant.ExpiresAt, RevokedAt: grant.RevokedAt})
 	}
-	return d.ResolveEntitlement(ctx, now, result, func(ctx context.Context, ref PlanReference) (HostedPlan, error) {
-		return d.ReadPlanRecord(ctx, r, ref)
+	return d.ResolveEntitlement(ctx, now, result, readPlan)
+}
+
+func (d *Service) readRuntimePlan(ctx context.Context, ref PlanReference) (HostedPlan, error) {
+	return d.LoadPlan(ctx, ref, func(_ context.Context, ref PlanReference) (HostedPlan, string, error) {
+		for _, plan := range d.Plans().Plans {
+			if plan.PlanReference == ref {
+				return NormalizePlan(plan), "", nil
+			}
+		}
+		return HostedPlan{PlanReference: ref}, "", sql.ErrNoRows
 	})
 }
