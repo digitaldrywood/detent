@@ -1,7 +1,9 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -641,9 +643,11 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope hubs
 		var before, planned postgres.WorkspaceSession
 		var target, reason string
 		var linkID tracker.NativeWorkItemID
+		sharedRun := false
 		err := w.server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			before, _, err = w.workspaceWorkerRecord(ctx, r, scope, id, identity, now, bound)
+			var held leasestore.Lease
+			before, held, err = w.workspaceWorkerRecord(ctx, r, scope, id, identity, now, bound)
 			if err != nil {
 				return err
 			}
@@ -658,6 +662,10 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope hubs
 				}
 				if link.ClosedAt == nil {
 					linkID = link.WorkItemID
+				}
+				sharedRun, err = workspaceLeaseRunning(ctx, r, held)
+				if err != nil {
+					return err
 				}
 			}
 			if prepare != nil {
@@ -676,6 +684,13 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope hubs
 		closure, err := w.server.prepareWorkspaceIssueClose(ctx, scope, string(linkID), now)
 		if err != nil {
 			return workspaceRecord{}, err
+		}
+		var cancellation *preparedNativeLeaseCancellation
+		if sharedRun {
+			cancellation, err = w.server.prepareNativeLeaseCancellationTenant(ctx, scope, string(identity.LeaseID), tracker.NativeLeaseMutation{FencingToken: identity.FencingToken, Reason: cmp.Or(reason, target)})
+			if err != nil {
+				return workspaceRecord{}, hubapi.ProjectRecordError(err)
+			}
 		}
 		var result postgres.WorkspaceSession
 		err = w.server.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
@@ -738,6 +753,21 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope hubs
 						return err
 					}
 				}
+				if cancellation == nil || cancellation.attempt.ID == "" {
+					running, err := workspaceLeaseRunning(ctx, writer, lease)
+					if err != nil {
+						return err
+					}
+					if running {
+						return corestore.ErrSerializationFailure
+					}
+				}
+				if err := w.server.recordPreparedLeaseCancellation(ctx, writer, scope, lease, cancellation); err != nil {
+					if errors.Is(err, leasestore.ErrAttemptConflict) {
+						return corestore.ErrSerializationFailure
+					}
+					return err
+				}
 				_, err = writer.Release(ctx, fence, unbindReleaseReason(reason, workspaceTenantRecord(row)))
 			} else if bound {
 				_, err = writer.Renew(ctx, fence, workspacesession.LeaseTTL)
@@ -750,4 +780,15 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope hubs
 		}
 		return workspaceTenantRecord(result), hubapi.ProjectRecordError(err)
 	}
+}
+
+func workspaceLeaseRunning(ctx context.Context, r tenantstore.Reader, lease leasestore.Lease) (bool, error) {
+	attempt, err := r.LatestAttempt(ctx, lease.IssueID)
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, leasestore.ErrAttemptConflict) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return attempt.LeaseID == lease.LeaseID && attempt.FencingToken == lease.FencingToken && attempt.Status == "running", nil
 }

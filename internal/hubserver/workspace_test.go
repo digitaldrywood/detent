@@ -984,6 +984,44 @@ func TestWorkspaceWorkerUnbind(t *testing.T) {
 		}
 	})
 
+	t.Run("an unbind cancels a run started on the workspace lease before releasing it", func(t *testing.T) {
+		bind, lease := f.bound(t)
+		item := f.item(t, bind.Session.ID)
+		attempt := hubapi.NewID("attempt")
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+item+"/events", f.runner.redemption.Credential, tracker.NativeRunEvent{
+			Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("start")}, Type: "run.started", SchemaVersion: 1,
+			Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: lease.ID, FencingToken: lease.FencingToken, RunID: hubapi.NewID("run"), AttemptID: attempt, PolicyID: f.policy},
+		}), http.StatusOK)
+		requireNativeStatus(t, f.workerPost(t, bind.Session.ID, "unbind", workspaceUnbindRequest{
+			workspaceWorkerIdentity: workspaceIdentity(lease), Reason: workspacesession.ReasonRunnerRestarted}), http.StatusNoContent)
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+			stored, err := r.Attempt(t.Context(), attempt)
+			if err != nil {
+				return err
+			}
+			if stored.Status != "cancelled" || stored.Sequence != 2 {
+				t.Errorf("released workspace lease left its run without a cancellation: status=%s sequence=%d", stored.Status, stored.Sequence)
+			}
+			history, err := r.LatestRunEvent(t.Context(), f.project.ID, attempt)
+			if err != nil {
+				return err
+			}
+			if history.Type != "run.finished" {
+				t.Errorf("cancellation history type = %q", history.Type)
+			}
+			released, err := r.Lease(t.Context(), string(lease.ID))
+			if err != nil {
+				return err
+			}
+			if released.ReleasedAt == nil || released.ReleaseReason != workspacesession.ReasonRunnerRestarted {
+				t.Errorf("workspace lease released=%v reason=%q", released.ReleasedAt, released.ReleaseReason)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	t.Run("an unbind from closing ends the workspace closed", func(t *testing.T) {
 		bind, lease := f.bound(t)
 		// closing is the hub asking the runner to let go; it is reached by a
