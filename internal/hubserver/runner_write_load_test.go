@@ -220,6 +220,7 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runner write load reproduction")
 	}
+	var measuring sync.Mutex
 	for _, test := range []struct {
 		name     string
 		sessions int
@@ -230,7 +231,10 @@ func TestRunnerWritesStayBoundedAsTenantsGrow(t *testing.T) {
 		{name: "one hundred sessions on sixteen runners", sessions: 100, runners: 16},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newWriteLoadFixture(t, 50000, test.runners, test.sessions)
+			measuring.Lock()
+			defer measuring.Unlock()
 			const turnBatches = 40
 			ctx, stop := context.WithCancel(t.Context())
 			defer stop()
