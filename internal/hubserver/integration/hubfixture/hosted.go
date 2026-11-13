@@ -1,6 +1,7 @@
 package hubfixture
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -21,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -40,6 +42,7 @@ type Hosted struct {
 	*Hub
 	Provider *HostedProvider
 	Project  tracker.ProjectID
+	Base     string
 }
 
 type HostedUser struct {
@@ -107,8 +110,14 @@ func OpenHostedSecurity(t *testing.T, configure ...func(*Config)) (*Hosted, trac
 	h := OpenHosted(t, cfg)
 	project := tracker.ProjectID("prj_security")
 	h.SeedProject(t, project, "private-project-sentinel")
-	h.Project = project
-	return h, project, ProjectBase(h.Primary, project)
+	h.Project, h.Base = project, ProjectBase(h.Primary, project)
+	return h, project, h.Base
+}
+
+func NewHostedSecurity(t *testing.T, configure ...func(*Config)) *Hosted {
+	t.Helper()
+	h, _, _ := OpenHostedSecurity(t, configure...)
+	return h
 }
 
 func (h *Hosted) SeedProject(t *testing.T, id tracker.ProjectID, name string) tracker.NativeProject {
@@ -251,4 +260,12 @@ func (h *Hosted) Page(t *testing.T, user HostedUser, path string) *httptest.Resp
 	response := httptest.NewRecorder()
 	h.Handler().ServeHTTP(response, request)
 	return response
+}
+
+func SeedHostedSecurityProject(ctx context.Context, repository tenantstore.Repository, organization tracker.OrganizationID) error {
+	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}
+	return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.CreateProjectRecord(ctx, projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_security", Name: "private-project-sentinel", Profile: "native", CreatedAt: time.Now().UTC()}, States: states})
+		return err
+	})
 }

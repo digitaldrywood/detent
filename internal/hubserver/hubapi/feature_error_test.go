@@ -1,4 +1,4 @@
-package hubserver
+package hubapi_test
 
 import (
 	"errors"

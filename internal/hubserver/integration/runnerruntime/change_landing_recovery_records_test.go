@@ -1,9 +1,10 @@
-package hubserver
+package runnerruntime_test
 
 import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -14,18 +15,18 @@ func TestPostgresRecoveryRetainsPendingLandingIdentity(t *testing.T) {
 			name = "pending landing"
 		}
 		t.Run(name, func(t *testing.T) {
-			f := newRunnerPGFixture(t)
-			native, ctx := f.client(t, 0)
-			item := f.leases[0].WorkItemID
+			f := hubfixture.NewLeasedRunners(t)
+			native, ctx := f.Client(t, 0)
+			item := f.Leases[0].WorkItemID
 			change, err := native.CreateChange(ctx, item, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Example source"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			source := f.data[0]
-			input := changeTestInput()
+			source := f.Data[0]
+			input := hubfixture.ChangeInput()
 			bundle := changeTestSource(t, &input)
-			input.PolicyID, input.RunID, input.AttemptID = f.policy.PolicyID, source.RunID, source.AttemptID
-			if _, err := native.PostAttemptDiff(ctx, source.AttemptID, tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: source.AttemptID, RunnerID: f.bindings[0].RunnerID, LeaseID: source.LeaseID, FencingToken: source.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 2}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}); err != nil {
+			input.PolicyID, input.RunID, input.AttemptID = f.Policy.PolicyID, source.RunID, source.AttemptID
+			if _, err := native.PostAttemptDiff(ctx, source.AttemptID, tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: source.AttemptID, RunnerID: f.Bindings[0].RunnerID, LeaseID: source.LeaseID, FencingToken: source.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 2}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}); err != nil {
 				t.Fatal(err)
 			}
 			version, err := native.PublishChangeVersion(ctx, item, change.ID, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version"}, ChangeVersionInput: input, SourceBundle: bundle})
