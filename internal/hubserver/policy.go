@@ -520,7 +520,15 @@ func (s *Service) approveTenantProjectPolicyWithReceipt(ctx context.Context, sco
 			return err
 		}
 		if currentID != resolved.ID && (resolved.Workflow != nil || previous.Policy.SameAuthoredInputs(resolved)) {
-			if err := s.createTenantWorkflowApply(ctx, writer, scope, project, currentID, previous.Policy, resolved, actor, "", now, eventstore.PolicyLanding{}, false); err != nil {
+			reporters, _, err := writer.ProjectPolicyObservations(ctx, scope.Project, "", resolved.ID, now, 1)
+			if err != nil {
+				return err
+			}
+			reporter := ""
+			if len(reporters) > 0 {
+				reporter = reporters[0].RunnerID
+			}
+			if err := s.createTenantWorkflowApply(ctx, writer, scope, project, currentID, previous.Policy, resolved, actor, reporter, now, eventstore.PolicyLanding{}, false); err != nil {
 				return err
 			}
 		}
