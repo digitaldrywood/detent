@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -408,9 +409,42 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								t.Fatalf("MCP session read status=%d denied=%t want=%t body=%s", mcpRead.Code, mcpDenied, readDenied, mcpRead.Body.String())
 							}
 							if scenario == "admin" {
+								var expected tracker.ChangeReviewPolicy
+								if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(r tenantstore.Reader) error {
+									revision, err := r.ProjectPolicy(t.Context(), f.project)
+									if err != nil {
+										return err
+									}
+									descriptor, err := eventstore.NewContent(f.service.runDetailStore()).ProjectPolicy(t.Context(), revision)
+									expected = defaultChangeReviewPolicy(descriptor)
+									return err
+								}); err != nil {
+									t.Fatal(err)
+								}
+								response := serve(http.MethodPost, mcpEndpoint, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"`+operatortool.GetChangeReviewPolicy+`","arguments":{"project_id":"`+project+`"}}}`)
+								requireNativeStatus(t, response, http.StatusOK)
+								var reviewPolicy struct {
+									Result struct {
+										IsError bool `json:"isError"`
+										Content struct {
+											OrganizationID string `json:"organization_id"`
+											ProjectID      string `json:"project_id"`
+											Policy         struct {
+												ReviewPolicyID string                    `json:"review_policy_id"`
+												PolicyID       string                    `json:"policy_id"`
+												RequireReview  bool                      `json:"require_review"`
+												RequiredChecks []tracker.ChangeCheckSpec `json:"required_checks"`
+											} `json:"policy"`
+										} `json:"structuredContent"`
+									} `json:"result"`
+								}
+								decodeHubResponse(t, response, &reviewPolicy)
+								got := reviewPolicy.Result.Content
+								if reviewPolicy.Result.IsError || got.OrganizationID != organization || got.ProjectID != project || got.Policy.ReviewPolicyID != expected.ID || got.Policy.PolicyID != expected.PolicyID || got.Policy.RequireReview != expected.RequireReview || got.Policy.RequiredChecks == nil || len(got.Policy.RequiredChecks) != 0 {
+									t.Fatalf("admin key %s=%s want default policy %+v", operatortool.GetChangeReviewPolicy, response.Body.String(), expected)
+								}
 								for _, missing := range []struct{ name, message string }{
 									{"get_cutover_receipt", "No cutover receipt exists for this project"},
-									{operatortool.GetChangeReviewPolicy, "No approved Change review policy exists for this project"},
 								} {
 									response := serve(http.MethodPost, mcpEndpoint, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"`+missing.name+`","arguments":{"project_id":"`+project+`"}}}`)
 									requireNativeStatus(t, response, http.StatusOK)
