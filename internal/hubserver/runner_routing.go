@@ -290,6 +290,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope hubscope
 	if !maps.Equal(change.ProjectCapacityLimits, current.ProjectCapacityLimits) && strings.TrimSpace(request.IdempotencyKey) == "" {
 		return nil, hubapi.NativeInvalid("Project capacity updates require an idempotency key")
 	}
+	authorizedProjects := slices.Clone(projects)
 	projects = append(projects, change.ProjectIDs...)
 	for project := range change.ProjectCapacityLimits {
 		if !change.AllowsProject(project) {
@@ -324,6 +325,18 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope hubscope
 	identity.ProjectCapacityLimits, identity.ProjectRanks = change.ProjectCapacityLimits, change.ProjectRanks
 	var responseRanks map[tracker.ProjectID]int
 	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		for _, project := range projects {
+			if slices.Contains(authorizedProjects, project) {
+				continue
+			}
+			row, err := reader.Project(ctx, project)
+			if errors.Is(err, corestore.ErrNotFound) || err == nil && row.DeletedAt != nil {
+				return hubapi.NativePublicInvalid("Runner routing names a project that does not exist")
+			}
+			if err != nil {
+				return err
+			}
+		}
 		if err := authorize(reader); err != nil {
 			return err
 		}
