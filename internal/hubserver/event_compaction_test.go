@@ -355,8 +355,16 @@ func TestEventCompactionRollback(t *testing.T) {
 	if !reflect.DeepEqual(rows, beforeRows) || !reflect.DeepEqual(payloads, beforePayloads) {
 		t.Fatal("rollback changed immutable event references or payload bytes")
 	}
+	var stored []eventstore.Event
+	if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		stored, err = r.Events(t.Context(), a.scope.project, a.issue.WorkItemID, 0, corestore.MaxPageSize)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	spans := 0
-	for _, row := range rows {
+	for _, row := range stored {
 		event, err := eventstore.NewContent(a.service.runDetailStore()).Event(t.Context(), row)
 		if err != nil {
 			t.Fatal(err)
