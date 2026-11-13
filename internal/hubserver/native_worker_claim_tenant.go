@@ -79,7 +79,7 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 		}
 		position := scan.cursor.Position
 		var descriptor *policy.Descriptor
-		var budgetRefusal error
+		var budgetRefusal, providerRefusal error
 		placement := &hubrecords.ClaimPlacementSnapshot{}
 		for _, rows := range scan.plans {
 			candidate := rows.Candidate
@@ -127,6 +127,11 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 					continue
 				}
 			}
+			if isProviderWait(err) {
+				providerRefusal = err
+				position = claimCandidateCursor(candidate)
+				continue
+			}
 			if errors.Is(err, ErrNoClaimableWork) || errors.Is(err, tracker.ErrLeaseConflict) {
 				position = claimCandidateCursor(candidate)
 				continue
@@ -146,6 +151,9 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 		return leasestore.Lease{}, ErrNoClaimableWork
 	}
 	plan, err := s.readNativeClaimPlan(ctx, scope, request, now)
+		if providerRefusal != nil {
+			return leasestore.Lease{}, providerRefusal
+		}
 	if err != nil {
 		if errors.Is(err, ErrNoClaimableWork) && explicitItem {
 			if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, errors.Is(err, errNativeClaimPlanRefused), "no_claimable_work"); recordErr != nil {
