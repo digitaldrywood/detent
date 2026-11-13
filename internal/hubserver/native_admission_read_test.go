@@ -133,7 +133,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 					blocker := blockerFixture.create(t, "unfinished blocker "+strconv.Itoa(index))
 					blockers = append(blockers, blocker)
 					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-						return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, RelatedProjectID: blocker.ProjectID, RelatedWorkItemID: blocker.WorkItemID, Type: "dependency", Direction: "blocked_by"}, "native", now)
+						return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: issue.WorkItemID, RelatedProjectID: blocker.ProjectID, RelatedWorkItemID: blocker.WorkItemID, Type: "dependency", Direction: "blocked_by"}, "add", now)
 					}); err != nil {
 						t.Fatal(err)
 					}
