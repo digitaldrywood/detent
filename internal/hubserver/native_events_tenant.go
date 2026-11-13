@@ -1099,27 +1099,26 @@ func admitNativeRunEventBatch(ctx context.Context, r tenantstore.Reader, project
 	if !terminating && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) {
 		return &leasestore.FenceError{Check: "lease_current"}
 	}
-	for i := 1; i < len(events); i++ {
-		if events[i].Data.Sequence != events[i-1].Data.Sequence+1 {
-			return leasestore.ErrAttemptConflict
-		}
-	}
+	var stored int64
 	attempt, err := r.Attempt(ctx, request.Data.AttemptID)
-	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-		if events[0].Data.Sequence != 1 {
+	switch {
+	case errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return err
+	default:
+		stored = attempt.Sequence
+	}
+	next := stored + 1
+	for i, event := range events {
+		if i > 0 && event.Data.Sequence <= events[i-1].Data.Sequence {
 			return leasestore.ErrAttemptConflict
 		}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if events[0].Data.Sequence > attempt.Sequence+1 {
-		return leasestore.ErrAttemptConflict
-	}
-	for _, event := range events {
-		if event.Data.Sequence > attempt.Sequence {
-			break
+		if event.Data.Sequence > stored {
+			if event.Data.Sequence != next {
+				return leasestore.ErrAttemptConflict
+			}
+			next++
+			continue
 		}
 		reader, ok := r.(nativeRunEventReader)
 		if !ok {
