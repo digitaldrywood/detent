@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -92,7 +93,11 @@ func TestHostedFleetSprites(t *testing.T) {
 			}
 			visible := map[tracker.ProjectID]bool{scope.Project: !tt.hidden}
 			view := hostedFleetRunnerView(runner, "dev", visible, f.service.config.now())
-			if err := f.service.hostedFleetSprite(t.Context(), testenv.WaitContext(t, t.Context()), scope.Credential, &view, runner, visible); err != nil {
+			facts, err := f.service.readSpriteMachineFacts(t.Context(), runner.OrganizationID, runner.MachineID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.hostedFleetSprite(t.Context(), testenv.WaitContext(t, t.Context()), scope.Credential, &view, runner, facts, visible); err != nil {
 				t.Fatal(err)
 			}
 			if view.Health != tt.wantHealth || (view.Sprite != nil) != tt.wantSprite || calls != tt.wantCalls {
@@ -100,6 +105,27 @@ func TestHostedFleetSprites(t *testing.T) {
 			}
 			if tt.wakeFailure && !view.Sprite.WakeFailed {
 				t.Fatal("failed provider wake was not preserved in the fleet read")
+			}
+			projects := []appBootstrapProject{}
+			if !tt.hidden {
+				projects = append(projects, appBootstrapProject{ID: string(scope.Project)})
+			}
+			fleet, _, err := f.service.readHostedFleetSnapshotTenant(t.Context(), scope.Credential, projects, "", f.service.config.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			listed := false
+			for _, candidate := range fleet.Runners {
+				if candidate.ID != runners[0].binding.RunnerID {
+					continue
+				}
+				listed = true
+				if candidate.Health != view.Health || !reflect.DeepEqual(candidate.Sprite, view.Sprite) {
+					t.Fatalf("fleet view health=%q sprite=%+v; want %q sprite=%+v", candidate.Health, candidate.Sprite, view.Health, view.Sprite)
+				}
+			}
+			if !listed {
+				t.Fatalf("fleet view omitted the runner: %+v", fleet.Runners)
 			}
 			if calls > 0 {
 				var auditUses int

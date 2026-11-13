@@ -16,13 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credential hubapi.APICredential, view *hostedFleetRunner, runner runnerauth.Runner, visible map[tracker.ProjectID]bool) error {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
-	facts, err := s.readSpriteMachineFacts(readCtx, runner.OrganizationID, runner.MachineID)
-	if err != nil {
-		return err
-	}
+func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credential hubapi.APICredential, view *hostedFleetRunner, runner runnerauth.Runner, facts machineSpriteFacts, visible map[tracker.ProjectID]bool) error {
 	name, failed := spriteFactValue(facts.Name), spriteFactValue(facts.WakeFailedAt)
 	if name == "" || name != runner.Hostname || !validSpritesSlug(name) {
 		return nil

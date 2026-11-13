@@ -90,6 +90,11 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 		return hostedFleetResponse{}, nil, operatortool.ErrAccessDenied
 	}
 	reservations := []scopedProviderAccount{}
+	type fleetSpriteSource struct {
+		runner runnerauth.Runner
+		facts  machineSpriteFacts
+	}
+	sprites := []fleetSpriteSource{}
 	result := hostedFleetResponse{Runners: []hostedFleetRunner{}, RunnerNames: map[string]hostedRunnerName{}, Current: detentVersion(s.config.Version), MinimumRunnerVersion: minimumRunnerVersion(s.config.Version)}
 	read := func(r tenantstore.Reader) error {
 		if selectedProject != "" {
@@ -279,6 +284,7 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 				view.ProjectCheckouts[project] = hostedRunnerCheckout{Status: status, Message: checks.CheckoutMessage, FixCommand: checks.CheckoutFix}
 			}
 			result.Runners = append(result.Runners, view)
+			sprites = append(sprites, fleetSpriteSource{runner: runner, facts: spriteFactsForMachine(machine)})
 		}
 		return nil
 	}
@@ -293,6 +299,13 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 	}
 	if err != nil {
 		return hostedFleetResponse{}, nil, fmt.Errorf("read tenant fleet: %w", err)
+	}
+	spriteContext, cancelSprites := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelSprites()
+	for index, source := range sprites {
+		if err := s.hostedFleetSprite(ctx, spriteContext, credential, &result.Runners[index], source.runner, source.facts, visible); err != nil {
+			return hostedFleetResponse{}, nil, fmt.Errorf("read runner sprite: %w", err)
+		}
 	}
 	slices.SortFunc(result.Runners, func(a, b hostedFleetRunner) int {
 		return cmp.Or(cmp.Compare(a.DisplayName, b.DisplayName), cmp.Compare(a.ID, b.ID))
