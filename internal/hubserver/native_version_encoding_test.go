@@ -646,7 +646,12 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 				if _, err := admin.ExecContext(t.Context(), fmt.Sprintf(`CREATE FUNCTION reject_test_collaboration_import() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.record_id='wi_core_import' AND NEW.revision=%d THEN RAISE EXCEPTION 'injected final version failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_test_collaboration_import BEFORE INSERT ON collaboration_versions FOR EACH ROW EXECUTE FUNCTION reject_test_collaboration_import()`, revisions)); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err == nil || !strings.Contains(err.Error(), "injected final version failure") {
+				_, err = ImportCoreWorkItems(t.Context(), f.service.database.postgres, input)
+				var databaseError interface {
+					error
+					SQLState() string
+				}
+				if !errors.As(err, &databaseError) || databaseError.SQLState() != "P0001" || !strings.Contains(databaseError.Error(), "injected final version failure") {
 					t.Fatalf("final persistence failure=%v", err)
 				}
 				assertEmpty()
