@@ -749,11 +749,16 @@ func TestGitHubReconciliationRetainsFencedTenantCursors(t *testing.T) {
 						t.Fatal(err)
 					}
 					write(func(w tenantstore.Writer) error {
-						return w.(projectstore.GitHubPullRequestRefreshWriter).RequestGitHubPullRequests(t.Context(), rows[:1])
+						request := rows[0]
+						request.RequestedAt = now.Add(7 * time.Hour)
+						return w.(projectstore.GitHubPullRequestRefreshWriter).RequestGitHubPullRequests(t.Context(), []projectstore.GitHubPullRequestRefresh{request})
 					})
 					rearmed := read(a.GitHubPullRequestRefreshKey)
 					if !rearmed.Pending || rearmed.RequestCount != a.RequestCount+1 || !reflect.DeepEqual(rearmed.Observation, a.Observation) {
 						t.Fatalf("existing request owner did not rearm superseded demand=%+v", rearmed)
+					}
+					if !rearmed.NextAttemptAt.Equal(now.Add(7 * time.Hour)) {
+						t.Fatalf("rearmed demand retained its completed due time: %s", rearmed.NextAttemptAt)
 					}
 					a = rearmed
 				}

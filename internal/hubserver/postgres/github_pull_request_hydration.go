@@ -102,7 +102,7 @@ ON CONFLICT(organization_id,project_id,change_id,repository,pull_number) DO UPDA
  requested_head_sha=CASE WHEN stored.requested_head_sha<>excluded.requested_head_sha THEN excluded.requested_head_sha ELSE stored.requested_head_sha END,
  request_count=stored.request_count+1,requested_at=GREATEST(stored.requested_at,excluded.requested_at),pending=true,
  attempts=CASE WHEN stored.requested_version<>excluded.requested_version OR stored.requested_head_sha<>excluded.requested_head_sha THEN 0 ELSE stored.attempts END,
- next_attempt_at=CASE WHEN stored.requested_version<>excluded.requested_version OR stored.requested_head_sha<>excluded.requested_head_sha THEN excluded.requested_at WHEN NOT stored.pending THEN LEAST(stored.next_attempt_at,excluded.requested_at) ELSE stored.next_attempt_at END`, s.organization, projects, changes, repositories, numbers, items, versions, heads, requested)
+ next_attempt_at=CASE WHEN stored.requested_version<>excluded.requested_version OR stored.requested_head_sha<>excluded.requested_head_sha OR NOT stored.pending THEN excluded.requested_at ELSE stored.next_attempt_at END`, s.organization, projects, changes, repositories, numbers, items, versions, heads, requested)
 	if err != nil {
 		return mapError(ctx, err)
 	}
