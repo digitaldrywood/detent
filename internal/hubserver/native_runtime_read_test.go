@@ -505,6 +505,11 @@ func TestNativeExplanationIncompleteGateHistory(t *testing.T) {
 						review = "approved"
 					}
 					path := f.path + "/versions/" + version.ID
+					for range 2 {
+						if _, err := f.service.config.TenantRepository.(*postgres.Repository).BackfillCurrentChangeReviews(t.Context(), organization, eventstore.NewContent(f.service.runDetailStore()), corestore.MaxPageSize); err != nil {
+							t.Fatal(err)
+						}
+					}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "effective-review"}, Decision: review}), http.StatusOK)
 					for i, check := range version.Checks {
 						result := changeTestResult(version)
