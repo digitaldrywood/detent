@@ -327,6 +327,9 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
+	if err := r.service.readRuntimeAdmissionTenant(ctx, scope, issue, &evidence, nil); err != nil {
+		return explain.IssueExplanation{}, safeWorkReadError(err)
+	}
 	out, err := boundedNativeExplanation(evidence, latestNativeFailureSignature(failures, partial))
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
