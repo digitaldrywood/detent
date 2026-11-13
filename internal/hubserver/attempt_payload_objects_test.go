@@ -481,12 +481,11 @@ func TestPayloadPreparationRechecksLease(t *testing.T) {
 	var seconds atomic.Int64
 	seconds.Store(time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC).Unix())
 	var advanced atomic.Bool
-	f := claimedAttemptDiffFixture(t, false, Config{now: func() time.Time { return time.Unix(seconds.Load(), 0).UTC() }, Content: func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
-		if request.Write && advanced.CompareAndSwap(false, true) {
+	f := claimedAttemptDiffFixture(t, false, Config{now: func() time.Time { return time.Unix(seconds.Load(), 0).UTC() }, Content: objects.call, RunDetails: &memoryRunDetails{afterStore: func(attachment.ArchiveReference) {
+		if advanced.CompareAndSwap(false, true) {
 			seconds.Add(3600)
 		}
-		return objects.call(ctx, request)
-	}})
+	}}})
 	advanced.Store(false)
 	event := nativeStartedEvent(f.lease)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event)
