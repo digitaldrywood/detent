@@ -152,7 +152,7 @@ func (c *Content) readRaw(ctx context.Context, organization tracker.Organization
 }
 
 func referencedObjectError(err error) error {
-	if errors.Is(err, artifact.ErrStorage) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, artifact.ErrIntegrity) {
+	if errors.Is(err, artifact.ErrStorage) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, artifact.ErrIntegrity) && errors.Unwrap(err) == nil {
 		return err
 	}
 	return errors.Join(artifact.ErrIntegrity, err)
