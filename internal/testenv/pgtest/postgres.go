@@ -422,7 +422,7 @@ func (s *server) create(ctx context.Context, template string) (string, error) {
 	s.mu.Lock()
 	s.owned[name] = struct{}{}
 	s.mu.Unlock()
-	_, err := s.admin.ExecContext(ctx, "CREATE DATABASE "+identifier(name)+" TEMPLATE "+identifier(template)+fmt.Sprintf(" CONNECTION LIMIT %d", connectionLimit))
+	_, err := s.admin.ExecContext(ctx, "CREATE DATABASE "+identifier(name)+" TEMPLATE "+identifier(template)+" STRATEGY FILE_COPY"+fmt.Sprintf(" CONNECTION LIMIT %d", connectionLimit))
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {

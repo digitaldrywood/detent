@@ -32,7 +32,7 @@ Call `template.Database(t)` directly for repository tests using `database/sql`.
 The migration function receives an empty database and must finish all migration
 work before returning. It runs once, then its connection pool is closed and the
 template disables connections. Each fixture clones that database with
-`CREATE DATABASE ... TEMPLATE`, using a random name and its own connection pool.
+`CREATE DATABASE ... TEMPLATE ... STRATEGY FILE_COPY`, using a random name and its own connection pool. [`FILE_COPY`](https://www.postgresql.org/docs/17/sql-createdatabase.html) copies the template directory at the filesystem level instead of writing every block through shared buffers and the write-ahead log, so a clone leaves no dirty pages for the checkpoint that every `DROP DATABASE` waits on.
 Register application database cleanup after obtaining the fixture so it runs
 before the fixture database is dropped.
 
