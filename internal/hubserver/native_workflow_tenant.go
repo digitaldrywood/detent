@@ -266,7 +266,10 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		unchanged := human && stop == nil && previousState == request.State && bytes.Equal(previousContract, currentContract)
 		if unchanged {
 			issue.Revision = tracker.Revision(row.Revision)
-			issue.UpdatedAt, issue.LastActivityAt = previousUpdatedAt, previousActivityAt
+			issue.UpdatedAt = previousUpdatedAt
+			if !strings.EqualFold(request.State, "Blocked") {
+				issue.LastActivityAt = previousActivityAt
+			}
 		}
 		if linkedSource != nil {
 			issue.ExternalReferences = slices.DeleteFunc(slices.Clone(issue.ExternalReferences), func(reference tracker.ExternalReference) bool {

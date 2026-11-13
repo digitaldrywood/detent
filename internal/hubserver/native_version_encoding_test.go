@@ -476,7 +476,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 		t.Fatalf("real transition wrote extra history: versions=%d/%d events=%d/%d", versions, beforeVersions, events, beforeEvents)
 	}
 	t.Run("operator hold response and replay", func(t *testing.T) {
-		now := time.Now().UTC().Add(time.Hour)
+		now := time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
 		states[1].Transitions = append(states[1].Transitions, "Blocked")
 		states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Blocked", "Todo"}})
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
