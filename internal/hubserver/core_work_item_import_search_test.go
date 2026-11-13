@@ -45,7 +45,7 @@ func TestCoreWorkItemImportSupportsMutationsAndSearchAcrossTenants(t *testing.T)
 					}
 					f = nativeFixture{service: service, project: tracker.NativeProject{OrganizationID: org, ID: project}, base: "/api/v2/organizations/" + string(org) + "/projects/" + string(project), token: testHubAdminToken}
 					seedNativeFixturePolicy(t, service, string(org)+"/"+string(project))
-					fixture = coreHistoricalV7Fixture(t, org)
+					fixture = neutralimporttest.HistoricalV7(t, org)
 				} else {
 					f = newNativeFixture(t, service, org, "Example project")
 					fixture = coreWorkItemNeutralFixture(t, org, f.project.ID, false)

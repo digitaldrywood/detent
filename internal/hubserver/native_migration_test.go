@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -250,7 +251,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 					project := tracker.ProjectID("prj_activity")
 					seedHistoricalImportTarget(t, repository, organization, project, "native")
 					fixture := coreWorkItemNeutralFixture(t, organization, project, false)
-					coreFixtureAddTables(t, fixture, "projects", "native_attempts", "work_events", "change_issue_links", "change_requests", "change_versions", "change_evidence", "pull_requests")
+					fixture.AddTables(t, os.DirFS("../.."), "projects", "native_attempts", "work_events", "change_issue_links", "change_requests", "change_versions", "change_evidence", "pull_requests")
 					fixture.Add("projects", map[string]any{"id": project, "organization_id": organization, "name": "Example activity", "profile": "native", "repository_id": 1, "created_at": "2026-10-01T00:00:00Z"})
 					base := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
 					at := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC).Add(time.Duration(index) * time.Microsecond)
@@ -400,8 +401,8 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 	const rawProgress = `{"policy_approved":true}`
 	const updated = "2026-10-01T00:00:00Z"
 	for _, organization := range []tracker.OrganizationID{"org_aggregate_a", "org_aggregate_b"} {
-		fixture := coreFixtureFromBundle(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
-		coreFixtureAddTables(t, fixture, "project_onboarding")
+		fixture := neutralimporttest.Read(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
+		fixture.AddTables(t, os.DirFS("../.."), "project_onboarding")
 		suffix := strings.TrimPrefix(string(organization), "org_aggregate_")
 		project := tracker.ProjectID("prj_aggregate_" + suffix)
 		fixture.Add("project_onboarding", map[string]any{"organization_id": organization, "project_id": project, "revision": 7, "progress_json": rawProgress, "updated_at": updated})
@@ -481,8 +482,8 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 		}()
 	}
 	failedOrg := tracker.OrganizationID("org_aggregate_incomplete")
-	failed := coreFixtureFromBundle(t, coreTenantAggregateSourceCopy(t, failedOrg, false), failedOrg)
-	coreFixtureAddTables(t, failed, "project_onboarding")
+	failed := neutralimporttest.Read(t, coreTenantAggregateSourceCopy(t, failedOrg, false), failedOrg)
+	failed.AddTables(t, os.DirFS("../.."), "project_onboarding")
 	failed.Add("project_onboarding", map[string]any{"organization_id": failedOrg, "project_id": "prj_aggregate_incomplete", "revision": 7, "progress_json": "{", "updated_at": updated})
 	result, err := ImportTenantCoreCopy(t.Context(), config, TenantCoreImportSource{BundlePath: failed.Write(), OrganizationID: failedOrg, Catalog: catalog, Objects: objects})
 	if err == nil || result.CoreImportComplete {
@@ -511,7 +512,7 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 	for _, organization := range []tracker.OrganizationID{"org_legacy_first", "org_legacy_second"} {
 		project := tracker.ProjectID("prj_legacy")
 		seedHistoricalImportTarget(t, store.postgres, organization, project, "github_compatible")
-		fixture := coreHistoricalV7Fixture(t, organization)
+		fixture := neutralimporttest.HistoricalV7(t, organization)
 		fixture.Add("workflow_states", map[string]any{"id": 2, "repository_id": 1, "source_name": "Done", "detent_state": "Done", "terminal": 1, "created_at": "2026-09-01T12:00:00Z", "updated_at": "2026-09-01T12:00:00Z"})
 		fixture.Set("issues", map[string]string{"id": "41"}, map[string]any{"workflow_state_id": 2, "github_state": "open"})
 		fixture.Set("issues", map[string]string{"id": "43"}, map[string]any{"workflow_state_id": nil, "github_state": "closed"})

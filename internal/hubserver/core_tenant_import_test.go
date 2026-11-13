@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
@@ -36,7 +37,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 	objects := &memoryRunDetails{}
 
 	for _, organization := range []tracker.OrganizationID{"org_aggregate_a", "org_aggregate_b"} {
-		fixture := coreFixtureFromBundle(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
+		fixture := neutralimporttest.Read(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
 		var issue tracker.NativeIssue
 		var raw string
 		if err := fixture.Records["collaboration_versions"][0].Decode(map[string]any{"record_json": &raw}); err != nil {
@@ -91,7 +92,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 		for _, organization := range []tracker.OrganizationID{"org_historical_a", "org_historical_b"} {
 			project := tracker.ProjectID("prj_historical")
 			seedHistoricalImportTarget(t, store.postgres, organization, project, "github_compatible")
-			fixture := coreHistoricalV7Fixture(t, organization)
+			fixture := neutralimporttest.HistoricalV7(t, organization)
 			path := fixture.Write()
 			source := TenantCoreImportSource{BundlePath: path, OrganizationID: organization, Catalog: catalog, Objects: objects}
 			result, err := ImportTenantCoreCopy(t.Context(), config, source)
@@ -118,7 +119,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 			}
 			assertUnwritten()
 			mapping := coreWorkItemNeutralFixture(t, organization, project, false)
-			coreFixtureAddTables(t, mapping, "projects")
+			mapping.AddTables(t, os.DirFS("../.."), "projects")
 			mapping.Add("projects", map[string]any{"id": project, "organization_id": organization, "repository_id": 1, "name": "Historical mapping", "profile": "github_compatible", "created_at": "2026-09-01T12:00:00Z"})
 			mapping.Set("repositories", map[string]string{"id": "1"}, map[string]any{"github_node_id": "R_original"})
 			for index, id := range []int64{41, 43} {
@@ -182,7 +183,7 @@ func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
 
 	t.Run("missing issues table keeps current import route", func(t *testing.T) {
 		organization := tracker.OrganizationID("org_aggregate_c")
-		fixture := coreFixtureFromBundle(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
+		fixture := neutralimporttest.Read(t, coreTenantAggregateSourceCopy(t, organization, false), organization)
 		delete(fixture.Tables, "issues")
 		delete(fixture.Records, "issues")
 		result, err := ImportTenantCoreCopy(t.Context(), config, TenantCoreImportSource{BundlePath: fixture.Write(), OrganizationID: organization, Catalog: catalog, Objects: objects})
