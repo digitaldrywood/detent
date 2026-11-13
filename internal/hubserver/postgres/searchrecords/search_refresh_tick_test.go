@@ -138,25 +138,48 @@ func TestSearchRefreshTickDeadlineCancelsBlockedOperation(t *testing.T) {
 	barrier := &searchReadBarrier{DetailStore: f.objects, read: make(chan struct{}), release: make(chan struct{})}
 	content := searchstore.NewContent(barrier)
 	counter := countPublications(f.repository)
-	var expire context.CancelFunc
+	parent := t.Context()
+	if end, ok := t.Deadline(); ok {
+		guarded, cancel := context.WithDeadline(parent, end.Add(-time.Until(end)/10))
+		t.Cleanup(cancel)
+		parent = guarded
+	}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(barrier.release) }) }
+	stop, helperDone := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() {
+		close(stop)
+		release()
+		<-helperDone
+	})
+	expired := make(chan context.CancelFunc, 1)
 	deadline := func(parent context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
 		if budget != searchstore.RefreshTickDuration {
 			t.Errorf("tick budget=%s want %s", budget, searchstore.RefreshTickDuration)
 		}
 		ctx, cancel := context.WithCancel(parent)
-		expire = cancel
+		expired <- cancel
 		return ctx, cancel
 	}
 	go func() {
-		<-barrier.read
-		expire()
+		defer close(helperDone)
+		select {
+		case <-barrier.read:
+		case <-stop:
+			return
+		}
+		select {
+		case expire := <-expired:
+			expire()
+		case <-stop:
+		}
 	}()
-	processed, err := content.RefreshTick(t.Context(), counter, "org_first", deadline)
+	processed, err := content.RefreshTick(parent, counter, "org_first", deadline)
 	if err != nil || processed != 0 || pendingSearchDocuments(t, f, "org_first") != 3 {
 		t.Fatalf("expired tick processed=%d pending=%d err=%v", processed, pendingSearchDocuments(t, f, "org_first"), err)
 	}
 	counter.requireEachOnce(t, "issue/wi_tick_", 0)
-	close(barrier.release)
+	release()
 	processed, err = content.RefreshTick(t.Context(), counter, "org_first", withoutDeadline)
 	if err != nil || processed != 3 || pendingSearchDocuments(t, f, "org_first") != 0 {
 		t.Fatalf("next tick processed=%d pending=%d err=%v", processed, pendingSearchDocuments(t, f, "org_first"), err)
