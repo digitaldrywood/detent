@@ -424,7 +424,7 @@ func TestArchiveLegacyBindingSnapshot(t *testing.T) {
 func TestArchiveRoutesLifecycle(t *testing.T) {
 	t.Parallel()
 	var logs bytes.Buffer
-	f := newEntryFixtureWithLogger(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	f := newSeparateDatabaseEntryFixture(t, slog.New(slog.NewTextHandler(&logs, nil)))
 	store := newSpacesFixture(t, false)
 	storageConfig := store.Config()
 	storageConfig.Endpoint = "https://objects.example.test"

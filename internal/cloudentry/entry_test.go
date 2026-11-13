@@ -46,6 +46,16 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger, configure ...f
 
 func newEntryFixtureWithConfig(t *testing.T, logger *slog.Logger, configureEntry []func(*Config), configure ...func(*hubserver.Config)) entryFixture {
 	t.Helper()
+	return newEntryFixtureOn(t, entrySharedDatabase(t), logger, configureEntry, configure...)
+}
+
+func newSeparateDatabaseEntryFixture(t *testing.T, logger *slog.Logger) entryFixture {
+	t.Helper()
+	return newEntryFixtureOn(t, nil, logger, nil)
+}
+
+func newEntryFixtureOn(t *testing.T, database *sql.DB, logger *slog.Logger, configureEntry []func(*Config), configure ...func(*hubserver.Config)) entryFixture {
+	t.Helper()
 	seed := make([]byte, ed25519.SeedSize)
 	seed[0] = 42
 	key := ed25519.NewKeyFromSeed(seed)
@@ -57,7 +67,6 @@ func newEntryFixtureWithConfig(t *testing.T, logger *slog.Logger, configureEntry
 	provider.Member("user_alice", "porg_alpha", "owner")
 	provider.Member("user_alice", "porg_beta", "owner")
 	provider.Member("user_bob", "porg_beta", "member")
-	database := entrySharedDatabase(t)
 	alpha, alphaHandler := newTenantIn(t, database, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project", configure...)
 	beta, betaHandler := newTenantIn(t, database, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project", configure...)
 	tenants := map[string]http.Handler{testSocketEndpoint("alpha.sock"): alphaHandler, testSocketEndpoint("beta.sock"): betaHandler}
@@ -72,8 +81,10 @@ func newEntryFixtureWithConfig(t *testing.T, logger *slog.Logger, configureEntry
 	for _, configure := range configureEntry {
 		configure(&cfg)
 	}
-	if cfg.Storage.Backend == "" {
+	if cfg.Storage.Backend == "" && database != nil {
 		entryPostgresConfig(t, database)(&cfg)
+	} else if cfg.Storage.Backend == "" {
+		entryPostgresConfig(t)(&cfg)
 	}
 	service, err := Open(t.Context(), cfg)
 	if err != nil {
