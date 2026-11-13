@@ -165,7 +165,7 @@ func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope hubscop
 		if err := s.requireRunnerAdministrationTenant(ctx, w, scope); err != nil {
 			return err
 		}
-		return s.revokeRunnerIdentityTenant(ctx, w, scope.Organization, resource, scope.Credential.ID, s.config.Clock().UTC())
+		return s.revokeRunnerIdentityTenant(ctx, w, scope.Organization, resource, scope.Credential.ID, func() time.Time { return s.config.Clock().UTC() })
 	})
 	if err != nil {
 		return nil, err
@@ -176,7 +176,7 @@ func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope hubscop
 	return struct{}{}, nil
 }
 
-func (s *Service) revokeRunnerIdentityTenant(ctx context.Context, w tenantstore.Writer, organization tracker.OrganizationID, resource, actorID string, now time.Time) error {
+func (s *Service) revokeRunnerIdentityTenant(ctx context.Context, w tenantstore.Writer, organization tracker.OrganizationID, resource, actorID string, clock func() time.Time) error {
 	identity, err := w.RunnerIdentity(ctx, resource)
 	if err != nil {
 		return err
@@ -184,6 +184,7 @@ func (s *Service) revokeRunnerIdentityTenant(ctx context.Context, w tenantstore.
 	if identity.RemovedAt != nil {
 		return nil
 	}
+	now := clock()
 	busy, err := w.RunnerHasActiveLease(ctx, resource, now)
 	if err != nil {
 		return err

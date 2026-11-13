@@ -854,7 +854,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope hubscope.NativeSco
 			return err
 		}
 		if enrollment.RunnerID != "" {
-			if err := s.revokeRunnerIdentityTenant(cleanup, w, scope.Organization, enrollment.RunnerID, actor, s.config.Clock()); err != nil {
+			if err := s.revokeRunnerIdentityTenant(cleanup, w, scope.Organization, enrollment.RunnerID, actor, s.config.Clock); err != nil {
 				return err
 			}
 		}
