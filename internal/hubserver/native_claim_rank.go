@@ -7,12 +7,15 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -29,11 +32,18 @@ const (
 
 type nativeClaimRankPosition struct {
 	rank      int
+	preferred bool
 	candidate claimstore.Candidate
 }
 
 func nativeClaimOutranks(left, right nativeClaimRankPosition) bool {
 	l, r := left.candidate, right.candidate
+	if left.preferred != right.preferred {
+		if left.preferred {
+			return l.LaneRank <= r.LaneRank
+		}
+		return l.LaneRank < r.LaneRank
+	}
 	return cmp.Or(
 		cmp.Compare(left.rank, right.rank),
 		cmp.Compare(l.LaneRank, r.LaneRank),
@@ -55,18 +65,21 @@ type nativeClaimRankCompetitor struct {
 	incomplete bool
 }
 
-func readNativeClaimRanking(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) (*hubrecords.ClaimRanking, error) {
+func readNativeClaimRanking(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) (*runnerstore.ProjectRanking, error) {
 	if scope.Credential.Runner.RunnerID == "" {
-		return &hubrecords.ClaimRanking{}, nil
+		return &runnerstore.ProjectRanking{}, nil
 	}
-	projects, own, err := r.RunnerOutrankingProjects(ctx, scope.Credential.Runner.RunnerID, scope.Project, nativeClaimRankProjects)
+	ranking, err := r.RunnerOutrankingProjects(ctx, scope.Credential.Runner.RunnerID, scope.Project, nativeClaimRankProjects)
 	if errors.Is(err, corestore.ErrNotFound) {
-		return &hubrecords.ClaimRanking{}, nil
+		return &runnerstore.ProjectRanking{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &hubrecords.ClaimRanking{Own: own, Projects: projects}, nil
+	if ranking.Preferred != "" && ranking.Preferred != scope.Project && !slices.ContainsFunc(ranking.Projects, func(project runnerstore.ProjectRank) bool { return project.ProjectID == ranking.Preferred }) {
+		ranking.Projects = append(ranking.Projects, runnerstore.ProjectRank{ProjectID: ranking.Preferred, Rank: ranking.Own})
+	}
+	return &ranking, nil
 }
 
 func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, plan hubrecords.NativeClaimPlan, now time.Time) (bool, error) {
@@ -79,6 +92,7 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 	}
 	var identity runnerstore.Identity
 	var reports []providercapacity.Report
+	var machine leasestore.Machine
 	var competitors []nativeClaimRankCompetitor
 	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		batch, ok := r.(tenantstore.ClaimPreviewPlanRowsReader)
@@ -100,15 +114,16 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 		if len(projects) == 0 {
 			return nil
 		}
+		preferred := ranking.Preferred
 		reports, err = r.RunnerProviderReports(ctx, identity.RunnerID)
 		if err != nil {
 			return err
 		}
-		machine, err := r.Machine(ctx, string(identity.MachineID))
+		machine, err = r.Machine(ctx, string(identity.MachineID))
 		if err != nil {
 			return err
 		}
-		self := nativeClaimRankPosition{rank: own, candidate: plan.Candidate}
+		self := nativeClaimRankPosition{rank: own, preferred: preferred == scope.Project, candidate: plan.Candidate}
 		quota := max(1, nativeClaimRankBudget/(len(projects)+1))
 		for _, ranked := range projects {
 			projectScope := scope
@@ -169,7 +184,7 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 			}
 			var outranking []claimstore.Candidate
 			for _, candidate := range page.Items {
-				if len(outranking) == quota || !nativeClaimOutranks(nativeClaimRankPosition{rank: ranked.Rank, candidate: candidate}, self) {
+				if len(outranking) == quota || !nativeClaimOutranks(nativeClaimRankPosition{rank: ranked.Rank, preferred: ranked.ProjectID == preferred, candidate: candidate}, self) {
 					break
 				}
 				outranking = append(outranking, candidate)
@@ -177,7 +192,7 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 			if len(outranking) == 0 {
 				continue
 			}
-			incomplete := len(page.Items) > quota && nativeClaimOutranks(nativeClaimRankPosition{rank: ranked.Rank, candidate: page.Items[quota]}, self)
+			incomplete := len(page.Items) > quota && nativeClaimOutranks(nativeClaimRankPosition{rank: ranked.Rank, preferred: ranked.ProjectID == preferred, candidate: page.Items[quota]}, self)
 			cursor.Position = claimCandidateCursor(outranking[len(outranking)-1])
 			rows, err := batch.ClaimPreviewPlanRows(ctx, ranked.ProjectID, outranking)
 			if err != nil {
@@ -221,7 +236,7 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 	}
 	var pending []claimstore.SelectionCursor
 	for _, competitor := range competitors {
-		claimable, excluded, err := s.nativeClaimRankCompetitorClaimable(ctx, competitor, request, identity, reports, now)
+		claimable, excluded, err := s.nativeClaimRankCompetitorClaimable(ctx, competitor, request, identity, machine, reports, now)
 		if err != nil || claimable {
 			return claimable, err
 		}
@@ -242,7 +257,7 @@ func (s *Service) nativeClaimOutranked(ctx context.Context, scope hubscope.Nativ
 	})
 }
 
-func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, competitor nativeClaimRankCompetitor, request tracker.NativeClaim, identity runnerstore.Identity, reports []providercapacity.Report, now time.Time) (bool, bool, error) {
+func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, competitor nativeClaimRankCompetitor, request tracker.NativeClaim, identity runnerstore.Identity, machine leasestore.Machine, reports []providercapacity.Report, now time.Time) (bool, bool, error) {
 	plans := competitor.plans
 	if err := s.prepareNativeClaimLegacyAuditFacts(ctx, competitor.scope, plans); err != nil {
 		return false, false, err
@@ -290,9 +305,43 @@ func (s *Service) nativeClaimRankCompetitorClaimable(ctx context.Context, compet
 				continue
 			}
 		}
+		allowed, err := s.nativeClaimRankBudgetAllowed(ctx, competitor.scope, plan, machine, now)
+		if err != nil {
+			return false, false, err
+		}
+		if !allowed {
+			continue
+		}
 		return true, false, nil
 	}
 	return false, false, nil
+}
+
+func (s *Service) nativeClaimRankBudgetAllowed(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan, machine leasestore.Machine, now time.Time) (bool, error) {
+	runnerAPI := true
+	if plan.Descriptor.Configuration != nil {
+		workflow, err := hubrecords.ProjectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), plan.Descriptor)
+		if err != nil {
+			return false, err
+		}
+		runnerAPI = workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered
+	}
+	allowed := false
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		input, err := readBillingMonthlyBudgetInput(ctx, r, scope, now)
+		if err != nil {
+			return err
+		}
+		_, err = r.BillingMonthlyAdmission(ctx, tracker.WorkItemID(plan.Item.ID))
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+		input.Exposure, input.Admitted = monthlyCostExposure(machine, false, runnerAPI), err == nil
+		decision, err := billingstore.EvaluateMonthlyBudget(input)
+		allowed = decision.Allowed
+		return err
+	})
+	return allowed, err
 }
 
 func (s *Service) nativeClaimRankResolver(ctx context.Context, scope hubscope.NativeScope, plan hubrecords.NativeClaimPlan) (*runner.BoardIdentityResolver, error) {

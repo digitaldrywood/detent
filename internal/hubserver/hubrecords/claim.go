@@ -16,14 +16,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type ClaimRanking struct {
-	Own      int
-	Projects []runnerstore.ProjectRank
-}
-
 type NativeClaimPlan struct {
 	SnapshotLoaded       bool                            `json:"-"`
-	Ranking              *ClaimRanking                   `json:"-"`
+	Ranking              *runnerstore.ProjectRanking     `json:"-"`
 	ReleaseDelivery      ReleaseDeliveryContractFacts    `json:"-"`
 	Observations         *tenantstore.ChangeVersionRows  `json:"-"`
 	Approval             *ChangeVersionApproval          `json:"-"`

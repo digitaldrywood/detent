@@ -39,12 +39,17 @@ func (s *session) RunnerProjectSchedulingRanks(ctx context.Context, runnerID str
 }
 
 const runnerOutrankingProjectsSQL = `WITH runner AS (
- SELECT r.runner_id,r.token_id,r.scope FROM runner_identities r WHERE r.organization_id=$1 AND r.runner_id=$2 AND r.removed_at IS NULL
+ SELECT r.runner_id,r.token_id,r.scope,r.enrollment_id FROM runner_identities r WHERE r.organization_id=$1 AND r.runner_id=$2 AND r.removed_at IS NULL
+), preferred AS (
+ SELECT m.allocation_project_id AS id FROM runner JOIN runner_sprite_memberships m ON m.organization_id=$1 AND m.enrollment_id=runner.enrollment_id
+ JOIN projects p ON p.organization_id=m.organization_id AND p.id=m.allocation_project_id AND p.deleted_at IS NULL
+ WHERE m.allocation_project_id<>''
+ AND (runner.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.organization_id=$1 AND g.token_id=runner.token_id AND g.project_id=p.id))
 ), own AS (
  SELECT COALESCE(o.rank,p.scheduling_rank) AS rank FROM runner JOIN projects p ON p.organization_id=$1 AND p.id=$3 AND p.deleted_at IS NULL
  LEFT JOIN runner_project_ranks o ON o.organization_id=$1 AND o.runner_id=runner.runner_id AND o.project_id=p.id
 )
-SELECT ranked.id,ranked.rank,own.rank FROM own LEFT JOIN LATERAL (
+SELECT ranked.id,ranked.rank,own.rank,(SELECT id FROM preferred LIMIT 1) FROM own LEFT JOIN LATERAL (
  SELECT candidate.id,candidate.rank FROM (
   (SELECT p.id,o.rank FROM runner JOIN runner_project_ranks o ON o.organization_id=$1 AND o.runner_id=runner.runner_id
    JOIN projects p ON p.organization_id=o.organization_id AND p.id=o.project_id AND p.deleted_at IS NULL
@@ -63,35 +68,38 @@ SELECT ranked.id,ranked.rank,own.rank FROM own LEFT JOIN LATERAL (
  ) candidate ORDER BY candidate.rank,candidate.id LIMIT $4
 ) ranked ON true ORDER BY ranked.rank,ranked.id`
 
-func (s *session) RunnerOutrankingProjects(ctx context.Context, runnerID string, project tracker.ProjectID, limit int) ([]runnerstore.ProjectRank, int, error) {
+func (s *session) RunnerOutrankingProjects(ctx context.Context, runnerID string, project tracker.ProjectID, limit int) (runnerstore.ProjectRanking, error) {
 	if runnerID == "" || project == "" || limit < 1 || limit > runnerstore.MaxRunnerProjectRanks {
-		return nil, 0, corestore.ErrInvalidPage
+		return runnerstore.ProjectRanking{}, corestore.ErrInvalidPage
 	}
 	rows, err := s.db.Query(ctx, runnerOutrankingProjectsSQL, s.organization, runnerID, project, limit)
 	if err != nil {
-		return nil, 0, mapError(ctx, err)
+		return runnerstore.ProjectRanking{}, mapError(ctx, err)
 	}
 	defer rows.Close()
-	var projects []runnerstore.ProjectRank
-	own, found := 0, false
+	var ranking runnerstore.ProjectRanking
+	found := false
 	for rows.Next() {
-		var id *string
+		var id, preferred *string
 		var rank *int
-		if err := rows.Scan(&id, &rank, &own); err != nil {
-			return nil, 0, mapError(ctx, err)
+		if err := rows.Scan(&id, &rank, &ranking.Own, &preferred); err != nil {
+			return runnerstore.ProjectRanking{}, mapError(ctx, err)
 		}
 		found = true
 		if id != nil && rank != nil {
-			projects = append(projects, runnerstore.ProjectRank{ProjectID: tracker.ProjectID(*id), Rank: *rank})
+			ranking.Projects = append(ranking.Projects, runnerstore.ProjectRank{ProjectID: tracker.ProjectID(*id), Rank: *rank})
+		}
+		if preferred != nil {
+			ranking.Preferred = tracker.ProjectID(*preferred)
 		}
 	}
 	if err := mapError(ctx, rows.Err()); err != nil {
-		return nil, 0, err
+		return runnerstore.ProjectRanking{}, err
 	}
 	if !found {
-		return nil, 0, corestore.ErrNotFound
+		return runnerstore.ProjectRanking{}, corestore.ErrNotFound
 	}
-	return projects, own, nil
+	return ranking, nil
 }
 
 func (s *session) RunnerProposedSchedulingRanks(ctx context.Context, proposed runnerstore.Identity, limit int) (map[tracker.ProjectID]int, error) {
