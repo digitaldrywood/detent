@@ -121,6 +121,11 @@ func (s *session) updateWorkItem(ctx context.Context, record corestore.WorkItem,
 	if err != nil {
 		return corestore.WorkItem{}, err
 	}
+	if previous.Number != record.Number || !reflect.DeepEqual(previous.NativeSourceKey, record.NativeSourceKey) {
+		if err := s.lockOrganizationCounter(ctx); err != nil {
+			return corestore.WorkItem{}, err
+		}
+	}
 	row, err := s.queries.UpdateWorkItem(ctx, pgquery.UpdateWorkItemParams{
 		ActivityClock:  activity,
 		SourceRevision: record.SourceRevision, SourceScheduled: record.SourceScheduled, SourceObservedAt: record.SourceObservedAt,

@@ -226,6 +226,11 @@ func (s *session) UpdateProjectRecord(ctx context.Context, record projectstore.R
 	if err := s.reserveProjectSlug(ctx, record.Core.ID, record.Core.Slug); err != nil {
 		return projectstore.Record{}, err
 	}
+	if current.Core.Name != record.Core.Name {
+		if err := s.lockOrganizationCounter(ctx); err != nil {
+			return projectstore.Record{}, err
+		}
+	}
 	rows, err := s.queries.UpdateProjectMetadata(ctx, pgquery.UpdateProjectMetadataParams{OrganizationID: s.organization, ID: record.Core.ID, Name: record.Core.Name, Slug: record.Core.Slug, RequireDependencies: record.Core.RequireDependencies, WorkflowSource: record.Core.WorkflowSource, WorkflowSourceRevision: record.Core.WorkflowSourceRevision, ExpectedRevision: record.Core.ContentSettingsRevision})
 	if err := affected(ctx, rows, err); err != nil {
 		return projectstore.Record{}, err

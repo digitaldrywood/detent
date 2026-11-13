@@ -647,6 +647,24 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		})
 		return facts.WithRunnerEventFacts(ctx, eventstore.RunCommand{Project: "prj_first", WorkItem: "wi_first_1", Operation: "append-event"}, func(tenantstore.Writer) error { return nil })
 	}
+	renumber := func(ctx context.Context, w tenantstore.Writer) error {
+		item, err := w.LockWorkItem(ctx, "prj_first", "wi_first_1")
+		if err != nil {
+			return err
+		}
+		item.Number = 9
+		_, err = w.UpdateWorkItem(ctx, item)
+		return err
+	}
+	rename := func(ctx context.Context, w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(ctx, "prj_first")
+		if err != nil {
+			return err
+		}
+		record.Core.Name = "renamed"
+		_, err = w.UpdateProjectRecord(ctx, record)
+		return err
+	}
 	batch := func(ctx context.Context, w tenantstore.Writer) error {
 		_, err := w.LockWorkItems(ctx, []corestore.WorkItemReference{{ProjectID: "prj_first", WorkItemID: "wi_first_1"}})
 		return err
@@ -662,6 +680,8 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		{"receipt after population write", archiveItem("prj_first", "wi_first_1"), receipt, archive, archiveItem("prj_second", "wi_second_1"), false, 2},
 		{"optimized runner snapshot while archive holder checks keys", snapshot, receipt, archive, converse, false, 4},
 		{"batch issue lock while archive holder checks keys", batch, receipt, archive, converse, false, 4},
+		{"issue key change while archive holder checks keys", renumber, receipt, archive, converse, false, 4},
+		{"project key change while archive holder checks keys", archive, converse, noop, rename, true, 4},
 		{"idle project check excludes conversation insert", idle, receipt, archive, converse, true, 4},
 		{"idle project check waits for work item writer", lock("prj_first", "wi_first_1"), receipt, noop, idle, true, 4},
 	} {
@@ -673,6 +693,14 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 				seedRepository(t, repository, organization)
 				if _, err := admin.ExecContext(t.Context(), `INSERT INTO api_tokens (organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES ($1,'owner','owner','hash_'||$1,'fingerprint_'||$1,'operator',true,now(),now())`, organization); err != nil {
 					t.Fatal(err)
+				}
+				for _, statement := range []string{
+					`INSERT INTO project_settings(organization_id,project_id) SELECT organization_id,id FROM projects WHERE organization_id=$1 ON CONFLICT DO NOTHING`,
+					`INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,board_rank) SELECT organization_id,id,'Todo',false,true,1 FROM projects WHERE organization_id=$1`,
+				} {
+					if _, err := admin.ExecContext(t.Context(), statement, organization); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			for _, organization := range organizations {
@@ -698,8 +726,12 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 					})
 				})
 				next := startRepositoryTask(t, func(ctx context.Context) error {
-					if err := await(ctx, firstHeld); err != nil {
-						return err
+					select {
+					case <-firstHeld:
+					case <-first.done:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
 					}
 					return repository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 						if err := test.holdNext(ctx, w); err != nil {
@@ -717,6 +749,8 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 					select {
 					case <-ready:
 						return nil
+					case <-first.done:
+						return nil
 					default:
 					}
 					var waiting bool
@@ -731,7 +765,7 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 				if test.exclusive {
 					select {
 					case <-next.done:
-						t.Errorf("%s next transaction committed while the first held the project: %v", organization, next.err)
+						t.Errorf("%s next transaction committed while the first held its locks: %v", organization, next.err)
 					default:
 					}
 				}
