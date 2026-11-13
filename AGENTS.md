@@ -96,6 +96,12 @@ Detent's self-protection mechanisms (brakes, breakers, leases, parks, recovery s
 - Uncertain publication is reconciled against the remote ref: an intended SHA match is published, an unchanged or absent ref permits a compare-and-swap push, a moved ref returns to Rework.
 - The orchestrator is the only writer of tracker lane state; workers report outcomes and never write lanes or labels.
 
+## Multi-tenancy
+
+- One Hub process serves many organizations. The tenant is an attribute of a request, a job and a row, never of a process, binary, connection pool, timer, goroutine or configuration file, and never a process-wide "current organization".
+- Rules, Go guidance and the review checklist: [docs/architecture/multi-tenancy.md](docs/architecture/multi-tenancy.md). Enforced by [INV-23](docs/invariants.md#inv-23--the-tenant-is-never-a-process); its baseline in `internal/invariants/tenancy_policy.json` only shrinks.
+- A change touching hosted serving, tenancy, scheduling, connection pools or background work answers every question of the [review checklist](docs/architecture/multi-tenancy.md#review-checklist) in its Change description.
+
 ## Repository invariants
 
 Follow [docs/invariants.md](docs/invariants.md). Start with its headings and read the sections governing the touched behavior and their linked prerequisites; do not load the whole file into context. Only a change to an invariant's rule or its enforcing check edits `docs/invariants.md`. Name affected INV IDs in the Change description; per-change rationale and evidence go there or in issue comments. The rules agents trip on most:

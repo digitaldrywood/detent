@@ -166,6 +166,7 @@ Reference and contribute:
 - [CLI reference](docs/cli.md).
 - [AGENTS.md](AGENTS.md) (agent rules), [WORKFLOW.md](WORKFLOW.md) (this project's process), and the [contribution guide](CONTRIBUTING.md).
 - [Repository invariants](docs/invariants.md).
+- [Multi-tenancy architecture](docs/architecture/multi-tenancy.md): how one Hub serves every organization, and the rules that keep it that way.
 
 ## License
 

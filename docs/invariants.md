@@ -717,3 +717,25 @@ injects a fake sender or client before any test runs.
 the environment clears it in `TestMain` or injects a fake. Review rejects a
 Change that enables a production credential in any development, test or CI
 environment, or a test that can open a connection to a production endpoint.
+
+## INV-23 — The tenant is never a process
+
+The tenant is an attribute of a request, a job and a row, never of a process,
+binary, connection pool, timer or configuration file. One Hub process serves
+many organizations: no change starts a process per tenant, opens a database
+pool per tenant, runs a timer or long-lived goroutine per idle tenant, or
+writes a configuration file per tenant. Tenant identity comes from the verified
+request or the scheduler's selected tenant and is passed explicitly, never read
+from process-wide configuration. Background work is one shared scheduler per
+process with a fixed per-tick budget, bounded workers and per-tenant fairness,
+and its cost is stated at INV-21 scale. The rules and their rationale are in
+[the multi-tenancy architecture](architecture/multi-tenancy.md).
+
+**Enforcement:** `TestRepositoryTenancy` in `internal/invariants` counts, per
+non-test file, process launches under `internal/cloudentry` and
+`internal/hubserver`, database pool construction outside `internal/pgtransport`,
+and process-wide organization reads in the hosted serving tree. Counts must
+equal `internal/invariants/tenancy_policy.json`; the baseline only shrinks and
+must reach zero. `TestTenancyPolicyViolations` tests the scanner. The scan is
+syntactic; review applies the remaining rules and the
+[review checklist](architecture/multi-tenancy.md#review-checklist).
