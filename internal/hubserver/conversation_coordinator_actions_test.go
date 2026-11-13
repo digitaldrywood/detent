@@ -162,7 +162,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					f.grant(t, u, true, outcome != "no runner grant")
 					if outcome == "grantless project" {
 						coordinatorFixtureWrite(t, f.service, "org_security", func(w tenantstore.Writer) error {
-							_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: "prj_grantless", Name: "owner/repository", Profile: "github_compatible"}})
+							_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org_security", ID: "prj_grantless", Name: "owner/repository", Profile: "github_compatible"}, States: []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}})
 							return err
 						})
 					}
@@ -1884,7 +1884,7 @@ func coordinatorActionSpriteSeed(t *testing.T, f hostedSecurityFixture, u hosted
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := eventstore.NewContent(s.runDetailStore()).PreparePayload(t.Context(), organization, []byte("private-provider-secret"))
+	ref, err := prepareChangeContent(s.contentContext(t.Context()), string(organization), []byte("private-provider-secret"))
 	if err != nil {
 		t.Fatal(err)
 	}
