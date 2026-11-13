@@ -201,6 +201,9 @@ func (s *Service) Read(ctx context.Context, caller Caller, request operatortool.
 			initial = history[0].From
 		}
 		samples := []reportdata.ResidenceSample{{Sequence: 0, At: fact.CreatedAt, Created: fact.CreatedAt, Initial: initial, State: initial, Entered: fact.CreatedAt, Partial: fact.Partial || !snapshot.Created[fact.ID]}}
+		if !snapshot.Created[fact.ID] {
+			samples[0].Sequence = -1
+		}
 		for _, transition := range history {
 			samples = append(samples, reportdata.ResidenceSample{Sequence: transition.Sequence, At: transition.At, State: transition.To, Entered: transition.At})
 		}
