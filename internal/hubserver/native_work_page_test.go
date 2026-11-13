@@ -243,7 +243,7 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 								t.Fatal(err)
 							}
 							page := result.Data
-							if page.Total != 2 || len(page.Items) != 1 || page.Items[0].Identifier != string(fixture.project.ID)+"#"+strconv.Itoa(want.Number) || page.Items[0].State != "Done" {
+							if page.Total != -1 || len(page.Items) != 1 || page.Items[0].Identifier != string(fixture.project.ID)+"#"+strconv.Itoa(want.Number) || page.Items[0].State != "Done" {
 								t.Fatalf("page %d: total=%d items=%d want number=%d", index, page.Total, len(page.Items), want.Number)
 							}
 							if include == "work" && (page.Items[0].ClosedAt == nil || !page.Items[0].ClosedAt.Equal(closed[want.WorkItemID])) {
@@ -348,8 +348,9 @@ func indexNativeWorkPageFixtureIssues(t *testing.T, f nativeFixture, issues []tr
 
 func TestNativeWorkPageOperationalScope(t *testing.T) {
 	t.Parallel()
+	fixtureNow := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{keyReads: make(map[string]int)}
-	f := newDefaultNativeFixture(t, Config{WebhookMaintenanceInterval: time.Hour, RunDetails: details})
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return fixtureNow }, WebhookMaintenanceInterval: time.Hour, RunDetails: details})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	history := seedArchiveIssues(t, f.service, scope, 130, "Done")
@@ -463,7 +464,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=100&cursor="+url.QueryEscape(cursor)+include, f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var continuation tracker.NativeIssuePage
-			if err := json.Unmarshal(response.Body.Bytes(), &continuation); err != nil || continuation.Work != nil || len(continuation.Items) == 0 || continuation.Total != 136 {
+			if err := json.Unmarshal(response.Body.Bytes(), &continuation); err != nil || continuation.Work != nil || len(continuation.Items) == 0 || continuation.Total != -1 {
 				t.Fatalf("continuation without work: %s err=%v", response.Body, err)
 			}
 			for _, issue := range continuation.Items {
@@ -522,6 +523,51 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 			})
 		}
 	}
+	readInventory := func(t *testing.T, query string) (int, int) {
+		t.Helper()
+		params, err := url.ParseQuery("limit=100" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		params.Del("cursor")
+		seen := map[tracker.NativeWorkItemID]bool{}
+		running := 0
+		for {
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+params.Encode(), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page tracker.NativeIssuePage
+			decodeHubResponse(t, response, &page)
+			statusParams := url.Values{}
+			for _, issue := range page.Items {
+				if seen[issue.WorkItemID] {
+					t.Fatalf("inventory repeated %s", issue.WorkItemID)
+				}
+				seen[issue.WorkItemID] = true
+				statusParams.Add("item", string(issue.WorkItemID))
+			}
+			if len(page.Items) > 0 {
+				response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/board/status?"+statusParams.Encode(), f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var statuses []viewstore.BoardStatusRecord
+				decodeHubResponse(t, response, &statuses)
+				if len(statuses) != len(page.Items) {
+					t.Fatalf("inventory status count=%d want=%d", len(statuses), len(page.Items))
+				}
+				for _, status := range statuses {
+					if status.Execution != nil && status.Execution.Running {
+						running++
+					}
+				}
+			}
+			if page.NextCursor == "" {
+				return len(seen), running
+			}
+			if page.NextCursor == params.Get("cursor") {
+				t.Fatal("inventory cursor did not advance")
+			}
+			params.Set("cursor", page.NextCursor)
+		}
+	}
 	for _, test := range []struct {
 		name, query          string
 		total, running, open int
@@ -548,14 +594,13 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 			if strings.HasSuffix(test.name, "identifier") && !slices.ContainsFunc(page.Items, func(item tracker.NativeIssue) bool { return item.WorkItemID == history[120].WorkItemID }) {
 				t.Fatal("identifier search lost legacy match")
 			}
-			if page.Total != test.total || page.Work == nil || len(page.Items) > 100 || len(page.Work.Items) != test.open || page.Work.Truncated || page.Work.AsOf.IsZero() {
+			if page.Total != -1 || page.Work == nil || len(page.Items) > 100 || len(page.Work.Items) != test.open || page.Work.Truncated || page.Work.AsOf.IsZero() {
 				t.Fatalf("page lost bounds or open selection: %+v", page.Work)
 			}
-			total, running := 0, 0
-			for _, lane := range page.Work.Lanes {
-				total += lane.Total
-				running += lane.Running
+			if len(page.Work.Lanes) != 0 {
+				t.Fatalf("list response included aggregate lanes: %+v", page.Work.Lanes)
 			}
+			total, running := readInventory(t, test.query)
 			if total != test.total || running != test.running {
 				t.Fatalf("scope total=%d running=%d, want %d/%d", total, running, test.total, test.running)
 			}
@@ -588,10 +633,8 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 			if err := f.service.refreshBoardRecord(t.Context(), scope.organization, viewstore.BoardCandidate{ProjectID: scope.project, WorkItemID: ip[1].WorkItemID}, now); err != nil {
 				t.Fatal(err)
 			}
-			running := 0
-			for _, lane := range read("").Work.Lanes {
-				running += lane.Running
-			}
+			read("")
+			_, running := readInventory(t, "")
 			if running != test.running {
 				t.Fatalf("running=%d, want %d", running, test.running)
 			}
@@ -606,12 +649,9 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	indexNativeWorkPageFixtureIssues(t, f, more)
 	query := "&q=Open%20needle&state=Todo&state=Done&label=open-match&label=selected&assignee=operator&assignee=reviewer&priority=0&priority=1"
 	matching := read(query)
+	total, _ := readInventory(t, query)
 	found := map[tracker.NativeWorkItemID]bool{}
 	for {
-		total := 0
-		for _, lane := range matching.Work.Lanes {
-			total += lane.Total
-		}
 		if total != 130 || len(matching.Items) > 100 || len(matching.Work.Items) > 100 {
 			t.Fatalf("matching scope or bounds changed: %+v", matching.Work)
 		}
@@ -761,6 +801,11 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 	}
 	importNativeWorkPageIssues(t, f, issues, histories)
 	drainTestNativeBoard(t, f.service)
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("fixture authentication=%d %v", status, err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 	windows := []tracker.NativeShippedWindow{{Window: "1h", Shipped: 3}, {Window: "24h", Shipped: 3, Cancelled: 1}, {Window: "7d", Shipped: 5, Cancelled: 2}}
 	for _, test := range []struct {
 		window, filter     string
@@ -788,6 +833,14 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 			}
 			var page tracker.NativeIssuePage
 			decodeHubResponse(t, response, &page)
+			params, err := url.ParseQuery("include=work&completed_window=" + test.window + test.filter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			page, err = f.service.readBoardRecordsFor(t.Context(), scope, params, true)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if page.Work == nil || page.Work.Completed != test.shipped || page.Work.Cancelled != test.cancelled {
 				t.Fatalf("summary = %+v, want %d shipped and %d cancelled", page.Work, test.shipped, test.cancelled)
 			}
