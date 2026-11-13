@@ -800,7 +800,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := service.dashboardPage(t.Context(), newDashboardDelivery(service), retained); !errors.Is(err, accessstore.ErrDenied) || len(retained.frames) != 0 {
+			if _, err := service.dashboardPage(t.Context(), newDashboardDelivery(service), retained); !isNativeNotFound(err) || len(retained.frames) != 0 {
 				t.Fatalf("revoked project stream published data: pending=%d error=%v", len(retained.frames), err)
 			}
 		})
