@@ -16,7 +16,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -805,7 +804,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 			{name: "available with exhausted event window", apiLimit: 100, status: http.StatusOK},
 			{name: "API window exhausted", apiLimit: 0, status: http.StatusTooManyRequests, code: "allowance_exhausted"},
 			{name: "stale fence", apiLimit: 100, fenceOffset: 1, status: http.StatusConflict, code: "stale_fencing_token"},
-			{name: "expired lease", apiLimit: 100, statement: "UPDATE leases SET expires_at=acquired_at WHERE lease_id=$1", target: "lease", status: http.StatusConflict, code: "stale_fencing_token"},
+			{name: "expired lease", apiLimit: 100, statement: "UPDATE leases SET acquired_at=acquired_at-interval '2 minutes',renewed_at=acquired_at-interval '2 minutes',expires_at=acquired_at-interval '1 minute' WHERE lease_id=$1", target: "lease", status: http.StatusConflict, code: "stale_fencing_token"},
 			{name: "released lease", apiLimit: 100, statement: "UPDATE leases SET released_at=acquired_at WHERE lease_id=$1", target: "lease", status: http.StatusConflict, code: "stale_fencing_token"},
 			{name: "revoked credential", apiLimit: 100, statement: "UPDATE api_tokens SET revoked_at=created_at WHERE id=$1", target: "runner", status: http.StatusUnauthorized, code: "unauthorized"},
 			{name: "project access removed", apiLimit: 100, statement: "DELETE FROM token_grants WHERE token_id=$1", target: "runner", status: http.StatusNotFound, code: "not_found"},
@@ -855,11 +854,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 					credential = other.redemption.Credential
 				case "cross organization":
 					organization := tracker.OrganizationID(hubapi.NewID("org"))
-					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-						return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: "Other organization", Slug: string(organization), CreatedAt: now})
-					}); err != nil {
-						t.Fatal(err)
-					}
+					seedPostgresHubAdmin(t, f.service.config.TenantRepository, f.service, nativeOrganization{ID: organization, Name: "Other organization", Slug: string(organization)})
 					other := newNativeFixture(t, f.service, organization, "other-project")
 					if other.project.OrganizationID == f.project.OrganizationID || other.project.ID == f.project.ID {
 						t.Fatal("cross-organization fixtures must have distinct organizations and projects")
