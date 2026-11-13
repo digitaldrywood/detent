@@ -316,7 +316,17 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 				decodeHubResponse(t, routeRead, &before)
 				routing := before.Routing
 				routing.ProjectIDs = append(slices.Clone(routing.ProjectIDs), f.project)
-				requireNativeStatus(t, f.request(t, user, http.MethodPut, route, runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: routing}), http.StatusForbidden)
+				refused := f.request(t, user, http.MethodPut, route, runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: routing})
+				if tt.grant == "" {
+					requireNativeError(t, refused, http.StatusNotFound, "not_found")
+				} else {
+					requireNativeStatus(t, refused, http.StatusForbidden)
+				}
+				var after runnerauth.Runner
+				decodeHubResponse(t, f.request(t, user, http.MethodGet, route, nil), &after)
+				if after.Revision != before.Revision || slices.Contains(after.ProjectIDs, f.project) {
+					t.Fatalf("refused routing change altered the runner: before=%+v after=%+v", before.Routing, after.Routing)
+				}
 			}
 			if wantRoute == http.StatusNotFound && strings.Contains(routeRead.Body.String(), "Sibling project") {
 				t.Fatal("runner read disclosed an inaccessible project name")

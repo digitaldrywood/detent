@@ -225,11 +225,11 @@ func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential hub
 }
 
 func (s *Service) appAllRunnerGrantsWith(ctx context.Context, reader tenantstore.Reader, credential hubapi.APICredential, projects []tracker.ProjectID) (bool, error) {
-	if credential.HostedRole != "owner" && credential.HostedRole != "admin" && credential.HostedRole != "member" || projects != nil && len(projects) == 0 {
-		return false, nil
-	}
 	if credential.HostedKeyScope == "" && (credential.HostedRole == "owner" || credential.HostedRole == "admin") {
 		return true, nil
+	}
+	if credential.HostedRole != "owner" && credential.HostedRole != "admin" && credential.HostedRole != "member" || projects != nil && len(projects) == 0 {
+		return false, nil
 	}
 	var total, accessible int
 	err := func() error {

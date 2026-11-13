@@ -115,9 +115,10 @@ func (s *Service) projectOnboardingRecord(ctx context.Context, scope hubscope.Na
 			return result, err
 		}
 		allManageable = len(projects) == projectCount && projectCount > 0
+		roleManages := scope.Credential.HostedRole == "owner" || scope.Credential.HostedRole == "admin"
 		for _, project := range projects {
-			manageable[tracker.ProjectID(project.ID)] = project.CanManageRunners
-			allManageable = allManageable && project.CanManageRunners
+			manageable[tracker.ProjectID(project.ID)] = project.CanManageRunners || roleManages
+			allManageable = allManageable && manageable[tracker.ProjectID(project.ID)]
 		}
 	}
 	canManage := scope.Credential.Scope == hubapi.APIScopeAdmin && !scope.Credential.NativeOnly || scope.Credential.Hosted != nil
