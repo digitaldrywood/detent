@@ -268,7 +268,7 @@ func TestAPIRefusals(t *testing.T) {
 				if err := json.Unmarshal([]byte(line), &candidate); err != nil {
 					t.Fatalf("invalid JSON log: %v: %s", err, line)
 				}
-				if candidate["level"] == "WARN" && candidate["route"] == route && candidate["method"] == test.method && candidate["code"] == "invalid_request" {
+				if candidate["level"] == "WARN" && candidate["route"] == route && candidate["method"] == test.method && candidate["refusal_code"] == "invalid_request" {
 					entry = candidate
 					matched++
 				}
@@ -279,8 +279,11 @@ func TestAPIRefusals(t *testing.T) {
 			if entry["route"] != route || entry["organization_id"] != string(native.project.OrganizationID) || entry["project_id"] != string(native.project.ID) {
 				t.Fatalf("validated refusal scope or route = %#v", entry)
 			}
-			if failure.Message != test.message || entry["level"] != "WARN" || entry["reason"] != test.message || entry["error"] != test.message || entry["code"] != "invalid_request" {
+			if failure.Message != test.message || entry["level"] != "WARN" || entry["reason"] != test.message || entry["error"] != test.message || entry["refusal_code"] != "invalid_request" {
 				t.Fatalf("refusal = %#v, log = %#v", failure, entry)
+			}
+			if code, present := entry["code"]; present {
+				t.Fatalf("hosted refusal log kept code %#v: %#v", code, entry)
 			}
 			if strings.Contains(logged+response.Body.String(), "private-token") {
 				t.Fatal("private query or operation escaped in refusal")
