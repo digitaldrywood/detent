@@ -11,7 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 )
 
-const singleScopePostingsVersion = 20261113134131
+const singleScopePostingsVersion = 20261113155409
 
 const staleSearchScopeKeys = `CREATE OR REPLACE FUNCTION public.search_scope_keys(project_id text,work_item_id text,kind text,scope text,status text,archived boolean,principal_id text)
 RETURNS SETOF text LANGUAGE sql IMMUTABLE SET search_path=pg_catalog AS $keys$
