@@ -830,6 +830,7 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 
 func TestNativeCandidateQueryBound(t *testing.T) {
 	t.Parallel()
+	var bindMu sync.Mutex
 	var bindBytes int64
 	for _, test := range []struct {
 		size        int
@@ -837,6 +838,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 		filtered    bool
 	}{{size: 16}, {size: 256}, {size: 2048}, {size: 256, unpublished: true}, {size: 16, filtered: true}, {size: 256, filtered: true}, {size: 2048, filtered: true}} {
 		t.Run(fmt.Sprintf("queue_%d_unpublished_%t_filtered_%t", test.size, test.unpublished, test.filtered), func(t *testing.T) {
+			t.Parallel()
 			f, probe := newDispatchWaitFixture(t, "candidate-bound")
 			requests := make([]tracker.CreateIssue, test.size)
 			for index := range test.size {
@@ -996,11 +998,14 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			if len(ids) != 9 || ids[0] != tailID || probe.rows.Load() != 9 {
 				t.Fatalf("ids=%v tail=%d returned_rows=%d", ids, tailID, probe.rows.Load())
 			}
+			bindMu.Lock()
 			if bindBytes == 0 {
 				bindBytes = probe.maxArgumentBytes.Load()
 			}
-			if probe.maxArgumentBytes.Load() != bindBytes {
-				t.Fatalf("bind payload grew with candidate cohort: got=%d want=%d", probe.maxArgumentBytes.Load(), bindBytes)
+			want := bindBytes
+			bindMu.Unlock()
+			if probe.maxArgumentBytes.Load() != want {
+				t.Fatalf("bind payload grew with candidate cohort: got=%d want=%d", probe.maxArgumentBytes.Load(), want)
 			}
 			captured := probe.query.Load()
 			if captured == nil || probe.candidates.Load() == 0 {
