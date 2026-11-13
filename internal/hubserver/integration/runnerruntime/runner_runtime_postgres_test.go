@@ -726,8 +726,8 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 					}
 					_, err = api.NewRunnerSessions(unknownProject).SessionPolicy(restartedCtx, "local-project", id)
 					var denial *api.APIError
-					if !errors.As(err, &denial) || denial.Status != http.StatusForbidden || denial.Code != "access_denied" {
-						t.Fatalf("unknown project policy read = %v, want 403 access_denied", err)
+					if !errors.As(err, &denial) || denial.Status != http.StatusNotFound || denial.Code != "not_found" {
+						t.Fatalf("unknown project policy read = %v, want 404 not_found", err)
 					}
 				})
 				if err := restarted.FinishSession(restartedCtx, id, store.SessionFinish{CompletedAt: started.Add(time.Second), FinalState: "completed", ProviderThreadID: provider.ThreadID, ProviderSessionID: provider.SessionID}); err != nil {

@@ -18,7 +18,7 @@ func TestRunnerProjectRouteAccessByScope(t *testing.T) {
 	}
 	allowed := decision{register: http.StatusOK, claim: http.StatusOK}
 	registered := decision{register: http.StatusOK}
-	forbidden := decision{register: http.StatusForbidden, claim: http.StatusForbidden}
+	hidden := decision{register: http.StatusNotFound, claim: http.StatusNotFound}
 	unauthorized := decision{register: http.StatusUnauthorized, claim: http.StatusUnauthorized}
 	on := func(project string, want decision) decision {
 		want.project = project
@@ -32,14 +32,14 @@ func TestRunnerProjectRouteAccessByScope(t *testing.T) {
 		after  []decision
 	}{
 		{name: "organization runner", scope: "organization", before: []decision{on("first", allowed), on("second", allowed), on("foreign", unauthorized)}},
-		{name: "selected runner", scope: "projects", before: []decision{on("first", allowed), on("second", forbidden), on("foreign", unauthorized)}},
+		{name: "selected runner", scope: "projects", before: []decision{on("first", allowed), on("second", hidden), on("foreign", unauthorized)}},
 		{name: "removed organization runner", scope: "organization", before: []decision{on("second", registered)}, change: func(t *testing.T, f hubfixture.Native, r hubfixture.Runner) {
 			hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodDelete, r.IdentityPath(), hubfixture.AdminToken, nil), http.StatusNoContent)
 		}, after: []decision{on("first", unauthorized), on("second", unauthorized)}},
 		{name: "scope reduced organization runner", scope: "organization", before: []decision{on("second", registered)}, change: func(t *testing.T, f hubfixture.Native, r hubfixture.Runner) {
 			change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{Scope: "projects", DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.Project.ID}}}
 			hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPut, r.IdentityPath()+"/routing", hubfixture.AdminToken, change), http.StatusOK)
-		}, after: []decision{on("first", allowed), on("second", forbidden)}},
+		}, after: []decision{on("first", allowed), on("second", hidden)}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
