@@ -1435,57 +1435,56 @@ func TestUpdateRuntimeDispatchesWithoutWaitingForPoll(t *testing.T) {
 
 func TestUpdateRuntimeClearsAuthHealthWhenConnectorHasNoReport(t *testing.T) {
 	t.Parallel()
-
-	failedAt := time.Now().Add(-time.Minute)
-	initialTracker := &authHealthConnector{
-		fakeConnector: newFakeConnector(),
-		health: connector.AuthHealth{
-			Status:      connector.AuthStatusStale,
-			LastError:   "github authentication failed: status 401",
-			LastErrorAt: failedAt,
-		},
-		ok: true,
-	}
-	reloadedTracker := &authHealthConnector{fakeConnector: newFakeConnector()}
-	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:        5 * time.Millisecond,
-		MaxConcurrentAgents: 1,
-		ActiveStates:        []string{"Todo"},
-		TerminalStates:      []string{"Done"},
-	}, orchestrator.Dependencies{
-		Connector: initialTracker,
-		Runner:    &staticRunner{},
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	stop := runOrchestrator(t, orch)
-	defer stop()
-
-	waitForState(t, orch, func(state orchestrator.State) bool {
-		return state.Auth.Status == connector.AuthStatusStale
-	})
-
-	updateCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := orch.UpdateRuntime(updateCtx, orchestrator.RuntimeUpdate{
-		Config: orchestrator.Config{
+	synctest.Test(t, func(t *testing.T) {
+		failedAt := time.Now().Add(-time.Minute)
+		initialTracker := &authHealthConnector{
+			fakeConnector: newFakeConnector(),
+			health: connector.AuthHealth{
+				Status:      connector.AuthStatusStale,
+				LastError:   "github authentication failed: status 401",
+				LastErrorAt: failedAt,
+			},
+			ok: true,
+		}
+		reloadedTracker := &authHealthConnector{fakeConnector: newFakeConnector()}
+		orch, err := orchestrator.New(orchestrator.Config{
 			PollInterval:        5 * time.Millisecond,
 			MaxConcurrentAgents: 1,
 			ActiveStates:        []string{"Todo"},
 			TerminalStates:      []string{"Done"},
-		},
-		Connector: reloadedTracker,
-	}); err != nil {
-		t.Fatalf("UpdateRuntime() error = %v", err)
-	}
+		}, orchestrator.Dependencies{
+			Connector: initialTracker,
+			Runner:    &staticRunner{},
+		})
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		stop := runOrchestrator(t, orch)
+		defer stop()
 
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
-		return reloadedTracker.fetchCandidateCalls() > 0 && state.Auth == (connector.AuthHealth{})
+		waitForState(t, orch, func(state orchestrator.State) bool {
+			return state.Auth.Status == connector.AuthStatusStale
+		})
+
+		if err := orch.UpdateRuntime(t.Context(), orchestrator.RuntimeUpdate{
+			Config: orchestrator.Config{
+				PollInterval:        5 * time.Millisecond,
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+			},
+			Connector: reloadedTracker,
+		}); err != nil {
+			t.Fatalf("UpdateRuntime() error = %v", err)
+		}
+
+		state := waitForState(t, orch, func(state orchestrator.State) bool {
+			return reloadedTracker.fetchCandidateCalls() > 0 && state.Auth == (connector.AuthHealth{})
+		})
+		if state.Auth != (connector.AuthHealth{}) {
+			t.Fatalf("Auth = %#v, want cleared", state.Auth)
+		}
 	})
-	if state.Auth != (connector.AuthHealth{}) {
-		t.Fatalf("Auth = %#v, want cleared", state.Auth)
-	}
 }
 
 func TestRunDispatchesByPriorityBeforeStateRank(t *testing.T) {
@@ -1851,49 +1850,50 @@ func TestRunReapsTerminalWorkspacesOnStartupSweep(t *testing.T) {
 
 func TestRunReapsIdleObservedWorkspacesWithoutTouchingActiveIssues(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now()
+		staleAt := now.Add(-2 * time.Hour)
+		recentAt := now.Add(-5 * time.Minute)
+		idle := testIssue("issue-review", "digitaldrywood/detent#81", "Human Review")
+		idle.StageUpdatedAt = &staleAt
+		recent := testIssue("issue-blocked", "digitaldrywood/detent#82", "Blocked")
+		recent.StageUpdatedAt = &recentAt
+		active := testIssue("issue-active", "digitaldrywood/detent#83", "In Progress")
+		active.StageUpdatedAt = &staleAt
 
-	now := time.Now()
-	staleAt := now.Add(-2 * time.Hour)
-	recentAt := now.Add(-5 * time.Minute)
-	idle := testIssue("issue-review", "digitaldrywood/detent#81", "Human Review")
-	idle.StageUpdatedAt = &staleAt
-	recent := testIssue("issue-blocked", "digitaldrywood/detent#82", "Blocked")
-	recent.StageUpdatedAt = &recentAt
-	active := testIssue("issue-active", "digitaldrywood/detent#83", "In Progress")
-	active.StageUpdatedAt = &staleAt
+		reaper := &fakeWorkspaceReaper{result: orchestrator.WorkspaceReapResult{Worktrees: 1}}
+		tracker := newFakeConnector()
+		tracker.setStateIssues(idle, recent, active)
 
-	reaper := &fakeWorkspaceReaper{result: orchestrator.WorkspaceReapResult{Worktrees: 1}}
-	tracker := newFakeConnector()
-	tracker.setStateIssues(idle, recent, active)
+		orch, err := orchestrator.New(orchestrator.Config{
+			PollInterval:                  time.Hour,
+			MaxConcurrentAgents:           1,
+			ActiveStates:                  []string{"Todo", "In Progress", "Rework"},
+			TerminalStates:                []string{"Done"},
+			ObservedStates:                []string{"Human Review", "Blocked", "In Progress"},
+			WorkspaceCleanupIdleTTL:       time.Hour,
+			WorkspaceCleanupSweepInterval: time.Hour,
+		}, orchestrator.Dependencies{
+			Connector:       tracker,
+			Runner:          &staticRunner{},
+			WorkspaceReaper: reaper,
+		})
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		stop := runOrchestrator(t, orch)
+		defer stop()
 
-	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:                  time.Hour,
-		MaxConcurrentAgents:           1,
-		ActiveStates:                  []string{"Todo", "In Progress", "Rework"},
-		TerminalStates:                []string{"Done"},
-		ObservedStates:                []string{"Human Review", "Blocked", "In Progress"},
-		WorkspaceCleanupIdleTTL:       time.Hour,
-		WorkspaceCleanupSweepInterval: time.Hour,
-	}, orchestrator.Dependencies{
-		Connector:       tracker,
-		Runner:          &staticRunner{},
-		WorkspaceReaper: reaper,
+		reaped := waitForWorkspaceReaps(t, reaper, 1)
+		if reaped[0].ID != idle.ID {
+			t.Fatalf("reaped issue ID = %q, want %q", reaped[0].ID, idle.ID)
+		}
+
+		synctest.Wait()
+		if got := reaper.reapedIssues(); len(got) != 1 {
+			t.Fatalf("reaped issues = %#v, want only idle issue", got)
+		}
 	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	stop := runOrchestrator(t, orch)
-	defer stop()
-
-	reaped := waitForWorkspaceReaps(t, reaper, 1)
-	if reaped[0].ID != idle.ID {
-		t.Fatalf("reaped issue ID = %q, want %q", reaped[0].ID, idle.ID)
-	}
-
-	time.Sleep(25 * time.Millisecond)
-	if got := reaper.reapedIssues(); len(got) != 1 {
-		t.Fatalf("reaped issues = %#v, want only idle issue", got)
-	}
 }
 
 func TestRunRetriesTransientStartupCleanupFetchAndDispatchesCandidate(t *testing.T) {
