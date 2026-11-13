@@ -136,6 +136,7 @@ type healthMaintenanceCursor struct {
 	item                   healthWaitItemCursor
 	conversation, question string
 	finding                string
+	startedAt              time.Time
 	cycleFailed            bool
 	completed              [5]bool
 	projectWait            healthProjectWaitCursor
@@ -153,6 +154,9 @@ func (s *Service) maintainHealthSources(ctx context.Context, organization tracke
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	ctx = detailbatch.WithStore(ctx, hubmaintenance.LimitDetails(s.runDetailStore()))
+	if cursor.startedAt.IsZero() {
+		cursor.startedAt = s.config.Clock().UTC()
+	}
 
 	projectErr := s.maintainHealthProject(ctx, organization, &cursor.project)
 	runnerErr := s.maintainHealthRunner(ctx, organization, &cursor.runner)
@@ -169,7 +173,7 @@ func (s *Service) maintainHealthSources(ctx context.Context, organization tracke
 	if cursor.completed == ([5]bool{true, true, true, true, true}) && cursor.projectWait.finding.ID == "" {
 		if !cursor.cycleFailed {
 			combined = s.database.postgres.WriteHealth(ctx, organization, corestore.Background, func(writer postgres.HealthWriter) error {
-				return writer.PutHealthTick(ctx, postgres.PutHealthTickInput{OrganizationID: organization, LastTickAt: s.config.Clock().UTC()})
+				return writer.PutHealthTick(ctx, postgres.PutHealthTickInput{OrganizationID: organization, LastTickAt: cursor.startedAt})
 			})
 		}
 		*cursor = healthMaintenanceCursor{}
