@@ -23,6 +23,7 @@ var (
 )
 
 const MaxPageSize = 200
+const MaxRelationshipBatch = 2000
 const MaxDuplicateChallengePruneBatch = 5000
 
 type Workload uint8

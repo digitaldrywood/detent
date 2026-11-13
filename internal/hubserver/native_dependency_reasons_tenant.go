@@ -280,8 +280,8 @@ func loadDependencyReasonRecords(ctx context.Context, r tenantstore.Reader, proj
 		}
 		byID[issue.WorkItemID] = append(byID[issue.WorkItemID], issue)
 	}
-	for start := 0; start < len(ids); start += corestore.MaxPageSize {
-		records, err := reader.DependencyReasonRecords(ctx, project, ids[start:min(start+corestore.MaxPageSize, len(ids))])
+	for start := 0; start < len(ids); start += corestore.MaxRelationshipBatch {
+		records, err := reader.DependencyReasonRecords(ctx, project, ids[start:min(start+corestore.MaxRelationshipBatch, len(ids))])
 		if err != nil {
 			return err
 		}

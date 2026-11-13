@@ -13,7 +13,7 @@ import (
 )
 
 func (s *session) WorkItemRelationshipFacts(ctx context.Context, project tracker.ProjectID, workItems []tracker.NativeWorkItemID) ([]tenantstore.WorkItemRelationshipFact, error) {
-	if len(workItems) == 0 || len(workItems) > corestore.MaxPageSize {
+	if len(workItems) == 0 || len(workItems) > corestore.MaxRelationshipBatch {
 		return nil, corestore.ErrInvalidPage
 	}
 	ids := make([]string, 0, len(workItems))

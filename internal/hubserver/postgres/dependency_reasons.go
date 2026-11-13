@@ -10,7 +10,7 @@ import (
 )
 
 func (s *session) DependencyReasonRecords(ctx context.Context, project tracker.ProjectID, ids []tracker.NativeWorkItemID) ([]corestore.DependencyReason, error) {
-	if len(ids) < 1 || len(ids) > corestore.MaxPageSize {
+	if len(ids) < 1 || len(ids) > corestore.MaxRelationshipBatch {
 		return nil, corestore.ErrInvalidPage
 	}
 	values := make([]string, len(ids))

@@ -43,8 +43,8 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 			return err
 		}
 		if batch, ok := r.(tenantstore.WorkItemRelationshipBatchReader); ok {
-			for start := 0; start < len(workItems); start += corestore.MaxPageSize {
-				end := min(start+corestore.MaxPageSize, len(workItems))
+			for start := 0; start < len(workItems); start += corestore.MaxRelationshipBatch {
+				end := min(start+corestore.MaxRelationshipBatch, len(workItems))
 				facts, err := batch.WorkItemRelationshipFacts(ctx, scope.project, workItems[start:end])
 				if err != nil {
 					return err
