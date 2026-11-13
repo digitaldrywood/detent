@@ -10,13 +10,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) prepareReleasePublication(ctx context.Context, scope nativeScope, item string, r tracker.PublishReleasePick) (tracker.ReleasePickPublication, error) {
+func (s *Service) prepareReleasePublication(ctx context.Context, scope hubscope.NativeScope, item string, r tracker.PublishReleasePick) (tracker.ReleasePickPublication, error) {
 	var result tracker.ReleasePickPublication
-	if scope.credential.Scope != hubapi.APIScopeOperator && scope.credential.Scope != hubapi.APIScopeAdmin || scope.credential.Runner.RunnerID != "" {
+	if scope.Credential.Scope != hubapi.APIScopeOperator && scope.Credential.Scope != hubapi.APIScopeAdmin || scope.Credential.Runner.RunnerID != "" {
 		return result, hubapi.NativeNotFound()
 	}
 	if r.PRNumber < 0 {
@@ -44,11 +45,11 @@ func (s *Service) prepareReleasePublication(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := s.recheckReleaseDelivery(ctx, w, scope, plan); err != nil {
 				return err
 			}
-			receipt, err := w.Receipt(ctx, scope.credential.ID, releasePublicationOperation(scope, item), r.IdempotencyKey)
+			receipt, err := w.Receipt(ctx, scope.Credential.ID, releasePublicationOperation(scope, item), r.IdempotencyKey)
 			if errors.Is(err, corestore.ErrNotFound) {
 				return nil
 			}
@@ -83,8 +84,8 @@ func (s *Service) prepareReleasePublication(ctx context.Context, scope nativeSco
 	return result, nil
 }
 
-func releasePublicationOperation(scope nativeScope, item string) string {
-	return "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items/" + item + "/release-pick/publication"
+func releasePublicationOperation(scope hubscope.NativeScope, item string) string {
+	return "POST /api/v2/organizations/" + string(scope.Organization) + "/projects/" + string(scope.Project) + "/work-items/" + item + "/release-pick/publication"
 }
 
 func (s *Service) publishReleasePick(c echo.Context) error {
@@ -92,11 +93,11 @@ func (s *Service) publishReleasePick(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &r); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	result, err := s.prepareReleasePublication(c.Request().Context(), nativeRequestScope(c), c.Param("item"), r)
+	result, err := s.prepareReleasePublication(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), r)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	raw, err := s.recordReleasePublicationCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), r, result)
+	raw, err := s.recordReleasePublicationCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), r, result)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

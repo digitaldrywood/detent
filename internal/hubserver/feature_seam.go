@@ -5,22 +5,23 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) featureScope(scope nativeScope) hubapi.Scope {
+func (s *Service) featureScope(scope hubscope.NativeScope) hubapi.Scope {
 	facts := hubapi.Facts{
-		Organization: scope.organization,
-		Project:      scope.project,
-		Actor:        scope.actor(),
-		CredentialID: scope.credential.ID,
-		HostedRole:   scope.credential.HostedRole,
-		Admin:        scope.requireHostedAdmin,
-		Runner:       scope.credential.Runner,
+		Organization: scope.Organization,
+		Project:      scope.Project,
+		Actor:        scope.Actor(),
+		CredentialID: scope.Credential.ID,
+		HostedRole:   scope.Credential.HostedRole,
+		Admin:        scope.RequireHostedAdmin,
+		Runner:       scope.Credential.Runner,
 	}
 	return hubapi.NewProjectScope(facts, func(ctx context.Context, reader accessstore.Reader, project tracker.ProjectID, write bool) error {
 		rebound := scope
-		rebound.project = project
+		rebound.Project = project
 		return s.authorizeAccessScope(ctx, reader, rebound, write)
 	})
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -19,7 +20,7 @@ func TestReleaseDeliveryStatusPostgresMissingItem(t *testing.T) {
 	c := echo.New().NewContext(request, response)
 	c.SetParamNames("item")
 	c.SetParamValues("wi_missing")
-	c.Set("native_scope", nativeScope{organization: tracker.OrganizationID("org_missing"), project: tracker.ProjectID("prj_missing")})
+	c.Set("native_scope", hubscope.NativeScope{Organization: tracker.OrganizationID("org_missing"), Project: tracker.ProjectID("prj_missing")})
 	if err := service.getReleaseDeliveryStatus(c); err != nil {
 		t.Fatal(err)
 	}

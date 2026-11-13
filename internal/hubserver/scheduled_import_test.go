@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -136,8 +137,8 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 						approveHubTestPolicy(t, f.service, f.base+"/policy", replacement)
 					}
 					if test.staleRepository {
-						err := f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-							project, err := w.ProjectRecord(ctx, scope.project)
+						err := f.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+							project, err := w.ProjectRecord(ctx, scope.Project)
 							if err != nil {
 								return err
 							}
@@ -178,9 +179,9 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					f.service.config.GitHubWebhookSecret = []byte(testWebhookSecret)
 					requireNativeStatus(t, sendSignedWebhookRequest(t, f.service, key, "issues", string(payload)), http.StatusAccepted)
 					var linked eventstore.LinkedSource
-					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 						var err error
-						linked, err = r.LinkedSourceByURL(t.Context(), scope.project, snapshot.URL)
+						linked, err = r.LinkedSourceByURL(t.Context(), scope.Project, snapshot.URL)
 						return err
 					}); err != nil {
 						t.Fatal(err)
@@ -224,8 +225,8 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 						t.Fatalf("untrusted issue has unconfigured state %q", issue.State)
 					}
 					var imported eventstore.Event
-					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-						events, err := r.Events(t.Context(), scope.project, issue.WorkItemID, 0, 4)
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+						events, err := r.Events(t.Context(), scope.Project, issue.WorkItemID, 0, 4)
 						if err != nil {
 							return err
 						}
@@ -265,7 +266,7 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					issue = seedScheduledImportOccurrenceState(t, f, scope, issue, test.existingState)
 				}
 				if test.duplicate {
-					refreshNativeDuplicateSearchFixture(t, f.service, scope.organization)
+					refreshNativeDuplicateSearchFixture(t, f.service, scope.Organization)
 					search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, tracker.CreateIssue{Body: snapshot.Body}, true)
 					if err != nil || !search.available || len(search.matches) != 1 || search.matches[0].WorkItemID != issue.WorkItemID {
 						t.Fatalf("expected an indexed same-project owner, search=%+v error=%v", search, err)
@@ -295,21 +296,21 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 					if !errors.As(err, &conflict) || conflict.Status != http.StatusConflict {
 						t.Fatalf("different create input reused the receipt: %v", err)
 					}
-					refreshNativeDuplicateSearchFixture(t, f.service, scope.organization)
+					refreshNativeDuplicateSearchFixture(t, f.service, scope.Organization)
 					anotherKey := importReport(fmt.Sprintf("%d-third", number))
 					if !reflect.DeepEqual(sameKey, replay) || anotherKey.WorkItemID != issue.WorkItemID || anotherKey.Revision != issue.Revision {
 						t.Fatalf("repeat changed the verified occurrence owner: same=%+v new=%+v", sameKey, anotherKey)
 					}
-					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-						_, err := r.LinkedSourceByURL(t.Context(), scope.project, snapshot.URL)
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+						_, err := r.LinkedSourceByURL(t.Context(), scope.Project, snapshot.URL)
 						if !errors.Is(err, corestore.ErrNotFound) {
 							t.Errorf("reused report created a linked source: %v", err)
 						}
-						originalSource, err := r.LinkedSourceByURL(t.Context(), scope.project, fmt.Sprintf("https://github.com/%s/issues/%d", repository, number))
+						originalSource, err := r.LinkedSourceByURL(t.Context(), scope.Project, fmt.Sprintf("https://github.com/%s/issues/%d", repository, number))
 						if err != nil || originalSource.WorkItemID != issue.WorkItemID {
 							t.Fatalf("original source binding changed: %+v, %v", originalSource, err)
 						}
-						comments, err := r.Comments(t.Context(), scope.project, issue.WorkItemID, 0, 2)
+						comments, err := r.Comments(t.Context(), scope.Project, issue.WorkItemID, 0, 2)
 						if err != nil {
 							return err
 						}
@@ -335,7 +336,7 @@ func TestScheduledGitHubImportAdmission(t *testing.T) {
 	}
 }
 
-func seedScheduledImportOccurrenceState(t *testing.T, f nativeFixture, scope nativeScope, issue tracker.NativeIssue, state string) tracker.NativeIssue {
+func seedScheduledImportOccurrenceState(t *testing.T, f nativeFixture, scope hubscope.NativeScope, issue tracker.NativeIssue, state string) tracker.NativeIssue {
 	t.Helper()
 	ctx := t.Context()
 	current, previous, err := f.service.readWorkItemRecord(ctx, scope, string(issue.WorkItemID))
@@ -353,19 +354,19 @@ func seedScheduledImportOccurrenceState(t *testing.T, f nativeFixture, scope nat
 		t.Fatal(err)
 	}
 	version, err := eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{
-		OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision),
+		OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision),
 	}, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	search, err := searchstore.NewContent(f.service.runDetailStore()).Prepare(ctx, searchstore.Document{
-		OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID),
+		OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID),
 		SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt,
 	}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		current.WorkflowStateName = &issue.State
 		if _, err := w.UpdateWorkItem(ctx, current); err != nil {
 			return err

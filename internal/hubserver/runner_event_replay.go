@@ -6,6 +6,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -16,7 +17,7 @@ type nativeRunReplaySnapshot struct {
 	attempts []leasestore.Attempt
 }
 
-func readNativeRunReplaySnapshot(ctx context.Context, r tenantstore.Reader, scope nativeScope, item string, events []tracker.NativeRunEvent) (*nativeRunReplaySnapshot, error) {
+func readNativeRunReplaySnapshot(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item string, events []tracker.NativeRunEvent) (*nativeRunReplaySnapshot, error) {
 	rows := make([]eventstore.Event, len(events))
 	attempts := make([]leasestore.Attempt, len(events))
 	reader, ok := r.(nativeRunEventReader)
@@ -24,11 +25,11 @@ func readNativeRunReplaySnapshot(ctx context.Context, r tenantstore.Reader, scop
 		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	for i, event := range events {
-		row, err := reader.RunEvent(ctx, scope.project, tracker.NativeWorkItemID(item), nativeAttemptHistoryID(event.Type, event.Data))
+		row, err := reader.RunEvent(ctx, scope.Project, tracker.NativeWorkItemID(item), nativeAttemptHistoryID(event.Type, event.Data))
 		if err != nil {
 			return nil, err
 		}
-		if row.OrganizationID != scope.organization || row.ProjectID != scope.project || row.WorkItemID != tracker.NativeWorkItemID(item) || row.Type != event.Type {
+		if row.OrganizationID != scope.Organization || row.ProjectID != scope.Project || row.WorkItemID != tracker.NativeWorkItemID(item) || row.Type != event.Type {
 			return nil, artifact.ErrIntegrity
 		}
 		attempt, err := r.Attempt(ctx, event.Data.AttemptID)

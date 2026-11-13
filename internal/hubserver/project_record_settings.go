@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -181,7 +182,7 @@ func (s *Service) planProjectRecordModel(ctx context.Context, record projectstor
 	return record, cloudModelSelection{Revision: request.ExpectedRevision + 1, Selection: request.Selection, Effective: effective}, nil
 }
 
-func (s *Service) projectRecordSlugSettings(c echo.Context, scope nativeScope) error {
+func (s *Service) projectRecordSlugSettings(c echo.Context, scope hubscope.NativeScope) error {
 	ctx := c.Request().Context()
 	if err := s.authorizeProjectRecord(ctx, scope, false); err != nil {
 		return s.nativeAPIError(c, err)
@@ -193,7 +194,7 @@ func (s *Service) projectRecordSlugSettings(c echo.Context, scope nativeScope) e
 	if c.Request().Method == http.MethodGet {
 		return c.JSON(http.StatusOK, map[string]string{"slug": current.Core.Slug})
 	}
-	if scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
+	if scope.Credential.HostedRole != "owner" && scope.Credential.HostedRole != "admin" {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	var input struct {
@@ -206,19 +207,19 @@ func (s *Service) projectRecordSlugSettings(c echo.Context, scope nativeScope) e
 	if err := readableurl.Validate(input.Slug); err != nil {
 		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
 	}
-	scope.requireHostedAdmin = true
+	scope.RequireHostedAdmin = true
 	authority, err := s.beginProjectRecordAuthority(ctx, scope)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	defer s.releaseProjectRecordAuthority(ctx, authority)
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if s.config.AccessRepository != nil {
 			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 				return err
 			}
 		}
-		return w.UpdateProjectSlug(ctx, scope.project, input.ExpectedSlug, input.Slug)
+		return w.UpdateProjectSlug(ctx, scope.Project, input.ExpectedSlug, input.Slug)
 	})
 	err = errors.Join(err, authority.Rollback())
 	if errors.Is(err, corestore.ErrRevisionConflict) {

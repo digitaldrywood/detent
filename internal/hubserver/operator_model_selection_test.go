@@ -15,6 +15,7 @@ import (
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -226,7 +227,7 @@ func TestModelSelectionToolAuthority(t *testing.T) {
 					}
 					connection := operatortool.CurrentConnection(ctx)
 					connection.ID = "key-model-selection"
-					connection.Identity = operatorIdentity(credential, "org_security")
+					connection.Identity = hubscope.OperatorIdentity(credential, "org_security")
 					connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
 						current, _, err := f.service.authenticateAPIToken(ctx, key.Token, "", "")
 						if err != nil {

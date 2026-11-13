@@ -11,7 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -34,14 +34,6 @@ func resolveHostedProjectAccess(access hubapi.HostedProjectAccess, projects []st
 		return "", "All project access cannot include selected project IDs"
 	}
 	return access, ""
-}
-
-func hostedKeyAllows(scope, required apikey.Scope) bool {
-	return hubauth.KeyAllows(scope, required)
-}
-
-func hostedRoleAllows(role string, scope apikey.Scope, action ...string) bool {
-	return hubauth.RoleAllows(role, scope, action...)
 }
 
 func (s *Service) hostedKeyBrowser(c echo.Context) (hubapi.APICredential, error) {
@@ -67,14 +59,14 @@ func (s *Service) hostedKeyCredentialFor(ctx context.Context, credential hubapi.
 	}
 	session, err := s.WebSession(ctx, credential.SessionHash, s.config.now())
 	if err != nil {
-		return hubapi.APICredential{}, operatorAuthorizationError(err)
+		return hubapi.APICredential{}, hubscope.OperatorAuthorizationError(err)
 	}
 	if session.Identity.SupportActor != "" {
 		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	current, _, err := s.hostedSessionCredential(ctx, session, credential.SessionHash)
 	if err != nil {
-		return hubapi.APICredential{}, operatorAuthorizationError(err)
+		return hubapi.APICredential{}, hubscope.OperatorAuthorizationError(err)
 	}
 	if current.ID != credential.ID || current.Hash != credential.Hash || current.HostedMembership != credential.HostedMembership {
 		return hubapi.APICredential{}, operatortool.ErrAccessDenied
@@ -100,8 +92,8 @@ type hostedAPIKey struct {
 func (s *Service) hostedAPIKeys(c echo.Context) error {
 	credential, err := s.hostedKeyBrowser(c)
 	if err != nil {
-		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-			return s.nativeAPIError(c, operatorAuthorizationError(err))
+		if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 		}
 		return s.hostedJSONError(c, http.StatusForbidden, "Sign in as an organization member to manage your API keys")
 	}
@@ -139,8 +131,8 @@ func (request hostedKeyRequest) validExpiry() bool {
 func (s *Service) createHostedAPIKey(c echo.Context) error {
 	credential, err := s.hostedKeyBrowser(c)
 	if err != nil {
-		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-			return s.nativeAPIError(c, operatorAuthorizationError(err))
+		if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 		}
 		return s.hostedJSONError(c, http.StatusForbidden, "Sign in as an organization member to create an API key")
 	}
@@ -168,11 +160,11 @@ func (s *Service) authorizeHostedKeyRequest(ctx context.Context, credential huba
 	if _, message := resolveHostedProjectAccess(request.ProjectAccess, request.Projects); message != "" {
 		return operatortool.ErrInvalidArguments
 	}
-	if !hostedRoleAllows(credential.HostedRole, request.Scope, "credentials") {
+	if !hubscope.HostedRoleAllows(credential.HostedRole, request.Scope, "credentials") {
 		return operatortool.ErrAccessDenied
 	}
 	for _, project := range request.Projects {
-		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
+		scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), Project: tracker.ProjectID(project), Credential: credential}
 		if err := s.requireHostedProject(ctx, nil, scope, false); err != nil {
 			return err
 		}
@@ -218,8 +210,8 @@ func (s *Service) createHostedAPIKeyFor(ctx context.Context, credential hubapi.A
 func (s *Service) revokeHostedAPIKey(c echo.Context) error {
 	credential, err := s.hostedKeyBrowser(c)
 	if err != nil {
-		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-			return s.nativeAPIError(c, operatorAuthorizationError(err))
+		if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+			return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 		}
 		return s.hostedJSONError(c, http.StatusForbidden, "Sign in to revoke your API key")
 	}

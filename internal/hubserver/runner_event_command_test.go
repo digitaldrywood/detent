@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
@@ -62,7 +63,7 @@ func TestRunnerEventSubmissionWireBudget(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("authority status=%d error=%v", status, err)
 			}
-			scope := nativeScope{organization: org, project: "prj_runner", credential: credential}
+			scope := hubscope.NativeScope{Organization: org, Project: "prj_runner", Credential: credential}
 			warm := fixture.data[index]
 			warm.Sequence++
 			warm.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: time.Now().UTC()}
@@ -73,7 +74,7 @@ func TestRunnerEventSubmissionWireBudget(t *testing.T) {
 			history := 0
 			for _, size := range []int{2, 50} {
 				for ; history < size; history++ {
-					raw, err := json.Marshal(tracker.CollaborationEvent{ID: fmt.Sprintf("history_%d_%d", index, history), OrganizationID: org, ProjectID: scope.project, AggregateType: "issue", AggregateID: fixture.leases[index].WorkItemID, Type: "issue.updated", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: time.Now().UTC()})
+					raw, err := json.Marshal(tracker.CollaborationEvent{ID: fmt.Sprintf("history_%d_%d", index, history), OrganizationID: org, ProjectID: scope.Project, AggregateType: "issue", AggregateID: fixture.leases[index].WorkItemID, Type: "issue.updated", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: time.Now().UTC()})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -115,7 +116,7 @@ func TestRunnerEventSubmissionWireBudget(t *testing.T) {
  SELECT payload_object_key,payload_sha256 FROM native_commands WHERE organization_id=$1 AND command_key=$5
 )
 SELECT count(*),count(*) FILTER (WHERE a.id IS NULL),count(*) FILTER (WHERE a.collaboration_bytes<>a.compressed_size)
-FROM refs r LEFT JOIN archive_objects a ON a.organization_id=$1 AND a.object_key=r.payload_object_key AND (r.payload_sha256 IS NULL OR a.sha256=r.payload_sha256)`, org, scope.project, fixture.leases[index].WorkItemID, data.AttemptID, request.IdempotencyKey).Scan(&references, &missingArchives, &unchargedArchives); err != nil {
+FROM refs r LEFT JOIN archive_objects a ON a.organization_id=$1 AND a.object_key=r.payload_object_key AND (r.payload_sha256 IS NULL OR a.sha256=r.payload_sha256)`, org, scope.Project, fixture.leases[index].WorkItemID, data.AttemptID, request.IdempotencyKey).Scan(&references, &missingArchives, &unchargedArchives); err != nil {
 					t.Fatal(err)
 				}
 				if references != 3 || missingArchives != 0 || unchargedArchives != 0 {
@@ -259,7 +260,7 @@ FROM refs r LEFT JOIN archive_objects a ON a.organization_id=$1 AND a.object_key
 				if !ok {
 					t.Fatal("missing run event reader")
 				}
-				_, err = reader.RunEvent(t.Context(), scope.project, fixture.leases[index].WorkItemID, nativeAttemptHistoryID(bad.Type, bad.Data))
+				_, err = reader.RunEvent(t.Context(), scope.Project, fixture.leases[index].WorkItemID, nativeAttemptHistoryID(bad.Type, bad.Data))
 				if !errors.Is(err, corestore.ErrNotFound) {
 					t.Fatalf("failed publication left history: %v", err)
 				}

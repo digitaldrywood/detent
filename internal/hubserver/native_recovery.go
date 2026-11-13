@@ -10,12 +10,13 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, item string, projected ...bool) (tracker.NativeRecovery, error) {
+func (s *Service) readNativeRecovery(ctx context.Context, scope hubscope.NativeScope, item string, projected ...bool) (tracker.NativeRecovery, error) {
 	ctx = s.contentContext(s.runDetailContext(ctx))
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
@@ -44,7 +45,7 @@ func recoveryRecordFragment(page *tracker.NativeRecoveryPage, content []byte, of
 	return nil
 }
 
-func (s *Service) fitNativeRecovery(ctx context.Context, scope nativeScope, path string, result *tracker.NativeRecovery, bodyFragments bool) error {
+func (s *Service) fitNativeRecovery(ctx context.Context, scope hubscope.NativeScope, path string, result *tracker.NativeRecovery, bodyFragments bool) error {
 	encoded, err := json.Marshal(result)
 	if err != nil || len(encoded)+1 <= 1<<20 {
 		return err

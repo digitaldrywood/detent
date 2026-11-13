@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerupdate"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -85,24 +86,24 @@ func (s *Service) storeRunnerUpdateObservationTenant(ctx context.Context, writer
 	return hubapi.FromFeatureError(s.runnerUpdateService().StoreObservation(ctx, writer, identity, report, protocol, version, platform, architecture, now, releasePublished))
 }
 
-func (s *Service) readRunnerUpdate(ctx context.Context, scope nativeScope, resource string) (any, error) {
-	scope.managedRunner = resource
+func (s *Service) readRunnerUpdate(ctx context.Context, scope hubscope.NativeScope, resource string) (any, error) {
+	scope.ManagedRunner = resource
 	value, err := s.runnerUpdateService().View(ctx, s.featureScope(scope), resource)
 	return value, hubapi.FromFeatureError(err)
 }
 
-func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScope, resource string, request runnerUpdateChange) (any, error) {
-	scope.managedRunner = resource
+func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope hubscope.NativeScope, resource string, request runnerUpdateChange) (any, error) {
+	scope.ManagedRunner = resource
 	value, err := s.runnerUpdateService().Apply(ctx, s.featureScope(scope), resource, request)
 	return value, hubapi.FromFeatureError(err)
 }
 
-func (s *Service) readUrgentRunnerUpdateCommand(ctx context.Context, scope nativeScope) (any, error) {
+func (s *Service) readUrgentRunnerUpdateCommand(ctx context.Context, scope hubscope.NativeScope) (any, error) {
 	value, err := s.runnerUpdateService().ReadUrgent(ctx, s.featureScope(scope))
 	return value, hubapi.FromFeatureError(err)
 }
 
-func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativeScope, request urgentRunnerUpdateChange) (any, error) {
+func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope hubscope.NativeScope, request urgentRunnerUpdateChange) (any, error) {
 	value, err := s.runnerUpdateService().MarkUrgent(ctx, s.featureScope(scope), request)
 	return value, hubapi.FromFeatureError(err)
 }
@@ -112,7 +113,7 @@ func (s *Service) registerRunnerUpdateRoutes(e *echo.Echo) {
 		Service: s.runnerUpdateService, Auth: s.requestAuth,
 		Credential: func(c echo.Context) (hubauth.Credential, bool) {
 			credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
-			return authCredential(credential), ok
+			return hubscope.AuthCredential(credential), ok
 		},
 		Admin: s.requireInstanceAdmin(), Worker: s.requireAPIScope(hubapi.APIScopeWorker),
 		Error:   func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },

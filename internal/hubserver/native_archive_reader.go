@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -18,7 +19,7 @@ type nativeArchiveContextKey struct{}
 
 type nativeArchiveRead struct {
 	service     *Service
-	scope       nativeScope
+	scope       hubscope.NativeScope
 	presign     bool
 	webResponse bool
 	descriptor  *tracker.ArchiveDescriptor
@@ -28,14 +29,14 @@ type nativeArchiveRead struct {
 	err         error
 }
 
-func (s *Service) archiveContext(ctx context.Context, scope nativeScope, presign bool) context.Context {
+func (s *Service) archiveContext(ctx context.Context, scope hubscope.NativeScope, presign bool) context.Context {
 	if ctx.Value(nativeArchiveContextKey{}) != nil {
 		return ctx
 	}
 	return context.WithValue(ctx, nativeArchiveContextKey{}, &nativeArchiveRead{service: s, scope: scope, presign: presign})
 }
 
-func (s *Service) archiveRequestContext(c echo.Context, scope nativeScope) context.Context {
+func (s *Service) archiveRequestContext(c echo.Context, scope hubscope.NativeScope) context.Context {
 	ctx := s.archiveContext(c.Request().Context(), scope, c.QueryParam("archive_url") == "true")
 	if state, ok := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead); ok {
 		state.webResponse = c.Request().Header.Get("X-Detent-Archive-Read") == "1"
@@ -81,7 +82,7 @@ func nativeArchiveJSON(c echo.Context, status int, value any) error {
 func (r *nativeArchiveRead) load(ctx context.Context, item, kind, subject string, sequence int64, id string, first, last int64, ref attachment.ArchiveReference) (attachment.ArchiveSection, bool, error) {
 	s, scope := r.service, r.scope
 	if r.descriptor != nil {
-		if r.section == nil || r.section.SectionID != id || r.section.WorkItemID != item || r.section.ProjectID != string(scope.project) || r.section.OrganizationID != string(scope.organization) || r.descriptor.SHA256 != ref.SHA256 {
+		if r.section == nil || r.section.SectionID != id || r.section.WorkItemID != item || r.section.ProjectID != string(scope.Project) || r.section.OrganizationID != string(scope.Organization) || r.descriptor.SHA256 != ref.SHA256 {
 			if r.err != nil {
 				return attachment.ArchiveSection{}, false, r.err
 			}
@@ -95,7 +96,7 @@ func (r *nativeArchiveRead) load(ctx context.Context, item, kind, subject string
 		r.err = &hubapi.NativeArchiveError{Archive: r.descriptor}
 		return attachment.ArchiveSection{}, false, r.err
 	}
-	if ref.Validate(string(scope.organization)) != nil || ref.UncompressedSize > attachment.MaxSectionBytes || ref.SchemaVersion != 1 || id == "" || (sequence > 0 && kind != "conversation" && sequence > last) {
+	if ref.Validate(string(scope.Organization)) != nil || ref.UncompressedSize > attachment.MaxSectionBytes || ref.SchemaVersion != 1 || id == "" || (sequence > 0 && kind != "conversation" && sequence > last) {
 		return fail("invalid")
 	}
 	reader := s.config.ArchiveReader
@@ -105,10 +106,10 @@ func (r *nativeArchiveRead) load(ctx context.Context, item, kind, subject string
 	if reader == nil {
 		return fail("unavailable")
 	}
-	unrestricted := scope.credential.Scope == hubapi.APIScopeAdmin && !scope.credential.NativeOnly && scope.credential.Hosted == nil
-	unrestricted = unrestricted || scope.credential.Hosted != nil && scope.credential.EntryKey == nil && scope.credential.HostedKeyScope == "" && (scope.credential.HostedRole == "owner" || scope.credential.HostedRole == "admin")
+	unrestricted := scope.Credential.Scope == hubapi.APIScopeAdmin && !scope.Credential.NativeOnly && scope.Credential.Hosted == nil
+	unrestricted = unrestricted || scope.Credential.Hosted != nil && scope.Credential.EntryKey == nil && scope.Credential.HostedKeyScope == "" && (scope.Credential.HostedRole == "owner" || scope.Credential.HostedRole == "admin")
 	presign := r.presign && unrestricted
-	response, err := readRuntimeObject(ctx, nativeRuntimeObjectKey{kind: "archive", organization: string(scope.organization), reference: ref, presign: presign}, func() (entryauthority.ArchiveResponse, error) {
+	response, err := readRuntimeObject(ctx, nativeRuntimeObjectKey{kind: "archive", organization: string(scope.Organization), reference: ref, presign: presign}, func() (entryauthority.ArchiveResponse, error) {
 		return reader(ctx, ref, presign)
 	})
 	var hydration *nativeRuntimeHydration
@@ -119,8 +120,8 @@ func (r *nativeArchiveRead) load(ctx context.Context, item, kind, subject string
 	if err != nil {
 		return fail("unavailable")
 	}
-	section, err := attachment.DecodeArchiveSection(string(scope.organization), ref, response.Data)
-	if err != nil || section.ProjectID != string(scope.project) || section.WorkItemID != item || section.SectionID != id {
+	section, err := attachment.DecodeArchiveSection(string(scope.Organization), ref, response.Data)
+	if err != nil || section.ProjectID != string(scope.Project) || section.WorkItemID != item || section.SectionID != id {
 		return fail("invalid")
 	}
 	if err := validateNativeArchiveSection(section, kind, subject, first, last); err != nil {

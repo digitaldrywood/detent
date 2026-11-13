@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -155,7 +156,7 @@ func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			scope := nativeScope{organization: org, project: project.Core.ID, credential: hubapi.APICredential{ID: "principal", Hash: "principal_hash", SessionHash: claims.Binding, Scope: hubapi.APIScopeOperator, NativeOnly: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject}, HostedRole: claims.Role, HostedMembership: "membership_example"}}
+			scope := hubscope.NativeScope{Organization: org, Project: project.Core.ID, Credential: hubapi.APICredential{ID: "principal", Hash: "principal_hash", SessionHash: claims.Binding, Scope: hubapi.APIScopeOperator, NativeOnly: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject}, HostedRole: claims.Role, HostedMembership: "membership_example"}}
 			barrier := &boardSessionBarrier{firstInside: make(chan struct{}), secondDone: make(chan struct{})}
 			t.Cleanup(barrier.release)
 			tenantRepository := service.config.TenantRepository

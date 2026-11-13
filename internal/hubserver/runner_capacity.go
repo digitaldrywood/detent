@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -30,25 +31,25 @@ func freshCapacityConfig(r runnerauth.Runner, now time.Time) bool {
 	return r.CapacityConfig != nil && !now.Before(r.CapacityConfig.ObservedAt) && now.Before(r.CapacityConfig.ObservedAt.Add(runnerauth.HeartbeatTimeout)) && !now.Before(r.LastHeartbeatAt) && now.Before(r.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout))
 }
 
-func (s *Service) authorizeRunnerCapacity(ctx context.Context, reader tenantstore.Reader, scope nativeScope) error {
+func (s *Service) authorizeRunnerCapacity(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope) error {
 	return hubapi.FromFeatureError(s.runnerAdviceService().Authorize(ctx, reader, s.authInput(scope)))
 }
-func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, resource, backend string) (any, error) {
+func (s *Service) readRunnerCapacity(ctx context.Context, scope hubscope.NativeScope, resource, backend string) (any, error) {
 	value, err := s.runnerAdviceService().Read(ctx, s.authInput(scope), resource, backend)
 	return value, hubapi.FromFeatureError(err)
 }
 
-func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeScope, resource string, request runnerCapacityChange) (any, error) {
+func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope hubscope.NativeScope, resource string, request runnerCapacityChange) (any, error) {
 	return s.persistRunnerCapacityCommand(ctx, scope, resource, request)
 }
 
-func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope nativeScope, resource string, request runnerCapacityChange) (any, error) {
+func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope hubscope.NativeScope, resource string, request runnerCapacityChange) (any, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if request.ExpectedRevision < 1 || request.Validate() != nil || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return nil, hubapi.NativePublicInvalid("A bounded capacity, configuration revision, runner revision and idempotency key are required")
 	}
-	if scope.credential.Runner.RunnerID != "" {
+	if scope.Credential.Runner.RunnerID != "" {
 		return nil, accessstore.ErrDenied
 	}
 	r, err := s.readRunnerRouting(ctx, scope, resource)
@@ -62,12 +63,12 @@ func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope native
 		return nil, err
 	}
 	var receipt eventstore.Receipt
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := authorize(reader); err != nil {
 			return err
 		}
 		var err error
-		receipt, err = reader.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+		receipt, err = reader.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -92,15 +93,15 @@ func (s *Service) persistRunnerCapacityCommand(ctx context.Context, scope native
 	if err != nil {
 		return nil, err
 	}
-	receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, raw)
+	receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, raw)
 	if err != nil {
 		return nil, err
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
 		if err := authorize(writer); err != nil {
 			return err
 		}
-		previous, err := writer.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+		previous, err := writer.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
 				return hubapi.NativeConflict(0)
@@ -144,7 +145,7 @@ func (s *Service) updateRunnerCapacity(c echo.Context) error {
 	if !ok {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	value, err := s.updateRunnerCapacityCommand(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"), request)
+	value, err := s.updateRunnerCapacityCommand(c.Request().Context(), hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential}, c.Param("runner"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

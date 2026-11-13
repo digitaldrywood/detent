@@ -6,6 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -15,11 +16,11 @@ type deleteCloudProjectRequest struct {
 }
 
 func (s *Service) deleteCloudProject(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	if s.config.Hosted == nil || scope.credential.Hosted == nil {
+	scope := hubscope.NativeRequestScope(c)
+	if s.config.Hosted == nil || scope.Credential.Hosted == nil {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	scope.requireHostedAdmin = true
+	scope.RequireHostedAdmin = true
 	c.Set("native_scope", scope)
 	var request deleteCloudProjectRequest
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {

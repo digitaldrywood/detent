@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -526,7 +527,7 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("cleanup authority status=%d error=%v", status, err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			archived, err := f.service.readNativeAttemptSnapshotTenant(t.Context(), scope, string(issue.WorkItemID), event.Data.AttemptID)
 			if err != nil {
 				t.Fatal(err)
@@ -617,7 +618,7 @@ func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 			if receipt.CleanupAcknowledgedAt == nil || receipt.CleanupAcknowledgedAt.IsZero() || receipt.AttemptID != attempt.AttemptID || receipt.LeaseID != attempt.LeaseID || receipt.FencingToken != attempt.FencingToken || receipt.Runtime == nil || receipt.Runtime.WorkerLaunch == nil || *receipt.Runtime.WorkerLaunch != *attempt.Runtime.WorkerLaunch {
 				t.Fatalf("acknowledged cleanup receipt = %+v", receipt)
 			}
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 				receipt, err := reader.Attempt(t.Context(), event.Data.AttemptID)
 				if err == nil && (receipt.CleanupAcknowledgedAt == nil || receipt.CleanupAcknowledgedAt.IsZero() || receipt.Sequence != event.Data.Sequence) {
 					t.Fatalf("cleanup receipt missing: %+v", receipt)
@@ -894,7 +895,7 @@ func TestReleasedExecutionPollingBudget(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("cleanup authority status=%d error=%v", status, err)
 			}
-			scope := nativeScope{organization: org, project: project, credential: credential}
+			scope := hubscope.NativeScope{Organization: org, Project: project, Credential: credential}
 			content := eventstore.NewContent(f.service.runDetailStore())
 			checkpoint, err := content.PreparePayload(t.Context(), org, historyTestJSON(t, checkpointPayload{Checkpoint: nativeTestCheckpoint()}))
 			if err != nil {

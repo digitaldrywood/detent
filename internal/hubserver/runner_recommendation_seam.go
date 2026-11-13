@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runneradvice"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -58,7 +59,7 @@ func (s *Service) registerRunnerAdviceRoutes(e *echo.Echo) {
 		Service: s.runnerAdviceService,
 		Credential: func(c echo.Context) (hubauth.Credential, bool) {
 			credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
-			return authCredential(credential), ok
+			return hubscope.AuthCredential(credential), ok
 		},
 		Admin: s.requireInstanceAdmin(),
 		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },

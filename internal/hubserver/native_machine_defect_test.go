@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -47,8 +48,8 @@ func TestNativeReleaseStabilizationOccurrences(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, project := range []tracker.ProjectID{selected, f.project.ID} {
-		scope := nativeScope{organization: f.project.OrganizationID, project: project, credential: credential, action: operatortool.FileIssue}
-		seedNativeFixturePolicy(t, f.service, string(scope.organization)+"/"+string(project))
+		scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: project, Credential: credential, Action: operatortool.FileIssue}
+		seedNativeFixturePolicy(t, f.service, string(scope.Organization)+"/"+string(project))
 		file := func(series, key string) tracker.NativeIssue {
 			t.Helper()
 			body := "Problem: `go-test:example/pkg:TestOne`\n" + issueContractTestSections
@@ -145,9 +146,9 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: project, credential: credential}
-			seedNativeFixturePolicy(t, f.service, string(scope.organization)+"/"+string(project))
-			base := "/api/v2/organizations/" + string(scope.organization) + "/projects/" + string(project)
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: project, Credential: credential}
+			seedNativeFixturePolicy(t, f.service, string(scope.Organization)+"/"+string(project))
+			base := "/api/v2/organizations/" + string(scope.Organization) + "/projects/" + string(project)
 			intake := func(request tracker.CreateIssue) tracker.NativeIssue {
 				t.Helper()
 				request, err := normalizeNativeMachineIntake(scope, states, request)
@@ -166,12 +167,12 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 					t.Fatal(err)
 				}
 				operatorRefreshSearch(t, f)
-				if err := f.service.refreshBoardRecord(t.Context(), scope.organization, viewstore.BoardCandidate{ProjectID: project, WorkItemID: issue.WorkItemID}, f.service.config.now()); err != nil {
+				if err := f.service.refreshBoardRecord(t.Context(), scope.Organization, viewstore.BoardCandidate{ProjectID: project, WorkItemID: issue.WorkItemID}, f.service.config.now()); err != nil {
 					t.Fatal(err)
 				}
 				return issue
 			}
-			scope.action = operatortool.FileIssue
+			scope.Action = operatortool.FileIssue
 			admin := nativeAttemptTestDatabase(t, f)
 			var owner tracker.NativeIssue
 			for i, evidence := range []string{test.first, test.second} {
@@ -208,10 +209,10 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				t.Fatalf("owner = %#v, want %s priority %d", owner, test.state, wantPriority)
 			}
 			var issues, comments int
-			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", scope.organization, project).Scan(&issues); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", scope.Organization, project).Scan(&issues); err != nil {
 				t.Fatal(err)
 			}
-			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", scope.organization, project, owner.WorkItemID).Scan(&comments); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", scope.Organization, project, owner.WorkItemID).Scan(&comments); err != nil {
 				t.Fatal(err)
 			}
 			if issues != 1 || comments != 1 {
@@ -248,7 +249,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				if !strings.Contains(occurrence, test.second) {
 					t.Fatalf("scheduled occurrence lost failure evidence: %q", occurrence)
 				}
-				approval, err := f.service.readTenantProjectPolicy(t.Context(), scope.organization, project)
+				approval, err := f.service.readTenantProjectPolicy(t.Context(), scope.Organization, project)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -269,7 +270,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			if closed.WorkItemID != owner.WorkItemID || closed.State != test.endState || !closed.Terminal || !closed.PublicationReused || closed.Priority == nil || *closed.Priority != 1 {
 				t.Fatalf("terminal report changed handled owner: %#v", closed)
 			}
-			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", scope.organization, project, owner.WorkItemID).Scan(&comments); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", scope.Organization, project, owner.WorkItemID).Scan(&comments); err != nil {
 				t.Fatal(err)
 			}
 			if comments != 2 {
@@ -308,7 +309,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				if reused.WorkItemID != current.WorkItemID || !reused.PublicationReused || reused.Body != current.Body {
 					t.Fatalf("following occurrence did not reuse open owner: %#v", reused)
 				}
-				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", scope.organization, project, current.WorkItemID).Scan(&comments); err != nil {
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", scope.Organization, project, current.WorkItemID).Scan(&comments); err != nil {
 					t.Fatal(err)
 				}
 				if comments != 1 {
@@ -326,13 +327,13 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			if !reflect.DeepEqual(historical, historicalBefore) {
 				t.Fatalf("scheduled report changed terminal history: %#v, want %#v", historical, historicalBefore)
 			}
-			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", scope.organization, project, owner.WorkItemID).Scan(&comments); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3", scope.Organization, project, owner.WorkItemID).Scan(&comments); err != nil {
 				t.Fatal(err)
 			}
 			if comments != 2 {
 				t.Fatalf("scheduled report changed terminal comments: %d", comments)
 			}
-			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", scope.organization, project).Scan(&issues); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", scope.Organization, project).Scan(&issues); err != nil {
 				t.Fatal(err)
 			}
 			wantIssues := 2
@@ -499,7 +500,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential, action: operatortool.FileIssue}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential, Action: operatortool.FileIssue}
 			origin := issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "completed-run", Fingerprint: issueorigin.Fingerprint("go-test:example/hub:TestFence")}
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "fence-owner"}, Title: "Completed owner", Body: issueorigin.Stamp("Problem: `go-test:example/hub:TestFence`"+issueContractTestSections, origin), State: "Done", Priority: new(1)}
 			options := hubapi.NativeCommandOptions{OperationID: "machine-defect-fixture", Feature: "collaboration"}
@@ -541,8 +542,8 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			if !mutated || !errors.As(err, &conflict) || conflict.Status != http.StatusConflict {
 				t.Fatalf("candidate mutation was not fenced: mutated=%t error=%v", mutated, err)
 			}
-			if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				row, err := r.WorkItem(t.Context(), scope.project, owner.WorkItemID)
+			if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				row, err := r.WorkItem(t.Context(), scope.Project, owner.WorkItemID)
 				if err != nil {
 					return err
 				}
@@ -557,10 +558,10 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				t.Fatal(err)
 			}
 			var issues, comments int
-			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", scope.organization, scope.project).Scan(&issues); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2", scope.Organization, scope.Project).Scan(&issues); err != nil {
 				t.Fatal(err)
 			}
-			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2", scope.organization, scope.project).Scan(&comments); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2", scope.Organization, scope.Project).Scan(&comments); err != nil {
 				t.Fatal(err)
 			}
 			if issues != 1 || comments != 0 {

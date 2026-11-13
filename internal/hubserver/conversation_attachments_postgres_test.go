@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -349,7 +350,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			scope := nativeScope{organization: f.org, project: f.project, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
+			scope := hubscope.NativeScope{Organization: f.org, Project: f.project, Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 			retainedMessageWant := body.Messages[0]
 			retainedMessageWant.Attachments = nil
 			retainedMessageWant.Text = "retained accepted snapshot"

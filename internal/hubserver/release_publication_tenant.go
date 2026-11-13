@@ -9,11 +9,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope nativeScope, item string, request tracker.PublishReleasePick, result tracker.ReleasePickPublication) (json.RawMessage, error) {
+func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.PublishReleasePick, result tracker.ReleasePickPublication) (json.RawMessage, error) {
 	operation := releasePublicationOperation(scope, item)
 	hash, err := hubapi.CommandHash(request)
 	if err != nil {
@@ -24,7 +25,7 @@ func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope nat
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, raw)
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: s.config.now()}, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -32,14 +33,14 @@ func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope nat
 		return nil, err
 	}
 	var replay *eventstore.Receipt
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeReleaseScope(ctx, w, scope); err != nil {
 			return err
 		}
 		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
 			return err
 		}
-		prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+		prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if prior.RequestHash != hash {
 				return hubapi.NativeConflict(0)
@@ -50,9 +51,9 @@ func (s *Service) recordReleasePublicationCommand(ctx context.Context, scope nat
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if scope.credential.Hosted != nil {
+		if scope.Credential.Hosted != nil {
 			audit := projectRecordActor(scope).Audit
-			audit.Event, audit.Route, audit.Status, audit.ProjectID = "action", operation, http.StatusOK, scope.project
+			audit.Event, audit.Route, audit.Status, audit.ProjectID = "action", operation, http.StatusOK, scope.Project
 			audit.RecordedAt = s.config.now()
 			audit.RecordedAtNS = audit.RecordedAt.UnixNano()
 			if _, err := w.RecordAccessAudit(ctx, audit); err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -45,7 +46,7 @@ type coordinatorRunnerChange struct {
 	ExpectedRevision int64  `json:"expected_revision"`
 }
 
-func (s *Service) coordinatorRunner(ctx context.Context, scope nativeScope, id string) (runnerauth.Runner, error) {
+func (s *Service) coordinatorRunner(ctx context.Context, scope hubscope.NativeScope, id string) (runnerauth.Runner, error) {
 	runners, err := s.coordinatorRunners(ctx, scope, coordinatorRunnerArguments{RunnerID: id})
 	if err != nil {
 		return runnerauth.Runner{}, err
@@ -56,7 +57,7 @@ func (s *Service) coordinatorRunner(ctx context.Context, scope nativeScope, id s
 	return runners[0], nil
 }
 
-func (s *Service) coordinatorRunners(ctx context.Context, scope nativeScope, args coordinatorRunnerArguments) ([]runnerauth.Runner, error) {
+func (s *Service) coordinatorRunners(ctx context.Context, scope hubscope.NativeScope, args coordinatorRunnerArguments) ([]runnerauth.Runner, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
@@ -64,7 +65,7 @@ func (s *Service) coordinatorRunners(ctx context.Context, scope nativeScope, arg
 		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
 	runners := []runnerauth.Runner{}
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -90,7 +91,7 @@ func (s *Service) coordinatorRunners(ctx context.Context, scope nativeScope, arg
 				limit = 20
 			}
 			var err error
-			records, err = reader.RunnerProjectRoutingRecords(ctx, scope.project, limit, args.Offset, now)
+			records, err = reader.RunnerProjectRoutingRecords(ctx, scope.Project, limit, args.Offset, now)
 			if err != nil {
 				return err
 			}
@@ -101,7 +102,7 @@ func (s *Service) coordinatorRunners(ctx context.Context, scope nativeScope, arg
 		}
 		for _, record := range records {
 			runner := runnerFromRoutingRecord(record, now, urgent)
-			if !runner.AllowsProject(scope.project) {
+			if !runner.AllowsProject(scope.Project) {
 				return hubapi.NativeNotFound()
 			}
 			runners = append(runners, runner)
@@ -139,7 +140,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 		return nil, err
 	}
 	if !manage {
-		scope.project = record.ProjectID
+		scope.Project = record.ProjectID
 	}
 	if manage {
 		r, err := s.coordinatorRunner(ctx, scope, args.RunnerID)
@@ -179,7 +180,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 	}
 	views := make([]map[string]any, 0, len(runners))
 	for _, r := range runners {
-		problems := slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.project) })
+		problems := slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.Project) })
 		views = append(views, map[string]any{"runner_id": r.RunnerID, "display_name": r.DisplayName, "revision": r.Revision, "scope": r.Scope, "isolation_tier": r.IsolationTier, "backend_isolation": r.BackendIsolation, "problems": problems, "health": r.Health, "connection_health": r.ConnectionHealth, "last_heartbeat_at": r.LastHeartbeatAt})
 	}
 	return map[string]any{"runners": views, "observed_at": s.config.now().UTC()}, nil

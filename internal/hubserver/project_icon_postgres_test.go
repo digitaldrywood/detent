@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projecticon"
@@ -37,7 +38,7 @@ func TestPostgresProjectIconReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.echo.GET(hubapi.NativeBase+"/local-projects", func(c echo.Context) error {
-		projects, err := service.localAppProjects(c.Request().Context(), nativeRequestScope(c).credential)
+		projects, err := service.localAppProjects(c.Request().Context(), hubscope.NativeRequestScope(c).Credential)
 		if err != nil {
 			return service.nativeAPIError(c, err)
 		}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -24,14 +25,14 @@ type issueArchiveSection struct {
 	AccessPath       string                 `json:"access_path"`
 }
 
-func readIssueArchiveSection(ctx context.Context, reader attachmentstore.StorageArchiveReader, scope nativeScope, item, section string) (issueArchiveSection, error) {
-	result := issueArchiveSection{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, SectionID: section}
-	record, err := reader.StorageArchiveSection(ctx, attachmentstore.StorageArchiveSectionQuery{ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), SectionID: section})
+func readIssueArchiveSection(ctx context.Context, reader attachmentstore.StorageArchiveReader, scope hubscope.NativeScope, item, section string) (issueArchiveSection, error) {
+	result := issueArchiveSection{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, SectionID: section}
+	record, err := reader.StorageArchiveSection(ctx, attachmentstore.StorageArchiveSectionQuery{ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), SectionID: section})
 	if err != nil {
 		return result, err
 	}
 	ref := record.Archive.Reference
-	if ref.Validate(string(scope.organization)) != nil || (ref.SchemaVersion != 1 && ref.SchemaVersion != 2) {
+	if ref.Validate(string(scope.Organization)) != nil || (ref.SchemaVersion != 1 && ref.SchemaVersion != 2) {
 		return result, hubapi.NativeNotFound()
 	}
 	result.Revision = record.Stamp.Revision
@@ -40,6 +41,6 @@ func readIssueArchiveSection(ctx context.Context, reader attachmentstore.Storage
 	result.UncompressedSize = ref.UncompressedSize
 	result.Codec = ref.Codec
 	result.SchemaVersion = ref.SchemaVersion
-	result.AccessPath = "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/archives/" + result.SHA256 + "/access?section=" + url.QueryEscape(section) + "&revision=" + strconv.FormatInt(result.Revision, 10)
+	result.AccessPath = "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(item) + "/archives/" + result.SHA256 + "/access?section=" + url.QueryEscape(section) + "&revision=" + strconv.FormatInt(result.Revision, 10)
 	return result, nil
 }

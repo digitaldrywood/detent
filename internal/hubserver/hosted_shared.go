@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/readableurl"
@@ -158,14 +159,14 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 			if claims.Key == nil || bearer {
 				return c.NoContent(http.StatusUnauthorized)
 			}
-			audit := &entryKeyAudit{claims: claims, operation: request.Method + " " + c.Path(), project: c.Param("project"), resource: c.Param("item")}
+			audit := &hubscope.EntryKeyAudit{Claims: claims, Operation: request.Method + " " + c.Path(), Project: c.Param("project"), Resource: c.Param("item")}
 			if keyInternal {
-				audit.operation = request.Method + " " + path
+				audit.Operation = request.Method + " " + path
 			}
-			if audit.resource == "" {
-				audit.resource = audit.project
+			if audit.Resource == "" {
+				audit.Resource = audit.Project
 			}
-			request = request.WithContext(context.WithValue(request.Context(), entryKeyAuditContext{}, audit))
+			request = request.WithContext(context.WithValue(request.Context(), hubscope.EntryKeyAuditContext{}, audit))
 			c.SetRequest(request)
 			if path != "/internal/v1/keys/call" {
 				if err := s.recordEntryAccessKeyAudit(request.Context(), audit, 0); err != nil {
@@ -349,7 +350,7 @@ func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
 	}
 	binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
 	if err != nil && !errors.Is(err, errHostedBillingUnbound) {
-		return s.nativeAPIError(c, operatorAuthorizationError(err))
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 	}
 	if err != nil || binding.CustomerID != request.CustomerID {
 		return s.refusedAPIError(c, http.StatusConflict, "customer_mismatch", "The event customer is not bound to this organization", hubapi.APIErrorResponse{Code: "customer_mismatch", Message: "The event customer is not bound to this organization"})
@@ -392,15 +393,15 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	provider, err := s.hostedProviderOrganization(ctx)
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 	}
 	if err != nil || provider == "" {
 		return s.refusedAPIError(c, http.StatusConflict, "unallocated", "The tenant has no provider organization", hubapi.APIErrorResponse{Code: "unallocated", Message: "The tenant has no provider organization"})
 	}
 	membership, err := s.hostedMembership(ctx, &auth.HostedIdentity{Subject: claims.Subject, OrganizationID: provider})
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 	}
 	if err != nil || membership.Role.Slug != "owner" {
 		return s.refusedAPIError(c, http.StatusForbidden, "owner_unverified", "The provider does not report this identity as an owner", hubapi.APIErrorResponse{Code: "owner_unverified", Message: "The provider does not report this identity as an owner"})
@@ -458,7 +459,7 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		return s.refusedAPIError(c, http.StatusConflict, "already_bootstrapped", "This organization already has members", hubapi.APIErrorResponse{Code: "already_bootstrapped", Message: "This organization already has members"})
 	}
 	if err != nil {
-		return s.nativeAPIError(c, operatorAuthorizationError(err))
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 	}
 	return c.NoContent(http.StatusNoContent)
 }

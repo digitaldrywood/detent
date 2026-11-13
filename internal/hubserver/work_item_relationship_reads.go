@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -33,7 +34,7 @@ type workItemRelationshipPage struct {
 	NextCursor   string                      `json:"next_cursor,omitempty"`
 }
 
-func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue) error {
+func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope hubscope.NativeScope, issue *tracker.NativeIssue) error {
 	type dependencyEdges struct {
 		blocked, unblocks               []string
 		privateBlocked, privateUnblocks bool
@@ -45,24 +46,24 @@ func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope na
 	issue.Related = []tracker.NativeDependency{}
 	issue.DependencyReady = true
 	edges := dependencyEdges{}
-	projectVisible := map[tracker.ProjectID]bool{scope.project: true}
+	projectVisible := map[tracker.ProjectID]bool{scope.Project: true}
 
 	var relations []corestore.Relationship
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := loadDependencyReasonRecords(ctx, r, scope.project, []*tracker.NativeIssue{issue}); err != nil {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := loadDependencyReasonRecords(ctx, r, scope.Project, []*tracker.NativeIssue{issue}); err != nil {
 			return err
 		}
 		batch, ok := r.(tenantstore.WorkItemRelationshipBatchReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		facts, err := batch.WorkItemRelationshipFacts(ctx, scope.project, []tracker.NativeWorkItemID{issue.WorkItemID})
+		facts, err := batch.WorkItemRelationshipFacts(ctx, scope.Project, []tracker.NativeWorkItemID{issue.WorkItemID})
 		if err != nil {
 			return err
 		}
 		for _, fact := range facts {
 			relations = append(relations, fact.Relationship)
-			if fact.Relationship.RelatedProjectID != scope.project {
+			if fact.Relationship.RelatedProjectID != scope.Project {
 				projectVisible[fact.Relationship.RelatedProjectID] = fact.RelatedProjectVisible
 			}
 		}
@@ -82,14 +83,14 @@ func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope na
 			switch relation.Direction {
 			case "blocked_by":
 				edges.blocked = append(edges.blocked, string(relation.RelatedWorkItemID))
-				edges.privateBlocked = edges.privateBlocked || relation.RelatedProjectID != scope.project
+				edges.privateBlocked = edges.privateBlocked || relation.RelatedProjectID != scope.Project
 			case "blocks":
 				edges.unblocks = append(edges.unblocks, string(relation.RelatedWorkItemID))
-				edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.project
+				edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.Project
 			}
 		}
 		visible := authorizedProjects[relation.RelatedProjectID]
-		visible = visible && scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
+		visible = visible && scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
 		if !visible {
 			if relation.Type == "dependency" {
 				switch relation.Direction {
@@ -157,7 +158,7 @@ func (s *Service) hydrateWorkItemRelationshipFacts(ctx context.Context, scope na
 	return nil
 }
 
-func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope nativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
+func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope hubscope.NativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
 	var page workItemRelationshipPage
 	err := s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
 		var err error
@@ -170,7 +171,7 @@ func (s *Service) readWorkItemRelationshipPage(ctx context.Context, scope native
 	return page, err
 }
 
-func (s *Service) readRelationshipPageModel(ctx context.Context, scope nativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
+func (s *Service) readRelationshipPageModel(ctx context.Context, scope hubscope.NativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
 	page := workItemRelationshipPage{
 		Dependencies: []tracker.NativeWorkItemID{},
 		Blockers:     []tracker.NativeDependency{},
@@ -185,7 +186,7 @@ func (s *Service) readRelationshipPageModel(ctx context.Context, scope nativeSco
 	if request.Cursor != "" {
 		params.Set("cursor", request.Cursor)
 	}
-	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(string(item.WorkItemID)) + "/relationships"
+	path := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(string(item.WorkItemID)) + "/relationships"
 	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, hubapi.MaxAPIPageLimit, hubapi.DefaultAPIPageLimit)
 	if err != nil {
 		return page, err
@@ -200,13 +201,13 @@ func (s *Service) readRelationshipPageModel(ctx context.Context, scope nativeSco
 		return page, err
 	}
 	var records []viewstore.RelationshipPageRecord
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		reader, ok := r.(viewstore.RelationshipPageReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		records, err = reader.RelationshipPageRecords(ctx, scope.project, item.WorkItemID, after, limit)
+		records, err = reader.RelationshipPageRecords(ctx, scope.Project, item.WorkItemID, after, limit)
 		return err
 	})
 	if err != nil {
@@ -226,10 +227,10 @@ func (s *Service) readRelationshipPageModel(ctx context.Context, scope nativeSco
 		if !record.TargetExists {
 			continue
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)}) {
 			continue
 		}
-		if scope.credential.EntryKey != nil && !scope.credential.EntryKey.Allows(string(relation.RelatedProjectID)) {
+		if scope.Credential.EntryKey != nil && !scope.Credential.EntryKey.Allows(string(relation.RelatedProjectID)) {
 			continue
 		}
 		if !authorizedProjects[relation.RelatedProjectID] {
@@ -283,27 +284,27 @@ type relationshipProjectReader interface {
 	RelationshipProjects(context.Context, accessstore.Authority, []tracker.ProjectID, time.Time) (map[tracker.ProjectID]bool, error)
 }
 
-func (s *Service) relationshipProjectAccess(ctx context.Context, scope nativeScope, visible map[tracker.ProjectID]bool) (map[tracker.ProjectID]bool, error) {
-	allowed := map[tracker.ProjectID]bool{scope.project: true}
+func (s *Service) relationshipProjectAccess(ctx context.Context, scope hubscope.NativeScope, visible map[tracker.ProjectID]bool) (map[tracker.ProjectID]bool, error) {
+	allowed := map[tracker.ProjectID]bool{scope.Project: true}
 	projects := []tracker.ProjectID{}
 	for project, active := range visible {
-		if project != scope.project && active && (scope.credential.EntryKey == nil || scope.credential.EntryKey.Allows(string(project))) {
+		if project != scope.Project && active && (scope.Credential.EntryKey == nil || scope.Credential.EntryKey.Allows(string(project))) {
 			projects = append(projects, project)
 		}
 	}
 	if len(projects) == 0 {
 		return allowed, nil
 	}
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		if batch, ok := r.(relationshipProjectReader); ok {
-			if s.config.Hosted != nil && scope.organization != s.accessOrganization() {
+			if s.config.Hosted != nil && scope.Organization != s.accessOrganization() {
 				return auth.ErrHostedIdentity
 			}
 			required := apikey.ScopeRead
-			if scope.requireHostedAdmin {
+			if scope.RequireHostedAdmin {
 				required = apikey.ScopeAdmin
 			}
-			if scope.credential.EntryKey != nil && (!hostedKeyAllows(scope.credential.HostedKeyScope, required) || !hostedRoleAllows(scope.credential.HostedRole, required, scope.action)) {
+			if scope.Credential.EntryKey != nil && (!hubscope.HostedKeyAllows(scope.Credential.HostedKeyScope, required) || !hubscope.HostedRoleAllows(scope.Credential.HostedRole, required, scope.Action)) {
 				return auth.ErrHostedIdentity
 			}
 			found, err := batch.RelationshipProjects(ctx, s.accessAuthority(scope, false), projects, s.config.now())
@@ -317,7 +318,7 @@ func (s *Service) relationshipProjectAccess(ctx context.Context, scope nativeSco
 		}
 		for _, project := range projects {
 			target := scope
-			target.project = project
+			target.Project = project
 			err := s.authorizeAccessScope(ctx, r, target, false)
 			if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || hubapi.IsNativeNotFound(err) {
 				continue
@@ -347,7 +348,7 @@ func (s *Service) GetWorkItemRelationships(c echo.Context) error {
 			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Page limit is invalid"))
 		}
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	item := tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(c.Param("item"))}}
 	var page workItemRelationshipPage
 	err = s.readWorkItemPageSnapshot(c.Request().Context(), scope, func(ctx context.Context) error {
@@ -361,7 +362,7 @@ func (s *Service) GetWorkItemRelationships(c echo.Context) error {
 	return c.JSON(http.StatusOK, page)
 }
 
-func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope nativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
+func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope hubscope.NativeScope, request operatortool.WorkReadRequest, item tracker.NativeIssue) (workItemRelationshipPage, error) {
 	page := workItemRelationshipPage{
 		Dependencies: []tracker.NativeWorkItemID{},
 		Blockers:     []tracker.NativeDependency{},
@@ -375,7 +376,7 @@ func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope 
 	if request.Cursor != "" {
 		params.Set("cursor", request.Cursor)
 	}
-	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(string(item.WorkItemID)) + "/relationships"
+	path := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(string(item.WorkItemID)) + "/relationships"
 	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, hubapi.MaxAPIPageLimit, hubapi.DefaultAPIPageLimit)
 	if err != nil {
 		return page, err
@@ -387,9 +388,9 @@ func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope 
 		}
 	}
 	var relations corestore.RelationshipPage
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		relations, err = r.Relationships(ctx, scope.project, item.WorkItemID, after, limit)
+		relations, err = r.Relationships(ctx, scope.Project, item.WorkItemID, after, limit)
 		return err
 	})
 	if err != nil {
@@ -404,10 +405,10 @@ func (s *Service) readWorkItemRelationshipSourcePage(ctx context.Context, scope 
 		return page, err
 	}
 	for _, relation := range relations.Items {
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)}) {
 			continue
 		}
-		if scope.credential.EntryKey != nil && !scope.credential.EntryKey.Allows(string(relation.RelatedProjectID)) {
+		if scope.Credential.EntryKey != nil && !scope.Credential.EntryKey.Allows(string(relation.RelatedProjectID)) {
 			continue
 		}
 		if !authorizedProjects[relation.RelatedProjectID] {

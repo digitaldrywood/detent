@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -34,7 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
+func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
 	result, err := s.transitionNativeIssueTenantWithStop(ctx, scope, item, request, nil)
 	if err == nil && s.wakeSpriteRunnersAfter != nil {
 		s.wakeSpriteRunnersAfter(scope, result)
@@ -42,22 +43,22 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope nativeS
 	return result, err
 }
 
-func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope nativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments) (json.RawMessage, error) {
-	batchRouting := scope.integrationOwned && scope.integrationRepository != "" && scope.githubIntakeRevision != nil && scope.githubIntakeRevision.batchID != "" && scope.githubIntakeRevision.revision > 0 && scope.credential.Scope == hubapi.APIScopeAdmin && scope.credential.Runner.RunnerID == "" && request.Reason == "user_requested" && request.State != "Cancelled" && stop == nil
+func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition, stop *coordinatorStopRunArguments) (json.RawMessage, error) {
+	batchRouting := scope.IntegrationOwned && scope.IntegrationRepository != "" && scope.GitHubIntakeRevision != nil && scope.GitHubIntakeRevision.BatchID != "" && scope.GitHubIntakeRevision.Revision > 0 && scope.Credential.Scope == hubapi.APIScopeAdmin && scope.Credential.Runner.RunnerID == "" && request.Reason == "user_requested" && request.State != "Cancelled" && stop == nil
 	if batchRouting {
 		batch, err := s.loadGitHubBatchRecord(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
-		actor := scope.actor()
-		if batch.ID != scope.githubIntakeRevision.batchID || batch.Revision != scope.githubIntakeRevision.revision || batch.Status != "importing" || batch.RequestedBy == nil || batch.RequestedBy.Kind != actor.Kind || batch.RequestedBy.PrincipalID != actor.PrincipalID || batch.Discovery.Repository != scope.integrationRepository {
-			return nil, runnerUnauthorized()
+		actor := scope.Actor()
+		if batch.ID != scope.GitHubIntakeRevision.BatchID || batch.Revision != scope.GitHubIntakeRevision.Revision || batch.Status != "importing" || batch.RequestedBy == nil || batch.RequestedBy.Kind != actor.Kind || batch.RequestedBy.PrincipalID != actor.PrincipalID || batch.Discovery.Repository != scope.IntegrationRepository {
+			return nil, hubscope.RunnerUnauthorized()
 		}
 		index := slices.IndexFunc(batch.Items, func(selected tracker.GitHubBatchItem) bool {
 			return string(selected.WorkItemID) == item && selected.Status == "pending"
 		})
 		if index < 0 {
-			return nil, runnerUnauthorized()
+			return nil, hubscope.RunnerUnauthorized()
 		}
 		previewIndex := slices.IndexFunc(batch.Page.Issues, func(preview tracker.GitHubIssuePreview) bool { return preview.Number == batch.Items[index].Number })
 		if previewIndex < 0 {
@@ -72,13 +73,13 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			return nil, err
 		}
 		if destination != request.State {
-			return nil, runnerUnauthorized()
+			return nil, hubscope.RunnerUnauthorized()
 		}
 	}
-	human := (scope.credential.Scope == hubapi.APIScopeOperator || scope.credential.Scope == hubapi.APIScopeAdmin) && scope.credential.Runner.RunnerID == "" && scope.actor().Kind == "human" || batchRouting
+	human := (scope.Credential.Scope == hubapi.APIScopeOperator || scope.Credential.Scope == hubapi.APIScopeAdmin) && scope.Credential.Runner.RunnerID == "" && scope.Actor().Kind == "human" || batchRouting
 	recordedRecovery := !human && request.Reason == "dependency_ready"
-	if !human && (scope.credential.Scope != hubapi.APIScopeWorker || scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization || scope.credential.EntryKey != nil) {
-		return nil, runnerUnauthorized()
+	if !human && (scope.Credential.Scope != hubapi.APIScopeWorker || scope.Credential.Runner.RunnerID == "" || scope.Credential.Runner.OrganizationID != scope.Organization || scope.Credential.EntryKey != nil) {
+		return nil, hubscope.RunnerUnauthorized()
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || request.ExpectedRevision <= 0 || !human && (request.LeaseID == "" || request.FencingToken <= 0) {
 		return nil, hubapi.NativePublicInvalid("A current revision and idempotency key are required; workers also require a lease and fencing token")
@@ -92,14 +93,14 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 	if !human && strings.EqualFold(request.State, "Cancelled") {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	if human && scope.credential.HostedRole == "reporter" && request.State != "Cancelled" {
+	if human && scope.Credential.HostedRole == "reporter" && request.State != "Cancelled" {
 		return nil, operatortool.ErrAccessDenied
 	}
-	scope.action = operatortool.MoveItem
+	scope.Action = operatortool.MoveItem
 	if stop != nil {
-		scope.action = operatortool.StopRun
+		scope.Action = operatortool.StopRun
 	}
-	scope.actionItem, scope.actionTarget = item, request.State
+	scope.ActionItem, scope.ActionTarget = item, request.State
 	options := hubapi.NativeCommandOptions{OperationID: nativeOperation(scope, http.MethodPost, "/work-items/"+item+"/workflow"), Item: item, RequireLease: true, Feature: "collaboration"}
 	if stop != nil {
 		options.OperationID = nativeOperation(scope, http.MethodPost, "/work-items/"+item+"/stop-run")
@@ -154,8 +155,8 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		var linkedSource *eventstore.LinkedSource
 		if human && issue.LinkedSource != nil {
-			if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				current, err := r.LinkedSource(ctx, scope.project, issue.WorkItemID)
+			if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				current, err := r.LinkedSource(ctx, scope.Project, issue.WorkItemID)
 				linkedSource = &current
 				return err
 			}); err != nil {
@@ -163,7 +164,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 			issue.LinkedSource = &tracker.LinkedIssueSource{URL: linkedSource.URL, Status: "pending"}
 			if linkedSource.SnapshotObjectKey != "" {
-				snapshot, err := content.LinkedIssueSnapshot(ctx, scope.organization, eventstore.Reference(linkedSource.SnapshotObjectKey, linkedSource.SnapshotSHA256, linkedSource.SnapshotBytes, linkedSource.SnapshotContentBytes))
+				snapshot, err := content.LinkedIssueSnapshot(ctx, scope.Organization, eventstore.Reference(linkedSource.SnapshotObjectKey, linkedSource.SnapshotSHA256, linkedSource.SnapshotBytes, linkedSource.SnapshotContentBytes))
 				if err != nil {
 					return nil, err
 				}
@@ -183,7 +184,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if human && !batchRouting && linkedSource != nil && issue.LinkedSource.Status != "complete" && dispatchableProjectState(project, request.State) {
 			return nil, hubapi.NativeWorkflowInvalid("Linked source intake must complete before executable work")
 		}
-		if err := validateNativeWorkflowTransition(project.States, issue.State, request.State, scope.credential.Scope); err != nil {
+		if err := validateNativeWorkflowTransition(project.States, issue.State, request.State, scope.Credential.Scope); err != nil {
 			return nil, err
 		}
 		var recovery *leasestore.RecordedRecovery
@@ -224,9 +225,9 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		if previousState != request.State && nativeDoneState(request.State) && nativeHumanFiled(issue) {
 			var workspace bool
-			if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				workspace, err = r.IsWorkspaceWorkItem(ctx, scope.project, issue.WorkItemID)
+				workspace, err = r.IsWorkspaceWorkItem(ctx, scope.Project, issue.WorkItemID)
 				return err
 			}); err != nil {
 				return nil, err
@@ -277,7 +278,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				return reference.Provider == "github" && reference.Kind == "issue" && reference.URL == linkedSource.URL
 			})
 		}
-		responseIssue := s.nativeIssueResponse(scope.reporterIssue(issue))
+		responseIssue := s.nativeIssueResponse(scope.ReporterIssue(issue))
 		versionRaw, err := json.Marshal(responseIssue)
 		if err != nil {
 			return nil, err
@@ -289,7 +290,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if err != nil {
 			return nil, err
 		}
-		newVersion, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision)}, versionRaw)
+		newVersion, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision)}, versionRaw)
 		if err != nil {
 			return nil, err
 		}
@@ -303,19 +304,19 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if awaitsFiler {
 			data.Verification = tracker.VerificationPending
 		}
-		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: data})
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: data})
 		if err != nil {
 			return nil, err
 		}
-		event, err := content.PrepareEvent(ctx, scope.organization, eventRaw)
+		event, err := content.PrepareEvent(ctx, scope.Organization, eventRaw)
 		if err != nil {
 			return nil, err
 		}
-		preparedReceipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: options.OperationID, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, responseRaw)
+		preparedReceipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: options.OperationID, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, responseRaw)
 		if err != nil {
 			return nil, err
 		}
-		searchDocument := searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}
+		searchDocument := searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}
 		searchDocument, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchDocument, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 		if err != nil {
 			return nil, err
@@ -328,7 +329,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if err != nil {
 				return nil, err
 			}
-			prepared, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
+			prepared, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, raw)
 			if err != nil {
 				return nil, err
 			}
@@ -359,7 +360,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		}
 		var workflowOutbound *projectstore.GitHubOutbound
 		if compatible {
-			key, err := hubapi.CommandHash(struct{ Operation, ActorID, CommandKey string }{options.OperationID, scope.credential.ID, request.IdempotencyKey})
+			key, err := hubapi.CommandHash(struct{ Operation, ActorID, CommandKey string }{options.OperationID, scope.Credential.ID, request.IdempotencyKey})
 			if err != nil {
 				return nil, err
 			}
@@ -382,7 +383,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 					return err
 				}
 			}
-			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
 			if batchRouting {
@@ -393,14 +394,14 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 					return err
 				}
 			}
-			currentProject, err := w.ProjectRecord(ctx, scope.project)
+			currentProject, err := w.ProjectRecord(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
 			if currentProject.Core.DeletedAt != nil || !sameWorkItemProjectPlan(project, currentProject) {
 				return corestore.ErrSerializationFailure
 			}
-			currentPolicy, policyErr := w.ProjectPolicy(ctx, scope.project)
+			currentPolicy, policyErr := w.ProjectPolicy(ctx, scope.Project)
 			if errors.Is(policyErr, corestore.ErrNotFound) {
 				if policyFound {
 					return corestore.ErrSerializationFailure
@@ -410,14 +411,14 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			} else if !policyFound || !sameTenantProjectPolicyRevisionContent(policyRevision, currentPolicy) {
 				return corestore.ErrSerializationFailure
 			}
-			locked, err := w.LockWorkItem(ctx, scope.project, issue.WorkItemID)
+			locked, err := w.LockWorkItem(ctx, scope.Project, issue.WorkItemID)
 			if err != nil {
 				return err
 			}
-			if human && scope.credential.HostedRole == "reporter" && (request.State != "Cancelled" || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(locked.ActorPrincipalID)})) {
+			if human && scope.Credential.HostedRole == "reporter" && (request.State != "Cancelled" || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(locked.ActorPrincipalID)})) {
 				return corestore.ErrNotFound
 			}
-			previous, err := w.Receipt(ctx, scope.credential.ID, options.OperationID, request.IdempotencyKey)
+			previous, err := w.Receipt(ctx, scope.Credential.ID, options.OperationID, request.IdempotencyKey)
 			if err == nil {
 				if previous.RequestHash != hash {
 					return hubapi.NativeConflict(0)
@@ -434,7 +435,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				return corestore.ErrRevisionConflict
 			}
 			if previousState != request.State && nativeDoneState(request.State) && nativeHumanFiled(issue) {
-				workspace, err := w.IsWorkspaceWorkItem(ctx, scope.project, issue.WorkItemID)
+				workspace, err := w.IsWorkspaceWorkItem(ctx, scope.Project, issue.WorkItemID)
 				if err != nil {
 					return err
 				}
@@ -444,7 +445,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 			activeLease := false
 			if human {
-				currentSource, sourceErr := w.LinkedSource(ctx, scope.project, issue.WorkItemID)
+				currentSource, sourceErr := w.LinkedSource(ctx, scope.Project, issue.WorkItemID)
 				if sourceErr == nil && (linkedSource == nil || !sameNativeClaimLinkedSource(currentSource, *linkedSource)) || (errors.Is(sourceErr, corestore.ErrNotFound) || errors.Is(sourceErr, sql.ErrNoRows)) && linkedSource != nil {
 					return corestore.ErrSerializationFailure
 				}
@@ -490,24 +491,24 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				if err != nil {
 					return err
 				}
-				if lease.OrganizationID != scope.organization || lease.IssueID != row.ID || lease.FencingToken != int64(request.FencingToken) || lease.ReleasedAt != nil {
+				if lease.OrganizationID != scope.Organization || lease.IssueID != row.ID || lease.FencingToken != int64(request.FencingToken) || lease.ReleasedAt != nil {
 					return tracker.ErrStaleFencingToken
 				}
-				credential, err := w.AccessCredential(ctx, scope.credential.ID)
+				credential, err := w.AccessCredential(ctx, scope.Credential.ID)
 				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 					return err
 				}
-				if err != nil || credential.OrganizationID != scope.organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" {
-					return runnerUnauthorized()
+				if err != nil || credential.OrganizationID != scope.Organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" {
+					return hubscope.RunnerUnauthorized()
 				}
 				currentTime := s.config.now().UTC()
-				if !lease.ExpiresAt.After(currentTime) || !credential.Valid(scope.credential.Hash, currentTime) {
+				if !lease.ExpiresAt.After(currentTime) || !credential.Valid(scope.Credential.Hash, currentTime) {
 					return tracker.ErrStaleFencingToken
 				}
-				if !runnerIdentityMatchesHeldLease(identity, scope.organization, scope.credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), currentTime) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Claim) || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
+				if !runnerIdentityMatchesHeldLease(identity, scope.Organization, scope.Credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), currentTime) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Claim) || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
 					return tracker.ErrMachineNotFound
 				}
-				allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, currentTime)
+				allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, currentTime)
 				if err != nil {
 					return err
 				}
@@ -535,12 +536,12 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			}
 			if contractPayload != nil {
 				ref := eventstore.Reference(contractPayload.PayloadObjectKey, contractPayload.PayloadSHA256, contractPayload.PayloadBytes, contractPayload.PayloadContentBytes)
-				id := "att_" + artifact.Digest([]byte(string(scope.organization) + "\n" + ref.Key))[:32]
-				object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: id, Reference: ref, CreatedAt: now})
+				id := "att_" + artifact.Digest([]byte(string(scope.Organization) + "\n" + ref.Key))[:32]
+				object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: id, Reference: ref, CreatedAt: now})
 				if err != nil {
 					return err
 				}
-				if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.organization, ArchiveID: object.ID, Kind: "work-item-contract", ID: string(issue.WorkItemID) + ":" + strconv.FormatInt(int64(issue.Revision), 10), CreatedAt: now}); err != nil {
+				if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "work-item-contract", ID: string(issue.WorkItemID) + ":" + strconv.FormatInt(int64(issue.Revision), 10), CreatedAt: now}); err != nil {
 					return err
 				}
 			}
@@ -556,7 +557,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 				if s.config.ConversationDispatch == nil {
 					return conversationDispatchUnavailable()
 				}
-				if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.project, string(issue.WorkItemID), leasestore.Fence{}, currentTime); err != nil {
+				if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.Project, string(issue.WorkItemID), leasestore.Fence{}, currentTime); err != nil {
 					return err
 				}
 			}
@@ -571,7 +572,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 			if _, err := w.CreateCollaborationVersion(ctx, newVersion); err != nil {
 				return err
 			}
-			if err := w.BindDoctorProposalIdentities(ctx, corestore.DoctorProposalIdentityBinding{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: newVersion.WorkItemID, Revision: newVersion.Revision, VersionSHA256: newVersion.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(issue.Body)}); err != nil {
+			if err := w.BindDoctorProposalIdentities(ctx, corestore.DoctorProposalIdentityBinding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: newVersion.WorkItemID, Revision: newVersion.Revision, VersionSHA256: newVersion.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(issue.Body)}); err != nil {
 				return err
 			}
 			if _, err := w.AppendEvent(ctx, event); err != nil {
@@ -604,7 +605,7 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 		if recordedRecovery {
 			err = s.writeNativeClaimCommand(ctx, scope, write)
 		} else {
-			err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
+			err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
 		}
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
 			continue
@@ -622,24 +623,24 @@ func (s *Service) transitionNativeIssueTenantWithStop(ctx context.Context, scope
 	}
 }
 
-func (s *Service) humanWorkflowReceipt(ctx context.Context, scope nativeScope, item, operation, key, hash string) (eventstore.Receipt, bool, error) {
+func (s *Service) humanWorkflowReceipt(ctx context.Context, scope hubscope.NativeScope, item, operation, key, hash string) (eventstore.Receipt, bool, error) {
 	var receipt eventstore.Receipt
 	var found bool
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeNativeWorkflowScope(ctx, w, scope); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		row, err := w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		row, err := w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if scope.credential.HostedRole == "reporter" && !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+		if scope.Credential.HostedRole == "reporter" && !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
-		receipt, err = w.Receipt(ctx, scope.credential.ID, operation, key)
+		receipt, err = w.Receipt(ctx, scope.Credential.ID, operation, key)
 		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -659,7 +660,7 @@ func (s *Service) humanWorkflowReceipt(ctx context.Context, scope nativeScope, i
 			if _, err := writer.ExpireReceipt(ctx, receipt, now.Add(time.Nanosecond)); err != nil {
 				return err
 			}
-			receipt, err = w.Receipt(ctx, scope.credential.ID, operation, key)
+			receipt, err = w.Receipt(ctx, scope.Credential.ID, operation, key)
 			return err
 		}
 		return nil
@@ -685,22 +686,22 @@ func tenantProjectStateTerminal(project projectstore.Record, name string) bool {
 	return false
 }
 
-func (s *Service) readTenantProjectRecord(ctx context.Context, scope nativeScope) (projectstore.Record, error) {
+func (s *Service) readTenantProjectRecord(ctx context.Context, scope hubscope.NativeScope) (projectstore.Record, error) {
 	var project projectstore.Record
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		project, err = r.ProjectRecord(ctx, scope.project)
+		project, err = r.ProjectRecord(ctx, scope.Project)
 		return err
 	})
 	return project, hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue, project *projectstore.Record, previousState string, request tracker.Transition, stopState, workflowLabel *string) (policystore.Revision, bool, error) {
+func (s *Service) validateTenantTransitionIssueContract(ctx context.Context, scope hubscope.NativeScope, issue *tracker.NativeIssue, project *projectstore.Record, previousState string, request tracker.Transition, stopState, workflowLabel *string) (policystore.Revision, bool, error) {
 	workflow := config.Workflow{Config: config.Default()}
 	var revision policystore.Revision
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		revision, err = r.ProjectPolicy(ctx, scope.project)
+		revision, err = r.ProjectPolicy(ctx, scope.Project)
 		return err
 	})
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -781,7 +782,7 @@ func approvedCompatibilityWorkflowLabel(workflow config.Workflow, found bool, st
 	return label, nil
 }
 
-func (s *Service) prepareCompatibilityWorkflowLabel(ctx context.Context, scope nativeScope, issue tracker.NativeIssue, project projectstore.Record, label, key string, now time.Time) (*projectstore.GitHubOutbound, error) {
+func (s *Service) prepareCompatibilityWorkflowLabel(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, project projectstore.Record, label, key string, now time.Time) (*projectstore.GitHubOutbound, error) {
 	repository, number, err := cutoverSourceReference(issue)
 	if err != nil || !project.Settings.RepositoryEnabled || !strings.EqualFold(repository, strings.TrimSpace(project.Settings.Repository)) {
 		return nil, hubapi.NativePublicInvalid("Compatibility workflow transitions require an enabled matching repository source")
@@ -790,9 +791,9 @@ func (s *Service) prepareCompatibilityWorkflowLabel(ctx context.Context, scope n
 	if err != nil {
 		return nil, err
 	}
-	prepared, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, desired)
+	prepared, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, desired)
 	if err != nil {
 		return nil, err
 	}
-	return &projectstore.GitHubOutbound{ProjectID: scope.project, WorkItemID: issue.WorkItemID, Key: key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkflowLabel), CreatedAt: now, Payload: prepared, CoalesceKey: "managed-label:" + repository + ":" + string(issue.WorkItemID) + ":" + defaultLabelPrefix}, nil
+	return &projectstore.GitHubOutbound{ProjectID: scope.Project, WorkItemID: issue.WorkItemID, Key: key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkflowLabel), CreatedAt: now, Payload: prepared, CoalesceKey: "managed-label:" + repository + ":" + string(issue.WorkItemID) + ":" + defaultLabelPrefix}, nil
 }

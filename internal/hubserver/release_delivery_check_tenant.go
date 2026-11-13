@@ -11,26 +11,27 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Reader, scope nativeScope, item string, request tracker.AssociateReleasePick, publishing bool) (releaseDeliveryRows, error) {
+func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item string, request tracker.AssociateReleasePick, publishing bool) (releaseDeliveryRows, error) {
 	var rows releaseDeliveryRows
 	var err error
-	rows.project, err = r.ProjectRecord(ctx, scope.project)
+	rows.project, err = r.ProjectRecord(ctx, scope.Project)
 	if err != nil {
 		return rows, err
 	}
 	if rows.project.Core.DeletedAt != nil {
 		return rows, corestore.ErrNotFound
 	}
-	rows.checkoutVerified, err = r.RunnerCheckoutVerified(ctx, scope.project, rows.project.Settings.CheckoutRepository, s.config.now())
+	rows.checkoutVerified, err = r.RunnerCheckoutVerified(ctx, scope.Project, rows.project.Settings.CheckoutRepository, s.config.now())
 	if err != nil {
 		return rows, err
 	}
-	rows.current, err = r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+	rows.current, err = r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 	if err != nil {
 		return rows, err
 	}
@@ -42,7 +43,7 @@ func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Rea
 	if !ok {
 		return rows, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	rows.deliveryRow, err = deliveryReader.ReleaseDelivery(ctx, scope.project, tracker.NativeWorkItemID(item))
+	rows.deliveryRow, err = deliveryReader.ReleaseDelivery(ctx, scope.Project, tracker.NativeWorkItemID(item))
 	rows.found = err == nil
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return rows, err
@@ -51,7 +52,7 @@ func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Rea
 	if !ok {
 		return rows, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	rows.facts, err = facts.ReleaseDeliveryFacts(ctx, scope.project, tracker.NativeWorkItemID(item), request.ReleasePickInput)
+	rows.facts, err = facts.ReleaseDeliveryFacts(ctx, scope.Project, tracker.NativeWorkItemID(item), request.ReleasePickInput)
 	if err != nil {
 		return rows, err
 	}
@@ -59,7 +60,7 @@ func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Rea
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return rows, err
 	}
-	rows.source, err = r.WorkItem(ctx, scope.project, request.SourceIssueID)
+	rows.source, err = r.WorkItem(ctx, scope.Project, request.SourceIssueID)
 	if err != nil {
 		return rows, err
 	}
@@ -67,7 +68,7 @@ func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Rea
 	if err != nil {
 		return rows, err
 	}
-	if rows.change.ProjectID != scope.project || rows.change.WorkItemID != request.SourceIssueID {
+	if rows.change.ProjectID != scope.Project || rows.change.WorkItemID != request.SourceIssueID {
 		return rows, corestore.ErrNotFound
 	}
 	if rows.change.CurrentVersionID == nil || rows.change.LandedVersionID == nil || *rows.change.CurrentVersionID != *rows.change.LandedVersionID || rows.change.LandedMergeSHA == nil || rows.change.LandedBaseRef == nil {
@@ -77,7 +78,7 @@ func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Rea
 	if err != nil {
 		return rows, err
 	}
-	rows.prior, err = r.LatestChange(ctx, scope.project, tracker.NativeWorkItemID(item))
+	rows.prior, err = r.LatestChange(ctx, scope.Project, tracker.NativeWorkItemID(item))
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return rows, err
 	}
@@ -104,7 +105,7 @@ func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Rea
 				return rows, err
 			}
 			if rows.attempt.payload == nil {
-				rows.attempt.event, err = r.LatestRunEvent(ctx, scope.project, attempt.ID)
+				rows.attempt.event, err = r.LatestRunEvent(ctx, scope.Project, attempt.ID)
 				if err != nil {
 					return rows, err
 				}
@@ -114,12 +115,12 @@ func (s *Service) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Rea
 	return rows, nil
 }
 
-func (s *Service) prepareReleaseDeliveryCheck(ctx context.Context, scope nativeScope, item string, request tracker.AssociateReleasePick, now time.Time, publishing bool) (releaseDeliveryCheck, error) {
+func (s *Service) prepareReleaseDeliveryCheck(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.AssociateReleasePick, now time.Time, publishing bool) (releaseDeliveryCheck, error) {
 	plan := releaseDeliveryCheck{request: request, publishing: publishing}
 	if s.config.TenantRepository == nil {
 		return plan, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeReleaseScope(ctx, r, scope); err != nil {
 			return err
 		}
@@ -196,14 +197,14 @@ func (s *Service) prepareReleaseDeliveryCheck(ctx context.Context, scope nativeS
 	return plan, nil
 }
 
-func (s *Service) recheckReleaseDelivery(ctx context.Context, w tenantstore.Writer, scope nativeScope, plan releaseDeliveryCheck) error {
+func (s *Service) recheckReleaseDelivery(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, plan releaseDeliveryCheck) error {
 	if err := s.authorizeReleaseScope(ctx, w, scope); err != nil {
 		return err
 	}
-	if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+	if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 		return err
 	}
-	if _, err := w.LockWorkItem(ctx, scope.project, plan.current.NativeID); err != nil {
+	if _, err := w.LockWorkItem(ctx, scope.Project, plan.current.NativeID); err != nil {
 		return err
 	}
 	if _, err := w.LockChange(ctx, plan.change.ID); err != nil {
@@ -222,19 +223,19 @@ func (s *Service) recheckReleaseDelivery(ctx context.Context, w tenantstore.Writ
 	return nil
 }
 
-func (s *Service) authorizeReleaseScope(ctx context.Context, r tenantstore.Reader, scope nativeScope) error {
-	if scope.credential.Scope != hubapi.APIScopeOperator && scope.credential.Scope != hubapi.APIScopeAdmin || scope.credential.Runner.RunnerID != "" {
+func (s *Service) authorizeReleaseScope(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) error {
+	if scope.Credential.Scope != hubapi.APIScopeOperator && scope.Credential.Scope != hubapi.APIScopeAdmin || scope.Credential.Runner.RunnerID != "" {
 		return hubapi.NativeNotFound()
 	}
 	if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
 		return err
 	}
-	if scope.credential.Hosted == nil {
-		current, err := r.AccessCredential(ctx, scope.credential.ID)
+	if scope.Credential.Hosted == nil {
+		current, err := r.AccessCredential(ctx, scope.Credential.ID)
 		if err != nil {
 			return err
 		}
-		if current.Scope != string(scope.credential.Scope) || current.NativeOnly != scope.credential.NativeOnly {
+		if current.Scope != string(scope.Credential.Scope) || current.NativeOnly != scope.Credential.NativeOnly {
 			return hubapi.NativeNotFound()
 		}
 	}
@@ -248,16 +249,16 @@ type releaseDeliveryContractFacts struct {
 	change          eventstore.Change
 }
 
-func readReleaseDeliveryContractFacts(ctx context.Context, r tenantstore.Reader, scope nativeScope, item tracker.NativeWorkItemID, states []tracker.NativeState) (releaseDeliveryContractFacts, error) {
+func readReleaseDeliveryContractFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item tracker.NativeWorkItemID, states []tracker.NativeState) (releaseDeliveryContractFacts, error) {
 	var rows releaseDeliveryContractFacts
-	delivery, err := r.ReleaseDelivery(ctx, scope.project, item)
+	delivery, err := r.ReleaseDelivery(ctx, scope.Project, item)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return rows, nil
 	}
 	if err != nil {
 		return rows, err
 	}
-	if delivery.OrganizationID != scope.organization || delivery.ProjectID != scope.project || delivery.WorkItemID != item {
+	if delivery.OrganizationID != scope.Organization || delivery.ProjectID != scope.Project || delivery.WorkItemID != item {
 		return rows, corestore.ErrNotFound
 	}
 	rows.delivery = &delivery
@@ -265,12 +266,12 @@ func readReleaseDeliveryContractFacts(ctx context.Context, r tenantstore.Reader,
 	if !ok {
 		return rows, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	facts, err := reader.ReleaseDeliveryFacts(ctx, scope.project, item, delivery.ReleasePickInput)
+	facts, err := reader.ReleaseDeliveryFacts(ctx, scope.Project, item, delivery.ReleasePickInput)
 	if err != nil {
 		return rows, err
 	}
 	rows.dependsOnSource = facts.DependsOnSource
-	source, err := r.WorkItem(ctx, scope.project, delivery.SourceIssueID)
+	source, err := r.WorkItem(ctx, scope.Project, delivery.SourceIssueID)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return rows, nil
 	}
@@ -303,7 +304,7 @@ func releaseDeliveryContractFactsCurrent(plan nativeClaimPlan, contract config.I
 	return change.OrganizationID == rows.delivery.OrganizationID && change.ProjectID == rows.delivery.ProjectID && change.WorkItemID == rows.delivery.SourceIssueID && change.ID == rows.delivery.SourceChangeID && change.CurrentVersionID != nil && *change.CurrentVersionID != "" && change.LandedVersionID != nil && *change.CurrentVersionID == *change.LandedVersionID && change.LandedBaseRef != nil && *change.LandedBaseRef == "develop" && change.LandedMergeSHA != nil && *change.LandedMergeSHA == rows.delivery.SourceMergeSHA
 }
 
-func readNativeClaimReleaseDeliveryFacts(ctx context.Context, r tenantstore.Reader, scope nativeScope, plans []nativeClaimPlan) error {
+func readNativeClaimReleaseDeliveryFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plans []nativeClaimPlan) error {
 	for i := range plans {
 		if plans[i].item.IssueContractObjectKey == nil {
 			continue

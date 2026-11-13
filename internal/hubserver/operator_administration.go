@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -89,7 +90,7 @@ func (a hubAdministration) credential(ctx context.Context) (hubapi.APICredential
 	if err != nil {
 		return hubapi.APICredential{}, err
 	}
-	if operatorIdentity(credential, c.Identity.OrganizationID) != c.Identity {
+	if hubscope.OperatorIdentity(credential, c.Identity.OrganizationID) != c.Identity {
 		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	if credential.Hosted != nil {
@@ -125,7 +126,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		if in.OrganizationID == "" {
 			return nil
 		}
-		return s.authorizeConversationOrganization(ctx, nativeScope{organization: tracker.OrganizationID(in.OrganizationID), credential: credential})
+		return s.authorizeConversationOrganization(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(in.OrganizationID), Credential: credential})
 	}
 
 	if s.config.Hosted == nil {
@@ -357,7 +358,7 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 	}
 	switch name {
 	case operatortool.OrganizationProjectRank:
-		return s.readOrganizationRankRecord(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential})
+		return s.readOrganizationRankRecord(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), Credential: credential})
 	case operatortool.OrganizationSession:
 		setup := hostedAccountSetup{}
 		if credential.Hosted != nil && credential.SessionHash != "" {
@@ -433,7 +434,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 	}
 	switch name {
 	case operatortool.OrganizationProjectRankUpdate:
-		current, err := s.readOrganizationRankRecord(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential})
+		current, err := s.readOrganizationRankRecord(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), Credential: credential})
 		if err != nil {
 			return preview, err
 		}
@@ -475,7 +476,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 	case operatortool.OrganizationSwitch:
 		if s.config.Hosted == nil {
 			organization := tracker.OrganizationID(in.OrganizationID)
-			if err := s.authorizeConversationOrganization(ctx, nativeScope{organization: organization, credential: credential}); err != nil {
+			if err := s.authorizeConversationOrganization(ctx, hubscope.NativeScope{Organization: organization, Credential: credential}); err != nil {
 				return preview, err
 			}
 			var org nativeOrganization
@@ -768,8 +769,8 @@ func (s *Service) operatorOrganizationMetadata(ctx context.Context, credential h
 	result := operatoradmin.PageResult[nativeOrganization]{Items: []nativeOrganization{}}
 	err := s.accessRead(ctx, organization, func(r tenantstore.Reader) error {
 		if credential.NativeOnly {
-			if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: organization, credential: credential}, false); err != nil {
-				return operatorAuthorizationError(err)
+			if err := s.authorizeAccessScope(ctx, r, hubscope.NativeScope{Organization: organization, Credential: credential}, false); err != nil {
+				return hubscope.OperatorAuthorizationError(err)
 			}
 			if _, err := r.RunnerIdentityByCredential(ctx, credential.ID); !errors.Is(err, corestore.ErrNotFound) {
 				return operatortool.ErrAccessDenied
@@ -831,7 +832,7 @@ func (s *Service) tokenMetadata(ctx context.Context, credential hubapi.APICreden
 		if current.Scope != string(hubapi.APIScopeAdmin) || current.NativeOnly {
 			return operatortool.ErrAccessDenied
 		}
-		if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: organization, credential: credential, requireHostedAdmin: true}, false); err != nil {
+		if err := s.authorizeAccessScope(ctx, r, hubscope.NativeScope{Organization: organization, Credential: credential, RequireHostedAdmin: true}, false); err != nil {
 			return err
 		}
 		if _, err := r.RunnerIdentityByCredential(ctx, credential.ID); !errors.Is(err, corestore.ErrNotFound) {

@@ -12,13 +12,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readNativeFailuresTenant(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, w operatortool.AnalyticsWindow) ([]nativeFailure, bool, []string, error) {
+func (s *Service) readNativeFailuresTenant(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, w operatortool.AnalyticsWindow) ([]nativeFailure, bool, []string, error) {
 	out := []nativeFailure{}
 	unavailable := []string{}
 	after, cursor, key, err := s.analyticsFactSeek(ctx, scope, w, "failures")
@@ -32,7 +33,7 @@ func (s *Service) readNativeFailuresTenant(ctx context.Context, scope nativeScop
 	}
 	var page diagnosticstore.AnalyticsFailurePage
 	var usage reportstore.AnalyticsUsagePage
-	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
 		if err != nil {
 			return err
@@ -45,7 +46,7 @@ func (s *Service) readNativeFailuresTenant(ctx context.Context, scope nativeScop
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		page, err = owner.ReadAnalyticsFailurePage(ctx, diagnosticstore.AnalyticsFailureQuery{ProjectID: scope.project, WorkItemID: item, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: after.Failure})
+		page, err = owner.ReadAnalyticsFailurePage(ctx, diagnosticstore.AnalyticsFailureQuery{ProjectID: scope.Project, WorkItemID: item, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: after.Failure})
 		if err != nil {
 			return err
 		}
@@ -55,7 +56,7 @@ func (s *Service) readNativeFailuresTenant(ctx context.Context, scope nativeScop
 		if len(page.Attempts) == 0 {
 			return nil
 		}
-		usage, err = usageOwner.ReadAnalyticsUsagePage(ctx, reportstore.AnalyticsUsageQuery{ProjectID: scope.project, Principal: principal, From: time.Time{}, To: time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC), Limit: maxAnalyticsPopulation})
+		usage, err = usageOwner.ReadAnalyticsUsagePage(ctx, reportstore.AnalyticsUsageQuery{ProjectID: scope.Project, Principal: principal, From: time.Time{}, To: time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC), Limit: maxAnalyticsPopulation})
 		return err
 	})
 	if err != nil {
@@ -90,7 +91,7 @@ func (s *Service) readNativeFailuresTenant(ctx context.Context, scope nativeScop
 		if err != nil {
 			return out, false, nil, err
 		}
-		if value.Data.Run == nil || value.Data.Run.AttemptID != attempt.ID || value.ProjectID != scope.project || value.AggregateID != attempt.WorkItemID {
+		if value.Data.Run == nil || value.Data.Run.AttemptID != attempt.ID || value.ProjectID != scope.Project || value.AggregateID != attempt.WorkItemID {
 			return out, false, nil, artifact.ErrIntegrity
 		}
 		example, class := failureFromAttempt(*value.Data.Run, attempt.Status)

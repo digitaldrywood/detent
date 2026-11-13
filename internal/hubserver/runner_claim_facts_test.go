@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -173,7 +174,7 @@ func TestRunnerClaimFactsRecoverOnlyVerifiedCurrentSource(t *testing.T) {
 					t.Fatalf("legacy fixture already has claim facts: %+v", attempt)
 				}
 				legacyPlan := nativeClaimPlan{candidate: claimstore.Candidate{State: "Todo"}, item: item, latestAttempt: attempt, latestAttemptFound: true}
-				_, unknownErr := service.hydrateNativeClaimPlan(t.Context(), nativeScope{organization: organization, project: project}, tracker.NativeClaim{}, lease.RenewedAt.Add(time.Second), legacyPlan, nil)
+				_, unknownErr := service.hydrateNativeClaimPlan(t.Context(), hubscope.NativeScope{Organization: organization, Project: project}, tracker.NativeClaim{}, lease.RenewedAt.Add(time.Second), legacyPlan, nil)
 				var unknown *hubapi.NativeError
 				if !errors.As(unknownErr, &unknown) || unknown.Status != http.StatusServiceUnavailable {
 					t.Fatalf("unknown facts did not fail closed: %v", unknownErr)

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -25,15 +26,15 @@ func TestAnalyticsQualityEvidencePopulationOrder(t *testing.T) {
 	now := f.service.config.now().UTC().Truncate(time.Hour)
 	content := eventstore.NewContent(f.service.runDetailStore())
 	for index, name := range []string{"first", "second"} {
-		issue := seedAnalyticsTestWorkItem(t, f.service, scope.organization, scope.project, "quality-"+name, index+1, name, "Todo", now.Add(-time.Hour))
+		issue := seedAnalyticsTestWorkItem(t, f.service, scope.Organization, scope.Project, "quality-"+name, index+1, name, "Todo", now.Add(-time.Hour))
 		change, version := seedAnalyticsTestChange(t, f.service, scope, issue.WorkItemID, "change-"+name, now.Add(-time.Hour), nil)
 		for number := 1; number <= maxAnalyticsPopulation+2; number++ {
 			review := tracker.ChangeReview{ID: fmt.Sprintf("%s-%d", name, number), VersionID: version.ID, Decision: "changes_requested", Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: now.Add(-time.Duration(number) * time.Second)}
-			row, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: scope.organization, ChangeID: change.ID, Kind: "review", Sequence: int64(number*2 - 1 + index)}, historyTestJSON(t, review))
+			row, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: change.ID, Kind: "review", Sequence: int64(number*2 - 1 + index)}, historyTestJSON(t, review))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), row); return err }); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), row); return err }); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -85,11 +86,11 @@ func TestQualityEscapeApplicationAndRead(t *testing.T) {
 	scope := analyticsTestScope(t, f.nativeFixture)
 	version := f.publish(t, "v1", "")
 	landing := tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: strings.Repeat("d", 40), BaseRef: "develop", LandedAt: now.Add(-time.Hour), Quality: &tracker.LandingQualitySnapshot{IssueBody: "Must accept valid input", Criteria: []string{"Accept valid input"}, Evidence: []gate.CriterionEvidence{}}}
-	frozenRow, err := eventstore.NewContent(details).PrepareVersionLanding(t.Context(), eventstore.VersionLanding{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: f.issue.WorkItemID, ChangeID: f.change.ID, VersionID: version.ID}, landing)
+	frozenRow, err := eventstore.NewContent(details).PrepareVersionLanding(t.Context(), eventstore.VersionLanding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: f.issue.WorkItemID, ChangeID: f.change.ID, VersionID: version.ID}, landing)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.RecordVersionLanding(t.Context(), frozenRow) }); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { return w.RecordVersionLanding(t.Context(), frozenRow) }); err != nil {
 		t.Fatal(err)
 	}
 	assessment := tracker.QualityEscape{OccurrenceID: strings.Repeat("e", 40), Kind: "revert", ObservedAt: now.Add(-30 * time.Minute), Cause: "missing_criterion", EvidenceReference: "revert_commit", EvidenceQuote: "This reverts commit " + landing.MergeSHA, BasisQuote: "Must accept valid input"}
@@ -147,7 +148,7 @@ func TestQualityEscapeApplicationAndRead(t *testing.T) {
 	if !injected {
 		t.Fatal("scheduled evidence edit was not injected")
 	}
-	row, err := f.service.readChangeVersionRecord(t.Context(), scope.organization, f.change.ID, version.ID)
+	row, err := f.service.readChangeVersionRecord(t.Context(), scope.Organization, f.change.ID, version.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,13 +163,13 @@ func TestQualityEscapeApplicationAndRead(t *testing.T) {
 	}
 }
 
-func replaceAnalyticsTestIssueBody(t *testing.T, service *Service, scope nativeScope, item tracker.NativeWorkItemID, body string) {
+func replaceAnalyticsTestIssueBody(t *testing.T, service *Service, scope hubscope.NativeScope, item tracker.NativeWorkItemID, body string) {
 	t.Helper()
 	var row corestore.WorkItem
 	var version eventstore.CollaborationVersion
-	if err := service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		row, err = r.WorkItem(t.Context(), scope.project, item)
+		row, err = r.WorkItem(t.Context(), scope.Project, item)
 		if err != nil {
 			return err
 		}
@@ -184,17 +185,17 @@ func replaceAnalyticsTestIssueBody(t *testing.T, service *Service, scope nativeS
 	issue.Body = body
 	issue.Revision++
 	issue.UpdatedAt = service.config.now().UTC().Truncate(time.Microsecond)
-	fields, err := service.prepareWorkItemFields(t.Context(), scope.organization, workItemRecordPlan{issue: issue})
+	fields, err := service.prepareWorkItemFields(t.Context(), scope.Organization, workItemRecordPlan{issue: issue})
 	if err != nil {
 		t.Fatal(err)
 	}
 	content := eventstore.NewContent(service.runDetailStore())
-	version, err = content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, RecordID: string(item), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
+	version, err = content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, RecordID: string(item), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.LockWorkItemProject(t.Context(), scope.project); err != nil {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockWorkItemProject(t.Context(), scope.Project); err != nil {
 			return err
 		}
 		row.BodyObjectKey = &fields.Body

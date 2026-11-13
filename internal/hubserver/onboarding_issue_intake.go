@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -64,7 +65,7 @@ func projectGitHubBatchView(states []tracker.NativeState, batch *tracker.GitHubB
 }
 
 func (s *Service) getGitHubBatch(c echo.Context) error {
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	ctx := c.Request().Context()
 	view, err := s.projectGitHubBatch(ctx, scope)
 	if err != nil {
@@ -73,7 +74,7 @@ func (s *Service) getGitHubBatch(c echo.Context) error {
 	return c.JSON(http.StatusOK, view)
 }
 
-func (s *Service) projectGitHubBatch(ctx context.Context, scope nativeScope) (githubBatchView, error) {
+func (s *Service) projectGitHubBatch(ctx context.Context, scope hubscope.NativeScope) (githubBatchView, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil {
@@ -82,12 +83,12 @@ func (s *Service) projectGitHubBatch(ctx context.Context, scope nativeScope) (gi
 	var project projectstore.Record
 	var record projectstore.IntakeBatch
 	found := false
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
 		var err error
-		project, err = r.ProjectRecord(ctx, scope.project)
+		project, err = r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -95,7 +96,7 @@ func (s *Service) projectGitHubBatch(ctx context.Context, scope nativeScope) (gi
 		if !ok {
 			return ErrHostedDatabaseBinding
 		}
-		record, err = reader.ProjectIntakeBatch(ctx, scope.project)
+		record, err = reader.ProjectIntakeBatch(ctx, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -113,7 +114,7 @@ func (s *Service) projectGitHubBatch(ctx context.Context, scope nativeScope) (gi
 		return githubBatchView{}, err
 	}
 	var batch tracker.GitHubBatch
-	if json.Unmarshal(raw, &batch) != nil || record.ProjectID != scope.project || record.Payload.OrganizationID != scope.organization || batch.ID != record.ID || batch.Revision != record.Revision || batch.Status != record.Status || batch.HubOwned != record.HubOwned {
+	if json.Unmarshal(raw, &batch) != nil || record.ProjectID != scope.Project || record.Payload.OrganizationID != scope.Organization || batch.ID != record.ID || batch.Revision != record.Revision || batch.Status != record.Status || batch.HubOwned != record.HubOwned {
 		return githubBatchView{}, eventstore.ErrInvalidRecord
 	}
 	return projectGitHubBatchView(project.States, &batch), nil
@@ -244,7 +245,7 @@ func (s *Service) reportGitHubBatch(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	raw, err := s.reportGitHubBatchRecord(c.Request().Context(), scope, nativeOperation(scope, http.MethodPost, "/onboarding/issue-intake/result"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -24,7 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, attemptID string, request tracker.AttemptDiffRequest, checkOnly bool) (tracker.AttemptDiffReceipt, error) {
+func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, attemptID string, request tracker.AttemptDiffRequest, checkOnly bool) (tracker.AttemptDiffReceipt, error) {
 	var receipt tracker.AttemptDiffReceipt
 	if s.config.TenantRepository == nil || s.runDetailStore() == nil {
 		return receipt, hubapi.NativeRunEventStorageUnavailable()
@@ -38,7 +39,7 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 	if strings.TrimSpace(string(request.Producer.LeaseID)) == "" || request.Producer.FencingToken <= 0 {
 		return receipt, hubapi.NativePublicInvalid("A producer lease and fencing token are required")
 	}
-	if request.Producer.RunnerID != "" && request.Producer.RunnerID != scope.credential.Runner.RunnerID {
+	if request.Producer.RunnerID != "" && request.Producer.RunnerID != scope.Credential.Runner.RunnerID {
 		return receipt, hubapi.NativePublicInvalid("Producer identity must match the authenticated lease owner")
 	}
 	files, patchBytes, err := normalizeAttemptDiff(scope, request)
@@ -62,7 +63,7 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return receipt, fmt.Errorf("encode attempt diff: %w", err)
 	}
-	preparedRef, _, err := attachment.PrepareArchive(string(scope.organization), 1, bytes.NewReader(data))
+	preparedRef, _, err := attachment.PrepareArchive(string(scope.Organization), 1, bytes.NewReader(data))
 	if err != nil {
 		return receipt, err
 	}
@@ -70,14 +71,14 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 		return receipt, err
 	}
 	store := s.runDetailStore()
-	ref, err := store.StoreDetail(ctx, string(scope.organization), data)
+	ref, err := store.StoreDetail(ctx, string(scope.Organization), data)
 	if err != nil {
 		return receipt, fmt.Errorf("store attempt diff: %w", err)
 	}
-	if ref.Validate(string(scope.organization)) != nil || ref.BindingID != "" || ref.CustomerOwned || ref.SchemaVersion != 1 || ref.UncompressedSize != int64(len(data)) {
+	if ref.Validate(string(scope.Organization)) != nil || ref.BindingID != "" || ref.CustomerOwned || ref.SchemaVersion != 1 || ref.UncompressedSize != int64(len(data)) {
 		return receipt, attachment.ErrInvalid
 	}
-	verified, err := store.ReadDetail(ctx, string(scope.organization), ref)
+	verified, err := store.ReadDetail(ctx, string(scope.Organization), ref)
 	if err != nil {
 		return receipt, fmt.Errorf("verify attempt diff: %w", err)
 	}
@@ -97,11 +98,11 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 	}
 	now := s.config.now().UTC()
 	diffID, archiveID := hubapi.NewID("diff"), hubapi.NewID("archive")
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if _, err := resolveAttemptDiffTenant(ctx, w, scope, attemptID, request, now); err != nil {
 			return err
 		}
-		latest, err := w.LockAttemptDiffGeneration(ctx, attemptID, string(request.Producer.LeaseID), scope.credential.ID, request.Generation.Source, request.Generation.ID)
+		latest, err := w.LockAttemptDiffGeneration(ctx, attemptID, string(request.Producer.LeaseID), scope.Credential.ID, request.Generation.Source, request.Generation.ID)
 		if err != nil {
 			return err
 		}
@@ -119,7 +120,7 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 		if err := w.LockArchiveAccounting(ctx); err != nil {
 			return err
 		}
-		object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: archiveID, Reference: ref, CreatedAt: now})
+		object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: archiveID, Reference: ref, CreatedAt: now})
 		if err != nil {
 			return err
 		}
@@ -133,7 +134,7 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 		if !usage.Allowed {
 			return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 		}
-		if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.organization, ArchiveID: object.ID, Kind: "attempt-diff", ID: diffID, CreatedAt: now}); err != nil {
+		if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "attempt-diff", ID: diffID, CreatedAt: now}); err != nil {
 			return err
 		}
 		attempt, err := w.Attempt(ctx, attemptID)
@@ -141,9 +142,9 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 			return err
 		}
 		if err := w.CreateAttemptDiff(ctx, leasestore.AttemptDiff{
-			OrganizationID: scope.organization, ID: diffID, AttemptID: attemptID, IssueID: attempt.IssueID,
-			ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), Generation: request.Generation,
-			Producer: tracker.DiffProducer{Kind: request.Producer.Kind, ID: attemptID, RunnerID: scope.credential.Runner.RunnerID, LeaseID: request.Producer.LeaseID, FencingToken: request.Producer.FencingToken},
+			OrganizationID: scope.Organization, ID: diffID, AttemptID: attemptID, IssueID: attempt.IssueID,
+			ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), Generation: request.Generation,
+			Producer: tracker.DiffProducer{Kind: request.Producer.Kind, ID: attemptID, RunnerID: scope.Credential.Runner.RunnerID, LeaseID: request.Producer.LeaseID, FencingToken: request.Producer.FencingToken},
 			BaseSHA:  request.BaseSHA, HeadSHA: request.HeadSHA, FileCount: len(files), PatchBytes: patchBytes,
 			PostedBytes: postedBytes, Truncated: truncated, ArchiveID: object.ID, CreatedAt: now,
 		}); err != nil {
@@ -155,7 +156,7 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 				keys = append(keys, file.PatchBody.Key)
 			}
 		}
-		return w.IndexAttemptDiffBodies(ctx, scope.project, diffID, keys)
+		return w.IndexAttemptDiffBodies(ctx, scope.Project, diffID, keys)
 	})
 	if err != nil {
 		return receipt, err
@@ -163,8 +164,8 @@ func (s *Service) postAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 	return tracker.AttemptDiffReceipt{Accepted: true, DiffID: diffID, Generation: request.Generation, FileCount: len(files), PatchBytes: patchBytes, Truncated: truncated}, nil
 }
 
-func (s *Service) checkAttemptDiffStorageAdmission(ctx context.Context, scope nativeScope, ref attachment.ArchiveReference) error {
-	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+func (s *Service) checkAttemptDiffStorageAdmission(ctx context.Context, scope hubscope.NativeScope, ref attachment.ArchiveReference) error {
+	return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		limit, err := s.attachmentQuotaLimit(ctx, r)
 		if err != nil {
 			return err
@@ -188,8 +189,8 @@ func (s *Service) checkAttemptDiffStorageAdmission(ctx context.Context, scope na
 	})
 }
 
-func (s *Service) validateAttemptDiffTenant(ctx context.Context, scope nativeScope, attemptID string, request tracker.AttemptDiffRequest) error {
-	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+func (s *Service) validateAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, attemptID string, request tracker.AttemptDiffRequest) error {
+	return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		_, err := resolveAttemptDiffTenant(ctx, r, scope, attemptID, request, s.config.now().UTC())
 		if err != nil {
 			return err
@@ -205,35 +206,35 @@ func (s *Service) validateAttemptDiffTenant(ctx context.Context, scope nativeSco
 	})
 }
 
-func resolveAttemptDiffTenant(ctx context.Context, r tenantstore.Reader, scope nativeScope, attemptID string, request tracker.AttemptDiffRequest, now time.Time) (string, error) {
-	if scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization {
+func resolveAttemptDiffTenant(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, attemptID string, request tracker.AttemptDiffRequest, now time.Time) (string, error) {
+	if scope.Credential.Runner.RunnerID == "" || scope.Credential.Runner.OrganizationID != scope.Organization {
 		return "", hubapi.NativeStaleExecution("The authenticated runner does not own the producer lease")
 	}
-	identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
+	identity, err := r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
 	if err != nil {
 		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-			return "", runnerUnauthorized()
+			return "", hubscope.RunnerUnauthorized()
 		}
 		return "", err
 	}
-	credential, err := r.AccessCredential(ctx, scope.credential.ID)
+	credential, err := r.AccessCredential(ctx, scope.Credential.ID)
 	if err != nil {
 		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
-			return "", runnerUnauthorized()
+			return "", hubscope.RunnerUnauthorized()
 		}
 		return "", err
 	}
-	if credential.OrganizationID != scope.organization || credential.Kind != "service" || credential.Scope != string(hubapi.APIScopeWorker) || !credential.Valid(scope.credential.Hash, now) {
-		return "", runnerUnauthorized()
+	if credential.OrganizationID != scope.Organization || credential.Kind != "service" || credential.Scope != string(hubapi.APIScopeWorker) || !credential.Valid(scope.Credential.Hash, now) {
+		return "", hubscope.RunnerUnauthorized()
 	}
-	if identity.OrganizationID != scope.organization || identity.RunnerID != scope.credential.Runner.RunnerID || identity.TokenID != credential.ID || identity.RemovedAt != nil || identity.State == "disabled" || !identity.ExpiresAt.After(now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
-		return "", runnerUnauthorized()
+	if identity.OrganizationID != scope.Organization || identity.RunnerID != scope.Credential.Runner.RunnerID || identity.TokenID != credential.ID || identity.RemovedAt != nil || identity.State == "disabled" || !identity.ExpiresAt.After(now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
+		return "", hubscope.RunnerUnauthorized()
 	}
 	projects, err := r.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
 	if err != nil {
 		return "", err
 	}
-	if !slices.Contains(projects, scope.project) {
+	if !slices.Contains(projects, scope.Project) {
 		return "", hubapi.NativeNotFound()
 	}
 	lease, err := r.Lease(ctx, string(request.Producer.LeaseID))
@@ -257,27 +258,27 @@ func resolveAttemptDiffTenant(ctx context.Context, r tenantstore.Reader, scope n
 	if err != nil {
 		return "", err
 	}
-	if leaseIdentity.RunnerID != scope.credential.Runner.RunnerID || leaseIdentity.MachineID != scope.credential.Runner.MachineID || lease.MachineID != string(leaseIdentity.MachineID) {
+	if leaseIdentity.RunnerID != scope.Credential.Runner.RunnerID || leaseIdentity.MachineID != scope.Credential.Runner.MachineID || lease.MachineID != string(leaseIdentity.MachineID) {
 		return "", hubapi.NativeStaleExecution("The producer lease belongs to a different runner session")
 	}
-	item, err := r.WorkItemByID(ctx, scope.project, lease.IssueID)
+	item, err := r.WorkItemByID(ctx, scope.Project, lease.IssueID)
 	if err != nil {
 		return "", err
 	}
 	return string(item.NativeID), nil
 }
 
-func (s *Service) readAttemptDiffTenant(ctx context.Context, scope nativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
+func (s *Service) readAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
 	var diff leasestore.AttemptDiff
 	var archive artifactstore.ArchiveObject
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		if seq > 0 {
-			diff, err = r.AttemptDiff(ctx, scope.project, attemptID, tracker.DiffGeneration{Source: source, Seq: seq})
+			diff, err = r.AttemptDiff(ctx, scope.Project, attemptID, tracker.DiffGeneration{Source: source, Seq: seq})
 		} else if item == "" {
-			diff, err = r.LatestAttemptDiff(ctx, scope.project, attemptID, source)
+			diff, err = r.LatestAttemptDiff(ctx, scope.Project, attemptID, source)
 		} else {
-			diff, err = r.LatestAttemptDiff(ctx, scope.project, attemptID, source)
+			diff, err = r.LatestAttemptDiff(ctx, scope.Project, attemptID, source)
 		}
 		if err != nil {
 			return err
@@ -297,16 +298,16 @@ func (s *Service) readAttemptDiffTenant(ctx context.Context, scope nativeScope, 
 	return s.loadTenantAttemptDiff(ctx, scope, diff, archive)
 }
 
-func (s *Service) readWorkItemDiffTenant(ctx context.Context, scope nativeScope, item, source string) (tracker.WorkItemDiff, error) {
+func (s *Service) readWorkItemDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, source string) (tracker.WorkItemDiff, error) {
 	var diff leasestore.AttemptDiff
 	var archive artifactstore.ArchiveObject
 	foundDiff := false
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if _, err := attemptDiffReadableWorkItem(ctx, r, scope, tracker.NativeWorkItemID(item)); err != nil {
 			return err
 		}
 		var err error
-		diff, err = r.LatestWorkItemAttemptDiff(ctx, scope.project, tracker.NativeWorkItemID(item), source)
+		diff, err = r.LatestWorkItemAttemptDiff(ctx, scope.Project, tracker.NativeWorkItemID(item), source)
 		if err != nil {
 			return err
 		}
@@ -327,16 +328,16 @@ func (s *Service) readWorkItemDiffTenant(ctx context.Context, scope nativeScope,
 	return tracker.WorkItemDiff{Diff: &loaded}, nil
 }
 
-func attemptDiffReadableWorkItem(ctx context.Context, r tenantstore.Reader, scope nativeScope, id tracker.NativeWorkItemID) (corestore.WorkItem, error) {
-	project, err := r.Project(ctx, scope.project)
+func attemptDiffReadableWorkItem(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id tracker.NativeWorkItemID) (corestore.WorkItem, error) {
+	project, err := r.Project(ctx, scope.Project)
 	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) || err == nil && project.DeletedAt != nil {
 		return corestore.WorkItem{}, hubapi.NativeNotFound()
 	}
 	if err != nil {
 		return corestore.WorkItem{}, err
 	}
-	item, err := r.WorkItem(ctx, scope.project, id)
-	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) || err == nil && !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+	item, err := r.WorkItem(ctx, scope.Project, id)
+	if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) || err == nil && !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 		return corestore.WorkItem{}, hubapi.NativeNotFound()
 	}
 	if err != nil {
@@ -345,11 +346,11 @@ func attemptDiffReadableWorkItem(ctx context.Context, r tenantstore.Reader, scop
 	return item, nil
 }
 
-func (s *Service) loadTenantAttemptDiff(ctx context.Context, scope nativeScope, diff leasestore.AttemptDiff, archive artifactstore.ArchiveObject) (tracker.AttemptDiff, error) {
+func (s *Service) loadTenantAttemptDiff(ctx context.Context, scope hubscope.NativeScope, diff leasestore.AttemptDiff, archive artifactstore.ArchiveObject) (tracker.AttemptDiff, error) {
 	if s.runDetailStore() == nil {
 		return tracker.AttemptDiff{}, hubapi.NativeRunEventStorageUnavailable()
 	}
-	data, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), archive.Reference)
+	data, err := s.runDetailStore().ReadDetail(ctx, string(scope.Organization), archive.Reference)
 	if err != nil {
 		return tracker.AttemptDiff{}, err
 	}

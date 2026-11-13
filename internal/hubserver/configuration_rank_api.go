@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -22,12 +23,12 @@ func (s *Service) registerConfigurationRankRoutes(e *echo.Echo) {
 	e.PUT(configurationRankBase, s.putConfigurationRank, permission)
 }
 
-func configurationRankScope(c echo.Context) (nativeScope, error) {
+func configurationRankScope(c echo.Context) (hubscope.NativeScope, error) {
 	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok || c.Param("organization") == "" {
-		return nativeScope{}, hubapi.NativeNotFound()
+		return hubscope.NativeScope{}, hubapi.NativeNotFound()
 	}
-	return nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential, requireHostedAdmin: c.Request().Method == http.MethodPut}, nil
+	return hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential, RequireHostedAdmin: c.Request().Method == http.MethodPut}, nil
 }
 
 func (s *Service) getConfigurationRank(c echo.Context) error {

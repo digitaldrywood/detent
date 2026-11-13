@@ -8,15 +8,16 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readNativeRelatedBatch(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, items map[tracker.NativeWorkItemID]*tracker.NativeIssue) error {
+func readNativeRelatedBatch(ctx context.Context, query hubapi.NativeQueryer, scope hubscope.NativeScope, items map[tracker.NativeWorkItemID]*tracker.NativeIssue) error {
 	if len(items) == 0 {
 		return nil
 	}
-	if scope.credential.HostedRole == "reporter" {
-		pageQuery, pageErr := prepareNativePageQuery(ctx, query, nativeScope{organization: scope.organization}, "", "native_issue_actors")
+	if scope.Credential.HostedRole == "reporter" {
+		pageQuery, pageErr := prepareNativePageQuery(ctx, query, hubscope.NativeScope{Organization: scope.Organization}, "", "native_issue_actors")
 		if pageErr != nil {
 			return pageErr
 		}
@@ -27,11 +28,11 @@ func readNativeRelatedBatch(ctx context.Context, query hubapi.NativeQueryer, sco
 		ids = append(ids, id)
 		issue.Related = []tracker.NativeDependency{}
 	}
-	condition, grantArgs := scope.credential.ProjectGrantSQL("i.organization_id", "i.project_id")
-	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
+	condition, grantArgs := scope.Credential.ProjectGrantSQL("i.organization_id", "i.project_id")
+	visibility, visibilityArgs := scope.IssueVisibilitySQL("i")
 	condition = "(" + condition + ") AND (" + visibility + ")"
 	grantArgs = append(grantArgs, visibilityArgs...)
-	args := append(ids, scope.organization, scope.project, scope.organization)
+	args := append(ids, scope.Organization, scope.Project, scope.Organization)
 	args = append(args, grantArgs...)
 	rows, err := query.QueryContext(ctx, `SELECT source.native_id, i.native_id, i.project_id, i.project_id || '#' || i.number, ws.detent_state, ws.terminal, i.number, i.title, o.slug, p.slug
 FROM issues source CROSS JOIN issue_relationships r ON r.first_issue_id=source.id OR r.second_issue_id=source.id

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -18,7 +19,7 @@ type retainedAttemptReadPin struct {
 	LeaseExpiresAt time.Time `json:"lease_expires_at"`
 }
 
-func (s *Service) readRetainedAttemptTenant(ctx context.Context, scope nativeScope, item, id string, pin *retainedAttemptReadPin) (tracker.NativeAttempt, *retainedAttemptReadPin, error) {
+func (s *Service) readRetainedAttemptTenant(ctx context.Context, scope hubscope.NativeScope, item, id string, pin *retainedAttemptReadPin) (tracker.NativeAttempt, *retainedAttemptReadPin, error) {
 	snapshot, err := s.readNativeAttemptSnapshotTenant(ctx, scope, item, id)
 	if err != nil {
 		return tracker.NativeAttempt{}, nil, err

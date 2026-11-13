@@ -8,36 +8,37 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (e nativeOperatorExecutor) stopRunAuthority(ctx context.Context, raw json.RawMessage) (context.Context, nativeScope, operatortool.NativeStopRunArguments, error) {
+func (e nativeOperatorExecutor) stopRunAuthority(ctx context.Context, raw json.RawMessage) (context.Context, hubscope.NativeScope, operatortool.NativeStopRunArguments, error) {
 	request, err := operatortool.DecodeNativeStopRun(raw)
 	if err != nil {
-		return ctx, nativeScope{}, request, err
+		return ctx, hubscope.NativeScope{}, request, err
 	}
 	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, Action: operatortool.StopRun, ProjectID: request.ProjectID, ResourceKind: "work_item", ResourceID: request.Identifier})
 	if err != nil {
-		return ctx, nativeScope{}, request, err
+		return ctx, hubscope.NativeScope{}, request, err
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
-		return ctx, nativeScope{}, request, operatortool.ErrAccessDenied
+		return ctx, hubscope.NativeScope{}, request, operatortool.ErrAccessDenied
 	}
 	scope, err := resolve(ctx)
 	if err != nil {
-		return ctx, nativeScope{}, request, operatortool.ErrAccessDenied
+		return ctx, hubscope.NativeScope{}, request, operatortool.ErrAccessDenied
 	}
-	scope.project = tracker.ProjectID(request.ProjectID)
-	scope.action, scope.actionItem, scope.actionTarget = operatortool.StopRun, request.Identifier, request.Destination
+	scope.Project = tracker.ProjectID(request.ProjectID)
+	scope.Action, scope.ActionItem, scope.ActionTarget = operatortool.StopRun, request.Identifier, request.Destination
 	issue, err := e.service.resolveOperatorNativeItem(ctx, nil, scope, request.Identifier)
 	if err != nil {
-		return ctx, nativeScope{}, request, hubSafeChangeError(err)
+		return ctx, hubscope.NativeScope{}, request, hubSafeChangeError(err)
 	}
 	if issue.Profile != "native" {
-		return ctx, nativeScope{}, request, operatortool.ErrServiceUnavailable
+		return ctx, hubscope.NativeScope{}, request, operatortool.ErrServiceUnavailable
 	}
 	request.Identifier = string(issue.WorkItemID)
 	return ctx, scope, request, nil

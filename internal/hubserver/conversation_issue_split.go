@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -125,7 +126,7 @@ func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conve
 	if err != nil {
 		return nil, err
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
 		return nil, operatortool.ErrAccessDenied
 	}
@@ -133,7 +134,7 @@ func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conve
 	if err != nil {
 		return nil, err
 	}
-	scope.project = record.ProjectID
+	scope.Project = record.ProjectID
 	s := t.coordinator.server
 	row, version, err := s.readWorkItemRecord(readCtx, scope, split.ParentID)
 	if err != nil {
@@ -183,7 +184,7 @@ func (s *Service) executeCoordinatorIssueSplit(ctx context.Context, action chat.
 	if split.ParentID != action.IssueID || split.Revision != action.Revision {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
@@ -191,7 +192,7 @@ func (s *Service) executeCoordinatorIssueSplit(ctx context.Context, action chat.
 	if err != nil {
 		return chat.ActionExecution{}, err
 	}
-	scope.project = tracker.ProjectID(action.ProjectID)
+	scope.Project = tracker.ProjectID(action.ProjectID)
 	options := hubapi.NativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+split.ParentID+"/split"), Item: split.ParentID, RequireLease: true, Feature: "collaboration"}
 	raw, err := s.executeCoordinatorSplitRecords(ctx, scope, options, tracker.MutationForContext(ctx, action.RequestID), split)
 	if err != nil {
@@ -227,7 +228,7 @@ type coordinatorSplitRecord struct {
 	commentBytes int64
 }
 
-func (s *Service) prepareCoordinatorSplitRecord(ctx context.Context, scope nativeScope, plan workItemRecordPlan) (coordinatorSplitRecord, error) {
+func (s *Service) prepareCoordinatorSplitRecord(ctx context.Context, scope hubscope.NativeScope, plan workItemRecordPlan) (coordinatorSplitRecord, error) {
 	record := coordinatorSplitRecord{plan: plan}
 	var err error
 	if plan.requiresIssueContract() {
@@ -243,7 +244,7 @@ func (s *Service) prepareCoordinatorSplitRecord(ctx context.Context, scope nativ
 		}
 		record.attachments = attachments.current
 	}
-	record.fields, err = s.prepareWorkItemFields(ctx, scope.organization, plan)
+	record.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
 	if err != nil {
 		return record, err
 	}
@@ -269,40 +270,40 @@ func (s *Service) prepareCoordinatorSplitRecord(ctx context.Context, scope nativ
 		if err != nil {
 			return record, err
 		}
-		actorRaw, err := json.Marshal(scope.actor())
+		actorRaw, err := json.Marshal(scope.Actor())
 		if err != nil {
 			return record, err
 		}
 		record.commentBytes = int64(len(plan.comment.Body) + len(raw) + len(dataRaw) + len(actorRaw))
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	record.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, RecordID: id, Revision: revision}, raw)
+	record.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, RecordID: id, Revision: revision}, raw)
 	if err != nil {
 		return record, err
 	}
-	record.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
+	record.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
 	if err != nil {
 		return record, err
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: at, Data: data})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: at, Data: data})
 	if err != nil {
 		return record, err
 	}
-	record.event, err = content.PrepareEvent(ctx, scope.organization, eventRaw)
+	record.event, err = content.PrepareEvent(ctx, scope.Organization, eventRaw)
 	return record, err
 }
 
-func (s *Service) readCoordinatorSplitReceipt(ctx context.Context, scope nativeScope, receipt eventstore.Receipt, parent string) (json.RawMessage, error) {
+func (s *Service) readCoordinatorSplitReceipt(ctx context.Context, scope hubscope.NativeScope, receipt eventstore.Receipt, parent string) (json.RawMessage, error) {
 	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
 	if err != nil {
 		return nil, err
 	}
 	var result coordinatorSplitResult
-	if json.Unmarshal(raw, &result) != nil || len(result.Children) < 1 || len(result.Children) > coordinatorSplitMaxChildren || result.Comment.OrganizationID != scope.organization || result.Comment.ProjectID != scope.project || result.Comment.WorkItemID != tracker.NativeWorkItemID(parent) {
+	if json.Unmarshal(raw, &result) != nil || len(result.Children) < 1 || len(result.Children) > coordinatorSplitMaxChildren || result.Comment.OrganizationID != scope.Organization || result.Comment.ProjectID != scope.Project || result.Comment.WorkItemID != tracker.NativeWorkItemID(parent) {
 		return nil, receiptstore.ErrExpired
 	}
 	for _, child := range result.Children {
-		if child.OrganizationID != scope.organization || child.ProjectID != scope.project || child.WorkItemID == "" {
+		if child.OrganizationID != scope.Organization || child.ProjectID != scope.Project || child.WorkItemID == "" {
 			return nil, receiptstore.ErrExpired
 		}
 	}
@@ -315,7 +316,7 @@ func (s *Service) readCoordinatorSplitReceipt(ctx context.Context, scope nativeS
 	return raw, nil
 }
 
-func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nativeScope, options hubapi.NativeCommandOptions, command tracker.Mutation, split chat.IssueSplit) (json.RawMessage, error) {
+func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions, command tracker.Mutation, split chat.IssueSplit) (json.RawMessage, error) {
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -325,10 +326,10 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 	if split.Revision <= 0 || strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, hubapi.NativePublicInvalid("A current revision and idempotency key are required")
 	}
-	if scope.credential.Scope == hubapi.APIScopeWorker {
+	if scope.Credential.Scope == hubapi.APIScopeWorker {
 		return nil, operatortool.ErrAccessDenied
 	}
-	scope.action, scope.actionItem = string(chat.ActionIssueSplit), split.ParentID
+	scope.Action, scope.ActionItem = string(chat.ActionIssueSplit), split.ParentID
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
@@ -352,9 +353,9 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 	}
 	var nextNumber int64
 	var organizationSlug string
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		nextNumber, err = r.NextWorkItemNumber(ctx, scope.project)
+		nextNumber, err = r.NextWorkItemNumber(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -384,13 +385,13 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 		}
 		records = append(records, record)
 		nodes = append(nodes, plan.issue)
-		rows = append(rows, corestore.WorkItem{OrganizationID: scope.organization, ProjectID: scope.project, NativeID: plan.issue.WorkItemID, Revision: int64(plan.issue.Revision), EventSequence: 1, WorkflowStateName: &plan.issue.State})
+		rows = append(rows, corestore.WorkItem{OrganizationID: scope.Organization, ProjectID: scope.Project, NativeID: plan.issue.WorkItemID, Revision: int64(plan.issue.Revision), EventSequence: 1, WorkflowStateName: &plan.issue.State})
 	}
 	for _, edge := range split.Edges {
 		dependent, blocker := nodes[edge.Dependent], nodes[edge.Blocker]
 		plan := workItemRecordPlan{project: parent.project, current: rows[edge.Dependent], related: rows[edge.Blocker], issue: dependent,
 			previousContent: dependent.Title + "\n" + dependent.Body, relationshipType: "dependency", relationshipOperate: "add",
-			relationship: &corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: dependent.WorkItemID, RelatedProjectID: scope.project, RelatedWorkItemID: blocker.WorkItemID, Type: "dependency"}}
+			relationship: &corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: dependent.WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: blocker.WorkItemID, Type: "dependency"}}
 		plan, err = s.planWorkItemRecord(ctx, scope, plan, tracker.DependencyMutation{ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"})
 		if err != nil {
 			return nil, err
@@ -430,7 +431,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 		return nil, err
 	}
 	now := s.config.now().UTC().Truncate(time.Microsecond)
-	receipt, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: options.OperationID, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
+	receipt, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: options.OperationID, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -439,19 +440,19 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 		return nil, err
 	}
 	var previous *eventstore.Receipt
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if len(split.Edges) > 0 {
 			if err := w.LockRelationshipGraph(ctx); err != nil {
 				return err
 			}
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
 		if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
 			return err
 		}
-		project, err := w.ProjectRecord(ctx, scope.project)
+		project, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -461,7 +462,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 		if !sameWorkItemProjectPlan(parent.project, project) {
 			return hubapi.NativeConflict(tracker.Revision(parent.current.Revision))
 		}
-		stored, err := w.Receipt(ctx, scope.credential.ID, options.OperationID, command.IdempotencyKey)
+		stored, err := w.Receipt(ctx, scope.Credential.ID, options.OperationID, command.IdempotencyKey)
 		if err == nil {
 			if stored.ResponseExpired || stored.ResponseReplayUntilNs > 0 && s.config.now().UnixNano() >= stored.ResponseReplayUntilNs {
 				return receiptstore.ErrExpired
@@ -470,7 +471,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 				return hubapi.NativeConflict(0)
 			}
 			previous = &stored
-			return s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK)
+			return s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), http.StatusOK)
 		}
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
@@ -481,20 +482,20 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 				created[record.plan.issue.WorkItemID] = true
 			}
 		}
-		refs := []corestore.WorkItemReference{{ProjectID: scope.project, WorkItemID: parent.current.NativeID}}
+		refs := []corestore.WorkItemReference{{ProjectID: scope.Project, WorkItemID: parent.current.NativeID}}
 		for _, record := range records {
 			if (!record.plan.create || record.plan.comment.ID != "") && !created[record.plan.current.NativeID] {
-				refs = append(refs, corestore.WorkItemReference{ProjectID: scope.project, WorkItemID: record.plan.current.NativeID})
+				refs = append(refs, corestore.WorkItemReference{ProjectID: scope.Project, WorkItemID: record.plan.current.NativeID})
 			}
 		}
 		if _, err := w.LockWorkItems(ctx, refs); err != nil {
 			return err
 		}
-		current, err := w.LockWorkItem(ctx, scope.project, parent.current.NativeID)
+		current, err := w.LockWorkItem(ctx, scope.Project, parent.current.NativeID)
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		if current.Revision != parent.current.Revision || current.EventSequence != parent.current.EventSequence || current.Archived {
@@ -503,7 +504,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 		if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, now); err != nil {
 			return err
 		}
-		policy, policyErr := w.ProjectPolicy(ctx, scope.project)
+		policy, policyErr := w.ProjectPolicy(ctx, scope.Project)
 		if policyErr != nil && !errors.Is(policyErr, corestore.ErrNotFound) {
 			return policyErr
 		}
@@ -513,7 +514,7 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 				return hubapi.PolicyMismatch("The approved policy changed after the split proposal")
 			}
 			if !plan.create || plan.comment.ID != "" {
-				current, err := w.LockWorkItem(ctx, scope.project, plan.current.NativeID)
+				current, err := w.LockWorkItem(ctx, scope.Project, plan.current.NativeID)
 				if err != nil {
 					return err
 				}
@@ -564,12 +565,12 @@ func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope nati
 				item = plan.comment.WorkItemID
 			}
 			for _, id := range record.attachments {
-				if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.project, AttachmentID: id, WorkItemID: item, CommentID: plan.comment.ID}); err != nil {
+				if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.Project, AttachmentID: id, WorkItemID: item, CommentID: plan.comment.ID}); err != nil {
 					return err
 				}
 			}
 		}
-		if err := s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK); err != nil {
+		if err := s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), http.StatusOK); err != nil {
 			return err
 		}
 		_, err = w.PutReceipt(ctx, receipt)

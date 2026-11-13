@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -1159,7 +1160,7 @@ func TestPostgresRunnerHostChangeWithoutLegacyDatabase(t *testing.T) {
 	}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
-			scope := nativeScope{organization: org, credential: serverapi.APICredential{ID: "admin", Hash: apikey.HashToken(string(org)), Scope: serverapi.APIScopeAdmin}}
+			scope := hubscope.NativeScope{Organization: org, Credential: serverapi.APICredential{ID: "admin", Hash: apikey.HashToken(string(org)), Scope: serverapi.APIScopeAdmin}}
 			for _, tc := range []struct {
 				name, machine, token string
 				revision             int64
@@ -1173,7 +1174,7 @@ func TestPostgresRunnerHostChangeWithoutLegacyDatabase(t *testing.T) {
 				{"missing", "missing", string(org), 1, 9, true},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					scope.credential.Hash = apikey.HashToken(tc.token)
+					scope.Credential.Hash = apikey.HashToken(tc.token)
 					value, err := service.updateRunnerHostCommand(t.Context(), scope, tc.machine, runnerauth.HostChange{ExpectedRevision: tc.revision, DisplayName: " Updated ", Capacity: tc.capacity})
 					if (err != nil) != tc.wantError {
 						t.Fatalf("value=%+v error=%v", value, err)

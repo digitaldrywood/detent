@@ -7,13 +7,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func BenchmarkNativeIssueProjection(b *testing.B) {
 	ctx, fixture, service, _, project, _ := benchmarkPostgresReportFacts(b)
-	scope := nativeScope{organization: fixture.organization, project: project}
+	scope := hubscope.NativeScope{Organization: fixture.organization, Project: project}
 	var row corestore.WorkItem
 	if err := fixture.repository.ReadTenant(ctx, fixture.organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error

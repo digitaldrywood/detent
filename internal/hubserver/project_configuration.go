@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -37,7 +38,7 @@ type configurationIntent struct {
 	Arguments operatortool.LocalProjectArguments
 	Previous  runnerauth.ProjectConfiguration
 	Desired   runnerauth.ProjectConfiguration
-	Issuer    operatorChatIdentity
+	Issuer    hubscope.OperatorChatIdentity
 }
 
 type projectConfigurationPlan struct {
@@ -57,7 +58,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	scope.project = tracker.ProjectID(args.ProjectID)
+	scope.Project = tracker.ProjectID(args.ProjectID)
 	if err := ctx.Err(); err != nil {
 		return operatortool.Result{}, err
 	}
@@ -74,7 +75,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 		return operatortool.Result{}, err
 	}
 	for _, op := range []string{"configuration result " + operation, operation} {
-		raw, found, err := e.service.configurationReceipt(ctx, scope, scope.credential.ID, op, args.RequestID, hash)
+		raw, found, err := e.service.configurationReceipt(ctx, scope, scope.Credential.ID, op, args.RequestID, hash)
 		if err != nil {
 			return operatortool.Result{}, err
 		}
@@ -91,7 +92,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 	if err := e.service.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return operatortool.Result{}, err
 	}
-	if err := e.service.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := e.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return e.service.configurationRequestAuthority(ctx, r, scope, e.service.config.now(), name)
 	}); err != nil {
 		return operatortool.Result{}, err
@@ -108,7 +109,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 	desired.Authority = "hub_configuration"
 	switch name {
 	case "apply_local_project_policy":
-		approval, err := e.service.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+		approval, err := e.service.readTenantProjectPolicy(ctx, scope.Organization, scope.Project)
 		if err != nil || approval.Policy.ID != args.PolicyID || approval.Policy.SourceRevision != args.SourceRevision {
 			return operatortool.Result{}, hubapi.PolicyMismatch("Approved policy changed; read its current identity before applying")
 		}
@@ -151,19 +152,19 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 	if preview {
 		return hubProjectResult(plan.View)
 	}
-	origin, _ := ctx.Value(operatorEntryOriginKey{}).(string)
+	origin, _ := ctx.Value(hubscope.OperatorEntryOriginKey{}).(string)
 	if origin == "" {
 		origin = operatortool.CurrentConnection(ctx).Origin
 	}
-	if scope.credential.EntryKey != nil && origin == "" {
+	if scope.Credential.EntryKey != nil && origin == "" {
 		return operatortool.Result{}, operatortool.ErrAccessDenied
 	}
-	intent := configurationIntent{Arguments: args, Previous: plan.View, Desired: desired, Issuer: operatorChatIdentity{Identity: operatorIdentity(scope.credential, string(scope.organization)), Origin: origin}}
-	intentRef, err := e.service.prepareConfigurationPayload(ctx, scope.organization, intent)
+	intent := configurationIntent{Arguments: args, Previous: plan.View, Desired: desired, Issuer: hubscope.OperatorChatIdentity{Identity: hubscope.OperatorIdentity(scope.Credential, string(scope.Organization)), Origin: origin}}
+	intentRef, err := e.service.prepareConfigurationPayload(ctx, scope.Organization, intent)
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	desiredRef, err := e.service.prepareConfigurationPayload(ctx, scope.organization, desired)
+	desiredRef, err := e.service.prepareConfigurationPayload(ctx, scope.Organization, desired)
 	if err != nil {
 		return operatortool.Result{}, err
 	}
@@ -178,14 +179,14 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 		return operatortool.Result{}, err
 	}
 	now := e.service.config.now().UTC()
-	receipt, err := eventstore.NewContent(e.service.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: args.RequestID, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
+	receipt, err := eventstore.NewContent(e.service.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: args.RequestID, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return operatortool.Result{}, err
 	}
 	var superseded eventstore.Receipt
 	if plan.Command.Status == "pending" {
 		var previous configurationIntent
-		if err := e.service.readConfigurationPayload(ctx, scope.organization, plan.Command.Intent, &previous); err != nil {
+		if err := e.service.readConfigurationPayload(ctx, scope.Organization, plan.Command.Intent, &previous); err != nil {
 			return operatortool.Result{}, err
 		}
 		outcome := previous.Desired
@@ -198,13 +199,13 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 		if err != nil {
 			return operatortool.Result{}, err
 		}
-		superseded, err = eventstore.NewContent(e.service.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: plan.Command.ActorID, Operation: "configuration result " + plan.Command.Operation, CommandKey: plan.Command.RequestID, RequestHash: plan.Command.RequestHash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, body)
+		superseded, err = eventstore.NewContent(e.service.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: plan.Command.ActorID, Operation: "configuration result " + plan.Command.Operation, CommandKey: plan.Command.RequestID, RequestHash: plan.Command.RequestHash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, body)
 		if err != nil {
 			return operatortool.Result{}, err
 		}
 	}
 	var replay eventstore.Receipt
-	err = e.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = e.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		locker, ok := w.(runnerstore.UpdateLocker)
 		if !ok {
 			return hubapi.ErrProjectServiceUnavailable
@@ -219,13 +220,13 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
 		if err := e.service.configurationRequestAuthority(ctx, w, scope, now, name); err != nil {
 			return err
 		}
-		previous, err := w.Receipt(ctx, scope.credential.ID, operation, args.RequestID)
+		previous, err := w.Receipt(ctx, scope.Credential.ID, operation, args.RequestID)
 		if err == nil {
 			if previous.RequestHash != hash {
 				return configurationIdempotencyConflict()
@@ -241,7 +242,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 			return hubapi.ErrProjectServiceUnavailable
 		}
 		if name == "resume_local_project" || name == "detach_local_project" || args.AllowLocalBinding != nil {
-			unsettled, err := owner.ConfigurationUnsettled(ctx, identity.RunnerID, scope.project, now)
+			unsettled, err := owner.ConfigurationUnsettled(ctx, identity.RunnerID, scope.Project, now)
 			if err != nil {
 				return err
 			}
@@ -249,7 +250,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 				return hubapi.PolicyMismatch("Active or deferred work must settle before changing configuration")
 			}
 		}
-		current, err := owner.ConfigurationProject(ctx, identity.RunnerID, scope.project)
+		current, err := owner.ConfigurationProject(ctx, identity.RunnerID, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -257,7 +258,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 			return hubapi.NativeConflict(tracker.Revision(identity.Revision))
 		}
 		if superseded.CommandKey != "" {
-			command, err := owner.ConfigurationCommand(ctx, identity.RunnerID, scope.project)
+			command, err := owner.ConfigurationCommand(ctx, identity.RunnerID, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -269,7 +270,7 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 			}
 		}
 		if name == "apply_local_project_policy" {
-			approved, err := w.ProjectPolicy(ctx, scope.project)
+			approved, err := w.ProjectPolicy(ctx, scope.Project)
 			if err != nil || approved.PolicyID != args.PolicyID {
 				return hubapi.PolicyMismatch("Approved policy changed")
 			}
@@ -282,16 +283,16 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 		if err != nil {
 			return err
 		}
-		row := configurationProjectRow(scope.organization, identity.RunnerID, desired, desiredRef, now)
-		_, err = owner.ApplyConfiguration(ctx, postgres.ConfigurationChange{OrganizationID: scope.organization, Authority: postgres.ConfigurationAuthority{RunnerID: identity.RunnerID, EnrollmentID: identity.EnrollmentID, Revision: identity.Revision, At: now}, ExpectedRevision: header.Revision, ExpectedSourceRevision: header.SourceRevision, SourceRevision: desired.ConfigRevision, Projects: []postgres.ConfigurationProject{row}})
+		row := configurationProjectRow(scope.Organization, identity.RunnerID, desired, desiredRef, now)
+		_, err = owner.ApplyConfiguration(ctx, postgres.ConfigurationChange{OrganizationID: scope.Organization, Authority: postgres.ConfigurationAuthority{RunnerID: identity.RunnerID, EnrollmentID: identity.EnrollmentID, Revision: identity.Revision, At: now}, ExpectedRevision: header.Revision, ExpectedSourceRevision: header.SourceRevision, SourceRevision: desired.ConfigRevision, Projects: []postgres.ConfigurationProject{row}})
 		if err != nil {
 			return err
 		}
-		current, err = owner.ConfigurationProject(ctx, identity.RunnerID, scope.project)
+		current, err = owner.ConfigurationProject(ctx, identity.RunnerID, scope.Project)
 		if err != nil {
 			return err
 		}
-		if err := owner.SetConfigurationCommand(ctx, postgres.ConfigurationCommand{OrganizationID: scope.organization, RunnerID: identity.RunnerID, ProjectID: scope.project, RequestID: args.RequestID, Operation: operation, ActorID: scope.credential.ID, RequestHash: hash, RunnerRevision: identity.Revision, Status: "pending", Intent: intentRef}, current.Revision); err != nil {
+		if err := owner.SetConfigurationCommand(ctx, postgres.ConfigurationCommand{OrganizationID: scope.Organization, RunnerID: identity.RunnerID, ProjectID: scope.Project, RequestID: args.RequestID, Operation: operation, ActorID: scope.Credential.ID, RequestHash: hash, RunnerRevision: identity.Revision, Status: "pending", Intent: intentRef}, current.Revision); err != nil {
 			return err
 		}
 		_, err = w.PutReceipt(ctx, receipt)
@@ -312,13 +313,13 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 	return hubProjectResult(json.RawMessage(raw))
 }
 
-func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope nativeScope, args operatortool.LocalProjectArguments) (projectConfigurationPlan, error) {
+func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope hubscope.NativeScope, args operatortool.LocalProjectArguments) (projectConfigurationPlan, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var plan projectConfigurationPlan
 	plan.View = project.MissingConfigurationOwner(args.ProjectID)
 	now := s.config.now()
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -328,7 +329,7 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope native
 			if !ok {
 				return hubapi.ErrProjectServiceUnavailable
 			}
-			runners, more, err := reader.RunnerProjectObservationRunners(ctx, scope.project, now, 2)
+			runners, more, err := reader.RunnerProjectObservationRunners(ctx, scope.Project, now, 2)
 			if err != nil {
 				return err
 			}
@@ -347,7 +348,7 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope native
 		if err != nil {
 			return err
 		}
-		allowed, err := r.RunnerProjectAuthorized(ctx, runner, scope.project, now)
+		allowed, err := r.RunnerProjectAuthorized(ctx, runner, scope.Project, now)
 		if err != nil {
 			return err
 		}
@@ -358,7 +359,7 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope native
 		if !ok {
 			return hubapi.ErrProjectServiceUnavailable
 		}
-		plan.Record, err = owner.ConfigurationProject(ctx, runner, scope.project)
+		plan.Record, err = owner.ConfigurationProject(ctx, runner, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -369,17 +370,17 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope native
 		if err != nil {
 			return err
 		}
-		plan.Command, err = owner.ConfigurationCommand(ctx, runner, scope.project)
+		plan.Command, err = owner.ConfigurationCommand(ctx, runner, scope.Project)
 		if err != nil {
 			return err
 		}
-		observation, _, err := r.RunnerProjectObservation(ctx, runner, scope.project, "")
+		observation, _, err := r.RunnerProjectObservation(ctx, runner, scope.Project, "")
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
 		plan.Diagnostics = observation.Diagnostics
 		plan.Identity = identity
-		unsettled, err := owner.ConfigurationUnsettled(ctx, runner, scope.project, now)
+		unsettled, err := owner.ConfigurationUnsettled(ctx, runner, scope.Project, now)
 		if err != nil {
 			return err
 		}
@@ -393,13 +394,13 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope native
 	}
 	unsettled := plan.View.UnsettledAttempts
 	var stored runnerauth.ProjectConfiguration
-	if err := s.readConfigurationPayload(ctx, scope.organization, eventstore.Reference(plan.Record.PayloadObjectKey, plan.Record.PayloadSHA256, plan.Record.PayloadBytes, plan.Record.PayloadContentBytes), &stored); err != nil {
+	if err := s.readConfigurationPayload(ctx, scope.Organization, eventstore.Reference(plan.Record.PayloadObjectKey, plan.Record.PayloadSHA256, plan.Record.PayloadBytes, plan.Record.PayloadContentBytes), &stored); err != nil {
 		return plan, err
 	}
 	plan.View = stored
 	if plan.Command.Status == "pending" {
 		var intent configurationIntent
-		if err := s.readConfigurationPayload(ctx, scope.organization, plan.Command.Intent, &intent); err != nil {
+		if err := s.readConfigurationPayload(ctx, scope.Organization, plan.Command.Intent, &intent); err != nil {
 			return plan, err
 		}
 		plan.View = intent.Previous
@@ -410,7 +411,7 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope native
 	}
 	if plan.Command.Observation.Key != "" {
 		var observation runnerauth.ProjectConfiguration
-		if err := s.readConfigurationPayload(ctx, scope.organization, plan.Command.Observation, &observation); err != nil {
+		if err := s.readConfigurationPayload(ctx, scope.Organization, plan.Command.Observation, &observation); err != nil {
 			return plan, err
 		}
 		plan.View.SelectedPolicy = observation.SelectedPolicy
@@ -446,19 +447,19 @@ func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope native
 	return plan, nil
 }
 
-func (s *Service) configurationRequestAuthority(ctx context.Context, r tenantstore.Reader, scope nativeScope, _ time.Time, operation string) error {
-	if scope.credential.Runner.RunnerID != "" {
+func (s *Service) configurationRequestAuthority(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, _ time.Time, operation string) error {
+	if scope.Credential.Runner.RunnerID != "" {
 		return hubapi.NativeNotFound()
 	}
-	if scope.credential.Hosted == nil && scope.credential.EntryKey == nil && scope.credential.Scope != hubapi.APIScopeAdmin {
+	if scope.Credential.Hosted == nil && scope.Credential.EntryKey == nil && scope.Credential.Scope != hubapi.APIScopeAdmin {
 		return hubapi.NativeNotFound()
 	}
-	scope.requireHostedAdmin = true
+	scope.RequireHostedAdmin = true
 	if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
 		return err
 	}
-	if operation == "resume_local_project" && scope.credential.Hosted != nil {
-		grant, err := r.AccessProjectGrant(ctx, scope.credential.Hosted.Subject, scope.project)
+	if operation == "resume_local_project" && scope.Credential.Hosted != nil {
+		grant, err := r.AccessProjectGrant(ctx, scope.Credential.Hosted.Subject, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -471,9 +472,9 @@ func (s *Service) configurationRequestAuthority(ctx context.Context, r tenantsto
 func configurationIdempotencyConflict() error {
 	return &hubapi.NativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: 409, PublicMessage: true}
 }
-func (s *Service) configurationReceipt(ctx context.Context, scope nativeScope, actor, operation, key, hash string) (json.RawMessage, bool, error) {
+func (s *Service) configurationReceipt(ctx context.Context, scope hubscope.NativeScope, actor, operation, key, hash string) (json.RawMessage, bool, error) {
 	var receipt eventstore.Receipt
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -583,7 +584,7 @@ type configurationHeartbeat struct {
 	payload          attachment.ArchiveReference
 	observation      attachment.ArchiveReference
 	completion       eventstore.Receipt
-	issuer           nativeScope
+	issuer           hubscope.NativeScope
 	deliver          bool
 	settle           bool
 	initialize       bool
@@ -604,7 +605,7 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 			return err
 		}
 		if identity.RunnerID != credential.Runner.RunnerID {
-			return runnerUnauthorized()
+			return hubscope.RunnerUnauthorized()
 		}
 		if err := validateConfigurationRunner(reported, identity); err != nil {
 			return err
@@ -666,7 +667,7 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 	}
 	if reported != nil {
 		if reported.SelectedPolicy != nil {
-			observation, err := s.prepareConfigurationPolicyObservation(ctx, nativeScope{organization: org, project: projectID, credential: credential}, policy.Observation{Descriptor: *reported.SelectedPolicy})
+			observation, err := s.prepareConfigurationPolicyObservation(ctx, hubscope.NativeScope{Organization: org, Project: projectID, Credential: credential}, policy.Observation{Descriptor: *reported.SelectedPolicy})
 			if err == nil {
 				p.policy = &observation
 			} else {
@@ -723,7 +724,7 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 		authErr = authority.Check(ctx, requirement)
 		if authErr == nil {
 			p.issuer, authErr = (hubProjectExecutor{s}).projectScope(authority.BindContext(ctx))
-			p.issuer.project = projectID
+			p.issuer.Project = projectID
 		}
 	}
 	refusal := "The issuing operator no longer has permission; the requested configuration was not confirmed."
@@ -921,31 +922,31 @@ func (s *Service) applyConfigurationHeartbeat(ctx context.Context, w tenantstore
 	return nil
 }
 
-func (s *Service) prepareConfigurationPolicyObservation(ctx context.Context, scope nativeScope, observation policy.Observation) (policystore.Observation, error) {
+func (s *Service) prepareConfigurationPolicyObservation(ctx context.Context, scope hubscope.NativeScope, observation policy.Observation) (policystore.Observation, error) {
 	content := eventstore.NewContent(s.runDetailStore())
-	revision, found, err := s.tenantProjectPolicyRevisionForDescriptor(ctx, scope.organization, scope.project, observation.Descriptor, content)
+	revision, found, err := s.tenantProjectPolicyRevisionForDescriptor(ctx, scope.Organization, scope.Project, observation.Descriptor, content)
 	if err != nil {
 		return policystore.Observation{}, err
 	}
 	if !found {
-		ref, err := s.prepareConfigurationPayload(ctx, scope.organization, observation.Descriptor)
+		ref, err := s.prepareConfigurationPayload(ctx, scope.Organization, observation.Descriptor)
 		if err != nil {
 			return policystore.Observation{}, err
 		}
 		gate := observation.Gates.GitHubPullRequest
-		revision = policystore.Revision{OrganizationID: scope.organization, ProjectID: scope.project, PolicyID: observation.ID, GitHubPullRequest: &gate, PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}
+		revision = policystore.Revision{OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: observation.ID, GitHubPullRequest: &gate, PayloadObjectKey: ref.Key, PayloadSHA256: ref.SHA256, PayloadBytes: ref.CompressedSize, PayloadContentBytes: ref.UncompressedSize}
 	}
-	return policystore.Observation{OrganizationID: scope.organization, ProjectID: scope.project, PolicyID: observation.ID, Source: observation.Source, Revision: revision}, nil
+	return policystore.Observation{OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: observation.ID, Source: observation.Source, Revision: revision}, nil
 }
 
-func (s *Service) recordConfigurationPolicyObservation(ctx context.Context, scope nativeScope, observation policy.Observation) error {
-	credential := scope.credential
+func (s *Service) recordConfigurationPolicyObservation(ctx context.Context, scope hubscope.NativeScope, observation policy.Observation) error {
+	credential := scope.Credential
 	prepared, err := s.prepareConfigurationPolicyObservation(ctx, scope, observation)
 	if err != nil {
 		return err
 	}
 	now := s.config.now().UTC()
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		locker, ok := w.(runnerstore.UpdateLocker)
 		if !ok {
 			return hubapi.ErrProjectServiceUnavailable
@@ -960,8 +961,8 @@ func (s *Service) recordConfigurationPolicyObservation(ctx context.Context, scop
 		if err != nil {
 			return err
 		}
-		if identity.RunnerID != credential.Runner.RunnerID || identity.OrganizationID != scope.organization || identity.RemovedAt != nil || !identity.ExpiresAt.After(now) {
-			return runnerUnauthorized()
+		if identity.RunnerID != credential.Runner.RunnerID || identity.OrganizationID != scope.Organization || identity.RemovedAt != nil || !identity.ExpiresAt.After(now) {
+			return hubscope.RunnerUnauthorized()
 		}
 		return writeConfigurationPolicyObservation(ctx, w, identity.RunnerID, prepared, now)
 	})

@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
@@ -197,7 +198,7 @@ func TestChangeContentObjects(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		var published tracker.ChangeVersion
 		decodeHubResponse(t, response, &published)
-		versions[i] = tracker.ChangeVersion{ChangeVersionInput: input, ID: published.ID, ChangeID: f.change.ID, Number: int64(f.change.Revision) + int64(i), Policy: hubTestPolicy(), ReviewPolicy: f.rules, Actor: scope.actor(), CreatedAt: now}
+		versions[i] = tracker.ChangeVersion{ChangeVersionInput: input, ID: published.ID, ChangeID: f.change.ID, Number: int64(f.change.Revision) + int64(i), Policy: hubTestPolicy(), ReviewPolicy: f.rules, Actor: scope.Actor(), CreatedAt: now}
 		for position, spec := range f.rules.RequiredChecks {
 			versions[i].Checks = append(versions[i].Checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: spec, CheckRunID: published.Checks[position].CheckRunID})
 		}
@@ -942,7 +943,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		app := hubChangeApplication{service: service, scope: nativeScope{organization: f.project.OrganizationID, credential: credential}}
+		app := hubChangeApplication{service: service, scope: hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: credential}}
 		result, err := app.MutateChange(ctx, operatortool.CreateChange, operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(item.WorkItemID), RequestID: "typed-content-capability", Title: "Operator content"})
 		if err != nil || result.ChangeID == "" || probes == 0 {
 			t.Fatalf("operator mutation lost its typed content capability: change=%q probes=%d error=%v", result.ChangeID, probes, err)

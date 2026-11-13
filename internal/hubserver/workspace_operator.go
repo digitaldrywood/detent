@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -84,7 +85,7 @@ func workspaceRequirement(name string, r workspaceToolRequest, write bool) opera
 	}
 	return requirement
 }
-func (s *Service) checkOperatorResource(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, r operatortool.Requirement) error {
+func (s *Service) checkOperatorResource(ctx context.Context, query hubapi.NativeQueryer, scope hubscope.NativeScope, r operatortool.Requirement) error {
 	kind := r.ResourceKind
 	if strings.HasPrefix(kind, "runners:") {
 		if err := s.requireOperatorRunners(ctx, query, scope); err != nil {
@@ -110,12 +111,12 @@ func (s *Service) checkOperatorResource(ctx context.Context, query hubapi.Native
 		_, err := s.conversations.LoadConversation(ctx, query, conversationInput(scope), r.ResourceID)
 		return err
 	case "action":
-		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			owner, ok := reader.(actionstore.Reader)
 			if !ok {
 				return hubapi.NativeRunEventStorageUnavailable()
 			}
-			_, err := owner.ProjectAction(ctx, scope.project, r.ResourceID)
+			_, err := owner.ProjectAction(ctx, scope.Project, r.ResourceID)
 			return err
 		})
 	case "work_item":
@@ -159,8 +160,8 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		outcome = "denied"
 		return operatortool.Result{}, err
 	}
-	scope := ctx.Value(operatorScopeKey{}).(nativeScope) //nolint:errcheck // Successful workspace authorization binds the application scope.
-	scope.project = tracker.ProjectID(request.ProjectID)
+	scope := ctx.Value(operatorScopeKey{}).(hubscope.NativeScope) //nolint:errcheck // Successful workspace authorization binds the application scope.
+	scope.Project = tracker.ProjectID(request.ProjectID)
 	if !write {
 		value, err := e.server.readWorkspaceTool(ctx, scope, call.Name, request)
 		if err != nil {
@@ -220,7 +221,7 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 	proposal := chat.Action{Kind: chat.ActionKind(call.Name), ProjectID: request.ProjectID, IssueID: resourceSelector(request), RequestID: request.RequestID, Arguments: arguments, Mutation: m}
 	if call.Name == "create_project_action_run" {
 		var record actionstore.Record
-		err := e.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		err := e.server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			if err := e.server.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 				return err
 			}
@@ -229,7 +230,7 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 				return errWorkspaceOperationUnavailable
 			}
 			var err error
-			record, err = owner.ProjectAction(ctx, scope.project, request.ActionID)
+			record, err = owner.ProjectAction(ctx, scope.Project, request.ActionID)
 			return err
 		})
 		if err != nil {
@@ -316,8 +317,8 @@ func (e workspaceOperatorExecutor) ExecuteAction(ctx context.Context, action cha
 	if err != nil || m.Source != "mcp" || m.PrincipalID != identity.PrincipalID || m.OrganizationID != identity.OrganizationID || m.ProjectID != request.ProjectID || m.Action != string(action.Kind) || bound.RetryIdentity != m.RetryIdentity || bound.InputHash != m.InputHash {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
-	scope := ctx.Value(operatorScopeKey{}).(nativeScope) //nolint:errcheck // Successful workspace authorization binds the application scope.
-	scope.project = tracker.ProjectID(request.ProjectID)
+	scope := ctx.Value(operatorScopeKey{}).(hubscope.NativeScope) //nolint:errcheck // Successful workspace authorization binds the application scope.
+	scope.Project = tracker.ProjectID(request.ProjectID)
 	ctx = mutation.WithContext(ctx, m)
 	command := hostedCommand{actor: identity.PrincipalID, operation: "mcp " + string(action.Kind), key: m.RetryIdentity, input: action.Arguments}
 	claimed, previous, err := e.server.claimHostedOperation(ctx, command)
@@ -403,10 +404,10 @@ func (e workspaceOperatorExecutor) auditMutation(ctx context.Context, m mutation
 	if err == nil {
 		e.server.config.Logger.InfoContext(ctx, "operator mutation", "audit", string(raw))
 	}
-	if scope, ok := ctx.Value(operatorScopeKey{}).(nativeScope); ok && scope.credential.Hosted != nil {
+	if scope, ok := ctx.Value(operatorScopeKey{}).(hubscope.NativeScope); ok && scope.Credential.Hosted != nil {
 		auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
-		if err := e.server.hostedAudit(auditCtx, scope.credential.Hosted, outcome, "mcp "+m.Action, m.ProjectID, 0); err != nil {
+		if err := e.server.hostedAudit(auditCtx, scope.Credential.Hosted, outcome, "mcp "+m.Action, m.ProjectID, 0); err != nil {
 			e.server.config.Logger.WarnContext(ctx, "operator audit unavailable")
 		}
 	}
@@ -466,7 +467,7 @@ func (e workspaceOperatorExecutor) connectionResult(ctx context.Context, call op
 	return e.actionResult(action, data)
 }
 
-func (s *Service) readWorkspaceTool(ctx context.Context, scope nativeScope, name string, r workspaceToolRequest) (result json.RawMessage, resultErr error) {
+func (s *Service) readWorkspaceTool(ctx context.Context, scope hubscope.NativeScope, name string, r workspaceToolRequest) (result json.RawMessage, resultErr error) {
 	defer func() {
 		if archive := hubapi.NativeArchiveReadError(resultErr); archive != nil {
 			resultErr = archive
@@ -491,7 +492,7 @@ func (s *Service) readWorkspaceTool(ctx context.Context, scope nativeScope, name
 		value, err := s.readWorkspace(ctx, scope, r.WorkspaceID)
 		return operatorWorkspaceProjection(value, false, err)
 	case "list_project_conversations", "list_organization_conversations":
-		filter := conversationListQuery{Project: scope.project, Limit: limit, Cursor: r.Cursor, Title: r.Query, Settled: r.Settled, SubjectWorkItemID: r.SubjectWorkItemID}
+		filter := conversationListQuery{Project: scope.Project, Limit: limit, Cursor: r.Cursor, Title: r.Query, Settled: r.Settled, SubjectWorkItemID: r.SubjectWorkItemID}
 		if name == "list_organization_conversations" && r.ProjectID == "" {
 			projects, every, err := s.readableConversationProjects(ctx, scope)
 			if err != nil {
@@ -582,7 +583,7 @@ func boundedWorkspaceContent(id string, content []byte, offset, length int) (jso
 		More    bool   `json:"has_more"`
 	}{id, base64.StdEncoding.EncodeToString(content[offset:end]), offset, end, len(content), end < len(content)})
 }
-func (s *Service) commandWorkspaceTool(ctx context.Context, scope nativeScope, name string, r workspaceToolRequest) (json.RawMessage, error) {
+func (s *Service) commandWorkspaceTool(ctx context.Context, scope hubscope.NativeScope, name string, r workspaceToolRequest) (json.RawMessage, error) {
 	if (strings.Contains(name, "conversation")) && s.conversations == nil {
 		return nil, errWorkspaceOperationUnavailable
 	}
@@ -738,18 +739,18 @@ func boundedOperatorHistory(raw json.RawMessage, snapshot bool, err error) (json
 	return raw, nil
 }
 
-func (w *workspaceService) readOperatorWorkspaceForActor(ctx context.Context, scope nativeScope, id string) (workspaceRecord, error) {
+func (w *workspaceService) readOperatorWorkspaceForActor(ctx context.Context, scope hubscope.NativeScope, id string) (workspaceRecord, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if workspacesession.ValidateID(id) != nil {
 		return workspaceRecord{}, hubapi.NativeNotFound()
 	}
 	var row postgres.WorkspaceSession
-	err := w.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err := w.server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := w.server.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 			return err
 		}
-		project, err := reader.Project(ctx, scope.project)
+		project, err := reader.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -760,7 +761,7 @@ func (w *workspaceService) readOperatorWorkspaceForActor(ctx context.Context, sc
 		if !ok {
 			return hubapi.WorkspaceUnavailable()
 		}
-		row, err = owner.WorkspaceSession(ctx, scope.project, id)
+		row, err = owner.WorkspaceSession(ctx, scope.Project, id)
 		if err != nil {
 			return err
 		}

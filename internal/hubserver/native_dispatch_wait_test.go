@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -619,11 +620,11 @@ func prepareDispatchIssuesFixture(t *testing.T, f nativeFixture, requests []trac
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("fixture authority status%d: %v", status, err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	var project projectstore.Record
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		project, err = r.ProjectRecord(t.Context(), scope.project)
+		project, err = r.ProjectRecord(t.Context(), scope.Project)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -642,7 +643,7 @@ func prepareDispatchIssuesFixture(t *testing.T, f nativeFixture, requests []trac
 		if err != nil {
 			t.Fatal(err)
 		}
-		fields, err := f.service.prepareWorkItemFields(t.Context(), scope.organization, plan)
+		fields, err := f.service.prepareWorkItemFields(t.Context(), scope.Organization, plan)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -650,15 +651,15 @@ func prepareDispatchIssuesFixture(t *testing.T, f nativeFixture, requests []trac
 		if err != nil {
 			t.Fatal(err)
 		}
-		version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, RecordID: string(plan.issue.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
+		version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, RecordID: string(plan.issue.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, AggregateType: "issue", Type: "issue.created", SchemaVersion: 1, Actor: plan.issue.Actor, RecordedAt: plan.issue.CreatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, ToState: plan.issue.State}})
+		raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.issue.WorkItemID, AggregateType: "issue", Type: "issue.created", SchemaVersion: 1, Actor: plan.issue.Actor, RecordedAt: plan.issue.CreatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, ToState: plan.issue.State}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		event, err := content.PrepareEvent(t.Context(), scope.organization, raw)
+		event, err := content.PrepareEvent(t.Context(), scope.Organization, raw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -666,7 +667,7 @@ func prepareDispatchIssuesFixture(t *testing.T, f nativeFixture, requests []trac
 		issues = append(issues, plan.issue)
 	}
 	return func() {
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			for _, item := range prepared {
 				if err := writeWorkItemRecord(t.Context(), w, item.plan, item.fields); err != nil {
 					return err
@@ -866,7 +867,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			tailID := tracker.WorkItemID(tailRow.ID)
 			attempts := map[tracker.NativeWorkItemID]dispatchGuardFixture{}
 			var worker runnerFixture
-			var scope nativeScope
+			var scope hubscope.NativeScope
 			if test.unpublished {
 				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 				worker = prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
@@ -880,7 +881,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 				if err != nil || status != http.StatusOK {
 					t.Fatalf("fixture worker status%d: %v", status, err)
 				}
-				scope = nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+				scope = hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 				for _, issue := range issues {
 					lease := nativeAttemptFixtureLease(t, worker, issue, hubapi.NewID("source-session"))
 					event := nativeStartedEvent(lease)

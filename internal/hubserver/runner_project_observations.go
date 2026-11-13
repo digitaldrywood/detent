@@ -6,13 +6,14 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func storeRunnerProjectObservationTenant(ctx context.Context, scope nativeScope, view runnerauth.ProjectConfiguration, receivedAt time.Time, writer runnerstore.Writer) error {
-	if view.ProjectID != string(scope.project) || view.ObservedAt.IsZero() {
+func storeRunnerProjectObservationTenant(ctx context.Context, scope hubscope.NativeScope, view runnerauth.ProjectConfiguration, receivedAt time.Time, writer runnerstore.Writer) error {
+	if view.ProjectID != string(scope.Project) || view.ObservedAt.IsZero() {
 		return runnerstore.ErrInvalidRecord
 	}
 	digest, err := projectConfigurationDigest(view)
@@ -20,8 +21,8 @@ func storeRunnerProjectObservationTenant(ctx context.Context, scope nativeScope,
 		return err
 	}
 	observation := runnerstore.ProjectObservation{
-		OrganizationID: scope.organization,
-		RunnerID:       scope.credential.Runner.RunnerID,
+		OrganizationID: scope.Organization,
+		RunnerID:       scope.Credential.Runner.RunnerID,
 		ProjectID:      tracker.ProjectID(view.ProjectID),
 		ObservedAt:     receivedAt,
 		SnapshotDigest: digest,

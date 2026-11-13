@@ -7,22 +7,23 @@ import (
 	"slices"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
-func (t *coordinatorToolset) workReadContext(ctx context.Context, record conversationRecord) (context.Context, nativeScope, error) {
+func (t *coordinatorToolset) workReadContext(ctx context.Context, record conversationRecord) (context.Context, hubscope.NativeScope, error) {
 	current, err := t.actionContext(ctx, record)
 	if err != nil {
-		return ctx, nativeScope{}, err
+		return ctx, hubscope.NativeScope{}, err
 	}
 	current, err = operatortool.AuthorizeCurrent(current, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(record.ProjectID)})
 	if err != nil {
-		return ctx, nativeScope{}, err
+		return ctx, hubscope.NativeScope{}, err
 	}
-	resolve, ok := current.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := current.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
-		return ctx, nativeScope{}, operatortool.ErrAccessDenied
+		return ctx, hubscope.NativeScope{}, operatortool.ErrAccessDenied
 	}
 	scope, err := resolve(current)
 	return current, scope, err

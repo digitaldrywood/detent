@@ -9,11 +9,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-func (s *Service) nativeClaimAnsweredExclusion(ctx context.Context, scope nativeScope, plan nativeClaimPlan, now time.Time) (*tracker.NativeAnsweredExclusion, error) {
+func (s *Service) nativeClaimAnsweredExclusion(ctx context.Context, scope hubscope.NativeScope, plan nativeClaimPlan, now time.Time) (*tracker.NativeAnsweredExclusion, error) {
 	if !nativeClaimAnswerRequired(plan) || plan.latestAttempt.ClaimDisposition == nil {
 		return nil, nil
 	}
@@ -33,14 +34,14 @@ func (s *Service) nativeClaimAnsweredExclusion(ctx context.Context, scope native
 	return nil, nil
 }
 
-func (s *Service) nativePublishedReviewAwaiting(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, attemptID string, now time.Time) (bool, error) {
+func (s *Service) nativePublishedReviewAwaiting(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, attemptID string, now time.Time) (bool, error) {
 	attempt, err := s.readNativeAttemptTenant(ctx, scope, string(item), attemptID)
 	if err != nil {
 		return false, err
 	}
 	disposition := attempt.Disposition
 	if disposition == nil {
-		signal, reported := workpad.SignalFromComment(attempt.CompletionBody, "", string(scope.project))
+		signal, reported := workpad.SignalFromComment(attempt.CompletionBody, "", string(scope.Project))
 		if !reported || signal == nil || signal.Invalid != nil || signal.Fields["completion_kind"] == "operational" {
 			return false, nil
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/usagereport"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -59,7 +60,7 @@ func (s *Service) creditHTTPDeps() credits.HTTPDeps {
 }
 
 func creditCredential(value hubauth.Credential, err error) (hubapi.APICredential, error) {
-	return nativeCredential(value), err
+	return hubscope.NativeCredential(value), err
 }
 
 func (s *Service) creditCommandFailure(c echo.Context, api bool, err error) error {

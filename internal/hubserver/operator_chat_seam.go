@@ -10,12 +10,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/operatorchat"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type operatorChatIdentity = operatorchat.Identity
 
 type operatorChatOrganizationKey = operatorchat.OrganizationKey
 
@@ -61,7 +60,7 @@ func (s *Service) resolveOperatorChatAuthority(ctx context.Context, identity ope
 	} else {
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
-	if err != nil || operatorIdentity(credential, identity.OrganizationID) != identity {
+	if err != nil || hubscope.OperatorIdentity(credential, identity.OrganizationID) != identity {
 		return operatortool.Authority{}, operatortool.ErrAccessDenied
 	}
 	return s.operatorCurrentAuthority(ctx, credential, identity.OrganizationID)
@@ -74,7 +73,7 @@ func (s *Service) currentEntryOriginClaims(ctx context.Context, encoded string) 
 	}
 	claims, err := s.config.Hosted.SharedEntry.ResolveKey(ctx, origin)
 	if err != nil {
-		return cloudassert.Claims{}, operatorAuthorizationError(err)
+		return cloudassert.Claims{}, hubscope.OperatorAuthorizationError(err)
 	}
 	if claims.Key == nil || claims.Key.ID != origin.KeyID || claims.Key.CredentialBinding != origin.CredentialBinding || claims.Subject != origin.Subject || claims.Issuer != origin.Issuer || claims.Generation != origin.Generation {
 		return cloudassert.Claims{}, operatortool.ErrAccessDenied

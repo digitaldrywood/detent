@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -111,7 +112,7 @@ func TestClaimNextCandidateConcurrent(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 			type claimer struct {
-				scope   nativeScope
+				scope   hubscope.NativeScope
 				request tracker.NativeClaim
 				probe   claimCandidateProbe
 			}
@@ -144,7 +145,7 @@ func TestClaimNextCandidateConcurrent(t *testing.T) {
 						t.Fatalf("authenticate runner: status=%d error=%v", status, err)
 					}
 					workers[organizationIndex*test.runners+index] = claimer{
-						scope:   nativeScope{organization: organization.ID, project: f.project.ID, credential: credential},
+						scope:   hubscope.NativeScope{Organization: organization.ID, Project: f.project.ID, Credential: credential},
 						request: tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: runner.binding.MachineID, SessionID: fmt.Sprintf("session-%d-%d", organizationIndex, index), TTLSeconds: 60, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: []string{"Todo"}},
 					}
 				}
@@ -185,7 +186,7 @@ func TestClaimNextCandidateConcurrent(t *testing.T) {
 				result := <-results
 				worker := &workers[result.index]
 				worker.probe.wire.Lock()
-				t.Logf("organization=%s runner=%d granted=%t writes=%d statements=%d exchanges=%d", worker.scope.organization, result.index, result.err == nil, worker.probe.writes, worker.probe.wire.statements, worker.probe.wire.exchanges)
+				t.Logf("organization=%s runner=%d granted=%t writes=%d statements=%d exchanges=%d", worker.scope.Organization, result.index, result.err == nil, worker.probe.writes, worker.probe.wire.statements, worker.probe.wire.exchanges)
 				worker.probe.wire.Unlock()
 				if worker.probe.reads.readTenant != 1 || worker.probe.reads.candidatePage != 1 || len(worker.probe.candidates) != test.items {
 					t.Errorf("claim selection escaped one page: reads=%+v candidates=%d", worker.probe.reads, len(worker.probe.candidates))
@@ -201,7 +202,7 @@ func TestClaimNextCandidateConcurrent(t *testing.T) {
 				if position < 0 || position >= len(worker.probe.candidates) || worker.probe.candidates[position].ID != lease.IssueID {
 					t.Errorf("claim did not follow selected candidate order: writes=%d lease=%+v", worker.probe.writes, lease)
 				}
-				if lease.OrganizationID != worker.scope.organization || lease.ProjectID == nil || *lease.ProjectID != worker.scope.project || lease.LeaseID == "" || lease.FencingToken <= 0 || leases[lease.LeaseID] || fences[lease.FencingToken] || items[lease.IssueID] {
+				if lease.OrganizationID != worker.scope.Organization || lease.ProjectID == nil || *lease.ProjectID != worker.scope.Project || lease.LeaseID == "" || lease.FencingToken <= 0 || leases[lease.LeaseID] || fences[lease.FencingToken] || items[lease.IssueID] {
 					t.Errorf("duplicate or invalid claim: %+v", lease)
 				}
 				leases[lease.LeaseID], fences[lease.FencingToken], items[lease.IssueID] = true, true, true

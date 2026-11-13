@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -21,11 +22,11 @@ type boardChangePreparation struct {
 	workload corestore.Workload
 }
 
-func (s *Service) prepareBoardChangeRows(ctx context.Context, scope nativeScope, cards []tracker.NativeBoardCard) (boardChangePreparation, bool) {
+func (s *Service) prepareBoardChangeRows(ctx context.Context, scope hubscope.NativeScope, cards []tracker.NativeBoardCard) (boardChangePreparation, bool) {
 	return s.prepareBoardChangeRowsFor(ctx, scope, cards, corestore.Serving)
 }
 
-func (s *Service) prepareBoardChangeRowsFor(ctx context.Context, scope nativeScope, cards []tracker.NativeBoardCard, workload corestore.Workload) (boardChangePreparation, bool) {
+func (s *Service) prepareBoardChangeRowsFor(ctx context.Context, scope hubscope.NativeScope, cards []tracker.NativeBoardCard, workload corestore.Workload) (boardChangePreparation, bool) {
 	requests := []tenantstore.BoardChangeRequest{}
 	seen := map[tenantstore.BoardChangeRequest]bool{}
 	for _, card := range cards {
@@ -45,13 +46,13 @@ func (s *Service) prepareBoardChangeRowsFor(ctx context.Context, scope nativeSco
 	supported := false
 	hasChanges := false
 	finishRows := timeSpan(ctx, "board_change_rows")
-	result.err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, workload, func(reader tenantstore.Reader) error {
+	result.err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, workload, func(reader tenantstore.Reader) error {
 		batch, ok := reader.(tenantstore.BoardChangeRowsReader)
 		if !ok {
 			return nil
 		}
 		supported = true
-		project, err := reader.Project(ctx, scope.project)
+		project, err := reader.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -59,7 +60,7 @@ func (s *Service) prepareBoardChangeRowsFor(ctx context.Context, scope nativeSco
 			return corestore.ErrNotFound
 		}
 		for start := 0; start < len(requests); start += corestore.MaxPageSize {
-			rows, err := batch.BoardChangeRows(ctx, scope.project, requests[start:min(start+corestore.MaxPageSize, len(requests))])
+			rows, err := batch.BoardChangeRows(ctx, scope.Project, requests[start:min(start+corestore.MaxPageSize, len(requests))])
 			if err != nil {
 				return err
 			}
@@ -96,7 +97,7 @@ func (s *Service) prepareBoardChangeRowsFor(ctx context.Context, scope nativeSco
 			}
 		}
 		finishPayloads := timeSpan(ctx, "board_change_payloads")
-		s.prefetchDetails(ctx, string(scope.organization), refs)
+		s.prefetchDetails(ctx, string(scope.Organization), refs)
 		finishPayloads()
 		finishPolicy := timeSpan(ctx, "board_change_policy")
 		approval, err := hydrateChangeSummaryPolicy(ctx, eventstore.NewContent(s.runDetailStoreFor(ctx)), scope, result.policy)
@@ -106,7 +107,7 @@ func (s *Service) prepareBoardChangeRowsFor(ctx context.Context, scope nativeSco
 	}
 	return result, supported
 }
-func (p boardChangePreparation) summary(ctx context.Context, s *Service, scope nativeScope, item tracker.NativeWorkItemID, id string, now time.Time) (tracker.ChangeSummary, error) {
+func (p boardChangePreparation) summary(ctx context.Context, s *Service, scope hubscope.NativeScope, item tracker.NativeWorkItemID, id string, now time.Time) (tracker.ChangeSummary, error) {
 	if p.err != nil {
 		return tracker.ChangeSummary{}, hubapi.ProjectRecordError(p.err)
 	}
@@ -120,14 +121,14 @@ func (p boardChangePreparation) summary(ctx context.Context, s *Service, scope n
 	detail, err := s.hydrateCurrentChangeDetailWithFacts(ctx, scope, item, *row.Change, row.Version, p.policy, now, &row, p.approval, p.workload)
 	return detail.Summary, err
 }
-func boardCurrentApproval(ctx context.Context, content *eventstore.Content, scope nativeScope, rows currentChangePolicyRows, approval *ChangeVersionApproval) (ChangeVersionApproval, error) {
+func boardCurrentApproval(ctx context.Context, content *eventstore.Content, scope hubscope.NativeScope, rows currentChangePolicyRows, approval *ChangeVersionApproval) (ChangeVersionApproval, error) {
 	if approval != nil {
 		return *approval, nil
 	}
 	return hydrateChangeSummaryPolicy(ctx, content, scope, rows)
 }
-func filterBoardChangeRecord(scope nativeScope, change tracker.ChangeRequest, rows tenantstore.BoardChangeRows) (tracker.ChangeRequest, bool, error) {
-	if change.OrganizationID != scope.organization || change.ProjectID != scope.project {
+func filterBoardChangeRecord(scope hubscope.NativeScope, change tracker.ChangeRequest, rows tenantstore.BoardChangeRows) (tracker.ChangeRequest, bool, error) {
+	if change.OrganizationID != scope.Organization || change.ProjectID != scope.Project {
 		return tracker.ChangeRequest{}, false, corestore.ErrNotFound
 	}
 	if len(rows.Links) > 32 {
@@ -135,10 +136,10 @@ func filterBoardChangeRecord(scope nativeScope, change tracker.ChangeRequest, ro
 	}
 	linked := make([]tracker.NativeWorkItemID, 0, len(rows.Links))
 	for _, link := range rows.Links {
-		if link.ProjectID != scope.project {
+		if link.ProjectID != scope.Project {
 			return tracker.ChangeRequest{}, false, corestore.ErrTenantMismatch
 		}
-		if !link.ItemExists || !link.VersionExists || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(link.ActorPrincipalID)}) {
+		if !link.ItemExists || !link.VersionExists || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(link.ActorPrincipalID)}) {
 			continue
 		}
 		linked = append(linked, link.WorkItemID)

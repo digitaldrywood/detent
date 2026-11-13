@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/pullrequests"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -16,8 +17,8 @@ type pullRequestView = pullrequests.View
 func externalPullRequestNumber(reference tracker.ChangeExternalReference) int {
 	return pullrequests.ExternalNumber(reference)
 }
-func pullRequestCacheKey(scope nativeScope, item string) string {
-	return pullrequests.CacheKey(scope.organization, scope.project, item)
+func pullRequestCacheKey(scope hubscope.NativeScope, item string) string {
+	return pullrequests.CacheKey(scope.Organization, scope.Project, item)
 }
 
 type pullRequestCache struct{ cache *pullrequests.Cache }
@@ -32,7 +33,7 @@ func (c *pullRequestCache) inner() *pullrequests.Cache {
 	return c.cache
 }
 func (c *pullRequestCache) invalidate(key string) { c.inner().Invalidate(key) }
-func (s *Service) pullRequestService(scope nativeScope) *pullrequests.Service {
+func (s *Service) pullRequestService(scope hubscope.NativeScope) *pullrequests.Service {
 	return pullrequests.New(pullrequests.Deps{
 		Repository: s.config.TenantRepository, Now: s.config.now, Cache: s.pullRequests.inner(), TransportAvailable: s.config.ReconcileBackend != nil, Unavailable: hubapi.ErrPostgresFeatureUnavailable,
 		ValidCheckout: validCheckoutRepository,
@@ -57,11 +58,11 @@ func (s *Service) pullRequestService(scope nativeScope) *pullrequests.Service {
 		},
 	})
 }
-func (s *Service) projectRepositoryBinding(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope) (*pullRequestConnector, int64, bool, error) {
+func (s *Service) projectRepositoryBinding(ctx context.Context, _ hubapi.NativeQueryer, scope hubscope.NativeScope) (*pullRequestConnector, int64, bool, error) {
 	result, id, enabled, err := s.pullRequestService(scope).RepositoryBinding(ctx, s.featureScope(scope))
 	return result, id, enabled, hubapi.FromFeatureError(err)
 }
-func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScope, item, refresh string) ([]pullRequestView, error) {
+func (s *Service) readWorkItemPullRequests(ctx context.Context, scope hubscope.NativeScope, item, refresh string) ([]pullRequestView, error) {
 	result, err := s.pullRequestService(scope).Read(ctx, s.featureScope(scope), item, refresh)
 	return result, hubapi.FromFeatureError(err)
 }

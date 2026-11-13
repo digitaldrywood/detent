@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -94,7 +95,7 @@ func TestPostgresWorkerWorkflowTransitionPersistsFencedEventAndReplays(t *testin
 	requireNativeStatus(t, secondResponse, http.StatusOK)
 	var second tracker.NativeIssue
 	decodeHubResponse(t, secondResponse, &second)
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
+	scope := hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
 	acquire := func(item tracker.NativeIssue, session string) leasestore.Lease {
 		t.Helper()
 		var lease leasestore.Lease

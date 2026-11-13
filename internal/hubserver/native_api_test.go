@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -97,7 +98,7 @@ func newNativeFixture(t *testing.T, service *Service, organization tracker.Organ
 	if err != nil {
 		t.Fatalf("fixture credential status=%d: %v", status, err)
 	}
-	if _, err := service.readAuthorizedProjectRecord(t.Context(), nativeScope{organization: organization, project: project.ID, credential: credential}, true, false); err != nil {
+	if _, err := service.readAuthorizedProjectRecord(t.Context(), hubscope.NativeScope{Organization: organization, Project: project.ID, Credential: credential}, true, false); err != nil {
 		t.Fatalf("fixture project authority: %v", err)
 	}
 	f := nativeFixture{service: service, project: project, base: "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID), token: token.Token}
@@ -428,7 +429,7 @@ func TestNativeAPIError(t *testing.T) {
 					c.SetPath(hubapi.NativeBase + "/runners/:runner")
 					c.SetParamNames("organization", "project", "runner")
 					c.SetParamValues("private-organization", "private-project", "runner_example")
-					c.Set("native_scope", nativeScope{organization: "org_example", project: "prj_example"})
+					c.Set("native_scope", hubscope.NativeScope{Organization: "org_example", Project: "prj_example"})
 					if err := service.nativeAPIError(c, fmt.Errorf("private-context: %w", test.err), "operation", "example_lookup"); err != nil {
 						t.Fatal(err)
 					}
@@ -561,7 +562,7 @@ func TestNativeWorkflowRefusalCode(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("fixture authentication=%d %v", status, err)
 			}
-			_, intakeErr := f.service.createNativeIssueCommand(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "unlinked-triage"}, Title: "Unlinked draft", Body: nativeContractTestBody, State: "Triage"})
+			_, intakeErr := f.service.createNativeIssueCommand(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "unlinked-triage"}, Title: "Unlinked draft", Body: nativeContractTestBody, State: "Triage"})
 			if intakeErr == nil {
 				t.Fatal("unlinked Triage creation accepted")
 			}
@@ -933,7 +934,7 @@ func TestNativeDependenciesDoNotLeakThroughCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	current, err = f.service.resolveOperatorRecordReadItem(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, string(native.WorkItemID))
+	current, err = f.service.resolveOperatorRecordReadItem(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}, string(native.WorkItemID))
 	if err != nil || len(current.Dependencies) != 1 || current.Dependencies[0] != other.WorkItemID {
 		t.Fatalf("current dependency graph = %#v error=%v", current.Dependencies, err)
 	}
@@ -1088,7 +1089,7 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					got, err = f.service.resolveOperatorRecordReadItem(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, string(issue.WorkItemID))
+					got, err = f.service.resolveOperatorRecordReadItem(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}, string(issue.WorkItemID))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1116,7 +1117,7 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: other.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: other.project.ID, Credential: credential}
 	reference := fmt.Sprintf("%s#%d", other.project.ID, blocker.Number)
 	if _, err := f.service.resolveOperatorRecordReadItem(t.Context(), scope, reference); err == nil {
 		t.Fatal("recorded predicate resolved without its project grant")

@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -119,7 +120,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 						if report.Completion.Done != 6 || report.Completion.Cancelled != 2 {
 							t.Fatalf("24h report completed=%d cancelled=%d, want 6 and 2", report.Completion.Done, report.Completion.Cancelled)
 						}
-						scope := nativeScope{organization: org, project: project, credential: credential}
+						scope := hubscope.NativeScope{Organization: org, Project: project, Credential: credential}
 						board, err := service.readWorkBoardProject(ctx, scope, savedWorkState{View: "board", Lanes: []string{"Todo"}, CompletedWindow: "24h"})
 						if err != nil {
 							t.Fatal(err)
@@ -359,7 +360,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 				if dayReport.Completion.Done != 6 || dayReport.Completion.Cancelled != 2 {
 					t.Fatalf("24h report=%+v", dayReport.Completion)
 				}
-				scope := nativeScope{organization: org, project: project, credential: credential}
+				scope := hubscope.NativeScope{Organization: org, Project: project, Credential: credential}
 				var refreshed []tracker.NativeWorkItemID
 				for cursor := tracker.NativeWorkItemID(""); ; {
 					next, processed, err := service.maintainBoardRecord(ctx, org, cursor, refreshed...)

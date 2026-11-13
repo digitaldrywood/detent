@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -106,7 +107,7 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: tracker.MachineID(machineID)}, OrganizationID: organization.ID}}}
+	scope := hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: tracker.MachineID(machineID)}, OrganizationID: organization.ID}}}
 	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: tracker.MachineID(machineID), SessionID: "runtime-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	lease, err := service.claimNativeIssueTenant(t.Context(), scope, request, 5*time.Minute)
 	if err != nil {
@@ -215,14 +216,14 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	if err != nil {
 		t.Fatal(err)
 	}
-	operatorContext := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: operatorIdentity(admin, string(organization.ID)), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+	operatorContext := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: hubscope.OperatorIdentity(admin, string(organization.ID)), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 		current, _, err := service.authenticateTenantAPIHash(ctx, organization.ID, apikey.HashToken(testHubAdminToken), "", "")
 		if err != nil {
 			return operatortool.Authority{}, err
 		}
 		return service.operatorCurrentAuthority(ctx, current, string(organization.ID))
 	}})
-	reads := operatorWorkReads{service: service, scope: nativeScope{organization: organization.ID, project: project.ID, credential: admin}}
+	reads := operatorWorkReads{service: service, scope: hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: admin}}
 	t.Run("work_config", func(t *testing.T) {
 		defer func() {
 			if value := recover(); value != nil {
@@ -384,30 +385,30 @@ func TestPostgresOperatorReadsRejectRoleChanges(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
 			decodeHubResponse(t, response, &issue)
-			scope := nativeScope{organization: "org_security", project: f.project, credential: hubapi.APICredential{ID: owner.identity.Subject, Scope: hubapi.APIScopeOperator, Hosted: owner.identity.Hosted, SessionHash: apikey.HashToken(owner.token), HostedRole: "owner"}}
-			if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			scope := hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: hubapi.APICredential{ID: owner.identity.Subject, Scope: hubapi.APIScopeOperator, Hosted: owner.identity.Hosted, SessionHash: apikey.HashToken(owner.token), HostedRole: "owner"}}
+			if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				member, err := r.AccessMember(t.Context(), owner.identity.Subject)
 				if err != nil {
 					return err
 				}
 				principal, err := r.AccessCredential(t.Context(), member.PrincipalID)
-				scope.credential.ID, scope.credential.Hash = principal.ID, principal.Hash
-				scope.credential.HostedPrincipal, scope.credential.HostedMembership = principal.ID, member.MembershipID
+				scope.Credential.ID, scope.Credential.Hash = principal.ID, principal.Hash
+				scope.Credential.HostedPrincipal, scope.Credential.HostedMembership = principal.ID, member.MembershipID
 				return err
 			}); err != nil {
 				t.Fatal(err)
 			}
-			identity := operatorIdentity(scope.credential, "org_security")
+			identity := hubscope.OperatorIdentity(scope.Credential, "org_security")
 			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
 				return operatortool.Authority{Identity: identity, Check: func(ctx context.Context, req operatortool.Requirement) error {
-					return repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return f.service.authorizeAccessScope(ctx, r, scope, false) })
+					return repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { return f.service.authorizeAccessScope(ctx, r, scope, false) })
 				}}, nil
 			}})
 			changed := false
 			details.beforeRead = func(ctx context.Context) error {
 				details.beforeRead = nil
 				changed = true
-				return repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				return repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					member, err := w.AccessMember(ctx, owner.identity.Subject)
 					if err != nil {
 						return err

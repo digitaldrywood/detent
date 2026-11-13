@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -60,7 +61,7 @@ func TestUrgentRunnerUpdateHeartbeatSurvivesReplayExpiry(t *testing.T) {
 			if routingError0 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus0, routingError0)
 			}
-			stored, err := s.readRunnerRouting(ctx, nativeScope{organization: f.project.OrganizationID, credential: routingCredential0}, r.binding.RunnerID)
+			stored, err := s.readRunnerRouting(ctx, hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential0}, r.binding.RunnerID)
 			if err != nil || stored.Update == nil || stored.Update.Receipt != nil {
 				t.Fatalf("expired receipt authenticated a changed request: observation=%+v error=%v", stored.Update, err)
 			}
@@ -71,7 +72,7 @@ func TestUrgentRunnerUpdateHeartbeatSurvivesReplayExpiry(t *testing.T) {
 			if routingError1 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus1, routingError1)
 			}
-			stored, err = s.readRunnerRouting(ctx, nativeScope{organization: f.project.OrganizationID, credential: routingCredential1}, r.binding.RunnerID)
+			stored, err = s.readRunnerRouting(ctx, hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential1}, r.binding.RunnerID)
 			if err != nil || stored.Update == nil || !reflect.DeepEqual(stored.Update.Receipt, receipt) {
 				t.Fatalf("expired superseded urgent update lost runner receipt: observation=%+v error=%v", stored.Update, err)
 			}
@@ -145,7 +146,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 		if routingError2 != nil {
 			t.Fatalf("routing reader status=%d error=%v", routingStatus2, routingError2)
 		}
-		stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential2}, m.runner.binding.RunnerID)
+		stored, err := f.service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential2}, m.runner.binding.RunnerID)
 		wantState := m.state
 		if err != nil || stored.State != wantState || (stored.UpdateRequest != nil) != m.older {
 			t.Fatalf("version %s state=%s desired=%+v error=%v", m.version, stored.State, stored.UpdateRequest, err)
@@ -191,7 +192,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			if routingError3 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus3, routingError3)
 			}
-			stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential3}, m.runner.binding.RunnerID)
+			stored, err := f.service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential3}, m.runner.binding.RunnerID)
 			if err != nil || stored.State != m.state || stored.Update.Receipt.FailureReason != failure.reason {
 				t.Fatalf("runner lost failure: %+v %v", stored, err)
 			}
@@ -243,7 +244,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 	if routingError4 != nil {
 		t.Fatalf("routing reader status=%d error=%v", routingStatus4, routingError4)
 	}
-	stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential4}, late.binding.RunnerID)
+	stored, err := f.service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential4}, late.binding.RunnerID)
 	if err != nil || stored.State != "active" || stored.UpdateRequest == nil || stored.Health != "offline" {
 		t.Fatalf("offline runner escaped urgent release: %+v error=%v", stored, err)
 	}
@@ -340,7 +341,7 @@ func TestUrgentRunnerUpdateFleet(t *testing.T) {
 			if routingError5 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus5, routingError5)
 			}
-			stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential5}, r.binding.RunnerID)
+			stored, err := f.service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential5}, r.binding.RunnerID)
 			if err != nil || stored.UpdateRequest == nil || *stored.UpdateRequest != *request || stored.Update == nil || !reflect.DeepEqual(stored.Update.Receipt, receipt) {
 				t.Fatalf("routing lost request or historical receipt: %+v error=%v", stored, err)
 			}

@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -111,19 +112,19 @@ func (c *conversationTurnCoordinator) coordinatorMessages(ctx context.Context, f
 	return messages, nil
 }
 
-func (c *conversationTurnCoordinator) authorizeRecord(ctx context.Context, scope nativeScope, record conversationRecord, write bool) error {
-	if record.OrganizationID != scope.organization || record.ProjectID != scope.project {
+func (c *conversationTurnCoordinator) authorizeRecord(ctx context.Context, scope hubscope.NativeScope, record conversationRecord, write bool) error {
+	if record.OrganizationID != scope.Organization || record.ProjectID != scope.Project {
 		return hubapi.NativeNotFound()
 	}
-	return c.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	return c.server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := c.server.authorizeAccessScope(ctx, r, scope, write); err != nil {
 			return err
 		}
-		if record.Visibility == conversation.VisibilityPrivate && record.OwnerPrincipalID != scope.credential.ID {
+		if record.Visibility == conversation.VisibilityPrivate && record.OwnerPrincipalID != scope.Credential.ID {
 			return hubapi.NativeNotFound()
 		}
 		if record.ReadAudience != "" {
-			audience, err := conversationReadAudienceRecord(ctx, r, scope.organization, scope.credential)
+			audience, err := conversationReadAudienceRecord(ctx, r, scope.Organization, scope.Credential)
 			if err != nil || audience != record.ReadAudience {
 				return hubapi.NativeNotFound()
 			}

@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -155,13 +156,13 @@ func newBatchFixtureForProject(t *testing.T, f nativeFixture) *batchFixture {
 	return fixture
 }
 
-func (f *batchFixture) scope(t *testing.T) nativeScope {
+func (f *batchFixture) scope(t *testing.T) hubscope.NativeScope {
 	t.Helper()
 	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	return hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 }
 
 func (f *batchFixture) refresh(t *testing.T) {
@@ -309,7 +310,7 @@ func (f *batchFixture) save(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope.githubIntakeRevision = &githubIntakeRevision{issuer: current.Issuer, fallbackRunner: current.FallbackRunnerID, requireAdminKey: current.RequireAdminKey}
+	scope.GitHubIntakeRevision = &hubscope.GitHubIntakeRevision{Issuer: current.Issuer, FallbackRunner: current.FallbackRunnerID, RequireAdminKey: current.RequireAdminKey}
 	if err := f.service.saveGitHubBatchRecord(t.Context(), scope, f.batch); err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +444,7 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				scope.sourceActor = f.batch.RequestedBy
+				scope.SourceActor = f.batch.RequestedBy
 				state, err := f.service.loadGitHubBatchState(t.Context(), scope)
 				if err != nil {
 					t.Fatal(err)
@@ -455,20 +456,20 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 				original := f.issue(t, id)
 				for _, fault := range []string{"missing batch", "wrong batch", "stale batch", "wrong repository", "wrong actor", "completed item", "unapproved destination"} {
 					invalid := scope
-					fence := *scope.githubIntakeRevision
-					invalid.githubIntakeRevision = &fence
+					fence := *scope.GitHubIntakeRevision
+					invalid.GitHubIntakeRevision = &fence
 					target, destination := id, "Backlog"
 					switch fault {
 					case "missing batch":
-						invalid.githubIntakeRevision = nil
+						invalid.GitHubIntakeRevision = nil
 					case "wrong batch":
-						invalid.githubIntakeRevision.batchID = "other-batch"
+						invalid.GitHubIntakeRevision.BatchID = "other-batch"
 					case "stale batch":
-						invalid.githubIntakeRevision.revision--
+						invalid.GitHubIntakeRevision.Revision--
 					case "wrong repository":
-						invalid.integrationRepository = "other/repository"
+						invalid.IntegrationRepository = "other/repository"
 					case "wrong actor":
-						invalid.sourceActor = &tracker.Actor{Kind: "integration", PrincipalID: "other-key"}
+						invalid.SourceActor = &tracker.Actor{Kind: "integration", PrincipalID: "other-key"}
 					case "completed item":
 						target = f.batch.Items[0].WorkItemID
 					case "unapproved destination":
@@ -797,7 +798,7 @@ func TestGitHubBatchRunnerOperations(t *testing.T) {
 						t.Fatal(err)
 					}
 				default:
-					caller := first.scope(t).credential
+					caller := first.scope(t).Credential
 					if err := first.service.config.TenantRepository.WriteTenant(t.Context(), first.project.OrganizationID, corestore.Serving, func(writer tenantstore.Writer) error {
 						switch fault {
 						case "credential revoked":
@@ -1664,7 +1665,7 @@ func TestGitHubBatchMaintenanceTraversal(t *testing.T) {
 					t.Fatal(err)
 				}
 				issuerScope := testGitHubBatchIssuer(t, f.service, f.project.OrganizationID, projectID)
-				batch := &tracker.GitHubBatch{ID: fmt.Sprint("prefix_batch_", index), Revision: 1, HubOwned: test.owned, Status: test.status, Limit: 1000, RequestedBy: new(issuerScope.actor()), Discovery: tracker.GitHubDiscovery{Repository: "example-org/example-project"}}
+				batch := &tracker.GitHubBatch{ID: fmt.Sprint("prefix_batch_", index), Revision: 1, HubOwned: test.owned, Status: test.status, Limit: 1000, RequestedBy: new(issuerScope.Actor()), Discovery: tracker.GitHubDiscovery{Repository: "example-org/example-project"}}
 				if !test.owned {
 					batch.RunnerID = f.runner.binding.RunnerID
 				}
@@ -1719,7 +1720,7 @@ func TestGitHubBatchMaintenanceTraversal(t *testing.T) {
 				t.Fatal(err)
 			}
 			issuerScope := testGitHubBatchIssuer(t, f.service, f.project.OrganizationID, projectID)
-			batch := &tracker.GitHubBatch{ID: "prefix_batch_0", Revision: 2, HubOwned: true, Status: "discovering", Limit: 1000, RequestedBy: new(issuerScope.actor()), Discovery: tracker.GitHubDiscovery{Repository: "example-org/example-project"}}
+			batch := &tracker.GitHubBatch{ID: "prefix_batch_0", Revision: 2, HubOwned: true, Status: "discovering", Limit: 1000, RequestedBy: new(issuerScope.Actor()), Discovery: tracker.GitHubDiscovery{Repository: "example-org/example-project"}}
 			row, err := f.service.prepareGitHubBatchRecord(t.Context(), issuerScope, batch)
 			if err != nil {
 				t.Fatal(err)
@@ -2099,7 +2100,7 @@ func bindBatchTenant(t *testing.T, f *batchFixture, hosted *HostedConfig) {
 
 func seedBatchServiceKey(t *testing.T, f *batchFixture, ttl ...time.Duration) string {
 	t.Helper()
-	credential := f.scope(t).credential
+	credential := f.scope(t).Credential
 	token := hubapi.NewID("service_token")
 	id := "service_" + string(f.project.ID)
 	now := f.service.config.now()
@@ -2119,16 +2120,16 @@ func seedBatchServiceKey(t *testing.T, f *batchFixture, ttl ...time.Duration) st
 	return token
 }
 
-func testGitHubBatchIssuer(t *testing.T, service *Service, organization tracker.OrganizationID, project tracker.ProjectID) nativeScope {
+func testGitHubBatchIssuer(t *testing.T, service *Service, organization tracker.OrganizationID, project tracker.ProjectID) hubscope.NativeScope {
 	t.Helper()
 	credential, _, err := service.authenticateTenantAPIHash(t.Context(), organization, apikey.HashToken(testHubAdminToken), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: organization, project: project, credential: credential}
-	issuer := operatorChatIdentity{Identity: operatorIdentity(credential, string(organization))}
+	scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}
+	issuer := hubscope.OperatorChatIdentity{Identity: hubscope.OperatorIdentity(credential, string(organization))}
 	authority := scope
-	scope.githubIntakeRevision = &githubIntakeRevision{issuer: &issuer, authority: &authority}
+	scope.GitHubIntakeRevision = &hubscope.GitHubIntakeRevision{Issuer: &issuer, Authority: &authority}
 	return scope
 }
 
@@ -2165,7 +2166,7 @@ func (f *batchFixture) workerPreview(t *testing.T) {
 
 func seedBatchExpiringKey(t *testing.T, f *batchFixture, ttl time.Duration) string {
 	t.Helper()
-	credential := f.scope(t).credential
+	credential := f.scope(t).Credential
 	token := hubapi.NewID("expiring_token")
 	id := "expiring_" + string(f.project.ID)
 	now := f.service.config.now()
@@ -2183,7 +2184,7 @@ func seedBatchExpiringKey(t *testing.T, f *batchFixture, ttl time.Duration) stri
 
 func createBatchSession(t *testing.T, f *batchFixture) string {
 	t.Helper()
-	credential := f.scope(t).credential
+	credential := f.scope(t).Credential
 	now := f.service.config.now()
 	identity := auth.Identity{Subject: credential.Hosted.Subject, Email: "operator@example.test", EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: credential.Hosted.Subject, OrganizationID: f.service.config.Hosted.WorkOSOrganizationID, SessionID: "session_" + string(f.project.ID), CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour)}}
 	f.provider.mu.Lock()

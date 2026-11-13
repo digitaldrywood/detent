@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -118,12 +119,12 @@ func (s *Service) removeHostedMemberFor(ctx context.Context, credential hubapi.A
 	if err != nil {
 		return err
 	}
-	scope := nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}
+	scope := hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential, RequireHostedAdmin: true}
 	audit, err := s.prepareAccessAudit(ctx, credential.Hosted, "action", "DELETE "+hostedOrganizationBase+"/members/:member", "", http.StatusNoContent)
 	if err != nil {
 		return err
 	}
-	if err := s.accessWrite(ctx, scope.organization, func(w tenantstore.Writer) error {
+	if err := s.accessWrite(ctx, scope.Organization, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -155,7 +156,7 @@ func (s *Service) changeHostedRoleFor(ctx context.Context, credential hubapi.API
 func (s *Service) changeHostedGrantFor(ctx context.Context, credential hubapi.APICredential, id, project string, write, runner, revoke bool) (hostedMemberView, error) {
 	member, err := s.hostedMemberByID(ctx, credential, id)
 	if err != nil {
-		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+		if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 			return hostedMemberView{}, classified
 		}
 		return hostedMemberView{}, hubapi.NativeNotFound()
@@ -204,12 +205,12 @@ func (s *Service) validateHostedGrants(ctx context.Context, credential hubapi.AP
 		if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 			return &hubapi.NativeError{Code: "forbidden", Message: "You cannot manage project grants", Status: 403, PublicMessage: true}
 		}
-		if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}, true); err != nil {
+		if err := s.authorizeAccessScope(ctx, r, hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential, RequireHostedAdmin: true}, true); err != nil {
 			return err
 		}
 		tenant, err := r.AccessTenant(ctx)
 		if err != nil {
-			return operatorAuthorizationError(err)
+			return hubscope.OperatorAuthorizationError(err)
 		}
 		if credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied

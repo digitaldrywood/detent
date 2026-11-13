@@ -15,7 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -42,7 +42,7 @@ func (s *Service) hostedMembership(ctx context.Context, identity *auth.HostedIde
 }
 
 func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (hubapi.APICredential, int, error) {
-	return nativeCredentialResult(s.requestAuth().HostedCredential(ctx, c))
+	return hubscope.NativeCredentialResult(s.requestAuth().HostedCredential(ctx, c))
 }
 
 // hostedSharedCredential builds a browser credential from the shared entry's
@@ -50,7 +50,7 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (hubapi.
 // so the tenant does not call the provider on the request path; membership
 // removal reaches the tenant through the entry's revocation of the binding.
 func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Session, hash, role string) (hubapi.APICredential, int, error) {
-	return nativeCredentialResult(s.requestAuth().SharedCredential(ctx, session, hash, role))
+	return hubscope.NativeCredentialResult(s.requestAuth().SharedCredential(ctx, session, hash, role))
 }
 
 func (s *Service) completePendingHostedInvitation(ctx context.Context, session auth.Session) (bool, error) {
@@ -58,7 +58,7 @@ func (s *Service) completePendingHostedInvitation(ctx context.Context, session a
 }
 
 func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Session, hash string) (hubapi.APICredential, int, error) {
-	return nativeCredentialResult(s.requestAuth().SessionCredential(ctx, session, hash))
+	return hubscope.NativeCredentialResult(s.requestAuth().SessionCredential(ctx, session, hash))
 }
 
 func hostedCSRF(token string) string {
@@ -80,10 +80,6 @@ func (s *Service) hostedCSRFValid(c echo.Context) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(value), []byte(hostedCSRF(cookie.Value))) == 1
-}
-
-func hostedReadRequest(c echo.Context) bool {
-	return hubauth.ReadRequest(c)
 }
 
 type hostedMutationContext struct{}
@@ -116,10 +112,10 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 		if claims, ok := hostedSharedClaims(c); ok && (claims.Kind == cloudassert.KindService || claims.Kind == cloudassert.KindKey) {
 			return next(c)
 		}
-		if !hostedReadRequest(c) && !bearerAPI && !strings.HasSuffix(c.Path(), "/redeem") && !s.hostedCSRFValid(c) {
+		if !hubscope.HostedReadRequest(c) && !bearerAPI && !strings.HasSuffix(c.Path(), "/redeem") && !s.hostedCSRFValid(c) {
 			return s.refusedAPIError(c, http.StatusForbidden, "invalid_csrf", "Reload the form and try again", hubapi.APIErrorResponse{Code: "invalid_csrf", Message: "Reload the form and try again"})
 		}
-		if !hostedReadRequest(c) && !bearerAPI {
+		if !hubscope.HostedReadRequest(c) && !bearerAPI {
 			s.hostedMutationMu.Lock()
 			defer s.hostedMutationMu.Unlock()
 			c.SetRequest(c.Request().WithContext(context.WithValue(c.Request().Context(), hostedMutationContext{}, true)))
@@ -128,12 +124,12 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-func (s *Service) requireHostedProject(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, write bool) error {
-	return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, write) })
+func (s *Service) requireHostedProject(ctx context.Context, query hubapi.NativeQueryer, scope hubscope.NativeScope, write bool) error {
+	return s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, write) })
 }
 
 func (s *Service) hostedMutationIdentity(ctx context.Context, credential hubapi.APICredential) (auth.HostedIdentity, auth.Membership, error) {
-	identity, membership, err := s.requestAuth().MutationIdentity(ctx, authCredential(credential))
+	identity, membership, err := s.requestAuth().MutationIdentity(ctx, hubscope.AuthCredential(credential))
 	return identity, membership, hubapi.FromFeatureError(err)
 }
 

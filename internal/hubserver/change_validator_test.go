@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
@@ -42,13 +43,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
-func changeValidatorOperatorScope(t *testing.T, f nativeFixture) nativeScope {
+func changeValidatorOperatorScope(t *testing.T, f nativeFixture) hubscope.NativeScope {
 	t.Helper()
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("operator credential status=%d: %v", status, err)
 	}
-	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	return hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 }
 
 func TestChangeValidatorSessionAuthority(t *testing.T) {

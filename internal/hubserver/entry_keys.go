@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/labstack/echo/v4"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -25,34 +25,7 @@ func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Cla
 	return s.entryAccessKeyCredential(ctx, claims)
 }
 
-type entryKeyAuditContext struct{}
-
-type entryKeyAudit struct {
-	claims                       cloudassert.Claims
-	operation, project, resource string
-	rowID                        int64
-}
-
-func entryKeyAuditFrom(ctx context.Context) *entryKeyAudit {
-	audit, ok := ctx.Value(entryKeyAuditContext{}).(*entryKeyAudit)
-	if !ok {
-		return nil
-	}
-	return audit
-}
-
-func (a *entryKeyAudit) readOnly() bool {
-	if a.operation == http.MethodPost+" /internal/v1/keys/catalog" {
-		return true
-	}
-	if definition, found := operatortool.Lookup(a.operation); found {
-		return definition.Annotations.ReadOnly
-	}
-	method, _, _ := strings.Cut(a.operation, " ")
-	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
-}
-
-func (s *Service) auditEntryKey(ctx context.Context, _ hostedExecer, audit *entryKeyAudit, status int) error {
+func (s *Service) auditEntryKey(ctx context.Context, _ hostedExecer, audit *hubscope.EntryKeyAudit, status int) error {
 	return s.recordEntryAccessKeyAudit(ctx, audit, status)
 }
 
@@ -173,7 +146,7 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 			required = apikey.ScopeRead
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, ResourceKind: "work_item", Action: name})
-		return err == nil, operatorAuthorizationError(err)
+		return err == nil, hubscope.OperatorAuthorizationError(err)
 	}
 	if !entryKeyToolSupported(name) {
 		return false, nil
@@ -219,9 +192,9 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 			return false, nil
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: projectToolScope(name, definition.Annotations.ReadOnly), ResourceKind: "work_item", Action: name})
-		return err == nil, operatorAuthorizationError(err)
+		return err == nil, hubscope.OperatorAuthorizationError(err)
 	case operatortool.AppUpdates, operatortool.AppBootstrapPayload:
-		if s.config.Hosted == nil || s.database == nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+		if s.config.Hosted == nil || s.database == nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || hubscope.OperatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
 			return false, nil
 		}
 		_, found := entryKeyDefinition(operatortool.HostedContextCatalog(), name)
@@ -233,14 +206,14 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 			requirement.ResourceKind = "runners"
 			allowed, err := s.appAllRunnerGrants(ctx, catalog.credential)
 			if err != nil {
-				return false, operatorAuthorizationError(err)
+				return false, hubscope.OperatorAuthorizationError(err)
 			}
 			if !allowed {
 				return false, nil
 			}
 		}
 		_, err := s.authorizeCatalog(ctx, requirement)
-		return err == nil, operatorAuthorizationError(err)
+		return err == nil, hubscope.OperatorAuthorizationError(err)
 	case "list_threads", "get_thread", "create_thread", "post_to_thread", "resolve_thread":
 		if catalog.credential.HostedRole == "account" {
 			return false, nil
@@ -253,13 +226,13 @@ func (s *Service) entryKeyToolAvailable(ctx context.Context, name string) (bool,
 			required = apikey.ScopeWrite
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, Action: name})
-		return err == nil, operatorAuthorizationError(err)
+		return err == nil, hubscope.OperatorAuthorizationError(err)
 	case operatortool.ListComments:
 		if _, found := operatortool.Lookup(name); !found {
 			return false, nil
 		}
 		_, err := s.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ResourceKind: "comment", Action: name})
-		return err == nil, operatorAuthorizationError(err)
+		return err == nil, hubscope.OperatorAuthorizationError(err)
 	default:
 		return false, nil
 	}
@@ -335,8 +308,8 @@ func (s *Service) entryKeyAdmin(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "Organization administrator service access is required")
 	}
 	member, err := s.activeAccessMember(ctx, claims.Subject)
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 	}
 	role := member.Role
 	if err != nil || role != "owner" && role != "admin" {
@@ -355,8 +328,8 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &call); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if audit := entryKeyAuditFrom(c.Request().Context()); audit != nil {
-		audit.operation = call.Name
+	if audit := hubscope.EntryKeyAuditFrom(c.Request().Context()); audit != nil {
+		audit.Operation = call.Name
 	}
 	if call.ConnectionID == "" || len(call.ConnectionID) > 256 || len(call.ClientName) > 256 {
 		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
@@ -382,10 +355,10 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if operatortool.IsAdministration(call.Name) {
 		permission = operatortool.AdministrationScope(call.Name)
 	}
-	if !hostedKeyAllows(credential.HostedKeyScope, permission) {
+	if !hubscope.HostedKeyAllows(credential.HostedKeyScope, permission) {
 		return s.refusedAPIError(c, http.StatusForbidden, "key_permission_denied", "The key permission does not allow this call", apikey.Refusal{Code: "key_permission_denied", Message: "The key permission does not allow this call"})
 	}
-	if !hostedRoleAllows(credential.HostedRole, permission, call.Name) {
+	if !hubscope.HostedRoleAllows(credential.HostedRole, permission, call.Name) {
 		return s.refusedAPIError(c, http.StatusForbidden, "role_denied", "The current organization role does not allow this call", apikey.Refusal{Code: "role_denied", Message: "The current organization role does not allow this call"})
 	}
 	var selector struct {
@@ -400,8 +373,8 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if resource == "" {
 		resource = selector.Reference
 	}
-	if audit := entryKeyAuditFrom(ctx); audit != nil {
-		audit.project, audit.resource = selector.ProjectID, resource
+	if audit := hubscope.EntryKeyAuditFrom(ctx); audit != nil {
+		audit.Project, audit.Resource = selector.ProjectID, resource
 	}
 	if selector.ProjectID != "" && !credential.EntryKey.Allows(selector.ProjectID) {
 		return s.refusedAPIError(c, http.StatusForbidden, "key_project_denied", "The project is outside this key's access context", apikey.Refusal{Code: "key_project_denied", Message: "The project is outside this key's access context"})
@@ -413,7 +386,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if !available {
 		return s.refusedAPIError(c, http.StatusForbidden, "tool_unavailable", "The target organization's role or plan does not provide this tool", apikey.Refusal{Code: "tool_unavailable", Message: "The target organization's role or plan does not provide this tool"})
 	}
-	if audit := entryKeyAuditFrom(ctx); audit != nil {
+	if audit := hubscope.EntryKeyAuditFrom(ctx); audit != nil {
 		if err := s.auditEntryKey(ctx, nil, audit, 0); err != nil {
 			return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
 		}
@@ -500,8 +473,8 @@ func (s *Service) entryKeyContext(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusForbidden, "Shared service identity is required to read key context")
 	}
 	member, err := s.activeAccessMember(c.Request().Context(), claims.Subject)
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-		return s.nativeAPIError(c, operatorAuthorizationError(err))
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 	}
 	local := member.Role
 	if err != nil || !auth.ValidOrganizationRole(local) || !auth.ValidOrganizationRole(claims.Role) {

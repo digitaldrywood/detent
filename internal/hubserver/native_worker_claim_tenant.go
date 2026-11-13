@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -76,8 +77,8 @@ type nativeClaimCandidateScan struct {
 
 var errClaimHostSlotTaken = fmt.Errorf("runner host slot taken: %w", ErrNoClaimableWork)
 
-func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope, request tracker.NativeClaim, ttl time.Duration) (leasestore.Lease, error) {
-	if s.config.TenantRepository == nil || s.config.NativeRunEvents == nil || scope.credential.Runner.RunnerID == "" {
+func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, ttl time.Duration) (leasestore.Lease, error) {
+	if s.config.TenantRepository == nil || s.config.NativeRunEvents == nil || scope.Credential.Runner.RunnerID == "" {
 		return leasestore.Lease{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	explicitItem := request.WorkItemID != ""
@@ -123,9 +124,9 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 			descriptor = &plan.descriptor
 			if !nativeClaimIssueContractAllowed(plan) {
 				s.config.Logger.InfoContext(ctx, "native claim candidate skipped",
-					"organization_id", scope.organization, "project_id", scope.project,
+					"organization_id", scope.Organization, "project_id", scope.Project,
 					"work_item_id", candidate.WorkItemID, "work_item_revision", plan.item.Revision,
-					"runner_id", scope.credential.Runner.RunnerID, "reason", "issue_contract_unsatisfied")
+					"runner_id", scope.Credential.Runner.RunnerID, "reason", "issue_contract_unsatisfied")
 				position = claimCandidateCursor(candidate)
 				continue
 			}
@@ -201,19 +202,19 @@ type requestedClaimRefusal struct {
 	recorded        bool
 }
 
-func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.Reader, scope nativeScope, request tracker.NativeClaim, now time.Time, planRefused bool, reason string) (requestedClaimRefusal, error) {
+func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, planRefused bool, reason string) (requestedClaimRefusal, error) {
 	var result requestedClaimRefusal
 	if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 		return result, err
 	}
-	identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
+	identity, err := r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
 	if err != nil {
 		return result, err
 	}
 	if err := runnerIdentityClaimRefusal(identity, scope, request.MachineID, s.config.now().UTC()); err != nil {
 		return result, err
 	}
-	currentPolicy, err := r.ProjectPolicy(ctx, scope.project)
+	currentPolicy, err := r.ProjectPolicy(ctx, scope.Project)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return result, errNoApprovedRepositoryPolicy
 	}
@@ -221,9 +222,9 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 		return result, err
 	}
 	if currentPolicy.PolicyID != request.PolicyID {
-		return result, claimPolicyRefusal(ctx, r, scope.project, request.PolicyID)
+		return result, claimPolicyRefusal(ctx, r, scope.Project, request.PolicyID)
 	}
-	result.item, err = r.WorkItem(ctx, scope.project, request.WorkItemID)
+	result.item, err = r.WorkItem(ctx, scope.Project, request.WorkItemID)
 	if err != nil {
 		return result, err
 	}
@@ -247,7 +248,7 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 			return result, corestore.ErrRevisionConflict
 		}
 	}
-	change, err := r.LatestChange(ctx, scope.project, request.WorkItemID)
+	change, err := r.LatestChange(ctx, scope.Project, request.WorkItemID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return result, err
 	}
@@ -265,7 +266,7 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	if !ok {
 		return result, hubapi.NativeRunEventStorageUnavailable()
 	}
-	claimed, err := owner.LatestClaimedSchedulerDecision(ctx, scope.project, request.WorkItemID)
+	claimed, err := owner.LatestClaimedSchedulerDecision(ctx, scope.Project, request.WorkItemID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return result, err
 	}
@@ -281,19 +282,19 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 		Change       tracker.NativeChangeReference
 		Reason       string
 		Claimed      int64
-	}{scope.organization, scope.project, request.WorkItemID, identity.RunnerID, result.item.Revision, result.change, reason, result.claimedSequence})
+	}{scope.Organization, scope.Project, request.WorkItemID, identity.RunnerID, result.item.Revision, result.change, reason, result.claimedSequence})
 	if err != nil {
 		return result, err
 	}
 	result.eventID = "evt_refusal_" + policy.Digest(key)
-	previous, err := owner.SchedulerDecision(ctx, scope.project, request.WorkItemID, result.eventID)
+	previous, err := owner.SchedulerDecision(ctx, scope.Project, request.WorkItemID, result.eventID)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return result, nil
 	}
 	if err != nil {
 		return result, err
 	}
-	actor := scope.actor()
+	actor := scope.Actor()
 	if previous.SchedulerOutcome != "skipped" || previous.ActorKind != actor.Kind || previous.ActorPrincipalID != actor.PrincipalID || previous.EventRevision != result.item.Revision || previous.ChangeID != result.change.ChangeID || previous.VersionID != result.change.VersionID || previous.HeadSHA != result.change.HeadSHA {
 		return result, artifact.ErrIntegrity
 	}
@@ -301,20 +302,20 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	return result, nil
 }
 
-func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time, planRefused bool, reason string) error {
+func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, planRefused bool, reason string) error {
 	var refusal requestedClaimRefusal
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return hubapi.NativeRunEventStorageUnavailable()
 	}
-	if err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		refusal, err = s.readRequestedClaimRefusal(ctx, r, scope, request, now, planRefused, reason)
 		return err
 	}); err != nil || refusal.recorded {
 		return err
 	}
-	decision := tracker.CollaborationEvent{ID: refusal.eventID, OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: request.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: tracker.Revision(refusal.item.Revision), Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.credential.Runner.RunnerID, Source: "native_claim_eligibility", Outcome: "skipped", Reason: reason, At: now, WorkItemRevision: tracker.Revision(refusal.item.Revision)}}}
+	decision := tracker.CollaborationEvent{ID: refusal.eventID, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: request.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: tracker.Revision(refusal.item.Revision), Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.Credential.Runner.RunnerID, Source: "native_claim_eligibility", Outcome: "skipped", Reason: reason, At: now, WorkItemRevision: tracker.Revision(refusal.item.Revision)}}}
 	if refusal.change.ChangeID != "" {
 		decision.Data.Change = &refusal.change
 	}
@@ -322,7 +323,7 @@ func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope nativeS
 	if err != nil {
 		return err
 	}
-	row, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).PrepareEvent(ctx, scope.organization, raw)
+	row, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).PrepareEvent(ctx, scope.Organization, raw)
 	if err != nil {
 		return err
 	}
@@ -330,7 +331,7 @@ func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope nativeS
 		if err := w.LockRelationshipGraph(ctx); err != nil {
 			return err
 		}
-		if _, err := w.LockWorkItem(ctx, scope.project, request.WorkItemID); err != nil {
+		if _, err := w.LockWorkItem(ctx, scope.Project, request.WorkItemID); err != nil {
 			return err
 		}
 		current, err := s.readRequestedClaimRefusal(ctx, w, scope, request, s.config.now().UTC(), planRefused, reason)
@@ -348,24 +349,24 @@ func (s *Service) recordRequestedClaimRefusal(ctx context.Context, scope nativeS
 	})
 }
 
-func (s *Service) readNativeClaimCandidates(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time) (nativeClaimCandidateScan, error) {
+func (s *Service) readNativeClaimCandidates(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (nativeClaimCandidateScan, error) {
 	var scan nativeClaimCandidateScan
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return scan, hubapi.NativeRunEventStorageUnavailable()
 	}
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
-		project, err := r.ProjectRecord(ctx, scope.project)
+		project, err := r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if !nativeClaimProjectEnabled(project) {
 			return ErrNoClaimableWork
 		}
-		policy, err := r.ProjectPolicy(ctx, scope.project)
+		policy, err := r.ProjectPolicy(ctx, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return errNoApprovedRepositoryPolicy
 		}
@@ -373,13 +374,13 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope nativeSco
 			return err
 		}
 		if policy.PolicyID != request.PolicyID {
-			return claimPolicyRefusal(ctx, r, scope.project, request.PolicyID)
+			return claimPolicyRefusal(ctx, r, scope.Project, request.PolicyID)
 		}
 		shared := nativeClaimPlan{project: project, policy: policy}
 		if request.SessionID != "" {
 			lease, err := r.LeaseBySession(ctx, request.SessionID)
 			if err == nil {
-				item, err := r.WorkItemByID(ctx, scope.project, lease.IssueID)
+				item, err := r.WorkItemByID(ctx, scope.Project, lease.IssueID)
 				if err != nil {
 					return err
 				}
@@ -401,9 +402,9 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		cursor, err := r.SelectionCursor(ctx, scope.credential.Runner.RunnerID, scope.project)
+		cursor, err := r.SelectionCursor(ctx, scope.Credential.Runner.RunnerID, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) {
-			cursor = claimstore.SelectionCursor{OrganizationID: scope.organization, RunnerID: scope.credential.Runner.RunnerID, ProjectID: scope.project, SourceRevision: sourceRevision}
+			cursor = claimstore.SelectionCursor{OrganizationID: scope.Organization, RunnerID: scope.Credential.Runner.RunnerID, ProjectID: scope.Project, SourceRevision: sourceRevision}
 		} else if err != nil {
 			return err
 		} else if cursor.SourceRevision != sourceRevision {
@@ -435,7 +436,7 @@ func (s *Service) readNativeClaimCandidates(ctx context.Context, scope nativeSco
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
-		rows, err := batchReader.ClaimPreviewPlanRows(ctx, scope.project, page.Items)
+		rows, err := batchReader.ClaimPreviewPlanRows(ctx, scope.Project, page.Items)
 		if err != nil {
 			return err
 		}
@@ -513,7 +514,7 @@ func nativeClaimPlanFromBatch(shared nativeClaimPlan, candidate claimstore.Candi
 	return plan
 }
 
-func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nativeScope, request tracker.NativeClaim, ttl time.Duration, now time.Time, plan nativeClaimPlan, cursor *claimstore.SelectionCursor) (leasestore.Lease, error) {
+func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, ttl time.Duration, now time.Time, plan nativeClaimPlan, cursor *claimstore.SelectionCursor) (leasestore.Lease, error) {
 	if !nativeClaimIssueContractAllowed(plan) {
 		return leasestore.Lease{}, &hubapi.NativeError{Code: "issue_contract_unsatisfied", Message: "Current issue contract does not allow dispatch", Status: http.StatusConflict}
 	}
@@ -530,18 +531,18 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 	}
 	runnerAPI := true
 	if plan.descriptor.Configuration != nil {
-		workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), plan.descriptor)
+		workflow, err := projectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), plan.descriptor)
 		if err != nil {
 			return leasestore.Lease{}, err
 		}
 		runnerAPI = workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered
 	}
-	decision := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: plan.item.NativeID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.credential.Runner.RunnerID, Source: "native_claim", Outcome: "claimed", Reason: "A current fenced lease owns this item", At: now, WorkItemRevision: tracker.Revision(plan.item.Revision)}}}
+	decision := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.item.NativeID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.Credential.Runner.RunnerID, Source: "native_claim", Outcome: "claimed", Reason: "A current fenced lease owns this item", At: now, WorkItemRevision: tracker.Revision(plan.item.Revision)}}}
 	decisionRaw, err := json.Marshal(decision)
 	if err != nil {
 		return leasestore.Lease{}, err
 	}
-	decisionRow, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).PrepareEvent(ctx, scope.organization, decisionRaw)
+	decisionRow, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).PrepareEvent(ctx, scope.Organization, decisionRaw)
 	if err != nil {
 		return leasestore.Lease{}, err
 	}
@@ -564,7 +565,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		identity, err := w.RunnerIdentityByCredential(ctx, scope.credential.ID)
+		identity, err := w.RunnerIdentityByCredential(ctx, scope.Credential.ID)
 		if err != nil {
 			return err
 		}
@@ -586,7 +587,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		if isolationRefused {
 			return ErrNoClaimableWork
 		}
-		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, authoritativeNow)
+		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, authoritativeNow)
 		if err != nil {
 			return err
 		}
@@ -597,11 +598,11 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			return err
 		}
 		if plan.project.Core.Profile == "github_compatible" || slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) || request.LandingCapacity > 0 || plan.landingRequired || plan.issue.IssueContract != nil && plan.issue.IssueContract.ReleaseDelivery != nil {
-			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
 		}
-		project, err := w.ProjectRecord(ctx, scope.project)
+		project, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -611,7 +612,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		if project.Core.Profile == "github_compatible" && !sameWorkItemProjectPlan(plan.project, project) {
 			return ErrNoClaimableWork
 		}
-		item, err := w.WorkItemByID(ctx, scope.project, plan.candidate.ID)
+		item, err := w.WorkItemByID(ctx, scope.Project, plan.candidate.ID)
 		if err != nil {
 			return err
 		}
@@ -619,7 +620,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			return ErrNoClaimableWork
 		}
 		if project.Core.Profile == "github_compatible" {
-			facts, err := w.WorkItemFacts(ctx, scope.project, item.NativeID)
+			facts, err := w.WorkItemFacts(ctx, scope.Project, item.NativeID)
 			if err != nil {
 				return err
 			}
@@ -629,14 +630,14 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				return ErrNoClaimableWork
 			}
 		}
-		currentLinked, err := w.LinkedSource(ctx, scope.project, item.NativeID)
+		currentLinked, err := w.LinkedSource(ctx, scope.Project, item.NativeID)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
 		if err == nil && (plan.linkedRecord == nil || !sameNativeClaimLinkedSource(currentLinked, *plan.linkedRecord)) || errors.Is(err, corestore.ErrNotFound) && plan.linkedRecord != nil {
 			return corestore.ErrRevisionConflict
 		}
-		workspaceItem, err := w.IsWorkspaceWorkItem(ctx, scope.project, item.NativeID)
+		workspaceItem, err := w.IsWorkspaceWorkItem(ctx, scope.Project, item.NativeID)
 		if err != nil {
 			return err
 		}
@@ -653,7 +654,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				return ErrNoClaimableWork
 			}
 		}
-		item, err = w.LockWorkItem(ctx, scope.project, item.NativeID)
+		item, err = w.LockWorkItem(ctx, scope.Project, item.NativeID)
 		if err != nil {
 			return err
 		}
@@ -714,7 +715,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			}
 		}
 		if hubapi.StringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending {
-			latest, err := w.LatestChange(ctx, scope.project, plan.candidate.WorkItemID)
+			latest, err := w.LatestChange(ctx, scope.Project, plan.candidate.WorkItemID)
 			if err != nil || latest.ID != plan.change.ChangeID || latest.CurrentVersionID == nil || *latest.CurrentVersionID != plan.change.VersionID {
 				if err != nil {
 					return err
@@ -735,7 +736,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			if version.PolicyRevisionID != plan.changeVersion.PolicyRevisionID || version.HeadSHA != plan.changeVersion.HeadSHA {
 				return corestore.ErrRevisionConflict
 			}
-			versionPolicy, err := w.ProjectPolicyRevision(ctx, scope.project, version.PolicyRevisionID)
+			versionPolicy, err := w.ProjectPolicyRevision(ctx, scope.Project, version.PolicyRevisionID)
 			if err != nil {
 				return err
 			}
@@ -758,7 +759,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			landingCapacity = int64(request.LandingCapacity)
 		}
 		if replay == nil && plan.landingRequired {
-			usage, err := w.LandingCapacityUsage(ctx, scope.project, authoritativeNow)
+			usage, err := w.LandingCapacityUsage(ctx, scope.Project, authoritativeNow)
 			if err != nil {
 				return err
 			}
@@ -774,7 +775,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		exposure := budget.CostExposure{RunnerAPI: !workspaceItem && runnerAPI}
 		if replay == nil {
 			capacity := min(identity.CapacityLimit, identity.ReportedCapacity, int64(identity.CapacityConfig.LocalLimit), int64(identity.CapacityConfig.ClientLimit), int64(identity.CapacityConfig.RuntimeLimit))
-			projectCapacity, projectCapacityConfigured := identity.ProjectCapacityLimits[scope.project]
+			projectCapacity, projectCapacityConfigured := identity.ProjectCapacityLimits[scope.Project]
 			if projectCapacityConfigured {
 				capacity = min(capacity, int64(projectCapacity))
 			}
@@ -801,7 +802,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 					batch = parts[1]
 				}
 			}
-			usage, err := w.ClaimCapacityUsage(ctx, machine.ID, identity.RunnerID, scope.project, batch, authoritativeNow)
+			usage, err := w.ClaimCapacityUsage(ctx, machine.ID, identity.RunnerID, scope.Project, batch, authoritativeNow)
 			if err != nil {
 				return err
 			}
@@ -816,7 +817,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			}
 			joining := ""
 			if batch != "" {
-				joining = landingCapacityKey(identity.MachineID, string(scope.project), request.SessionID)
+				joining = landingCapacityKey(identity.MachineID, string(scope.Project), request.SessionID)
 			}
 			allowed, reason, err := claimPlacementAllowed(ctx, w, scope, identity, machine, plan, request.ProviderCandidates, workspaceItem, joining, authoritativeNow, placement.snapshot)
 			if err != nil {
@@ -890,7 +891,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 		if err != nil {
 			return err
 		}
-		currentPolicy, err := w.ProjectPolicy(ctx, scope.project)
+		currentPolicy, err := w.ProjectPolicy(ctx, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return errNoApprovedRepositoryPolicy
 		}
@@ -925,11 +926,11 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			if _, err := w.AppendEvent(ctx, decisionRow); err != nil {
 				return err
 			}
-			if err := w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: scope.organization, ProjectID: scope.project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: plan.policy.PolicyID, BoundAt: authoritativeNow}); err != nil {
+			if err := w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: scope.Organization, ProjectID: scope.Project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: plan.policy.PolicyID, BoundAt: authoritativeNow}); err != nil {
 				return err
 			}
 			if selectedReservation != nil {
-				row := claimstore.ProviderReservation{OrganizationID: scope.organization, LeaseID: tracker.LeaseID(lease.LeaseID), Reservation: *selectedReservation}
+				row := claimstore.ProviderReservation{OrganizationID: scope.Organization, LeaseID: tracker.LeaseID(lease.LeaseID), Reservation: *selectedReservation}
 				if err := w.CreateProviderReservation(ctx, row); err != nil {
 					return err
 				}
@@ -955,10 +956,10 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			return selectionRequired
 		}
 		if lease.LeaseID == leaseID {
-			if err := w.RecordBillingMonthlyAdmission(ctx, billingstore.MonthlyAdmission{OrganizationID: scope.organization, IssueID: tracker.WorkItemID(item.ID), AdmittedAt: authoritativeNow}); err != nil {
+			if err := w.RecordBillingMonthlyAdmission(ctx, billingstore.MonthlyAdmission{OrganizationID: scope.Organization, IssueID: tracker.WorkItemID(item.ID), AdmittedAt: authoritativeNow}); err != nil {
 				return err
 			}
-			if err := w.RecordBillingMonthlyLease(ctx, billingstore.MonthlyLease{OrganizationID: scope.organization, LeaseID: tracker.LeaseID(lease.LeaseID), LunaAPI: exposure.LunaAPI, RunnerAPI: exposure.RunnerAPI, SpriteInfrastructure: exposure.SpriteInfrastructure}); err != nil {
+			if err := w.RecordBillingMonthlyLease(ctx, billingstore.MonthlyLease{OrganizationID: scope.Organization, LeaseID: tracker.LeaseID(lease.LeaseID), LunaAPI: exposure.LunaAPI, RunnerAPI: exposure.RunnerAPI, SpriteInfrastructure: exposure.SpriteInfrastructure}); err != nil {
 				return err
 			}
 		}
@@ -984,8 +985,8 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 	}
 	if placementRefusal != "" && errors.Is(err, ErrNoClaimableWork) {
 		s.config.Logger.DebugContext(ctx, "native claim candidate skipped",
-			"organization_id", scope.organization, "project_id", scope.project,
-			"work_item_id", plan.candidate.WorkItemID, "runner_id", scope.credential.Runner.RunnerID, "reason", placementRefusal)
+			"organization_id", scope.Organization, "project_id", scope.Project,
+			"work_item_id", plan.candidate.WorkItemID, "runner_id", scope.Credential.Runner.RunnerID, "reason", placementRefusal)
 	}
 	if errors.Is(err, ErrNoClaimableWork) && isolationRefused {
 		if recordErr := s.recordRequestedClaimRefusal(ctx, scope, request, now, false, "no_claimable_work"); recordErr != nil {
@@ -995,29 +996,29 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 	return lease, err
 }
 
-func (s *Service) writeNativeClaimCommand(ctx context.Context, scope nativeScope, write func(context.Context, tenantstore.Writer) error) error {
+func (s *Service) writeNativeClaimCommand(ctx context.Context, scope hubscope.NativeScope, write func(context.Context, tenantstore.Writer) error) error {
 	if command, ok := s.config.TenantRepository.(interface {
 		WriteRunnerCommand(context.Context, tracker.OrganizationID, string, string, func(context.Context, tenantstore.Writer) error) error
 	}); ok {
-		return command.WriteRunnerCommand(ctx, scope.organization, scope.credential.ID, scope.credential.Runner.RunnerID, write)
+		return command.WriteRunnerCommand(ctx, scope.Organization, scope.Credential.ID, scope.Credential.Runner.RunnerID, write)
 	}
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
+	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
 }
 
-func (s *Service) persistNativeClaimCursor(ctx context.Context, scope nativeScope, cursor claimstore.SelectionCursor) error {
+func (s *Service) persistNativeClaimCursor(ctx context.Context, scope hubscope.NativeScope, cursor claimstore.SelectionCursor) error {
 	return s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		identity, err := w.RunnerIdentityByCredential(ctx, scope.credential.ID)
+		identity, err := w.RunnerIdentityByCredential(ctx, scope.Credential.ID)
 		if err != nil {
 			return err
 		}
 		authoritativeNow := s.config.now().UTC()
-		if !runnerIdentityCanClaim(identity, scope, scope.credential.Runner.MachineID, authoritativeNow) {
+		if !runnerIdentityCanClaim(identity, scope, scope.Credential.Runner.MachineID, authoritativeNow) {
 			return tracker.ErrMachineNotFound
 		}
-		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, authoritativeNow)
+		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, authoritativeNow)
 		if err != nil {
 			return err
 		}
@@ -1116,7 +1117,7 @@ func readTenantProviderReservation(ctx context.Context, r claimstore.Reader, lea
 	return reservation, true, nil
 }
 
-func (s *Service) readNativeClaimPlan(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time) (nativeClaimPlan, error) {
+func (s *Service) readNativeClaimPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (nativeClaimPlan, error) {
 	plan, err := s.readNativeClaimPlanRows(ctx, scope, request, now, nil, nil, nativeClaimPlan{})
 	if err != nil {
 		return nativeClaimPlan{}, err
@@ -1131,19 +1132,19 @@ func (s *Service) readNativeClaimPlan(ctx context.Context, scope nativeScope, re
 	return s.hydrateNativeClaimPlan(ctx, scope, request, now, plans[0], nil)
 }
 
-func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time, reader tenantstore.Reader, candidate *claimstore.Candidate, shared nativeClaimPlan) (nativeClaimPlan, error) {
+func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, reader tenantstore.Reader, candidate *claimstore.Candidate, shared nativeClaimPlan) (nativeClaimPlan, error) {
 	plan := shared
 	readRows := func(r tenantstore.Reader) error {
 		var err error
 		if plan.project.Core.ID == "" {
-			plan.project, err = r.ProjectRecord(ctx, scope.project)
+			plan.project, err = r.ProjectRecord(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
 			if !nativeClaimProjectEnabled(plan.project) {
 				return ErrNoClaimableWork
 			}
-			plan.policy, err = r.ProjectPolicy(ctx, scope.project)
+			plan.policy, err = r.ProjectPolicy(ctx, scope.Project)
 			if errors.Is(err, corestore.ErrNotFound) {
 				return errNoApprovedRepositoryPolicy
 			}
@@ -1151,7 +1152,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope
 				return err
 			}
 			if plan.policy.PolicyID != request.PolicyID {
-				return claimPolicyRefusal(ctx, r, scope.project, request.PolicyID)
+				return claimPolicyRefusal(ctx, r, scope.Project, request.PolicyID)
 			}
 		}
 		if request.SessionID != "" && plan.replay == nil {
@@ -1168,7 +1169,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope
 				return tracker.ErrLeaseConflict
 			}
 			if candidate == nil {
-				item, err := r.WorkItemByID(ctx, scope.project, lease.IssueID)
+				item, err := r.WorkItemByID(ctx, scope.Project, lease.IssueID)
 				if err != nil {
 					return err
 				}
@@ -1195,7 +1196,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope
 			candidate = &page.Items[0]
 		}
 		if plan.project.Core.Profile == "github_compatible" && candidate.Repository == "" {
-			facts, err := r.WorkItemFacts(ctx, scope.project, candidate.WorkItemID)
+			facts, err := r.WorkItemFacts(ctx, scope.Project, candidate.WorkItemID)
 			if err != nil {
 				return err
 			}
@@ -1207,7 +1208,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
-		rows, err := batch.ClaimPreviewPlanRows(ctx, scope.project, []claimstore.Candidate{*candidate})
+		rows, err := batch.ClaimPreviewPlanRows(ctx, scope.Project, []claimstore.Candidate{*candidate})
 		if err != nil {
 			return err
 		}
@@ -1242,7 +1243,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope
 		if !ok {
 			return plan, hubapi.NativeRunEventStorageUnavailable()
 		}
-		err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 				return err
 			}
@@ -1252,7 +1253,7 @@ func (s *Service) readNativeClaimPlanRows(ctx context.Context, scope nativeScope
 	return plan, err
 }
 
-func (s *Service) prepareNativeClaimApprovals(ctx context.Context, scope nativeScope, plans []nativeClaimPlan) error {
+func (s *Service) prepareNativeClaimApprovals(ctx context.Context, scope hubscope.NativeScope, plans []nativeClaimPlan) error {
 	var approval *ChangeVersionApproval
 	for i := range plans {
 		if (hubapi.StringsEqualFold(plans[i].candidate.State, "Merging") || plans[i].landingPending) && plans[i].changeRecord.ID != "" {
@@ -1269,26 +1270,26 @@ func (s *Service) prepareNativeClaimApprovals(ctx context.Context, scope nativeS
 	return nil
 }
 
-func validateClaimSnapshotPolicy(scope nativeScope, plan nativeClaimPlan) error {
+func validateClaimSnapshotPolicy(scope hubscope.NativeScope, plan nativeClaimPlan) error {
 	project := plan.changePolicy.Project
-	if project.OrganizationID != scope.organization || project.ProjectID != scope.project || project.PolicyID == "" || project.ApprovedBy == "" || project.ApprovedAt.IsZero() {
+	if project.OrganizationID != scope.Organization || project.ProjectID != scope.Project || project.PolicyID == "" || project.ApprovedBy == "" || project.ApprovedAt.IsZero() {
 		return corestore.ErrTenantMismatch
 	}
 	if plan.changePolicy.hasReview {
 		review := plan.changePolicy.Review
-		if review.OrganizationID != scope.organization || review.ProjectID != scope.project || review.PolicyRevisionID == "" || review.ReviewPolicyID == "" || review.Revision < 1 || review.UpdatedBy == "" || review.UpdatedAt.IsZero() {
+		if review.OrganizationID != scope.Organization || review.ProjectID != scope.Project || review.PolicyRevisionID == "" || review.ReviewPolicyID == "" || review.Revision < 1 || review.UpdatedBy == "" || review.UpdatedAt.IsZero() {
 			return corestore.ErrTenantMismatch
 		}
 	}
 	return nil
 }
 
-func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope, request tracker.NativeClaim, now time.Time, plan nativeClaimPlan, descriptor *policy.Descriptor) (nativeClaimPlan, error) {
+func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time, plan nativeClaimPlan, descriptor *policy.Descriptor) (nativeClaimPlan, error) {
 	if !plan.snapshotLoaded {
 		return plan, hubapi.NativeRunEventStorageUnavailable()
 	}
 	if plan.replay == nil && slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) {
-		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 				return err
 			}
@@ -1347,7 +1348,7 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope,
 		record := plan.linkedRecord
 		linked := tracker.LinkedIssueSource{URL: record.URL, Status: "pending"}
 		if record.SnapshotObjectKey != "" {
-			snapshot, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).LinkedIssueSnapshot(ctx, scope.organization, eventstore.Reference(record.SnapshotObjectKey, record.SnapshotSHA256, record.SnapshotBytes, record.SnapshotContentBytes))
+			snapshot, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).LinkedIssueSnapshot(ctx, scope.Organization, eventstore.Reference(record.SnapshotObjectKey, record.SnapshotSHA256, record.SnapshotBytes, record.SnapshotContentBytes))
 			if err != nil {
 				return nativeClaimPlan{}, err
 			}
@@ -1372,7 +1373,7 @@ func (s *Service) hydrateNativeClaimPlan(ctx context.Context, scope nativeScope,
 		}
 		state := changerequest.ReviewState(detail, plan.changeVersion.ID, plan.changeVersion.HeadSHA)
 		currentVersion := hubapi.ValueOrEmpty(plan.changeRecord.CurrentVersionID)
-		plan.changeReady = plan.changeRecord.OrganizationID == scope.organization && plan.changeRecord.ProjectID == scope.project && plan.changeRecord.WorkItemID == plan.candidate.WorkItemID && detail.Change.ID == plan.changeRecord.ID && int64(detail.Change.Revision) == plan.changeRecord.Revision && detail.Change.CurrentVersion == currentVersion && currentVersion == plan.changeVersion.ID && state.Current && !state.ChangesRequested && !state.RepairPending && nativeChangeLandingClaimable("Merging", &detail)
+		plan.changeReady = plan.changeRecord.OrganizationID == scope.Organization && plan.changeRecord.ProjectID == scope.Project && plan.changeRecord.WorkItemID == plan.candidate.WorkItemID && detail.Change.ID == plan.changeRecord.ID && int64(detail.Change.Revision) == plan.changeRecord.Revision && detail.Change.CurrentVersion == currentVersion && currentVersion == plan.changeVersion.ID && state.Current && !state.ChangesRequested && !state.RepairPending && nativeChangeLandingClaimable("Merging", &detail)
 	}
 	plan.landingRequired, err = nativeClaimLandingCapacityRequired(plan)
 	if err != nil {
@@ -1462,7 +1463,7 @@ func sameNativeClaimLinkedSource(left, right eventstore.LinkedSource) bool {
 	return left.OrganizationID == right.OrganizationID && left.ProjectID == right.ProjectID && left.WorkItemID == right.WorkItemID && left.URL == right.URL && left.TitleSupplied == right.TitleSupplied && left.BodySupplied == right.BodySupplied && left.TitleOwned == right.TitleOwned && left.BodyOwned == right.BodyOwned && left.SnapshotObjectKey == right.SnapshotObjectKey && left.SnapshotSHA256 == right.SnapshotSHA256 && left.SnapshotBytes == right.SnapshotBytes && left.SnapshotContentBytes == right.SnapshotContentBytes && hubapi.StringValue(left.ExpectedSnapshotSHA256) == hubapi.StringValue(right.ExpectedSnapshotSHA256)
 }
 
-func (s *Service) nativeWorkspaceClaimAllowed(ctx context.Context, r tenantstore.Reader, scope nativeScope, item tracker.NativeWorkItemID, now time.Time) (bool, error) {
+func (s *Service) nativeWorkspaceClaimAllowed(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item tracker.NativeWorkItemID, now time.Time) (bool, error) {
 	if s.workspaces == nil {
 		return false, nil
 	}
@@ -1471,17 +1472,17 @@ func (s *Service) nativeWorkspaceClaimAllowed(ctx context.Context, r tenantstore
 		return false, hubapi.WorkspaceUnavailable()
 	}
 	unavailable := func(source string) (bool, error) {
-		s.config.Logger.WarnContext(ctx, "workspace claim candidate skipped", "organization_id", scope.organization, "project_id", scope.project, "work_item_id", item, "source", source)
+		s.config.Logger.WarnContext(ctx, "workspace claim candidate skipped", "organization_id", scope.Organization, "project_id", scope.Project, "work_item_id", item, "source", source)
 		return false, nil
 	}
-	row, err := owner.WorkspaceByDispatchItem(ctx, scope.project, item)
+	row, err := owner.WorkspaceByDispatchItem(ctx, scope.Project, item)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	link, err := owner.WorkspaceDispatchItem(ctx, scope.project, row.ID)
+	link, err := owner.WorkspaceDispatchItem(ctx, scope.Project, row.ID)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return unavailable("workspace_association")
 	}
@@ -1491,7 +1492,7 @@ func (s *Service) nativeWorkspaceClaimAllowed(ctx context.Context, r tenantstore
 	if link.WorkItemID != item || link.ClosedAt != nil || row.State != workspacesession.StateRequested {
 		return false, nil
 	}
-	identity, err := r.RunnerIdentity(ctx, scope.credential.Runner.RunnerID)
+	identity, err := r.RunnerIdentity(ctx, scope.Credential.Runner.RunnerID)
 	if err != nil {
 		return false, err
 	}
@@ -1511,14 +1512,14 @@ func (s *Service) nativeWorkspaceClaimAllowed(ctx context.Context, r tenantstore
 		if err != nil {
 			return false, err
 		}
-		subject, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(row.SubjectWorkItemID))
+		subject, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(row.SubjectWorkItemID))
 		if errors.Is(err, corestore.ErrNotFound) {
 			return unavailable("subject")
 		}
 		if err != nil {
 			return false, err
 		}
-		if attempt.OrganizationID != scope.organization || attempt.IssueID != subject.ID {
+		if attempt.OrganizationID != scope.Organization || attempt.IssueID != subject.ID {
 			return false, corestore.ErrTenantMismatch
 		}
 		if attempt.Status == "running" || now.Before(attempt.UpdatedAt.Add(s.workspaces.config.RetainAfterRun)) {
@@ -1552,13 +1553,13 @@ func nativeClaimIssueContractAllowed(plan nativeClaimPlan) bool {
 	return err == nil && evaluation.Allowed
 }
 
-func nativeTenantCandidateQuery(scope nativeScope, request tracker.NativeClaim, item tracker.NativeWorkItemID, now time.Time) claimstore.CandidateQuery {
+func nativeTenantCandidateQuery(scope hubscope.NativeScope, request tracker.NativeClaim, item tracker.NativeWorkItemID, now time.Time) claimstore.CandidateQuery {
 	workItemIDs := make([]tracker.NativeWorkItemID, 0, len(request.ProviderCandidates))
 	for _, candidate := range request.ProviderCandidates {
 		workItemIDs = append(workItemIDs, candidate.WorkItemID)
 	}
 	return claimstore.CandidateQuery{
-		ProjectID: scope.project, Scope: string(scope.project), WorkItemID: item, WorkItemIDs: workItemIDs,
+		ProjectID: scope.Project, Scope: string(scope.Project), WorkItemID: item, WorkItemIDs: workItemIDs,
 		States: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees,
 		IncludeLabels: request.LabelInclude, ExcludeLabels: request.LabelExclude,
 		WorkspaceLane:   slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability),
@@ -1568,18 +1569,18 @@ func nativeTenantCandidateQuery(scope nativeScope, request tracker.NativeClaim, 
 	}
 }
 
-func runnerIdentityClaimRefusal(identity runnerstore.Identity, scope nativeScope, machine tracker.MachineID, now time.Time) error {
+func runnerIdentityClaimRefusal(identity runnerstore.Identity, scope hubscope.NativeScope, machine tracker.MachineID, now time.Time) error {
 	if runnerIdentityCanClaim(identity, scope, machine, now) {
 		return nil
 	}
-	if identity.State == "disabled" && identity.OrganizationID == scope.organization && identity.TokenID == scope.credential.ID && identity.RunnerID == scope.credential.Runner.RunnerID && identity.RemovedAt == nil {
+	if identity.State == "disabled" && identity.OrganizationID == scope.Organization && identity.TokenID == scope.Credential.ID && identity.RunnerID == scope.Credential.Runner.RunnerID && identity.RemovedAt == nil {
 		return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_disabled", Message: "Runner is disabled"}})
 	}
 	return tracker.ErrMachineNotFound
 }
 
-func runnerIdentityCanClaim(identity runnerstore.Identity, scope nativeScope, machine tracker.MachineID, now time.Time) bool {
-	return identity.OrganizationID == scope.organization && identity.TokenID == scope.credential.ID && identity.RunnerID == scope.credential.Runner.RunnerID && identity.MachineID == machine && machine == scope.credential.Runner.MachineID && identity.State == "active" && identity.RemovedAt == nil && identity.ExpiresAt.After(now) && !now.Before(identity.LastHeartbeatAt) && now.Before(identity.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout)) && slices.Contains(identity.Operations, runnerauth.Claim)
+func runnerIdentityCanClaim(identity runnerstore.Identity, scope hubscope.NativeScope, machine tracker.MachineID, now time.Time) bool {
+	return identity.OrganizationID == scope.Organization && identity.TokenID == scope.Credential.ID && identity.RunnerID == scope.Credential.Runner.RunnerID && identity.MachineID == machine && machine == scope.Credential.Runner.MachineID && identity.State == "active" && identity.RemovedAt == nil && identity.ExpiresAt.After(now) && !now.Before(identity.LastHeartbeatAt) && now.Before(identity.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout)) && slices.Contains(identity.Operations, runnerauth.Claim)
 }
 
 func nativeClaimProjectEnabled(project projectstore.Record) bool {

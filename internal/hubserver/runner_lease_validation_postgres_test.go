@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -132,7 +133,7 @@ func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 	context.SetParamValues("org_startup", string(projectID), leaseID)
 	credential := hubapi.APICredential{ID: tokenID, Hash: workerHash, Scope: hubapi.APIScopeWorker, HostedKeyKind: "service", Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: "org_startup", Operations: []string{runnerauth.Read, runnerauth.Claim}}}
 	context.Set("hub_api_credential", credential)
-	context.Set("native_scope", nativeScope{organization: "org_startup", project: projectID, credential: credential})
+	context.Set("native_scope", hubscope.NativeScope{Organization: "org_startup", Project: projectID, Credential: credential})
 	if err := service.validateRunnerLease(context); err != nil {
 		t.Fatalf("validate PostgreSQL lease: %v", err)
 	}
@@ -147,12 +148,12 @@ func TestValidateRunnerLeaseUsesPostgresTenantRecords(t *testing.T) {
 		t.Fatalf("lease validation runner = %+v", validated)
 	}
 
-	scope := nativeScope{organization: "org_startup", project: projectID, credential: credential}
+	scope := hubscope.NativeScope{Organization: "org_startup", Project: projectID, Credential: credential}
 	if _, err := service.validateRunnerLeaseTenant(t.Context(), scope, leaseID, tracker.FencingToken(lease.FencingToken+1)); !errors.Is(err, tracker.ErrStaleFencingToken) {
 		t.Fatalf("stale lease fence error = %v, want stale fencing token", err)
 	}
 	wrongCredential := scope
-	wrongCredential.credential.Hash = apikey.HashToken("different_runner_token")
+	wrongCredential.Credential.Hash = apikey.HashToken("different_runner_token")
 	if _, err := service.validateRunnerLeaseTenant(t.Context(), wrongCredential, leaseID, tracker.FencingToken(lease.FencingToken)); err == nil {
 		t.Fatal("lease validation accepted a credential with a different hash")
 	}

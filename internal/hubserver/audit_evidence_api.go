@@ -16,33 +16,34 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) authorizeAuditChange(ctx context.Context, r tenantstore.Reader, scope nativeScope, changeID string) error {
-	if scope.credential.HostedRole != "reporter" {
+func (s *Service) authorizeAuditChange(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, changeID string) error {
+	if scope.Credential.HostedRole != "reporter" {
 		return nil
 	}
 	change, err := r.Change(ctx, changeID)
 	if err != nil {
 		return err
 	}
-	if change.ProjectID != scope.project {
+	if change.ProjectID != scope.Project {
 		return corestore.ErrNotFound
 	}
-	item, err := r.WorkItem(ctx, scope.project, change.WorkItemID)
+	item, err := r.WorkItem(ctx, scope.Project, change.WorkItemID)
 	if err != nil {
 		return err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+	if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 		return corestore.ErrNotFound
 	}
 	return nil
 }
 
-func (s *Service) visibleAuditCandidates(ctx context.Context, r tenantstore.Reader, scope nativeScope, rows []eventstore.Evidence) ([]eventstore.Evidence, error) {
+func (s *Service) visibleAuditCandidates(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, rows []eventstore.Evidence) ([]eventstore.Evidence, error) {
 	result := make([]eventstore.Evidence, 0, len(rows))
 	for _, row := range rows {
 		if err := s.authorizeAuditChange(ctx, r, scope, row.ChangeID); err != nil {
@@ -56,9 +57,9 @@ func (s *Service) visibleAuditCandidates(ctx context.Context, r tenantstore.Read
 	return result, nil
 }
 
-func (s *Service) auditDispositions(ctx context.Context, scope nativeScope, id int64) ([]securityaudit.Disposition, error) {
+func (s *Service) auditDispositions(ctx context.Context, scope hubscope.NativeScope, id int64) ([]securityaudit.Disposition, error) {
 	var rows []eventstore.AuditDisposition
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -67,7 +68,7 @@ func (s *Service) auditDispositions(ctx context.Context, scope nativeScope, id i
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		rows, err = reader.AuditDispositions(ctx, scope.project, id)
+		rows, err = reader.AuditDispositions(ctx, scope.Project, id)
 		if err == nil {
 			for _, row := range rows {
 				if err := s.authorizeAuditChange(ctx, r, scope, row.ChangeID); err != nil {
@@ -98,7 +99,7 @@ func (s *Service) getAuditDispositions(c echo.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	value, err := s.auditDispositions(ctx, nativeRequestScope(c), id)
+	value, err := s.auditDispositions(ctx, hubscope.NativeRequestScope(c), id)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -108,14 +109,14 @@ func (s *Service) getAuditDispositions(c echo.Context) error {
 func (s *Service) getAuditEvidence(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	pr, err := strconv.Atoi(c.QueryParam("pull_request"))
 	if err != nil || pr < 0 || c.QueryParam("repository") == "" {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("repository and pull request are required"))
 	}
 	key := securityaudit.Key{Repository: c.QueryParam("repository"), PRNumber: pr, BaseSHA: c.QueryParam("base_sha"), HeadSHA: c.QueryParam("head_sha")}
 	var candidates []eventstore.Evidence
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -124,7 +125,7 @@ func (s *Service) getAuditEvidence(c echo.Context) error {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		candidates, err = reader.AuditReviewCandidates(ctx, scope.project, key, 100)
+		candidates, err = reader.AuditReviewCandidates(ctx, scope.Project, key, 100)
 		if err == nil {
 			candidates, err = s.visibleAuditCandidates(ctx, r, scope, candidates)
 		}
@@ -144,7 +145,7 @@ func (s *Service) getAuditEvidence(c echo.Context) error {
 		if err := json.Unmarshal(raw, &review); err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		if review.SecurityAudit == nil || review.SecurityAudit.Run.ProjectID != string(scope.project) || review.SecurityAudit.Run.Repository != key.Repository || review.SecurityAudit.Run.PRNumber != key.PRNumber || key.BaseSHA != "" && review.SecurityAudit.Run.BaseSHA != key.BaseSHA || key.HeadSHA != "" && review.SecurityAudit.Run.HeadSHA != key.HeadSHA {
+		if review.SecurityAudit == nil || review.SecurityAudit.Run.ProjectID != string(scope.Project) || review.SecurityAudit.Run.Repository != key.Repository || review.SecurityAudit.Run.PRNumber != key.PRNumber || key.BaseSHA != "" && review.SecurityAudit.Run.BaseSHA != key.BaseSHA || key.HeadSHA != "" && review.SecurityAudit.Run.HeadSHA != key.HeadSHA {
 			continue
 		}
 		run := review.SecurityAudit.Run
@@ -157,27 +158,27 @@ func (s *Service) getAuditEvidence(c echo.Context) error {
 	return s.nativeAPIError(c, hubapi.NativeNotFound())
 }
 
-func (s *Service) readAuditDisposition(ctx context.Context, scope nativeScope, row eventstore.AuditDisposition) (securityaudit.Disposition, error) {
+func (s *Service) readAuditDisposition(ctx context.Context, scope hubscope.NativeScope, row eventstore.AuditDisposition) (securityaudit.Disposition, error) {
 	var value securityaudit.Disposition
-	raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), row.Reference)
+	raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.Organization), row.Reference)
 	if err != nil {
 		return value, err
 	}
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return value, err
 	}
-	if value.AuditRunID != row.Disposition.AuditRunID || value.FindingID != row.Disposition.FindingID || value.Status != row.Disposition.Status || value.ServiceIdentity != securityaudit.ServiceIdentity(string(scope.project)) {
+	if value.AuditRunID != row.Disposition.AuditRunID || value.FindingID != row.Disposition.FindingID || value.Status != row.Disposition.Status || value.ServiceIdentity != securityaudit.ServiceIdentity(string(scope.Project)) {
 		return value, corestore.ErrRevisionConflict
 	}
 	value.ID = row.Disposition.ID
 	return value, nil
 }
 
-func (s *Service) prepareValidatorAuditDispositions(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
+func (s *Service) prepareValidatorAuditDispositions(ctx context.Context, scope hubscope.NativeScope, changeID string, run securityaudit.Run) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
 	return s.prepareValidatorAuditDispositionsFor(ctx, scope, changeID, run, corestore.Serving, nil)
 }
 
-func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scope nativeScope, changeID string, run securityaudit.Run, workload corestore.Workload, facts *tenantstore.BoardChangeRows) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
+func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scope hubscope.NativeScope, changeID string, run securityaudit.Run, workload corestore.Workload, facts *tenantstore.BoardChangeRows) ([]securityaudit.Disposition, []eventstore.AuditDisposition, error) {
 	var rows []eventstore.AuditDisposition
 	var sources []eventstore.Evidence
 	var err error
@@ -191,7 +192,7 @@ func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scop
 			return nil, nil, corestore.ErrInvalidPage
 		}
 		for _, row := range rows {
-			if row.Organization != scope.organization || row.Project != scope.project || row.ChangeID != changeID {
+			if row.Organization != scope.Organization || row.Project != scope.Project || row.ChangeID != changeID {
 				return nil, nil, corestore.ErrRevisionConflict
 			}
 			found := false
@@ -207,7 +208,7 @@ func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scop
 			}
 		}
 	} else {
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, workload, func(r tenantstore.Reader) error {
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, workload, func(r tenantstore.Reader) error {
 			if workload != corestore.Background {
 				if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 					return err
@@ -218,7 +219,7 @@ func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scop
 				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			var err error
-			rows, err = reader.AuditDispositions(ctx, scope.project, run.ID)
+			rows, err = reader.AuditDispositions(ctx, scope.Project, run.ID)
 			if err != nil {
 				return err
 			}
@@ -258,7 +259,7 @@ func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scop
 			return nil, nil, corestore.ErrRevisionConflict
 		}
 		source := review.SecurityAudit.Run
-		if source.ID != run.ID || source.ProjectID != string(scope.project) || source.IssueID != run.IssueID || source.Repository != run.Repository || source.PRNumber != run.PRNumber || source.BaseSHA != run.BaseSHA || source.HeadSHA != run.HeadSHA || !reflect.DeepEqual(source.Findings, run.Findings) {
+		if source.ID != run.ID || source.ProjectID != string(scope.Project) || source.IssueID != run.IssueID || source.Repository != run.Repository || source.PRNumber != run.PRNumber || source.BaseSHA != run.BaseSHA || source.HeadSHA != run.HeadSHA || !reflect.DeepEqual(source.Findings, run.Findings) {
 			return nil, nil, corestore.ErrRevisionConflict
 		}
 		value, err := s.readAuditDisposition(ctx, scope, row)
@@ -270,12 +271,12 @@ func (s *Service) prepareValidatorAuditDispositionsFor(ctx context.Context, scop
 	return values, rows, nil
 }
 
-func lockValidatorAuditDispositions(ctx context.Context, r tenantstore.Reader, scope nativeScope, runID int64, expected []eventstore.AuditDisposition) error {
+func lockValidatorAuditDispositions(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, runID int64, expected []eventstore.AuditDisposition) error {
 	reader, ok := r.(eventstore.AuditDispositionReader)
 	if !ok {
 		return hubapi.NativeRunEventStorageUnavailable()
 	}
-	rows, err := reader.AuditDispositions(ctx, scope.project, runID)
+	rows, err := reader.AuditDispositions(ctx, scope.Project, runID)
 	if err != nil {
 		return err
 	}
@@ -285,11 +286,11 @@ func lockValidatorAuditDispositions(ctx context.Context, r tenantstore.Reader, s
 	return nil
 }
 
-func (s *Service) summarizeChangeWithAuditDispositions(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) (tracker.ChangeSummary, error) {
+func (s *Service) summarizeChangeWithAuditDispositions(ctx context.Context, scope hubscope.NativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) (tracker.ChangeSummary, error) {
 	return s.summarizeChangeWithAuditDispositionsFor(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval, corestore.Serving, nil)
 }
 
-func (s *Service) summarizeChangeWithAuditDispositionsFor(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool, workload corestore.Workload, facts *tenantstore.BoardChangeRows) (tracker.ChangeSummary, error) {
+func (s *Service) summarizeChangeWithAuditDispositionsFor(ctx context.Context, scope hubscope.NativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool, workload corestore.Workload, facts *tenantstore.BoardChangeRows) (tracker.ChangeSummary, error) {
 	dispositions := make(map[int64][]securityaudit.Disposition)
 	for _, review := range detail.Reviews {
 		if review.VersionID != detail.Change.CurrentVersion || review.SecurityAudit == nil {

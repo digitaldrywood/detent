@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -65,7 +66,7 @@ func TestRegistrationCatalogGolden(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: operatorIdentity(credential, string(organization))})
+				ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: hubscope.OperatorIdentity(credential, string(organization))})
 				ctx = service.withOperatorCatalog(ctx, credential, string(organization))
 				definitions, err := (hostedOperatorExecutor{service}).ListTools(ctx)
 				if err != nil {

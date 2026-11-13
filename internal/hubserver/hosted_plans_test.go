@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -2081,7 +2082,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 						if err != nil || status != http.StatusOK {
 							t.Fatalf("evidence credential status=%d error=%v", status, err)
 						}
-						scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+						scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 						evidence := attachment.EvidenceRequest{Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("upload"), LeaseID: lease.ID, FencingToken: lease.FencingToken}, WorkItemID: issue.WorkItemID, AttemptID: event.Data.AttemptID, Caption: "保留された証拠"}
 						input := attachment.UploadRequest{Metadata: attachment.Metadata{Name: "retained.txt", ContentType: "text/plain", Size: 8, SHA256: artifact.Digest([]byte("retained"))}, RequestID: evidence.IdempotencyKey, Evidence: &evidence}
 						prepared := httptest.NewRecorder()
@@ -2128,8 +2129,8 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					if err != nil || status != http.StatusOK {
 						t.Fatalf("historical credential status=%d error=%v", status, err)
 					}
-					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
-					actor, err := json.Marshal(scope.actor())
+					scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
+					actor, err := json.Marshal(scope.Actor())
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -2142,9 +2143,9 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 					if err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
 						var row corestore.WorkItem
-						if err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+						if err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 							var err error
-							row, err = r.WorkItem(ctx, scope.project, issue.WorkItemID)
+							row, err = r.WorkItem(ctx, scope.Project, issue.WorkItemID)
 							return err
 						}); err != nil {
 							return err
@@ -2163,11 +2164,11 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 						if value.Data.Run == nil || value.Data.Run.Sequence != 0 || value.Data.Run.AttemptID != event.Data.AttemptID {
 							t.Fatal("historical event acquired runtime sequence authority")
 						}
-						receipt, err := prepareCoreExecutionReceipt(ctx, eventstore.NewContent(source.Objects), scope.organization, bundle.Identity().SourceSHA256, "legacy-accounting", event.IdempotencyKey, record.Events[0])
+						receipt, err := prepareCoreExecutionReceipt(ctx, eventstore.NewContent(source.Objects), scope.Organization, bundle.Identity().SourceSHA256, "legacy-accounting", event.IdempotencyKey, record.Events[0])
 						if err != nil {
 							return err
 						}
-						return repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 							if err := f.service.authorizeAccessScope(ctx, w, scope, true); err != nil {
 								return err
 							}

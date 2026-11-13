@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -369,7 +370,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 					}
 				}},
 				{"report facets", func(t *testing.T) {
-					scope := nativeScope{organization: organization, project: project, credential: credential}
+					scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}
 					facets, err := service.readReportsFacets(reporterReadContext(ctx, scope), []string{string(project)}, window)
 					if err != nil || len(facets.Labels) != 1 || facets.Labels[0] != "own-label" || len(facets.FiledBy) != 1 || facets.FiledBy[0].ID != principal {
 						t.Fatalf("reporter facets=%+v error=%v", facets, err)

@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -122,7 +123,7 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 			}
 		}
 		all, done, cancelled := rows["*"], rows["Done"], rows["Cancelled"]
-		scope := nativeScope{organization: org, project: projects[org], credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
+		scope := hubscope.NativeScope{Organization: org, Project: projects[org], Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 		legacy, err := service.readWorkBoardProject(t.Context(), scope, savedWorkState{View: "board", Lanes: []string{"Todo"}, CompletedWindow: "24h"})
 		if err != nil {
 			t.Fatal(err)
@@ -177,7 +178,7 @@ func TestBoardSummaryProjectionReplaysAndExpiresWindowsPerTenant(t *testing.T) {
 					t.Fatalf("cards=%d issues=%d want=%d", len(result.Cards), len(result.Issues), wantCount)
 				}
 				for _, card := range result.Cards {
-					if card.Issue.WorkItemID != test.want || card.Issue.OrganizationID != org || card.Issue.ProjectID != scope.project {
+					if card.Issue.WorkItemID != test.want || card.Issue.OrganizationID != org || card.Issue.ProjectID != scope.Project {
 						t.Errorf("unexpected filtered card: %+v", card.Issue.NativeReference)
 					}
 				}
@@ -269,7 +270,7 @@ func TestBoardCountsFenceOwnershipUntilProjection(t *testing.T) {
 				t.Fatal(err)
 			}
 			credential.HostedRole, credential.HostedPrincipal = "reporter", "owner"
-			scope := nativeScope{organization: org, project: fixture.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: org, Project: fixture.project.ID, Credential: credential}
 			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: fixture.project.ID, WorkItemID: "wi_counts", Number: 1, Revision: 1, Profile: "native"}, Title: "Example", State: "Done", Terminal: true, Actor: tracker.Actor{Kind: "human", PrincipalID: "owner"}, CreatedAt: now, UpdatedAt: now, ClosedAt: new(now)}
 			publish := func(create bool) {
 				t.Helper()

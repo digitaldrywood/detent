@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -413,7 +414,7 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 			}
 		}
 		if card.Change != nil {
-			scope := nativeScope{organization: organization, project: candidate.ProjectID}
+			scope := hubscope.NativeScope{Organization: organization, Project: candidate.ProjectID}
 			step = "change_rows"
 			changes, supported := s.prepareBoardChangeRowsFor(ctx, scope, []tracker.NativeBoardCard{card}, corestore.Background)
 			if changes.err != nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -205,10 +206,10 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		if disposition.ServiceIdentity != securityaudit.ServiceIdentity("prj_runner") {
 			t.Errorf("disposition has actor identity instead of trusted project owner: %q", disposition.ServiceIdentity)
 		}
-		scope := nativeScope{organization: "org_startup", project: "prj_runner"}
-		if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		scope := hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner"}
+		if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			credential, err := r.AccessCredential(ctx, "credential_"+strconv.Itoa(index+1))
-			scope.credential = hubapi.APICredential{ID: credential.ID, Hash: credential.Hash, Scope: hubapi.APIScope(credential.Scope)}
+			scope.Credential = hubapi.APICredential{ID: credential.ID, Hash: credential.Hash, Scope: hubapi.APIScope(credential.Scope)}
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -221,8 +222,8 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 		if evaluation.Allowed != (index == 0) {
 			t.Fatalf("exact-source disposition did not clear finding: %+v", evaluation)
 		}
-		if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			if receipts[0].ActorID != scope.credential.ID {
+		if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if receipts[0].ActorID != scope.Credential.ID {
 				t.Fatalf("actor attribution lost: %+v", receipts[0])
 			}
 			return lockValidatorAuditDispositions(ctx, r, scope, run.ID, receipts)
@@ -250,7 +251,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			t.Fatal("wrong source inherited a disposition")
 		}
 		forged := values[0]
-		forged.ServiceIdentity = scope.credential.ID
+		forged.ServiceIdentity = scope.Credential.ID
 		if securityaudit.Evaluate(run, []securityaudit.Disposition{forged}, key, securityaudit.ServiceIdentity("prj_runner"), []string{"p1"}).Allowed {
 			t.Fatal("actor identity forged audit owner")
 		}
@@ -356,7 +357,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			t.Fatal("unrecorded audit source accepted a disposition")
 		}
 		if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-			return w.(accessstore.Writer).DeleteAccessTokenGrant(ctx, scope.credential.ID, "prj_runner")
+			return w.(accessstore.Writer).DeleteAccessTokenGrant(ctx, scope.Credential.ID, "prj_runner")
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -364,7 +365,7 @@ func TestPostgresAuditDispositionIdentityAndReplay(t *testing.T) {
 			t.Fatal("revoked current grant replayed a receipt")
 		}
 		if err := f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: scope.credential.ID, ProjectID: "prj_runner"})
+			return w.CreateAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: "org_startup", TokenID: scope.Credential.ID, ProjectID: "prj_runner"})
 		}); err != nil {
 			t.Fatal(err)
 		}

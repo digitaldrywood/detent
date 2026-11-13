@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -118,7 +119,7 @@ func TestNativeWorkSearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := operatorIdentity(credential, "org_security")
+	identity := hubscope.OperatorIdentity(credential, "org_security")
 	mcpContext := operatortool.WithConnection(t.Context(), operatortool.Connection{ID: "search-connection", Client: "search-client", Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 		return f.service.operatorCurrentAuthority(ctx, credential, "org_security")
 	}})
@@ -320,7 +321,7 @@ func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			identity := operatorIdentity(credential, string(org))
+			identity := hubscope.OperatorIdentity(credential, string(org))
 			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{ID: "example-search-" + string(org), Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 				return service.operatorCurrentAuthority(ctx, credential, string(org))
 			}})

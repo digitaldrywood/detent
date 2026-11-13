@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -185,7 +186,7 @@ func TestConversationStreamReplaysAndFollows(t *testing.T) {
 	t.Run("replay stops at authorized head", func(t *testing.T) {
 		response := httptest.NewRecorder()
 		bounded := newConversationStream(f.service.echo.NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response))
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+		scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 		cursor, err := f.service.replayPGConversationEvents(t.Context(), scope, bounded, id, 0, 1)
 		if err != nil || cursor != 1 || strings.Contains(response.Body.String(), string(conversation.EventCommandReceipt)) {
 			t.Fatalf("replay exceeded authorized head: cursor=%d error=%v data=%s", cursor, err, response.Body.String())
@@ -476,7 +477,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 	for _, tt := range []struct {
 		name             string
 		account          string
-		mutate           func(*testing.T, *browserHostedFixture, nativeScope)
+		mutate           func(*testing.T, *browserHostedFixture, hubscope.NativeScope)
 		refresh          bool
 		shared           bool
 		wantErr          error
@@ -487,8 +488,8 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 	}{
 		{
 			name: "screen read audience changed", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversations SET read_audience='different-screen-access' WHERE organization_id=$1 AND id=$2", scope.organization, f.conversation); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversations SET read_audience='different-screen-access' WHERE organization_id=$1 AND id=$2", scope.Organization, f.conversation); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -498,63 +499,63 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		},
 		{
 			name: "expired provider session", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrInvalidSession,
-			mutate: func(_ *testing.T, f *browserHostedFixture, scope nativeScope) {
+			mutate: func(_ *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
 				f.provider.mu.Lock()
 				defer f.provider.mu.Unlock()
-				identity := f.provider.sessions[scope.credential.Hosted.SessionID]
+				identity := f.provider.sessions[scope.Credential.Hosted.SessionID]
 				identity.ExpiresAt = time.Now().Add(-time.Second)
 				f.provider.sessions[identity.SessionID] = identity
 			},
 		},
 		{
 			name: "membership removed", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(_ *testing.T, f *browserHostedFixture, scope nativeScope) {
+			mutate: func(_ *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
 				f.provider.mu.Lock()
 				defer f.provider.mu.Unlock()
-				delete(f.provider.members, scope.credential.HostedMembership)
+				delete(f.provider.members, scope.Credential.HostedMembership)
 			},
 		},
 		{
 			name: "local membership inactive", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_members SET active=false WHERE organization_id=$1", scope.organization); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_members SET active=false WHERE organization_id=$1", scope.Organization); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
 			name: "shared membership inactive", account: "owner", shared: true, want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_members SET active=false WHERE organization_id=$1", scope.organization); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE hosted_members SET active=false WHERE organization_id=$1", scope.Organization); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
 			name: "member token revoked", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2", f.service.config.now(), scope.organization); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=$1 WHERE organization_id=$2", f.service.config.now(), scope.Organization); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
 			name: "tenant missing", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM hosted_tenant WHERE organization_id=$1", scope.organization); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM hosted_tenant WHERE organization_id=$1", scope.Organization); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
 			name: "wrong provider organization", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
-				tamperHostedBinding(t, hostedPostgresAdmin(t, f.service), "UPDATE hosted_tenant SET provider_id='org_other' WHERE organization_id=$1", scope.organization)
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
+				tamperHostedBinding(t, hostedPostgresAdmin(t, f.service), "UPDATE hosted_tenant SET provider_id='org_other' WHERE organization_id=$1", scope.Organization)
 			},
 		},
 		{
 			name: "tenant read failure", account: "owner", want: conversationClosedServerError, wantError: "SQLSTATE 42P01",
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
 				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "ALTER TABLE hosted_tenant RENAME TO unavailable_tenant"); err != nil {
 					t.Fatal(err)
 				}
@@ -562,7 +563,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		},
 		{
 			name: "member read failure", account: "owner", want: conversationClosedServerError, wantError: "SQLSTATE 42P01",
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
 				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "ALTER TABLE hosted_members RENAME TO unavailable_members"); err != nil {
 					t.Fatal(err)
 				}
@@ -570,7 +571,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		},
 		{
 			name: "shared member read failure", account: "owner", shared: true, want: conversationClosedServerError, wantErr: operatortool.ErrServiceUnavailable, withheldError: "SQLSTATE",
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
 				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "ALTER TABLE hosted_members RENAME TO unavailable_members"); err != nil {
 					t.Fatal(err)
 				}
@@ -578,7 +579,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		},
 		{
 			name: "grant read failure", account: "owner", want: conversationClosedServerError, wantError: "SQLSTATE 42P01",
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
 				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "ALTER TABLE hosted_project_grants RENAME TO unavailable_grants"); err != nil {
 					t.Fatal(err)
 				}
@@ -586,40 +587,40 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		},
 		{
 			name: "provider timeout", account: "owner", want: conversationClosedServerError, wantErr: context.DeadlineExceeded, wantError: "context deadline exceeded",
-			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
+			mutate: func(_ *testing.T, f *browserHostedFixture, _ hubscope.NativeScope) {
 				f.service.config.Hosted.Provider.(*streamMembershipFailureProvider).fail(context.DeadlineExceeded)
 			},
 		},
 		{
 			name: "provider rate limit", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "status 429", credentialStatus: http.StatusServiceUnavailable,
-			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
+			mutate: func(_ *testing.T, f *browserHostedFixture, _ hubscope.NativeScope) {
 				f.service.config.Hosted.Provider.(*streamMembershipFailureProvider).fail(&auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable, Status: http.StatusTooManyRequests})
 			},
 		},
 		{
 			name: "provider unavailable", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "status 503",
-			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
+			mutate: func(_ *testing.T, f *browserHostedFixture, _ hubscope.NativeScope) {
 				f.service.config.Hosted.Provider.(*streamMembershipFailureProvider).fail(&auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable, Status: http.StatusServiceUnavailable})
 			},
 		},
 		{
 			name: "provider lookup sentinel", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "tenant authority storage is unavailable",
-			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
+			mutate: func(_ *testing.T, f *browserHostedFixture, _ hubscope.NativeScope) {
 				f.service.config.Hosted.Provider.(*streamMembershipFailureProvider).fail(auth.ErrHostedIdentity)
 			},
 		},
 		{
 			name: "project grant removed", account: "owner", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3", scope.organization, scope.credential.Hosted.Subject, scope.project); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE organization_id=$1 AND user_id=$2 AND project_id=$3", scope.Organization, scope.Credential.Hosted.Subject, scope.Project); err != nil {
 					t.Fatal(err)
 				}
 			},
 		},
 		{
 			name: "conversation made private", account: "viewer", want: conversationClosedAccessRevoked,
-			mutate: func(t *testing.T, f *browserHostedFixture, scope nativeScope) {
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversations SET visibility='private' WHERE organization_id=$1 AND id=$2", scope.organization, f.conversation); err != nil {
+			mutate: func(t *testing.T, f *browserHostedFixture, scope hubscope.NativeScope) {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE conversations SET visibility='private' WHERE organization_id=$1 AND id=$2", scope.Organization, f.conversation); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -636,10 +637,10 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: credential}
+			scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project), Credential: credential}
 			if tt.shared {
 				var session accessstore.Session
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 					var err error
 					session, err = reader.AccessSession(t.Context(), credential.SessionHash)
 					return err
@@ -648,12 +649,12 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 				}
 				f.service.config.Hosted.SharedEntry = &HostedSharedEntry{Generation: 1}
 				c.Set(hostedSharedClaimsKey, cloudassert.Claims{
-					Audience: string(scope.organization), Generation: 1,
+					Audience: string(scope.Organization), Generation: 1,
 					Kind: cloudassert.KindBrowser, Subject: session.Subject, Email: session.Email,
 					ProviderOrganization: session.ProviderOrganizationID, ProviderSession: session.SessionID,
 					SessionCreatedAt: session.IdentityCreatedAt, SessionExpiresAt: session.IdentityExpiresAt,
 					Role: credential.HostedRole, AccessExpiresAt: session.ExpiresAt, Binding: session.Hash,
-					CSRF: cloudassert.CSRFToken("stream", string(scope.organization)),
+					CSRF: cloudassert.CSRFToken("stream", string(scope.Organization)),
 				})
 			}
 			if _, err := f.service.reauthorizeConversationStream(c, &scope, f.conversation); err != nil {

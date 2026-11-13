@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -186,7 +187,7 @@ func TestTeamThreadWorkerReadIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	contextData, err := operatortool.ReadIssueContext(changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID)), operatorWorkReads{service: f.service, scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}}, operatortool.WorkReadRequest{ProjectID: string(f.project.ID), Reference: string(issue.WorkItemID)})
+	contextData, err := operatortool.ReadIssueContext(changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID)), operatorWorkReads{service: f.service, scope: hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}}, operatortool.WorkReadRequest{ProjectID: string(f.project.ID), Reference: string(issue.WorkItemID)})
 	if err != nil {
 		t.Fatal(err)
 	}

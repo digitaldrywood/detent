@@ -7,13 +7,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) hydrateSchedulerDecisionRows(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, evidence tracker.NativeRuntimeEvidence, rows eventstore.SchedulerDecisionRows) (tracker.NativeRuntimeEvidence, error) {
+func (s *Service) hydrateSchedulerDecisionRows(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, evidence tracker.NativeRuntimeEvidence, rows eventstore.SchedulerDecisionRows) (tracker.NativeRuntimeEvidence, error) {
 	hydrated := map[string]*tracker.CollaborationEvent{}
 	read := func(row eventstore.Event) (*tracker.CollaborationEvent, error) {
-		if row.OrganizationID != scope.organization || row.ProjectID != scope.project || row.WorkItemID != item {
+		if row.OrganizationID != scope.Organization || row.ProjectID != scope.Project || row.WorkItemID != item {
 			return nil, corestore.ErrTenantMismatch
 		}
 		if event := hydrated[row.ID]; event != nil {

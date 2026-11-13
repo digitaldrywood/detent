@@ -16,12 +16,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readHistoryTenant(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
+func (s *Service) readHistoryTenant(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
@@ -39,7 +40,7 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope nativeScope, item
 	if newest && view == "" {
 		return tracker.Page[tracker.CollaborationEvent]{}, hubapi.NativePublicInvalid("Newest history requires the timeline or blockers view")
 	}
-	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/history"
+	path := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(item) + "/history"
 	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
 	if err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err
@@ -57,28 +58,28 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope nativeScope, item
 
 	var records []eventstore.Event
 	var hasMore bool
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if project.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		workItem, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		workItem, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
 		}
 		if newest {
-			records, err = r.HistoryEventsBefore(ctx, scope.project, workItem.NativeID, boundary, limit)
+			records, err = r.HistoryEventsBefore(ctx, scope.Project, workItem.NativeID, boundary, limit)
 		} else {
-			records, err = r.HistoryEvents(ctx, scope.project, workItem.NativeID, boundary, limit)
+			records, err = r.HistoryEvents(ctx, scope.Project, workItem.NativeID, boundary, limit)
 		}
 		if err != nil || len(records) < limit {
 			return err
@@ -86,9 +87,9 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope nativeScope, item
 		last := records[len(records)-1].Sequence
 		var lookahead []eventstore.Event
 		if newest {
-			lookahead, err = r.HistoryEventsBefore(ctx, scope.project, workItem.NativeID, last, 1)
+			lookahead, err = r.HistoryEventsBefore(ctx, scope.Project, workItem.NativeID, last, 1)
 		} else {
-			lookahead, err = r.HistoryEvents(ctx, scope.project, workItem.NativeID, last, 1)
+			lookahead, err = r.HistoryEvents(ctx, scope.Project, workItem.NativeID, last, 1)
 		}
 		hasMore = len(lookahead) != 0
 		return err
@@ -168,7 +169,7 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope nativeScope, item
 	return page, nil
 }
 
-func (s *Service) hydrateTenantHistoryRelatedIssues(ctx context.Context, scope nativeScope, events []tracker.CollaborationEvent) error {
+func (s *Service) hydrateTenantHistoryRelatedIssues(ctx context.Context, scope hubscope.NativeScope, events []tracker.CollaborationEvent) error {
 	indices := make(map[tracker.NativeWorkItemID][]int)
 	for index, event := range events {
 		if event.Data.RelatedWorkItemID != "" {
@@ -178,7 +179,7 @@ func (s *Service) hydrateTenantHistoryRelatedIssues(ctx context.Context, scope n
 	if len(indices) == 0 {
 		return nil
 	}
-	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		organization, err := r.AccessOrganization(ctx)
 		if err != nil {
 			return err
@@ -192,12 +193,12 @@ func (s *Service) hydrateTenantHistoryRelatedIssues(ctx context.Context, scope n
 			if err != nil {
 				return err
 			}
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+			if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				clearTenantHistoryRelation(events, positions)
 				continue
 			}
 			targetScope := scope
-			targetScope.project = item.ProjectID
+			targetScope.Project = item.ProjectID
 			if err := s.authorizeAccessScope(ctx, r, targetScope, false); err != nil {
 				if errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, accessstore.ErrDenied) || hubapi.IsNativeNotFound(err) {
 					clearTenantHistoryRelation(events, positions)

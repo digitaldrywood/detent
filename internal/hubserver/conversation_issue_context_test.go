@@ -237,10 +237,10 @@ func TestCoordinatorSubjectRefresh(t *testing.T) {
 						var audience string
 						f.read(t, func(r tenantstore.Reader) error {
 							var err error
-							audience, err = conversationReadAudienceRecord(t.Context(), r, f.organization, scope.credential)
+							audience, err = conversationReadAudienceRecord(t.Context(), r, f.organization, scope.Credential)
 							return err
 						})
-						t.Fatalf("API turn=%d status=%d owner_matches=%t audience_matches=%t project_matches=%t response=%s", index, response.Code, current.OwnerPrincipalID == scope.credential.ID, current.ReadAudience == audience, current.ProjectID == scope.project, response.Body.String())
+						t.Fatalf("API turn=%d status=%d owner_matches=%t audience_matches=%t project_matches=%t response=%s", index, response.Code, current.OwnerPrincipalID == scope.Credential.ID, current.ReadAudience == audience, current.ProjectID == scope.Project, response.Body.String())
 					}
 				} else {
 					f.say(t, &record, "Summarize this issue")

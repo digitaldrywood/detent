@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -39,7 +40,7 @@ func TestNativeDuplicateCandidateCrowding(t *testing.T) {
 				t.Fatalf("fixture credential=%d %v", status, err)
 			}
 			credential.HostedRole = "reporter"
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential, sourceActor: &target.Actor}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential, SourceActor: &target.Actor}
 			creator := f
 			if crowd == "project" || crowd == "organization" || crowd == "invisible" {
 				organization := f.project.OrganizationID
@@ -76,8 +77,8 @@ func TestNativeDuplicateCandidateCrowding(t *testing.T) {
 			}
 			for _, text := range []string{"repos associ deadlock", "repository association absent"} {
 				ids := map[tracker.NativeWorkItemID]bool{}
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-					hits, err := r.Search(t.Context(), searchstore.Query{Kind: "work", ProjectID: scope.project, Reporter: new(target.Actor.PrincipalID), Text: text, Limit: 200})
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+					hits, err := r.Search(t.Context(), searchstore.Query{Kind: "work", ProjectID: scope.Project, Reporter: new(target.Actor.PrincipalID), Text: text, Limit: 200})
 					for _, hit := range hits {
 						ids[hit.Document.WorkItemID] = true
 					}
@@ -98,7 +99,7 @@ func TestNativeDuplicateCandidateCrowding(t *testing.T) {
 			}
 			for _, request := range []tracker.CreateIssue{{Title: "Repository association deadlocks"}, {Title: "Separate observed symptom", Body: "Repository association deadlocks"}} {
 				matches, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, request, false)
-				if err != nil || matches == nil || !matches.available || len(matches.matches) != 2 || !slices.ContainsFunc(matches.matches, func(hit possibleDuplicate) bool { return hit.WorkItemID == target.WorkItemID }) || !slices.ContainsFunc(matches.matches, func(hit possibleDuplicate) bool { return hit.WorkItemID == partial.WorkItemID }) {
+				if err != nil || matches == nil || !matches.available || len(matches.matches) != 2 || !slices.ContainsFunc(matches.matches, func(hit hubscope.PossibleDuplicate) bool { return hit.WorkItemID == target.WorkItemID }) || !slices.ContainsFunc(matches.matches, func(hit hubscope.PossibleDuplicate) bool { return hit.WorkItemID == partial.WorkItemID }) {
 					t.Fatalf("request=%+v matches=%+v err=%v", request, matches, err)
 				}
 			}
@@ -117,7 +118,7 @@ func TestNativeSearchScopedCost(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("fixture credential=%d %v", status, err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			adminValue, ok := projectRecordDatabases.Load(f.service.database.postgres)
 			if !ok {
 				t.Fatal("fixture PostgreSQL administration connection unavailable")
@@ -377,7 +378,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			reader := operatorWorkReads{service: f.service, scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}}
+			reader := operatorWorkReads{service: f.service, scope: hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}}
 			for _, pair := range [][2]tracker.NativeWorkItemID{{first.WorkItemID, created.WorkItemID}, {created.WorkItemID, first.WorkItemID}} {
 				result, err := reader.ReadWork(ctx, operatortool.WorkRelationships, operatortool.WorkReadRequest{ProjectID: string(f.project.ID), Reference: string(pair[0])})
 				if err != nil {
@@ -914,7 +915,7 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("fixture credential=%d %v", status, err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential, action: operatortool.FileIssue}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential, Action: operatortool.FileIssue}
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "candidate-recheck"}, Title: first.Title, Body: first.Body, State: "Todo"}
 			search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, request, false)
 			if err != nil {
@@ -941,7 +942,7 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 				setNativeDuplicateChallengeFixture(t, f, change == "challenge enabled")
 			}
 			refreshNativeDuplicateSearchFixture(t, f.service, f.project.OrganizationID)
-			err = f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, prepared.write)
+			err = f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, prepared.write)
 			if !errors.Is(err, corestore.ErrSerializationFailure) {
 				t.Fatalf("stale duplicate preparation was accepted: %v", err)
 			}
@@ -971,7 +972,7 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("fixture credential=%d %v", status, err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential, action: operatortool.FileIssue}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential, Action: operatortool.FileIssue}
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "same-call-recheck"}, Title: first.Title, Body: first.Body, State: "Todo"}
 			installNativeBrowserPathFault(t, f.service)
 			repository := f.service.config.TenantRepository.(*nativeBrowserPathRepository)
@@ -1024,7 +1025,7 @@ func TestNativeMachineDuplicateCommentCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	request := tracker.CreateIssue{Body: issueorigin.Stamp("internal/example/pool.go:31:2: undefined: capacity", issueorigin.Origin{Kind: "worker", Fingerprint: "later-failure"})}
 	search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, request, true)
 	if err != nil || !search.available || len(search.matches) != 1 || search.matches[0].WorkItemID != owner.WorkItemID {
@@ -1051,7 +1052,7 @@ func TestNativeDuplicatesIncompleteIndex(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("fixture credential=%d %v", status, err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			request := tracker.CreateIssue{Title: first.Title, Body: body}
 			for _, machine := range []bool{false, true} {
 				search, err := f.service.prepareWorkItemDuplicates(t.Context(), scope, request, machine)

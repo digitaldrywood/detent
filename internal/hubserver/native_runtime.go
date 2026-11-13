@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -182,7 +183,7 @@ func (s *Service) getNativeExplanation(c echo.Context) error {
 	if len(c.QueryParams()) != 0 {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Unsupported explanation selector"))
 	}
-	evidence, err := s.readNativeRuntime(ctx, nativeRequestScope(c), c.Param("item"), "")
+	evidence, err := s.readNativeRuntime(ctx, hubscope.NativeRequestScope(c), c.Param("item"), "")
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -223,19 +224,19 @@ func (s *Service) getNativeRuntime(c echo.Context) error {
 		if err := validateNativeAdmissionContext(current); err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		if nativeRequestScope(c).credential.Runner.RunnerID == "" {
+		if hubscope.NativeRequestScope(c).Credential.Runner.RunnerID == "" {
 			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Admission context requires the current registered runner"))
 		}
 		admission = append(admission, current)
 	}
-	result, err := s.readNativeRuntime(c.Request().Context(), nativeRequestScope(c), c.Param("item"), selector, admission...)
+	result, err := s.readNativeRuntime(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), selector, admission...)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return nativeArchiveJSON(c, http.StatusOK, result)
 }
 
-func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
+func (s *Service) readNativeRuntime(ctx context.Context, scope hubscope.NativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()

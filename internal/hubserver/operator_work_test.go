@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -41,8 +42,8 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	f := linkedFixture(t)
 	scope := analyticsTestScope(t, f)
 	updateProject := func(ctx context.Context, mutate func(*projectstore.Record)) error {
-		return f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			project, err := w.ProjectRecord(ctx, scope.project)
+		return f.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			project, err := w.ProjectRecord(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -52,12 +53,12 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		})
 	}
 	setVisual := func(ctx context.Context, visual bool) error {
-		return f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			project, err := w.ProjectRecord(ctx, scope.project)
+		return f.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			project, err := w.ProjectRecord(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
-			return w.UpdateProjectContent(ctx, scope.project, project.Core.ContentSettingsRevision, visual)
+			return w.UpdateProjectContent(ctx, scope.Project, project.Core.ContentSettingsRevision, visual)
 		})
 	}
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
@@ -168,7 +169,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 					t.Fatal(err)
 				}
 				var locked tracker.ProjectID
-				if err := conn.QueryRowContext(t.Context(), "SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR UPDATE", scope.organization, scope.project).Scan(&locked); err != nil {
+				if err := conn.QueryRowContext(t.Context(), "SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR UPDATE", scope.Organization, scope.Project).Scan(&locked); err != nil {
 					t.Fatal(err)
 				}
 				var blockerPID int
@@ -234,9 +235,9 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		}
 	})
 	t.Run("reused attachment contract", func(t *testing.T) {
-		record := attachment.Metadata{ID: conversation.NewAttachmentID(), ProjectID: string(f.project.ID), Uploader: scope.credential.ID, Name: "file.txt", ContentType: "text/plain", Size: 5, SHA256: artifact.Digest([]byte("hello")), CreatedAt: time.Now().UTC()}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: scope.organization, Kind: "attachment", Metadata: record})
+		record := attachment.Metadata{ID: conversation.NewAttachmentID(), ProjectID: string(f.project.ID), Uploader: scope.Credential.ID, Name: "file.txt", ContentType: "text/plain", Size: 5, SHA256: artifact.Digest([]byte("hello")), CreatedAt: time.Now().UTC()}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			return w.CreateAttachment(t.Context(), attachmentstore.Record{OrganizationID: scope.Organization, Kind: "attachment", Metadata: record})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -1129,7 +1130,7 @@ func performHubWorkCall(t *testing.T, service *Service, path, token, name string
 
 func TestSafeNativeWorkError(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "public-filing-errors")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	now := time.Now().UTC()
 	validSource := tracker.Provenance{Provider: "github", ExternalID: "issue", AuthorID: "author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}
 	for _, test := range []struct {
@@ -1167,11 +1168,11 @@ func TestSafeNativeWorkError(t *testing.T) {
 		{name: "linked repository mismatch", setup: func(p *projectstore.Record) { p.Settings.CheckoutRepository = "example-org/other-project" }, request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1"}, message: linkedIssueRepositoryMismatch},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			project := projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: tracker.ProjectID(hubapi.NewID("prj")), Name: "Validation example " + test.name, Profile: "native"}, States: nativeFixtureStates()}
+			project := projectstore.Record{Core: corestore.Project{OrganizationID: scope.Organization, ID: tracker.ProjectID(hubapi.NewID("prj")), Name: "Validation example " + test.name, Profile: "native"}, States: nativeFixtureStates()}
 			if test.setup != nil {
 				test.setup(&project)
 			}
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				stored, err := w.CreateProjectRecord(t.Context(), project)
 				if err != nil {
 					return err
@@ -1195,9 +1196,9 @@ func TestSafeNativeWorkError(t *testing.T) {
 				request.State = "Todo"
 			}
 			caller := scope
-			caller.project = project.Core.ID
+			caller.Project = project.Core.ID
 			if test.worker {
-				caller.credential.Scope = hubapi.APIScopeWorker
+				caller.Credential.Scope = hubapi.APIScopeWorker
 			}
 			_, cause := f.service.loadWorkItemPlan(t.Context(), caller, "", "", request)
 			err := safeNativeWorkError(cause)

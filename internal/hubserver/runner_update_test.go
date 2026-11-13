@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -60,7 +61,7 @@ func TestHostedRunnerUpdateReadKeyAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			value, err := f.service.createRunnerEnrollmentCommand(t.Context(), nativeScope{organization: "org_security", credential: enrollmentCredential}, runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{f.project}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 60})
+			value, err := f.service.createRunnerEnrollmentCommand(t.Context(), hubscope.NativeScope{Organization: "org_security", Credential: enrollmentCredential}, runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{f.project}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 60})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -233,7 +234,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 				if routingError0 != nil {
 					t.Fatalf("routing reader status=%d error=%v", routingStatus0, routingError0)
 				}
-				stored, err := service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential0}, r.binding.RunnerID)
+				stored, err := service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential0}, r.binding.RunnerID)
 				if err != nil || stored.Update.Receipt.Status != "refused" || stored.Update.Receipt.Request != *previous {
 					t.Fatalf("lost historical refusal: %+v %v", stored.Update, err)
 				}
@@ -279,7 +280,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 				if routingError1 != nil {
 					t.Fatalf("routing reader status=%d error=%v", routingStatus1, routingError1)
 				}
-				stored, err := service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential1}, r.binding.RunnerID)
+				stored, err := service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential1}, r.binding.RunnerID)
 				if err != nil || stored.UpdateView(service.config.now()).Status != "refused" || stored.Update.Receipt.FailureReason != "Update download failed" {
 					t.Fatalf("failed update not reported: %+v %v", stored.Update, err)
 				}
@@ -301,7 +302,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			if routingError2 != nil {
 				t.Fatalf("routing reader status=%d error=%v", routingStatus2, routingError2)
 			}
-			stored, err := service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential2}, r.binding.RunnerID)
+			stored, err := service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential2}, r.binding.RunnerID)
 			if previous != nil && (err != nil || stored.Update.Receipt.PreviousFailure == nil || stored.Update.Receipt.PreviousFailure.Request != *previous || stored.Update.Receipt.PreviousFailure.FailureReason != "Requested update target is not applicable to the observed runner state") {
 				t.Fatalf("Hub lost refusal history without a runner cache: %+v %v", stored.Update, err)
 			}
@@ -465,7 +466,7 @@ func TestRunnerUpdateHeartbeatApplication(t *testing.T) {
 	if routingError4 != nil {
 		t.Fatalf("routing reader status=%d error=%v", routingStatus4, routingError4)
 	}
-	stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential4}, r.binding.RunnerID)
+	stored, err := f.service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential4}, r.binding.RunnerID)
 	if err != nil || len(stored.Leases) != 1 || stored.Leases[0].ID != active.ID {
 		t.Fatalf("active lease changed: %+v error=%v", stored.Leases, err)
 	}

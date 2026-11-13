@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -40,7 +41,7 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 	if event.Data.Sequence <= 0 || event.Data.LeaseID != tracker.LeaseID(authority.Lease.LeaseID) || int64(event.Data.FencingToken) != authority.Lease.FencingToken {
 		return &leasestore.FenceError{Check: "event_fence"}
 	}
-	if authority.Scope.organization != authority.OrganizationID || authority.Scope.project != authority.ProjectID || authority.Lease.OrganizationID != authority.OrganizationID {
+	if authority.Scope.Organization != authority.OrganizationID || authority.Scope.Project != authority.ProjectID || authority.Lease.OrganizationID != authority.OrganizationID {
 		return corestore.ErrTenantMismatch
 	}
 	project, err := reader.Project(ctx, authority.ProjectID)
@@ -65,7 +66,7 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 	if lease.IssueID != item.ID || lease.FencingToken != authority.Lease.FencingToken || lease.MachineID != authority.Lease.MachineID || lease.SessionID != authority.Lease.SessionID || !authority.Termination && (lease.ReleasedAt != nil || !lease.ExpiresAt.After(now)) {
 		return &leasestore.FenceError{Check: "lease_current"}
 	}
-	if event.Data.MachineID != tracker.MachineID(lease.MachineID) || event.Data.SessionID != lease.SessionID || !human && event.Data.RunnerID != authority.Scope.credential.Runner.RunnerID {
+	if event.Data.MachineID != tracker.MachineID(lease.MachineID) || event.Data.SessionID != lease.SessionID || !human && event.Data.RunnerID != authority.Scope.Credential.Runner.RunnerID {
 		return nativeExecutionConflict("Execution identity must match the authenticated lease owner")
 	}
 	if human {
@@ -77,7 +78,7 @@ func (p tenantNativeRunEventParticipant) validateRunEventOwner(ctx context.Conte
 		if err != nil {
 			return err
 		}
-		if identity.OrganizationID != authority.OrganizationID || identity.RunnerID == "" || identity.RunnerID != authority.Scope.credential.Runner.RunnerID || identity.TokenID != authority.Scope.credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || identity.State != "active" || !identity.ExpiresAt.After(now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
+		if identity.OrganizationID != authority.OrganizationID || identity.RunnerID == "" || identity.RunnerID != authority.Scope.Credential.Runner.RunnerID || identity.TokenID != authority.Scope.Credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || identity.State != "active" || !identity.ExpiresAt.After(now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
 			return &leasestore.FenceError{Check: "runner_owner"}
 		}
 		allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, authority.ProjectID, now)
@@ -132,7 +133,7 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEvent(ctx context.Cont
 		}
 		authority.DispatchGeneration = state.Generation
 		if event.Type == "run.started" && event.Data.Identity != nil {
-			if err := validateTenantProviderAttempt(ctx, reader, authority.Scope.credential.Runner.RunnerID, event.Data, p.service.config.now().UTC()); err != nil {
+			if err := validateTenantProviderAttempt(ctx, reader, authority.Scope.Credential.Runner.RunnerID, event.Data, p.service.config.now().UTC()); err != nil {
 				return err
 			}
 		}
@@ -154,7 +155,7 @@ func (p tenantNativeRunEventParticipant) validateNativeRunEvent(ctx context.Cont
 		}
 		if authority.UsageFacts != nil {
 			facts := authority.UsageFacts
-			if event.Type != "run.finished" || len(event.Data.Usage) == 0 || len(authority.UsageCosts) != len(event.Data.Usage) || facts.WorkItemID != string(item.NativeID) || facts.RunnerID != authority.Scope.credential.Runner.RunnerID || facts.MachineID != lease.MachineID || !facts.StartedAt.Equal(attempt.StartedAt) || !facts.StartedAt.Before(facts.EndedAt) {
+			if event.Type != "run.finished" || len(event.Data.Usage) == 0 || len(authority.UsageCosts) != len(event.Data.Usage) || facts.WorkItemID != string(item.NativeID) || facts.RunnerID != authority.Scope.Credential.Runner.RunnerID || facts.MachineID != lease.MachineID || !facts.StartedAt.Equal(attempt.StartedAt) || !facts.StartedAt.Before(facts.EndedAt) {
 				return leasestore.ErrAttemptConflict
 			}
 			machine, err := reader.Machine(ctx, lease.MachineID)
@@ -233,16 +234,16 @@ func (p tenantNativeRunEventParticipant) ValidateNativeLeaseMutation(ctx context
 }
 
 func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context.Context, reader tenantstore.Reader, authority *NativeLeaseAuthority, human bool) error {
-	if authority == nil || authority.Scope.organization == "" || authority.Scope.project == "" || authority.Lease.LeaseID == "" {
+	if authority == nil || authority.Scope.Organization == "" || authority.Scope.Project == "" || authority.Lease.LeaseID == "" {
 		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	if human && (authority.Operation != "release" || authority.Request.Reason != "cancelled" || !authority.Request.CancelAttempt) {
 		return tracker.ErrInvalidClaimRequest
 	}
-	if authority.Lease.OrganizationID != authority.Scope.organization || !human && (authority.Scope.credential.Scope != hubapi.APIScopeWorker || authority.Scope.credential.Runner.RunnerID == "") {
+	if authority.Lease.OrganizationID != authority.Scope.Organization || !human && (authority.Scope.Credential.Scope != hubapi.APIScopeWorker || authority.Scope.Credential.Runner.RunnerID == "") {
 		return tracker.ErrMachineNotFound
 	}
-	item, err := reader.WorkItemByID(ctx, authority.Scope.project, authority.Lease.IssueID)
+	item, err := reader.WorkItemByID(ctx, authority.Scope.Project, authority.Lease.IssueID)
 	if err != nil {
 		return err
 	}
@@ -260,10 +261,10 @@ func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context
 		if err != nil {
 			return err
 		}
-		if identity.OrganizationID != authority.Scope.organization || identity.RunnerID == "" || identity.RunnerID != authority.Scope.credential.Runner.RunnerID || identity.TokenID != authority.Scope.credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || identity.State != "active" || !identity.ExpiresAt.After(now) {
+		if identity.OrganizationID != authority.Scope.Organization || identity.RunnerID == "" || identity.RunnerID != authority.Scope.Credential.Runner.RunnerID || identity.TokenID != authority.Scope.Credential.ID || identity.MachineID != tracker.MachineID(lease.MachineID) || identity.RemovedAt != nil || identity.State != "active" || !identity.ExpiresAt.After(now) {
 			return tracker.ErrMachineNotFound
 		}
-		allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, authority.Scope.project, now)
+		allowed, err := reader.RunnerProjectAuthorized(ctx, identity.RunnerID, authority.Scope.Project, now)
 		if err != nil {
 			return err
 		}
@@ -283,7 +284,7 @@ func (p tenantNativeRunEventParticipant) validateNativeLeaseMutation(ctx context
 		return tracker.ErrInvalidClaimRequest
 	}
 	if authority.Operation == "renew" {
-		return checkMonthlyLeasePG(ctx, reader, authority.Scope.project, lease.LeaseID, now)
+		return checkMonthlyLeasePG(ctx, reader, authority.Scope.Project, lease.LeaseID, now)
 	}
 	return nil
 }
@@ -292,12 +293,12 @@ func (p tenantNativeRunEventParticipant) ApplyNativeLeaseMutation(context.Contex
 	return nil
 }
 
-func (p tenantNativeRunEventParticipant) NativeLeaseResponse(ctx context.Context, reader tenantstore.Reader, scope nativeScope, lease leasestore.Lease) (NativeLeaseResponseDetails, error) {
-	item, err := reader.WorkItemByID(ctx, scope.project, lease.IssueID)
+func (p tenantNativeRunEventParticipant) NativeLeaseResponse(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, lease leasestore.Lease) (NativeLeaseResponseDetails, error) {
+	item, err := reader.WorkItemByID(ctx, scope.Project, lease.IssueID)
 	if err != nil {
 		return NativeLeaseResponseDetails{}, err
 	}
-	if item.ProjectID != scope.project || item.Archived {
+	if item.ProjectID != scope.Project || item.Archived {
 		return NativeLeaseResponseDetails{}, corestore.ErrNotFound
 	}
 	identity, err := reader.RunnerForLease(ctx, lease.LeaseID)

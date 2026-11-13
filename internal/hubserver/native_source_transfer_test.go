@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -166,7 +167,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 					t.Fatal(err)
 				}
 				current := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
-				_, err = f.service.stopNativeRunCommand(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, "stop-source", coordinatorStopRunArguments{ProjectID: string(f.project.ID), RequestID: "stop-source", Identifier: string(f.issue.WorkItemID), ExpectedRevision: current.Revision, LeaseID: lease.ID, FencingToken: lease.FencingToken, Destination: "Todo"})
+				_, err = f.service.stopNativeRunCommand(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}, "stop-source", coordinatorStopRunArguments{ProjectID: string(f.project.ID), RequestID: "stop-source", Identifier: string(f.issue.WorkItemID), ExpectedRevision: current.Revision, LeaseID: lease.ID, FencingToken: lease.FencingToken, Destination: "Todo"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -373,7 +374,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					_, refusal := f.service.transferNativeSourceCommand(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, string(f.issue.WorkItemID), request)
+					_, refusal := f.service.transferNativeSourceCommand(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}, string(f.issue.WorkItemID), request)
 					if refusal == nil {
 						t.Fatal("active or interrupted writer became transferable")
 					}

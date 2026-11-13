@@ -9,12 +9,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) projectNativeAnalyticsResidenceTenant(ctx context.Context, scope nativeScope, r operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
+func (s *Service) projectNativeAnalyticsResidenceTenant(ctx context.Context, scope hubscope.NativeScope, r operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
 	live, _ := ctx.Value(analyticsLiveIssuesKey{}).(bool)
 	after, cursor, key, err := s.analyticsResidenceSeek(ctx, scope, out.Window, live)
 	if err != nil {
@@ -26,7 +27,7 @@ func (s *Service) projectNativeAnalyticsResidenceTenant(ctx context.Context, sco
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var page eventstore.AnalyticsResidencePage
-	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		principal, err := s.analyticsSnapshotPrincipal(ctx, reader, scope)
 		if err != nil {
 			return err
@@ -35,7 +36,7 @@ func (s *Service) projectNativeAnalyticsResidenceTenant(ctx context.Context, sco
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		page, err = owner.ReadAnalyticsResidencePage(ctx, eventstore.AnalyticsResidenceQuery{ProjectID: scope.project, Principal: principal, From: out.Window.From, To: out.Window.To, Limit: maxAnalyticsPopulation, Live: live, IssuesAfter: after.IssuesAfter, EventsAfterItem: after.EventItem, EventsAfterSequence: after.EventSequence})
+		page, err = owner.ReadAnalyticsResidencePage(ctx, eventstore.AnalyticsResidenceQuery{ProjectID: scope.Project, Principal: principal, From: out.Window.From, To: out.Window.To, Limit: maxAnalyticsPopulation, Live: live, IssuesAfter: after.IssuesAfter, EventsAfterItem: after.EventItem, EventsAfterSequence: after.EventSequence})
 		return err
 	})
 	if err != nil {
@@ -60,7 +61,7 @@ func (s *Service) projectNativeAnalyticsResidenceTenant(ctx context.Context, sco
 	}
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	for _, row := range page.Events {
-		if row.OrganizationID != scope.organization || row.ProjectID != scope.project {
+		if row.OrganizationID != scope.Organization || row.ProjectID != scope.Project {
 			return artifact.ErrIntegrity
 		}
 		if !analyticsCohortAllows(ctx, row.WorkItemID) {

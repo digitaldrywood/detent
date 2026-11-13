@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -34,7 +35,7 @@ type sourceRecoveryRunner = tracker.NativeSourceRecoveryRunner
 func (s *Service) getNativeSourceRecovery(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -56,24 +57,24 @@ type nativeSourceRecoverySnapshot struct {
 	runnerName      string
 }
 
-func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nativeScope, item string, supplied ...tracker.NativeIssue) (sourceRecoveryView, error) {
+func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubscope.NativeScope, item string, supplied ...tracker.NativeIssue) (sourceRecoveryView, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok || len(supplied) > 1 {
 		return sourceRecoveryView{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var snapshot nativeSourceRecoverySnapshot
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if project.Profile != "native" || project.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		snapshot.item, err = r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		snapshot.item, err = r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
@@ -85,7 +86,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{Kind: hubapi.StringValue(snapshot.item.ActorKind), PrincipalID: hubapi.StringValue(snapshot.item.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{Kind: hubapi.StringValue(snapshot.item.ActorKind), PrincipalID: hubapi.StringValue(snapshot.item.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		if len(supplied) == 0 {
@@ -93,10 +94,10 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 			if err != nil {
 				return err
 			}
-		} else if supplied[0].WorkItemID != snapshot.item.NativeID || supplied[0].OrganizationID != scope.organization || supplied[0].ProjectID != scope.project || int64(supplied[0].Revision) != snapshot.item.Revision || supplied[0].State != hubapi.StringValue(snapshot.item.WorkflowStateName) || supplied[0].Archived != snapshot.item.Archived {
+		} else if supplied[0].WorkItemID != snapshot.item.NativeID || supplied[0].OrganizationID != scope.Organization || supplied[0].ProjectID != scope.Project || int64(supplied[0].Revision) != snapshot.item.Revision || supplied[0].State != hubapi.StringValue(snapshot.item.WorkflowStateName) || supplied[0].Archived != snapshot.item.Archived {
 			return corestore.ErrSerializationFailure
 		}
-		change, err := r.LatestChange(ctx, scope.project, snapshot.item.NativeID)
+		change, err := r.LatestChange(ctx, scope.Project, snapshot.item.NativeID)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
@@ -105,7 +106,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 			if err != nil {
 				return err
 			}
-			if change.OrganizationID != scope.organization || change.ProjectID != scope.project || change.WorkItemID != snapshot.item.NativeID || version.OrganizationID != scope.organization || version.ChangeID != change.ID {
+			if change.OrganizationID != scope.Organization || change.ProjectID != scope.Project || change.WorkItemID != snapshot.item.NativeID || version.OrganizationID != scope.Organization || version.ChangeID != change.ID {
 				return artifact.ErrIntegrity
 			}
 			snapshot.version = &version
@@ -137,7 +138,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 		if err != nil {
 			return err
 		}
-		if attempt.OrganizationID != scope.organization || attempt.IssueID != snapshot.item.ID {
+		if attempt.OrganizationID != scope.Organization || attempt.IssueID != snapshot.item.ID {
 			return artifact.ErrIntegrity
 		}
 		snapshot.attemptFound, snapshot.attempt.attempt = true, attempt
@@ -146,14 +147,14 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 			return err
 		}
 		lease := snapshot.attempt.lease
-		if lease.OrganizationID != scope.organization || lease.IssueID != snapshot.item.ID || lease.FencingToken != attempt.FencingToken {
+		if lease.OrganizationID != scope.Organization || lease.IssueID != snapshot.item.ID || lease.FencingToken != attempt.FencingToken {
 			return artifact.ErrIntegrity
 		}
-		snapshot.attempt.event, err = r.LatestRunEvent(ctx, scope.project, attempt.ID)
+		snapshot.attempt.event, err = r.LatestRunEvent(ctx, scope.Project, attempt.ID)
 		if err != nil {
 			return err
 		}
-		if snapshot.attempt.event.OrganizationID != scope.organization || snapshot.attempt.event.ProjectID != scope.project || snapshot.attempt.event.WorkItemID != snapshot.item.NativeID || snapshot.attempt.event.AttemptID != attempt.ID {
+		if snapshot.attempt.event.OrganizationID != scope.Organization || snapshot.attempt.event.ProjectID != scope.Project || snapshot.attempt.event.WorkItemID != snapshot.item.NativeID || snapshot.attempt.event.AttemptID != attempt.ID {
 			return artifact.ErrIntegrity
 		}
 		if err := readTenantAttemptPayload(ctx, r, &snapshot.attempt); err != nil {
@@ -252,7 +253,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope nati
 	return view, nil
 }
 
-func (s *Service) readRuntimeSourceRecoveryTenant(ctx context.Context, scope nativeScope, item string, evidence *tracker.NativeRuntimeEvidence) error {
+func (s *Service) readRuntimeSourceRecoveryTenant(ctx context.Context, scope hubscope.NativeScope, item string, evidence *tracker.NativeRuntimeEvidence) error {
 	if !explanationRead(ctx) {
 		return nil
 	}
@@ -271,7 +272,7 @@ func (s *Service) readRuntimeSourceRecoveryTenant(ctx context.Context, scope nat
 		if authorityErr := s.recheckChangeReadAuthority(ctx, scope); authorityErr != nil {
 			return authorityErr
 		}
-		s.config.Logger.Warn("Source recovery projection unavailable", "error", err, "organization_id", scope.organization, "project_id", scope.project, "work_item_id", item)
+		s.config.Logger.Warn("Source recovery projection unavailable", "error", err, "organization_id", scope.Organization, "project_id", scope.Project, "work_item_id", item)
 		evidence.SourceRecovery = nil
 		if !slices.Contains(evidence.Unavailable, "source_recovery_projection") {
 			evidence.Unavailable = append(evidence.Unavailable, "source_recovery_projection")
@@ -285,11 +286,11 @@ func (s *Service) readRuntimeSourceRecoveryTenant(ctx context.Context, scope nat
 	return nil
 }
 
-func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, scope nativeScope, after string) ([]sourceRecoveryRunner, string, error) {
+func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, scope hubscope.NativeScope, after string) ([]sourceRecoveryRunner, string, error) {
 	if len(after) > 256 {
 		return nil, "", hubapi.NativePublicInvalid("Destination cursor exceeds 256 bytes")
 	}
-	approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+	approval, err := s.readTenantProjectPolicy(ctx, scope.Organization, scope.Project)
 	if err != nil {
 		return nil, "", err
 	}
@@ -299,7 +300,7 @@ func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, sc
 	now := s.config.now().UTC()
 	destinations := []sourceRecoveryRunner{}
 	var next string
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 			return err
 		}
@@ -307,7 +308,7 @@ func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, sc
 		if !ok {
 			return corestore.ErrInvalidPage
 		}
-		page, err := candidates.ProjectSourceRecoveryPage(ctx, scope.project, after, runnerstore.SourceRecoveryPageLimit, now)
+		page, err := candidates.ProjectSourceRecoveryPage(ctx, scope.Project, after, runnerstore.SourceRecoveryPageLimit, now)
 		if err != nil {
 			return err
 		}
@@ -323,9 +324,9 @@ func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, sc
 				continue
 			}
 			runner.Used, runner.HostUsed = candidate.RunnerUsed, candidate.HostUsed
-			runner.ProjectUsed = map[tracker.ProjectID]int{scope.project: candidate.ProjectUsed}
+			runner.ProjectUsed = map[tracker.ProjectID]int{scope.Project: candidate.ProjectUsed}
 			runner.ProviderCapacity = candidate.Providers
-			if placementRunnerCompatible(placementRunner{Runner: runner}, scope.project, approval.Policy.Requirements, now, false) {
+			if placementRunnerCompatible(placementRunner{Runner: runner}, scope.Project, approval.Policy.Requirements, now, false) {
 				name := runner.DisplayName
 				if name == "" {
 					name = runner.Hostname
@@ -341,8 +342,8 @@ func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, sc
 	return destinations, next, nil
 }
 
-func (s *Service) verifiedNativeSourceTenant(ctx context.Context, scope nativeScope, row eventstore.Version) (bool, error) {
-	if row.OrganizationID != scope.organization {
+func (s *Service) verifiedNativeSourceTenant(ctx context.Context, scope hubscope.NativeScope, row eventstore.Version) (bool, error) {
+	if row.OrganizationID != scope.Organization {
 		return false, artifact.ErrIntegrity
 	}
 	content := eventstore.NewContent(s.runDetailStore())
@@ -353,7 +354,7 @@ func (s *Service) verifiedNativeSourceTenant(ctx context.Context, scope nativeSc
 	if version.Source == nil {
 		return false, nil
 	}
-	_, err = content.SourceBundle(ctx, scope.organization, row, *version.Source)
+	_, err = content.SourceBundle(ctx, scope.Organization, row, *version.Source)
 	if ctx.Err() != nil {
 		return false, ctx.Err()
 	}
@@ -368,7 +369,7 @@ func (s *Service) transferNativeSource(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	result, err := s.transferNativeSourceCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	result, err := s.transferNativeSourceCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -379,19 +380,19 @@ func sourceRecoveryRefusal(message string) error {
 	return &hubapi.NativeError{Code: "invalid_request", Message: message, Status: http.StatusUnprocessableEntity, PublicMessage: true}
 }
 
-func (s *Service) authorizeSourceTransferTenant(ctx context.Context, r tenantstore.Reader, scope nativeScope) error {
+func (s *Service) authorizeSourceTransferTenant(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) error {
 	if err := s.authorizeRunnerCapacity(ctx, r, scope); err != nil {
 		return err
 	}
-	if scope.credential.Hosted != nil {
-		member, err := r.AccessMember(ctx, scope.credential.Hosted.Subject)
+	if scope.Credential.Hosted != nil {
+		member, err := r.AccessMember(ctx, scope.Credential.Hosted.Subject)
 		if err != nil {
 			return err
 		}
-		switch hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole) {
+		switch hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole) {
 		case "owner", "admin":
 		case "member":
-			grant, err := r.AccessProjectGrant(ctx, member.UserID, scope.project)
+			grant, err := r.AccessProjectGrant(ctx, member.UserID, scope.Project)
 			if err != nil || !grant.ManageRunner {
 				return accessstore.ErrDenied
 			}
@@ -402,14 +403,14 @@ func (s *Service) authorizeSourceTransferTenant(ctx context.Context, r tenantsto
 	return nil
 }
 
-func (s *Service) selectNativeSourceTransferTenant(ctx context.Context, scope nativeScope, item string, request sourceTransferRequest) (sourceRecoveryView, error) {
+func (s *Service) selectNativeSourceTransferTenant(ctx context.Context, scope hubscope.NativeScope, item string, request sourceTransferRequest) (sourceRecoveryView, error) {
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return sourceRecoveryView{}, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return sourceRecoveryView{}, err
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return s.authorizeSourceTransferTenant(ctx, r, scope) }); err != nil {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { return s.authorizeSourceTransferTenant(ctx, r, scope) }); err != nil {
 		return sourceRecoveryView{}, hubapi.ProjectRecordError(err)
 	}
 	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, item)
@@ -429,14 +430,14 @@ func (s *Service) selectNativeSourceTransferTenant(ctx context.Context, scope na
 		if !view.Available {
 			return view, sourceRecoveryRefusal(view.Reason)
 		}
-		approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+		approval, err := s.readTenantProjectPolicy(ctx, scope.Organization, scope.Project)
 		if err != nil {
 			return view, err
 		}
 		if approval.Policy.ID == "" {
 			return view, errNoApprovedRepositoryPolicy
 		}
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			return s.validateSourceDestinationTenant(ctx, r, scope, request.DestinationRunnerID, approval.Policy.Requirements)
 		})
 		if err != nil {
@@ -446,13 +447,13 @@ func (s *Service) selectNativeSourceTransferTenant(ctx context.Context, scope na
 	return view, nil
 }
 
-func (s *Service) validateSourceDestinationTenant(ctx context.Context, r tenantstore.Reader, scope nativeScope, id string, requirements policy.Requirements) error {
+func (s *Service) validateSourceDestinationTenant(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id string, requirements policy.Requirements) error {
 	reader, ok := r.(runnerstore.SourceRecoveryDestinationReader)
 	if !ok {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	now := s.config.now().UTC()
-	candidate, err := reader.SourceRecoveryDestination(ctx, scope.project, id, now)
+	candidate, err := reader.SourceRecoveryDestination(ctx, scope.Project, id, now)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return sourceRecoveryRefusal("Destination runner must be online, eligible and have available capacity")
 	}
@@ -465,9 +466,9 @@ func (s *Service) validateSourceDestinationTenant(ctx context.Context, r tenants
 	}
 	runner := runnerFromFleetRecord(candidate.Record, now, urgent)
 	runner.Used, runner.HostUsed = candidate.RunnerUsed, candidate.HostUsed
-	runner.ProjectUsed = map[tracker.ProjectID]int{scope.project: candidate.ProjectUsed}
+	runner.ProjectUsed = map[tracker.ProjectID]int{scope.Project: candidate.ProjectUsed}
 	runner.ProviderCapacity = candidate.Providers
-	if !placementRunnerCompatible(placementRunner{Runner: runner}, scope.project, requirements, now, false) {
+	if !placementRunnerCompatible(placementRunner{Runner: runner}, scope.Project, requirements, now, false) {
 		return sourceRecoveryRefusal("Destination runner must be online, eligible and have available capacity")
 	}
 	if !candidate.Record.Isolation.SupportsOn(runner.IsolationTier, runner.OS) {

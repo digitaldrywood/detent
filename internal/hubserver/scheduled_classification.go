@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -41,15 +42,15 @@ func (b ciTextBackend) Generate(ctx context.Context, instructions, input string)
 	return text.String(), err
 }
 
-func (s *Service) readCIClassification(ctx context.Context, scope nativeScope, input progresscheck.CIFailure) (progresscheck.CIDecision, bool, error) {
+func (s *Service) readCIClassification(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure) (progresscheck.CIDecision, bool, error) {
 	var result progresscheck.CIDecision
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(policystore.ScheduledReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		result, err = owner.ReadScheduledDecision(ctx, scope.project, input)
+		result, err = owner.ReadScheduledDecision(ctx, scope.Project, input)
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -61,13 +62,13 @@ func (s *Service) readCIClassification(ctx context.Context, scope nativeScope, i
 	return result, err == nil, err
 }
 
-func (s *Service) scheduledRepository(ctx context.Context, scope nativeScope) (string, error) {
+func (s *Service) scheduledRepository(ctx context.Context, scope hubscope.NativeScope) (string, error) {
 	if s.config.TenantRepository == nil {
 		return "", hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var repository string
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		record, err := r.ProjectRecord(ctx, scope.project)
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		record, err := r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -84,8 +85,8 @@ func (s *Service) scheduledRepository(ctx context.Context, scope nativeScope) (s
 }
 
 func (s *Service) classifyScheduledFailure(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	if scope.credential.HostedRole == "reporter" {
+	scope := hubscope.NativeRequestScope(c)
+	if scope.Credential.HostedRole == "reporter" {
 		return s.nativeAPIError(c, &hubapi.NativeError{Code: "insufficient_scope", Status: http.StatusForbidden})
 	}
 	var input progresscheck.CIFailure
@@ -119,12 +120,12 @@ func (s *Service) classifyScheduledFailure(c echo.Context) error {
 		}
 		result = progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "AI classification unavailable or invalid; diagnose the retained job evidence through the source repair path."}
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		owner, ok := w.(policystore.ScheduledWriter)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.StoreScheduledDecision(ctx, scope.project, input, result, s.config.now().UTC())
+		return owner.StoreScheduledDecision(ctx, scope.Project, input, result, s.config.now().UTC())
 	})
 	if err != nil {
 		return s.nativeAPIError(c, fmt.Errorf("store CI classification: %w", err))

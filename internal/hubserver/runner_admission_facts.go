@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -100,9 +101,9 @@ func readAdmissionFacts(ctx context.Context, q hubapi.NativeQueryer, runner stri
 	return observation, rows.Err()
 }
 
-func storeLegacyAdmission(ctx context.Context, tx *sql.Tx, scope nativeScope, raw string) error {
+func storeLegacyAdmission(ctx context.Context, tx *sql.Tx, scope hubscope.NativeScope, raw string) error {
 	var document string
-	if err := tx.QueryRowContext(ctx, `SELECT capabilities_json FROM machines WHERE id=? AND organization_id=?`, scope.credential.Runner.MachineID, scope.organization).Scan(&document); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT capabilities_json FROM machines WHERE id=? AND organization_id=?`, scope.Credential.Runner.MachineID, scope.Organization).Scan(&document); err != nil {
 		return err
 	}
 	var payload map[string]json.RawMessage
@@ -118,11 +119,11 @@ func storeLegacyAdmission(ctx context.Context, tx *sql.Tx, scope nativeScope, ra
 	if admissions == nil {
 		admissions = make(map[string]map[tracker.ProjectID]json.RawMessage)
 	}
-	runner := scope.credential.Runner.RunnerID
+	runner := scope.Credential.Runner.RunnerID
 	if admissions[runner] == nil {
 		admissions[runner] = make(map[tracker.ProjectID]json.RawMessage)
 	}
-	admissions[runner][scope.project] = json.RawMessage(raw)
+	admissions[runner][scope.Project] = json.RawMessage(raw)
 	encoded, err := json.Marshal(admissions)
 	if err != nil {
 		return err
@@ -135,6 +136,6 @@ func storeLegacyAdmission(ctx context.Context, tx *sql.Tx, scope nativeScope, ra
 	if err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE machines SET capabilities_json=? WHERE id=? AND organization_id=?`, string(encoded), scope.credential.Runner.MachineID, scope.organization)
+	result, err := tx.ExecContext(ctx, `UPDATE machines SET capabilities_json=? WHERE id=? AND organization_id=?`, string(encoded), scope.Credential.Runner.MachineID, scope.Organization)
 	return requireRunnerUpdate(result, err)
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -56,7 +57,7 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 		return f, admin, []tracker.NativeIssue{f.create(t, "first"), f.create(t, "second")}
 	}
 	type claimRunner struct {
-		scope   nativeScope
+		scope   hubscope.NativeScope
 		request tracker.NativeClaim
 	}
 	newRunner := func(t *testing.T, f nativeFixture) claimRunner {
@@ -73,7 +74,7 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runner authentication status=%d: %v", status, err)
 		}
-		return claimRunner{scope: nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, request: tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: runner.binding.MachineID, TTLSeconds: 60, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}}
+		return claimRunner{scope: hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}, request: tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: runner.binding.MachineID, TTLSeconds: 60, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}}
 	}
 	for _, name := range []string{"a refusal with no candidate never takes the writer", "concurrent claims never oversubscribe one host slot", "a selected candidate taken before commit moves to the next one"} {
 		t.Run(name, func(t *testing.T) {
@@ -232,7 +233,7 @@ func TestClaimRetryAfterCommittedDecisionUsesFreshEventIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runner authentication status=%d error=%v", status, err)
 	}
-	scope := nativeScope{organization: org, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: org, Project: f.project.ID, Credential: credential}
 	first, second, selected := f.create(t, "first decision"), f.create(t, "second decision"), f.create(t, "selected candidate")
 	requestFor := func(issue tracker.NativeIssue) tracker.NativeClaim {
 		return tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: runner.binding.MachineID, SessionID: "retry-" + string(issue.WorkItemID), TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}

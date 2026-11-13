@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -706,7 +707,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 					if authErr != nil {
 						runErr = authErr
 					} else {
-						runErr = c.authorizeRecord(actorCtx, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record, false)
+						runErr = c.authorizeRecord(actorCtx, hubscope.NativeScope{Organization: record.OrganizationID, Project: record.ProjectID, Credential: credential}, record, false)
 						if runErr == nil {
 							runErr = tools.restrictReadAudience(actorCtx, record, credential)
 						}

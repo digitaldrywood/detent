@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -31,7 +32,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("owner credential status=%d error=%v", status, err)
 	}
-	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: credential}
+	scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project), Credential: credential}
 	to := f.service.config.now().UTC().Truncate(time.Hour)
 	priority := func(value int) *int { return &value }
 	seeds := []struct {
@@ -47,18 +48,18 @@ func TestReportsFilterDimensions(t *testing.T) {
 	}
 	admin := hostedPostgresAdmin(t, f.service)
 	content := eventstore.NewContent(f.service.runDetailStore())
-	seedIssue := func(scope nativeScope, id tracker.NativeWorkItemID, number int64, title, state, kind, filer string, labels []string, priority *int, created, closed time.Time, existing bool) tracker.NativeIssue {
+	seedIssue := func(scope hubscope.NativeScope, id tracker.NativeWorkItemID, number int64, title, state, kind, filer string, labels []string, priority *int, created, closed time.Time, existing bool) tracker.NativeIssue {
 		t.Helper()
-		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: id, Number: int(number), Revision: 1}, Title: title, Body: nativeContractTestBody, State: state, Terminal: state == "Done" || state == "Cancelled", Type: kind, Priority: priority, Labels: labels, Actor: tracker.Actor{Kind: "human", PrincipalID: filer}, CreatedAt: created, UpdatedAt: closed, LastActivityAt: closed}
+		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: id, Number: int(number), Revision: 1}, Title: title, Body: nativeContractTestBody, State: state, Terminal: state == "Done" || state == "Cancelled", Type: kind, Priority: priority, Labels: labels, Actor: tracker.Actor{Kind: "human", PrincipalID: filer}, CreatedAt: created, UpdatedAt: closed, LastActivityAt: closed}
 		if issue.Terminal {
 			issue.ClosedAt = &closed
 		}
 		from := "Todo"
 		var current corestore.WorkItem
 		if existing {
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				current, err = r.WorkItem(t.Context(), scope.project, id)
+				current, err = r.WorkItem(t.Context(), scope.Project, id)
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -66,26 +67,26 @@ func TestReportsFilterDimensions(t *testing.T) {
 			issue.Number, issue.Revision = int(current.Number), tracker.Revision(current.Revision+1)
 			from = hubapi.StringValue(current.WorkflowStateName)
 		}
-		fields, err := f.service.prepareWorkItemFields(t.Context(), scope.organization, workItemRecordPlan{issue: issue, create: !existing})
+		fields, err := f.service.prepareWorkItemFields(t.Context(), scope.Organization, workItemRecordPlan{issue: issue, create: !existing})
 		if err != nil {
 			t.Fatal(err)
 		}
-		version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: id, RecordID: string(id), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
+		version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: id, RecordID: string(id), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
 		if err != nil {
 			t.Fatal(err)
 		}
-		event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: id, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: closed, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: from, ToState: state}}))
+		event, err := content.PrepareEvent(t.Context(), scope.Organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: id, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: closed, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: from, ToState: state}}))
 		if err != nil {
 			t.Fatal(err)
 		}
 		var filing eventstore.Event
 		if !existing {
-			filing, err = content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: id, Type: "issue.created", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: created, Data: tracker.CollaborationData{Revision: 1}}))
+			filing, err = content.PrepareEvent(t.Context(), scope.Organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: id, Type: "issue.created", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: created, Data: tracker.CollaborationData{Revision: 1}}))
 			if err != nil {
 				t.Fatal(err)
 			}
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if existing {
 				current.Title, current.IssueType, current.Priority = title, kind, priority
 				current.BodyObjectKey, current.IssueContractObjectKey = &fields.Body, fields.Contract
@@ -93,19 +94,19 @@ func TestReportsFilterDimensions(t *testing.T) {
 				if _, err := w.UpdateWorkItem(t.Context(), current); err != nil {
 					return err
 				}
-			} else if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: scope.organization, ProjectID: scope.project, NativeID: id, Number: number, Revision: 1, Title: title, IssueType: kind, Priority: priority, BodyObjectKey: &fields.Body, IssueContractObjectKey: fields.Contract, WorkflowStateName: &state, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, CreatedAt: created, NativeCreatedAt: created, UpdatedAt: closed, NativeUpdatedAt: closed, LastActivityAt: closed}); err != nil {
+			} else if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: scope.Organization, ProjectID: scope.Project, NativeID: id, Number: number, Revision: 1, Title: title, IssueType: kind, Priority: priority, BodyObjectKey: &fields.Body, IssueContractObjectKey: fields.Contract, WorkflowStateName: &state, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, CreatedAt: created, NativeCreatedAt: created, UpdatedAt: closed, NativeUpdatedAt: closed, LastActivityAt: closed}); err != nil {
 				return err
 			}
-			if err := w.SetWorkItemLabels(t.Context(), scope.project, id, labels); err != nil {
+			if err := w.SetWorkItemLabels(t.Context(), scope.Project, id, labels); err != nil {
 				return err
 			}
-			if err := w.PutWorkItemFacts(t.Context(), claimstore.WorkItemFacts{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: id, Author: filer}); err != nil {
+			if err := w.PutWorkItemFacts(t.Context(), claimstore.WorkItemFacts{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: id, Author: filer}); err != nil {
 				return err
 			}
 			if _, err := w.CreateCollaborationVersion(t.Context(), version); err != nil {
 				return err
 			}
-			if err := w.BindDoctorProposalIdentities(t.Context(), corestore.DoctorProposalIdentityBinding{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: id, Revision: int64(issue.Revision), VersionSHA256: version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(issue.Body)}); err != nil {
+			if err := w.BindDoctorProposalIdentities(t.Context(), corestore.DoctorProposalIdentityBinding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: id, Revision: int64(issue.Revision), VersionSHA256: version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(issue.Body)}); err != nil {
 				return err
 			}
 			if !existing {
@@ -122,13 +123,13 @@ func TestReportsFilterDimensions(t *testing.T) {
 		if issue.Terminal {
 			terminal = &closed
 		}
-		if _, err := admin.ExecContext(t.Context(), "UPDATE issues SET created_at=CASE WHEN $7 THEN created_at ELSE $1 END,native_created_at=$1,updated_at=$2,native_updated_at=$2,terminal_entered_at=$3 WHERE organization_id=$4 AND project_id=$5 AND native_id=$6", created, closed, terminal, scope.organization, scope.project, id, existing); err != nil {
+		if _, err := admin.ExecContext(t.Context(), "UPDATE issues SET created_at=CASE WHEN $7 THEN created_at ELSE $1 END,native_created_at=$1,updated_at=$2,native_updated_at=$2,terminal_entered_at=$3 WHERE organization_id=$4 AND project_id=$5 AND native_id=$6", created, closed, terminal, scope.Organization, scope.Project, id, existing); err != nil {
 			t.Fatal(err)
 		}
 		return issue
 	}
 	var runnerItem tracker.NativeWorkItemID
-	if err := admin.QueryRowContext(t.Context(), "SELECT i.native_id FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND a.project_id=$2 AND a.id='attempt_browser_usage_0_0'", scope.organization, scope.project).Scan(&runnerItem); err != nil {
+	if err := admin.QueryRowContext(t.Context(), "SELECT i.native_id FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE a.organization_id=$1 AND a.project_id=$2 AND a.id='attempt_browser_usage_0_0'", scope.Organization, scope.Project).Scan(&runnerItem); err != nil {
 		t.Fatal(err)
 	}
 	for i, seed := range seeds {
@@ -272,13 +273,13 @@ func TestReportsFilterDimensions(t *testing.T) {
 		}
 	})
 	t.Run("options read only the readable projects", func(t *testing.T) {
-		secret := nativeScope{organization: scope.organization, project: "prj_rpt_secret"}
+		secret := hubscope.NativeScope{Organization: scope.Organization, Project: "prj_rpt_secret"}
 		project, err := f.service.readTenantProjectRecord(t.Context(), scope)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: secret.project, Name: "secret", Slug: "secret", Profile: "native"}, States: project.States})
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.Organization, ID: secret.Project, Name: "secret", Slug: "secret", Profile: "native"}, States: project.States})
 			if err != nil {
 				return err
 			}
@@ -286,21 +287,21 @@ func TestReportsFilterDimensions(t *testing.T) {
 			if !ok {
 				return hubapi.ErrProjectParticipants
 			}
-			return cleaner.DeleteAccessProjectGrants(t.Context(), secret.project)
+			return cleaner.DeleteAccessProjectGrants(t.Context(), secret.Project)
 		}); err != nil {
 			t.Fatal(err)
 		}
 		issue := seedIssue(secret, "issue_rpt_secret", 1, "secret", "Todo", "bug", "principal_rpt_secret", []string{"rpt-secret"}, nil, to.Add(-3*time.Hour), to.Add(-3*time.Hour), false)
 		var issueID int64
-		if err := admin.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", scope.organization, secret.project, issue.WorkItemID).Scan(&issueID); err != nil {
+		if err := admin.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", scope.Organization, secret.Project, issue.WorkItemID).Scan(&issueID); err != nil {
 			t.Fatal(err)
 		}
 		started, finished := to.Add(-2*time.Hour), to.Add(-time.Hour)
 		var fence int64
-		if err := admin.QueryRowContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,expires_at,acquired_at,renewed_at) VALUES($1,'lease_rpt_secret',$2,'machine_browser_preview_runner','session_rpt_secret',1,$3,$4,$5) RETURNING fencing_token`, scope.organization, issueID, to.Add(time.Hour), started, finished).Scan(&fence); err != nil {
+		if err := admin.QueryRowContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,expires_at,acquired_at,renewed_at) VALUES($1,'lease_rpt_secret',$2,'machine_browser_preview_runner','session_rpt_secret',1,$3,$4,$5) RETURNING fencing_token`, scope.Organization, issueID, to.Add(time.Hour), started, finished).Scan(&fence); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), "INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) VALUES($1,'run_rpt_secret',$2)", scope.organization, issueID); err != nil {
+		if _, err := admin.ExecContext(t.Context(), "INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) VALUES($1,'run_rpt_secret',$2)", scope.Organization, issueID); err != nil {
 			t.Fatal(err)
 		}
 		data := tracker.NativeRunData{RunID: "run_rpt_secret", AttemptID: "attempt_rpt_secret", LeaseID: "lease_rpt_secret", FencingToken: tracker.FencingToken(fence), MachineID: "machine_browser_preview_runner", RunnerID: "runner_browser_preview_shared", Sequence: 1, Outcome: "succeeded"}
@@ -308,19 +309,19 @@ func TestReportsFilterDimensions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ref, err := content.PreparePayload(t.Context(), scope.organization, raw)
+		ref, err := content.PreparePayload(t.Context(), scope.Organization, raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: "event_rpt_secret", OrganizationID: scope.organization, ProjectID: secret.project, AggregateID: issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "runner_browser_preview_shared"}, RecordedAt: finished, Data: tracker.CollaborationData{Run: &data}}))
+		event, err := content.PrepareEvent(t.Context(), scope.Organization, historyTestJSON(t, tracker.CollaborationEvent{ID: "event_rpt_secret", OrganizationID: scope.Organization, ProjectID: secret.Project, AggregateID: issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "runner_browser_preview_shared"}, RecordedAt: finished, Data: tracker.CollaborationData{Run: &data}}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at) VALUES($1,$2,'attempt_rpt_secret',$3,'lease_rpt_secret',$4,'run_rpt_secret',1,'succeeded',1,1,$5,$6,$7)`, scope.organization, secret.project, issueID, fence, ref.Key, started, finished); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at) VALUES($1,$2,'attempt_rpt_secret',$3,'lease_rpt_secret',$4,'run_rpt_secret',1,'succeeded',1,1,$5,$6,$7)`, scope.Organization, secret.Project, issueID, fence, ref.Key, started, finished); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: scope.organization, LeaseID: "lease_rpt_secret", RunnerID: "runner_browser_preview_shared", AssignedAt: started}); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: scope.Organization, LeaseID: "lease_rpt_secret", RunnerID: "runner_browser_preview_shared", AssignedAt: started}); err != nil {
 				return err
 			}
 			_, err := w.AppendEvent(t.Context(), event)
@@ -328,7 +329,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), "UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND lease_id='lease_rpt_secret'", finished, scope.organization); err != nil {
+		if _, err := admin.ExecContext(t.Context(), "UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND lease_id='lease_rpt_secret'", finished, scope.Organization); err != nil {
 			t.Fatal(err)
 		}
 		for _, project := range []string{f.project, reportsAllProjects} {
@@ -347,8 +348,8 @@ func TestReportsFilterDimensions(t *testing.T) {
 				t.Fatalf("%s options leak an unreadable project or an idle runner: %+v", project, facets)
 			}
 		}
-		f.usage(t, "owner", browserHostedOrganizationBase+"/reports/options?project="+string(secret.project)+"&range=24h", http.StatusNotFound)
-		f.usage(t, "owner", browserHostedOrganizationBase+"/reports?project="+string(secret.project)+"&range=24h", http.StatusNotFound)
+		f.usage(t, "owner", browserHostedOrganizationBase+"/reports/options?project="+string(secret.Project)+"&range=24h", http.StatusNotFound)
+		f.usage(t, "owner", browserHostedOrganizationBase+"/reports?project="+string(secret.Project)+"&range=24h", http.StatusNotFound)
 		var organization organizationProductivity
 		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports?scope=organization&project=all&range=24h", http.StatusOK), &organization)
 		if organization.Current.Completed != unfiltered.Completion.Done {

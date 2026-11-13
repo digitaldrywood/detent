@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -205,7 +206,7 @@ func TestPostgresAppBootstrapUsesTypedTenantAccess(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("PostgreSQL project shell credential status = %d, error %v", status, err)
 	}
-	if err := service.authorizeProjectRecord(t.Context(), nativeScope{organization: "org_startup", project: "project_granted", credential: credential}, false); err != nil {
+	if err := service.authorizeProjectRecord(t.Context(), hubscope.NativeScope{Organization: "org_startup", Project: "project_granted", Credential: credential}, false); err != nil {
 		t.Fatalf("PostgreSQL granted project authorization: %v", err)
 	}
 	if response := serveSigned("/example-startup/work", "example-startup"); response.Code != http.StatusOK {

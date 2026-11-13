@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -51,7 +52,7 @@ func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversa
 	if err != nil {
 		return nil, err
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
 		return nil, operatortool.ErrAccessDenied
 	}
@@ -59,18 +60,18 @@ func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversa
 	if err != nil {
 		return nil, err
 	}
-	scope.project = record.ProjectID
+	scope.Project = record.ProjectID
 	server := t.coordinator.server
 	issue, err := server.resolveOperatorNativeItem(ctx, nil, scope, args.WorkItemID)
 	if err != nil {
 		return nil, err
 	}
 	var lease leasestore.Lease
-	err = server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := server.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
-		item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+		item, err := r.WorkItem(ctx, scope.Project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
@@ -87,7 +88,7 @@ func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversa
 	if err != nil {
 		return nil, err
 	}
-	if err := validateNativeWorkflowTransition(project.States, issue.State, args.Destination, scope.credential.Scope); err != nil {
+	if err := validateNativeWorkflowTransition(project.States, issue.State, args.Destination, scope.Credential.Scope); err != nil {
 		return nil, err
 	}
 	request := coordinatorStopRunArguments{ProjectID: string(record.ProjectID), Identifier: string(issue.WorkItemID), ExpectedRevision: issue.Revision, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), Destination: args.Destination, Priority: args.Priority, Reason: args.Reason}
@@ -99,7 +100,7 @@ func (t *coordinatorToolset) proposeStopRun(ctx context.Context, record conversa
 	return t.submitCoordinatorAction(ctx, record, call, action)
 }
 
-func (s *Service) executeCoordinatorStopRun(ctx context.Context, scope nativeScope, action chat.Action) (chat.ActionExecution, error) {
+func (s *Service) executeCoordinatorStopRun(ctx context.Context, scope hubscope.NativeScope, action chat.Action) (chat.ActionExecution, error) {
 	var request coordinatorStopRunArguments
 	if err := operatortool.DecodeArguments(action.Arguments, &request); err != nil {
 		return chat.ActionExecution{}, err
@@ -113,8 +114,8 @@ func (s *Service) executeCoordinatorStopRun(ctx context.Context, scope nativeSco
 	return chat.ActionExecution{Message: "Runner attempt released; item moved to " + request.Destination + ".", ResourceID: action.IssueID}, nil
 }
 
-func (s *Service) stopNativeRunCommand(ctx context.Context, scope nativeScope, requestID string, request coordinatorStopRunArguments) (json.RawMessage, error) {
-	if request.ProjectID != string(scope.project) || request.LeaseID == "" || !slices.Contains([]string{"Blocked", "Backlog", "Cancelled", "Todo"}, request.Destination) || len(request.Reason) > 280 || request.Priority != nil && (*request.Priority < 1 || *request.Priority > 4) {
+func (s *Service) stopNativeRunCommand(ctx context.Context, scope hubscope.NativeScope, requestID string, request coordinatorStopRunArguments) (json.RawMessage, error) {
+	if request.ProjectID != string(scope.Project) || request.LeaseID == "" || !slices.Contains([]string{"Blocked", "Backlog", "Cancelled", "Todo"}, request.Destination) || len(request.Reason) > 280 || request.Priority != nil && (*request.Priority < 1 || *request.Priority > 4) {
 		return nil, operatortool.ErrInvalidArguments
 	}
 	raw, err := s.transitionNativeIssueTenantWithStop(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: tracker.MutationForContext(ctx, requestID).IdempotencyKey, LeaseID: request.LeaseID, FencingToken: request.FencingToken}, ExpectedRevision: request.ExpectedRevision, State: request.Destination, Reason: "user_requested", ReasonDetail: strings.TrimSpace(request.Reason)}, &request)

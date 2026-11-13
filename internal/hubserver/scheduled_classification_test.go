@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -92,7 +93,7 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 				request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 				response := httptest.NewRecorder()
 				c := service.echo.NewContext(request, response)
-				c.Set("native_scope", nativeScope{organization: "org_example", project: project})
+				c.Set("native_scope", hubscope.NativeScope{Organization: "org_example", Project: project})
 				if err := service.classifyScheduledFailure(c); err != nil {
 					service.echo.HTTPErrorHandler(err, c)
 				}

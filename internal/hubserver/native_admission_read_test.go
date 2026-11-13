@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
@@ -563,7 +564,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 
 func writeAdmissionIssue(t *testing.T, f nativeFixture, issue tracker.NativeIssue, change func(*tracker.NativeIssue)) tracker.NativeIssue {
 	t.Helper()
-	row, _, err := f.service.readWorkItemRecord(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}, string(issue.WorkItemID))
+	row, _, err := f.service.readWorkItemRecord(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}, string(issue.WorkItemID))
 	if err != nil {
 		t.Fatal(err)
 	}

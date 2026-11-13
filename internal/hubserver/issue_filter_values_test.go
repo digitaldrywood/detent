@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -112,14 +113,14 @@ func TestIssueFilterValues(t *testing.T) {
 		if err != nil || status != http.StatusOK {
 			t.Fatalf("fixture authentication=%d %v", status, err)
 		}
-		scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, credential: credential}
+		scope := hubscope.NativeScope{Organization: fixture.project.OrganizationID, Project: fixture.project.ID, Credential: credential}
 		issue, err := f.service.readWorkItem(t.Context(), scope, string(fixture.project.ID)+"_wi_core_import")
 		if err != nil {
 			t.Fatal(err)
 		}
 		var id tracker.WorkItemID
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			item, err := r.WorkItem(t.Context(), scope.project, issue.WorkItemID)
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			item, err := r.WorkItem(t.Context(), scope.Project, issue.WorkItemID)
 			id = tracker.WorkItemID(item.ID)
 			return err
 		}); err != nil {

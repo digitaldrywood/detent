@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -34,43 +35,6 @@ import (
 )
 
 const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
-
-type githubIntakeRevision struct {
-	requireAdminKey bool
-	issuer          *operatorChatIdentity
-	authority       *nativeScope
-	reporter        *nativeScope
-	fallbackRunner  string
-	batchID         string
-	importID        string
-	revision        int64
-}
-
-type nativeScope struct {
-	integrationOwned      bool
-	githubIntakeRevision  *githubIntakeRevision
-	integrationRepository string
-	duplicateSearch       *nativeDuplicateSearch
-	action                string
-	actionItem            string
-	actionTarget          string
-	actionComment         string
-	scheduledRepair       *nativeScheduledRepair
-	sourceActor           *tracker.Actor
-	progressOrigin        progressDefectOrigin
-	organization          tracker.OrganizationID
-	project               tracker.ProjectID
-	credential            hubapi.APICredential
-	requireHostedAdmin    bool
-	importedContent       bool
-	managedRunner         string
-	managedRunnerScope    string
-	managedRunnerProjects []tracker.ProjectID
-}
-
-type progressDefectOrigin interface {
-	AuthorizeProgressDefect(ctx context.Context, w tenantstore.Writer, owner any, scope nativeScope, leaseID tracker.LeaseID, fencingToken tracker.FencingToken) error
-}
 
 func nativeRejection(err error, category, field string) error {
 	var failure *hubapi.NativeError
@@ -118,7 +82,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 	authorizationFailure := errors.As(err, &deniedAuthorization)
 	authorizationUnavailable := errors.Is(err, tenantauth.ErrUnavailable) || auth.HostedIdentityReason(err) == auth.HostedReasonProviderInvalid
 	if authorizationUnavailable || authorizationFailure || auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || errors.Is(err, operatortool.ErrProviderUnavailable) {
-		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+		if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 			err = classified
 		}
 	}
@@ -143,7 +107,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 			Archive *tracker.ArchiveDescriptor `json:"archive"`
 		}{"archive_" + archive.Archive.Availability, archive.Archive})
 	}
-	var authorization *operatorAuthorizationFailure
+	var authorization *hubscope.OperatorAuthorizationFailure
 	if errors.As(err, &authorization) {
 		code := "service_unavailable"
 		message := authorization.Error()
@@ -152,7 +116,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 		} else if authorizationUnavailable {
 			message = "Authorization is temporarily unavailable"
 		}
-		cause := authorization.cause
+		cause := authorization.Cause
 		if deniedAuthorization != nil && deniedAuthorization.Cause != nil {
 			cause = deniedAuthorization.Cause
 		}
@@ -165,9 +129,9 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 		for errors.Unwrap(causeClass) != nil {
 			causeClass = errors.Unwrap(causeClass)
 		}
-		scope := nativeRequestScope(c)
+		scope := hubscope.NativeRequestScope(c)
 		attrs := []any{"error", authorization, "authorization_cause", operatorAuthorizationCause(cause), "authorization_step", step, "cause_class", fmt.Sprintf("%T", causeClass),
-			"method", c.Request().Method, "route", c.Path(), "organization_id", string(scope.organization), "project_id", string(scope.project)}
+			"method", c.Request().Method, "route", c.Path(), "organization_id", string(scope.Organization), "project_id", string(scope.Project)}
 		if deniedAuthorization != nil {
 			attrs = append(attrs, "authorization_stage", deniedAuthorization.Stage)
 		}
@@ -433,24 +397,24 @@ func (s *Service) resolveNativeRequestScope(readCtx context.Context, c echo.Cont
 	return s.resolveHubauthNativeScope(readCtx, c)
 }
 
-func (d *database) authorizeNativeProject(ctx context.Context, scope nativeScope) error {
+func (d *database) authorizeNativeProject(ctx context.Context, scope hubscope.NativeScope) error {
 	if d.postgres == nil {
 		return hubapi.NativeNotFound()
 	}
 	service := &Service{config: Config{now: d.now}}
-	return d.postgres.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if scope.credential.Runner.RunnerID != "" {
-			if scope.credential.Runner.OrganizationID != scope.organization {
+	return d.postgres.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if scope.Credential.Runner.RunnerID != "" {
+			if scope.Credential.Runner.OrganizationID != scope.Organization {
 				return hubapi.NativeNotFound()
 			}
-			identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
+			identity, err := r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
 			if err != nil {
 				return hubapi.ProjectRecordError(err)
 			}
-			if identity.RunnerID != scope.credential.Runner.RunnerID {
+			if identity.RunnerID != scope.Credential.Runner.RunnerID {
 				return hubapi.NativeNotFound()
 			}
-			allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, d.now())
+			allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, d.now())
 			if err != nil {
 				return err
 			}
@@ -460,7 +424,7 @@ func (d *database) authorizeNativeProject(ctx context.Context, scope nativeScope
 		} else if err := service.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return hubapi.ProjectRecordError(err)
 		}
@@ -471,14 +435,14 @@ func (d *database) authorizeNativeProject(ctx context.Context, scope nativeScope
 	})
 }
 
-func authorizeNativeProject(ctx context.Context, db hubapi.NativeQueryer, scope nativeScope) error {
-	if scope.credential.Runner.RunnerID != "" && scope.credential.Runner.OrganizationID != scope.organization {
+func authorizeNativeProject(ctx context.Context, db hubapi.NativeQueryer, scope hubscope.NativeScope) error {
+	if scope.Credential.Runner.RunnerID != "" && scope.Credential.Runner.OrganizationID != scope.Organization {
 		return hubapi.NativeNotFound()
 	}
 	var count int
 	query := "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?"
-	args := []any{scope.organization, scope.project}
-	condition, grantArgs := scope.credential.ProjectGrantSQL("projects.organization_id", "projects.id")
+	args := []any{scope.Organization, scope.Project}
+	condition, grantArgs := scope.Credential.ProjectGrantSQL("projects.organization_id", "projects.id")
 	query += " AND (" + condition + ")"
 	args = append(args, grantArgs...)
 	if err := db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
@@ -490,45 +454,20 @@ func authorizeNativeProject(ctx context.Context, db hubapi.NativeQueryer, scope 
 	return nil
 }
 
-func nativeRequestScope(c echo.Context) nativeScope {
-	scope, ok := c.Get("native_scope").(nativeScope)
-	if !ok {
-		return nativeScope{}
-	}
-	return scope
-}
-
 func nativeIntegrationActor(principalID string) *tracker.Actor {
 	return &tracker.Actor{Kind: "integration", PrincipalID: principalID}
 }
 
-func (scope nativeScope) actor() tracker.Actor {
-	if scope.sourceActor != nil {
-		return *scope.sourceActor
-	}
-	kind := "human"
-	if scope.credential.Scope == hubapi.APIScopeWorker || scope.credential.Runner.RunnerID != "" {
-		kind = "runner"
-	} else if scope.credential.EntryKey != nil && scope.credential.EntryKey.Kind == "service" || scope.credential.HostedKeyScope != "" && scope.credential.HostedKeyKind == "service" {
-		kind = "integration"
-	}
-	principal := operatorIdentity(scope.credential, string(scope.organization)).PrincipalID
-	if kind == "integration" && scope.credential.HostedKeyKind == "service" {
-		principal = scope.credential.ID
-	}
-	return tracker.Actor{Kind: kind, PrincipalID: principal, ViaKey: scope.credential.ViaKey(), Agent: scope.credential.Agent}
-}
-
-func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) error {
+func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, hubscope.NativeScope, time.Time) (any, error)) error {
 	return s.nativeMutationStatus(c, http.StatusOK, command, input, operation)
 }
 
 // nativeMutationStatus is nativeMutation with the success status the route
 // reports. A replay answers with the same status as the first call, so a
 // created resource stays 201 on every retry of its key.
-func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) error {
+func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, hubscope.NativeScope, time.Time) (any, error)) error {
 	options := hubapi.NativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Item: c.Param("item"), ChangeID: c.Param("change"), VersionID: c.Param("version"), CheckPrincipal: changeCheckRequest(c), RequireLease: c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") && c.Path() != changeBase+"/:change/versions/:version/checks", Completion: hostedCompletionMutation(c, input), Feature: hostedMutationFeature(c)}
-	result, err := s.executeNativeMutation(c.Request().Context(), nativeRequestScope(c), options, command, input, operation)
+	result, err := s.executeNativeMutation(c.Request().Context(), hubscope.NativeRequestScope(c), options, command, input, operation)
 	if err != nil {
 		if request, ok := input.(tracker.NativeRunEvent); ok {
 			return s.nativeRunEventError(c, request, err)
@@ -538,7 +477,7 @@ func (s *Service) nativeMutationStatus(c echo.Context, status int, command track
 	return c.JSONBlob(status, result)
 }
 
-func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, options hubapi.NativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
+func (s *Service) executeNativeMutation(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, hubscope.NativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
 	if request, ok := input.(projectSpriteAllocationRequest); ok {
 		return s.setProjectSpriteAllocationRecord(ctx, scope, options.OperationID, request)
 	}
@@ -554,13 +493,13 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	if request, ok := input.(startGitHubImportRequest); ok {
 		return s.startGitHubImportRecord(ctx, scope, options.OperationID, request)
 	}
-	if s.config.TenantRepository != nil && scope.project == "" {
+	if s.config.TenantRepository != nil && scope.Project == "" {
 		if request, ok := input.(cloudModelSelectionRequest); ok {
-			scope.requireHostedAdmin = true
+			scope.RequireHostedAdmin = true
 			return s.updateOrganizationModelRecord(ctx, scope, options.OperationID, request)
 		}
 	}
-	if s.config.TenantRepository != nil && (scope.project != "" || isProjectCreation(input)) && isProjectRecordCommand(input) {
+	if s.config.TenantRepository != nil && (scope.Project != "" || isProjectCreation(input)) && isProjectRecordCommand(input) {
 		return s.executeProjectRecordMutation(ctx, scope, options, command, input)
 	}
 	return nil, hubapi.NativePublicInvalid("Unsupported project command")
@@ -574,10 +513,10 @@ func (s *Service) requireCompatibilityResource(c echo.Context) error {
 	return nil
 }
 
-func nativeCommandReceiptReference(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, operation, key, hash string) (string, bool, error) {
+func nativeCommandReceiptReference(ctx context.Context, query hubapi.NativeQueryer, scope hubscope.NativeScope, operation, key, hash string) (string, bool, error) {
 	var storedHash, response string
 	var expired bool
-	err := query.QueryRowContext(ctx, `SELECT request_hash, COALESCE(NULLIF(response_object_key,''),response_json),response_expired FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND operation>=? AND operation<? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.organization, scope.credential.ID, key, operation, operation+"!", operation, operation, operation).Scan(&storedHash, &response, &expired)
+	err := query.QueryRowContext(ctx, `SELECT request_hash, COALESCE(NULLIF(response_object_key,''),response_json),response_expired FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND operation>=? AND operation<? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.Organization, scope.Credential.ID, key, operation, operation+"!", operation, operation, operation).Scan(&storedHash, &response, &expired)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -595,7 +534,7 @@ func nativeCommandReceiptReference(ctx context.Context, query hubapi.NativeQuery
 
 // External-read commands consult the same receipt before fetching a provider.
 // Current application authority is rechecked even when returning a replay.
-func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, operation, key string, input any) (json.RawMessage, bool, error) {
+func (s *Service) nativeCommandReplay(ctx context.Context, scope hubscope.NativeScope, operation, key string, input any) (json.RawMessage, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if strings.TrimSpace(key) == "" || len(key) > 128 {
@@ -612,12 +551,12 @@ func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, op
 		return nil, false, err
 	}
 	var receipt eventstore.Receipt
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
 		var err error
-		receipt, err = r.ReplayReceipt(ctx, scope.credential.ID, operation, key)
+		receipt, err = r.ReplayReceipt(ctx, scope.Credential.ID, operation, key)
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {

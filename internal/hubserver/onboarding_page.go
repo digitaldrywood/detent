@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/onboardingpage"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -82,7 +83,7 @@ func (s *Service) maintainOnboardingPage(ctx context.Context, organization track
 	if err != nil || candidate.ProjectID == "" {
 		return err
 	}
-	value, err := s.projectOnboardingRecord(ctx, nativeScope{organization: organization, project: candidate.ProjectID, credential: onboardingCredential(candidate.Viewer)})
+	value, err := s.projectOnboardingRecord(ctx, hubscope.NativeScope{Organization: organization, Project: candidate.ProjectID, Credential: onboardingCredential(candidate.Viewer)})
 	var native *hubapi.NativeError
 	if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, corestore.ErrNotFound) || errors.As(err, &native) && native.Code == "not_found" {
 		return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
@@ -112,22 +113,22 @@ func (s *Service) maintainOnboardingPage(ctx context.Context, organization track
 func (s *Service) getOnboardingPage(c echo.Context) error {
 	var value onboarding.Project
 	var cold bool
-	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization"))}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization"))}
 	err := s.readWorkItemPageSnapshot(c.Request().Context(), scope, func(ctx context.Context) error {
 		if err := s.resolveNativeRequestScope(ctx, c); err != nil {
 			return err
 		}
-		scope = nativeRequestScope(c)
-		if scope.credential.Scope == hubapi.APIScopeWorker {
+		scope = hubscope.NativeRequestScope(c)
+		if scope.Credential.Scope == hubapi.APIScopeWorker {
 			var err error
 			value, err = s.projectOnboarding(ctx, scope)
 			return err
 		}
-		_, key, err := onboardingViewer(scope.credential)
+		_, key, err := onboardingViewer(scope.Credential)
 		if err != nil {
 			return err
 		}
-		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				return err
 			}
@@ -136,7 +137,7 @@ func (s *Service) getOnboardingPage(c echo.Context) error {
 				return errors.New("onboarding page storage unavailable")
 			}
 			var err error
-			value, err = reader.OnboardingPage(ctx, scope.project, key)
+			value, err = reader.OnboardingPage(ctx, scope.Project, key)
 			if errors.Is(err, corestore.ErrNotFound) {
 				cold = true
 				return nil
@@ -147,11 +148,11 @@ func (s *Service) getOnboardingPage(c echo.Context) error {
 	if err == nil && cold {
 		value, err = s.projectOnboarding(c.Request().Context(), scope)
 		if err == nil {
-			viewer, key, viewerErr := onboardingViewer(scope.credential)
+			viewer, key, viewerErr := onboardingViewer(scope.Credential)
 			if viewerErr != nil {
 				return s.nativeAPIError(c, viewerErr)
 			}
-			queueErr := s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			queueErr := s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				if err := s.authorizeAccessScope(c.Request().Context(), w, scope, false); err != nil {
 					return err
 				}
@@ -159,7 +160,7 @@ func (s *Service) getOnboardingPage(c echo.Context) error {
 				if !ok {
 					return errors.New("onboarding page storage unavailable")
 				}
-				return writer.RequestOnboardingPage(c.Request().Context(), scope.project, key, viewer)
+				return writer.RequestOnboardingPage(c.Request().Context(), scope.Project, key, viewer)
 			})
 			if errors.Is(queueErr, accessstore.ErrDenied) || errors.Is(queueErr, auth.ErrHostedIdentity) {
 				err = queueErr
@@ -173,8 +174,8 @@ func (s *Service) getOnboardingPage(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
-	if scope.credential.Hosted != nil && (!hostedReadRequest(c) || scope.credential.Hosted.SupportActor != "") {
-		if err := s.hostedAudit(c.Request().Context(), scope.credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
+	if scope.Credential.Hosted != nil && (!hubscope.HostedReadRequest(c) || scope.Credential.Hosted.SupportActor != "") {
+		if err := s.hostedAudit(c.Request().Context(), scope.Credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.Project), 0); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}

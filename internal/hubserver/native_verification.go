@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -20,7 +21,7 @@ func (s *Service) verifyNativeIssue(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	result, err := s.verifyNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	result, err := s.verifyNativeIssueCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -31,24 +32,24 @@ func nativeVerificationInvalid(message string) error {
 	return &hubapi.NativeError{Code: "invalid_request", Message: message, Status: http.StatusUnprocessableEntity, PublicMessage: true}
 }
 
-func nativeVerificationAnswerer(scope nativeScope, issue tracker.NativeIssue) bool {
-	actor := scope.actor()
-	if scope.credential.Scope == hubapi.APIScopeWorker || actor.Kind != "human" || actor.PrincipalID == "" {
+func nativeVerificationAnswerer(scope hubscope.NativeScope, issue tracker.NativeIssue) bool {
+	actor := scope.Actor()
+	if scope.Credential.Scope == hubapi.APIScopeWorker || actor.Kind != "human" || actor.PrincipalID == "" {
 		return false
 	}
 	if actor.PrincipalID == issue.Actor.PrincipalID {
 		return true
 	}
-	switch scope.credential.HostedRole {
+	switch scope.Credential.HostedRole {
 	case "", "member", "admin", "owner":
 		return true
 	}
 	return false
 }
 
-func (s *Service) verifyNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.VerifyFix) (json.RawMessage, error) {
-	scope.action = operatortool.VerifyFix
-	scope.actionItem = item
+func (s *Service) verifyNativeIssueCommand(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.VerifyFix) (json.RawMessage, error) {
+	scope.Action = operatortool.VerifyFix
+	scope.ActionItem = item
 	switch request.Result {
 	case tracker.VerifyResultVerified, tracker.VerifyResultNotFixed:
 	default:

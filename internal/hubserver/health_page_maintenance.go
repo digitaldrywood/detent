@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -440,7 +441,7 @@ func (s *Service) readHealthProjectSource(ctx context.Context, organization trac
 		}
 	}
 	capacityKnown := !capacity.Truncated
-	runners := runtimeRunnersFromSnapshot(capacity, nativeScope{organization: organization, project: project.Core.ID}, now)
+	runners := runtimeRunnersFromSnapshot(capacity, hubscope.NativeScope{Organization: organization, Project: project.Core.ID}, now)
 	rate := healthRateProject{ID: p.ID, Candidates: p.Candidates, ResidencePartial: residence.IssuesMore || residence.EventsMore, Costs: map[string]healthItemCost{}, BaselineCosts: map[string]healthItemCost{}}
 	for _, runner := range runners {
 		view := runner.CapacityView("", now)
@@ -679,7 +680,7 @@ func (s *Service) maintainHealthProject(ctx context.Context, organization tracke
 	project, p, rate := source.project, source.observation, source.rate
 	capacity, candidates, residence, selectedQuestions := source.capacity, source.candidates, source.residence, source.questions
 	capacityKnown, attemptsKnown := source.capacityKnown, source.attemptsKnown
-	runners := runtimeRunnersFromSnapshot(capacity, nativeScope{organization: organization, project: project.Core.ID}, now)
+	runners := runtimeRunnersFromSnapshot(capacity, hubscope.NativeScope{Organization: organization, Project: project.Core.ID}, now)
 
 	scope := healthEvaluationScope{projects: map[tracker.ProjectID]bool{project.Core.ID: true}, fingerprints: map[string]bool{}}
 	findings := []healthFinding{}
@@ -1079,7 +1080,7 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 			if err != nil {
 				return err
 			}
-			scope := nativeScope{organization: organization, project: reference.ProjectID}
+			scope := hubscope.NativeScope{Organization: organization, Project: reference.ProjectID}
 			value, err := s.readNativeClaimPlanRows(ctx, scope, tracker.NativeClaim{PolicyID: policyRecord.PolicyID, WorkItemID: item.NativeID}, now, reader, &page.Items[0], nativeClaimPlan{})
 			if err != nil {
 				return err
@@ -1140,7 +1141,7 @@ func (s *Service) maintainHealthWaitItem(ctx context.Context, organization track
 		}
 	}
 	if plan != nil {
-		scope := nativeScope{organization: organization, project: reference.ProjectID}
+		scope := hubscope.NativeScope{Organization: organization, Project: reference.ProjectID}
 		plans := []nativeClaimPlan{*plan}
 		if err := s.prepareNativeClaimLegacyAuditFacts(ctx, scope, plans); err != nil {
 			return err

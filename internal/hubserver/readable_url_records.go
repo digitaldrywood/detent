@@ -12,13 +12,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readableRecordReference(ctx context.Context, scope nativeScope, parts []string, authorize bool) (string, error) {
-	if len(parts) < 4 || parts[2] != "issues" || scope.organization != tracker.OrganizationID(s.appOrganizationID()) {
+func (s *Service) readableRecordReference(ctx context.Context, scope hubscope.NativeScope, parts []string, authorize bool) (string, error) {
+	if len(parts) < 4 || parts[2] != "issues" || scope.Organization != tracker.OrganizationID(s.appOrganizationID()) {
 		return "", hubapi.NativeNotFound()
 	}
 	number, err := strconv.ParseInt(parts[3], 10, 64)
@@ -26,7 +27,7 @@ func (s *Service) readableRecordReference(ctx context.Context, scope nativeScope
 		return "", hubapi.NativeNotFound()
 	}
 	var id string
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owned, err := r.AccessOrganizationSlug(ctx, parts[0])
 		if err != nil {
 			return err
@@ -38,20 +39,20 @@ func (s *Service) readableRecordReference(ctx context.Context, scope nativeScope
 		if err != nil {
 			return err
 		}
-		if project.Core.DeletedAt != nil || scope.project != "" && scope.project != project.Core.ID {
+		if project.Core.DeletedAt != nil || scope.Project != "" && scope.Project != project.Core.ID {
 			return corestore.ErrNotFound
 		}
-		scope.project = project.Core.ID
+		scope.Project = project.Core.ID
 		if authorize {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				return err
 			}
 		}
-		row, err := r.WorkItemByNumber(ctx, scope.project, number)
+		row, err := r.WorkItemByNumber(ctx, scope.Project, number)
 		if err != nil {
 			return err
 		}
-		if authorize && !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+		if authorize && !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		id = string(row.NativeID)
@@ -60,12 +61,12 @@ func (s *Service) readableRecordReference(ctx context.Context, scope nativeScope
 	return id, hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) organizationSlugRecordSettings(c echo.Context, scope nativeScope) error {
+func (s *Service) organizationSlugRecordSettings(c echo.Context, scope hubscope.NativeScope) error {
 	ctx := c.Request().Context()
 	if s.config.AccessRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
-	if err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, false) }); err != nil {
+	if err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, false) }); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if c.Request().Method == http.MethodGet {
@@ -78,7 +79,7 @@ func (s *Service) organizationSlugRecordSettings(c echo.Context, scope nativeSco
 	if s.hostedShared() {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Edit the organization slug through the shared entry"))
 	}
-	scope.requireHostedAdmin = true
+	scope.RequireHostedAdmin = true
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -92,7 +93,7 @@ func (s *Service) organizationSlugRecordSettings(c echo.Context, scope nativeSco
 	if err := readableurl.Validate(input.Slug); err != nil {
 		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
 	}
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
@@ -111,29 +112,29 @@ func (s *Service) organizationSlugRecordSettings(c echo.Context, scope nativeSco
 }
 
 func (s *Service) readableLegacyRecordPath(ctx context.Context, credential hubapi.APICredential, parts []string, kind string) (string, error) {
-	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID()), Credential: credential}
 	var item corestore.WorkItem
 	var projectSlug string
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		switch kind {
 		case "issue":
 			item, err = r.WorkItemByNativeID(ctx, tracker.NativeWorkItemID(parts[2]))
-			scope.project = item.ProjectID
+			scope.Project = item.ProjectID
 		case "project_issue":
-			scope.project = tracker.ProjectID(parts[1])
+			scope.Project = tracker.ProjectID(parts[1])
 			if number, parseErr := strconv.ParseInt(parts[3], 10, 64); parseErr == nil {
-				item, err = r.WorkItemByNumber(ctx, scope.project, number)
+				item, err = r.WorkItemByNumber(ctx, scope.Project, number)
 			} else {
-				item, err = r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(parts[3]))
+				item, err = r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(parts[3]))
 			}
 		case "project":
-			scope.project = tracker.ProjectID(parts[2])
+			scope.Project = tracker.ProjectID(parts[2])
 		}
 		if err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -143,7 +144,7 @@ func (s *Service) readableLegacyRecordPath(ctx context.Context, credential hubap
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		if kind != "project" && !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+		if kind != "project" && !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		projectSlug = project.Slug
@@ -190,7 +191,7 @@ func (s *Service) readablePageRecord(ctx context.Context, credential hubapi.APIC
 	if s.config.TenantRepository == nil {
 		return "", "", "", hubapi.NativeWorkItemStorageUnavailable()
 	}
-	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID()), Credential: credential}
 	var projectSlug, item string
 	var number int64
 	if len(parts) > 1 {
@@ -200,7 +201,7 @@ func (s *Service) readablePageRecord(ctx context.Context, credential hubapi.APIC
 		}
 		number = parsed
 	}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		project, err := r.ProjectBySlug(ctx, parts[0])
 		if err != nil {
 			return err
@@ -208,7 +209,7 @@ func (s *Service) readablePageRecord(ctx context.Context, credential hubapi.APIC
 		if project.Core.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		scope.project = project.Core.ID
+		scope.Project = project.Core.ID
 		projectSlug = project.Core.Slug
 		return nil
 	})
@@ -218,7 +219,7 @@ func (s *Service) readablePageRecord(ctx context.Context, credential hubapi.APIC
 	if s.config.AccessRepository == nil {
 		return "", "", "", hubapi.NativeWorkItemStorageUnavailable()
 	}
-	if err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, false) }); err != nil {
+	if err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error { return s.authorizeAccessScope(ctx, r, scope, false) }); err != nil {
 		return "", "", "", err
 	}
 	orgSlug, err := s.readableOrganizationSlug(ctx)
@@ -227,14 +228,14 @@ func (s *Service) readablePageRecord(ctx context.Context, credential hubapi.APIC
 	}
 	canonical := "/" + orgSlug + "/" + projectSlug
 	if len(parts) == 1 {
-		return string(scope.project), "", canonical, nil
+		return string(scope.Project), "", canonical, nil
 	}
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		row, err := r.WorkItemByNumber(ctx, scope.project, number)
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.WorkItemByNumber(ctx, scope.Project, number)
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		item = string(row.NativeID)
@@ -243,7 +244,7 @@ func (s *Service) readablePageRecord(ctx context.Context, credential hubapi.APIC
 			if err != nil {
 				return err
 			}
-			if change.ProjectID != scope.project {
+			if change.ProjectID != scope.Project {
 				return corestore.ErrNotFound
 			}
 			links, err := r.Links(ctx, change.ID, "", 33)
@@ -251,7 +252,7 @@ func (s *Service) readablePageRecord(ctx context.Context, credential hubapi.APIC
 				return err
 			}
 			for _, link := range links {
-				if link.WorkItemID == row.NativeID && link.ProjectID == scope.project {
+				if link.WorkItemID == row.NativeID && link.ProjectID == scope.Project {
 					return nil
 				}
 			}
@@ -266,7 +267,7 @@ func (s *Service) readablePageRecord(ctx context.Context, credential hubapi.APIC
 	if len(parts) == 5 {
 		canonical += "/changes/" + url.PathEscape(parts[4])
 	}
-	return string(scope.project), item, canonical, nil
+	return string(scope.Project), item, canonical, nil
 }
 
 func (s *Service) readIssueBrowserPath(ctx context.Context, organization tracker.OrganizationID, id string) (string, error) {

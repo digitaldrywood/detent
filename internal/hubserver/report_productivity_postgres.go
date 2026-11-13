@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -200,7 +201,7 @@ func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, cred
 		if !presentProjects[project] {
 			continue
 		}
-		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
+		scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), Project: tracker.ProjectID(project), Credential: credential}
 		periods := [2]analyticsQualityInputs{}
 		for i, window := range []operatortool.AnalyticsWindow{w, prior} {
 			inputs, err := s.readAnalyticsQualityInputsTenant(ctx, scope, window)
@@ -486,7 +487,7 @@ func reportPrincipal(credential hubapi.APICredential) string {
 	if credential.HostedRole != "reporter" {
 		return ""
 	}
-	return operatorIdentity(credential, "").PrincipalID
+	return hubscope.OperatorIdentity(credential, "").PrincipalID
 }
 
 func projectIDs(projects []string) []tracker.ProjectID {

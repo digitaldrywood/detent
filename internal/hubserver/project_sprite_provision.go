@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -29,7 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name string) ([]byte, error) {
+func (s *Service) poolSpriteToken(ctx context.Context, scope hubscope.NativeScope, name string) ([]byte, error) {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	var secret accessstore.Secret
@@ -37,7 +38,7 @@ func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name s
 	if !ok {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	err := repository.ReadTenantSnapshot(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.SpriteReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
@@ -46,7 +47,7 @@ func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name s
 		if err != nil {
 			return err
 		}
-		scope.credential.ID = actor
+		scope.Credential.ID = actor
 		member, err := owner.SpriteMember(readCtx, name)
 		if err != nil {
 			return err
@@ -54,9 +55,9 @@ func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name s
 		if member.State == "deleted" {
 			return corestore.ErrNotFound
 		}
-		scope.project = tracker.ProjectID(member.TokenProjectID)
-		secret, err = r.AccessSecret(readCtx, scope.project, flySpritesToken)
-		if errors.Is(err, corestore.ErrNotFound) && scope.project != "" {
+		scope.Project = tracker.ProjectID(member.TokenProjectID)
+		secret, err = r.AccessSecret(readCtx, scope.Project, flySpritesToken)
+		if errors.Is(err, corestore.ErrNotFound) && scope.Project != "" {
 			secret, err = r.AccessSecret(readCtx, "", flySpritesToken)
 		}
 		if err != nil {
@@ -65,7 +66,7 @@ func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name s
 		if secret.OrganizationSlug != member.ProviderOrganization {
 			return errSpritesValidation
 		}
-		scope.project = secret.ProjectID
+		scope.Project = secret.ProjectID
 		return accessstore.VerifySecret(s.config.SecretKeys, secret)
 	})
 	if err != nil {
@@ -74,7 +75,7 @@ func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name s
 	if err := s.auditSecretUse(ctx, scope, secret.Envelope.Version); err != nil {
 		return nil, err
 	}
-	return s.config.SecretKeys.Open(secret.Envelope, secretAAD(string(scope.organization), string(scope.project), flySpritesToken))
+	return s.config.SecretKeys.Open(secret.Envelope, secretAAD(string(scope.Organization), string(scope.Project), flySpritesToken))
 }
 
 func (s *Service) spritePoolClient() *http.Client {
@@ -87,7 +88,7 @@ func (s *Service) spritePoolClient() *http.Client {
 	return &client
 }
 
-func (s *Service) poolSpriteRequest(ctx context.Context, scope nativeScope, name, method, path string, body []byte) (*http.Response, error) {
+func (s *Service) poolSpriteRequest(ctx context.Context, scope hubscope.NativeScope, name, method, path string, body []byte) (*http.Response, error) {
 	if method != http.MethodDelete && method != http.MethodGet {
 		allowed, err := monthlySpriteAllowed(ctx, nil, scope, s.config.now(), s.database.billingRepository)
 		if err != nil {
@@ -116,11 +117,11 @@ func (s *Service) poolSpriteRequest(ctx context.Context, scope nativeScope, name
 	return response, nil
 }
 
-func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool) (bool, error) {
+func (s *Service) createPoolSprite(ctx context.Context, scope hubscope.NativeScope, settings spritePoolSettings, allowOrganization bool) (bool, error) {
 	return s.createPoolSpriteWithNames(ctx, scope, settings, allowOrganization, &spriteNameGenerator{intN: rand.IntN})
 }
 
-func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool, names *spriteNameGenerator) (bool, error) {
+func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope hubscope.NativeScope, settings spritePoolSettings, allowOrganization bool, names *spriteNameGenerator) (bool, error) {
 	if s.config.Hosted == nil || settings.MaxRunners == 0 {
 		return false, nil
 	}
@@ -133,7 +134,7 @@ func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeSco
 			readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 			defer cancel()
 			var exists bool
-			err := s.accessRead(readCtx, scope.organization, func(r tenantstore.Reader) error {
+			err := s.accessRead(readCtx, scope.Organization, func(r tenantstore.Reader) error {
 				owner, ok := r.(postgres.SpriteReader)
 				if !ok {
 					return hubapi.NativeWorkItemStorageUnavailable()
@@ -158,8 +159,8 @@ func (s *Service) createPoolSpriteWithNames(ctx context.Context, scope nativeSco
 	}
 }
 
-func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, settings spritePoolSettings, allowOrganization bool, name string) (bool, error) {
-	scope.project = ""
+func (s *Service) createPoolSpriteNamed(ctx context.Context, scope hubscope.NativeScope, settings spritePoolSettings, allowOrganization bool, name string) (bool, error) {
+	scope.Project = ""
 	now := s.config.now()
 	placement, err := s.readOrganizationPlacementSnapshot(ctx, scope, now)
 	if err != nil {
@@ -172,7 +173,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 	allocationRevision := tracker.Revision(0)
 	for _, project := range projects {
 		selected := scope
-		selected.project = project
+		selected.Project = project
 		allocation, err := s.readSpriteAllocationController(ctx, selected)
 		if err != nil {
 			return false, err
@@ -181,7 +182,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 			continue
 		}
 		valid := false
-		err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		err = s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 			var err error
 			valid, err = s.projectSpriteAllocationAuthority(ctx, r, selected)
 			return err
@@ -199,12 +200,12 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 		if !decision.Allowed {
 			continue
 		}
-		scope.project = project
+		scope.Project = project
 		settings.MinRunners = allocation.DesiredCount
 		allocationRevision = allocation.Revision
 		break
 	}
-	if scope.project == "" && !allowOrganization {
+	if scope.Project == "" && !allowOrganization {
 		return false, nil
 	}
 	token, err := s.config.generateToken()
@@ -213,7 +214,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 	}
 	enrollment := runnerauth.Enrollment{ID: hubapi.NewID("enrollment"), Token: token, ExpiresAt: now.Add(runnerauth.MaxEnrollmentTTL)}
 	reserved := false
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
@@ -225,7 +226,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 		if err != nil {
 			return err
 		}
-		scope.credential.ID = actor
+		scope.Credential.ID = actor
 		pool, err := owner.SpritePool(ctx)
 		if err != nil {
 			return err
@@ -241,7 +242,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 		for _, member := range members {
 			if member.State != "deleted" {
 				count++
-				if member.AllocationProjectID == string(scope.project) {
+				if member.AllocationProjectID == string(scope.Project) {
 					ownerCount++
 				}
 			}
@@ -255,7 +256,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 		} else if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if scope.project != "" {
+		if scope.Project != "" {
 			allocation, _, err := projectSpriteAllocationRecord(ctx, w, scope)
 			if err != nil {
 				return err
@@ -291,7 +292,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 		if err != nil {
 			return err
 		}
-		if scope.project != "" {
+		if scope.Project != "" {
 			input.CreateLimit = nil
 			input.Depth, input.Free, input.Pending = 0, 0, 0
 		} else if placement.Policy.Mode == "local_first" {
@@ -300,7 +301,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 		if known && (input.CreateLimit == nil || providerFree < *input.CreateLimit) {
 			input.CreateLimit = new(providerFree)
 		}
-		if !decision.Allowed && scope.project != "" {
+		if !decision.Allowed && scope.Project != "" {
 			input.CreateLimit = new(0)
 		}
 		input.Ceiling = min(input.Ceiling, ownerCount+ceiling-count)
@@ -316,14 +317,14 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 		}
 		enrollmentScope := "organization"
 		var projectIDs []tracker.ProjectID
-		if scope.project != "" {
+		if scope.Project != "" {
 			enrollmentScope = "projects"
-			projectIDs = []tracker.ProjectID{scope.project}
+			projectIDs = []tracker.ProjectID{scope.Project}
 		}
-		if err := w.CreateRunnerEnrollment(ctx, runnerstore.Enrollment{OrganizationID: scope.organization, ID: enrollment.ID, TokenHash: apikey.HashToken(token), Scope: enrollmentScope, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, ProjectIDs: projectIDs, CreatedAt: now, ExpiresAt: enrollment.ExpiresAt, CreatedBy: actor}); err != nil {
+		if err := w.CreateRunnerEnrollment(ctx, runnerstore.Enrollment{OrganizationID: scope.Organization, ID: enrollment.ID, TokenHash: apikey.HashToken(token), Scope: enrollmentScope, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, ProjectIDs: projectIDs, CreatedAt: now, ExpiresAt: enrollment.ExpiresAt, CreatedBy: actor}); err != nil {
 			return err
 		}
-		if err := w.CreateRunnerSpriteMembership(ctx, runnerstore.SpriteMembership{OrganizationID: scope.organization, Name: name, ProviderOrganization: secret.OrganizationSlug, EnrollmentID: enrollment.ID, State: "bootstrapping", IdleSince: now, CreatedAt: now, AllocationProjectID: scope.project, AllocationRevision: int64(allocationRevision)}); errors.Is(err, corestore.ErrUniqueViolation) {
+		if err := w.CreateRunnerSpriteMembership(ctx, runnerstore.SpriteMembership{OrganizationID: scope.Organization, Name: name, ProviderOrganization: secret.OrganizationSlug, EnrollmentID: enrollment.ID, State: "bootstrapping", IdleSince: now, CreatedAt: now, AllocationProjectID: scope.Project, AllocationRevision: int64(allocationRevision)}); errors.Is(err, corestore.ErrUniqueViolation) {
 			return errSpriteNameTaken
 		} else if err != nil {
 			return err
@@ -338,7 +339,7 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 		return false, err
 	}
 
-	member := spritePoolMember{AllocationProjectID: scope.project, Name: name, State: "bootstrapping", EnrollmentID: enrollment.ID}
+	member := spritePoolMember{AllocationProjectID: scope.Project, Name: name, State: "bootstrapping", EnrollmentID: enrollment.ID}
 	if err := s.requireSpriteMemberWanted(ctx, scope, name); err != nil {
 		return true, s.cancelPoolSpriteReservation(ctx, scope, member, err)
 	}
@@ -373,11 +374,11 @@ func (s *Service) createPoolSpriteNamed(ctx context.Context, scope nativeScope, 
 	return true, errors.Join(err, markErr, s.deletePoolSprite(ctx, scope, member))
 }
 
-func (s *Service) requireSpriteMemberWanted(ctx context.Context, scope nativeScope, name string) error {
+func (s *Service) requireSpriteMemberWanted(ctx context.Context, scope hubscope.NativeScope, name string) error {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var wanted bool
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		var err error
 		wanted, err = spriteMemberWantedRecord(ctx, r, name)
 		return err
@@ -388,11 +389,11 @@ func (s *Service) requireSpriteMemberWanted(ctx context.Context, scope nativeSco
 	return err
 }
 
-func (s *Service) cancelPoolSpriteReservation(ctx context.Context, scope nativeScope, member spritePoolMember, cause error) error {
+func (s *Service) cancelPoolSpriteReservation(ctx context.Context, scope hubscope.NativeScope, member spritePoolMember, cause error) error {
 	if !errors.Is(cause, errSpriteReservationStale) && !errors.Is(cause, errSpriteNameTaken) {
 		return errors.Join(cause, s.retirePoolSpriteReservation(ctx, scope, member.Name, "Sprite provisioning did not start\n", false))
 	}
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
@@ -426,8 +427,8 @@ func (s *Service) cancelPoolSpriteReservation(ctx context.Context, scope nativeS
 	})
 }
 
-func (s *Service) retirePoolSpriteReservation(ctx context.Context, scope nativeScope, name, log string, failed bool) error {
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+func (s *Service) retirePoolSpriteReservation(ctx context.Context, scope hubscope.NativeScope, name, log string, failed bool) error {
+	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
@@ -465,14 +466,14 @@ func (s *Service) retirePoolSpriteReservation(ctx context.Context, scope nativeS
 	})
 }
 
-func (s *Service) poolSpriteTokenAvailable(ctx context.Context, scope nativeScope) (bool, error) {
+func (s *Service) poolSpriteTokenAvailable(ctx context.Context, scope hubscope.NativeScope) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { _, err := r.AccessSecret(ctx, "", flySpritesToken); return err })
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error { _, err := r.AccessSecret(ctx, "", flySpritesToken); return err })
 	return err == nil, err
 }
 
-func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, member spritePoolMember, settings spritePoolSettings, enrollment runnerauth.Enrollment) error {
+func (s *Service) bootstrapPoolSprite(ctx context.Context, scope hubscope.NativeScope, member spritePoolMember, settings spritePoolSettings, enrollment runnerauth.Enrollment) error {
 	version := "v" + strings.TrimPrefix(s.config.Version, "v")
 	if !regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(version) {
 		return hubapi.NativePublicInvalid("Sprite provisioning requires a Hub built from a pinned release")
@@ -515,8 +516,8 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	if err := s.requireSpriteMemberWanted(ctx, scope, member.Name); err != nil {
 		return err
 	}
-	command := "detent hub runner register --url " + spriteShellQuote(s.config.Hosted.PublicURL) + " --organization " + spriteShellQuote(string(scope.organization)) + " --name " + spriteShellQuote(member.Name) + " --capacity 1 --isolation-tier " + spriteShellQuote(settings.IsolationTier) + " --token " + spriteShellQuote(enrollment.Token)
-	script := spritePoolBootstrapScript(scope.organization, s.config.Hosted.PublicURL, settings.Bootstrap, command, version)
+	command := "detent hub runner register --url " + spriteShellQuote(s.config.Hosted.PublicURL) + " --organization " + spriteShellQuote(string(scope.Organization)) + " --name " + spriteShellQuote(member.Name) + " --capacity 1 --isolation-tier " + spriteShellQuote(settings.IsolationTier) + " --token " + spriteShellQuote(enrollment.Token)
+	script := spritePoolBootstrapScript(scope.Organization, s.config.Hosted.PublicURL, settings.Bootstrap, command, version)
 	log, execErr := s.execPoolSprite(ctx, scope, member.Name, []byte(script))
 	if execErr != nil {
 		log += "Bootstrap did not complete\n"
@@ -533,7 +534,7 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	if execErr != nil {
 		return execErr
 	}
-	if err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	if err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		enrollment, err := r.RunnerEnrollment(ctx, member.EnrollmentID)
 		if err != nil {
 			return err
@@ -597,7 +598,7 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	if !complete {
 		return errSpritesValidation
 	}
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
@@ -630,7 +631,7 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	})
 }
 
-func (s *Service) execPoolSprite(ctx context.Context, scope nativeScope, name string, script []byte) (string, error) {
+func (s *Service) execPoolSprite(ctx context.Context, scope hubscope.NativeScope, name string, script []byte) (string, error) {
 	defer clear(script)
 	token, err := s.poolSpriteToken(ctx, scope, name)
 	if err != nil {
@@ -714,10 +715,10 @@ func (s *Service) execPoolSprite(ctx context.Context, scope nativeScope, name st
 	}
 }
 
-func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, member spritePoolMember) error {
+func (s *Service) deletePoolSprite(ctx context.Context, scope hubscope.NativeScope, member spritePoolMember) error {
 	ready := false
 	actor := ""
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
@@ -734,7 +735,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 		if err != nil {
 			return err
 		}
-		if current.EnrollmentID != member.EnrollmentID || current.AllocationProjectID != string(scope.project) {
+		if current.EnrollmentID != member.EnrollmentID || current.AllocationProjectID != string(scope.Project) {
 			return corestore.ErrRevisionConflict
 		}
 		if current.State == "deleted" {
@@ -764,13 +765,13 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 			floor, threshold := int(pool.MinRunners), time.Duration(pool.IdleSeconds)*time.Second
 			busy := false
 			if identity.RunnerID != "" {
-				usage, err := w.ClaimCapacityUsage(ctx, string(identity.MachineID), identity.RunnerID, scope.project, "", now)
+				usage, err := w.ClaimCapacityUsage(ctx, string(identity.MachineID), identity.RunnerID, scope.Project, "", now)
 				if err != nil {
 					return err
 				}
 				busy = usage.Host > 0
 			}
-			if scope.project != "" {
+			if scope.Project != "" {
 				allocation, _, err := projectSpriteAllocationRecord(ctx, w, scope)
 				if err != nil {
 					return err
@@ -819,7 +820,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
 	defer cancel()
-	return s.config.TenantRepository.WriteTenant(cleanup, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	return s.config.TenantRepository.WriteTenant(cleanup, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(cleanup); err != nil {
 			return err
 		}
@@ -838,7 +839,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 		if err != nil {
 			return err
 		}
-		if current.EnrollmentID != member.EnrollmentID || current.AllocationProjectID != string(scope.project) {
+		if current.EnrollmentID != member.EnrollmentID || current.AllocationProjectID != string(scope.Project) {
 			return corestore.ErrRevisionConflict
 		}
 		held, err := owner.SpriteMemberHoldsWork(cleanup, current.EnrollmentID)
@@ -853,7 +854,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 			return err
 		}
 		if enrollment.RunnerID != "" {
-			if err := s.revokeRunnerIdentityTenant(cleanup, w, scope.organization, enrollment.RunnerID, actor, s.config.now()); err != nil {
+			if err := s.revokeRunnerIdentityTenant(cleanup, w, scope.Organization, enrollment.RunnerID, actor, s.config.now()); err != nil {
 				return err
 			}
 		}
@@ -867,7 +868,7 @@ func spriteMembershipRecord(row postgres.SpriteMember) runnerstore.SpriteMembers
 	return runnerstore.SpriteMembership{OrganizationID: row.OrganizationID, Name: row.Name, ProviderOrganization: row.ProviderOrganization, TokenProjectID: tracker.ProjectID(row.TokenProjectID), EnrollmentID: row.EnrollmentID, State: row.State, BootstrapLog: row.BootstrapLog, IdleSince: row.IdleSince, CreatedAt: row.CreatedAt, AllocationProjectID: tracker.ProjectID(row.AllocationProjectID), AllocationRevision: row.AllocationRevision}
 }
 
-func spriteMonthlyDecisionRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, admitted bool, now time.Time) (budget.MonthlyDecision, error) {
+func spriteMonthlyDecisionRecord(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, admitted bool, now time.Time) (budget.MonthlyDecision, error) {
 	input, err := readBillingMonthlyBudgetInput(ctx, r, scope, now)
 	if err != nil {
 		return budget.MonthlyDecision{}, err
@@ -877,7 +878,7 @@ func spriteMonthlyDecisionRecord(ctx context.Context, r tenantstore.Reader, scop
 	return billingstore.EvaluateMonthlyBudget(input)
 }
 
-func spriteMonthlyAllowedRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, now time.Time) (bool, error) {
+func spriteMonthlyAllowedRecord(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, now time.Time) (bool, error) {
 	decision, err := spriteMonthlyDecisionRecord(ctx, r, scope, false, now)
 	if err != nil || decision.Allowed {
 		return decision.Allowed, err
@@ -886,5 +887,5 @@ func spriteMonthlyAllowedRecord(ctx context.Context, r tenantstore.Reader, scope
 	if err != nil || !decision.Allowed {
 		return false, err
 	}
-	return r.BillingMonthlyAdmittedCandidate(ctx, scope.project, now)
+	return r.BillingMonthlyAdmittedCandidate(ctx, scope.Project, now)
 }

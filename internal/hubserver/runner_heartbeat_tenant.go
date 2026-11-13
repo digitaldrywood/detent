@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -83,7 +84,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			}
 		}
 	}
-	if err := validateRunnerCheckoutReport(nativeScope{credential: credential}, request.CheckoutRepository); err != nil {
+	if err := validateRunnerCheckoutReport(hubscope.NativeScope{Credential: credential}, request.CheckoutRepository); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	updateTarget := runnerUpdateTarget(s.config.Version)
@@ -95,10 +96,10 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	if request.ChangeCursor != nil {
 		params := url.Values{"cursor": {*request.ChangeCursor}}
 		var err error
-		_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), nativeRequestScope(c), c.Request().URL.EscapedPath()+"/changes", params)
+		_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), hubscope.NativeRequestScope(c), c.Request().URL.EscapedPath()+"/changes", params)
 		if err != nil {
 			params.Set("cursor", "")
-			_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), nativeRequestScope(c), c.Request().URL.EscapedPath()+"/changes", params)
+			_, changeCursor, changeKey, err = s.readNativePage(c.Request().Context(), hubscope.NativeRequestScope(c), c.Request().URL.EscapedPath()+"/changes", params)
 		}
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -147,20 +148,20 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		identity, err := w.RunnerIdentityByCredential(ctx, credential.ID)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
-				return runnerUnauthorized()
+				return hubscope.RunnerUnauthorized()
 			}
 			return err
 		}
 		current, err := w.AccessCredential(ctx, credential.ID)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
-				return runnerUnauthorized()
+				return hubscope.RunnerUnauthorized()
 			}
 			return err
 		}
 		receivedAt := s.config.now().UTC()
 		if identity.OrganizationID != credential.Runner.OrganizationID || identity.RunnerID != credential.Runner.RunnerID || identity.MachineID != credential.Runner.MachineID || identity.RemovedAt != nil || identity.TokenID != credential.ID || !identity.ExpiresAt.After(receivedAt) || current.OrganizationID != identity.OrganizationID || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, receivedAt) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
-			return runnerUnauthorized()
+			return hubscope.RunnerUnauthorized()
 		}
 		if request.Skills != nil || request.CheckoutRepository != nil {
 			if projectID == "" {
@@ -271,7 +272,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			if !allowed {
 				return hubapi.NativeNotFound()
 			}
-			if err := storeRunnerProjectObservationTenant(ctx, nativeScope{organization: identity.OrganizationID, project: tracker.ProjectID(view.ProjectID), credential: credential}, view, receivedAt, w); err != nil {
+			if err := storeRunnerProjectObservationTenant(ctx, hubscope.NativeScope{Organization: identity.OrganizationID, Project: tracker.ProjectID(view.ProjectID), Credential: credential}, view, receivedAt, w); err != nil {
 				return err
 			}
 		}
@@ -347,7 +348,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 	}); ok {
 		err = command.WriteRunnerHeartbeat(ctx, credential.Runner.OrganizationID, credential.ID, credential.Runner.RunnerID, write)
 		if errors.Is(err, accessstore.ErrDenied) {
-			err = runnerUnauthorized()
+			err = hubscope.RunnerUnauthorized()
 		}
 	} else {
 		err = s.config.TenantRepository.WriteTenant(ctx, credential.Runner.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
@@ -359,7 +360,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		s.notifications.notify(dispatchNotificationKey(credential.Runner.OrganizationID))
 	}
 	if s.startSpriteLifecycle != nil {
-		s.startSpriteLifecycle(nativeScope{organization: credential.Runner.OrganizationID, project: projectID}, "")
+		s.startSpriteLifecycle(hubscope.NativeScope{Organization: credential.Runner.OrganizationID, Project: projectID}, "")
 	}
 	assigned := false
 	cleanupKey := releasedExecutionCursorKey{organization: credential.Runner.OrganizationID, project: projectID, runner: credential.Runner.RunnerID}
@@ -379,7 +380,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			return err
 		}
 		if current.OrganizationID != credential.Runner.OrganizationID || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, now) || !runnerIdentityMatchesHeldLease(identity, credential.Runner.OrganizationID, credential.Runner.RunnerID, credential.ID, credential.Runner.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
-			return runnerUnauthorized()
+			return hubscope.RunnerUnauthorized()
 		}
 		if err := readRunnerResponseRouting(ctx, r, identity, &snapshot); err != nil {
 			return err
@@ -405,7 +406,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		if err != nil {
 			return err
 		}
-		cleanupCandidates, err = s.readRunnerCleanupCandidates(ctx, r, nativeScope{organization: identity.OrganizationID, project: projectID, credential: credential}, claims.Unclassified)
+		cleanupCandidates, err = s.readRunnerCleanupCandidates(ctx, r, hubscope.NativeScope{Organization: identity.OrganizationID, Project: projectID, Credential: credential}, claims.Unclassified)
 		if err != nil {
 			return err
 		}
@@ -421,7 +422,7 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 			if err == nil {
 				policyID = policy.PolicyID
 			}
-			snapshot.Changes, err = readHeartbeatChangesTenant(ctx, r, nativeScope{organization: identity.OrganizationID, project: projectID, credential: credential}, changeCursor, changeKey, changeReset, changeDigest, policyID, now)
+			snapshot.Changes, err = readHeartbeatChangesTenant(ctx, r, hubscope.NativeScope{Organization: identity.OrganizationID, Project: projectID, Credential: credential}, changeCursor, changeKey, changeReset, changeDigest, policyID, now)
 			if err != nil {
 				return err
 			}
@@ -435,11 +436,11 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 		c.Response().Header().Set("Cache-Control", "no-store")
 		return c.JSON(http.StatusOK, snapshot)
 	}
-	if err := s.resolveRunnerCleanupCandidates(ctx, nativeScope{organization: credential.Runner.OrganizationID, project: projectID, credential: credential}, credential.Runner.RunnerID, cleanupCandidates, snapshot.ClaimState); err != nil {
+	if err := s.resolveRunnerCleanupCandidates(ctx, hubscope.NativeScope{Organization: credential.Runner.OrganizationID, Project: projectID, Credential: credential}, credential.Runner.RunnerID, cleanupCandidates, snapshot.ClaimState); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	s.advanceRunnerCleanupCursor(cleanupKey, cleanupNext)
-	task, err := s.readGitHubBatchTaskRecord(ctx, nativeScope{organization: credential.Runner.OrganizationID, project: projectID, credential: credential})
+	task, err := s.readGitHubBatchTaskRecord(ctx, hubscope.NativeScope{Organization: credential.Runner.OrganizationID, Project: projectID, Credential: credential})
 	if err != nil {
 		s.config.Logger.Warn("GitHub intake task unavailable", "organization_id", credential.Runner.OrganizationID, "project_id", projectID, "runner_id", credential.Runner.RunnerID, "error", err)
 	} else {

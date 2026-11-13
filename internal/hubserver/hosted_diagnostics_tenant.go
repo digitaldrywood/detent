@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -39,7 +40,7 @@ func (s *Service) readDiagnosticsTenant(ctx context.Context, credential hubapi.A
 	projectPartial := false
 	principal := ""
 	if credential.HostedRole == "reporter" {
-		principal = (nativeScope{credential: credential}).actor().PrincipalID
+		principal = (hubscope.NativeScope{Credential: credential}).Actor().PrincipalID
 		if principal == "" {
 			return diagnosticsReport{}, hubapi.NativeNotFound()
 		}

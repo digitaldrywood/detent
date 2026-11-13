@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -853,7 +854,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 			if readerErr != nil {
 				t.Fatalf("provider reader status=%d error=%v", readerStatus, readerErr)
 			}
-			capacity, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: readerCredential}, current.binding.RunnerID)
+			capacity, err := f.service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: readerCredential}, current.binding.RunnerID)
 			if err != nil || len(capacity.ProviderCapacity) != 1 {
 				t.Fatalf("provider routing=%+v error=%v", capacity, err)
 			}
@@ -868,7 +869,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 				} else {
 					now = lease.ExpiresAt
 				}
-				capacity, err = f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: readerCredential}, current.binding.RunnerID)
+				capacity, err = f.service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: readerCredential}, current.binding.RunnerID)
 				if err != nil || len(capacity.ProviderCapacity) != 1 {
 					t.Fatalf("ended provider routing=%+v error=%v", capacity, err)
 				}
@@ -1163,7 +1164,7 @@ func TestProviderUsageHeartbeatRoundTrip(t *testing.T) {
 				if routingError0 != nil {
 					t.Fatalf("routing reader status=%d error=%v", routingStatus0, routingError0)
 				}
-				stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, credential: routingCredential0}, r.binding.RunnerID)
+				stored, err := f.service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: routingCredential0}, r.binding.RunnerID)
 				if err != nil || len(stored.ProviderCapacity) != 1 || !reflect.DeepEqual(stored.ProviderCapacity[0].UsageWindows, want) || stored.ProviderCapacity[0].Billing != report.BillingBasis() {
 					t.Fatalf("runner = %+v, err = %v, want windows = %+v", stored.ProviderCapacity, err, want)
 				}

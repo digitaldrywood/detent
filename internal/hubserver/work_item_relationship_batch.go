@@ -11,19 +11,20 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scope nativeScope, issues []*tracker.NativeIssue) error {
+func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scope hubscope.NativeScope, issues []*tracker.NativeIssue) error {
 	if len(issues) == 0 {
 		return nil
 	}
 	workItems := make([]tracker.NativeWorkItemID, 0, len(issues))
 	byWorkItem := make(map[tracker.NativeWorkItemID][]*tracker.NativeIssue, len(issues))
 	factsByWorkItem := make(map[tracker.NativeWorkItemID][]tenantstore.WorkItemRelationshipFact, len(issues))
-	projectVisible := map[tracker.ProjectID]bool{scope.project: true}
+	projectVisible := map[tracker.ProjectID]bool{scope.Project: true}
 	for _, issue := range issues {
 		if issue == nil || issue.WorkItemID == "" {
 			return corestore.ErrInvalidRelationship
@@ -39,20 +40,20 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 		byWorkItem[issue.WorkItemID] = append(byWorkItem[issue.WorkItemID], issue)
 	}
 	batchUnavailable := false
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := loadDependencyReasonRecords(ctx, r, scope.project, issues); err != nil {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := loadDependencyReasonRecords(ctx, r, scope.Project, issues); err != nil {
 			return err
 		}
 		if batch, ok := r.(tenantstore.WorkItemRelationshipBatchReader); ok {
 			for start := 0; start < len(workItems); start += corestore.MaxRelationshipBatch {
 				end := min(start+corestore.MaxRelationshipBatch, len(workItems))
-				facts, err := batch.WorkItemRelationshipFacts(ctx, scope.project, workItems[start:end])
+				facts, err := batch.WorkItemRelationshipFacts(ctx, scope.Project, workItems[start:end])
 				if err != nil {
 					return err
 				}
 				for _, fact := range facts {
 					factsByWorkItem[fact.WorkItemID] = append(factsByWorkItem[fact.WorkItemID], fact)
-					if fact.Relationship.RelatedProjectID != scope.project {
+					if fact.Relationship.RelatedProjectID != scope.Project {
 						projectVisible[fact.Relationship.RelatedProjectID] = fact.RelatedProjectVisible
 					}
 				}
@@ -76,17 +77,17 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 
 	projectIDs := make([]tracker.ProjectID, 0, len(projectVisible))
 	for projectID := range projectVisible {
-		if projectID != scope.project && projectVisible[projectID] {
+		if projectID != scope.Project && projectVisible[projectID] {
 			projectIDs = append(projectIDs, projectID)
 		}
 	}
 	slices.Sort(projectIDs)
-	authorizedProjects := map[tracker.ProjectID]bool{scope.project: true}
+	authorizedProjects := map[tracker.ProjectID]bool{scope.Project: true}
 	if len(projectIDs) > 0 {
-		err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 			for _, projectID := range projectIDs {
 				targetScope := scope
-				targetScope.project = projectID
+				targetScope.Project = projectID
 				err := s.authorizeAccessScope(ctx, r, targetScope, false)
 				if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || errors.Is(err, operatortool.ErrAccessDenied) || hubapi.IsNativeNotFound(err) {
 					authorizedProjects[projectID] = false
@@ -113,18 +114,18 @@ func (s *Service) hydrateWorkItemRelationshipFactsPage(ctx context.Context, scop
 			edges := dependencyEdges{}
 			for _, fact := range factsByWorkItem[workItem] {
 				relation := fact.Relationship
-				visible := relation.RelatedProjectID == scope.project || fact.RelatedProjectVisible && authorizedProjects[relation.RelatedProjectID]
+				visible := relation.RelatedProjectID == scope.Project || fact.RelatedProjectVisible && authorizedProjects[relation.RelatedProjectID]
 				if relation.Type == "dependency" {
 					switch relation.Direction {
 					case "blocked_by":
 						edges.blocked = append(edges.blocked, string(relation.RelatedWorkItemID))
-						edges.privateBlocked = edges.privateBlocked || relation.RelatedProjectID != scope.project
+						edges.privateBlocked = edges.privateBlocked || relation.RelatedProjectID != scope.Project
 					case "blocks":
 						edges.unblocks = append(edges.unblocks, string(relation.RelatedWorkItemID))
-						edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.project
+						edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.Project
 					}
 				}
-				visible = visible && scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
+				visible = visible && scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
 				if !visible {
 					if relation.Type == "dependency" {
 						switch relation.Direction {

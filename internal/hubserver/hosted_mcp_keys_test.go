@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -196,7 +197,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 									if err != nil {
 										t.Fatal(err)
 									}
-									if actor := (nativeScope{credential: current}).actor(); actor.Kind != "runner" || actor.PrincipalID != key.ID {
+									if actor := (hubscope.NativeScope{Credential: current}).Actor(); actor.Kind != "runner" || actor.PrincipalID != key.ID {
 										t.Fatalf("hosted worker actor=%+v", actor)
 									}
 								}
@@ -379,7 +380,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								t.Fatalf("own tenant credential changed: %v", currentErr)
 							}
 							if currentErr == nil {
-								projects, every, err := f.service.readableConversationProjects(t.Context(), nativeScope{organization: "org_security", credential: current})
+								projects, every, err := f.service.readableConversationProjects(t.Context(), hubscope.NativeScope{Organization: "org_security", Credential: current})
 								if err != nil || every || slices.Contains(projects, tracker.ProjectID(project)) == ownReadDenied {
 									t.Fatalf("project projection denied=%t projects=%v every=%t err=%v", ownReadDenied, projects, every, err)
 								}

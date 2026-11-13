@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -24,14 +25,14 @@ func (s *Service) publishChangeVersionRecord(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
-	raw, err := s.publishChangeVersionRecordCommand(ctx, nativeRequestScope(c), c.Param("item"), c.Param("change"), operation, request)
+	raw, err := s.publishChangeVersionRecordCommand(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("change"), operation, request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusOK, raw)
 }
 
-func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope nativeScope, item, changeID, operation string, request tracker.PublishChangeVersion) (json.RawMessage, error) {
+func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope hubscope.NativeScope, item, changeID, operation string, request tracker.PublishChangeVersion) (json.RawMessage, error) {
 	authority := s.config.ChangeVersionAuthority
 	if authority == nil {
 		if s.config.TenantRepository == nil {
@@ -54,7 +55,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 		return replay, nil
 	}
 	if err := validateChangeVersion(request.ChangeVersionInput); err != nil {
-		if visualErr := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if visualErr := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			_, err := validateChangeRecordContent(ctx, r, scope, nil, request.Artifacts, "artifacts", false)
 			return err
 		}); visualErr != nil {
@@ -92,7 +93,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 	} else if len(request.SourceBundle) > 0 {
 		return nil, hubapi.NativePublicInvalid("Source bundle requires immutable source metadata")
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		_, err := validateChangeRecordContent(ctx, r, scope, nil, request.Artifacts, "artifacts", false)
 		return err
 	}); err != nil {
@@ -116,13 +117,13 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 	for _, spec := range approval.ReviewPolicy.RequiredChecks {
 		checks = append(checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: spec, CheckRunID: payloadNativeID(ctx, "check")})
 	}
-	version := tracker.ChangeVersion{ChangeVersionInput: request.ChangeVersionInput, ID: payloadNativeID(ctx, "version"), ChangeID: change.ID, Number: int64(change.Revision), Policy: approval.Policy, ReviewPolicy: approval.ReviewPolicy, Checks: checks, Actor: scope.actor(), CreatedAt: payloadTimestamp(ctx, now)}
+	version := tracker.ChangeVersion{ChangeVersionInput: request.ChangeVersionInput, ID: payloadNativeID(ctx, "version"), ChangeID: change.ID, Number: int64(change.Revision), Policy: approval.Policy, ReviewPolicy: approval.ReviewPolicy, Checks: checks, Actor: scope.Actor(), CreatedAt: payloadTimestamp(ctx, now)}
 	versionRaw, err := json.Marshal(version)
 	if err != nil {
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	versionRecord, err := content.PrepareVersion(ctx, scope.organization, versionRaw)
+	versionRecord, err := content.PrepareVersion(ctx, scope.Organization, versionRaw)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +133,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 		versionRecord.ImplementingMachineID = sourceRun.machineID
 	}
 	if request.Source != nil {
-		sourceRef, err := content.PrepareSourceBundle(ctx, scope.organization, request.SourceBundle)
+		sourceRef, err := content.PrepareSourceBundle(ctx, scope.Organization, request.SourceBundle)
 		if err != nil {
 			return nil, err
 		}
@@ -150,21 +151,21 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 	if err != nil {
 		return nil, err
 	}
-	changeRecord, err := content.PrepareChange(ctx, scope.organization, changeRaw)
+	changeRecord, err := content.PrepareChange(ctx, scope.Organization, changeRaw)
 	if err != nil {
 		return nil, err
 	}
-	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
 	if err != nil {
 		return nil, err
 	}
 	events := make([]eventstore.Event, 0, len(change.LinkedIssues))
 	for _, item := range change.LinkedIssues {
-		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: item, Type: "change.version_published", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: newChange.UpdatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}})
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: item, Type: "change.version_published", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: newChange.UpdatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}})
 		if err != nil {
 			return nil, err
 		}
-		event, err := content.PrepareEvent(ctx, scope.organization, eventRaw)
+		event, err := content.PrepareEvent(ctx, scope.Organization, eventRaw)
 		if err != nil {
 			return nil, err
 		}
@@ -181,7 +182,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 		}
 	}
 	for {
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			transitionReady, err := s.lockChangeWorkflowTransition(ctx, w, scope, transition)
 			if err != nil {
 				return err
@@ -192,7 +193,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 			if err := bindChangeRecordContent(ctx, w, scope, item, nil, request.Artifacts, "artifacts"); err != nil {
 				return err
 			}
-			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
+			if prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
 					return hubapi.NativeConflict(change.Revision)
 				}
@@ -214,7 +215,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope n
 				return err
 			}
 			for _, item := range change.LinkedIssues {
-				if _, err := w.WorkItem(ctx, scope.project, item); err != nil {
+				if _, err := w.WorkItem(ctx, scope.Project, item); err != nil {
 					return err
 				}
 			}

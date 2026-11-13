@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -26,13 +27,13 @@ func (b *notificationBroker) dispatchCursor(key string) string {
 	return b.Cursor(key)
 }
 
-func (s *Service) notifyNativeDispatch(ctx context.Context, scope nativeScope, input any) {
+func (s *Service) notifyNativeDispatch(ctx context.Context, scope hubscope.NativeScope, input any) {
 	if event, ok := input.(tracker.NativeRunEvent); ok && event.Type != "run.finished" {
 		return
 	}
-	s.notifications.notify(dispatchNotificationKey(scope.organization))
-	s.stopMonthlyBudgetTurns(ctx, scope.organization)
-	s.stopMonthlyBudgetSpritePasses(ctx, scope.organization)
+	s.notifications.notify(dispatchNotificationKey(scope.Organization))
+	s.stopMonthlyBudgetTurns(ctx, scope.Organization)
+	s.stopMonthlyBudgetSpritePasses(ctx, scope.Organization)
 	switch input.(type) {
 	case monthlyBudgetRequest, spriteUsageRequest:
 		s.resumeMonthlyBudgetWork(ctx, scope)
@@ -43,13 +44,13 @@ func (s *Service) notifyNativeDispatch(ctx context.Context, scope nativeScope, i
 			}
 		}
 	}
-	if event, ok := input.(tracker.NativeRunEvent); ok && event.Type == "run.finished" && scope.project != "" {
+	if event, ok := input.(tracker.NativeRunEvent); ok && event.Type == "run.finished" && scope.Project != "" {
 		s.startSpritePoolForQueue(scope)
 	}
 }
 
-func (s *Service) signalNativeDispatch(scope nativeScope) {
-	s.notifications.notify(dispatchNotificationKey(scope.organization))
+func (s *Service) signalNativeDispatch(scope hubscope.NativeScope) {
+	s.notifications.notify(dispatchNotificationKey(scope.Organization))
 	select {
 	case s.boardRefresh <- struct{}{}:
 	default:
@@ -65,29 +66,29 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 		}
 		wait = parsed
 	}
-	scope := nativeRequestScope(c)
-	key := dispatchNotificationKey(scope.organization)
+	scope := hubscope.NativeRequestScope(c)
+	key := dispatchNotificationKey(scope.Organization)
 	s.notifications.dispatchCursor(key)
 	authorize := func() error {
 		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 		defer cancel()
 		now := s.config.now().UTC()
-		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				var lookup *accessstore.LookupError
 				if errors.Is(err, accessstore.ErrDenied) && errors.As(err, &lookup) && lookup.Step == "credential" {
-					return runnerUnauthorized()
+					return hubscope.RunnerUnauthorized()
 				}
 				return err
 			}
-			identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
+			identity, err := r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
 			if err != nil {
 				return err
 			}
-			if !runnerIdentityMatchesHeldLease(identity, scope.organization, scope.credential.Runner.RunnerID, scope.credential.ID, scope.credential.Runner.MachineID, now) || now.Before(identity.LastHeartbeatAt) || !now.Before(identity.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout)) || !slices.Contains(identity.Operations, runnerauth.Claim) {
+			if !runnerIdentityMatchesHeldLease(identity, scope.Organization, scope.Credential.Runner.RunnerID, scope.Credential.ID, scope.Credential.Runner.MachineID, now) || now.Before(identity.LastHeartbeatAt) || !now.Before(identity.LastHeartbeatAt.Add(runnerauth.HeartbeatTimeout)) || !slices.Contains(identity.Operations, runnerauth.Claim) {
 				return tracker.ErrMachineNotFound
 			}
-			allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+			allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, now)
 			if err != nil {
 				return err
 			}

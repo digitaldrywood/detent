@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -53,8 +54,8 @@ type changeReviewWorkflow struct {
 	evaluatedAt time.Time
 }
 
-func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, review tracker.ChangeReview, approval ChangeVersionApproval, now time.Time) (*changeReviewWorkflow, error) {
-	if scope.credential.Scope == hubapi.APIScopeWorker || review.VersionID != change.CurrentVersion || review.Decision == "commented" {
+func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, review tracker.ChangeReview, approval ChangeVersionApproval, now time.Time) (*changeReviewWorkflow, error) {
+	if scope.Credential.Scope == hubapi.APIScopeWorker || review.VersionID != change.CurrentVersion || review.Decision == "commented" {
 		return nil, nil
 	}
 	if review.Decision == "changes_requested" {
@@ -74,7 +75,7 @@ func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope nativeS
 	for _, check := range version.Checks {
 		checks = append(checks, check.CheckRunID)
 	}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		plan.current, err = r.Change(ctx, change.ID)
 		if err != nil {
@@ -96,7 +97,7 @@ func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope nativeS
 	detail := tracker.ChangeDetail{Change: change, Versions: []tracker.ChangeVersion{version}}
 	content := eventstore.NewContent(s.runDetailStore())
 	for _, row := range evidence {
-		if row.OrganizationID != scope.organization || row.ChangeID != change.ID || hubapi.ValueOrEmpty(row.VersionID) != version.ID || row.Sequence > plan.current.EvidenceSequence {
+		if row.OrganizationID != scope.Organization || row.ChangeID != change.ID || hubapi.ValueOrEmpty(row.VersionID) != version.ID || row.Sequence > plan.current.EvidenceSequence {
 			return nil, eventstore.ErrInvalidRecord
 		}
 		raw, err := content.Evidence(ctx, row)
@@ -111,8 +112,8 @@ func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope nativeS
 	return s.prepareChangeEvidenceWorkflow(ctx, scope, detail, approval, plan, prior, now)
 }
 
-func (s *Service) prepareChangeCheckWorkflow(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, check tracker.ChangeCheck, approval ChangeVersionApproval, now time.Time) (*changeReviewWorkflow, error) {
-	if scope.credential.Scope == hubapi.APIScopeWorker || version.ID != change.CurrentVersion {
+func (s *Service) prepareChangeCheckWorkflow(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, check tracker.ChangeCheck, approval ChangeVersionApproval, now time.Time) (*changeReviewWorkflow, error) {
+	if scope.Credential.Scope == hubapi.APIScopeWorker || version.ID != change.CurrentVersion {
 		return nil, nil
 	}
 	plan := &changeReviewWorkflow{audits: map[int64][]eventstore.AuditDisposition{}, evaluatedAt: now}
@@ -122,7 +123,7 @@ func (s *Service) prepareChangeCheckWorkflow(ctx context.Context, scope nativeSc
 	for _, expected := range version.Checks {
 		checks = append(checks, expected.CheckRunID)
 	}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		plan.current, err = r.Change(ctx, change.ID)
 		if err != nil {
@@ -144,7 +145,7 @@ func (s *Service) prepareChangeCheckWorkflow(ctx context.Context, scope nativeSc
 	detail := tracker.ChangeDetail{Change: change, Versions: []tracker.ChangeVersion{version}}
 	content := eventstore.NewContent(s.runDetailStore())
 	for _, row := range evidence {
-		if row.OrganizationID != scope.organization || row.ChangeID != change.ID || hubapi.ValueOrEmpty(row.VersionID) != version.ID || row.Sequence > plan.current.EvidenceSequence {
+		if row.OrganizationID != scope.Organization || row.ChangeID != change.ID || hubapi.ValueOrEmpty(row.VersionID) != version.ID || row.Sequence > plan.current.EvidenceSequence {
 			return nil, eventstore.ErrInvalidRecord
 		}
 		raw, err := content.Evidence(ctx, row)
@@ -160,7 +161,7 @@ func (s *Service) prepareChangeCheckWorkflow(ctx context.Context, scope nativeSc
 	return s.prepareChangeEvidenceWorkflow(ctx, scope, detail, approval, plan, prior, now)
 }
 
-func (s *Service) prepareChangeEvidenceWorkflow(ctx context.Context, scope nativeScope, detail tracker.ChangeDetail, approval ChangeVersionApproval, plan *changeReviewWorkflow, prior bool, now time.Time) (*changeReviewWorkflow, error) {
+func (s *Service) prepareChangeEvidenceWorkflow(ctx context.Context, scope hubscope.NativeScope, detail tracker.ChangeDetail, approval ChangeVersionApproval, plan *changeReviewWorkflow, prior bool, now time.Time) (*changeReviewWorkflow, error) {
 	change, version := detail.Change, detail.Versions[0]
 	dispositions := make(map[int64][]securityaudit.Disposition)
 	for _, current := range detail.Reviews {
@@ -200,7 +201,7 @@ func (s *Service) prepareChangeEvidenceWorkflow(ctx context.Context, scope nativ
 	return plan, nil
 }
 
-func (s *Service) recheckChangeReviewWorkflow(ctx context.Context, w tenantstore.Writer, scope nativeScope, p *changeReviewWorkflow, current eventstore.Change) (bool, error) {
+func (s *Service) recheckChangeReviewWorkflow(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, p *changeReviewWorkflow, current eventstore.Change) (bool, error) {
 	if p == nil {
 		return false, nil
 	}
@@ -215,7 +216,7 @@ func (s *Service) recheckChangeReviewWorkflow(ctx context.Context, w tenantstore
 			return false, hubapi.NativeWorkItemStorageUnavailable()
 		}
 		for run, expected := range p.audits {
-			rows, err := reader.AuditDispositions(ctx, scope.project, run)
+			rows, err := reader.AuditDispositions(ctx, scope.Project, run)
 			if err != nil {
 				return false, err
 			}
@@ -228,8 +229,8 @@ func (s *Service) recheckChangeReviewWorkflow(ctx context.Context, w tenantstore
 	return !now.Before(p.evaluatedAt) && (p.until.IsZero() || now.Before(p.until)), nil
 }
 
-func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, approval ChangeVersionApproval, rework bool, now time.Time) (*changeWorkflowTransition, error) {
-	if scope.credential.Scope == hubapi.APIScopeWorker {
+func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, approval ChangeVersionApproval, rework bool, now time.Time) (*changeWorkflowTransition, error) {
+	if scope.Credential.Scope == hubapi.APIScopeWorker {
 		return nil, nil
 	}
 	row, snapshot, err := s.readWorkItemRecord(ctx, scope, string(change.WorkItemID))
@@ -247,7 +248,7 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 	if err := validateConfiguredWorkflowPolicy(project, approval.Policy, true); err != nil {
 		return nil, err
 	}
-	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
+	workflow, err := projectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), approval.Policy)
 	if err != nil {
 		return nil, err
 	}
@@ -267,13 +268,13 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 	if target == "" || target == issue.State {
 		return p, nil
 	}
-	if err := validateNativeWorkflowTransition(project.States, issue.State, target, scope.credential.Scope); err != nil {
+	if err := validateNativeWorkflowTransition(project.States, issue.State, target, scope.Credential.Scope); err != nil {
 		return nil, err
 	}
 	p = &changeWorkflowTransition{eligible: true, plan: workItemRecordPlan{project: project, current: row, eventType: "workflow.transitioned"}, fields: workItemRecordFields{Body: hubapi.StringValue(row.BodyObjectKey), Contract: row.IssueContractObjectKey, Report: row.ReportContextObjectKey}, dependencies: !rework}
 	sourceIssue := issue
 	content := eventstore.NewContent(s.runDetailStore())
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		attempt, err := r.LatestAttempt(ctx, row.ID)
 		if err == nil {
 			p.attempt = &attempt
@@ -281,7 +282,7 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 			return err
 		}
 		if issue.LinkedSource != nil {
-			linked, err := r.LinkedSource(ctx, scope.project, row.NativeID)
+			linked, err := r.LinkedSource(ctx, scope.Project, row.NativeID)
 			if err != nil {
 				return err
 			}
@@ -301,7 +302,7 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 	if p.linked != nil {
 		issue.LinkedSource = &tracker.LinkedIssueSource{URL: p.linked.URL, Status: "pending"}
 		if p.linked.SnapshotObjectKey != "" {
-			linked, err := content.LinkedIssueSnapshot(ctx, scope.organization, eventstore.Reference(p.linked.SnapshotObjectKey, p.linked.SnapshotSHA256, p.linked.SnapshotBytes, p.linked.SnapshotContentBytes))
+			linked, err := content.LinkedIssueSnapshot(ctx, scope.Organization, eventstore.Reference(p.linked.SnapshotObjectKey, p.linked.SnapshotSHA256, p.linked.SnapshotBytes, p.linked.SnapshotContentBytes))
 			if err != nil {
 				return nil, err
 			}
@@ -339,7 +340,7 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 			key, err := hubapi.CommandHash(struct {
 				Organization, Project, Change, Item, State, Policy string
 				Revision                                           int64
-			}{string(scope.organization), string(scope.project), change.ID, string(issue.WorkItemID), target, p.policy.PolicyID, int64(issue.Revision)})
+			}{string(scope.Organization), string(scope.Project), change.ID, string(issue.WorkItemID), target, p.policy.PolicyID, int64(issue.Revision)})
 			if err != nil {
 				return nil, err
 			}
@@ -355,34 +356,34 @@ func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope nat
 		if err != nil {
 			return nil, err
 		}
-		prepared, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
+		prepared, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, raw)
 		if err != nil {
 			return nil, err
 		}
 		p.contract = &prepared
 		p.fields.Contract = &prepared.PayloadObjectKey
 	}
-	raw, err := json.Marshal(s.nativeIssueResponse(scope.reporterIssue(issue)))
+	raw, err := json.Marshal(s.nativeIssueResponse(scope.ReporterIssue(issue)))
 	if err != nil {
 		return nil, err
 	}
-	p.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: row.NativeID, RecordID: string(row.NativeID), Revision: row.Revision + 1}, raw)
+	p.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, RecordID: string(row.NativeID), Revision: row.Revision + 1}, raw)
 	if err != nil {
 		return nil, err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: row.NativeID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: previous, ToState: target, Reason: "user_requested"}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: row.NativeID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: previous, ToState: target, Reason: "user_requested"}})
 	if err != nil {
 		return nil, err
 	}
-	p.event, err = content.PrepareEvent(ctx, scope.organization, raw)
+	p.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
 	if err != nil {
 		return nil, err
 	}
-	p.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: row.NativeID, ID: "issue:" + string(row.NativeID), SourceID: string(row.NativeID), Kind: "issue", Scope: "issue", Revision: row.Revision + 1, UpdatedAt: now}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
+	p.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, ID: "issue:" + string(row.NativeID), SourceID: string(row.NativeID), Kind: "issue", Scope: "issue", Revision: row.Revision + 1, UpdatedAt: now}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 	return p, err
 }
 
-func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstore.Writer, scope nativeScope, p *changeWorkflowTransition) (bool, error) {
+func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, p *changeWorkflowTransition) (bool, error) {
 	if p == nil {
 		return false, nil
 	}
@@ -392,12 +393,12 @@ func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstor
 	if err := w.LockRelationshipGraph(ctx); err != nil {
 		return false, err
 	}
-	refs := []corestore.WorkItemReference{{ProjectID: scope.project, WorkItemID: p.plan.current.NativeID}}
+	refs := []corestore.WorkItemReference{{ProjectID: scope.Project, WorkItemID: p.plan.current.NativeID}}
 	if p.dependencies {
 		cursor := corestore.WorkItemBlockerCursor{}
 		complete := false
 		for range claimPreparationLimit {
-			page, err := w.WorkItemBlockers(ctx, scope.project, p.plan.current.NativeID, cursor, corestore.MaxPageSize)
+			page, err := w.WorkItemBlockers(ctx, scope.Project, p.plan.current.NativeID, cursor, corestore.MaxPageSize)
 			if err != nil {
 				return false, err
 			}
@@ -437,7 +438,7 @@ func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstor
 		if project.Core.DeletedAt != nil {
 			return false, corestore.ErrNotFound
 		}
-		if ref.ProjectID == scope.project && !sameWorkItemProjectPlan(p.plan.project, project) {
+		if ref.ProjectID == scope.Project && !sameWorkItemProjectPlan(p.plan.project, project) {
 			return false, corestore.ErrRevisionConflict
 		}
 		states := make(map[string]bool, len(project.States))
@@ -453,7 +454,7 @@ func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstor
 			return false, err
 		}
 		for _, row := range rows {
-			if row.ProjectID == scope.project && row.NativeID == p.plan.current.NativeID {
+			if row.ProjectID == scope.Project && row.NativeID == p.plan.current.NativeID {
 				if row.ID != p.plan.current.ID || row.Revision != p.plan.current.Revision || row.EventSequence != p.plan.current.EventSequence || row.Archived != p.plan.current.Archived {
 					return false, corestore.ErrRevisionConflict
 				}
@@ -465,14 +466,14 @@ func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstor
 	if !p.eligible {
 		return false, nil
 	}
-	policy, err := w.ProjectPolicy(ctx, scope.project)
+	policy, err := w.ProjectPolicy(ctx, scope.Project)
 	if err != nil || !p.policyFound || !sameTenantProjectPolicyRevisionContent(p.policy, policy) {
 		if err != nil {
 			return false, err
 		}
 		return false, corestore.ErrRevisionConflict
 	}
-	linked, linkedErr := w.LinkedSource(ctx, scope.project, p.plan.current.NativeID)
+	linked, linkedErr := w.LinkedSource(ctx, scope.Project, p.plan.current.NativeID)
 	if linkedErr == nil && (p.linked == nil || !sameNativeClaimLinkedSource(linked, *p.linked)) || (errors.Is(linkedErr, corestore.ErrNotFound) || errors.Is(linkedErr, sql.ErrNoRows)) && p.linked != nil {
 		return false, corestore.ErrRevisionConflict
 	}
@@ -505,15 +506,15 @@ func (s *Service) lockChangeWorkflowTransition(ctx context.Context, w tenantstor
 	return ready, nil
 }
 
-func (s *Service) applyChangeWorkflowTransition(ctx context.Context, w tenantstore.Writer, scope nativeScope, p *changeWorkflowTransition) error {
+func (s *Service) applyChangeWorkflowTransition(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, p *changeWorkflowTransition) error {
 	if p.contract != nil {
 		ref := eventstore.Reference(p.contract.PayloadObjectKey, p.contract.PayloadSHA256, p.contract.PayloadBytes, p.contract.PayloadContentBytes)
-		id := "att_" + artifact.Digest([]byte(string(scope.organization) + "\n" + ref.Key))[:32]
-		object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: id, Reference: ref, CreatedAt: p.plan.issue.UpdatedAt})
+		id := "att_" + artifact.Digest([]byte(string(scope.Organization) + "\n" + ref.Key))[:32]
+		object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: id, Reference: ref, CreatedAt: p.plan.issue.UpdatedAt})
 		if err != nil {
 			return err
 		}
-		if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.organization, ArchiveID: object.ID, Kind: "work-item-contract", ID: string(p.plan.current.NativeID) + ":" + strconv.FormatInt(int64(p.plan.issue.Revision), 10), CreatedAt: p.plan.issue.UpdatedAt}); err != nil {
+		if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "work-item-contract", ID: string(p.plan.current.NativeID) + ":" + strconv.FormatInt(int64(p.plan.issue.Revision), 10), CreatedAt: p.plan.issue.UpdatedAt}); err != nil {
 			return err
 		}
 	}
@@ -524,7 +525,7 @@ func (s *Service) applyChangeWorkflowTransition(ctx context.Context, w tenantsto
 		if s.config.ConversationDispatch == nil {
 			return conversationDispatchUnavailable()
 		}
-		if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.project, string(p.plan.current.NativeID), leasestore.Fence{}, s.config.now().UTC()); err != nil {
+		if err := s.config.ConversationDispatch.RequestDispatch(ctx, w, scope.Project, string(p.plan.current.NativeID), leasestore.Fence{}, s.config.now().UTC()); err != nil {
 			return err
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,7 +23,7 @@ func (s *Service) hostedProjectRank(c echo.Context) error {
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	value, err := s.readOrganizationRankRecord(ctx, nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential})
+	value, err := s.readOrganizationRankRecord(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID()), Credential: credential})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -46,6 +47,6 @@ func (s *Service) updateHostedProjectRank(c echo.Context) error {
 }
 
 func (s *Service) updateOrganizationProjectRankCommand(ctx context.Context, credential hubapi.APICredential, change projectRankChange) (any, error) {
-	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential, requireHostedAdmin: true}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID()), Credential: credential, RequireHostedAdmin: true}
 	return s.updateOrganizationRankRecord(ctx, scope, change)
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -14,7 +15,7 @@ func TestNativeIssuePickerProjection(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	issues := seedArchiveIssues(t, f.service, scope, 120, "Todo")
 	response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issues[7].WorkItemID), f.token, tracker.UpdateIssue{
 		Mutation: tracker.Mutation{IdempotencyKey: "picker-title-priority"}, ExpectedRevision: issues[7].Revision,

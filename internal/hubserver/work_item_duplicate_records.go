@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -97,16 +98,16 @@ func decodeWorkItemReceipt(raw json.RawMessage, value any) error {
 	return nil
 }
 
-func validateWorkItemReceiptIssue(scope nativeScope, item string, raw json.RawMessage) error {
+func validateWorkItemReceiptIssue(scope hubscope.NativeScope, item string, raw json.RawMessage) error {
 	var issue tracker.NativeIssue
 	if err := decodeWorkItemReceipt(raw, &issue); err != nil {
 		return err
 	}
-	if issue.OrganizationID != scope.organization || issue.ProjectID != scope.project || item == "" && !hubapi.ValidID(string(issue.WorkItemID), "wi") || item != "" && string(issue.WorkItemID) != item ||
+	if issue.OrganizationID != scope.Organization || issue.ProjectID != scope.Project || item == "" && !hubapi.ValidID(string(issue.WorkItemID), "wi") || item != "" && string(issue.WorkItemID) != item ||
 		issue.Number <= 0 || issue.Revision <= 0 || issue.Profile != "native" && issue.Profile != "github_compatible" || issue.Title == "" || issue.State == "" {
 		return receiptstore.ErrExpired
 	}
-	if !scope.reporterOwns(issue.Actor) {
+	if !scope.ReporterOwns(issue.Actor) {
 		return hubapi.NativeNotFound()
 	}
 	if len(issue.Dependencies) != 0 || len(issue.Blockers) != 0 || len(issue.Dependents) != 0 || len(issue.Related) != 0 ||
@@ -127,7 +128,7 @@ func validateWorkItemReceiptIssue(scope nativeScope, item string, raw json.RawMe
 	return nil
 }
 
-func (s *Service) readWorkItemRecordReceipt(ctx context.Context, scope nativeScope, receipt eventstore.Receipt, input any, item string) (json.RawMessage, error) {
+func (s *Service) readWorkItemRecordReceipt(ctx context.Context, scope hubscope.NativeScope, receipt eventstore.Receipt, input any, item string) (json.RawMessage, error) {
 	raw, err := eventstore.NewContent(s.runDetailStore()).Receipt(ctx, receipt)
 	if err != nil {
 		return raw, err
@@ -157,16 +158,16 @@ func (s *Service) readWorkItemRecordReceipt(ctx context.Context, scope nativeSco
 		return nil, err
 	}
 	var stored corestore.DuplicateChallenge
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		challenges, ok := reader.(corestore.DuplicateChallengeReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		stored, err = challenges.DuplicateChallenge(ctx, scope.project, challenge.ChallengeToken)
+		stored, err = challenges.DuplicateChallenge(ctx, scope.Project, challenge.ChallengeToken)
 		return err
 	})
-	if errors.Is(err, corestore.ErrNotFound) || err == nil && (stored.PrincipalID != scope.actor().PrincipalID || stored.RequestID != receipt.CommandKey || stored.ContentHash != receipt.RequestHash || !s.config.now().Before(stored.ExpiresAt)) {
+	if errors.Is(err, corestore.ErrNotFound) || err == nil && (stored.PrincipalID != scope.Actor().PrincipalID || stored.RequestID != receipt.CommandKey || stored.ContentHash != receipt.RequestHash || !s.config.now().Before(stored.ExpiresAt)) {
 		return nil, receiptstore.ErrExpired
 	}
 	if err != nil {
@@ -183,10 +184,10 @@ func (s *Service) readWorkItemRecordReceipt(ctx context.Context, scope nativeSco
 	if err := s.validateWorkItemChallengeReplay(ctx, scope, stored); err != nil {
 		return nil, err
 	}
-	if scope.credential.HostedRole != "reporter" {
+	if scope.Credential.HostedRole != "reporter" {
 		return raw, nil
 	}
-	visible := make([]possibleDuplicate, 0, len(challenge.PossibleDuplicates))
+	visible := make([]hubscope.PossibleDuplicate, 0, len(challenge.PossibleDuplicates))
 	for _, candidate := range challenge.PossibleDuplicates {
 		_, _, err := s.readWorkItemRecord(ctx, scope, string(candidate.WorkItemID))
 		if hubapi.IsNativeNotFound(err) || errors.Is(err, corestore.ErrNotFound) {
@@ -204,17 +205,17 @@ func (s *Service) readWorkItemRecordReceipt(ctx context.Context, scope nativeSco
 	return json.Marshal(challenge)
 }
 
-func (s *Service) validateWorkItemChallengeReplay(ctx context.Context, scope nativeScope, challenge corestore.DuplicateChallenge) error {
+func (s *Service) validateWorkItemChallengeReplay(ctx context.Context, scope hubscope.NativeScope, challenge corestore.DuplicateChallenge) error {
 	var project projectstore.Record
 	var revision policystore.Revision
 	var found bool
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		project, err = r.ProjectRecord(ctx, scope.project)
+		project, err = r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		revision, err = r.ProjectPolicy(ctx, scope.project)
+		revision, err = r.ProjectPolicy(ctx, scope.Project)
 		found = err == nil
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
@@ -242,14 +243,14 @@ func (s *Service) validateWorkItemChallengeReplay(ctx context.Context, scope nat
 	} else if project.Core.WorkflowSource != "" {
 		return hubapi.PolicyMismatch("The configured workflow requires its approved policy")
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		if err := lockWorkItemDuplicateSource(ctx, w, scope.project, challenge.SourceSequence); err != nil {
+		if err := lockWorkItemDuplicateSource(ctx, w, scope.Project, challenge.SourceSequence); err != nil {
 			if errors.Is(err, searchstore.ErrIndexPending) || errors.Is(err, corestore.ErrRevisionConflict) {
 				return hubapi.NativeConflict(0)
 			}
@@ -262,7 +263,7 @@ func (s *Service) validateWorkItemChallengeReplay(ctx context.Context, scope nat
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		stored, err := challenges.DuplicateChallenge(ctx, scope.project, challenge.Token)
+		stored, err := challenges.DuplicateChallenge(ctx, scope.Project, challenge.Token)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return receiptstore.ErrExpired
 		}
@@ -272,14 +273,14 @@ func (s *Service) validateWorkItemChallengeReplay(ctx context.Context, scope nat
 		if stored.PrincipalID != challenge.PrincipalID || stored.RequestID != challenge.RequestID || stored.ContentHash != challenge.ContentHash || stored.PolicyHash != challenge.PolicyHash || stored.SourceSequence != challenge.SourceSequence || !slices.Equal(stored.Candidates, challenge.Candidates) {
 			return hubapi.NativeConflict(0)
 		}
-		current, err := w.ProjectRecord(ctx, scope.project)
+		current, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if current.Core.DeletedAt != nil || !sameWorkItemProjectPlan(project, current) {
 			return hubapi.NativeConflict(0)
 		}
-		currentPolicy, err := w.ProjectPolicy(ctx, scope.project)
+		currentPolicy, err := w.ProjectPolicy(ctx, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) && !found {
 			err = nil
 		} else if err == nil && (!found || !sameNativeClaimProjectPolicy(revision, currentPolicy)) {
@@ -289,11 +290,11 @@ func (s *Service) validateWorkItemChallengeReplay(ctx context.Context, scope nat
 			return err
 		}
 		for _, candidate := range challenge.Candidates {
-			item, err := w.LockWorkItem(ctx, scope.project, candidate.WorkItemID)
+			item, err := w.LockWorkItem(ctx, scope.Project, candidate.WorkItemID)
 			if err != nil {
 				return err
 			}
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+			if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				return hubapi.NativeNotFound()
 			}
 			if item.Archived || item.Number != candidate.Number || item.Revision != candidate.Revision {
@@ -305,7 +306,7 @@ func (s *Service) validateWorkItemChallengeReplay(ctx context.Context, scope nat
 	return hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) prepareWorkItemDuplicateLinks(ctx context.Context, scope nativeScope, project projectstore.Record, issue tracker.NativeIssue, confirmation *workItemDuplicateConfirmation) ([]workItemDuplicateLink, error) {
+func (s *Service) prepareWorkItemDuplicateLinks(ctx context.Context, scope hubscope.NativeScope, project projectstore.Record, issue tracker.NativeIssue, confirmation *workItemDuplicateConfirmation) ([]workItemDuplicateLink, error) {
 	if confirmation == nil {
 		return nil, nil
 	}
@@ -319,15 +320,15 @@ func (s *Service) prepareWorkItemDuplicateLinks(ctx context.Context, scope nativ
 		if err != nil {
 			return nil, err
 		}
-		version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision)}, raw)
+		version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision)}, raw)
 		if err != nil {
 			return nil, err
 		}
-		eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID, ID: hubapi.NewID("evt"), Type: "issue.edited", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: issue.UpdatedAt, Data: tracker.CollaborationData{Revision: issue.Revision, Fields: []string{"related"}, RelatedWorkItemID: candidate.WorkItemID, Operation: "add"}})
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: issue.WorkItemID, ID: hubapi.NewID("evt"), Type: "issue.edited", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: issue.UpdatedAt, Data: tracker.CollaborationData{Revision: issue.Revision, Fields: []string{"related"}, RelatedWorkItemID: candidate.WorkItemID, Operation: "add"}})
 		if err != nil {
 			return nil, err
 		}
-		event, err := content.PrepareEvent(ctx, scope.organization, eventRaw)
+		event, err := content.PrepareEvent(ctx, scope.Organization, eventRaw)
 		if err != nil {
 			return nil, err
 		}
@@ -340,7 +341,7 @@ func (s *Service) prepareWorkItemDuplicateLinks(ctx context.Context, scope nativ
 	return links, nil
 }
 
-func (s *Service) prepareWorkItemDuplicateConfirmation(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (*workItemDuplicateConfirmation, error) {
+func (s *Service) prepareWorkItemDuplicateConfirmation(ctx context.Context, scope hubscope.NativeScope, request tracker.CreateIssue) (*workItemDuplicateConfirmation, error) {
 	if len(request.ChallengeToken) > 128 || len(request.NotDuplicateOf) < 1 || len(request.NotDuplicateOf) > 5 || request.GitHubIssueURL != "" || request.Provenance != nil {
 		return nil, hubapi.NativePublicInvalid("Supply a duplicate challenge token and one to five issue numbers together")
 	}
@@ -349,23 +350,23 @@ func (s *Service) prepareWorkItemDuplicateConfirmation(ctx context.Context, scop
 		return nil, err
 	}
 	confirmation := &workItemDuplicateConfirmation{issues: make(map[tracker.NativeWorkItemID]tracker.NativeIssue, len(request.NotDuplicateOf))}
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		challenges, ok := reader.(corestore.DuplicateChallengeReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		stored, err := challenges.DuplicateChallenge(ctx, scope.project, request.ChallengeToken)
+		stored, err := challenges.DuplicateChallenge(ctx, scope.Project, request.ChallengeToken)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return receiptstore.ErrExpired
 		}
 		if err != nil {
 			return err
 		}
-		if stored.PrincipalID != scope.actor().PrincipalID || stored.RequestID != request.IdempotencyKey || stored.ContentHash != hash || !s.config.now().Before(stored.ExpiresAt) {
+		if stored.PrincipalID != scope.Actor().PrincipalID || stored.RequestID != request.IdempotencyKey || stored.ContentHash != hash || !s.config.now().Before(stored.ExpiresAt) {
 			return receiptstore.ErrExpired
 		}
 		confirmation.challenge = stored
-		project, err := reader.ProjectRecord(ctx, scope.project)
+		project, err := reader.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -385,8 +386,8 @@ func (s *Service) prepareWorkItemDuplicateConfirmation(ctx context.Context, scop
 				return hubapi.NativePublicInvalid("Not duplicate of must name a challenged issue number")
 			}
 			candidate := stored.Candidates[index]
-			item, err := reader.WorkItem(ctx, scope.project, candidate.WorkItemID)
-			if err != nil || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+			item, err := reader.WorkItem(ctx, scope.Project, candidate.WorkItemID)
+			if err != nil || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 					return err
 				}
@@ -397,7 +398,7 @@ func (s *Service) prepareWorkItemDuplicateConfirmation(ctx context.Context, scop
 			}
 			confirmation.selected = append(confirmation.selected, candidate)
 			state := hubapi.StringValue(item.WorkflowStateName)
-			confirmation.issues[candidate.WorkItemID] = s.nativeIssueResponse(tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item.NativeID, Number: int(item.Number), Revision: tracker.Revision(item.Revision)}, Title: item.Title, State: state, Terminal: tenantProjectStateTerminal(project, state), WebURL: issueBrowserPath(organization.Slug, project.Core.Slug, int(item.Number))})
+			confirmation.issues[candidate.WorkItemID] = s.nativeIssueResponse(tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.NativeID, Number: int(item.Number), Revision: tracker.Revision(item.Revision)}, Title: item.Title, State: state, Terminal: tenantProjectStateTerminal(project, state), WebURL: issueBrowserPath(organization.Slug, project.Core.Slug, int(item.Number))})
 		}
 		return nil
 	})
@@ -407,7 +408,7 @@ func (s *Service) prepareWorkItemDuplicateConfirmation(ctx context.Context, scop
 	return confirmation, nil
 }
 
-func consumeWorkItemDuplicateConfirmation(ctx context.Context, writer tenantstore.Writer, scope nativeScope, confirmation *workItemDuplicateConfirmation, now time.Time) error {
+func consumeWorkItemDuplicateConfirmation(ctx context.Context, writer tenantstore.Writer, scope hubscope.NativeScope, confirmation *workItemDuplicateConfirmation, now time.Time) error {
 	challenges, ok := writer.(corestore.DuplicateChallengeWriter)
 	if !ok {
 		return hubapi.NativeWorkItemStorageUnavailable()
@@ -427,11 +428,11 @@ func consumeWorkItemDuplicateConfirmation(ctx context.Context, writer tenantstor
 		return strings.Compare(string(a.WorkItemID), string(b.WorkItemID))
 	})
 	for _, candidate := range ordered {
-		item, err := writer.LockWorkItem(ctx, scope.project, candidate.WorkItemID)
+		item, err := writer.LockWorkItem(ctx, scope.Project, candidate.WorkItemID)
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
 		}
 		if item.Archived || item.Number != candidate.Number || item.Revision != candidate.Revision {
@@ -444,7 +445,7 @@ func consumeWorkItemDuplicateConfirmation(ctx context.Context, writer tenantstor
 type workItemDuplicateSearch struct {
 	available bool
 	sequence  int64
-	matches   []possibleDuplicate
+	matches   []hubscope.PossibleDuplicate
 }
 
 func workItemDuplicatePolicyHash(revision policystore.Revision, found bool) (string, error) {
@@ -454,17 +455,17 @@ func workItemDuplicatePolicyHash(revision policystore.Revision, found bool) (str
 	}{revision, found})
 }
 
-func (s *Service) prepareWorkItemDuplicates(ctx context.Context, scope nativeScope, request tracker.CreateIssue, machine bool) (*workItemDuplicateSearch, error) {
+func (s *Service) prepareWorkItemDuplicates(ctx context.Context, scope hubscope.NativeScope, request tracker.CreateIssue, machine bool) (*workItemDuplicateSearch, error) {
 	text := request.Title + "\n" + request.Body
 	if origin, stamped := issueorigin.Parse(request.Body); stamped {
 		text = origin.Fingerprint + "\n" + issueorigin.DefectFingerprint(request.Body) + "\n" + text
 	}
-	query := searchstore.DuplicateSourceQuery{ProjectID: scope.project, Machine: machine, Request: &searchstore.Text{Title: request.Title, Body: request.Body}, Text: nativeSearchBytePrefix(text, searchstore.MaxQueryTextBytes), Now: s.config.now()}
-	if scope.credential.HostedRole == "reporter" {
-		query.Reporter = new(scope.actor().PrincipalID)
+	query := searchstore.DuplicateSourceQuery{ProjectID: scope.Project, Machine: machine, Request: &searchstore.Text{Title: request.Title, Body: request.Body}, Text: nativeSearchBytePrefix(text, searchstore.MaxQueryTextBytes), Now: s.config.now()}
+	if scope.Credential.HostedRole == "reporter" {
+		query.Reporter = new(scope.Actor().PrincipalID)
 	}
 	var page searchstore.DuplicateSourcePage
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
 			return err
 		}
@@ -520,7 +521,7 @@ func (s *Service) prepareWorkItemDuplicates(ctx context.Context, scope nativeSco
 		if match.Fingerprint {
 			why = "Matching machine fingerprint"
 		}
-		search.matches = append(search.matches, possibleDuplicate{WorkItemID: item.WorkItemID, Number: item.Number, Title: item.Title, State: item.State, revision: item.Revision, terminal: source.Terminal, Why: why, Identifier: string(scope.project) + "#" + strconv.Itoa(item.Number)})
+		search.matches = append(search.matches, hubscope.PossibleDuplicate{WorkItemID: item.WorkItemID, Number: item.Number, Title: item.Title, State: item.State, Revision: item.Revision, Terminal: source.Terminal, Why: why, Identifier: string(scope.Project) + "#" + strconv.Itoa(item.Number)})
 	}
 	return search, nil
 }
@@ -541,7 +542,7 @@ type workItemMachinePriority struct {
 	document searchstore.Document
 }
 
-func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope nativeScope, occurrence workItemRecordPlan, priority *int) (*workItemMachinePriority, error) {
+func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope hubscope.NativeScope, occurrence workItemRecordPlan, priority *int) (*workItemMachinePriority, error) {
 	if err := requireNativeEdit(occurrence.issue, occurrence.issue.Revision); err != nil {
 		return nil, err
 	}
@@ -550,7 +551,7 @@ func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope nati
 	plan.issue.Revision++
 	plan.issue.UpdatedAt = s.config.now().UTC().Truncate(time.Microsecond)
 	plan.issue.LastActivityAt = plan.issue.UpdatedAt
-	fields, err := s.prepareWorkItemFields(ctx, scope.organization, plan)
+	fields, err := s.prepareWorkItemFields(ctx, scope.Organization, plan)
 	if err != nil {
 		return nil, err
 	}
@@ -559,19 +560,19 @@ func (s *Service) prepareWorkItemMachinePriority(ctx context.Context, scope nati
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, RecordID: string(plan.issue.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
+	version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, RecordID: string(plan.issue.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
 	if err != nil {
 		return nil, err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.issue.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
 	if err != nil {
 		return nil, err
 	}
-	event, err := content.PrepareEvent(ctx, scope.organization, raw)
+	event, err := content.PrepareEvent(ctx, scope.Organization, raw)
 	if err != nil {
 		return nil, err
 	}
-	document := searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + string(plan.issue.WorkItemID), SourceID: string(plan.issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}
+	document := searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + string(plan.issue.WorkItemID), SourceID: string(plan.issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}
 	document, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, document, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
 	if err != nil {
 		return nil, err

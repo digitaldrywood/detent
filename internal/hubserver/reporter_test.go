@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -994,7 +995,7 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			if len(issue.IssueContract.ConfirmedSections) != 0 {
 				t.Fatalf("Reporter filing confirmed engineering sections: %+v", issue.IssueContract.ConfirmedSections)
 			}
-			scope := nativeScope{organization: "org_security", project: f.project}
+			scope := hubscope.NativeScope{Organization: "org_security", Project: f.project}
 			evaluation, err := nativeIssueContractEvaluationForTest(t.Context(), f.service, scope, issue.WorkItemID)
 			claimable, reason := evaluation.Allowed, evaluation.Reason
 			if err != nil || !claimable || reason != "" {

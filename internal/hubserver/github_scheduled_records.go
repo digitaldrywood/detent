@@ -9,28 +9,12 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-const scheduledImportTrustChanged = "Scheduled CI import authorization changed before creation or Todo is not dispatchable"
-
-func (v *nativeScheduledRepair) trusted() bool {
-	return v != nil && v.importReason == "" && v.policyID != ""
-}
-
-func (v *nativeScheduledRepair) trustedLinkedImport() bool {
-	return v.trusted() && v.importURL != ""
-}
-
-func (v *nativeScheduledRepair) downgradeTrust() {
-	v.policyID = ""
-	if v.importURL != "" {
-		v.importReason = scheduledImportTrustChanged
-	}
-}
 
 func scheduledRepairTodoAvailable(project projectstore.Record) bool {
 	return slices.ContainsFunc(project.States, func(state tracker.NativeState) bool {
@@ -38,28 +22,28 @@ func scheduledRepairTodoAvailable(project projectstore.Record) bool {
 	})
 }
 
-func scheduledRepairProjectTrusted(project projectstore.Record, verified *nativeScheduledRepair) bool {
+func scheduledRepairProjectTrusted(project projectstore.Record, verified *hubscope.NativeScheduledRepair) bool {
 	repository := project.Settings.CheckoutRepository
 	if repository == "" {
 		repository = project.Settings.Repository
 	}
-	return strings.EqualFold(repository, verified.evidence.Repository) && scheduledRepairTodoAvailable(project)
+	return strings.EqualFold(repository, verified.Evidence.Repository) && scheduledRepairTodoAvailable(project)
 }
 
-func (s *Service) requireGitHubPolicyRecord(ctx context.Context, w tenantstore.Writer, scope nativeScope) error {
-	verified := scope.scheduledRepair
-	if !verified.trusted() {
+func (s *Service) requireGitHubPolicyRecord(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope) error {
+	verified := scope.ScheduledRepair
+	if !verified.Trusted() {
 		return nil
 	}
-	if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+	if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 		return err
 	}
-	row, err := w.ProjectPolicy(ctx, scope.project)
+	row, err := w.ProjectPolicy(ctx, scope.Project)
 	if err != nil {
 		return err
 	}
-	if row.PolicyID == verified.policyID {
-		project, err := w.ProjectRecord(ctx, scope.project)
+	if row.PolicyID == verified.PolicyID {
+		project, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -67,21 +51,21 @@ func (s *Service) requireGitHubPolicyRecord(ctx context.Context, w tenantstore.W
 			return nil
 		}
 	}
-	verified.downgradeTrust()
+	verified.DowngradeTrust()
 	return corestore.ErrSerializationFailure
 }
 
-func (s *Service) applyScheduledRepairRecord(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue) error {
-	verified := scope.scheduledRepair
-	if !verified.trusted() {
+func (s *Service) applyScheduledRepairRecord(ctx context.Context, scope hubscope.NativeScope, issue *tracker.NativeIssue) error {
+	verified := scope.ScheduledRepair
+	if !verified.Trusted() {
 		return nil
 	}
-	approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+	approval, err := s.readTenantProjectPolicy(ctx, scope.Organization, scope.Project)
 	if err != nil {
 		return err
 	}
-	if approval.Policy.ID != verified.policyID || approval.Policy.Authored == nil {
-		verified.downgradeTrust()
+	if approval.Policy.ID != verified.PolicyID || approval.Policy.Authored == nil {
+		verified.DowngradeTrust()
 		return nil
 	}
 	contract, err := config.ResolvePolicyIssueContract(approval.Policy)
@@ -90,43 +74,43 @@ func (s *Service) applyScheduledRepairRecord(ctx context.Context, scope nativeSc
 	}
 	_, _, priority, authorized := contract.ScheduledRepairWorkflow()
 	if !authorized {
-		verified.downgradeTrust()
+		verified.DowngradeTrust()
 		return nil
 	}
 	body := contract.ScheduledRepairBody()
-	if verified.importURL != "" {
+	if verified.ImportURL != "" {
 		project, err := s.readProjectRecord(ctx, scope)
 		if err != nil {
 			return err
 		}
 		body = contract.ScheduledImportBody()
 		if body == "" || !scheduledRepairProjectTrusted(project, verified) {
-			verified.downgradeTrust()
+			verified.DowngradeTrust()
 			return nil
 		}
-		if issue.Body != verified.importBody {
+		if issue.Body != verified.ImportBody {
 			return nil
 		}
 	}
 	origin, ok := issueorigin.Parse(issue.Body)
-	if !ok || !scheduledRepairOriginMatches(origin.Source, verified.evidence) {
+	if !ok || !scheduledRepairOriginMatches(origin.Source, verified.Evidence) {
 		return nil
 	}
-	if verified.importURL == "" {
+	if verified.ImportURL == "" {
 		project, err := s.readProjectRecord(ctx, scope)
 		if err != nil {
 			return err
 		}
 		if body == "" || !scheduledRepairProjectTrusted(project, verified) {
-			verified.downgradeTrust()
+			verified.DowngradeTrust()
 			return nil
 		}
 	}
 	issue.State, issue.Priority = "Todo", new(priority)
 	issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(body)
 	issue.IssueContract.RecordedAt = s.config.now()
-	body += fmt.Sprintf("\n\n## Verified CI occurrence\nRun: %s\nJob: %s\nTested commit: %s\nApproved policy: %s", verified.evidence.RunURL, verified.evidence.JobURL, verified.evidence.HeadSHA, verified.policyID)
+	body += fmt.Sprintf("\n\n## Verified CI occurrence\nRun: %s\nJob: %s\nTested commit: %s\nApproved policy: %s", verified.Evidence.RunURL, verified.Evidence.JobURL, verified.Evidence.HeadSHA, verified.PolicyID)
 	body += "\n\n## Diagnostic evidence (untrusted)\n\n> " + strings.ReplaceAll(html.EscapeString(strings.ReplaceAll(issue.Body, "\r", "")), "\n", "\n> ")
-	issue.Body = issueorigin.Stamp(body, origin) + verified.evidence.Stamp()
+	issue.Body = issueorigin.Stamp(body, origin) + verified.Evidence.Stamp()
 	return nil
 }

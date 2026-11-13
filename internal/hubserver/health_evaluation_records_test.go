@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -259,7 +260,7 @@ func TestPostgresHealthEvaluationPublishesRecurrenceAndClear(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				unchanged, err := service.readHealthFindings(t.Context(), nativeScope{organization: org, project: f.project.ID}, "all", "", "", 100)
+				unchanged, err := service.readHealthFindings(t.Context(), hubscope.NativeScope{Organization: org, Project: f.project.ID}, "all", "", "", 100)
 				if err != nil || !reflect.DeepEqual(unchanged.Items, page.Items) {
 					t.Fatalf("partial work changed unexamined global findings: %+v err=%v", unchanged, err)
 				}
@@ -282,7 +283,7 @@ func TestPostgresHealthEvaluationPublishesRecurrenceAndClear(t *testing.T) {
 	}
 	defer reopened.Close()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {
-		page, err := reopened.readHealthFindings(t.Context(), nativeScope{organization: org, project: projects[org]}, "all", "", "", 100)
+		page, err := reopened.readHealthFindings(t.Context(), hubscope.NativeScope{Organization: org, Project: projects[org]}, "all", "", "", 100)
 		if err != nil || len(page.Items) != 4 {
 			t.Fatalf("reopened organization=%s page=%+v err=%v", org, page, err)
 		}
@@ -314,7 +315,7 @@ func TestPostgresHealthEvaluationPublishesRecurrenceAndClear(t *testing.T) {
 					if err := current.publishHealthEvaluationScope(t.Context(), organization, observed, []healthFinding{finding}, scope); err != nil {
 						t.Fatal(err)
 					}
-					page, err := current.readHealthFindings(t.Context(), nativeScope{organization: organization, project: f.project.ID}, "open", "", "", 10)
+					page, err := current.readHealthFindings(t.Context(), hubscope.NativeScope{Organization: organization, Project: f.project.ID}, "open", "", "", 10)
 					if err != nil || len(page.Items) != 1 {
 						t.Fatalf("current tenant wait=%+v error=%v", page, err)
 					}
@@ -337,7 +338,7 @@ func TestPostgresHealthEvaluationPublishesRecurrenceAndClear(t *testing.T) {
 					if err := current.publishHealthEvaluationScope(t.Context(), organization, observed.Add(time.Second), nil, scope); err != nil {
 						t.Fatal(err)
 					}
-					cleared, err := current.readHealthFindings(t.Context(), nativeScope{organization: organization, project: f.project.ID}, "open", "", "", 10)
+					cleared, err := current.readHealthFindings(t.Context(), hubscope.NativeScope{Organization: organization, Project: f.project.ID}, "open", "", "", 10)
 					if err != nil || len(cleared.Items) != 0 {
 						t.Fatalf("resolved wait remained current: %+v error=%v", cleared, err)
 					}

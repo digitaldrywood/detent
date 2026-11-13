@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -23,16 +24,16 @@ type attemptMetadataSnapshotReader struct {
 	organization tracker.OrganizationID
 }
 
-func readAttemptMetadataSnapshot(ctx context.Context, r tenantstore.Reader, scope nativeScope, item string, attempts []leasestore.Attempt, evidence bool) (tenantstore.Reader, error) {
+func readAttemptMetadataSnapshot(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item string, attempts []leasestore.Attempt, evidence bool) (tenantstore.Reader, error) {
 	reader, ok := r.(tenantstore.AttemptMetadataReader)
 	if !ok {
 		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
-	metadata, err := reader.AttemptMetadata(ctx, scope.project, tracker.NativeWorkItemID(item), attempts, evidence)
+	metadata, err := reader.AttemptMetadata(ctx, scope.Project, tracker.NativeWorkItemID(item), attempts, evidence)
 	if err != nil {
 		return nil, err
 	}
-	return attemptMetadataSnapshotReader{Reader: r, metadata: metadata, organization: scope.organization}, nil
+	return attemptMetadataSnapshotReader{Reader: r, metadata: metadata, organization: scope.Organization}, nil
 }
 
 func (r attemptMetadataSnapshotReader) Lease(_ context.Context, id string) (leasestore.Lease, error) {

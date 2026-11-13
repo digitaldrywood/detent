@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -37,7 +38,7 @@ type tenantAttemptSnapshot struct {
 	evidenceRows      []attachmentstore.Record
 }
 
-func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
+func (s *Service) readNativeAttemptTenant(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
 	snapshot, err := s.readNativeAttemptSnapshotTenant(ctx, scope, item, id)
 	if err != nil {
 		return tracker.NativeAttempt{}, err
@@ -45,28 +46,28 @@ func (s *Service) readNativeAttemptTenant(ctx context.Context, scope nativeScope
 	return s.hydrateNativeAttemptTenant(ctx, snapshot, s.config.now())
 }
 
-func (s *Service) readNativeAttemptSnapshotTenant(ctx context.Context, scope nativeScope, item, id string) (tenantAttemptSnapshot, error) {
+func (s *Service) readNativeAttemptSnapshotTenant(ctx context.Context, scope hubscope.NativeScope, item, id string) (tenantAttemptSnapshot, error) {
 	var snapshot tenantAttemptSnapshot
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return tenantAttemptSnapshot{}, hubapi.NativeRunEventStorageUnavailable()
 	}
-	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if project.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		workItem, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		workItem, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
 		}
 		snapshot.attempt, err = r.Attempt(ctx, id)
@@ -87,7 +88,7 @@ func (s *Service) readNativeAttemptSnapshotTenant(ctx context.Context, scope nat
 		if snapshot.lease.IssueID != workItem.ID || snapshot.lease.FencingToken != snapshot.attempt.FencingToken {
 			return corestore.ErrNotFound
 		}
-		snapshot.event, err = r.LatestRunEvent(ctx, scope.project, snapshot.attempt.ID)
+		snapshot.event, err = r.LatestRunEvent(ctx, scope.Project, snapshot.attempt.ID)
 		if err == nil && snapshot.event.WorkItemID != tracker.NativeWorkItemID(item) {
 			return corestore.ErrNotFound
 		}
@@ -102,11 +103,11 @@ func (s *Service) readNativeAttemptSnapshotTenant(ctx context.Context, scope nat
 	return snapshot, err
 }
 
-func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope nativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (nativeAttemptPage, error) {
+func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (nativeAttemptPage, error) {
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/attempts"
+	path := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(item) + "/attempts"
 	if err := hubapi.ValidateNativeQuery(params, "view", "direction"); err != nil {
 		return nativeAttemptPage{}, err
 	}
@@ -148,22 +149,22 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope nativeS
 	if !ok {
 		return nativeAttemptPage{}, hubapi.NativeRunEventStorageUnavailable()
 	}
-	err = snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if project.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		workItem, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		workItem, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
 		}
 		typedCursor.IssueID = workItem.ID
@@ -187,7 +188,7 @@ func (s *Service) readNativeAttemptPageTenant(ctx context.Context, scope nativeS
 			if lease.IssueID != workItem.ID || lease.FencingToken != attempt.FencingToken {
 				return corestore.ErrNotFound
 			}
-			event, err := r.LatestRunEvent(ctx, scope.project, attempt.ID)
+			event, err := r.LatestRunEvent(ctx, scope.Project, attempt.ID)
 			if err != nil {
 				return err
 			}
@@ -378,7 +379,7 @@ func (s *Service) hydrateNativeAttemptTenant(ctx context.Context, snapshot tenan
 	}
 	if result.Runtime != nil && result.Runtime.Landing != nil {
 		ref := result.Runtime.Landing
-		scope := nativeScope{organization: snapshot.attempt.OrganizationID, project: snapshot.event.ProjectID}
+		scope := hubscope.NativeScope{Organization: snapshot.attempt.OrganizationID, Project: snapshot.event.ProjectID}
 		landing, owner, err := s.readNativeLandingObservation(ctx, scope, snapshot.event.WorkItemID, tracker.NativeChangeReference{ChangeID: ref.ChangeID, VersionID: ref.VersionID, HeadSHA: ref.HeadSHA})
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return tracker.NativeAttempt{}, err

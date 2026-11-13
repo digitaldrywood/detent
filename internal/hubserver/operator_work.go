@@ -17,13 +17,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type nativeOperatorScopeKey struct{}
 type nativeOperatorExecutor struct{ service *Service }
 
 func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
@@ -95,7 +95,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	if !ok {
 		return operatortool.Result{}, operatortool.ErrUnknownTool
 	}
-	resolver, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolver, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
 		return operatortool.Result{}, operatortool.ErrAccessDenied
 	}
@@ -133,10 +133,10 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		outcome = "denied"
 		return operatortool.Result{}, operatortool.ErrAccessDenied
 	}
-	scope.project = tracker.ProjectID(selector.ProjectID)
-	metadata.ActorKind = scope.actor().Kind
-	metadata.ViaKey = scope.actor().ViaKey
-	scope.action = call.Name
+	scope.Project = tracker.ProjectID(selector.ProjectID)
+	metadata.ActorKind = scope.Actor().Kind
+	metadata.ViaKey = scope.Actor().ViaKey
+	scope.Action = call.Name
 	if call.Name == operatortool.UploadAttachment {
 		if !e.service.hostedShared() {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
@@ -190,7 +190,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 					}
 					return operatortool.Result{}, hubSafeChangeError(resolveErr)
 				}
-				if definition.Annotations.ReadOnly || scope.credential.HostedRole == "reporter" {
+				if definition.Annotations.ReadOnly || scope.Credential.HostedRole == "reporter" {
 					return operatortool.Result{}, hubapi.SafeWorkReadError(resolveErr)
 				}
 				return operatortool.Result{}, hubSafeChangeError(resolveErr)
@@ -285,7 +285,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	if resourceID == "" {
 		resourceID = request.Identifier
 	}
-	resourceURL := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(resourceID)
+	resourceURL := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(resourceID)
 	if resource.ID != "" {
 		resourceURL += "/comments#" + url.PathEscape(resource.ID)
 	}

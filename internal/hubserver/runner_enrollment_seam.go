@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerenroll"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
@@ -60,8 +61,7 @@ func (s *Service) runnerEnrollmentService() *runnerenroll.Service {
 	})
 }
 
-func runnerUnauthorized() error { return hubapi.FromFeatureError(runnerenroll.Unauthorized()) }
-func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope nativeScope, request runnerauth.EnrollmentRequest) (any, error) {
+func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope hubscope.NativeScope, request runnerauth.EnrollmentRequest) (any, error) {
 	scope, err := s.runnerEnrollmentScope(ctx, scope)
 	if err != nil {
 		return nil, err
@@ -70,7 +70,7 @@ func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope nativ
 	return value, hubapi.FromFeatureError(err)
 }
 
-func (s *Service) revokeRunnerEnrollmentCommand(ctx context.Context, scope nativeScope, resource string) (any, error) {
+func (s *Service) revokeRunnerEnrollmentCommand(ctx context.Context, scope hubscope.NativeScope, resource string) (any, error) {
 	scope, err := s.runnerEnrollmentScope(ctx, scope)
 	if err != nil {
 		return nil, err
@@ -79,15 +79,15 @@ func (s *Service) revokeRunnerEnrollmentCommand(ctx context.Context, scope nativ
 	return value, hubapi.FromFeatureError(err)
 }
 
-func (s *Service) runnerEnrollmentScope(ctx context.Context, scope nativeScope) (nativeScope, error) {
-	scope.requireHostedAdmin = scope.credential.Hosted == nil
-	if scope.credential.Hosted == nil {
+func (s *Service) runnerEnrollmentScope(ctx context.Context, scope hubscope.NativeScope) (hubscope.NativeScope, error) {
+	scope.RequireHostedAdmin = scope.Credential.Hosted == nil
+	if scope.Credential.Hosted == nil {
 		return scope, nil
 	}
-	if err := s.requireHostedRunnerAdministration(ctx, scope.credential); err != nil {
+	if err := s.requireHostedRunnerAdministration(ctx, scope.Credential); err != nil {
 		return scope, err
 	}
-	scope.credential.ManageRunners = true
+	scope.Credential.ManageRunners = true
 	return scope, nil
 }
 
@@ -96,7 +96,7 @@ func (s *Service) registerRunnerEnrollmentRoutes(e *echo.Echo) {
 		Service: s.runnerEnrollmentService, Auth: s.requestAuth,
 		Credential: func(c echo.Context) (hubauth.Credential, bool) {
 			credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
-			return authCredential(credential), ok
+			return hubscope.AuthCredential(credential), ok
 		},
 		Admin:   s.requireInstanceAdmin(),
 		Error:   func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },

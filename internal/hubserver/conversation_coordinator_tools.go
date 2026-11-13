@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -170,7 +171,7 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		if authErr != nil {
 			return nil, authErr
 		}
-		if err := t.coordinator.authorizeRecord(actorCtx, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record, false); err != nil {
+		if err := t.coordinator.authorizeRecord(actorCtx, hubscope.NativeScope{Organization: record.OrganizationID, Project: record.ProjectID, Credential: credential}, record, false); err != nil {
 			return nil, err
 		}
 		record.OwnerPrincipalID = credential.ID
@@ -306,7 +307,7 @@ func (t *coordinatorToolset) readableProjects(ctx context.Context, record conver
 	}
 	projects := []tracker.ProjectID{}
 	err = t.coordinator.server.config.TenantRepository.ReadTenant(actorCtx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-		if err := t.coordinator.server.authorizeAccessScope(actorCtx, r, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, false); err != nil {
+		if err := t.coordinator.server.authorizeAccessScope(actorCtx, r, hubscope.NativeScope{Organization: record.OrganizationID, Project: record.ProjectID, Credential: credential}, false); err != nil {
 			return err
 		}
 		var after tracker.ProjectID
@@ -333,7 +334,7 @@ func (t *coordinatorToolset) readableProjects(ctx context.Context, record conver
 				if len(rows) > 0 {
 					after = rows[len(rows)-1].ID
 				}
-				allowed, err := t.coordinator.server.coordinatorAllowedProjects(actorCtx, r, nativeScope{organization: record.OrganizationID, credential: credential}, ids)
+				allowed, err := t.coordinator.server.coordinatorAllowedProjects(actorCtx, r, hubscope.NativeScope{Organization: record.OrganizationID, Credential: credential}, ids)
 				if err != nil {
 					return err
 				}
@@ -351,7 +352,7 @@ func (t *coordinatorToolset) readableProjects(ctx context.Context, record conver
 					ids = append(ids, grant.ProjectID)
 				}
 			}
-			allowed, err := t.coordinator.server.coordinatorAllowedProjects(actorCtx, r, nativeScope{organization: record.OrganizationID, credential: credential}, ids)
+			allowed, err := t.coordinator.server.coordinatorAllowedProjects(actorCtx, r, hubscope.NativeScope{Organization: record.OrganizationID, Credential: credential}, ids)
 			if err != nil {
 				return err
 			}
@@ -542,7 +543,7 @@ func (t *coordinatorToolset) resolveIssueReference(ctx context.Context, record c
 	if err != nil {
 		return "", err
 	}
-	scope.project = record.ProjectID
+	scope.Project = record.ProjectID
 	s := t.coordinator.server
 	issue, err := s.resolveOperatorNativeItem(ctx, nil, scope, reference)
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, explain.ErrNotFound) || hubapi.IsNativeNotFound(err) {
@@ -572,7 +573,7 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 		return nil, err
 	}
 	s := t.coordinator.server
-	scope := nativeScope{organization: record.OrganizationID, credential: credential}
+	scope := hubscope.NativeScope{Organization: record.OrganizationID, Credential: credential}
 	result := coordinatorIssue{Comments: []coordinatorComment{}}
 	var attemptID string
 	err = s.config.TenantRepository.ReadTenant(actorCtx, record.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -583,7 +584,7 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 		if !slices.Contains(readable, row.ProjectID) {
 			return hubapi.NativeNotFound()
 		}
-		scope.project = row.ProjectID
+		scope.Project = row.ProjectID
 		project, err := r.ProjectRecord(ctx, row.ProjectID)
 		if err != nil {
 			return err
@@ -696,10 +697,10 @@ func (t *coordinatorToolset) proposeIssue(ctx context.Context, record conversati
 	return map[string]any{"proposal": proposal}, nil
 }
 
-func (s *Service) coordinatorAllowedProjects(ctx context.Context, r tenantstore.Reader, scope nativeScope, ids []tracker.ProjectID) ([]tracker.ProjectID, error) {
+func (s *Service) coordinatorAllowedProjects(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, ids []tracker.ProjectID) ([]tracker.ProjectID, error) {
 	allowed := make([]tracker.ProjectID, 0, len(ids))
 	for _, id := range ids {
-		scope.project = id
+		scope.Project = id
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, auth.ErrHostedIdentity) || hubapi.IsNativeNotFound(err) {
 				continue

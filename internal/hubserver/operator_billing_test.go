@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -37,7 +38,7 @@ func TestHostedBillingResultLimits(t *testing.T) {
 				db := hostedPostgresAdmin(t, f.service)
 				organization := tracker.OrganizationID(f.service.config.Hosted.OrganizationID)
 				issue := seedAnalyticsTestWorkItem(t, f.service, organization, f.project, "billing-usage", 1, "Usage fixture", "Todo", now.Add(-time.Minute))
-				seedAnalyticsTestAttempt(t, db, f.service, nativeScope{organization: organization, project: f.project}, issue.WorkItemID, "attempt_usage_fixture", "succeeded", now.Add(-time.Minute), now, tracker.NativeRunData{})
+				seedAnalyticsTestAttempt(t, db, f.service, hubscope.NativeScope{Organization: organization, Project: f.project}, issue.WorkItemID, "attempt_usage_fixture", "succeeded", now.Add(-time.Minute), now, tracker.NativeRunData{})
 				if _, err := db.ExecContext(t.Context(), `INSERT INTO attempt_usage
  (attempt_id, organization_id, project_id, period, provider, model, input, cached_input, output, cost_estimate, currency, updated_at)
  SELECT 'attempt_usage_fixture', $1, $2, $3, 'example-provider', CASE WHEN $6 THEN n::text || '-' || substr($4, n*512+1, 512) ELSE $4 END, 100, 0, 0, 0, 'USD', $5 FROM generate_series(0, CASE WHEN $6 THEN (length($4)-1)/512 ELSE 0 END) n`, organization, f.project, usagePeriod(now), test.model, now, test.oversized); err != nil {

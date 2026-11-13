@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
@@ -504,7 +505,7 @@ func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 		return request
 	}
 	r := monthlyBudgetRunner(t, f, "sprite-budget", "budget", true, 2, "test-model", "gpt-6.1-sol")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	admitted := f.create(t, "admitted")
 	request := claimRequest(r, admitted, "first-admission")
 	var lease tracker.NativeLease
@@ -546,7 +547,7 @@ func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 	if err != nil || !allowed {
 		t.Fatalf("ranked cohort beyond first page lost Sprite continuation: %t %v", allowed, err)
 	}
-	allowed, err = monthlySpriteAllowed(t.Context(), nil, nativeScope{organization: scope.organization}, f.service.config.now(), f.service.config.TenantRepository)
+	allowed, err = monthlySpriteAllowed(t.Context(), nil, hubscope.NativeScope{Organization: scope.Organization}, f.service.config.now(), f.service.config.TenantRepository)
 	if err != nil || !allowed {
 		t.Fatalf("organization Sprite lifecycle lost the admitted cohort: %t %v", allowed, err)
 	}
@@ -632,7 +633,7 @@ func TestMonthlyBudgetHardStopAndRecovery(t *testing.T) {
 	f.service.registerCostUsageRoutes(f.service.echo)
 	monthlyPolicyFixture(t, f, false)
 	r := monthlyBudgetRunner(t, f, "hard-budget", "budget", true, 2, "test-model", "gpt-6.1-sol")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	issue := f.create(t, "hard-stop")
 	var lease tracker.NativeLease
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "hard-first"))
@@ -645,7 +646,7 @@ func TestMonthlyBudgetHardStopAndRecovery(t *testing.T) {
 	}
 	renewal(http.StatusOK)
 	o := costTestObservation("cpu", now.Add(-time.Hour), now)
-	if _, err := recordPostgresTestCost(t, f.service.database, string(scope.organization), string(scope.project), o, now); err != nil {
+	if _, err := recordPostgresTestCost(t, f.service.database, string(scope.Organization), string(scope.Project), o, now); err != nil {
 		t.Fatal(err)
 	}
 	renewal(http.StatusConflict)
@@ -662,8 +663,8 @@ func TestMonthlyBudgetHardStopAndRecovery(t *testing.T) {
 	setMonthlyBudgetFixture(t, f, true, budget.MonthlyPolicy{Enabled: true, Mode: budget.HardStop, SpriteMicros: new(int64(20000))})
 	renewal(http.StatusConflict)
 	next := now.AddDate(0, 1, 0)
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		return checkMonthlyLeasePG(t.Context(), reader, scope.project, string(lease.ID), next)
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		return checkMonthlyLeasePG(t.Context(), reader, scope.Project, string(lease.ID), next)
 	}); err != nil {
 		t.Fatalf("rollover did not recover: %v", err)
 	}
@@ -674,9 +675,9 @@ func TestMonthlyBudgetCorrectionsAndSettingsAuthority(t *testing.T) {
 	now := time.Date(2026, time.April, 15, 12, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 	f.service.registerCostUsageRoutes(f.service.echo)
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	o := costTestObservation("cpu", now.Add(-time.Hour), now)
-	if _, err := recordPostgresTestCost(t, f.service.database, string(scope.organization), string(scope.project), o, now); err != nil {
+	if _, err := recordPostgresTestCost(t, f.service.database, string(scope.Organization), string(scope.Project), o, now); err != nil {
 		t.Fatal(err)
 	}
 	setMonthlyBudgetFixture(t, f, true, budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64(20000)), TotalMicros: new(int64(20001))})
@@ -689,7 +690,7 @@ func TestMonthlyBudgetCorrectionsAndSettingsAuthority(t *testing.T) {
 	o.Revision = 2
 	o.AmountMicros = nil
 	o.Quantity = new(1.0)
-	if _, err := recordPostgresTestCost(t, f.service.database, string(scope.organization), string(scope.project), o, now); err != nil {
+	if _, err := recordPostgresTestCost(t, f.service.database, string(scope.Organization), string(scope.Project), o, now); err != nil {
 		t.Fatal(err)
 	}
 	t.Run("corrected spend", func(t *testing.T) {
@@ -707,11 +708,11 @@ func TestMonthlyBudgetCorrectionsAndSettingsAuthority(t *testing.T) {
 	})
 	t.Run("stale revision is rejected", func(t *testing.T) {
 		request.ExpectedRevision = 0
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, "/api/v2/organizations/"+string(scope.organization)+"/monthly-budget", testHubAdminToken, request), http.StatusConflict)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, "/api/v2/organizations/"+string(scope.Organization)+"/monthly-budget", testHubAdminToken, request), http.StatusConflict)
 	})
 	t.Run("rejected writes preserve audit count", func(t *testing.T) {
 		var versions int
-		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM monthly_budget_policies WHERE organization_id=$1`, scope.organization).Scan(&versions); err != nil {
+		if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM monthly_budget_policies WHERE organization_id=$1`, scope.Organization).Scan(&versions); err != nil {
 			t.Fatal(err)
 		}
 		if versions != 1 {
@@ -720,7 +721,7 @@ func TestMonthlyBudgetCorrectionsAndSettingsAuthority(t *testing.T) {
 	})
 	t.Run("negative cap is rejected", func(t *testing.T) {
 		request := monthlyBudgetRequest{Mutation: tracker.Mutation{IdempotencyKey: "negative-cap"}, ExpectedRevision: 1, Policy: budget.MonthlyPolicy{Enabled: true, RunnerMicros: new(int64(-1))}}
-		requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodPut, "/api/v2/organizations/"+string(scope.organization)+"/monthly-budget", testHubAdminToken, request), http.StatusUnprocessableEntity, "invalid_request")
+		requireNativeCode(t, performHubAPIRequest(t, f.service, http.MethodPut, "/api/v2/organizations/"+string(scope.Organization)+"/monthly-budget", testHubAdminToken, request), http.StatusUnprocessableEntity, "invalid_request")
 	})
 }
 
@@ -986,12 +987,12 @@ func TestMonthlyBudgetStopsSpriteLifecycleByScope(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	f.service.registerCostUsageRoutes(f.service.echo)
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	otherCtx, otherCancel := context.WithCancel(t.Context())
 	defer otherCancel()
-	key := spriteWakeKey{organization: scope.organization}
+	key := spriteWakeKey{organization: scope.Organization}
 	otherKey := spriteWakeKey{organization: "org_other"}
 	f.service.spriteWakeMu.Lock()
 	f.service.spriteWakes[key] = &spriteLifecyclePass{cancel: cancel, pendingState: "Todo"}

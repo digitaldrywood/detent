@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -52,9 +53,9 @@ func budgetOverrideResponse(value postgres.BudgetOverride) budgetOverrideValue {
 func (s *Service) getBudgetOverride(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	var value postgres.BudgetOverride
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -63,7 +64,7 @@ func (s *Service) getBudgetOverride(c echo.Context) error {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		value, err = owner.ActiveBudgetOverride(ctx, scope.project, s.config.now())
+		value, err = owner.ActiveBudgetOverride(ctx, scope.Project, s.config.now())
 		return err
 	})
 	if err != nil {
@@ -87,7 +88,7 @@ func (s *Service) writeBudgetOverride(c echo.Context, clear bool) error {
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	result, err := s.executeBudgetOverride(ctx, nativeRequestScope(c), command, clear)
+	result, err := s.executeBudgetOverride(ctx, hubscope.NativeRequestScope(c), command, clear)
 	if errors.Is(err, postgres.ErrBudgetOverride) {
 		err = hubapi.NativePublicInvalid("Budget override exceeds the current project policy")
 	}
@@ -118,7 +119,7 @@ func (s *Service) budgetOverridePolicy(ctx context.Context, record projectstore.
 	return postgres.BudgetOverridePolicy{ProjectID: record.Core.ID, SettingsRevision: record.Settings.Revision, Enabled: value.Enabled, BasePerDayMaxUSD: value.PerDayMaxUSD, BasePerIssueMaxUSD: value.PerIssueMaxUSD, MaxDuration: duration, MaxMultiplier: multiplier, Now: now}, nil
 }
 
-func (s *Service) executeBudgetOverride(ctx context.Context, scope nativeScope, command budgetOverrideCommand, clear bool) (json.RawMessage, error) {
+func (s *Service) executeBudgetOverride(ctx context.Context, scope hubscope.NativeScope, command budgetOverrideCommand, clear bool) (json.RawMessage, error) {
 	operation := "set_budget_override"
 	if clear {
 		operation = "clear_budget_override"
@@ -126,19 +127,19 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope nativeScope, 
 	input := struct {
 		Project tracker.ProjectID
 		Command budgetOverrideCommand
-	}{scope.project, command}
+	}{scope.Project, command}
 	if raw, found, err := s.nativeCommandReplay(ctx, scope, operation, command.IdempotencyKey, input); err != nil || found {
 		return raw, err
 	}
 	now := s.config.now().UTC().Truncate(time.Microsecond)
 	var record projectstore.Record
 	var previous postgres.BudgetOverride
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
 		var err error
-		record, err = r.ProjectRecord(ctx, scope.project)
+		record, err = r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -146,7 +147,7 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope nativeScope, 
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
-		previous, err = owner.ActiveBudgetOverride(ctx, scope.project, now)
+		previous, err = owner.ActiveBudgetOverride(ctx, scope.Project, now)
 		if !clear && errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -155,7 +156,7 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return nil, err
 	}
-	value := postgres.BudgetOverride{OrganizationID: scope.organization, ProjectID: scope.project, PerDayMaxUSD: command.PerDayMaxUSD, PerIssueMaxUSD: command.PerIssueMaxUSD, ExpiresAt: command.ExpiresAt.UTC().Truncate(time.Microsecond), CreatedAt: now, Reason: strings.TrimSpace(command.Reason)}
+	value := postgres.BudgetOverride{OrganizationID: scope.Organization, ProjectID: scope.Project, PerDayMaxUSD: command.PerDayMaxUSD, PerIssueMaxUSD: command.PerIssueMaxUSD, ExpiresAt: command.ExpiresAt.UTC().Truncate(time.Microsecond), CreatedAt: now, Reason: strings.TrimSpace(command.Reason)}
 	if previous.Revision != 0 {
 		value.CreatedAt = previous.CreatedAt
 	}
@@ -179,7 +180,7 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash}, raw)
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash}, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -187,11 +188,11 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	var replay *eventstore.Receipt
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		existing, err := w.ReplayReceipt(ctx, scope.credential.ID, operation, command.IdempotencyKey)
+		existing, err := w.ReplayReceipt(ctx, scope.Credential.ID, operation, command.IdempotencyKey)
 		if err == nil {
 			if existing.RequestHash != hash {
 				return hubapi.NativeConflict(0)
@@ -207,7 +208,7 @@ func (s *Service) executeBudgetOverride(ctx context.Context, scope nativeScope, 
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		if clear {
-			err = owner.ClearBudgetOverride(ctx, scope.project)
+			err = owner.ClearBudgetOverride(ctx, scope.Project)
 		} else if !value.ExpiresAt.After(s.config.now()) {
 			return postgres.ErrBudgetOverride
 		} else {

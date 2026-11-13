@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -39,9 +40,9 @@ func (e hostedContextExecutor) credential(ctx context.Context, name, project str
 	}
 	credential, err := currentHubOperator(ctx)
 	if err != nil {
-		return ctx, hubapi.APICredential{}, operatorAuthorizationError(err)
+		return ctx, hubapi.APICredential{}, hubscope.OperatorAuthorizationError(err)
 	}
-	if credential.Hosted == nil || credential.HostedRole == "account" || operatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+	if credential.Hosted == nil || credential.HostedRole == "account" || hubscope.OperatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
 		return ctx, hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	if name == operatortool.AppUpdates {
@@ -66,9 +67,9 @@ func (e hostedContextExecutor) listTools(ctx context.Context) ([]operatortool.De
 	}
 	catalog, err := operatorCatalog(ctx)
 	if err != nil {
-		return nil, operatorAuthorizationError(err)
+		return nil, hubscope.OperatorAuthorizationError(err)
 	}
-	if catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+	if catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || hubscope.OperatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
 		return nil, nil
 	}
 	definitions := []operatortool.Definition{}
@@ -89,7 +90,7 @@ func (e hostedContextExecutor) listTools(ctx context.Context) ([]operatortool.De
 			continue
 		}
 		if _, err := s.authorizeCatalog(ctx, requirement); err != nil {
-			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return nil, classified
 			}
 			continue
@@ -106,7 +107,7 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 		if resultErr == nil {
 			return
 		}
-		classified := operatorAuthorizationError(resultErr)
+		classified := hubscope.OperatorAuthorizationError(resultErr)
 		switch {
 		case errors.Is(resultErr, operatortool.ErrAccessDenied):
 			resultErr = classified
@@ -147,12 +148,12 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 		if credential.SessionHash != "" {
 			session, err = s.storedWebSession(ctx, credential.SessionHash, s.config.now())
 			if err != nil {
-				return result, operatorAuthorizationError(err)
+				return result, hubscope.OperatorAuthorizationError(err)
 			}
 		} else if credential.HostedKeyScope != "" {
 			member, err := s.activeAccessMember(readCtx, credential.Hosted.Subject)
 			if err != nil {
-				return result, operatorAuthorizationError(err)
+				return result, hubscope.OperatorAuthorizationError(err)
 			}
 			session.Email = member.Email
 		}
@@ -214,7 +215,7 @@ func (s *Service) appAllRunnerGrantsPostgres(ctx context.Context, credential hub
 		return err
 	})
 	if err != nil {
-		classified := operatorAuthorizationError(err)
+		classified := hubscope.OperatorAuthorizationError(err)
 		if errors.Is(classified, operatortool.ErrAccessDenied) {
 			return false, nil
 		}

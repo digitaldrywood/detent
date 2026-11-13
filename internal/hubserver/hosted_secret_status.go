@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -25,7 +26,7 @@ type HostedSecretStatus struct {
 }
 
 func (s *Service) hostedSecretStatus(c echo.Context) error {
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	limit := 200
 	if raw := c.QueryParam("limit"); raw != "" {
 		var err error
@@ -36,8 +37,8 @@ func (s *Service) hostedSecretStatus(c echo.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	status := HostedSecretStatus{OrganizationID: scope.organization, Counts: []SecretVersionCount{}, Problems: []SecretRowProblem{}}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	status := HostedSecretStatus{OrganizationID: scope.Organization, Counts: []SecretVersionCount{}, Problems: []SecretRowProblem{}}
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -87,7 +88,7 @@ func (s *Service) hostedSecretStatusAuthority(next echo.HandlerFunc) echo.Handle
 		if credential.Scope != hubapi.APIScopeAdmin || credential.Hosted != nil && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
-		c.Set("native_scope", nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential, requireHostedAdmin: true})
+		c.Set("native_scope", hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential, RequireHostedAdmin: true})
 		c.Response().Header().Set("Cache-Control", "no-store")
 		return next(c)
 	}

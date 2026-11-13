@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -26,7 +27,7 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 	service := &Service{database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, Logger: discardLogger(), now: func() time.Time { return now }}}
 	service.conversations = &conversationService{Server: service.conversationServer(), Store: &conversationStore{Contents: objects}, Broker: newNotificationBroker().Broker, Coordinator: &recordingWaker{}}
 	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org_removal", Name: "Example", Slug: "example"})
-	scope := nativeScope{organization: "org_removal", project: "prj_removal", credential: hubapi.APICredential{ID: "test_hub_admin", Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
+	scope := hubscope.NativeScope{Organization: "org_removal", Project: "prj_removal", Credential: hubapi.APICredential{ID: "test_hub_admin", Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
 	payload, err := json.Marshal(conversationRecordContent{Execution: conversation.Execution{Status: conversation.ExecutionIdle}, Preferences: conversation.Preferences{Model: "example-model", ReasoningEffort: "auto", Access: "auto"}})
 	if err != nil {
 		t.Fatal(err)
@@ -35,13 +36,13 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := service.conversations.Store.PublishPayload(t.Context(), string(scope.organization), wrapped)
+	ref, err := service.conversations.Store.PublishPayload(t.Context(), string(scope.Organization), wrapped)
 	if err != nil {
 		t.Fatal(err)
 	}
-	contentID := contentArchiveID(string(scope.organization), ref)
-	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: scope.project, Name: "Example", Slug: "example", Profile: "native", CreatedAt: now}, Settings: projectstore.Settings{OrganizationID: scope.organization, ProjectID: scope.project}, States: nativeFixtureStates()})
+	contentID := contentArchiveID(string(scope.Organization), ref)
+	if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.Organization, ID: scope.Project, Name: "Example", Slug: "example", Profile: "native", CreatedAt: now}, Settings: projectstore.Settings{OrganizationID: scope.Organization, ProjectID: scope.Project}, States: nativeFixtureStates()})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -53,22 +54,22 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 	}{{"matching audience", true, false}, {"different audience", false, false}, {"typed running overrides archived idle", true, true}} {
 		t.Run(test.name, func(t *testing.T) {
 			id := conversation.NewConversationID()
-			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-				audience, err := conversationReadAudienceRecord(t.Context(), w, scope.organization, scope.credential)
+			if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+				audience, err := conversationReadAudienceRecord(t.Context(), w, scope.Organization, scope.Credential)
 				if err != nil {
 					return err
 				}
 				if !test.allowed {
 					audience = "different"
 				}
-				if err := w.PutConversationContent(t.Context(), conversationstore.ContentObject{OrganizationID: scope.organization, ID: contentID, Reference: ref, CreatedAt: now}); err != nil {
+				if err := w.PutConversationContent(t.Context(), conversationstore.ContentObject{OrganizationID: scope.Organization, ID: contentID, Reference: ref, CreatedAt: now}); err != nil {
 					return err
 				}
 				execution := conversation.Execution{Status: conversation.ExecutionIdle}
 				if test.running {
 					execution.Status = conversation.ExecutionRunning
 				}
-				_, err = w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: scope.organization, ProjectID: scope.project, ID: id, OwnerPrincipalID: scope.credential.ID, Origin: conversationOriginUser, Title: "Example", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1, Execution: execution, Preferences: conversation.Preferences{Model: "current-model", ReasoningEffort: "auto", Access: "auto"}, ReadAudience: audience, ContentReference: contentID, CreatedAt: now, UpdatedAt: now})
+				_, err = w.CreateConversation(t.Context(), conversationstore.Conversation{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: id, OwnerPrincipalID: scope.Credential.ID, Origin: conversationOriginUser, Title: "Example", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive, Revision: 1, Execution: execution, Preferences: conversation.Preferences{Model: "current-model", ReasoningEffort: "auto", Access: "auto"}, ReadAudience: audience, ContentReference: contentID, CreatedAt: now, UpdatedAt: now})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -142,7 +143,7 @@ func TestConversationRemovalUsesAudienceAndArchivedContent(t *testing.T) {
 			if !record.Archived || record.Revision != 2 || record.Preferences.Model != "current-model" {
 				t.Fatalf("archived record = %+v", record)
 			}
-			if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				page, err := r.ConversationEvents(t.Context(), id, 0, 10)
 				if err != nil {
 					return err

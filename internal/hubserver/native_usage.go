@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -83,8 +84,8 @@ func usagePeriod(at time.Time) string {
 	return at.UTC().Truncate(time.Hour).Format(usagePeriodLayout)
 }
 
-func prepareAttemptUsage(scope nativeScope, item tracker.NativeWorkItemID, event tracker.NativeRunEvent, prices UsageConfig, now time.Time) reportstore.AttemptUsage {
-	report := reportstore.AttemptUsage{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, AttemptID: event.Data.AttemptID, LeaseID: string(event.Data.LeaseID), FencingToken: int64(event.Data.FencingToken), Sequence: event.Data.Sequence, ReceivedAt: now.UTC(), Currency: strings.ToUpper(strings.TrimSpace(prices.currency()))}
+func prepareAttemptUsage(scope hubscope.NativeScope, item tracker.NativeWorkItemID, event tracker.NativeRunEvent, prices UsageConfig, now time.Time) reportstore.AttemptUsage {
+	report := reportstore.AttemptUsage{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, AttemptID: event.Data.AttemptID, LeaseID: string(event.Data.LeaseID), FencingToken: int64(event.Data.FencingToken), Sequence: event.Data.Sequence, ReceivedAt: now.UTC(), Currency: strings.ToUpper(strings.TrimSpace(prices.currency()))}
 	for _, entry := range event.Data.Usage {
 		if entry.UsageKind == "incremental" {
 			continue
@@ -101,13 +102,13 @@ func prepareAttemptUsage(scope nativeScope, item tracker.NativeWorkItemID, event
 	return report
 }
 
-func (s *Service) prepareAttemptUsageHistory(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, event tracker.NativeRunEvent, attempt leasestore.Attempt) ([]billingstore.CostObservation, error) {
+func (s *Service) prepareAttemptUsageHistory(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, event tracker.NativeRunEvent, attempt leasestore.Attempt) ([]billingstore.CostObservation, error) {
 	type selected struct {
 		source   billingstore.CostSource
 		revision billingstore.CostRevision
 	}
 	rows := make([]selected, 0, len(event.Data.Usage))
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
@@ -129,7 +130,7 @@ func (s *Service) prepareAttemptUsageHistory(ctx context.Context, scope nativeSc
 			if err != nil {
 				return err
 			}
-			if revision.ProjectID != scope.project {
+			if revision.ProjectID != scope.Project {
 				return artifact.ErrIntegrity
 			}
 			rows = append(rows, selected{source: source, revision: revision})
@@ -140,7 +141,7 @@ func (s *Service) prepareAttemptUsageHistory(ctx context.Context, scope nativeSc
 	}
 	records := make([]billingstore.CostObservation, 0, len(rows))
 	for _, row := range rows {
-		raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), row.revision.Reference.ArchiveReference())
+		raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.Organization), row.revision.Reference.ArchiveReference())
 		if err != nil {
 			return nil, err
 		}
@@ -148,7 +149,7 @@ func (s *Service) prepareAttemptUsageHistory(ctx context.Context, scope nativeSc
 		if json.Unmarshal(raw, &observation) != nil || observation.Provider != row.source.Provider || observation.ProviderAccount != row.source.ProviderAccount || observation.SourceID != row.source.SourceID || !observation.From.Equal(row.source.From) || !observation.To.Equal(row.source.To) || observation.Revision != row.revision.Revision || observation.ResourceID != event.Data.AttemptID || observation.AttemptID != event.Data.AttemptID || observation.WorkItemID != string(item) || observation.Bucket != runnerCostBucket {
 			return nil, artifact.ErrIntegrity
 		}
-		records = append(records, billingstore.CostObservation{OrganizationID: scope.organization, ProjectID: scope.project, Observation: observation, Reference: row.revision.Reference, ReceivedAt: row.revision.ReceivedAt})
+		records = append(records, billingstore.CostObservation{OrganizationID: scope.Organization, ProjectID: scope.Project, Observation: observation, Reference: row.revision.Reference, ReceivedAt: row.revision.ReceivedAt})
 	}
 	return records, nil
 }

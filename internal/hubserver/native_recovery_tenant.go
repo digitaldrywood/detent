@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -44,24 +45,24 @@ func (s *Service) getNativeRecoveryTenant(c echo.Context, params url.Values) err
 		if params.Get("projection") != "bounded" && c.Request().Header.Get("X-Detent-Recovery-Projection") != "bounded" || params.Has("limit") || params.Has("cursor") {
 			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Recovery projection supports bounded"))
 		}
-		result, err := s.readNativeRecoveryTenant(ctx, nativeRequestScope(c), c.Param("item"))
+		result, err := s.readNativeRecoveryTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"))
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		result.Issue = s.nativeIssueResponse(result.Issue)
-		if err := s.fitNativeRecovery(ctx, nativeRequestScope(c), c.Request().URL.EscapedPath(), &result, c.Request().Header.Get("X-Detent-Recovery-Body") == "fragments"); err != nil {
+		if err := s.fitNativeRecovery(ctx, hubscope.NativeRequestScope(c), c.Request().URL.EscapedPath(), &result, c.Request().Header.Get("X-Detent-Recovery-Body") == "fragments"); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		return c.JSON(http.StatusOK, result)
 	}
 	if params.Has("limit") || params.Has("cursor") {
-		result, err := s.readNativeRecoveryPageTenant(ctx, nativeRequestScope(c), c.Param("item"), c.Request().URL.EscapedPath(), params)
+		result, err := s.readNativeRecoveryPageTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Request().URL.EscapedPath(), params)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		return c.JSON(http.StatusOK, result)
 	}
-	result, err := s.readNativeRecoveryFactsTenant(ctx, nativeRequestScope(c), c.Param("item"), false)
+	result, err := s.readNativeRecoveryFactsTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), false)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -77,11 +78,11 @@ func (s *Service) getNativeRecoveryTenant(c echo.Context, params url.Values) err
 	return c.JSON(http.StatusOK, result)
 }
 
-func (s *Service) readNativeRecoveryTenant(ctx context.Context, scope nativeScope, item string) (tracker.NativeRecovery, error) {
+func (s *Service) readNativeRecoveryTenant(ctx context.Context, scope hubscope.NativeScope, item string) (tracker.NativeRecovery, error) {
 	return s.readNativeRecoveryCommentsTenant(ctx, scope, item, false)
 }
 
-func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope nativeScope, item string, excludeProgress bool) (tracker.NativeRecovery, error) {
+func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope hubscope.NativeScope, item string, excludeProgress bool) (tracker.NativeRecovery, error) {
 	result, err := s.readNativeRecoveryFactsTenant(ctx, scope, item, excludeProgress)
 	if err != nil {
 		return result, err
@@ -92,7 +93,7 @@ func (s *Service) readNativeRecoveryCommentsTenant(ctx context.Context, scope na
 	return result, nil
 }
 
-func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativeScope, item string, excludeProgress bool) (tracker.NativeRecovery, error) {
+func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubscope.NativeScope, item string, excludeProgress bool) (tracker.NativeRecovery, error) {
 	var result tracker.NativeRecovery
 	var row corestore.WorkItem
 	var version eventstore.CollaborationVersion
@@ -117,22 +118,22 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativ
 	if !ok {
 		return tracker.NativeRecovery{}, hubapi.NativeRunEventStorageUnavailable()
 	}
-	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if project.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		row, err = r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		row, err = r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		eligible, known, err := readRunnerRecoveryEligibility(ctx, r, scope, row.NativeID)
@@ -146,12 +147,12 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativ
 		if err != nil {
 			return err
 		}
-		change, err = r.LatestChange(ctx, scope.project, row.NativeID)
+		change, err = r.LatestChange(ctx, scope.Project, row.NativeID)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
 		if err == nil {
-			if change.OrganizationID != scope.organization || change.ProjectID != scope.project {
+			if change.OrganizationID != scope.Organization || change.ProjectID != scope.Project {
 				return corestore.ErrTenantMismatch
 			}
 			if change.CurrentVersionID != nil {
@@ -171,7 +172,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativ
 		beforeSequence := int64(1<<63 - 1)
 		commentScanComplete := false
 		for range claimPreparationLimit {
-			page, err := r.SelectComments(ctx, scope.project, row.NativeID, beforeSequence, true, corestore.MaxPageSize)
+			page, err := r.SelectComments(ctx, scope.Project, row.NativeID, beforeSequence, true, corestore.MaxPageSize)
 			if err != nil {
 				return err
 			}
@@ -259,7 +260,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativ
 				checkpointCursor = page.Next
 				continue
 			}
-			events, err := r.LatestCheckpointEvents(ctx, scope.project, row.NativeID, attemptIDs)
+			events, err := r.LatestCheckpointEvents(ctx, scope.Project, row.NativeID, attemptIDs)
 			if err != nil {
 				return err
 			}
@@ -272,7 +273,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativ
 				if !ok {
 					return corestore.ErrNotFound
 				}
-				if event.OrganizationID != scope.organization || event.ProjectID != scope.project || event.WorkItemID != row.NativeID || event.AttemptID != attempt.ID || event.Type != "run.checkpointed" {
+				if event.OrganizationID != scope.Organization || event.ProjectID != scope.Project || event.WorkItemID != row.NativeID || event.AttemptID != attempt.ID || event.Type != "run.checkpointed" {
 					return corestore.ErrNotFound
 				}
 				checkpointCandidates = append(checkpointCandidates, checkpointAttemptCandidate{attempt: attempt, event: event})
@@ -311,12 +312,12 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativ
 				return err
 			}
 		}
-		landingReceipt, err = r.LatestLandingReceipt(ctx, scope.project, row.NativeID)
+		landingReceipt, err = r.LatestLandingReceipt(ctx, scope.Project, row.NativeID)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
 		if err == nil {
-			if landingReceipt.OrganizationID != scope.organization || landingReceipt.AttemptID == "" || landingReceipt.VersionID == "" {
+			if landingReceipt.OrganizationID != scope.Organization || landingReceipt.AttemptID == "" || landingReceipt.VersionID == "" {
 				return eventstore.ErrInvalidRecord
 			}
 			if err := ensureAttempt(landingReceipt.AttemptID); err != nil {
@@ -345,7 +346,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativ
 			if lease.IssueID != row.ID || lease.FencingToken != attempt.FencingToken {
 				return corestore.ErrNotFound
 			}
-			event, err := r.LatestRunEvent(ctx, scope.project, attempt.ID)
+			event, err := r.LatestRunEvent(ctx, scope.Project, attempt.ID)
 			if err != nil {
 				return err
 			}
@@ -358,7 +359,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativ
 			}
 			snapshots = append(snapshots, snapshot)
 		}
-		projectSequence, err = r.ProjectEventSequence(ctx, scope.project)
+		projectSequence, err = r.ProjectEventSequence(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -367,7 +368,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativ
 		}
 		before := projectSequence + 1
 		for range claimPreparationLimit {
-			page, err := r.EventsBefore(ctx, scope.project, row.NativeID, before, corestore.MaxPageSize)
+			page, err := r.EventsBefore(ctx, scope.Project, row.NativeID, before, corestore.MaxPageSize)
 			if err != nil {
 				return err
 			}
@@ -437,10 +438,10 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativ
 	if result.Read == nil {
 		result.Read = &tracker.NativeRecoveryRead{}
 	}
-	if scope.credential.Runner.RunnerID != "" {
+	if scope.Credential.Runner.RunnerID != "" {
 		result.Read.Omitted = append(result.Read.Omitted, "instance_successes")
 	}
-	result.Read.DetailPath = "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "?view=recovery&limit=1"
+	result.Read.DetailPath = "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(item) + "?view=recovery&limit=1"
 	var sourceAttemptID, changeAttemptID, landingAttemptID, checkpointAttemptID string
 	var hydrated = make(map[string]tracker.NativeAttempt, len(snapshots))
 	checkpointsByAttempt := make(map[string]tracker.NativeCheckpoint, len(checkpointCandidates))
@@ -581,7 +582,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope nativ
 	return result, nil
 }
 
-func (s *Service) readNativeRecoveryPageTenant(ctx context.Context, scope nativeScope, item, path string, params url.Values) (tracker.NativeRecovery, error) {
+func (s *Service) readNativeRecoveryPageTenant(ctx context.Context, scope hubscope.NativeScope, item, path string, params url.Values) (tracker.NativeRecovery, error) {
 	ctx = s.contentContext(ctx)
 	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, 1, 1)
 	if err != nil {
@@ -591,29 +592,29 @@ func (s *Service) readNativeRecoveryPageTenant(ctx context.Context, scope native
 	var row corestore.WorkItem
 	var version eventstore.CollaborationVersion
 	var change eventstore.Change
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil || project.DeletedAt != nil {
 			if err == nil {
 				err = corestore.ErrNotFound
 			}
 			return err
 		}
-		row, err = r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		row, err = r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		version, err = r.CollaborationVersion(ctx, item, row.Revision)
 		if err != nil {
 			return err
 		}
-		change, err = r.LatestChange(ctx, scope.project, row.NativeID)
+		change, err = r.LatestChange(ctx, scope.Project, row.NativeID)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -683,23 +684,23 @@ func (s *Service) readNativeRecoveryPageTenant(ctx context.Context, scope native
 	return tracker.NativeRecovery{Continuation: page}, nil
 }
 
-func (s *Service) readRecoveryEvidenceRecordTenant(ctx context.Context, scope nativeScope, item corestore.WorkItem, change eventstore.Change, body string, cursor *recoveryEvidenceCursor) (int64, string, string, string, []byte, error) {
+func (s *Service) readRecoveryEvidenceRecordTenant(ctx context.Context, scope hubscope.NativeScope, item corestore.WorkItem, change eventstore.Change, body string, cursor *recoveryEvidenceCursor) (int64, string, string, string, []byte, error) {
 	var sequence int64
 	var section, id, versionID string
 	var hydrate func() ([]byte, error)
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		current, err := r.WorkItem(ctx, scope.project, item.NativeID)
+		current, err := r.WorkItem(ctx, scope.Project, item.NativeID)
 		if err != nil {
 			return err
 		}
-		if current.ID != item.ID || current.Revision != item.Revision || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
+		if current.ID != item.ID || current.Revision != item.Revision || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 			return corestore.ErrRevisionConflict
 		}
-		latest, err := r.LatestChange(ctx, scope.project, item.NativeID)
+		latest, err := r.LatestChange(ctx, scope.Project, item.NativeID)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
@@ -719,7 +720,7 @@ func (s *Service) readRecoveryEvidenceRecordTenant(ctx context.Context, scope na
 				return sql.ErrNoRows
 			}
 			row := rows[0]
-			if row.OrganizationID != scope.organization || row.ChangeID != change.ID {
+			if row.OrganizationID != scope.Organization || row.ChangeID != change.ID {
 				return artifact.ErrIntegrity
 			}
 			section = map[string]string{"review": "reviews", "check": "checks", "discussion": "change_discussion"}[row.Kind]
@@ -744,7 +745,7 @@ func (s *Service) readRecoveryEvidenceRecordTenant(ctx context.Context, scope na
 				return raw, nil
 			}
 		case 3:
-			rows, err := r.Comments(ctx, scope.project, item.NativeID, cursor.After, 1)
+			rows, err := r.Comments(ctx, scope.Project, item.NativeID, cursor.After, 1)
 			if err != nil {
 				return err
 			}
@@ -773,7 +774,7 @@ func (s *Service) readRecoveryEvidenceRecordTenant(ctx context.Context, scope na
 				return sql.ErrNoRows
 			}
 			row := rows.Items[0]
-			if row.OrganizationID != scope.organization || row.IssueID != item.ID {
+			if row.OrganizationID != scope.Organization || row.IssueID != item.ID {
 				return artifact.ErrIntegrity
 			}
 			sequence, section, id = row.FencingToken, "attempts", row.ID
@@ -800,15 +801,15 @@ func (s *Service) readRecoveryEvidenceRecordTenant(ctx context.Context, scope na
 				return sql.ErrNoRows
 			}
 			row := rows[0]
-			if row.OrganizationID != scope.organization || row.ChangeID != change.ID {
+			if row.OrganizationID != scope.Organization || row.ChangeID != change.ID {
 				return artifact.ErrIntegrity
 			}
 			sequence, section, id, versionID = row.Number, "versions", row.ID, row.ID
-			policyRow, err := r.ProjectPolicyRevision(ctx, scope.project, row.PolicyRevisionID)
+			policyRow, err := r.ProjectPolicyRevision(ctx, scope.Project, row.PolicyRevisionID)
 			if err != nil {
 				return err
 			}
-			if policyRow.OrganizationID != scope.organization || policyRow.ProjectID != scope.project || policyRow.PolicyID != row.PolicyRevisionID {
+			if policyRow.OrganizationID != scope.Organization || policyRow.ProjectID != scope.Project || policyRow.PolicyID != row.PolicyRevisionID {
 				return artifact.ErrIntegrity
 			}
 			hydrate = func() ([]byte, error) {
@@ -885,21 +886,21 @@ func findRecoveryAttemptSnapshot(snapshots []tenantAttemptSnapshot, attemptID st
 	return false
 }
 
-func (s *Service) readNativeRecoveryAttemptSnapshot(ctx context.Context, scope nativeScope, item string, issueID int64, attemptID string) (tenantAttemptSnapshot, error) {
+func (s *Service) readNativeRecoveryAttemptSnapshot(ctx context.Context, scope hubscope.NativeScope, item string, issueID int64, attemptID string) (tenantAttemptSnapshot, error) {
 	var snapshot tenantAttemptSnapshot
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return tenantAttemptSnapshot{}, hubapi.NativeRunEventStorageUnavailable()
 	}
-	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		workItem, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		workItem, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if workItem.ID != issueID || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
+		if workItem.ID != issueID || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		snapshot.attempt, err = r.Attempt(ctx, attemptID)
@@ -920,7 +921,7 @@ func (s *Service) readNativeRecoveryAttemptSnapshot(ctx context.Context, scope n
 		if snapshot.lease.IssueID != issueID || snapshot.lease.FencingToken != snapshot.attempt.FencingToken {
 			return corestore.ErrNotFound
 		}
-		snapshot.event, err = r.LatestRunEvent(ctx, scope.project, attemptID)
+		snapshot.event, err = r.LatestRunEvent(ctx, scope.Project, attemptID)
 		if err == nil && (snapshot.event.WorkItemID != tracker.NativeWorkItemID(item) || snapshot.event.AttemptID != attemptID) {
 			return corestore.ErrNotFound
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -30,7 +31,7 @@ func TestRunnerCommandFacts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+		scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 		content := eventstore.NewContent(f.service.runDetailStore())
 		now := f.service.config.now().UTC().Truncate(time.Microsecond)
 		store := func(key, operation, raw string, typed, referenced, pending bool, request string) eventstore.Receipt {
@@ -138,7 +139,7 @@ func TestConfigurationReceiptsExcludeExpiredHistory(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+				scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 				approved := hubTestPolicy()
 				approveHubTestPolicy(t, f.service, f.base+"/policy", approved)
 				view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, SelectedPolicy: &approved, EffectivePolicy: &approved, ObservedAt: now}

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -550,7 +551,7 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 			if snapshot.Truncated {
 				t.Fatal("runtime capacity snapshot truncated fixture facts")
 			}
-			admissions := runtimeRunnersFromSnapshot(snapshot, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, now)
+			admissions := runtimeRunnersFromSnapshot(snapshot, hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, now)
 			if len(admissions) != 2 || admissions[0].RunnerID != r.binding.RunnerID || admissions[1].RunnerID != other.binding.RunnerID {
 				t.Fatalf("dispatch runner target = %+v", admissions)
 			}

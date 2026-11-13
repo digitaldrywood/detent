@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -155,7 +156,7 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 			}
 			drainTestNativeBoard(t, f.service)
 			for _, fixture := range []nativeFixture{f, other} {
-				scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, credential: credential}
+				scope := hubscope.NativeScope{Organization: fixture.project.OrganizationID, Project: fixture.project.ID, Credential: credential}
 				selection := viewstore.BoardSelection{ProjectID: fixture.project.ID, Terminal: new(true), ClosedOrder: true, Limit: 10}
 				if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), fixture.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 					for itemIndex, item := range items[fixture.project.ID] {
@@ -275,7 +276,7 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 
 func updateNativeWorkPageFixtureIssue(t *testing.T, f nativeFixture, id tracker.NativeWorkItemID, update func(*tracker.NativeIssue)) tracker.NativeIssue {
 	t.Helper()
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	row, version, err := f.service.readWorkItemRecord(t.Context(), scope, string(id))
 	if err != nil {
 		t.Fatal(err)
@@ -292,15 +293,15 @@ func updateNativeWorkPageFixtureIssue(t *testing.T, f nativeFixture, id tracker.
 	issue.Revision++
 	issue.UpdatedAt = f.service.config.now().UTC()
 	plan := workItemRecordPlan{current: row, project: project, issue: issue, fields: []string{"title", "labels", "assignees", "priority"}}
-	fields, err := f.service.prepareWorkItemFields(t.Context(), scope.organization, plan)
+	fields, err := f.service.prepareWorkItemFields(t.Context(), scope.Organization, plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	version, err = eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: id, RecordID: string(id), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
+	version, err = eventstore.NewContent(f.service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: id, RecordID: string(id), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := writeWorkItemRecord(t.Context(), w, plan, fields); err != nil {
 			return err
 		}
@@ -315,7 +316,7 @@ func updateNativeWorkPageFixtureIssue(t *testing.T, f nativeFixture, id tracker.
 func indexNativeWorkPageFixtureIssues(t *testing.T, f nativeFixture, issues []tracker.NativeIssue) {
 	t.Helper()
 	content := searchstore.NewContent(f.service.runDetailStore())
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	for _, seeded := range issues {
 		row, version, err := f.service.readWorkItemRecord(t.Context(), scope, string(seeded.WorkItemID))
 		if err != nil {
@@ -328,16 +329,16 @@ func indexNativeWorkPageFixtureIssues(t *testing.T, f nativeFixture, issues []tr
 		if row.Revision == int64(seeded.Revision) {
 			continue
 		}
-		document, err := content.Prepare(t.Context(), searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: row.Revision, UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
+		document, err := content.Prepare(t.Context(), searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, ID: "issue:" + string(issue.WorkItemID), SourceID: string(issue.WorkItemID), Kind: "issue", Scope: "issue", Revision: row.Revision, UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 		if err != nil {
 			t.Fatalf("prepare fixture search %s: %v", seeded.WorkItemID, err)
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.PutSearch(t.Context(), document, int64(seeded.Revision)) }); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { return w.PutSearch(t.Context(), document, int64(seeded.Revision)) }); err != nil {
 			t.Fatalf("write fixture search %s: %v", seeded.WorkItemID, err)
 		}
 	}
 	for {
-		more, err := content.RefreshOne(t.Context(), tenantSearchRepository{f.service.config.TenantRepository}, scope.organization)
+		more, err := content.RefreshOne(t.Context(), tenantSearchRepository{f.service.config.TenantRepository}, scope.Organization)
 		if err != nil {
 			t.Fatalf("refresh fixture search: %v", err)
 		}
@@ -353,7 +354,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	details := &memoryRunDetails{keyReads: make(map[string]int)}
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return fixtureNow }, WebhookMaintenanceInterval: time.Hour, RunDetails: details})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	history := seedArchiveIssues(t, f.service, scope, 130, "Done")
 	todo := seedArchiveIssues(t, f.service, scope, 4, "Todo")
 	ip := seedArchiveIssues(t, f.service, scope, 2, "In Progress")
@@ -365,7 +366,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		start.IdempotencyKey = string(issue.WorkItemID)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start), http.StatusOK)
 		if index == 0 {
-			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$3,renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2", scope.organization, lease.ID, time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour)); err != nil {
+			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$3,renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2", scope.Organization, lease.ID, time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 		} else {
@@ -381,8 +382,8 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		})
 	}
 	updateNativeWorkPageFixtureIssue(t, f, todo[2].WorkItemID, func(issue *tracker.NativeIssue) { issue.Labels = []string{"human-owned"} })
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: todo[3].WorkItemID, RelatedProjectID: scope.project, RelatedWorkItemID: todo[2].WorkItemID, Type: "dependency", Provenance: "native"}, "add", f.service.config.now())
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: todo[3].WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: todo[2].WorkItemID, Type: "dependency", Provenance: "native"}, "add", f.service.config.now())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -628,10 +629,10 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		{"restore current lease", now.Add(-time.Second), now.Add(time.Hour), 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$3),renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2", scope.organization, activeLease.ID, test.renewed, test.expires); err != nil {
+			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$3),renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2", scope.Organization, activeLease.ID, test.renewed, test.expires); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.refreshBoardRecord(t.Context(), scope.organization, viewstore.BoardCandidate{ProjectID: scope.project, WorkItemID: ip[1].WorkItemID}, now); err != nil {
+			if err := f.service.refreshBoardRecord(t.Context(), scope.Organization, viewstore.BoardCandidate{ProjectID: scope.Project, WorkItemID: ip[1].WorkItemID}, now); err != nil {
 				t.Fatal(err)
 			}
 			read("")
@@ -723,7 +724,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 			}
 		}()
 		f.service.config.TenantRepository, f.service.config.AccessRepository, f.service.database.postgres = repository, repository, repository
-		scope.credential = credential
+		scope.Credential = credential
 		_, err = f.service.readBoardRecords(context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture), scope, url.Values{"include": {"work"}, "limit": {"100"}})
 		if err != nil {
 			t.Fatal(err)
@@ -806,7 +807,7 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("fixture authentication=%d %v", status, err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	windows := []tracker.NativeShippedWindow{{Window: "1h", Shipped: 3}, {Window: "24h", Shipped: 3, Cancelled: 1}, {Window: "7d", Shipped: 5, Cancelled: 2}}
 	for _, test := range []struct {
 		window, filter     string
@@ -860,13 +861,13 @@ func TestNativeWorkClosedOrdering(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("fixture authentication=%d %v", status, err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	project, err := f.service.readTenantProjectRecord(t.Context(), scope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	project.States = append(slices.Clone(project.States), tracker.NativeState{Name: "Cancelled", Terminal: true})
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.UpdateProjectRecord(t.Context(), project)
 		return err
 	}); err != nil {
@@ -876,7 +877,7 @@ func TestNativeWorkClosedOrdering(t *testing.T) {
 	var issues []tracker.NativeIssue
 	var histories [][]tracker.CollaborationEvent
 	for index, state := range []string{"Done", "Cancelled", "Done", "Done", "Done", "Todo"} {
-		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_closed_%d", index)), Number: index + 1, Revision: 1, Profile: "native"}, Title: fmt.Sprintf("Closed %d", index), Body: nativeContractTestBody, State: state, Terminal: state != "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: now.Add(-30 * 24 * time.Hour), UpdatedAt: now, LastActivityAt: now}
+		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_closed_%d", index)), Number: index + 1, Revision: 1, Profile: "native"}, Title: fmt.Sprintf("Closed %d", index), Body: nativeContractTestBody, State: state, Terminal: state != "Todo", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: now.Add(-30 * 24 * time.Hour), UpdatedAt: now, LastActivityAt: now}
 		var history []tracker.CollaborationEvent
 		if index < 4 {
 			at := now.Add(-time.Duration(index+1) * time.Hour)

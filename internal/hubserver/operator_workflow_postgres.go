@@ -9,22 +9,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) resolveWorkflowItem(ctx context.Context, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+func (s *Service) resolveWorkflowItem(ctx context.Context, scope hubscope.NativeScope, reference string) (tracker.NativeIssue, error) {
 	return s.resolveOperatorRecordReadItem(ctx, scope, reference)
 }
 
-func (s *Service) workflowProjectStates(ctx context.Context, scope nativeScope) ([]tracker.NativeState, error) {
+func (s *Service) workflowProjectStates(ctx context.Context, scope hubscope.NativeScope) ([]tracker.NativeState, error) {
 	project, err := s.readTenantProjectRecord(ctx, scope)
 	return project.States, err
 }
 
-func (s *Service) workflowCommandReplay(ctx context.Context, scope nativeScope, item string, transition tracker.Transition) (json.RawMessage, bool, error) {
+func (s *Service) workflowCommandReplay(ctx context.Context, scope hubscope.NativeScope, item string, transition tracker.Transition) (json.RawMessage, bool, error) {
 	operation := nativeOperation(scope, http.MethodPost, "/work-items/"+item+"/workflow")
 	payload := struct {
 		tracker.Transition
@@ -50,7 +51,7 @@ func workflowSafeError(err error) error {
 	if errors.As(err, &denied) {
 		return err
 	}
-	if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
+	if errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
 		return operatortool.ErrProviderUnavailable
 	}
 	if errors.Is(err, receiptstore.ErrExpired) {

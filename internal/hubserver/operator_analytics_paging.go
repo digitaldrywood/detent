@@ -11,11 +11,12 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-func (s *Service) analyticsAttemptCursor(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, runner, population string) (reportstore.AnalyticsAttemptCursor, nativeCursor, []byte, error) {
+func (s *Service) analyticsAttemptCursor(ctx context.Context, scope hubscope.NativeScope, w operatortool.AnalyticsWindow, runner, population string) (reportstore.AnalyticsAttemptCursor, nativeCursor, []byte, error) {
 	if population != "attempts" && population != "quality_worked" {
 		return reportstore.AnalyticsAttemptCursor{}, nativeCursor{}, nil, errors.New("invalid analytics attempt population")
 	}
@@ -25,7 +26,7 @@ func (s *Service) analyticsAttemptCursor(ctx context.Context, scope nativeScope,
 		}
 		return reportstore.AnalyticsAttemptCursor{}, nativeCursor{}, nil, nil
 	}
-	params := url.Values{"organization": {string(scope.organization)}, "project": {string(scope.project)}, "from": {w.From.UTC().Format(time.RFC3339Nano)}, "to": {w.To.UTC().Format(time.RFC3339Nano)}, "runner": {runner}}
+	params := url.Values{"organization": {string(scope.Organization)}, "project": {string(scope.Project)}, "from": {w.From.UTC().Format(time.RFC3339Nano)}, "to": {w.To.UTC().Format(time.RFC3339Nano)}, "runner": {runner}}
 	bindAnalyticsCohort(params, ctx)
 	if page := analyticsPagingFromContext(ctx); page != nil && page.Name == population {
 		if page.Offset != 0 {
@@ -81,14 +82,14 @@ func (s *Service) encodeAnalyticsAttemptCursor(cursor nativeCursor, key []byte, 
 	return result, nil
 }
 
-func (s *Service) analyticsUsageCursor(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow) (reportstore.AnalyticsUsageCursor, nativeCursor, []byte, error) {
+func (s *Service) analyticsUsageCursor(ctx context.Context, scope hubscope.NativeScope, w operatortool.AnalyticsWindow) (reportstore.AnalyticsUsageCursor, nativeCursor, []byte, error) {
 	if s.config.SecretKeys == nil {
 		if page := analyticsPagingFromContext(ctx); page != nil && page.Name == "usage" && (page.PopulationToken != "" || page.Offset != 0) {
 			return reportstore.AnalyticsUsageCursor{}, nativeCursor{}, nil, errors.New("analytics continuation requires configured secret encryption keys")
 		}
 		return reportstore.AnalyticsUsageCursor{}, nativeCursor{}, nil, nil
 	}
-	params := url.Values{"organization": {string(scope.organization)}, "project": {string(scope.project)}, "from": {w.From.UTC().Format(time.RFC3339Nano)}, "to": {w.To.UTC().Format(time.RFC3339Nano)}}
+	params := url.Values{"organization": {string(scope.Organization)}, "project": {string(scope.Project)}, "from": {w.From.UTC().Format(time.RFC3339Nano)}, "to": {w.To.UTC().Format(time.RFC3339Nano)}}
 	bindAnalyticsCohort(params, ctx)
 	if page := analyticsPagingFromContext(ctx); page != nil && page.Name == "usage" {
 		if page.Offset != 0 {
@@ -144,7 +145,7 @@ func (s *Service) encodeAnalyticsUsageCursor(cursor nativeCursor, key []byte, af
 	return result, nil
 }
 
-func (s *Service) analyticsSchedulerCursor(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, name string) (eventstore.AnalyticsSchedulerCursor, nativeCursor, []byte, error) {
+func (s *Service) analyticsSchedulerCursor(ctx context.Context, scope hubscope.NativeScope, w operatortool.AnalyticsWindow, name string) (eventstore.AnalyticsSchedulerCursor, nativeCursor, []byte, error) {
 	if name != "decisions" && name != "capacity" {
 		return eventstore.AnalyticsSchedulerCursor{}, nativeCursor{}, nil, errors.New("invalid scheduler analytics population")
 	}
@@ -154,7 +155,7 @@ func (s *Service) analyticsSchedulerCursor(ctx context.Context, scope nativeScop
 		}
 		return eventstore.AnalyticsSchedulerCursor{}, nativeCursor{}, nil, nil
 	}
-	params := url.Values{"organization": {string(scope.organization)}, "project": {string(scope.project)}, "from": {w.From.UTC().Format(time.RFC3339Nano)}, "to": {w.To.UTC().Format(time.RFC3339Nano)}}
+	params := url.Values{"organization": {string(scope.Organization)}, "project": {string(scope.Project)}, "from": {w.From.UTC().Format(time.RFC3339Nano)}, "to": {w.To.UTC().Format(time.RFC3339Nano)}}
 	bindAnalyticsCohort(params, ctx)
 	if page := analyticsPagingFromContext(ctx); page != nil && page.Name == name {
 		if page.Offset != 0 {
@@ -210,7 +211,7 @@ func (s *Service) encodeAnalyticsSchedulerCursor(cursor nativeCursor, key []byte
 	return result, nil
 }
 
-func (s *Service) analyticsResidenceSeek(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, live bool) (analyticsResidenceCursor, nativeCursor, []byte, error) {
+func (s *Service) analyticsResidenceSeek(ctx context.Context, scope hubscope.NativeScope, w operatortool.AnalyticsWindow, live bool) (analyticsResidenceCursor, nativeCursor, []byte, error) {
 	after := analyticsResidenceCursor{}
 	if s.config.SecretKeys == nil {
 		if page := analyticsPagingFromContext(ctx); page != nil && (page.Name == "residence_issues" || page.Name == "residence_events") && (page.PopulationToken != "" || page.Offset != 0) {
@@ -218,7 +219,7 @@ func (s *Service) analyticsResidenceSeek(ctx context.Context, scope nativeScope,
 		}
 		return after, nativeCursor{}, nil, nil
 	}
-	params := url.Values{"organization": {string(scope.organization)}, "project": {string(scope.project)}, "from": {w.From.UTC().Format(time.RFC3339Nano)}, "to": {w.To.UTC().Format(time.RFC3339Nano)}, "live": {strconv.FormatBool(live)}}
+	params := url.Values{"organization": {string(scope.Organization)}, "project": {string(scope.Project)}, "from": {w.From.UTC().Format(time.RFC3339Nano)}, "to": {w.To.UTC().Format(time.RFC3339Nano)}, "live": {strconv.FormatBool(live)}}
 	bindAnalyticsCohort(params, ctx)
 	if page := analyticsPagingFromContext(ctx); page != nil && (page.Name == "residence_issues" || page.Name == "residence_events") {
 		if page.Offset != 0 {
@@ -276,7 +277,7 @@ func (s *Service) encodeAnalyticsResidenceCursor(cursor nativeCursor, key []byte
 	return result, nil
 }
 
-func (s *Service) analyticsFactSeek(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, name string) (analyticsFactCursor, nativeCursor, []byte, error) {
+func (s *Service) analyticsFactSeek(ctx context.Context, scope hubscope.NativeScope, w operatortool.AnalyticsWindow, name string) (analyticsFactCursor, nativeCursor, []byte, error) {
 	after := analyticsFactCursor{}
 	switch name {
 	case "landings", "quality_landings", "quality_events", "quality_evidence", "failures":
@@ -289,7 +290,7 @@ func (s *Service) analyticsFactSeek(ctx context.Context, scope nativeScope, w op
 		}
 		return after, nativeCursor{}, nil, nil
 	}
-	params := url.Values{"organization": {string(scope.organization)}, "project": {string(scope.project)}, "from": {w.From.UTC().Format(time.RFC3339Nano)}, "to": {w.To.UTC().Format(time.RFC3339Nano)}}
+	params := url.Values{"organization": {string(scope.Organization)}, "project": {string(scope.Project)}, "from": {w.From.UTC().Format(time.RFC3339Nano)}, "to": {w.To.UTC().Format(time.RFC3339Nano)}}
 	bindAnalyticsCohort(params, ctx)
 	if page := analyticsPagingFromContext(ctx); page != nil && page.Name == name {
 		if page.Offset != 0 {

@@ -6,13 +6,14 @@ import (
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readLegacyIssueChangeSideData(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, item string, issue *tracker.NativeIssue) (err error) {
+func readLegacyIssueChangeSideData(ctx context.Context, query hubapi.NativeQueryer, scope hubscope.NativeScope, item string, issue *tracker.NativeIssue) (err error) {
 	var id, raw string
 	var current, landed, base, merge sql.NullString
-	err = query.QueryRowContext(ctx, `SELECT c.id,c.record_json,c.claim_version_id,c.landed_version_id,c.landed_base_ref,c.landed_merge_sha FROM change_requests c JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.rowid DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&id, &raw, &current, &landed, &base, &merge)
+	err = query.QueryRowContext(ctx, `SELECT c.id,c.record_json,c.claim_version_id,c.landed_version_id,c.landed_base_ref,c.landed_merge_sha FROM change_requests c JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.rowid DESC LIMIT 1`, scope.Organization, scope.Project, item).Scan(&id, &raw, &current, &landed, &base, &merge)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -64,7 +65,7 @@ func readLegacyIssueChangeSideData(ctx context.Context, query hubapi.NativeQuery
 		}
 		issue.ListChange = projection
 	}
-	rows, err := queryChangeLegacyRows(ctx, query, `SELECT v.external_provider,v.external_id,v.external_url,COALESCE(NULLIF(v.payload_object_key,''),v.record_json) FROM change_versions v JOIN change_requests c ON c.id=v.change_id JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? AND ((v.external_provider='github' AND v.external_url<>'') OR v.external_provider IS NULL OR v.external_url IS NULL) ORDER BY c.rowid DESC,v.number DESC`, scope.organization, scope.project, item)
+	rows, err := queryChangeLegacyRows(ctx, query, `SELECT v.external_provider,v.external_id,v.external_url,COALESCE(NULLIF(v.payload_object_key,''),v.record_json) FROM change_versions v JOIN change_requests c ON c.id=v.change_id JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? AND ((v.external_provider='github' AND v.external_url<>'') OR v.external_provider IS NULL OR v.external_url IS NULL) ORDER BY c.rowid DESC,v.number DESC`, scope.Organization, scope.Project, item)
 	if err != nil {
 		return err
 	}

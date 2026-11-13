@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -29,20 +30,20 @@ import (
 func (s *Service) changeReviewRecordMutation(c echo.Context, request tracker.ReviewChange) error {
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
 	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
-	raw, err := s.reviewChangeRecordCommand(ctx, nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"), operation, request)
+	raw, err := s.reviewChangeRecordCommand(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"), operation, request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusOK, raw)
 }
 
-func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope nativeScope, item, changeID, versionID, operation string, request tracker.ReviewChange) (json.RawMessage, error) {
+func (s *Service) reviewChangeRecordCommand(ctx context.Context, scope hubscope.NativeScope, item, changeID, versionID, operation string, request tracker.ReviewChange) (json.RawMessage, error) {
 	if request.Decision != "approved" && request.Decision != "changes_requested" && request.Decision != "commented" {
 		return nil, hubapi.NativePublicInvalid("review decision is invalid")
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 || len(request.Body) > 64<<10 {
 		refusal := hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes and a review body up to 64 KiB are required")
-		if len(request.Body) > 64<<10 && scope.credential.Scope == hubapi.APIScopeWorker && request.Validator != nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
+		if len(request.Body) > 64<<10 && scope.Credential.Scope == hubapi.APIScopeWorker && request.Validator != nil && request.ImplementationReview == nil && request.SecurityAudit == nil {
 			return nil, nativeRejection(refusal, "acceptance_validation", "body")
 		}
 		return nil, refusal
@@ -88,7 +89,7 @@ prepareReview:
 	if request.ExpectedRevision != 0 && request.ExpectedRevision != change.Revision || request.ExpectedVersionID != "" && request.ExpectedVersionID != versionID || request.Decision == "approved" && change.CurrentVersion != versionID || change.CurrentLanding() != nil {
 		return nil, hubapi.NativeConflict(change.Revision)
 	}
-	versionRow, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, versionID)
+	versionRow, err := s.readChangeVersionRecord(ctx, scope.Organization, change.ID, versionID)
 	if err != nil {
 		return nil, hubapi.ProjectRecordError(err)
 	}
@@ -110,7 +111,7 @@ prepareReview:
 			return nil, err
 		}
 	}
-	review := tracker.ChangeReview{SessionMachineID: sessionMachine, ImplementationReview: request.ImplementationReview, Validator: request.Validator, SecurityAudit: request.SecurityAudit, ID: payloadNativeID(ctx, "review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: payloadTimestamp(ctx, now)}
+	review := tracker.ChangeReview{SessionMachineID: sessionMachine, ImplementationReview: request.ImplementationReview, Validator: request.Validator, SecurityAudit: request.SecurityAudit, ID: payloadNativeID(ctx, "review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.Actor(), CreatedAt: payloadTimestamp(ctx, now)}
 	var independent *preparedIndependentRepairs
 	if request.Decision == "changes_requested" && review.VersionID == change.CurrentVersion {
 		independent, err = s.prepareIndependentRepairs(ctx, scope, change.WorkItemID, review.IndependentFailures(), change.ID+"/"+review.ID, now)
@@ -135,7 +136,7 @@ prepareReview:
 	var approvedPolicyRows currentChangePolicyRows
 	var approval ChangeVersionApproval
 	if request.Decision == "approved" || prepared != nil || request.Decision == "changes_requested" && versionID == change.CurrentVersion {
-		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			approvedPolicyRows, err = readCurrentChangePolicyRows(ctx, r, scope)
 			return err
@@ -151,7 +152,7 @@ prepareReview:
 			return nil, hubapi.PolicyMismatch("Current policy changed; the reviewed version must be republished")
 		}
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		_, err := validateChangeRecordContent(ctx, r, scope, submittedContent, nil, "", false)
 		return err
 	}); err != nil {
@@ -164,15 +165,15 @@ prepareReview:
 	if err != nil {
 		return nil, err
 	}
-	evidence, err := content.PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: scope.organization, ChangeID: change.ID, VersionID: new(versionID), Kind: "review", CreatedAt: review.CreatedAt}, raw)
+	evidence, err := content.PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: change.ID, VersionID: new(versionID), Kind: "review", CreatedAt: review.CreatedAt}, raw)
 	if err != nil {
 		return nil, err
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "change.review", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: review.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: versionID}}})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "change.review", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: review.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: versionID}}})
 	if err != nil {
 		return nil, err
 	}
-	event, err := content.PrepareEvent(ctx, scope.organization, eventRaw)
+	event, err := content.PrepareEvent(ctx, scope.Organization, eventRaw)
 	if err != nil {
 		return nil, err
 	}
@@ -198,37 +199,37 @@ prepareReview:
 			if err != nil {
 				return nil, err
 			}
-			bodyRef, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, bodyRaw)
+			bodyRef, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, bodyRaw)
 			if err != nil {
 				return nil, err
 			}
-			comment := tracker.NativeComment{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: itemRow.NativeID, ID: payloadNativeID(ctx, "cmt"), Revision: 1, Sequence: itemRow.EventSequence + 2, Body: body, Actor: scope.actor(), CreatedAt: review.CreatedAt, UpdatedAt: review.CreatedAt}
+			comment := tracker.NativeComment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemRow.NativeID, ID: payloadNativeID(ctx, "cmt"), Revision: 1, Sequence: itemRow.EventSequence + 2, Body: body, Actor: scope.Actor(), CreatedAt: review.CreatedAt, UpdatedAt: review.CreatedAt}
 			commentRaw, err := json.Marshal(comment)
 			if err != nil {
 				return nil, err
 			}
-			commentVersion, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: itemRow.NativeID, RecordID: comment.ID, Revision: 1}, commentRaw)
+			commentVersion, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemRow.NativeID, RecordID: comment.ID, Revision: 1}, commentRaw)
 			if err != nil {
 				return nil, err
 			}
-			commentEventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: itemRow.NativeID, Type: "comment.created", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: review.CreatedAt, Data: tracker.CollaborationData{CommentID: comment.ID}})
+			commentEventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: itemRow.NativeID, Type: "comment.created", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: review.CreatedAt, Data: tracker.CollaborationData{CommentID: comment.ID}})
 			if err != nil {
 				return nil, err
 			}
-			commentEvent, err := content.PrepareEvent(ctx, scope.organization, commentEventRaw)
+			commentEvent, err := content.PrepareEvent(ctx, scope.Organization, commentEventRaw)
 			if err != nil {
 				return nil, err
 			}
-			kind, principal := scope.actor().Kind, scope.actor().PrincipalID
-			instructions = &preparedInstructions{item: itemRow, comment: corestore.Comment{OrganizationID: scope.organization, ID: comment.ID, ProjectID: scope.project, WorkItemID: itemRow.NativeID, Revision: 1, Sequence: itemRow.EventSequence + 2, BodyObjectKey: bodyRef.PayloadObjectKey, ActorKind: kind, ActorPrincipalID: principal, CreatedAt: review.CreatedAt, UpdatedAt: review.CreatedAt}, version: commentVersion, event: commentEvent}
+			kind, principal := scope.Actor().Kind, scope.Actor().PrincipalID
+			instructions = &preparedInstructions{item: itemRow, comment: corestore.Comment{OrganizationID: scope.Organization, ID: comment.ID, ProjectID: scope.Project, WorkItemID: itemRow.NativeID, Revision: 1, Sequence: itemRow.EventSequence + 2, BodyObjectKey: bodyRef.PayloadObjectKey, ActorKind: kind, ActorPrincipalID: principal, CreatedAt: review.CreatedAt, UpdatedAt: review.CreatedAt}, version: commentVersion, event: commentEvent}
 		}
 	}
-	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, raw)
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, raw)
 	if err != nil {
 		return nil, err
 	}
 	var current eventstore.Change
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		current, err = r.Change(ctx, change.ID)
 		return err
@@ -236,7 +237,7 @@ prepareReview:
 		return nil, hubapi.ProjectRecordError(err)
 	}
 	for {
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if prepared != nil {
 				if _, err := w.RunnerForLease(ctx, string(request.LeaseID)); err != nil {
 					return fmt.Errorf("lock review runner: %w", err)
@@ -264,7 +265,7 @@ prepareReview:
 			}
 			var lockedItem corestore.WorkItem
 			if instructions != nil {
-				lockedItem, err = w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+				lockedItem, err = w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 				if err != nil {
 					return err
 				}
@@ -275,7 +276,7 @@ prepareReview:
 			if err := bindChangeRecordContent(ctx, w, scope, item, changeReviewContentFields(request), nil, ""); err != nil {
 				return err
 			}
-			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
+			if prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
 					return hubapi.NativeConflict(change.Revision)
 				}
@@ -310,7 +311,7 @@ prepareReview:
 				return fmt.Errorf("lock validator review: %w", err)
 			}
 			if request.Bundle != nil {
-				ref, err := w.ArtifactReference(ctx, scope.project, change.WorkItemID, request.Bundle.ArtifactID, request.Bundle.Revision)
+				ref, err := w.ArtifactReference(ctx, scope.Project, change.WorkItemID, request.Bundle.ArtifactID, request.Bundle.Revision)
 				if err != nil {
 					return err
 				}
@@ -337,7 +338,7 @@ prepareReview:
 				}
 				slices.Sort(keys)
 				for _, key := range keys {
-					if err := s.registerChangeContentRecord(ctx, w, string(scope.organization), preparedContent.prepared[key], true); err != nil {
+					if err := s.registerChangeContentRecord(ctx, w, string(scope.Organization), preparedContent.prepared[key], true); err != nil {
 						return err
 					}
 				}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -56,9 +57,9 @@ func (f nativeFixture) link(t *testing.T, key string) tracker.NativeIssue {
 func TestLinkedIssueCreation(t *testing.T) {
 	t.Parallel()
 	f := linkedFixture(t)
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		project, err := w.ProjectRecord(t.Context(), scope.project)
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), scope.Project)
 		if err != nil {
 			return err
 		}
@@ -83,8 +84,8 @@ func TestLinkedIssueCreation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.source != "" {
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-					project, err := w.ProjectRecord(t.Context(), scope.project)
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+					project, err := w.ProjectRecord(t.Context(), scope.Project)
 					if err != nil {
 						return err
 					}
@@ -159,8 +160,8 @@ func TestLinkedIssueCreation(t *testing.T) {
 	if replay.WorkItemID != first.WorkItemID || replay.LinkedSource == nil || replay.LinkedSource.Status != "complete" {
 		t.Fatalf("linked replay=%+v", replay)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		project, err := w.ProjectRecord(t.Context(), scope.project)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), scope.Project)
 		if err != nil {
 			return err
 		}

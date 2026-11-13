@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -81,7 +82,7 @@ func applyLinkedWebhook(t *testing.T, f nativeFixture, action, event string, sna
 	if err != nil {
 		t.Fatal(err)
 	}
-	row := projectstore.GitHubWebhook{DeliveryID: identity, EventType: event, Action: action, Repository: scope.integrationRepository, ReceivedAt: f.service.config.now()}
+	row := projectstore.GitHubWebhook{DeliveryID: identity, EventType: event, Action: action, Repository: scope.IntegrationRepository, ReceivedAt: f.service.config.now()}
 	if err := f.service.applyGitHubWebhookRecord(ctx, scope, row, payload); err != nil {
 		t.Fatal(err)
 	}
@@ -265,10 +266,10 @@ func TestNativeTriageWorkflowProjection(t *testing.T) {
 		for _, bound := range []bool{false, true} {
 			t.Run(strconv.FormatBool(custom)+"/"+strconv.FormatBool(bound), func(t *testing.T) {
 				f := newNativeFixture(t, nil, "", "triage")
-				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+				scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 				if bound {
-					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-						project, err := w.ProjectRecord(t.Context(), scope.project)
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+						project, err := w.ProjectRecord(t.Context(), scope.Project)
 						if err != nil {
 							return err
 						}
@@ -410,7 +411,7 @@ func TestNativeGitHubTriageMigration(t *testing.T) {
 			if count, err := f.service.database.postgres.ImportCoreProjects(t.Context(), input); err != nil || count != 1 {
 				t.Fatalf("historical project import = %d, %v", count, err)
 			}
-			project, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: f.project.OrganizationID, project: projectID})
+			project, err := f.service.readProjectRecord(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: projectID})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -431,7 +432,7 @@ func TestNativeGitHubTriageMigration(t *testing.T) {
 			if !reflect.DeepEqual(project.States, want) {
 				t.Fatalf("historical workflow changed = %+v, want %+v", project.States, want)
 			}
-			current, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			current, err := f.service.readProjectRecord(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID})
 			if err != nil || !reflect.DeepEqual(current.States, nativeFixtureStates()) {
 				t.Fatalf("current project affected = %+v, %v", current.States, err)
 			}
@@ -461,7 +462,7 @@ func (f *browserHostedFixture) seedGitHubTriage(t *testing.T) {
 	}
 	snapshot := linkedSnapshot()
 	snapshot.Title = "Public GitHub report awaiting triage"
-	scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: tracker.ProjectID(f.project)}
-	applyLinkedWebhook(t, nativeFixture{service: f.service, project: tracker.NativeProject{ID: scope.project, OrganizationID: scope.organization}}, "opened", "issues", snapshot, nil)
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), Project: tracker.ProjectID(f.project)}
+	applyLinkedWebhook(t, nativeFixture{service: f.service, project: tracker.NativeProject{ID: scope.Project, OrganizationID: scope.Organization}}, "opened", "issues", snapshot, nil)
 	drainTestNativeBoard(t, f.service)
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -249,7 +250,7 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 				if err != nil || status != http.StatusOK {
 					t.Fatalf("fixture credential=%d %v", status, err)
 				}
-				page, err := service.readWorkBoardProject(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, savedWorkState{View: "board", CompletedWindow: "all"})
+				page, err := service.readWorkBoardProject(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}, savedWorkState{View: "board", CompletedWindow: "all"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -443,9 +444,9 @@ func TestNativeBoardProjectionAndReplay(t *testing.T) {
 			drainTestNativeBoard(t, f.service)
 			for _, id := range []tracker.NativeWorkItemID{history.WorkItemID, other.WorkItemID} {
 				var row viewstore.BoardRecord
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
-					row, err = r.BoardItem(t.Context(), scope.project, id)
+					row, err = r.BoardItem(t.Context(), scope.Project, id)
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -474,9 +475,9 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	scope := nativeBoardFixtureScope(t, f.nativeFixture)
 	drainTestNativeBoard(t, f.service)
 	var sequence viewstore.BoardSequence
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		sequence, err = r.BoardSequence(t.Context(), scope.project)
+		sequence, err = r.BoardSequence(t.Context(), scope.Project)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -641,12 +642,12 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			payload, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: scope.organization}, raw)
+			payload, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: scope.Organization}, raw)
 			if err != nil {
 				t.Fatal(err)
 			}
 			policyRow := policystore.Revision{
-				OrganizationID: scope.organization, ProjectID: scope.project, PolicyID: descriptor.ID,
+				OrganizationID: scope.Organization, ProjectID: scope.Project, PolicyID: descriptor.ID,
 				ApprovedBy: "historical-owner", ApprovedAt: now, GitHubPullRequest: new(descriptor.Gates.GitHubPullRequest),
 				PayloadObjectKey: payload.PayloadObjectKey, PayloadSHA256: payload.PayloadSHA256,
 				PayloadBytes: payload.PayloadBytes, PayloadContentBytes: payload.PayloadContentBytes,
@@ -659,11 +660,11 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			versionRow, err := content.PrepareVersion(t.Context(), scope.organization, raw)
+			versionRow, err := content.PrepareVersion(t.Context(), scope.Organization, raw)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.ImportProjectPolicyRevision(t.Context(), policyRow, false); err != nil {
 					return err
 				}
@@ -683,7 +684,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			t.Cleanup(func() {
 				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 				defer cancel()
-				if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					change, err := w.LockChange(ctx, f.change.ID)
 					if err != nil {
 						return err
@@ -721,9 +722,9 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	readStoredCards := func(t *testing.T) map[tracker.NativeWorkItemID]viewstore.BoardRecord {
 		t.Helper()
 		cards := make(map[tracker.NativeWorkItemID]viewstore.BoardRecord)
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			for _, id := range []tracker.NativeWorkItemID{f.issue.WorkItemID, unaffected.WorkItemID, historical.WorkItemID} {
-				row, err := r.BoardItem(t.Context(), scope.project, id)
+				row, err := r.BoardItem(t.Context(), scope.Project, id)
 				if err != nil {
 					return err
 				}
@@ -740,7 +741,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 		remaining := map[tracker.NativeWorkItemID]bool{f.issue.WorkItemID: true, unaffected.WorkItemID: true, historical.WorkItemID: true}
 		var candidates []viewstore.BoardCandidate
 		var seen []tracker.NativeWorkItemID
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			for range 4 {
 				candidate, err := r.NextBoardCandidate(t.Context(), "", seen...)
 				if errors.Is(err, corestore.ErrNotFound) {
@@ -752,7 +753,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if !remaining[candidate.WorkItemID] || candidate.ProjectID != scope.project || candidate.Required || candidate.QueuedAt != nil {
+				if !remaining[candidate.WorkItemID] || candidate.ProjectID != scope.Project || candidate.Required || candidate.QueuedAt != nil {
 					t.Fatalf("unexpected/queued board candidate: %+v", candidate)
 				}
 				delete(remaining, candidate.WorkItemID)
@@ -1215,16 +1216,16 @@ func drainTestNativeBoard(t *testing.T, service *Service) {
 	}
 }
 
-func nativeBoardFixtureScope(t *testing.T, f nativeFixture) nativeScope {
+func nativeBoardFixtureScope(t *testing.T, f nativeFixture) hubscope.NativeScope {
 	t.Helper()
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
 		t.Fatalf("board fixture credential status=%d: %v", status, err)
 	}
-	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	return hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 }
 
-func readTestBoardRecordFrame(t *testing.T, service *Service, scope nativeScope, since int64) tracker.NativeBoardFrame {
+func readTestBoardRecordFrame(t *testing.T, service *Service, scope hubscope.NativeScope, since int64) tracker.NativeBoardFrame {
 	t.Helper()
 	sub := &dashboardSubscription{initial: true, sequence: since, frames: make(chan dashboardFrame, 1), done: make(chan struct{})}
 	delivery := &dashboardDelivery{config: dashboardDeliveryConfig{pageSize: corestore.MaxPageSize}}

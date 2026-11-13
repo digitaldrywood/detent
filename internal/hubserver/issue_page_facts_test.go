@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -73,13 +74,13 @@ func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
 				if filter.want == 1 && page.Items[0].ClosedAt == nil {
 					t.Fatalf("Done issue list projection lost closure: %+v", page.Items[0])
 				}
-				scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, sourceActor: &issue.Actor}
+				scope := hubscope.NativeScope{Organization: fixture.project.OrganizationID, Project: fixture.project.ID, SourceActor: &issue.Actor}
 				selection, err := boardRecordSelection(scope, url.Values{filter.name: {filter.value}})
 				if err != nil {
 					t.Fatal(err)
 				}
 				selection.Limit = 10
-				if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 					rows, err := r.BoardPage(t.Context(), selection)
 					if err != nil {
 						return err
@@ -97,13 +98,13 @@ func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
 			})
 		}
 		for _, filter := range []struct{ name, value string }{{"created_by", issue.Actor.PrincipalID}, {"type", "bug"}, {"label", "Example-Label"}, {"assignee", "Example-Assignee"}, {"reporter", ""}, {"reporter foreign", ""}} {
-			scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, sourceActor: &issue.Actor}
+			scope := hubscope.NativeScope{Organization: fixture.project.OrganizationID, Project: fixture.project.ID, SourceActor: &issue.Actor}
 			params := url.Values{}
 			want := 1
 			if strings.HasPrefix(filter.name, "reporter") {
-				scope.credential.HostedRole = "reporter"
+				scope.Credential.HostedRole = "reporter"
 				if filter.name == "reporter foreign" {
-					scope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "another-actor"}
+					scope.SourceActor = &tracker.Actor{Kind: "human", PrincipalID: "another-actor"}
 					want = 0
 				}
 			} else {
@@ -114,7 +115,7 @@ func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
 				t.Fatal(err)
 			}
 			at := fixture.service.config.now().Add(time.Second)
-			if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := fixture.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				lanes, err := r.BoardLanes(t.Context(), selection, at)
 				if err != nil {
 					return err
@@ -141,11 +142,11 @@ func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		reporter := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, sourceActor: &issue.Actor, credential: hubapi.APICredential{HostedRole: "reporter"}}
+		reporter := hubscope.NativeScope{Organization: fixture.project.OrganizationID, Project: fixture.project.ID, SourceActor: &issue.Actor, Credential: hubapi.APICredential{HostedRole: "reporter"}}
 		if _, _, err := fixture.service.readWorkItemRecord(t.Context(), reporter, string(issue.WorkItemID)); err != nil {
 			t.Fatalf("filer denied own item: %v", err)
 		}
-		reporter.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "another-actor"}
+		reporter.SourceActor = &tracker.Actor{Kind: "human", PrincipalID: "another-actor"}
 		_, _, err := fixture.service.readWorkItemRecord(t.Context(), reporter, string(issue.WorkItemID))
 		var denied *hubapi.NativeError
 		if !errors.As(err, &denied) || denied.Status != http.StatusNotFound {

@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -42,7 +43,7 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: organization, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: organization, Project: f.project.ID, Credential: credential}
 			request := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID}
 			for step, wantAllowed := range []bool{true, false, false} {
 				if step == 1 {
@@ -144,7 +145,7 @@ func TestHealthContractsLiveInputs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: "org_security", project: f.f.project, credential: credential}
+		scope := hubscope.NativeScope{Organization: "org_security", Project: f.f.project, Credential: credential}
 		request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: f.delivery.WorkItemID, MachineID: machineID}
 		for step, wantAllowed := range []bool{false, true, true} {
 			if step < 2 {

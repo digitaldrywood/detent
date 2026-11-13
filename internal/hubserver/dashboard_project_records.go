@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -15,18 +16,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func requireDashboardRecordItem(ctx context.Context, r tenantstore.Reader, scope nativeScope, id string) error {
-	row, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(id))
+func requireDashboardRecordItem(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id string) error {
+	row, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(id))
 	if err != nil {
 		return err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+	if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 		return corestore.ErrNotFound
 	}
 	return nil
 }
 
-func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDelivery, sub *dashboardSubscription, scope nativeScope) (bool, error) {
+func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDelivery, sub *dashboardSubscription, scope hubscope.NativeScope) (bool, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return false, hubapi.NativeWorkItemStorageUnavailable()
@@ -42,11 +43,11 @@ func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDe
 	var grants string
 	gap := false
 	sequence := sub.sequence
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -74,7 +75,7 @@ func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDe
 		if err != nil {
 			return err
 		}
-		watermark, err := r.BoardSequence(ctx, scope.project)
+		watermark, err := r.BoardSequence(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -82,11 +83,11 @@ func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDe
 		if sub.initial && sequence < watermark.ReplayFloor {
 			sequence = watermark.ReplayFloor
 		}
-		gap = sub.initial && scope.credential.HostedRole == "reporter" || sequence < watermark.ReplayFloor || sequence > head || sub.grantVersion != "" && sub.grantVersion != grants
+		gap = sub.initial && scope.Credential.HostedRole == "reporter" || sequence < watermark.ReplayFloor || sequence > head || sub.grantVersion != "" && sub.grantVersion != grants
 		if gap || sequence == head {
 			return nil
 		}
-		rows, err := r.BoardDeltas(ctx, scope.project, sequence, min(d.config.pageSize, corestore.MaxPageSize))
+		rows, err := r.BoardDeltas(ctx, scope.Project, sequence, min(d.config.pageSize, corestore.MaxPageSize))
 		if err != nil {
 			return err
 		}
@@ -126,7 +127,7 @@ func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDe
 					run, found := runs[row.EntityID]
 					var readErr error
 					if !found {
-						run, readErr = owner.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: row.EntityID})
+						run, readErr = owner.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: row.EntityID})
 						if readErr == nil {
 							runs[row.EntityID] = run
 						}
@@ -205,7 +206,7 @@ func (s *Service) dashboardProjectRecordPage(ctx context.Context, d *dashboardDe
 	return sequence < head, nil
 }
 
-func (s *Service) dashboardRecordFrame(ctx context.Context, r tenantstore.Reader, scope nativeScope, sub *dashboardSubscription, row viewstore.BoardDelta) (dashboardFrame, bool, error) {
+func (s *Service) dashboardRecordFrame(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, sub *dashboardSubscription, row viewstore.BoardDelta) (dashboardFrame, bool, error) {
 	frame := dashboardFrame{sequence: row.Sequence, event: row.Topic}
 	item := string(row.WorkItemID)
 	if row.Topic == "activity" || row.Topic == "human_action" || row.Topic == "work_item" {
@@ -217,7 +218,7 @@ func (s *Service) dashboardRecordFrame(ctx context.Context, r tenantstore.Reader
 	if sub.item != "" && sub.item != item {
 		return frame, false, nil
 	}
-	if scope.credential.HostedRole == "reporter" {
+	if scope.Credential.HostedRole == "reporter" {
 		if (row.Topic == "workspace" || row.Topic == "action_run") && item == "" {
 			return frame, false, nil
 		}
@@ -269,7 +270,7 @@ func (s *Service) dashboardRecordFrame(ctx context.Context, r tenantstore.Reader
 	return frame, true, err
 }
 
-func (s *Service) dashboardWorkspaceRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, id string) (postgres.WorkspaceSession, error) {
+func (s *Service) dashboardWorkspaceRecord(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id string) (postgres.WorkspaceSession, error) {
 	if s.workspaces == nil {
 		return postgres.WorkspaceSession{}, hubapi.NativeNotFound()
 	}
@@ -280,7 +281,7 @@ func (s *Service) dashboardWorkspaceRecord(ctx context.Context, r tenantstore.Re
 	if !ok {
 		return postgres.WorkspaceSession{}, hubapi.WorkspaceUnavailable()
 	}
-	row, err := owner.WorkspaceSession(ctx, scope.project, id)
+	row, err := owner.WorkspaceSession(ctx, scope.Project, id)
 	if err != nil {
 		return row, err
 	}

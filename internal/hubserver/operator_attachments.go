@@ -13,16 +13,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (e nativeOperatorExecutor) attachmentAuthority(ctx context.Context, name string, raw json.RawMessage) (context.Context, nativeScope, operatortool.AttachmentOperationArguments, error) {
+func (e nativeOperatorExecutor) attachmentAuthority(ctx context.Context, name string, raw json.RawMessage) (context.Context, hubscope.NativeScope, operatortool.AttachmentOperationArguments, error) {
 	r, err := operatortool.DecodeAttachmentOperation(name, raw)
 	if err != nil {
-		return ctx, nativeScope{}, r, err
+		return ctx, hubscope.NativeScope{}, r, err
 	}
 	scopeRequired := apikey.ScopeWrite
 	if name == operatortool.ReadAttachment || name == operatortool.ReadAttachmentMetadata {
@@ -30,21 +31,21 @@ func (e nativeOperatorExecutor) attachmentAuthority(ctx context.Context, name st
 	}
 	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scopeRequired, Action: name, ProjectID: r.ProjectID})
 	if err != nil {
-		return ctx, nativeScope{}, r, err
+		return ctx, hubscope.NativeScope{}, r, err
 	}
 	if !e.service.hostedShared() {
-		return ctx, nativeScope{}, r, operatortool.ErrServiceUnavailable
+		return ctx, hubscope.NativeScope{}, r, operatortool.ErrServiceUnavailable
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
-		return ctx, nativeScope{}, r, operatortool.ErrAccessDenied
+		return ctx, hubscope.NativeScope{}, r, operatortool.ErrAccessDenied
 	}
 	scope, err := resolve(ctx)
 	if err != nil {
-		return ctx, nativeScope{}, r, operatortool.ErrAccessDenied
+		return ctx, hubscope.NativeScope{}, r, operatortool.ErrAccessDenied
 	}
-	scope.project = tracker.ProjectID(r.ProjectID)
-	scope.action = name
+	scope.Project = tracker.ProjectID(r.ProjectID)
+	scope.Action = name
 	return ctx, scope, r, nil
 }
 
@@ -86,7 +87,7 @@ func (e nativeOperatorExecutor) attachmentOperation(ctx context.Context, call op
 		}
 	}
 	record, err := e.service.readCloudAttachment(ctx, scope, r.AttachmentID)
-	if err != nil && scope.credential.HostedRole == "reporter" {
+	if err != nil && scope.Credential.HostedRole == "reporter" {
 		return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 	}
 	if err != nil || record.Validate() != nil {
@@ -141,8 +142,8 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 	if repository == nil {
 		return chat.ActionExecution{}, operatortool.ErrServiceUnavailable
 	}
-	err = repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+	err = repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
 		if _, err := e.service.attachmentWriteAuthority(ctx, w, scope, nil); err != nil {
@@ -160,7 +161,7 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.DeleteAttachment(ctx, scope.project, r.AttachmentID, e.service.config.now().UTC())
+		return owner.DeleteAttachment(ctx, scope.Project, r.AttachmentID, e.service.config.now().UTC())
 	})
 	if err != nil {
 		return chat.ActionExecution{}, hubSafeChangeError(err)
@@ -182,11 +183,11 @@ func (e nativeOperatorExecutor) attachmentActionResult(ctx context.Context, acti
 	state := ""
 	if action.Status == chat.ActionSucceeded {
 		var confirmed bool
-		err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			if err := e.service.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 				return err
 			}
-			record, err := reader.Attachment(ctx, scope.project, r.AttachmentID)
+			record, err := reader.Attachment(ctx, scope.Project, r.AttachmentID)
 			if err != nil {
 				return err
 			}

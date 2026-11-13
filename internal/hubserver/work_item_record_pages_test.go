@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -155,7 +156,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 			}
 			for _, limit := range costLimits {
 				params := url.Values{"limit": {strconv.Itoa(limit)}}
-				scope := nativeScope{organization: org.ID, project: project.ID}
+				scope := hubscope.NativeScope{Organization: org.ID, Project: project.ID}
 				if _, err := service.readCommentSourceRecords(t.Context(), scope, string(issue.WorkItemID), params); err != nil {
 					t.Fatal(err)
 				}
@@ -233,7 +234,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				details := objects.DetailStore.(*memoryRunDetails)
 				original := details.data[version.PayloadObjectKey]
 				details.data[version.PayloadObjectKey] = []byte("{}")
-				_, err := service.readCommentSourceRecords(t.Context(), nativeScope{organization: org.ID, project: project.ID}, string(issue.WorkItemID), url.Values{"limit": {"200"}})
+				_, err := service.readCommentSourceRecords(t.Context(), hubscope.NativeScope{Organization: org.ID, Project: project.ID}, string(issue.WorkItemID), url.Values{"limit": {"200"}})
 				if !errors.Is(err, artifact.ErrIntegrity) {
 					t.Fatalf("corrupt comment payload must fail closed: %v", err)
 				}
@@ -247,7 +248,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("detail fixture credential status=%d: %v", status, err)
 			}
-			scope := nativeScope{organization: org.ID, project: project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: org.ID, Project: project.ID, Credential: credential}
 			readHead := func() int64 {
 				t.Helper()
 				var head viewstore.BoardSequence
@@ -330,7 +331,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				activityAt := beforeEvent.LastActivityAt.Add(time.Minute)
 				eventRaw, err := json.Marshal(tracker.CollaborationEvent{
 					ID: hubapi.NewID("evt"), OrganizationID: org.ID, ProjectID: project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID,
-					Type: "run.checkpointed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: activityAt,
+					Type: "run.checkpointed", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: activityAt,
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -399,7 +400,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 				}
 				changed = false
 				objects.afterRead = func() { changed = true }
-				_, err = service.readWorkItemSourcePage(t.Context(), nativeScope{organization: org.ID, project: project.ID, credential: readerCredential}, string(issue.WorkItemID))
+				_, err = service.readWorkItemSourcePage(t.Context(), hubscope.NativeScope{Organization: org.ID, Project: project.ID, Credential: readerCredential}, string(issue.WorkItemID))
 				objects.afterRead = nil
 				if !errors.Is(err, accessstore.ErrDenied) || changed {
 					t.Fatalf("revoked authority reached immutable content: objectRead=%t err=%v", changed, err)
@@ -491,7 +492,7 @@ func TestCommentPageUsesSetBasedVersions(t *testing.T) {
 							}
 						}, func(_ time.Time, _ string) { statements++ })
 						started := time.Now()
-						page, err := service.readCommentRecords(readCtx, nativeScope{organization: org.ID, project: project.ID}, string(issue.WorkItemID), url.Values{"limit": {strconv.Itoa(limit)}, "direction": {direction}})
+						page, err := service.readCommentRecords(readCtx, hubscope.NativeScope{Organization: org.ID, Project: project.ID}, string(issue.WorkItemID), url.Values{"limit": {strconv.Itoa(limit)}, "direction": {direction}})
 						durations = append(durations, time.Since(started))
 						if err != nil {
 							t.Fatal(err)

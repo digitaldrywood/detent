@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -30,7 +31,7 @@ func TestHotReadQueryPlans(t *testing.T) {
 	f := newUsageHostedFixture(t)
 	admin := hostedPostgresAdmin(t, f.service)
 	installReportsBudgetTrace(t, f.service)
-	seedProductionProject(t, f.service, nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}, productionProjectShape{issues: 594, attempts: 469, usage: 262, leases: 1682, comments: 7000})
+	seedProductionProject(t, f.service, hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}, productionProjectShape{issues: 594, attempts: 469, usage: 262, leases: 1682, comments: 7000})
 	if _, err := admin.ExecContext(t.Context(), "ANALYZE issues,collaboration_events,native_attempts,change_requests,change_evidence,attempt_usage,report_usage_current,report_escape_facts"); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +126,7 @@ func TestAnalyticsReportPlans(t *testing.T) {
 		t.Run(population.name, func(t *testing.T) {
 			f := newUsageHostedFixture(t)
 			installReportsBudgetTrace(t, f.service)
-			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+			scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}
 			seedProductionProject(t, f.service, scope, population.shape)
 			if population.transitions > 0 {
 				seedReportsVolumeTransitions(t, f.service, scope, population.transitions)
@@ -175,14 +176,14 @@ func TestAnalyticsReportPlans(t *testing.T) {
 					if len(captured) == 0 {
 						t.Fatal("no report statements traced")
 					}
-					reportsAssertPostgresPlans(t, admin, scope.organization, captured, "issues", "native_attempts", "collaboration_events", "attempt_usage", "change_requests")
+					reportsAssertPostgresPlans(t, admin, scope.Organization, captured, "issues", "native_attempts", "collaboration_events", "attempt_usage", "change_requests")
 				})
 			}
 		})
 	}
 }
 
-func seedReportsVolumeTransitions(t *testing.T, s *Service, scope nativeScope, count int) {
+func seedReportsVolumeTransitions(t *testing.T, s *Service, scope hubscope.NativeScope, count int) {
 	t.Helper()
 	content := eventstore.NewContent(s.runDetailStore())
 	now := s.config.now().UTC().Truncate(time.Microsecond)
@@ -193,13 +194,13 @@ func seedReportsVolumeTransitions(t *testing.T, s *Service, scope nativeScope, c
 			if index%5 == 0 {
 				from = "Done"
 			}
-			row, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: fmt.Sprintf("event_volume_%d", index), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: tracker.NativeWorkItemID(string(scope.project) + "-wi_shaped_0"), Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: now.Add(-time.Duration(index*7776000/count) * time.Second), Data: tracker.CollaborationData{FromState: from, ToState: "In Progress"}}))
+			row, err := content.PrepareEvent(t.Context(), scope.Organization, historyTestJSON(t, tracker.CollaborationEvent{ID: fmt.Sprintf("event_volume_%d", index), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: tracker.NativeWorkItemID(string(scope.Project) + "-wi_shaped_0"), Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: now.Add(-time.Duration(index*7776000/count) * time.Second), Data: tracker.CollaborationData{FromState: from, ToState: "In Progress"}}))
 			if err != nil {
 				t.Fatal(err)
 			}
 			records = append(records, row)
 		}
-		if err := s.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			for _, row := range records {
 				if _, err := w.AppendEvent(t.Context(), row); err != nil {
 					return err
@@ -211,7 +212,7 @@ func seedReportsVolumeTransitions(t *testing.T, s *Service, scope nativeScope, c
 		}
 	}
 	var got int
-	if err := hostedPostgresAdmin(t, s).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND id LIKE 'event_volume_%' AND type='workflow.transitioned'", scope.organization, scope.project).Scan(&got); err != nil || got != count {
+	if err := hostedPostgresAdmin(t, s).QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND id LIKE 'event_volume_%' AND type='workflow.transitioned'", scope.Organization, scope.Project).Scan(&got); err != nil || got != count {
 		t.Fatalf("volume workflow events=%d want=%d error=%v", got, count, err)
 	}
 }
@@ -221,7 +222,7 @@ type productionProjectShape struct {
 	days, attemptDays                         int
 }
 
-func seedProductionProject(t *testing.T, s *Service, scope nativeScope, shape productionProjectShape) {
+func seedProductionProject(t *testing.T, s *Service, scope hubscope.NativeScope, shape productionProjectShape) {
 	t.Helper()
 	admin := hostedPostgresAdmin(t, s)
 	now := s.config.now().UTC().Truncate(time.Microsecond)
@@ -230,8 +231,8 @@ func seedProductionProject(t *testing.T, s *Service, scope nativeScope, shape pr
 		days = 2
 	}
 	states := []tracker.NativeState{{Name: "Backlog"}, {Name: "Todo", Dispatchable: true}, {Name: "In Progress"}, {Name: "Rework", Dispatchable: true}, {Name: "Merging"}, {Name: "Done", Terminal: true}, {Name: "Cancelled", Terminal: true}}
-	if err := s.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		record, err := w.ProjectRecord(t.Context(), scope.project)
+	if err := s.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		record, err := w.ProjectRecord(t.Context(), scope.Project)
 		if err != nil {
 			return err
 		}
@@ -269,7 +270,7 @@ func seedProductionProject(t *testing.T, s *Service, scope nativeScope, shape pr
 			state = "In Progress"
 		}
 		id := fmt.Sprintf("wi_shaped_%d", index)
-		items[index] = seedAnalyticsTestWorkItem(t, s, scope.organization, scope.project, id, 100000+index, "Example report item", state, created)
+		items[index] = seedAnalyticsTestWorkItem(t, s, scope.Organization, scope.Project, id, 100000+index, "Example report item", state, created)
 		for _, step := range steps {
 			if step.state != state {
 				continue
@@ -324,18 +325,18 @@ func seedProductionProject(t *testing.T, s *Service, scope nativeScope, shape pr
 		item := items[worked[index%len(worked)]]
 		started := item.CreatedAt.Add(time.Duration(1200+index/len(worked)*1800) * time.Second)
 		ended := started.Add(1500 * time.Second)
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,released_at)SELECT $1,$3,i.id,'analytics-fixture',$4,1,$5,$5,$6::timestamptz+interval '1 hour',$6 FROM issues i WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$7`, scope.organization, scope.project, fmt.Sprintf("lease_shaped_extra_%d", index), fmt.Sprintf("session_shaped_extra_%d", index), started, ended, item.WorkItemID); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,released_at)SELECT $1,$3,i.id,'analytics-fixture',$4,1,$5,$5,$6::timestamptz+interval '1 hour',$6 FROM issues i WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$7`, scope.Organization, scope.Project, fmt.Sprintf("lease_shaped_extra_%d", index), fmt.Sprintf("session_shaped_extra_%d", index), started, ended, item.WorkItemID); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for index := range shape.usage {
 		attempt := fmt.Sprintf("attempt_shaped_%d", index*shape.attempts/shape.usage)
-		if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at)SELECT organization_id,project_id,id,date_trunc('hour',started_at),'openai','gpt-6-astra',100000,40000,8000,0.25,'USD',updated_at FROM native_attempts WHERE organization_id=$1 AND project_id=$2 AND id=$3`, scope.organization, scope.project, attempt); err != nil {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at)SELECT organization_id,project_id,id,date_trunc('hour',started_at),'openai','gpt-6-astra',100000,40000,8000,0.25,'USD',updated_at FROM native_attempts WHERE organization_id=$1 AND project_id=$2 AND id=$3`, scope.Organization, scope.Project, attempt); err != nil {
 			t.Fatal(err)
 		}
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	body, err := content.PreparePayload(t.Context(), scope.organization, []byte(strings.Repeat("x", 200)))
+	body, err := content.PreparePayload(t.Context(), scope.Organization, []byte(strings.Repeat("x", 200)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,8 +344,8 @@ func seedProductionProject(t *testing.T, s *Service, scope nativeScope, shape pr
 		item := items[index%len(items)]
 		at := item.CreatedAt.Add(time.Duration(10800+index/len(items)*60) * time.Second)
 		id := fmt.Sprintf("comment_shaped_%d", index)
-		if err := s.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.CreateComment(t.Context(), corestore.Comment{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item.WorkItemID, ID: id, Sequence: int64(index/len(items) + 1), BodyObjectKey: body.Key, ActorKind: "human", ActorPrincipalID: "example", CreatedAt: at, UpdatedAt: at})
+		if err := s.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.CreateComment(t.Context(), corestore.Comment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.WorkItemID, ID: id, Sequence: int64(index/len(items) + 1), BodyObjectKey: body.Key, ActorKind: "human", ActorPrincipalID: "example", CreatedAt: at, UpdatedAt: at})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -358,9 +359,9 @@ func seedProductionProject(t *testing.T, s *Service, scope nativeScope, shape pr
 		{"issues", "native_id LIKE $3", shape.issues}, {"native_attempts", "id LIKE 'attempt_shaped_%'", shape.attempts}, {"attempt_usage", "attempt_id LIKE 'attempt_shaped_%'", shape.usage}, {"native_comments", "id LIKE 'comment_shaped_%'", shape.comments},
 	} {
 		var got int
-		args := []any{scope.organization, scope.project}
+		args := []any{scope.Organization, scope.Project}
 		if test.relation == "issues" {
-			args = append(args, string(scope.project)+"-wi_shaped_%")
+			args = append(args, string(scope.Project)+"-wi_shaped_%")
 		}
 		if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM "+test.relation+" WHERE organization_id=$1 AND project_id=$2 AND "+test.predicate, args...).Scan(&got); err != nil || got != test.want {
 			t.Fatalf("report fixture %s count=%d want=%d error=%v", test.relation, got, test.want, err)
@@ -371,11 +372,11 @@ func seedProductionProject(t *testing.T, s *Service, scope nativeScope, shape pr
 		wantRunning = (min(shape.attempts, len(worked)) + 13) / 15
 	}
 	var running int
-	if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND project_id=$2 AND id LIKE 'attempt_shaped_%' AND status='running'", scope.organization, scope.project).Scan(&running); err != nil || running != wantRunning {
+	if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE organization_id=$1 AND project_id=$2 AND id LIKE 'attempt_shaped_%' AND status='running'", scope.Organization, scope.Project).Scan(&running); err != nil || running != wantRunning {
 		t.Fatalf("report fixture running attempts=%d want=%d error=%v", running, wantRunning, err)
 	}
 	var leases int
-	if err := admin.QueryRowContext(t.Context(), `SELECT count(*)FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id LIKE $3`, scope.organization, scope.project, string(scope.project)+"-wi_shaped_%").Scan(&leases); err != nil || leases != shape.leases {
+	if err := admin.QueryRowContext(t.Context(), `SELECT count(*)FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id LIKE $3`, scope.Organization, scope.Project, string(scope.Project)+"-wi_shaped_%").Scan(&leases); err != nil || leases != shape.leases {
 		t.Fatalf("report fixture leases=%d want=%d error=%v", leases, shape.leases, err)
 	}
 }

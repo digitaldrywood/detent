@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -295,7 +296,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			params := url.Values{"q": {needle}, "state": {"Todo"}, "label": {"bounded"}, "cursor": {firstCursor}}
 			_, cursor, key, err := f.service.readNativePage(t.Context(), scope, f.base+"/work-items", params)
 			if err != nil {

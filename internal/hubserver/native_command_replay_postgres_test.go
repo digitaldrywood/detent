@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -28,22 +29,22 @@ func TestNativeCommandReplayUsesTenantReceipt(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: organization, credential: hubapi.APICredential{ID: principal, Hash: principal, Scope: hubapi.APIScopeAdmin}}
+			scope := hubscope.NativeScope{Organization: organization, Credential: hubapi.APICredential{ID: principal, Hash: principal, Scope: hubapi.APIScopeAdmin}}
 			input := map[string]string{"name": "example"}
 			hash, err := hubapi.CommandHash(input)
 			if err != nil {
 				t.Fatal(err)
 			}
 			content := eventstore.NewContent(service.runDetailStore())
-			receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: "example", CommandKey: "example-key", RequestHash: hash, CreatedAt: service.config.now()}, json.RawMessage(`{"result":"saved"}`))
+			receipt, err := content.PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: "example", CommandKey: "example-key", RequestHash: hash, CreatedAt: service.config.now()}, json.RawMessage(`{"result":"saved"}`))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.PutReceipt(t.Context(), receipt); return err }); err != nil {
+			if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.PutReceipt(t.Context(), receipt); return err }); err != nil {
 				t.Fatal(err)
 			}
 			receipt.Operation, receipt.CommandKey = "example session_legacy", "historical-key"
-			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.PutReceipt(t.Context(), receipt); return err }); err != nil {
+			if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.PutReceipt(t.Context(), receipt); return err }); err != nil {
 				t.Fatal(err)
 			}
 			for _, test := range []struct {
@@ -66,7 +67,7 @@ func TestNativeCommandReplayUsesTenantReceipt(t *testing.T) {
 					}
 				})
 			}
-			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.RevokeAccessCredential(t.Context(), principal, now)
 			}); err != nil {
 				t.Fatal(err)

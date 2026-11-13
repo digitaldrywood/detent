@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -128,7 +129,7 @@ func TestCoordinatorPublicationPreservesEventSequence(t *testing.T) {
 			}
 			response := httptest.NewRecorder()
 			stream := newConversationStream(echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response))
-			scope := nativeScope{organization: organization, project: project, credential: hubapi.APICredential{ID: "example_owner", Hash: "example-owner-hash", Scope: hubapi.APIScopeOperator}}
+			scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: hubapi.APICredential{ID: "example_owner", Hash: "example-owner-hash", Scope: hubapi.APIScopeOperator}}
 			if _, err := fixture.service.replayPGConversationEvents(t.Context(), scope, stream, id, 0, 3); err != nil {
 				t.Fatal(err)
 			}

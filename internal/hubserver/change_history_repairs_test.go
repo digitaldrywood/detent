@@ -263,7 +263,7 @@ func TestValidationCandidatesKeepHistoricalMatchBeyondPage(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, target.service, http.MethodPost, target.base+"/work-items/"+string(target.issue.WorkItemID)+"/comments", target.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "historical-validation-source"}, Body: body}), http.StatusOK)
 	for pass := range 2 {
 		historyRepairImport(t, target, source, 1)
-		if err := target.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := target.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			for index, attempt := range attempts {
 				row, err := r.LandingReceipt(t.Context(), attempt.ID)
 				if err != nil {
@@ -281,7 +281,7 @@ func TestValidationCandidatesKeepHistoricalMatchBeyondPage(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		issue, err := coordinatorActionIssue(t.Context(), target.service, scope.organization, scope.project, target.issue.WorkItemID)
+		issue, err := coordinatorActionIssue(t.Context(), target.service, scope.Organization, scope.Project, target.issue.WorkItemID)
 		if err != nil {
 			t.Fatal(err)
 		}

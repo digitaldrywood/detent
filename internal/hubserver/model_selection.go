@@ -6,6 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
@@ -15,20 +16,20 @@ import (
 type cloudModelSelection = projectsettings.ModelSelection
 
 func (s *Service) getCloudModelSelection(c echo.Context) error {
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	if s.config.TenantRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
 	if s.config.AccessRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	if err := s.accessRead(c.Request().Context(), scope.organization, func(r tenantstore.Reader) error {
+	if err := s.accessRead(c.Request().Context(), scope.Organization, func(r tenantstore.Reader) error {
 		return s.authorizeAccessScope(c.Request().Context(), r, scope, false)
 	}); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if scope.project == "" {
-		value, err := s.readOrganizationModels(c.Request().Context(), scope.organization)
+	if scope.Project == "" {
+		value, err := s.readOrganizationModels(c.Request().Context(), scope.Organization)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -45,16 +46,16 @@ func (s *Service) getCloudModelSelection(c echo.Context) error {
 	return c.JSON(http.StatusOK, value)
 }
 
-func (s *Service) organizationModelSelectionScope(c echo.Context) (nativeScope, error) {
+func (s *Service) organizationModelSelectionScope(c echo.Context) (hubscope.NativeScope, error) {
 	if s.config.Hosted == nil {
 		credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 		if !ok || credential.NativeOnly || credential.Runner.RunnerID != "" {
-			return nativeScope{}, operatortool.ErrAccessDenied
+			return hubscope.NativeScope{}, operatortool.ErrAccessDenied
 		}
-		return nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, nil
+		return hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential}, nil
 	}
 	credential, _, err := s.appCredential(c)
-	return nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential, requireHostedAdmin: true}, err
+	return hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID()), Credential: credential, RequireHostedAdmin: true}, err
 }
 
 func (s *Service) getOrganizationModelSelection(c echo.Context) error {
@@ -80,8 +81,8 @@ func (s *Service) updateCloudModelSelection(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
-	scope.requireHostedAdmin = true
+	scope := hubscope.NativeRequestScope(c)
+	scope.RequireHostedAdmin = true
 	c.Set("native_scope", scope)
 	if s.config.TenantRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())

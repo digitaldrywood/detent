@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -262,7 +263,7 @@ func TestRunnerIsolationLeaseLifecycle(t *testing.T) {
 							if test.legacy && stored.IsolationTier != nil || !test.legacy && (stored.IsolationTier == nil || *stored.IsolationTier != test.initial) {
 								t.Fatalf("%s changed stored isolation: %+v", event.Type, stored.IsolationTier)
 							}
-							details, err := service.config.NativeRunEvents.NativeLeaseResponse(t.Context(), reader, nativeScope{organization: organization, project: f.project.ID}, stored)
+							details, err := service.config.NativeRunEvents.NativeLeaseResponse(t.Context(), reader, hubscope.NativeScope{Organization: organization, Project: f.project.ID}, stored)
 							if err == nil && (details.IsolationPolicy == nil || details.IsolationPolicy.Tier != want) {
 								t.Fatalf("%s isolation = %+v, want %s", event.Type, details.IsolationPolicy, want)
 							}
@@ -316,7 +317,7 @@ func TestRunnerIsolationRefusalAfterHeartbeatDuringClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runner authentication status=%d: %v", status, err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "heartbeat-during-claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	claimStarted := clock.Now()
 	plan, err := f.service.readNativeClaimPlan(t.Context(), scope, claim, claimStarted)

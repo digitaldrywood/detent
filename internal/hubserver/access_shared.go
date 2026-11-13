@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 )
 
 func (s *Service) sharedAccessSession(ctx context.Context, c echo.Context, claims cloudassert.Claims) (auth.Session, string, error) {
@@ -16,7 +17,7 @@ func (s *Service) sharedAccessSession(ctx context.Context, c echo.Context, claim
 }
 
 func (s *Service) entryAccessKeyCredential(ctx context.Context, claims cloudassert.Claims) (hubapi.APICredential, int, error) {
-	return nativeCredentialResult(s.requestAuth().EntryKeyCredential(ctx, claims))
+	return hubscope.NativeCredentialResult(s.requestAuth().EntryKeyCredential(ctx, claims))
 }
 
 func (s *Service) ensureEntryServicePrincipal(ctx context.Context, claims cloudassert.Claims) error {

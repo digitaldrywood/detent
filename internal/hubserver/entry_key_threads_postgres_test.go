@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/threadstore"
@@ -179,7 +180,7 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 					t.Fatal(err)
 				}
 				credential := hubapi.APICredential{ID: id, Hash: hash, Scope: hubapi.APIScopeOperator, NativeOnly: true, HostedMembership: "membership_" + tc.user, HostedPrincipal: "credential_" + tc.user, HostedRole: "owner", HostedKeyKind: "service", HostedKeyScope: apikey.ScopeRead, HostedProjectAccess: hubapi.HostedProjectAccess(tc.access), Hosted: &auth.HostedIdentity{Subject: tc.user, OrganizationID: "provider_org_startup"}}
-				page, err := service.listThreadRecords(t.Context(), nativeScope{organization: "org_startup", credential: credential}, teamThreadInput{})
+				page, err := service.listThreadRecords(t.Context(), hubscope.NativeScope{Organization: "org_startup", Credential: credential}, teamThreadInput{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -231,7 +232,7 @@ func TestPostgresEntryKeyThreadReads(t *testing.T) {
 		return request("/internal/v1/keys/call", "first", "thread_reads", map[string]any{"name": name, "arguments": args, "connection_id": "thread_reads"}, mutate)
 	}
 	credential := hubapi.APICredential{ID: "credential_first", Hash: "key-hash-first", HostedPrincipal: "credential_first", Scope: hubapi.APIScopeOperator, HostedRole: "owner", HostedKeyScope: apikey.ScopeRead, HostedProjectAccess: hubapi.HostedProjectsAll, Hosted: &auth.HostedIdentity{Subject: "first", OrganizationID: "provider_org_startup"}}
-	identity := operatorIdentity(credential, "org_startup")
+	identity := hubscope.OperatorIdentity(credential, "org_startup")
 	catalogContext := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity})
 	catalogContext = context.WithValue(catalogContext, operatorCatalogKey{}, operatorCatalogAuthority{identity: identity, credential: credential})
 	counter := &entryKeyReadCounter{}

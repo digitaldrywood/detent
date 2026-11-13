@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -1549,7 +1550,7 @@ func TestConversationPostgresAPIUsesTenantRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.commandCreateConversation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredentialValue}, conversationCreateRequest{Key: "pg-create", Title: "Example", FirstMessage: &conversationFirstMessage{Key: "pg-first", Text: "hello from PostgreSQL"}}); err != nil {
+	if _, err := f.service.commandCreateConversation(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: apiCredentialValue}, conversationCreateRequest{Key: "pg-create", Title: "Example", FirstMessage: &conversationFirstMessage{Key: "pg-first", Text: "hello from PostgreSQL"}}); err != nil {
 		t.Fatalf("commandCreateConversation() error = %v", err)
 	}
 	created := f.create(t, f.token, body)
@@ -1771,11 +1772,11 @@ func TestConversationPostgresScopeUsesTenantRecords(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	reporterScope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{Scope: hubapi.APIScopeOperator, HostedRole: "reporter", HostedPrincipal: hubapi.StringValue(item.ActorPrincipalID)}}
+	reporterScope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: hubapi.APICredential{Scope: hubapi.APIScopeOperator, HostedRole: "reporter", HostedPrincipal: hubapi.StringValue(item.ActorPrincipalID)}}
 	if _, _, err := f.service.readWorkItemRecord(t.Context(), reporterScope, linkedResult.Issue.ID); err != nil {
 		t.Fatalf("reporter could not read its own work item: %v", err)
 	}
-	reporterScope.credential.HostedPrincipal = "other-reporter"
+	reporterScope.Credential.HostedPrincipal = "other-reporter"
 	if _, _, err := f.service.readWorkItemRecord(t.Context(), reporterScope, linkedResult.Issue.ID); err == nil {
 		t.Fatal("reporter read another principal's work item")
 	} else {

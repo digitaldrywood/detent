@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -23,7 +24,7 @@ func (s *Service) submitChangeCheck(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if s.config.Hosted != nil && nativeRequestScope(c).credential.Runner.RunnerID == "" && request.Source != "independent" {
+	if s.config.Hosted != nil && hubscope.NativeRequestScope(c).Credential.Runner.RunnerID == "" && request.Source != "independent" {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	if s.config.TenantRepository == nil {

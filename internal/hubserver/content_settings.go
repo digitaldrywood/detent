@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -19,7 +20,7 @@ type cloudContentSettingsRequest struct {
 func (s *Service) getCloudContentSettings(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	if s.config.TenantRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
@@ -35,8 +36,8 @@ func (s *Service) updateCloudContentSettings(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
-	scope.requireHostedAdmin = true
+	scope := hubscope.NativeRequestScope(c)
+	scope.RequireHostedAdmin = true
 	c.Set("native_scope", scope)
 	if s.config.TenantRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())

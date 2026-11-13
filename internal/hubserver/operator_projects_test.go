@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -231,7 +232,7 @@ func TestHostedProjectCutoverReceiptReads(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				scope.project = id
+				scope.Project = id
 				objects.mu.Lock()
 				retained := append([]byte(nil), objects.data[ref.Key]...)
 				delete(objects.data, ref.Key)
@@ -348,7 +349,7 @@ func TestHostedProjectTools(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope.project = f.project
+			scope.Project = f.project
 			before, err := f.service.readOnboardingProgressRecord(t.Context(), scope)
 			if err != nil {
 				t.Fatal(err)
@@ -384,7 +385,7 @@ func TestHostedProjectTools(t *testing.T) {
 			}
 			t.Run("onboarding requires collaboration", func(t *testing.T) {
 				var original billingstore.Plan
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					assignment, err := w.BillingAssignment(t.Context())
 					if err != nil {
 						return err
@@ -406,7 +407,7 @@ func TestHostedProjectTools(t *testing.T) {
 				t.Cleanup(func() {
 					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 					defer cancel()
-					if err := f.service.config.TenantRepository.WriteTenant(cleanup, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					if err := f.service.config.TenantRepository.WriteTenant(cleanup, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 						return w.ReplaceBillingPlan(cleanup, original)
 					}); err != nil {
 						t.Error(err)
@@ -421,15 +422,15 @@ func TestHostedProjectTools(t *testing.T) {
 				if raw, err := e.command(ctx, denied, projectCommandExecute); !errors.As(err, &limited) || limited.Resource != "collaboration" || raw != nil {
 					t.Fatalf("unentitled onboarding save=%s err=%v", raw, err)
 				}
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-					current, err := r.ProjectOnboardingProgress(t.Context(), scope.project)
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+					current, err := r.ProjectOnboardingProgress(t.Context(), scope.Project)
 					if err != nil {
 						return err
 					}
 					if !reflect.DeepEqual(current, saved) {
 						t.Errorf("unentitled onboarding save changed progress: saved=%+v current=%+v", saved, current)
 					}
-					if _, err := r.ReplayReceipt(t.Context(), scope.credential.ID, projectOperationID(scope, "PUT", "/onboarding"), requestID); !errors.Is(err, corestore.ErrNotFound) {
+					if _, err := r.ReplayReceipt(t.Context(), scope.Credential.ID, projectOperationID(scope, "PUT", "/onboarding"), requestID); !errors.Is(err, corestore.ErrNotFound) {
 						t.Errorf("unentitled onboarding save wrote a receipt: %v", err)
 					}
 					return nil
@@ -488,7 +489,7 @@ func TestHostedProjectTools(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				created, err := f.service.createNativeIssueCommand(t.Context(), nativeScope{organization: "org_security", project: f.project, credential: credential}, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "quota-issue"}, Title: "Allowance fixture", State: "Todo", Body: "## Acceptance criteria\nPreserve allowance refusal.\n## Must not break\nKeep writes denied.\n## How we know it worked\nAssert no comment is stored."})
+				created, err := f.service.createNativeIssueCommand(t.Context(), hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: credential}, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "quota-issue"}, Title: "Allowance fixture", State: "Todo", Body: "## Acceptance criteria\nPreserve allowance refusal.\n## Must not break\nKeep writes denied.\n## How we know it worked\nAssert no comment is stored."})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -641,7 +642,7 @@ func TestHostedProjectTools(t *testing.T) {
 			if len(policyRead.Data.History) != 1 || policyRead.Data.History[0].PreviousDefinitionDigest != previous.Policy.SourceDigest || policyRead.Data.History[0].DefinitionDigest != candidate.SourceDigest || policyRead.Data.History[0].AppliedBy != attribution.ApprovedBy || policyRead.Data.History[0].AppliedAt == "" {
 				t.Fatalf("MCP lost workflow apply history: %+v", policyRead.Data.History)
 			}
-			integrationRecord, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: "org_security", project: f.project})
+			integrationRecord, err := f.service.readProjectRecord(t.Context(), hubscope.NativeScope{Organization: "org_security", Project: f.project})
 			integration := projectIntegrationRecord(integrationRecord)
 			wantStates := append([]tracker.NativeState{{Name: "Triage", Transitions: []string{"Backlog", "Todo", "Cancelled"}}}, candidate.Workflow.States...)
 			if err != nil || integration.Authority["workflow"] != "repository" || integration.WorkflowSource != candidate.Workflow.Source || integration.WorkflowSourceRevision != candidate.SourceRevision || !reflect.DeepEqual(integration.States, wantStates) {
@@ -671,12 +672,12 @@ func TestHostedProjectTools(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(unchanged.Policy, candidate) {
 				t.Fatalf("stale approval changed policy = %+v, %v", unchanged, err)
 			}
-			unchangedRecord, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: "org_security", project: f.project})
+			unchangedRecord, err := f.service.readProjectRecord(t.Context(), hubscope.NativeScope{Organization: "org_security", Project: f.project})
 			unchangedIntegration := projectIntegrationRecord(unchangedRecord)
 			if err != nil || !reflect.DeepEqual(unchangedIntegration, integration) {
 				t.Fatalf("stale approval changed workflow = %+v, %v", unchangedIntegration, err)
 			}
-			rules, err := f.service.changeReviewPolicyRecord(t.Context(), nativeScope{organization: "org_security", project: f.project})
+			rules, err := f.service.changeReviewPolicyRecord(t.Context(), hubscope.NativeScope{Organization: "org_security", Project: f.project})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -729,7 +730,7 @@ func TestHostedProjectTools(t *testing.T) {
 						t.Fatalf("MCP override refusal = %v", err)
 					}
 				}
-				storedRecord, readErr := f.service.readProjectRecord(t.Context(), nativeScope{organization: "org_security", project: newProject.ID})
+				storedRecord, readErr := f.service.readProjectRecord(t.Context(), hubscope.NativeScope{Organization: "org_security", Project: newProject.ID})
 				stored := projectIntegrationRecord(storedRecord)
 				if readErr != nil || stored.Authority["workflow"] != "repository" || !reflect.DeepEqual(stored.States, states) || stored.Revision != 2 {
 					t.Fatalf("MCP override changed repository workflow: %#v, %v", stored, readErr)

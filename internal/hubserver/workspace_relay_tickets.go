@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -171,15 +172,15 @@ func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	ctx := c.Request().Context()
 	ticket, err := newRelayTicket()
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	err = s.accessWrite(ctx, scope.organization, func(writer tenantstore.Writer) error {
+	err = s.accessWrite(ctx, scope.Organization, func(writer tenantstore.Writer) error {
 		current := scope
-		current.credential = principal.credential
+		current.Credential = principal.credential
 		record, err := service.readRelayWorkspaceForActor(ctx, writer, current, c.Param("workspace"))
 		if err != nil {
 			return err
@@ -192,7 +193,7 @@ func (s *Service) mintWorkspaceRelayTicket(c echo.Context) error {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		now := s.config.now().UTC()
-		_, err = owner.CreateRelayTicket(ctx, postgres.CreateRelayTicketInput{OrganizationID: scope.organization, ProjectID: scope.project, Digest: relayTicketDigest(ticket), WorkspaceID: record.ID, SessionID: principal.sessionID, PrincipalID: principal.principalID, Subject: principal.subject, SupportReason: principal.supportReason, CreatedAt: now, ExpiresAt: now.Add(workspacesession.TicketLifetime)})
+		_, err = owner.CreateRelayTicket(ctx, postgres.CreateRelayTicketInput{OrganizationID: scope.Organization, ProjectID: scope.Project, Digest: relayTicketDigest(ticket), WorkspaceID: record.ID, SessionID: principal.sessionID, PrincipalID: principal.principalID, Subject: principal.subject, SupportReason: principal.supportReason, CreatedAt: now, ExpiresAt: now.Add(workspacesession.TicketLifetime)})
 		return err
 	})
 	if err != nil {

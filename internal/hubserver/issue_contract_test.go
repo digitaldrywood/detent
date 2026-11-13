@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -36,7 +37,7 @@ import (
 
 const nativeContractTestBody = "## Acceptance criteria\nThe change works.\n## Must not break\nExisting behavior.\n## How we know it worked\nThe focused tests pass."
 
-func nativeIssueContractEvaluationForTest(ctx context.Context, service *Service, scope nativeScope, item tracker.NativeWorkItemID) (nativeContractEvaluation, error) {
+func nativeIssueContractEvaluationForTest(ctx context.Context, service *Service, scope hubscope.NativeScope, item tracker.NativeWorkItemID) (nativeContractEvaluation, error) {
 	row, version, err := service.readWorkItemRecord(ctx, scope, string(item))
 	if err != nil {
 		return nativeContractEvaluation{}, err
@@ -45,7 +46,7 @@ func nativeIssueContractEvaluationForTest(ctx context.Context, service *Service,
 	if err != nil {
 		return nativeContractEvaluation{}, err
 	}
-	approval, err := service.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+	approval, err := service.readTenantProjectPolicy(ctx, scope.Organization, scope.Project)
 	if err != nil {
 		return nativeContractEvaluation{}, err
 	}
@@ -55,7 +56,7 @@ func nativeIssueContractEvaluationForTest(ctx context.Context, service *Service,
 	}
 	plan := nativeClaimPlan{item: row, issue: issue, project: project, descriptor: approval.Policy}
 	if issue.IssueContract != nil && issue.IssueContract.ReleaseDelivery != nil {
-		if err := service.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			plan.releaseDelivery, err = readReleaseDeliveryContractFacts(ctx, r, scope, item, project.States)
 			return err
@@ -127,7 +128,7 @@ func TestNativeIssueContractPolicyDriftKeepsCurrentAuthority(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("operator authentication status=%d error=%v", status, err)
 	}
-	onboarding, err := f.service.projectOnboarding(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: operatorCredential})
+	onboarding, err := f.service.projectOnboarding(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: operatorCredential})
 	if err != nil || onboarding.Policy == nil || onboarding.Policy.Policy.ID != drifted.ID {
 		t.Fatalf("onboarding lost replacement approval identity: %+v, %v", onboarding.Policy, err)
 	}
@@ -217,7 +218,7 @@ func TestNativeIssueContract(t *testing.T) {
 			backendIsolation := isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": machine, "hostname": "runner", "capacity": 1, "version": minimumSupportedRunnerVersion, "backend_isolation": backendIsolation}), http.StatusOK)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(machine)+"/heartbeat", worker, map[string]any{"display_name": "Example runner", "capacity": 1, "version": minimumSupportedRunnerVersion, "backend_isolation": backendIsolation, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: 1, ClientLimit: 1, RuntimeLimit: 1, Manageable: true, ObservedAt: f.service.config.now()}}), http.StatusOK)
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			check := func(want bool) {
 				t.Helper()
 				evaluation, err := nativeIssueContractEvaluationForTest(t.Context(), f.service, scope, issue.WorkItemID)
@@ -272,8 +273,8 @@ func TestNativeIssueContract(t *testing.T) {
 			}
 			action := contract.HumanAction(nativeContractIssue(issue), contract.Evaluate(nativeContractIssue(issue)))
 			var heldLease leasestore.Lease
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-				row, err := w.WorkItem(t.Context(), scope.project, issue.WorkItemID)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+				row, err := w.WorkItem(t.Context(), scope.Project, issue.WorkItemID)
 				if err != nil {
 					return err
 				}
@@ -281,7 +282,7 @@ func TestNativeIssueContract(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: scope.organization, ProjectID: scope.project, LeaseID: tracker.LeaseID(heldLease.LeaseID), PolicyID: descriptor.ID, BoundAt: heldLease.AcquiredAt})
+				return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: scope.Organization, ProjectID: scope.Project, LeaseID: tracker.LeaseID(heldLease.LeaseID), PolicyID: descriptor.ID, BoundAt: heldLease.AcquiredAt})
 			}); err != nil {
 				t.Fatal(err)
 			}

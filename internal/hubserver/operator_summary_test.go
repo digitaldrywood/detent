@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
@@ -21,7 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func updateOperatorSummaryFixtureIssue(t *testing.T, service *Service, scope nativeScope, id tracker.NativeWorkItemID, update func(*tracker.NativeIssue)) tracker.NativeIssue {
+func updateOperatorSummaryFixtureIssue(t *testing.T, service *Service, scope hubscope.NativeScope, id tracker.NativeWorkItemID, update func(*tracker.NativeIssue)) tracker.NativeIssue {
 	t.Helper()
 	row, version, err := service.readWorkItemRecord(t.Context(), scope, string(id))
 	if err != nil {
@@ -33,21 +34,21 @@ func updateOperatorSummaryFixtureIssue(t *testing.T, service *Service, scope nat
 	}
 	update(&issue)
 	issue.Revision++
-	fields, err := service.prepareWorkItemFields(t.Context(), scope.organization, workItemRecordPlan{issue: issue})
+	fields, err := service.prepareWorkItemFields(t.Context(), scope.Organization, workItemRecordPlan{issue: issue})
 	if err != nil {
 		t.Fatal(err)
 	}
-	version, err = eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: id, RecordID: string(id), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
+	version, err = eventstore.NewContent(service.runDetailStore()).PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: id, RecordID: string(id), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
 	if err != nil {
 		t.Fatal(err)
 	}
 	row.Title, row.IssueType, row.Priority, row.Archived, row.LastActivityAt = issue.Title, issue.Type, issue.Priority, issue.Archived, issue.LastActivityAt
 	row.BodyObjectKey, row.IssueContractObjectKey, row.ReportContextObjectKey = &fields.Body, fields.Contract, fields.Report
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if _, err := w.UpdateWorkItem(t.Context(), row); err != nil {
 			return err
 		}
-		if err := w.SetWorkItemLabels(t.Context(), scope.project, id, issue.Labels); err != nil {
+		if err := w.SetWorkItemLabels(t.Context(), scope.Project, id, issue.Labels); err != nil {
 			return err
 		}
 		_, err := w.CreateCollaborationVersion(t.Context(), version)
@@ -58,13 +59,13 @@ func updateOperatorSummaryFixtureIssue(t *testing.T, service *Service, scope nat
 	return issue
 }
 
-func appendOperatorSummaryFixtureTransition(t *testing.T, service *Service, scope nativeScope, id tracker.NativeWorkItemID, data tracker.CollaborationData, at time.Time) {
+func appendOperatorSummaryFixtureTransition(t *testing.T, service *Service, scope hubscope.NativeScope, id tracker.NativeWorkItemID, data tracker.CollaborationData, at time.Time) {
 	t.Helper()
-	row, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: id, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, RecordedAt: at, Data: data}))
+	row, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), scope.Organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: id, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, RecordedAt: at, Data: data}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		_, err := w.AppendEvent(t.Context(), row)
 		return err
 	}); err != nil {
@@ -91,7 +92,7 @@ func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%s/%s/links=%d", test.field, strings.Join(test.include, ","), test.links), func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 			issues := seedArchiveIssues(t, f.service, scope, 2, "Todo")
 			large := strings.Repeat("<界", operatortool.WorkListPageBytes/4)
 			switch test.field {
@@ -100,16 +101,16 @@ func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
 					related := seedArchiveIssues(t, f.service, scope, test.links, "Todo")
 					for _, target := range related {
 						updateOperatorSummaryFixtureIssue(t, f.service, scope, target.WorkItemID, func(issue *tracker.NativeIssue) { issue.Archived = true })
-						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-							return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issues[0].WorkItemID, RelatedProjectID: scope.project, RelatedWorkItemID: target.WorkItemID, Type: "related"}, "add", f.service.config.now())
+						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+							return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issues[0].WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: target.WorkItemID, Type: "related"}, "add", f.service.config.now())
 						}); err != nil {
 							t.Fatal(err)
 						}
 					}
 				} else {
 					updateOperatorSummaryFixtureIssue(t, f.service, scope, issues[1].WorkItemID, func(issue *tracker.NativeIssue) { issue.Title = large })
-					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-						return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issues[0].WorkItemID, RelatedProjectID: scope.project, RelatedWorkItemID: issues[1].WorkItemID, Type: "related"}, "add", f.service.config.now())
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.SetRelationship(t.Context(), corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issues[0].WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: issues[1].WorkItemID, Type: "related"}, "add", f.service.config.now())
 					}); err != nil {
 						t.Fatal(err)
 					}
@@ -131,8 +132,8 @@ func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
 			})
 			for i, issue := range issues {
 				updateOperatorSummaryFixtureIssue(t, f.service, scope, issue.WorkItemID, func(item *tracker.NativeIssue) { item.Priority = new(i) })
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-					entry, err := w.QueueEntry(t.Context(), scope.project, issue.WorkItemID, string(scope.project))
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+					entry, err := w.QueueEntry(t.Context(), scope.Project, issue.WorkItemID, string(scope.Project))
 					if err != nil {
 						return err
 					}
@@ -238,7 +239,7 @@ func TestOperatorWorkListSummary(t *testing.T) {
 	reasons := map[tracker.ProjectID]map[int]string{}
 	for _, project := range []tracker.ProjectID{short, f.project.ID} {
 		reasons[project] = map[int]string{}
-		scope := nativeScope{organization: f.project.OrganizationID, project: project}
+		scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: project}
 		issues := seedArchiveIssues(t, f.service, scope, 40, "Todo")
 		for i, issue := range issues {
 			updateOperatorSummaryFixtureIssue(t, f.service, scope, issue.WorkItemID, func(issue *tracker.NativeIssue) {
@@ -329,10 +330,10 @@ func TestOperatorWorkListSummary(t *testing.T) {
 	if len(next.Data.Items) != 1 || next.Data.Items[0].Number == first.Data.Items[0].Number || next.Data.NextCursor == "" {
 		t.Fatal("summary continuation lost the default cursor")
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: short}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: short}
 	for _, id := range []tracker.NativeWorkItemID{first.Data.Items[0].WorkItemID, tracker.NativeWorkItemID("")} {
 		if id == "" {
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				item, err := r.WorkItemByNumber(t.Context(), short, int64(next.Data.Items[0].Number))
 				id = item.NativeID
 				return err

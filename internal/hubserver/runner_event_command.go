@@ -9,27 +9,28 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readNativeRunCommand(ctx context.Context, scope nativeScope, command eventstore.RunCommand, read func(context.Context, tenantstore.Reader) error) error {
-	if scope.credential.Runner.RunnerID != "" {
+func (s *Service) readNativeRunCommand(ctx context.Context, scope hubscope.NativeScope, command eventstore.RunCommand, read func(context.Context, tenantstore.Reader) error) error {
+	if scope.Credential.Runner.RunnerID != "" {
 		if repository, ok := s.config.TenantRepository.(interface {
 			ReadRunnerEventCommand(context.Context, tracker.OrganizationID, string, string, eventstore.RunCommand, func(context.Context, tenantstore.Reader) error) error
 		}); ok {
-			return repository.ReadRunnerEventCommand(ctx, scope.organization, scope.credential.ID, scope.credential.Runner.RunnerID, command, read)
+			return repository.ReadRunnerEventCommand(ctx, scope.Organization, scope.Credential.ID, scope.Credential.Runner.RunnerID, command, read)
 		}
 	}
 	if repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository); ok {
-		return repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return read(ctx, r) })
+		return repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { return read(ctx, r) })
 	}
 	return hubapi.NativeRunEventStorageUnavailable()
 }
 
-func (s *Service) writeNativeRunCommand(ctx context.Context, scope nativeScope, command eventstore.RunCommand, write func(context.Context, tenantstore.Writer) error) error {
-	if scope.credential.Runner.RunnerID == "" {
-		return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
+func (s *Service) writeNativeRunCommand(ctx context.Context, scope hubscope.NativeScope, command eventstore.RunCommand, write func(context.Context, tenantstore.Writer) error) error {
+	if scope.Credential.Runner.RunnerID == "" {
+		return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { return write(ctx, w) })
 	}
 	optimized := command.Operation == ""
 	switch s.config.NativeRunEvents.(type) {
@@ -39,10 +40,10 @@ func (s *Service) writeNativeRunCommand(ctx context.Context, scope nativeScope, 
 	if repository, ok := s.config.TenantRepository.(interface {
 		WriteRunnerEventCommand(context.Context, tracker.OrganizationID, string, string, eventstore.RunCommand, func(context.Context, tenantstore.Writer) error) error
 	}); ok && optimized {
-		return repository.WriteRunnerEventCommand(ctx, scope.organization, scope.credential.ID, scope.credential.Runner.RunnerID, command, write)
+		return repository.WriteRunnerEventCommand(ctx, scope.Organization, scope.Credential.ID, scope.Credential.Runner.RunnerID, command, write)
 	}
 	return s.writeNativeClaimCommand(ctx, scope, func(ctx context.Context, w tenantstore.Writer) error {
-		if _, err := w.RunnerIdentityByCredential(ctx, scope.credential.ID); err != nil {
+		if _, err := w.RunnerIdentityByCredential(ctx, scope.Credential.ID); err != nil {
 			return err
 		}
 		if command.Operation != "" {
@@ -68,8 +69,8 @@ func runnerEventCommandRoute(c echo.Context) bool {
 	return c.Request().Method == http.MethodPost && (c.Path() == hubapi.NativeBase+"/work-items/:item/events" || c.Path() == hubapi.NativeBase+"/runner-sessions" || c.Path() == hubapi.NativeBase+"/leases/:lease/release")
 }
 
-func (s *Service) runnerEventCommandScope(c echo.Context, scope nativeScope) bool {
-	if !runnerEventCommandRoute(c) || scope.credential.Runner.RunnerID == "" || scope.credential.EntryKey != nil {
+func (s *Service) runnerEventCommandScope(c echo.Context, scope hubscope.NativeScope) bool {
+	if !runnerEventCommandRoute(c) || scope.Credential.Runner.RunnerID == "" || scope.Credential.EntryKey != nil {
 		return false
 	}
 	switch s.config.NativeRunEvents.(type) {

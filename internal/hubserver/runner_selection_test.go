@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -518,12 +519,12 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 					{true, []string{"ready", "Rework", "Todo"}},
 					{false, []string{"Todo", "ready", "Rework"}},
 				} {
-					scope := nativeScope{organization: first.project.OrganizationID, project: first.project.ID}
-					query := claimstore.CandidateQuery{ProjectID: scope.project, Scope: string(scope.project), RunnerSelection: selection.runner, AvailableAt: now, Limit: 1}
+					scope := hubscope.NativeScope{Organization: first.project.OrganizationID, Project: first.project.ID}
+					query := claimstore.CandidateQuery{ProjectID: scope.Project, Scope: string(scope.Project), RunnerSelection: selection.runner, AvailableAt: now, Limit: 1}
 					for _, want := range selection.want {
 						var page claimstore.CandidatePage
 						var title string
-						if err := first.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+						if err := first.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 							var err error
 							page, err = reader.CandidatePage(t.Context(), query)
 							if err != nil {
@@ -532,7 +533,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 							if len(page.Items) != 1 {
 								t.Fatalf("candidate page = %+v", page)
 							}
-							item, err := reader.WorkItem(t.Context(), scope.project, page.Items[0].WorkItemID)
+							item, err := reader.WorkItem(t.Context(), scope.Project, page.Items[0].WorkItemID)
 							title = item.Title
 							return err
 						}); err != nil {
@@ -716,7 +717,7 @@ func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
 				for index := range 4 {
 					project.create(t, fmt.Sprintf("cursor work %d", index))
 				}
-				scope := nativeScope{organization: f.project.OrganizationID, project: project.project.ID, credential: credential}
+				scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: project.project.ID, Credential: credential}
 				request := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, MachineID: r.binding.MachineID, TTLSeconds: 60, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 				readScan := func() nativeClaimCandidateScan {
 					t.Helper()
@@ -748,9 +749,9 @@ func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
 				var stored claimstore.SelectionCursor
 				read := func() {
 					t.Helper()
-					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 						var err error
-						stored, err = reader.SelectionCursor(t.Context(), scope.credential.Runner.RunnerID, scope.project)
+						stored, err = reader.SelectionCursor(t.Context(), scope.Credential.Runner.RunnerID, scope.Project)
 						return err
 					}); err != nil {
 						t.Fatal(err)
@@ -767,8 +768,8 @@ func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
 					t.Fatalf("winner could not continue: cursor=%s revision=%d", stored.Position.WorkItemID, stored.Revision)
 				}
 				fresh := project.create(t, "work after cursor contention")
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-					queue, err := w.QueueEntry(t.Context(), scope.project, fresh.WorkItemID, string(scope.project))
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+					queue, err := w.QueueEntry(t.Context(), scope.Project, fresh.WorkItemID, string(scope.Project))
 					if err != nil {
 						return err
 					}
@@ -777,7 +778,7 @@ func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				request.SessionID = "cursor-progress-" + string(scope.project)
+				request.SessionID = "cursor-progress-" + string(scope.Project)
 				response := performHubAPIRequest(t, f.service, http.MethodPost, project.base+"/claims", r.redemption.Credential, request)
 				requireNativeStatus(t, response, http.StatusOK)
 				var lease tracker.NativeLease

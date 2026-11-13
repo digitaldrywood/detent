@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -183,7 +184,7 @@ func TestHostedEventsActivityIncludesChangesBelowIssueMaximum(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 	high, low := f.seedIssue(t, 1), f.seedIssue(t, 2)
-	scope := nativeScope{organization: "org_security", project: f.project, credential: hubapi.APICredential{ID: "fixture", Scope: hubapi.APIScopeAdmin}}
+	scope := hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: hubapi.APICredential{ID: "fixture", Scope: hubapi.APIScopeAdmin}}
 	appendEvent := func(item tracker.NativeWorkItemID, kind string, data tracker.CollaborationData) {
 		t.Helper()
 		appendAnalyticsTestEvent(t, f.service, scope, item, kind, data, f.service.config.now())
@@ -192,8 +193,8 @@ func TestHostedEventsActivityIncludesChangesBelowIssueMaximum(t *testing.T) {
 		appendEvent(high, "issue.edited", tracker.CollaborationData{})
 	}
 	var previous int64
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		watermark, err := r.BoardSequence(t.Context(), scope.project)
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		watermark, err := r.BoardSequence(t.Context(), scope.Project)
 		previous = watermark.Sequence
 		return err
 	}); err != nil {
@@ -215,19 +216,19 @@ func TestHostedEventsHealthFinding(t *testing.T) {
 	user := f.user(t, "member", "member", "member@example.test", "read", "")
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	finding := newHealthFinding("dead_man", "flow", "project", string(f.project), "No landings", "Check admission", []string{string(f.project)}, healthEvidence{})
-	scope := nativeScope{organization: "org_security", project: f.project}
+	scope := hubscope.NativeScope{Organization: "org_security", Project: f.project}
 	write := func(at time.Time, findings []healthFinding) int64 {
 		t.Helper()
 		var previous int64
-		err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			watermark, err := r.BoardSequence(t.Context(), scope.project)
+		err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			watermark, err := r.BoardSequence(t.Context(), scope.Project)
 			previous = watermark.Sequence
 			return err
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.publishHealthEvaluation(t.Context(), scope.organization, at, findings); err != nil {
+		if err := f.service.publishHealthEvaluation(t.Context(), scope.Organization, at, findings); err != nil {
 			t.Fatal(err)
 		}
 		return previous
@@ -264,7 +265,7 @@ func TestHostedEventsHealthFinding(t *testing.T) {
 			break
 		}
 	}
-	page, err := f.service.readHealthFindings(t.Context(), nativeScope{organization: "org_security", project: f.project, credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}, "open", "", "", 100)
+	page, err := f.service.readHealthFindings(t.Context(), hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}, "open", "", "", 100)
 	if err != nil || len(page.Items) != 0 {
 		t.Fatalf("resolved findings = %#v: %v", page, err)
 	}
@@ -275,10 +276,10 @@ func TestHostedEventsIssue(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 	item, unrelated := f.seedIssue(t, 1), f.seedIssue(t, 2)
-	scope := nativeScope{organization: "org_security", project: f.project, credential: hubapi.APICredential{ID: "fixture", Scope: hubapi.APIScopeAdmin}}
+	scope := hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: hubapi.APICredential{ID: "fixture", Scope: hubapi.APIScopeAdmin}}
 	var previous int64
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		watermark, err := r.BoardSequence(t.Context(), scope.project)
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		watermark, err := r.BoardSequence(t.Context(), scope.Project)
 		previous = watermark.Sequence
 		return err
 	}); err != nil {
@@ -348,8 +349,8 @@ func TestHostedEventsIssue(t *testing.T) {
 	})
 	capture := &runtimeHistoryTraceCapture{}
 	ctx := context.WithValue(t.Context(), runtimeHistoryTraceKey{}, capture)
-	if err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		row, err := r.WorkItem(ctx, scope.project, item)
+	if err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.WorkItem(ctx, scope.Project, item)
 		if err == nil && (row.NativeID != item || row.EventSequence < 1) {
 			return errors.New("selected issue observation did not return current evidence")
 		}
@@ -373,7 +374,7 @@ func TestHostedEventsIssue(t *testing.T) {
 	if _, err := admin.ExecContext(t.Context(), "ANALYZE issues"); err != nil {
 		t.Fatal(err)
 	}
-	plan, raw := reportsExplainPostgresPlan(t, admin, scope.organization, selected[0], "enable_seqscan=off", "enable_bitmapscan=off")
+	plan, raw := reportsExplainPostgresPlan(t, admin, scope.Organization, selected[0], "enable_seqscan=off", "enable_bitmapscan=off")
 	indexed, observed := false, float64(0)
 	var inspect func(reportsBudgetPlan)
 	inspect = func(node reportsBudgetPlan) {
@@ -392,8 +393,8 @@ func TestHostedEventsIssue(t *testing.T) {
 		t.Fatalf("unbounded issue observation query: %s", raw)
 	}
 	t.Logf("selected issue observation query plan: %s", raw)
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, scope.project)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteAccessProjectGrant(t.Context(), user.identity.Subject, scope.Project)
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -103,7 +104,7 @@ func TestWorkspaceOperatorFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := &relayConnection{ID: "relayrunner_test", WorkspaceID: workspace, Runner: true, Scope: f.service.authInput(nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: runnerCredential}), Owner: bound.Owner, SessionID: string(lease.ID), Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{})}
+	runner := &relayConnection{ID: "relayrunner_test", WorkspaceID: workspace, Runner: true, Scope: f.service.authInput(hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: runnerCredential}), Owner: bound.Owner, SessionID: string(lease.ID), Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{})}
 	if _, err := f.service.workspaces.relay.attachRunner(runner); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +309,7 @@ func workspaceOperatorContext(t *testing.T, s *Service, token, organization, con
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{ID: connection, Client: "regression", DashboardURL: "https://approval.example.test", Identity: operatorIdentity(credential, organization), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+	ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{ID: connection, Client: "regression", DashboardURL: "https://approval.example.test", Identity: hubscope.OperatorIdentity(credential, organization), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 		current, _, err := s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), apikey.HashToken(token), "", "")
 		if err != nil {
 			return operatortool.Authority{}, err
@@ -395,7 +396,7 @@ func TestWorkItemConversationMissingDiagnostic(t *testing.T) {
 				if err != nil {
 					t.Fatalf("credential status=%d error=%v", status, err)
 				}
-				scope := nativeScope{organization: tenant.project.OrganizationID, project: tenant.project.ID, credential: credential}
+				scope := hubscope.NativeScope{Organization: tenant.project.OrganizationID, Project: tenant.project.ID, Credential: credential}
 				raw, err := f.service.readWorkspaceTool(t.Context(), scope, "get_work_item_conversation", workspaceToolRequest{WorkItemID: string(test.item)})
 				if test.denied {
 					var refused *hubapi.NativeError

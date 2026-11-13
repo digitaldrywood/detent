@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -73,7 +74,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	workerCredential := accessstore.Credential{OrganizationID: f.project.OrganizationID, ID: workerID, Name: "Example worker", Hash: "example-worker-hash", Scope: "worker", NativeOnly: true, ProjectAccess: "all", Kind: "service", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	binding := runnerauth.NewBinding()
 	workerIdentity := runnerauth.Identity{Binding: binding, Scope: "projects", OrganizationID: f.project.OrganizationID, ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim}, ExpiresAt: time.Now().UTC().Add(time.Hour)}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{ID: workerID, Hash: workerCredential.Hash, Scope: hubapi.APIScopeWorker, NativeOnly: true, Runner: workerIdentity}}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: hubapi.APICredential{ID: workerID, Hash: workerCredential.Hash, Scope: hubapi.APIScopeWorker, NativeOnly: true, Runner: workerIdentity}}
 	authorityCalls := 0
 	deniedAuthorityCall := 0
 	f.service.config.ConversationWorkerAuthority = conversationWorkerAuthorityFunc(func(_ context.Context, _ tenantstore.Reader, identity ConversationWorkerIdentity) error {
@@ -155,7 +156,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.commandPostConversation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator}}, linked.ID, conversation.Command{Key: "pg-bind-control", Kind: conversation.CommandMessage, Text: "Example pending instruction"}); err != nil {
+	if _, err := f.service.commandPostConversation(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: hubapi.APICredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator}}, linked.ID, conversation.Command{Key: "pg-bind-control", Kind: conversation.CommandMessage, Text: "Example pending instruction"}); err != nil {
 		t.Fatal(err)
 	}
 	identity := conversationWorkerIdentity{LeaseID: "lease-pg-worker", FencingToken: 1, AttemptID: "attempt-pg-worker"}
@@ -180,20 +181,20 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		}
 		cleanupCtx, cancel := context.WithDeadline(context.WithoutCancel(t.Context()), deadline)
 		defer cancel()
-		if _, err := admin.ExecContext(cleanupCtx, `UPDATE leases SET renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, scope.organization, identity.LeaseID, currentLease.RenewedAt, currentLease.ExpiresAt); err != nil {
+		if _, err := admin.ExecContext(cleanupCtx, `UPDATE leases SET renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, scope.Organization, identity.LeaseID, currentLease.RenewedAt, currentLease.ExpiresAt); err != nil {
 			t.Error(err)
 		}
 	})
 	futureClock := time.Now().UTC()
 	f.service.config.now = func() time.Time { return futureClock }
-	if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, scope.organization, identity.LeaseID, futureClock.Add(time.Second), futureClock.Add(time.Hour)); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, scope.Organization, identity.LeaseID, futureClock.Add(time.Second), futureClock.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	futureRenewal := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 		_, _, err := f.service.authorizeConversationWorkerLeasePG(t.Context(), r, scope, string(issue.NativeID), identity, "run-pg-worker", false, false)
 		return err
 	})
-	if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, scope.organization, identity.LeaseID, currentLease.RenewedAt, currentLease.ExpiresAt); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `UPDATE leases SET renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2`, scope.Organization, identity.LeaseID, currentLease.RenewedAt, currentLease.ExpiresAt); err != nil {
 		t.Fatal(err)
 	}
 	f.service.config.now = originalClock
@@ -217,7 +218,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}
 	f.service.config.ConversationWorkerAuthority = conversationWorkerAuthorityFunc(func(ctx context.Context, reader tenantstore.Reader, worker ConversationWorkerIdentity) error {
 		if verificationRenewal.LeaseID == "" {
-			if err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				var err error
 				verificationRenewal, err = w.Renew(ctx, leasestore.Fence{LeaseID: string(identity.LeaseID), FencingToken: int64(identity.FencingToken)}, time.Hour)
 				return err
@@ -230,7 +231,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		}
 		return originalAuthority.VerifyConversationWorker(ctx, reader, worker)
 	})
-	renewalAuthority := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	renewalAuthority := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		_, _, err := f.service.authorizeConversationWorkerLeasePG(t.Context(), reader, scope, string(issue.NativeID), identity, "run-pg-worker", false, false)
 		return err
 	})
@@ -279,9 +280,9 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}
 
 	var reconcileCandidate conversationstore.Conversation
-	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		reconcileCandidate, err = r.Conversation(t.Context(), scope.project, linked.ID)
+		reconcileCandidate, err = r.Conversation(t.Context(), scope.Project, linked.ID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -292,7 +293,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		return sampled
 	}
 	f.service.config.TenantRepository = &conversationControlSnapshotRepository{Repository: repository, beforeWrite: func() error {
-		return repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			renewed, err := w.Renew(t.Context(), leasestore.Fence{LeaseID: string(identity.LeaseID), FencingToken: int64(identity.FencingToken)}, time.Hour)
 			if err != nil {
 				return err
@@ -304,7 +305,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 			return nil
 		})
 	}}
-	changed, reconcileErr := f.service.conversations.ReconcileExecutionPG(t.Context(), scope.organization, reconcileCandidate)
+	changed, reconcileErr := f.service.conversations.ReconcileExecutionPG(t.Context(), scope.Organization, reconcileCandidate)
 	f.service.config.TenantRepository = repository
 	f.service.config.now = func() time.Time { return renewedAt }
 	if reconcileErr != nil || changed || renewedAt.IsZero() {
@@ -387,7 +388,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		t.Fatal(err)
 	}
 
-	if _, err := f.service.commandPostConversation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator}}, linked.ID, conversation.Command{Key: "pg-control", Kind: conversation.CommandMessage, Text: "Example instruction"}); err != nil {
+	if _, err := f.service.commandPostConversation(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: hubapi.APICredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator}}, linked.ID, conversation.Command{Key: "pg-control", Kind: conversation.CommandMessage, Text: "Example instruction"}); err != nil {
 		t.Fatal(err)
 	}
 	controls := callConversationWorkerRoute(t, router.controls, scope, http.MethodGet, "/controls?after=0&wait=0", "", linked.ID, nil, identity)
@@ -403,8 +404,8 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}
 	t.Run("concurrent revision retries with the same worker", func(t *testing.T) {
 		f.service.config.TenantRepository = &conversationControlSnapshotRepository{Repository: repository, beforeWrite: func() error {
-			return repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-				stored, err := w.Conversation(t.Context(), scope.project, linked.ID)
+			return repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+				stored, err := w.Conversation(t.Context(), scope.Project, linked.ID)
 				if err != nil {
 					return err
 				}
@@ -417,7 +418,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		response := callConversationWorkerRoute(t, router.controls, scope, http.MethodGet, fmt.Sprintf("/controls?after=%d&wait=0", controlPage.Cursor), "", linked.ID, nil, identity)
 		f.service.config.TenantRepository = repository
 		requireConversationErrorCode(t, response, http.StatusConflict, "revision_conflict")
-		if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			message, err := r.Message(t.Context(), linked.ID, controlPage.Controls[0].MessageID)
 			if err != nil {
 				return err
@@ -615,9 +616,9 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		t.Fatalf("replacement bind status = %d, body = %s, log = %s", takeover.Code, takeover.Body.String(), logs.String())
 	}
 	var unstarted conversationstore.Conversation
-	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		unstarted, err = r.Conversation(t.Context(), scope.project, linked.ID)
+		unstarted, err = r.Conversation(t.Context(), scope.Project, linked.ID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -635,7 +636,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 		{name: "stale fence", now: nextLease.RenewedAt, status: conversation.ExecutionStarting, fence: nextLease.FencingToken + 1},
 		{name: "missing running attempt", now: nextLease.RenewedAt, status: conversation.ExecutionRunning, fence: nextLease.FencingToken},
 	} {
-		if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			record := conversationRecordFromStore(unstarted)
 			record.Execution.Status, record.Execution.Owner.FencingToken = test.status, test.fence
 			current, err := conversationLeaseCurrentPG(t.Context(), r, record, test.now)
@@ -647,7 +648,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 			t.Fatal(err)
 		}
 	}
-	if changed, err := f.service.conversations.ReconcileExecutionPG(t.Context(), scope.organization, unstarted); err != nil || changed {
+	if changed, err := f.service.conversations.ReconcileExecutionPG(t.Context(), scope.Organization, unstarted); err != nil || changed {
 		t.Fatalf("current bound execution was settled before its first attempt event: changed=%t error=%v", changed, err)
 	}
 	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -739,18 +740,18 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	}
 
 	if origin == conversationOriginWorker {
-		ownerScope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator}}
+		ownerScope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: hubapi.APICredential{ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator}}
 		testPGConversationContinuation(t, f.service, repository, scope, ownerScope, issue, linked.ID, nextIdentity)
 	}
 
-	reporterScope := nativeScope{
-		organization: f.project.OrganizationID,
-		project:      f.project.ID,
-		credential: hubapi.APICredential{
+	reporterScope := hubscope.NativeScope{
+		Organization: f.project.OrganizationID,
+		Project:      f.project.ID,
+		Credential: hubapi.APICredential{
 			ID: ownerCredential.ID, Hash: ownerCredential.Hash, Scope: hubapi.APIScopeOperator,
 			HostedRole: "reporter",
 		},
-		sourceActor: &tracker.Actor{Kind: "human", PrincipalID: f.ownerID},
+		SourceActor: &tracker.Actor{Kind: "human", PrincipalID: f.ownerID},
 	}
 	referenceAt := time.Now().UTC()
 	referenceTargetID := tracker.NativeWorkItemID("wi_reference_target")
@@ -833,8 +834,8 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 	for _, replaced := range []bool{true, false} {
 		t.Run(fmt.Sprintf("missing_lease/replaced=%t", replaced), func(t *testing.T) {
 			var selected conversationstore.Conversation
-			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-				stored, err := w.Conversation(t.Context(), scope.project, linked.ID)
+			if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+				stored, err := w.Conversation(t.Context(), scope.Project, linked.ID)
 				if err != nil {
 					return err
 				}
@@ -849,8 +850,8 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 			if replaced {
 				wantOwner.RunID = "replacement_run"
 				f.service.config.TenantRepository = &conversationControlSnapshotRepository{Repository: repository, beforeWrite: func() error {
-					return repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-						stored, err := w.Conversation(t.Context(), scope.project, linked.ID)
+					return repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+						stored, err := w.Conversation(t.Context(), scope.Project, linked.ID)
 						if err != nil {
 							return err
 						}
@@ -861,13 +862,13 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 				}}
 			}
 			t.Cleanup(func() { f.service.config.TenantRepository = repository })
-			changed, err := f.service.conversations.ReconcileExecutionPG(t.Context(), scope.organization, selected)
+			changed, err := f.service.conversations.ReconcileExecutionPG(t.Context(), scope.Organization, selected)
 			f.service.config.TenantRepository = repository
 			if err != nil || changed == replaced {
 				t.Fatalf("missing lease reconciliation: replaced=%t changed=%t error=%v", replaced, changed, err)
 			}
-			if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				stored, err := r.Conversation(t.Context(), scope.project, linked.ID)
+			if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				stored, err := r.Conversation(t.Context(), scope.Project, linked.ID)
 				if err != nil {
 					return err
 				}
@@ -887,7 +888,7 @@ func testConversationPostgresWorkerHandlers(t *testing.T, concurrent bool, origi
 
 }
 
-func testPGConversationContinuation(t *testing.T, service *Service, repository tenantstore.Repository, scope, ownerScope nativeScope, item corestore.WorkItem, conversationID string, identity conversationWorkerIdentity) {
+func testPGConversationContinuation(t *testing.T, service *Service, repository tenantstore.Repository, scope, ownerScope hubscope.NativeScope, item corestore.WorkItem, conversationID string, identity conversationWorkerIdentity) {
 	t.Helper()
 	originalClock, originalDispatch := service.config.now, service.config.ConversationDispatch
 	defer func() { service.config.now, service.config.ConversationDispatch = originalClock, originalDispatch }()
@@ -896,7 +897,7 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 	claimNumber := 0
 	release := func() {
 		t.Helper()
-		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			released, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(identity.LeaseID), FencingToken: int64(identity.FencingToken)}, "released")
 			if err != nil {
 				return err
@@ -911,12 +912,12 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 		claimNumber++
 		suffix := fmt.Sprint(claimNumber)
 		var lease leasestore.Lease
-		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			current, err := w.WorkItem(t.Context(), scope.project, item.NativeID)
+		if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			current, err := w.WorkItem(t.Context(), scope.Project, item.NativeID)
 			if err != nil {
 				return err
 			}
-			lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: current.ID, ExpectedRevision: current.Revision, MachineID: string(scope.credential.Runner.MachineID), SessionID: "session-pg-continuation-" + suffix, LeaseID: "lease-pg-continuation-" + suffix, TTL: time.Hour})
+			lease, err = w.Claim(t.Context(), leasestore.Claim{IssueID: current.ID, ExpectedRevision: current.Revision, MachineID: string(scope.Credential.Runner.MachineID), SessionID: "session-pg-continuation-" + suffix, LeaseID: "lease-pg-continuation-" + suffix, TTL: time.Hour})
 			if err != nil {
 				return err
 			}
@@ -973,7 +974,7 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 			if !bound.Continuation || len(bound.Pending) != 0 {
 				t.Fatalf("replacement lost ownership or replayed Continue: %+v", bound)
 			}
-			if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				message, err := r.Message(t.Context(), conversationID, receipt.MessageID)
 				if err != nil {
 					return err
@@ -1000,8 +1001,8 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 				if response.Code != wantStatus {
 					t.Fatalf("execution-level %s = %d: %s", status, response.Code, response.Body.String())
 				}
-				if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-					stored, err := r.Conversation(t.Context(), scope.project, conversationID)
+				if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+					stored, err := r.Conversation(t.Context(), scope.Project, conversationID)
 					if err != nil {
 						return err
 					}
@@ -1034,7 +1035,7 @@ func testPGConversationContinuation(t *testing.T, service *Service, repository t
 	release()
 }
 
-func callConversationWorkerRoute(t *testing.T, handler echo.HandlerFunc, scope nativeScope, method, path, item, conversationID string, body any, identity conversationWorkerIdentity) *httptest.ResponseRecorder {
+func callConversationWorkerRoute(t *testing.T, handler echo.HandlerFunc, scope hubscope.NativeScope, method, path, item, conversationID string, body any, identity conversationWorkerIdentity) *httptest.ResponseRecorder {
 	t.Helper()
 	var encoded bytes.Buffer
 	if body != nil {
@@ -1193,14 +1194,14 @@ func (w conversationControlOrderWriter) RunnerIdentityByCredential(ctx context.C
 	return w.Writer.RunnerIdentityByCredential(ctx, id)
 }
 
-func pollControlsAgainstRunnerEvent(t *testing.T, admin *sql.DB, service *Service, router *conversationWorkerRouter, scope nativeScope, id string, identity conversationWorkerIdentity, after int64) conversationControlsResponse {
+func pollControlsAgainstRunnerEvent(t *testing.T, admin *sql.DB, service *Service, router *conversationWorkerRouter, scope hubscope.NativeScope, id string, identity conversationWorkerIdentity, after int64) conversationControlsResponse {
 	t.Helper()
 	blocker, err := admin.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var runner string
-	if err := blocker.QueryRowContext(t.Context(), `SELECT runner_id FROM runner_identities WHERE organization_id=$1 AND token_id=$2 FOR UPDATE`, scope.organization, scope.credential.ID).Scan(&runner); err != nil {
+	if err := blocker.QueryRowContext(t.Context(), `SELECT runner_id FROM runner_identities WHERE organization_id=$1 AND token_id=$2 FOR UPDATE`, scope.Organization, scope.Credential.ID).Scan(&runner); err != nil {
 		blocker.Rollback()
 		t.Fatal(err)
 	}
@@ -1231,11 +1232,11 @@ func pollControlsAgainstRunnerEvent(t *testing.T, admin *sql.DB, service *Servic
 		t.Fatalf("control poll finished before runner authority: %v", pollErr)
 	}
 	var credentialID string
-	if err := blocker.QueryRowContext(t.Context(), `SELECT id FROM api_tokens WHERE organization_id=$1 AND id=$2 FOR UPDATE NOWAIT`, scope.organization, scope.credential.ID).Scan(&credentialID); err != nil {
+	if err := blocker.QueryRowContext(t.Context(), `SELECT id FROM api_tokens WHERE organization_id=$1 AND id=$2 FOR UPDATE NOWAIT`, scope.Organization, scope.Credential.ID).Scan(&credentialID); err != nil {
 		t.Fatalf("control poll locked credential while waiting for runner identity: %v", err)
 	}
 	var conversationID string
-	if err := blocker.QueryRowContext(t.Context(), `SELECT id FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE NOWAIT`, scope.organization, scope.project, id).Scan(&conversationID); err != nil {
+	if err := blocker.QueryRowContext(t.Context(), `SELECT id FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE NOWAIT`, scope.Organization, scope.Project, id).Scan(&conversationID); err != nil {
 		t.Fatalf("control poll locked conversation while waiting for runner identity: %v", err)
 	}
 	if err := blocker.Commit(); err != nil {
@@ -1277,7 +1278,7 @@ func (w conversationReconcileOrderWriter) LockLease(ctx context.Context, id stri
 	return w.Writer.(leasestore.FencedLeaseLocker).LockLease(ctx, id)
 }
 
-func reconcileWithWorkerLock(t *testing.T, admin *sql.DB, service *Service, repository tenantstore.Repository, scope nativeScope, candidate conversationstore.Conversation, held string) {
+func reconcileWithWorkerLock(t *testing.T, admin *sql.DB, service *Service, repository tenantstore.Repository, scope hubscope.NativeScope, candidate conversationstore.Conversation, held string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -1289,9 +1290,9 @@ func reconcileWithWorkerLock(t *testing.T, admin *sql.DB, service *Service, repo
 	var itemID int64
 	var leaseID string
 	if held == "work_item" {
-		err = blocker.QueryRowContext(ctx, `SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE`, scope.organization, scope.project, candidate.WorkItemID).Scan(&itemID)
+		err = blocker.QueryRowContext(ctx, `SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE`, scope.Organization, scope.Project, candidate.WorkItemID).Scan(&itemID)
 	} else {
-		err = blocker.QueryRowContext(ctx, `SELECT lease_id FROM leases WHERE organization_id=$1 AND lease_id=$2 FOR UPDATE`, scope.organization, candidate.Execution.Owner.LeaseID).Scan(&leaseID)
+		err = blocker.QueryRowContext(ctx, `SELECT lease_id FROM leases WHERE organization_id=$1 AND lease_id=$2 FOR UPDATE`, scope.Organization, candidate.Execution.Owner.LeaseID).Scan(&leaseID)
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -1312,7 +1313,7 @@ func reconcileWithWorkerLock(t *testing.T, admin *sql.DB, service *Service, repo
 	}()
 	go func() {
 		defer close(finished)
-		changed, reconcileErr = service.conversations.ReconcileExecutionPG(ctx, scope.organization, candidate)
+		changed, reconcileErr = service.conversations.ReconcileExecutionPG(ctx, scope.Organization, candidate)
 	}()
 	attempted := order.workItemAttempted
 	if held == "lease" {
@@ -1327,12 +1328,12 @@ func reconcileWithWorkerLock(t *testing.T, admin *sql.DB, service *Service, repo
 		t.Fatal(ctx.Err())
 	}
 	if held == "work_item" {
-		if err := blocker.QueryRowContext(ctx, `SELECT lease_id FROM leases WHERE organization_id=$1 AND lease_id=$2 FOR UPDATE NOWAIT`, scope.organization, candidate.Execution.Owner.LeaseID).Scan(&leaseID); err != nil {
+		if err := blocker.QueryRowContext(ctx, `SELECT lease_id FROM leases WHERE organization_id=$1 AND lease_id=$2 FOR UPDATE NOWAIT`, scope.Organization, candidate.Execution.Owner.LeaseID).Scan(&leaseID); err != nil {
 			t.Fatalf("reconciliation locked lease while waiting for work item: %v", err)
 		}
 	}
 	var conversationID string
-	if err := blocker.QueryRowContext(ctx, `SELECT id FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE NOWAIT`, scope.organization, scope.project, candidate.ID).Scan(&conversationID); err != nil {
+	if err := blocker.QueryRowContext(ctx, `SELECT id FROM conversations WHERE organization_id=$1 AND project_id=$2 AND id=$3 FOR UPDATE NOWAIT`, scope.Organization, scope.Project, candidate.ID).Scan(&conversationID); err != nil {
 		t.Fatalf("reconciliation locked conversation while waiting for %s: %v", held, err)
 	}
 	if err := blocker.Commit(); err != nil {

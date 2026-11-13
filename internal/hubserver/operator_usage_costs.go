@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -34,25 +35,25 @@ func (e hubProjectExecutor) monthlyUsageCosts(ctx context.Context, arguments jso
 	}
 	projects := []string{request.ProjectID}
 	if request.Scope == "organization" {
-		if !canManageProjectSecrets(scope.credential) {
+		if !hubscope.CanManageProjectSecrets(scope.Credential) {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
 		}
-		if scope.credential.Hosted != nil {
-			if err := e.service.requireHostedUsageGrants(ctx, scope.credential); err != nil {
-				return operatortool.Result{}, operatorAuthorizationError(err)
+		if scope.Credential.Hosted != nil {
+			if err := e.service.requireHostedUsageGrants(ctx, scope.Credential); err != nil {
+				return operatortool.Result{}, hubscope.OperatorAuthorizationError(err)
 			}
 		}
 		projects = nil
 	} else {
-		scope.project = tracker.ProjectID(request.ProjectID)
+		scope.Project = tracker.ProjectID(request.ProjectID)
 		if err := e.service.requireHostedProject(ctx, nil, scope, false); err != nil {
-			return operatortool.Result{}, operatorAuthorizationError(err)
+			return operatortool.Result{}, hubscope.OperatorAuthorizationError(err)
 		}
 		if err := e.service.database.authorizeNativeProject(ctx, scope); err != nil {
-			return operatortool.Result{}, operatorAuthorizationError(err)
+			return operatortool.Result{}, hubscope.OperatorAuthorizationError(err)
 		}
 	}
-	report, err := e.service.database.monthlyCosts(ctx, string(scope.organization), request.Scope, projects, window, e.service.config.now())
+	report, err := e.service.database.monthlyCosts(ctx, string(scope.Organization), request.Scope, projects, window, e.service.config.now())
 	if err != nil {
 		return operatortool.Result{}, hubapi.ErrProjectServiceUnavailable
 	}

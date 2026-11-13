@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -23,7 +24,7 @@ func explanationRead(ctx context.Context) bool {
 	return ok && value
 }
 
-func (s *Service) readExplanationCurrentChange(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, now time.Time) (*tracker.ChangeDetail, error) {
+func (s *Service) readExplanationCurrentChange(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, now time.Time) (*tracker.ChangeDetail, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return nil, hubapi.NativeRunEventStorageUnavailable()
@@ -31,18 +32,18 @@ func (s *Service) readExplanationCurrentChange(ctx context.Context, scope native
 	var change eventstore.Change
 	var version *eventstore.Version
 	var policy currentChangePolicyRows
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeBulkExportItem(ctx, r, scope, item); err != nil {
 			return err
 		}
-		row, err := r.LatestChange(ctx, scope.project, item)
+		row, err := r.LatestChange(ctx, scope.Project, item)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if row.OrganizationID != scope.organization || row.ProjectID != scope.project {
+		if row.OrganizationID != scope.Organization || row.ProjectID != scope.Project {
 			return corestore.ErrNotFound
 		}
 		change = row
@@ -66,7 +67,7 @@ func (s *Service) readExplanationCurrentChange(ctx context.Context, scope native
 	if err != nil {
 		return nil, err
 	}
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return s.authorizeBulkExportItem(ctx, r, scope, item)
 	})
 	if err != nil {

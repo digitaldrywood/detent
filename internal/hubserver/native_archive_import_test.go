@@ -118,7 +118,7 @@ func TestNativeArchiveImportRecoversRetiredMessagesAndImmutableVersions(t *testi
 						t.Fatal(err)
 					}
 					attachmentID := sectionID + "_attachment"
-					fixture.add("attachments", map[string]any{"id": attachmentID, "project_id": f.project.ID, "uploader": f.scope.credential.ID, "name": "archive.gz", "content_type": "application/gzip", "size": ref.CompressedSize, "sha256": ref.SHA256, "created_at": at, "kind": ref.Kind, "retention_class": ref.Retention, "object_key": ref.Key, "uncompressed_size": ref.UncompressedSize, "codec": ref.Codec, "schema_version": ref.SchemaVersion, "storage_binding_id": "", "customer_owned": 0})
+					fixture.add("attachments", map[string]any{"id": attachmentID, "project_id": f.project.ID, "uploader": f.scope.Credential.ID, "name": "archive.gz", "content_type": "application/gzip", "size": ref.CompressedSize, "sha256": ref.SHA256, "created_at": at, "kind": ref.Kind, "retention_class": ref.Retention, "object_key": ref.Key, "uncompressed_size": ref.UncompressedSize, "codec": ref.Codec, "schema_version": ref.SchemaVersion, "storage_binding_id": "", "customer_owned": 0})
 					fixture.add("native_archive_sections", map[string]any{"project_id": f.project.ID, "work_item_id": issue.WorkItemID, "kind": kind, "subject_id": subject, "first_sequence": 1, "last_sequence": 1, "section_id": sectionID, "attachment_id": attachmentID, "retired_rows": 1, "retirement_complete": 1})
 					fixture.add("issue_archive_sections", map[string]any{"project_id": f.project.ID, "work_item_id": issue.WorkItemID, "archive_revision": issue.Revision, "section_id": sectionID, "attachment_id": attachmentID})
 					expected = append(expected, expectedArchive{item: issue.WorkItemID, conversation: record.ID, message: messageID, version: versionID, section: sectionID, revision: int64(issue.Revision), reference: ref, raw: raw})
@@ -133,7 +133,7 @@ func TestNativeArchiveImportRecoversRetiredMessagesAndImmutableVersions(t *testi
 					t.Fatal(err)
 				}
 				id := fmt.Sprintf("historical_root_%d", index)
-				fixture.add("attachments", map[string]any{"id": id, "project_id": f.project.ID, "uploader": f.scope.credential.ID, "name": "archive.gz", "content_type": "application/gzip", "size": ref.CompressedSize, "sha256": ref.SHA256, "created_at": at, "kind": ref.Kind, "retention_class": ref.Retention, "object_key": ref.Key, "uncompressed_size": ref.UncompressedSize, "codec": ref.Codec, "schema_version": ref.SchemaVersion, "storage_binding_id": "", "customer_owned": 0})
+				fixture.add("attachments", map[string]any{"id": id, "project_id": f.project.ID, "uploader": f.scope.Credential.ID, "name": "archive.gz", "content_type": "application/gzip", "size": ref.CompressedSize, "sha256": ref.SHA256, "created_at": at, "kind": ref.Kind, "retention_class": ref.Retention, "object_key": ref.Key, "uncompressed_size": ref.UncompressedSize, "codec": ref.Codec, "schema_version": ref.SchemaVersion, "storage_binding_id": "", "customer_owned": 0})
 				fixture.add("issue_storage_archives", map[string]any{"project_id": f.project.ID, "work_item_id": issue.WorkItemID, "issue_revision": issue.Revision, "event_sequence": current.EventSequence, "conversation_sequence": 0, "attachment_id": id, "published_at": at})
 				roots[issue.WorkItemID], rootBytes[issue.WorkItemID] = ref, raw
 			}

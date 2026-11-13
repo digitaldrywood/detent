@@ -8,12 +8,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, project string, write bool) (nativeScope, error) {
+func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, project string, write bool) (hubscope.NativeScope, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	permission := apikey.ScopeRead
@@ -22,16 +23,16 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 	}
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: permission, ProjectID: project, OrganizationWide: operatortool.IsOrganizationModelSelection(name)})
 	if err != nil {
-		return nativeScope{}, err
+		return hubscope.NativeScope{}, err
 	}
 	scope, err := e.projectScope(ctx)
 	if err != nil {
 		return scope, err
 	}
-	scope.project = tracker.ProjectID(project)
-	scope.requireHostedAdmin = write
+	scope.Project = tracker.ProjectID(project)
+	scope.RequireHostedAdmin = write
 	if operatortool.IsOrganizationModelSelection(name) {
-		if project != "" || e.service.config.Hosted != nil && (scope.credential.Hosted == nil || scope.credential.SessionHash == "" || scope.credential.HostedKeyScope != "" || scope.credential.HostedRole == "account" || string(scope.organization) != e.service.config.Hosted.OrganizationID) {
+		if project != "" || e.service.config.Hosted != nil && (scope.Credential.Hosted == nil || scope.Credential.SessionHash == "" || scope.Credential.HostedKeyScope != "" || scope.Credential.HostedRole == "account" || string(scope.Organization) != e.service.config.Hosted.OrganizationID) {
 			return scope, operatortool.ErrAccessDenied
 		}
 	} else if project == "" {
@@ -46,7 +47,7 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 	if write {
 		return scope, e.service.recheckProjectRecordMutation(ctx, scope)
 	}
-	return scope, e.service.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error { return e.service.authorizeAccessScope(ctx, r, scope, false) })
+	return scope, e.service.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error { return e.service.authorizeAccessScope(ctx, r, scope, false) })
 }
 
 func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
@@ -61,8 +62,8 @@ func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operato
 		return operatortool.Result{}, err
 	}
 	var selection cloudModelSelection
-	if scope.project == "" {
-		selection, err = e.service.readOrganizationModels(ctx, scope.organization)
+	if scope.Project == "" {
+		selection, err = e.service.readOrganizationModels(ctx, scope.Organization)
 	} else {
 		record, readErr := e.service.readProjectRecord(ctx, scope)
 		if readErr != nil {
@@ -78,7 +79,7 @@ func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operato
 		ProjectID      tracker.ProjectID      `json:"project_id,omitempty"`
 		ObservedAt     time.Time              `json:"observed_at"`
 		Data           cloudModelSelection    `json:"data"`
-	}{scope.organization, scope.project, e.service.config.now().UTC(), selection})
+	}{scope.Organization, scope.Project, e.service.config.now().UTC(), selection})
 }
 
 func (e hubProjectExecutor) modelSelectionCommand(ctx context.Context, call operatortool.Call, mode projectCommandMode) (json.RawMessage, error) {
@@ -90,7 +91,7 @@ func (e hubProjectExecutor) modelSelectionCommand(ctx context.Context, call oper
 	if err != nil {
 		return nil, err
 	}
-	if scope.project == "" && input.Input.Selection == nil {
+	if scope.Project == "" && input.Input.Selection == nil {
 		return nil, operatortool.ErrInvalidArguments
 	}
 	if mode == projectCommandPreview {
@@ -98,8 +99,8 @@ func (e hubProjectExecutor) modelSelectionCommand(ctx context.Context, call oper
 	}
 	request := cloudModelSelectionRequest{Mutation: tracker.Mutation{IdempotencyKey: input.RequestID}, ExpectedRevision: input.Input.ExpectedRevision, Selection: input.Input.Selection}
 	operation := projectOperationID(scope, http.MethodPut, "/model-selection")
-	if scope.project == "" {
-		operation = http.MethodPut + " /api/v2/organizations/" + string(scope.organization) + "/model-selection"
+	if scope.Project == "" {
+		operation = http.MethodPut + " /api/v2/organizations/" + string(scope.Organization) + "/model-selection"
 	}
 	if mode == projectCommandReplay {
 		hash, err := hubapi.CommandHash(request)
@@ -127,7 +128,7 @@ func (e hubProjectExecutor) modelSelectionCatalogAllowed(ctx context.Context, de
 			return false
 		}
 	}
-	if !definition.Annotations.ReadOnly && (credential.Scope != hubapi.APIScopeOperator && credential.Scope != hubapi.APIScopeAdmin || credential.Hosted != nil && (credential.HostedRole != "owner" && credential.HostedRole != "admin" || credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin))) {
+	if !definition.Annotations.ReadOnly && (credential.Scope != hubapi.APIScopeOperator && credential.Scope != hubapi.APIScopeAdmin || credential.Hosted != nil && (credential.HostedRole != "owner" && credential.HostedRole != "admin" || credential.HostedKeyScope != "" && !hubscope.HostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin))) {
 		return false
 	}
 	return true

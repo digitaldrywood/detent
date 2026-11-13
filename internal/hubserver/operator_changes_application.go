@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,16 +21,16 @@ import (
 
 type hubChangeApplication struct {
 	service *Service
-	scope   nativeScope
+	scope   hubscope.NativeScope
 }
 
-func (a hubChangeApplication) authorized(ctx context.Context, args operatortool.ChangeArguments, write bool) (nativeScope, error) {
+func (a hubChangeApplication) authorized(ctx context.Context, args operatortool.ChangeArguments, write bool) (hubscope.NativeScope, error) {
 	scope := a.scope
-	scope.project = tracker.ProjectID(args.ProjectID)
+	scope.Project = tracker.ProjectID(args.ProjectID)
 	if a.service.config.TenantRepository == nil || a.service.config.AccessRepository == nil {
 		return scope, operatortool.ErrServiceUnavailable
 	}
-	if scope.credential.Scope != hubapi.APIScopeOperator && scope.credential.Scope != hubapi.APIScopeAdmin || scope.credential.Runner.RunnerID != "" {
+	if scope.Credential.Scope != hubapi.APIScopeOperator && scope.Credential.Scope != hubapi.APIScopeAdmin || scope.Credential.Runner.RunnerID != "" {
 		return scope, operatortool.ErrAccessDenied
 	}
 	if err := a.service.requireHostedProject(ctx, nil, scope, write); err != nil {
@@ -47,9 +48,9 @@ func (a hubChangeApplication) authorized(ctx context.Context, args operatortool.
 	return scope, nil
 }
 
-func (a hubChangeApplication) result(scope nativeScope, args operatortool.ChangeArguments) operatortool.ChangeResult {
-	result := operatortool.ChangeResult{OrganizationID: string(scope.organization), ProjectID: args.ProjectID, WorkItemID: args.ItemID, ChangeID: args.ChangeID, GeneratedAt: a.service.config.now().UTC(), Freshness: "live"}
-	result.URL = "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(args.ProjectID)
+func (a hubChangeApplication) result(scope hubscope.NativeScope, args operatortool.ChangeArguments) operatortool.ChangeResult {
+	result := operatortool.ChangeResult{OrganizationID: string(scope.Organization), ProjectID: args.ProjectID, WorkItemID: args.ItemID, ChangeID: args.ChangeID, GeneratedAt: a.service.config.now().UTC(), Freshness: "live"}
+	result.URL = "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(args.ProjectID)
 	if args.ItemID != "" {
 		result.URL += "/work-items/" + url.PathEscape(args.ItemID)
 	}
@@ -142,7 +143,7 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		if err != nil {
 			return operatortool.ChangeResult{}, err
 		}
-		scope.action = name
+		scope.Action = name
 		ctx = a.service.archiveContext(ctx, scope, args.ArchiveURL)
 		defer func() { value.Archive = nativeArchiveDescriptor(ctx) }()
 		value = a.result(scope, args)
@@ -155,7 +156,7 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 				value.Version = &version
 			}
 		}
-		if err != nil && errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		if err != nil && errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 			return operatortool.ChangeResult{}, operatortool.ErrAccessDenied
 		}
 		return value, err
@@ -183,7 +184,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	s := a.service
 	result := a.result(scope, args)
 	command := tracker.Mutation{IdempotencyKey: args.RequestID}
-	scope.action = name
+	scope.Action = name
 	ctx = isolateContentContext(s.runDetailContext(ctx))
 	switch name {
 	case operatortool.ViewChangeFile:
@@ -199,8 +200,8 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		if args.Policy == nil {
 			return result, operatortool.ErrInvalidArguments
 		}
-		if scope.credential.Hosted != nil {
-			scope.requireHostedAdmin = true
+		if scope.Credential.Hosted != nil {
+			scope.RequireHostedAdmin = true
 		}
 		request := tracker.ApproveChangeReviewPolicy{Mutation: command, ExpectedID: args.ExpectedPolicyID, Policy: *args.Policy}
 		result.Receipt, err = s.approveChangeReviewPolicyRecordCommand(ctx, scope, http.MethodPut+" "+result.URL+"/change-review-policy", request)
@@ -286,11 +287,11 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		}
 		result.Access = &access
 	case operatortool.ReviewChange:
-		if scope.actor().Kind != "human" {
+		if scope.Actor().Kind != "human" {
 			return result, operatortool.ErrServiceUnavailable
 		}
-		if scope.credential.Hosted != nil {
-			scope.requireHostedAdmin = true
+		if scope.Credential.Hosted != nil {
+			scope.RequireHostedAdmin = true
 		}
 		request := tracker.ReviewChange{Mutation: command, ExpectedRevision: tracker.Revision(args.ExpectedRevision), ExpectedVersionID: args.VersionID, Decision: args.Decision, Body: args.Body, Bundle: args.Bundle}
 		result.Receipt, err = s.reviewChangeRecordCommand(ctx, scope, args.ItemID, args.ChangeID, args.VersionID, http.MethodPost+" "+result.URL+"/versions/"+url.PathEscape(args.VersionID)+"/reviews", request)
@@ -303,7 +304,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	return result, err
 }
 
-func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope nativeScope, args operatortool.ChangeArguments) (json.RawMessage, error) {
+func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope hubscope.NativeScope, args operatortool.ChangeArguments) (json.RawMessage, error) {
 	s := a.service
 	if strings.TrimSpace(args.RequestID) == "" || len(args.RequestID) > 128 {
 		return nil, operatortool.ErrInvalidArguments
@@ -330,29 +331,29 @@ func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope n
 	if err != nil {
 		return nil, err
 	}
-	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: args.RequestID, RequestHash: hash, CreatedAt: s.config.now()}, raw)
+	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: args.RequestID, RequestHash: hash, CreatedAt: s.config.now()}, raw)
 	if err != nil {
 		return nil, err
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, false); err != nil {
 			return err
 		}
-		item, err := w.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(args.ItemID))
+		item, err := w.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(args.ItemID))
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
 		}
-		current, err := w.ArtifactReference(ctx, scope.project, item.NativeID, args.ArtifactID, args.Revision)
+		current, err := w.ArtifactReference(ctx, scope.Project, item.NativeID, args.ArtifactID, args.Revision)
 		if err != nil {
 			return err
 		}
 		if current != reference {
 			return corestore.ErrRevisionConflict
 		}
-		binding, err := w.ArtifactService(ctx, scope.project, reference.ServiceID)
+		binding, err := w.ArtifactService(ctx, scope.Project, reference.ServiceID)
 		if err != nil {
 			return err
 		}
@@ -362,7 +363,7 @@ func (a hubChangeApplication) artifactAccessReceipt(ctx context.Context, scope n
 		if !s.config.now().Before(reference.ExpiresAt) {
 			return artifact.ErrExpired
 		}
-		existing, err := w.Receipt(ctx, scope.credential.ID, operation, args.RequestID)
+		existing, err := w.Receipt(ctx, scope.Credential.ID, operation, args.RequestID)
 		if err == nil {
 			if existing.RequestHash != hash {
 				return hubapi.NativeConflict(0)

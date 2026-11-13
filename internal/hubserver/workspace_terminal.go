@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 )
 
@@ -41,7 +42,7 @@ import (
 // listWorkspaceTerminalRecordings implements
 // GET {nativeBase}/workspaces/:workspace/terminal-recordings.
 func (s *Service) listWorkspaceTerminalRecordings(c echo.Context) error {
-	recordings, err := s.readRecordings(c.Request().Context(), nativeRequestScope(c), c.Param("workspace"), c.QueryParam("relay_session"), 0)
+	recordings, err := s.readRecordings(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("workspace"), c.QueryParam("relay_session"), 0)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -57,7 +58,7 @@ func (s *Service) listWorkspaceTerminalRecordings(c echo.Context) error {
 // again. That is the same judgement the action run output endpoint makes about
 // a log.
 func (s *Service) getWorkspaceTerminalRecording(c echo.Context) error {
-	recording, err := s.readRecording(c.Request().Context(), nativeRequestScope(c), c.Param("workspace"), c.Param("recording"))
+	recording, err := s.readRecording(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("workspace"), c.Param("recording"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -968,7 +969,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 		if err != nil || status != http.StatusOK {
 			t.Fatalf("authenticate change operator: status=%d error=%v", status, err)
 		}
-		scope := nativeScope{organization: organization, project: project, credential: credential}
+		scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}
 		plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, ChangeVersionApproval{Policy: descriptor}, false, service.config.now().UTC())
 		if err != nil || plan == nil || !plan.eligible {
 			t.Fatalf("prepare compatible change transition: plan=%+v error=%v", plan, err)
@@ -1093,7 +1094,7 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("authenticate automated transition operator: status=%d error=%v", status, err)
 			}
-			scope := nativeScope{organization: organization, project: project, credential: credential}
+			scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}
 			plan, err := service.prepareChangeWorkflowTransition(t.Context(), scope, change, ChangeVersionApproval{Policy: selectedPolicy}, test.rework, service.config.now().UTC())
 			if err != nil || plan == nil || !plan.eligible || plan.outbound != nil {
 				t.Fatalf("local automated transition refused or prepared external write: plan=%+v error=%v", plan, err)

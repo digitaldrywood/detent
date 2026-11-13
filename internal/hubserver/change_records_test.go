@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -529,7 +530,7 @@ func TestChangeReviewPolicyUsesSelectedTenantPolicyAndReceipt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: "org_security", project: f.project, credential: serverapi.APICredential{ID: member.PrincipalID, Scope: serverapi.APIScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
+	scope := hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: serverapi.APICredential{ID: member.PrincipalID, Scope: serverapi.APIScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
 	reference, summary, found, err := f.service.selectedLatestChangeSummary(t.Context(), scope, string(item.WorkItemID), f.service.config.now())
 	if err != nil || !found || reference.ChangeID != change.ID || reference.VersionID != "" || summary.Status != "draft" {
 		t.Fatalf("latest selected Change = %+v, %+v, found=%v, err=%v", reference, summary, found, err)
@@ -588,7 +589,7 @@ func TestApprovedChangeReviewRejectsPolicyChangedAfterPreflight(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: organization, project: project, credential: serverapi.APICredential{ID: principal.ID, Hash: principal.Hash, Scope: serverapi.APIScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
+	scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: serverapi.APICredential{ID: principal.ID, Hash: principal.Hash, Scope: serverapi.APIScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
 	policy := hubTestPolicy()
 	input := changeTestInput()
 	bundle := changeTestSource(t, &input)
@@ -1071,7 +1072,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: orgID, project: projectID, credential: serverapi.APICredential{ID: principal.ID, Hash: principal.Hash, Scope: serverapi.APIScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
+	scope := hubscope.NativeScope{Organization: orgID, Project: projectID, Credential: serverapi.APICredential{ID: principal.ID, Hash: principal.Hash, Scope: serverapi.APIScopeOperator, Hosted: owner.identity.Hosted, HostedRole: "owner", HostedMembership: member.MembershipID, HostedPrincipal: member.PrincipalID, NativeOnly: true}}
 	server := httptest.NewServer(service.Handler())
 	t.Cleanup(server.Close)
 	client, err := hubapi.New(hubapi.Config{URL: server.URL, TokenSource: func() string { return workerToken }, HTTPClient: server.Client()})
@@ -1722,7 +1723,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	raceStore := &changeArchiveMutationStore{DetailStore: originalRunDetails}
 	raceStore.afterLandingPayload = func(ctx context.Context) error {
 		lateReviewID = payloadNativeID(ctx, "review")
-		review := tracker.ChangeReview{ID: lateReviewID, VersionID: nextVersion.ID, Decision: lateReview.Decision, Body: lateReview.Body, Actor: scope.actor(), CreatedAt: service.config.now()}
+		review := tracker.ChangeReview{ID: lateReviewID, VersionID: nextVersion.ID, Decision: lateReview.Decision, Body: lateReview.Body, Actor: scope.Actor(), CreatedAt: service.config.now()}
 		raw, err := json.Marshal(review)
 		if err != nil {
 			return err
@@ -1779,7 +1780,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	concurrentReview := tracker.ChangeReview{ID: payloadNativeID(t.Context(), "review"), VersionID: nextVersion.ID, Decision: "approved", Body: "Concurrent approval evidence", Actor: scope.actor(), CreatedAt: service.config.now()}
+	concurrentReview := tracker.ChangeReview{ID: payloadNativeID(t.Context(), "review"), VersionID: nextVersion.ID, Decision: "approved", Body: "Concurrent approval evidence", Actor: scope.Actor(), CreatedAt: service.config.now()}
 	concurrentReviewRaw, err := json.Marshal(concurrentReview)
 	if err != nil {
 		t.Fatal(err)

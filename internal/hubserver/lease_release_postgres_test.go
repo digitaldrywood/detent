@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -26,7 +27,7 @@ func TestPostgresLeaseReleaseOrdersLocksWithProgress(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("authenticate: status=%d err=%v", status, err)
 	}
-	owner := nativeProgressOwner{service: f.service, scope: nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}, request: progresscheck.Request{IssueID: string(f.leases[0].WorkItemID), PolicyID: f.policy.PolicyID, Instance: string(f.bindings[0].MachineID)}, leaseID: f.leases[0].ID, fencingToken: f.leases[0].FencingToken}
+	owner := nativeProgressOwner{service: f.service, scope: hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: credential}, request: progresscheck.Request{IssueID: string(f.leases[0].WorkItemID), PolicyID: f.policy.PolicyID, Instance: string(f.bindings[0].MachineID)}, leaseID: f.leases[0].ID, fencingToken: f.leases[0].FencingToken}
 	locked, resume := make(chan struct{}), make(chan struct{})
 	progress := make(chan error, 1)
 	progressDone := make(chan struct{})

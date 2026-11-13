@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -38,32 +39,32 @@ func testDashboardChangeLog(t *testing.T) {
 	snapshot := repository.(tenantstore.SnapshotRepository)
 	ctx := t.Context()
 	now := f.service.config.now().UTC().Truncate(time.Microsecond)
-	scopes := []nativeScope{nativeBoardFixtureScope(t, f), nativeBoardFixtureScope(t, other)}
-	head := func(scope nativeScope) viewstore.BoardSequence {
+	scopes := []hubscope.NativeScope{nativeBoardFixtureScope(t, f), nativeBoardFixtureScope(t, other)}
+	head := func(scope hubscope.NativeScope) viewstore.BoardSequence {
 		t.Helper()
 		var result viewstore.BoardSequence
-		if err := repository.ReadTenant(ctx, scope.organization, corestore.Background, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(ctx, scope.Organization, corestore.Background, func(r tenantstore.Reader) error {
 			var err error
-			result, err = r.BoardSequence(ctx, scope.project)
+			result, err = r.BoardSequence(ctx, scope.Project)
 			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
 		return result
 	}
-	deltas := func(scope nativeScope, since int64) []viewstore.BoardDelta {
+	deltas := func(scope hubscope.NativeScope, since int64) []viewstore.BoardDelta {
 		t.Helper()
 		var result []viewstore.BoardDelta
-		if err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			result, err = r.BoardDeltas(ctx, scope.project, since, corestore.MaxPageSize)
+			result, err = r.BoardDeltas(ctx, scope.Project, since, corestore.MaxPageSize)
 			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
 		return result
 	}
-	matching := func(scope nativeScope, since int64, topic, entity string) []viewstore.BoardDelta {
+	matching := func(scope hubscope.NativeScope, since int64, topic, entity string) []viewstore.BoardDelta {
 		var result []viewstore.BoardDelta
 		for _, delta := range deltas(scope, since) {
 			if delta.Topic == topic && delta.EntityID == entity {
@@ -72,13 +73,13 @@ func testDashboardChangeLog(t *testing.T) {
 		}
 		return result
 	}
-	updateWorkspace := func(w tenantstore.Writer, scope nativeScope, id, state string) (postgres.WorkspaceSession, error) {
+	updateWorkspace := func(w tenantstore.Writer, scope hubscope.NativeScope, id, state string) (postgres.WorkspaceSession, error) {
 		owner := w.(postgres.WorkspaceWriter)
-		current, err := owner.WorkspaceSession(ctx, scope.project, id)
+		current, err := owner.WorkspaceSession(ctx, scope.Project, id)
 		if err != nil {
 			return postgres.WorkspaceSession{}, err
 		}
-		return owner.UpdateWorkspaceSession(ctx, postgres.WorkspaceUpdate{OrganizationID: scope.organization, ProjectID: scope.project, ID: id, ExpectedRevision: current.Revision, ExpectedRunnerID: current.RunnerID, ExpectedLeaseID: current.LeaseID, ExpectedFencingToken: current.FencingToken, RunnerID: current.RunnerID, MachineID: current.MachineID, LeaseID: current.LeaseID, FencingToken: current.FencingToken, State: state, UpdatedAt: now.Add(time.Second)})
+		return owner.UpdateWorkspaceSession(ctx, postgres.WorkspaceUpdate{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: id, ExpectedRevision: current.Revision, ExpectedRunnerID: current.RunnerID, ExpectedLeaseID: current.LeaseID, ExpectedFencingToken: current.FencingToken, RunnerID: current.RunnerID, MachineID: current.MachineID, LeaseID: current.LeaseID, FencingToken: current.FencingToken, State: state, UpdatedAt: now.Add(time.Second)})
 	}
 	command, err := f.service.runDetailStore().StoreDetail(ctx, string(f.project.OrganizationID), []byte("true"))
 	if err != nil {
@@ -86,18 +87,18 @@ func testDashboardChangeLog(t *testing.T) {
 	}
 	for i, scope := range scopes {
 		id := strconv.Itoa(i)
-		if err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if _, err := w.(postgres.WorkspaceWriter).CreateWorkspaceSession(ctx, postgres.WorkspaceCreate{OrganizationID: scope.organization, ProjectID: scope.project, ID: dashboardWorkspaceID(id), SubjectWorkItemID: string(issues[i].WorkItemID), Ref: "develop", Requires: []string{"files"}, IdleTimeoutSeconds: 60, ExpiresAt: now.Add(time.Hour), RequestedExpiresAt: now.Add(time.Minute), CreatedBy: "example-owner", CreatedAt: now}); err != nil {
+		if err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.(postgres.WorkspaceWriter).CreateWorkspaceSession(ctx, postgres.WorkspaceCreate{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: dashboardWorkspaceID(id), SubjectWorkItemID: string(issues[i].WorkItemID), Ref: "develop", Requires: []string{"files"}, IdleTimeoutSeconds: 60, ExpiresAt: now.Add(time.Hour), RequestedExpiresAt: now.Add(time.Minute), CreatedBy: "example-owner", CreatedAt: now}); err != nil {
 				return err
 			}
 			if _, err := updateWorkspace(w, scope, dashboardWorkspaceID(id), "starting"); err != nil {
 				return err
 			}
 			owner := w.(postgres.RelayActionWriter)
-			if err := owner.CreateProjectAction(ctx, actionstore.Record{Action: workspacesession.Action{ID: "action_dashboard_" + id, OrganizationID: string(scope.organization), ProjectID: string(scope.project), Name: "Example action", Icon: "play", CreatedBy: "example-owner", Revision: 1, CreatedAt: now, UpdatedAt: now}, Command: command}); err != nil {
+			if err := owner.CreateProjectAction(ctx, actionstore.Record{Action: workspacesession.Action{ID: "action_dashboard_" + id, OrganizationID: string(scope.Organization), ProjectID: string(scope.Project), Name: "Example action", Icon: "play", CreatedBy: "example-owner", Revision: 1, CreatedAt: now, UpdatedAt: now}, Command: command}); err != nil {
 				return err
 			}
-			_, err := owner.CreateActionRun(ctx, postgres.CreateActionRunInput{ID: "run_dashboard_" + id, OrganizationID: scope.organization, ProjectID: scope.project, ActionID: "action_dashboard_" + id, WorkspaceID: dashboardWorkspaceID(id), CreatedBy: "example-owner", CreatedAt: now})
+			_, err := owner.CreateActionRun(ctx, postgres.CreateActionRunInput{ID: "run_dashboard_" + id, OrganizationID: scope.Organization, ProjectID: scope.Project, ActionID: "action_dashboard_" + id, WorkspaceID: dashboardWorkspaceID(id), CreatedBy: "example-owner", CreatedAt: now})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -133,7 +134,7 @@ func testDashboardChangeLog(t *testing.T) {
 					if row.WorkItemID != issues[i].WorkItemID {
 						t.Fatalf("missing subject fence: %+v", row)
 					}
-					if err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					if err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 						frame, visible, err := f.service.dashboardRecordFrame(ctx, r, scope, &dashboardSubscription{}, row)
 						if err != nil {
 							return err
@@ -142,8 +143,8 @@ func testDashboardChangeLog(t *testing.T) {
 							t.Fatalf("source frame=%+v visible=%t", frame, visible)
 						}
 						reporter := scope
-						reporter.credential.HostedRole = "reporter"
-						reporter.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "other-reporter"}
+						reporter.Credential.HostedRole = "reporter"
+						reporter.SourceActor = &tracker.Actor{Kind: "human", PrincipalID: "other-reporter"}
 						_, visible, err = f.service.dashboardRecordFrame(ctx, r, reporter, &dashboardSubscription{}, row)
 						if err == nil && visible {
 							t.Fatal("reporter received another issue's workspace or action notice")
@@ -163,9 +164,9 @@ func testDashboardChangeLog(t *testing.T) {
 			read := func() postgres.WorkspaceSession {
 				t.Helper()
 				var row postgres.WorkspaceSession
-				if err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
-					row, err = r.(postgres.WorkspaceReader).WorkspaceSession(ctx, scope.project, id)
+					row, err = r.(postgres.WorkspaceReader).WorkspaceSession(ctx, scope.Project, id)
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -175,10 +176,10 @@ func testDashboardChangeLog(t *testing.T) {
 			before := read()
 			watermark := head(scope)
 			at := now.Add(2 * time.Second)
-			if err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				owner := w.(postgres.WorkspaceWriter)
 				for _, observed := range []time.Time{at, at, now.Add(time.Second)} {
-					if err := owner.TouchWorkspaceActivity(ctx, scope.project, id, observed); err != nil {
+					if err := owner.TouchWorkspaceActivity(ctx, scope.Project, id, observed); err != nil {
 						return err
 					}
 				}
@@ -193,8 +194,8 @@ func testDashboardChangeLog(t *testing.T) {
 			if got := head(scope); got != watermark || len(matching(scope, watermark.Sequence, "workspace", id)) != 0 {
 				t.Fatalf("activity published lifecycle delivery: before=%+v after=%+v", watermark, got)
 			}
-			err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-				if err := w.(postgres.WorkspaceWriter).TouchWorkspaceActivity(ctx, scope.project, id, at.Add(time.Second)); err != nil {
+			err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.(postgres.WorkspaceWriter).TouchWorkspaceActivity(ctx, scope.Project, id, at.Add(time.Second)); err != nil {
 					return err
 				}
 				return rollback
@@ -214,11 +215,11 @@ func testDashboardChangeLog(t *testing.T) {
 	}
 	for i, scope := range scopes {
 		id := strconv.Itoa(i)
-		activityRaw, err := json.Marshal(tracker.CollaborationEvent{ID: "activity_dashboard_" + id, OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: issues[i].WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, RecordedAt: now, Actor: scope.actor(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped"}}})
+		activityRaw, err := json.Marshal(tracker.CollaborationEvent{ID: "activity_dashboard_" + id, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: issues[i].WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, RecordedAt: now, Actor: scope.Actor(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped"}}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		activity, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(ctx, scope.organization, activityRaw)
+		activity, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(ctx, scope.Organization, activityRaw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,7 +229,7 @@ func testDashboardChangeLog(t *testing.T) {
 			mutate        func(tenantstore.Writer) error
 		}{
 			{"work_item", string(issues[i].WorkItemID), 2, func(w tenantstore.Writer) error {
-				item, err := w.WorkItem(ctx, scope.project, issues[i].WorkItemID)
+				item, err := w.WorkItem(ctx, scope.Project, issues[i].WorkItemID)
 				if err != nil {
 					return err
 				}
@@ -237,7 +238,7 @@ func testDashboardChangeLog(t *testing.T) {
 				return err
 			}},
 			{"human_action", string(issues[i].WorkItemID), 3, func(w tenantstore.Writer) error {
-				item, err := w.WorkItem(ctx, scope.project, issues[i].WorkItemID)
+				item, err := w.WorkItem(ctx, scope.Project, issues[i].WorkItemID)
 				if err != nil {
 					return err
 				}
@@ -245,8 +246,8 @@ func testDashboardChangeLog(t *testing.T) {
 				_, err = updateDashboardWorkItem(ctx, w, eventstore.NewContent(f.service.runDetailStore()), item)
 				return err
 			}},
-			{"lane", string(scope.project), -1, func(w tenantstore.Writer) error {
-				project, err := w.ProjectRecord(ctx, scope.project)
+			{"lane", string(scope.Project), -1, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(ctx, scope.Project)
 				if err != nil {
 					return err
 				}
@@ -269,14 +270,14 @@ func testDashboardChangeLog(t *testing.T) {
 				if _, err := updateWorkspace(w, scope, dashboardWorkspaceID(id), "failed"); err != nil {
 					return err
 				}
-				_, err := w.(postgres.RelayActionWriter).FailOrphanedActionRun(ctx, postgres.OrphanedActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: "run_dashboard_" + id, ExpectedRevision: 1, Now: now.Add(time.Second)})
+				_, err := w.(postgres.RelayActionWriter).FailOrphanedActionRun(ctx, postgres.OrphanedActionRunInput{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: "run_dashboard_" + id, ExpectedRevision: 1, Now: now.Add(time.Second)})
 				return err
 			}},
 		} {
 			t.Run("source revisions commit once and roll back together/"+id+"/"+test.topic, func(t *testing.T) {
 				before := head(scope).Sequence
 				for _, commit := range []bool{false, true} {
-					err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 						if err := test.mutate(w); err != nil {
 							return err
 						}
@@ -431,7 +432,7 @@ func testDashboardChangeLog(t *testing.T) {
 						t.Fatalf("step %d project %d change=%+v", step, i, delta)
 					}
 					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
-						scope := nativeScope{organization: organization, project: project, credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}
+						scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}
 						frame, visible, err := service.dashboardRecordFrame(t.Context(), r, scope, &dashboardSubscription{}, delta)
 						if err == nil && (!visible || frame.event != "health.findings") {
 							t.Fatalf("health frame=%+v visible=%t", frame, visible)
@@ -439,7 +440,7 @@ func testDashboardChangeLog(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						scope.credential.HostedRole = "reporter"
+						scope.Credential.HostedRole = "reporter"
 						_, visible, err = service.dashboardRecordFrame(t.Context(), r, scope, &dashboardSubscription{}, delta)
 						if err == nil && visible {
 							t.Fatal("reporter received a project health finding event")
@@ -546,8 +547,8 @@ func testDashboardChangeLog(t *testing.T) {
 			go func() {
 				defer close(finished[i])
 				signaled := false
-				err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-					item, err := w.WorkItem(ctx, scope.project, issues[i].WorkItemID)
+				err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+					item, err := w.WorkItem(ctx, scope.Project, issues[i].WorkItemID)
 					if err != nil {
 						return err
 					}
@@ -578,8 +579,8 @@ func testDashboardChangeLog(t *testing.T) {
 		if err := <-results[0]; err != nil {
 			t.Fatal(err)
 		}
-		if err := snapshot.ReadTenantSnapshot(ctx, scopes[0].organization, corestore.Serving, func(r tenantstore.Reader) error {
-			watermark, err := r.BoardSequence(ctx, scopes[0].project)
+		if err := snapshot.ReadTenantSnapshot(ctx, scopes[0].Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			watermark, err := r.BoardSequence(ctx, scopes[0].Project)
 			if err != nil {
 				return err
 			}
@@ -590,7 +591,7 @@ func testDashboardChangeLog(t *testing.T) {
 			if err := <-results[1]; err != nil {
 				return err
 			}
-			item, err := r.WorkItem(ctx, scopes[1].project, issues[1].WorkItemID)
+			item, err := r.WorkItem(ctx, scopes[1].Project, issues[1].WorkItemID)
 			if err != nil {
 				return err
 			}
@@ -606,8 +607,8 @@ func testDashboardChangeLog(t *testing.T) {
 			if len(rows) != 1 || rows[0].EntityRevision == nil || *rows[0].EntityRevision != 4 || head(scope).Sequence != before[i]+1 {
 				t.Fatalf("project %d committed revisions=%+v", i, rows)
 			}
-			if err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-				item, err := w.WorkItem(ctx, scope.project, issues[i].WorkItemID)
+			if err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+				item, err := w.WorkItem(ctx, scope.Project, issues[i].WorkItemID)
 				if err != nil {
 					return err
 				}
@@ -643,8 +644,8 @@ func testDashboardChangeLog(t *testing.T) {
 		case result := <-results:
 			t.Fatalf("snapshot did not reach source read: %v", result.err)
 		}
-		if err := repository.WriteTenant(ctx, scopes[0].organization, corestore.Serving, func(w tenantstore.Writer) error {
-			item, err := w.WorkItem(ctx, scopes[0].project, issues[0].WorkItemID)
+		if err := repository.WriteTenant(ctx, scopes[0].Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			item, err := w.WorkItem(ctx, scopes[0].Project, issues[0].WorkItemID)
 			if err != nil {
 				return err
 			}
@@ -741,7 +742,7 @@ func testDashboardChangeLog(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					ref, err := fixture.service.runDetailStore().StoreDetail(ctx, string(scope.organization), raw)
+					ref, err := fixture.service.runDetailStore().StoreDetail(ctx, string(scope.Organization), raw)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -762,7 +763,7 @@ func testDashboardChangeLog(t *testing.T) {
 					}
 					before := head(scope).Sequence
 					for replay := range 2 {
-						if err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+						if err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 							record := func(w tenantstore.Writer) error {
 								_, duplicate, err := w.RecordAttemptEvent(ctx, event)
 								if err == nil && duplicate != (replay == 1) {
@@ -775,7 +776,7 @@ func testDashboardChangeLog(t *testing.T) {
 							}
 							return w.(interface {
 								WithRunnerEventFacts(context.Context, eventstore.RunCommand, func(tenantstore.Writer) error) error
-							}).WithRunnerEventFacts(ctx, eventstore.RunCommand{Project: scope.project, WorkItem: issue.WorkItemID, LeaseID: string(data.LeaseID), AttemptID: data.AttemptID, Operation: "dashboard-human-projection", Sequences: []int64{sequence}}, record)
+							}).WithRunnerEventFacts(ctx, eventstore.RunCommand{Project: scope.Project, WorkItem: issue.WorkItemID, LeaseID: string(data.LeaseID), AttemptID: data.AttemptID, Operation: "dashboard-human-projection", Sequences: []int64{sequence}}, record)
 						}); err != nil {
 							t.Fatal(err)
 						}
@@ -796,12 +797,12 @@ func testDashboardChangeLog(t *testing.T) {
 			before := head(scope).Sequence
 			id := "run_dashboard_" + strconv.Itoa(i)
 			for _, commit := range []bool{false, true} {
-				err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					owner := w.(postgres.RelayActionWriter)
-					if err := owner.DeleteActionRun(ctx, scope.project, id, 2); err != nil {
+					if err := owner.DeleteActionRun(ctx, scope.Project, id, 2); err != nil {
 						return err
 					}
-					if _, err := owner.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: id}); !errors.Is(err, corestore.ErrNotFound) {
+					if _, err := owner.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: id}); !errors.Is(err, corestore.ErrNotFound) {
 						t.Fatalf("deleted row remains inside transaction: %v", err)
 					}
 					if len(matching(scope, before, "action_run", id)) != 0 {
@@ -820,8 +821,8 @@ func testDashboardChangeLog(t *testing.T) {
 			if len(rows) != 1 || rows[0].Kind != "delete" {
 				t.Fatalf("tombstone=%+v", rows)
 			}
-			if err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				_, err := r.(postgres.RelayActionReader).ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: id})
+			if err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				_, err := r.(postgres.RelayActionReader).ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: id})
 				if !errors.Is(err, corestore.ErrNotFound) {
 					t.Fatalf("deleted row still exists: %v", err)
 				}
@@ -842,7 +843,7 @@ func testDashboardChangeLog(t *testing.T) {
 		if _, err := plan.ExecContext(ctx, `SET LOCAL enable_seqscan=off`); err != nil {
 			t.Fatal(err)
 		}
-		rows, err := plan.QueryContext(ctx, `EXPLAIN SELECT project_id FROM native_board_sequences WHERE organization_id=$1 AND project_id>$2 ORDER BY project_id LIMIT 1 FOR UPDATE SKIP LOCKED`, scopes[0].organization, "")
+		rows, err := plan.QueryContext(ctx, `EXPLAIN SELECT project_id FROM native_board_sequences WHERE organization_id=$1 AND project_id>$2 ORDER BY project_id LIMIT 1 FOR UPDATE SKIP LOCKED`, scopes[0].Organization, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -871,31 +872,31 @@ func testDashboardChangeLog(t *testing.T) {
 		for _, scope := range scopes {
 			before := head(scope).Sequence
 			added := int64(nativeBoardReplayLimit + 2*nativeBoardTrimLimit)
-			if _, err := admin.ExecContext(ctx, `INSERT INTO native_board_deltas(organization_id,project_id,sequence,work_item_id,topic,entity_id,entity_revision,kind) SELECT $1,$2,n,'','lane',$2,1,'invalidate' FROM generate_series($3::bigint,$4::bigint) n`, scope.organization, scope.project, before+1, before+added); err != nil {
+			if _, err := admin.ExecContext(ctx, `INSERT INTO native_board_deltas(organization_id,project_id,sequence,work_item_id,topic,entity_id,entity_revision,kind) SELECT $1,$2,n,'','lane',$2,1,'invalidate' FROM generate_series($3::bigint,$4::bigint) n`, scope.Organization, scope.Project, before+1, before+added); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.ExecContext(ctx, `UPDATE native_board_sequences SET sequence=$3 WHERE organization_id=$1 AND project_id=$2`, scope.organization, scope.project, before+added); err != nil {
+			if _, err := admin.ExecContext(ctx, `UPDATE native_board_sequences SET sequence=$3 WHERE organization_id=$1 AND project_id=$2`, scope.Organization, scope.Project, before+added); err != nil {
 				t.Fatal(err)
 			}
 		}
 		for _, scope := range scopes {
 			var beforeCount, floor int64
 			beforeHead := head(scope).Sequence
-			if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2`, scope.organization, scope.project).Scan(&beforeCount); err != nil {
+			if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2`, scope.Organization, scope.Project).Scan(&beforeCount); err != nil {
 				t.Fatal(err)
 			}
-			if err := admin.QueryRowContext(ctx, `SELECT sequence FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2 ORDER BY sequence OFFSET $3 LIMIT 1`, scope.organization, scope.project, nativeBoardTrimLimit-1).Scan(&floor); err != nil {
+			if err := admin.QueryRowContext(ctx, `SELECT sequence FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2 ORDER BY sequence OFFSET $3 LIMIT 1`, scope.Organization, scope.Project, nativeBoardTrimLimit-1).Scan(&floor); err != nil {
 				t.Fatal(err)
 			}
-			f.service.boardRetentionScope = nativeScope{}
+			f.service.boardRetentionScope = hubscope.NativeScope{}
 			for range len(scopes) + 1 {
 				f.service.maintainNativeBoard(ctx)
-				if f.service.boardRetentionScope.project == scope.project {
+				if f.service.boardRetentionScope.Project == scope.Project {
 					break
 				}
 			}
 			var afterCount int64
-			if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2`, scope.organization, scope.project).Scan(&afterCount); err != nil {
+			if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM native_board_deltas WHERE organization_id=$1 AND project_id=$2`, scope.Organization, scope.Project).Scan(&afterCount); err != nil {
 				t.Fatal(err)
 			}
 			if beforeCount-afterCount != nativeBoardTrimLimit {
@@ -938,7 +939,7 @@ func testDashboardChangeLog(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: f.project.OrganizationID, project: project.ID}
+		scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: project.ID}
 		watermark := head(scope)
 		if watermark.Sequence != 0 || watermark.ReplayFloor != 0 || len(deltas(scope, 0)) != 0 {
 			t.Fatalf("empty feed=%+v", watermark)
@@ -971,9 +972,9 @@ func testDashboardProjectionAfterSourceSnapshot(t *testing.T) {
 	readHead := func() viewstore.BoardSequence {
 		t.Helper()
 		var head viewstore.BoardSequence
-		if err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			head, err = r.BoardSequence(ctx, scope.project)
+			head, err = r.BoardSequence(ctx, scope.Project)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -989,23 +990,23 @@ func testDashboardProjectionAfterSourceSnapshot(t *testing.T) {
 		t.Fatalf("board watermark=%d head=%d", page.ChangeSequence, before.Sequence)
 	}
 	abort := errors.New("rollback board projection")
-	err := repository.WriteTenant(ctx, scope.organization, corestore.Background, func(w tenantstore.Writer) error {
-		item, err := w.WorkItem(ctx, scope.project, issue.WorkItemID)
+	err := repository.WriteTenant(ctx, scope.Organization, corestore.Background, func(w tenantstore.Writer) error {
+		item, err := w.WorkItem(ctx, scope.Project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
-		project, err := w.Project(ctx, scope.project)
+		project, err := w.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if err := w.ReplaceBoardItem(ctx, viewstore.BoardUpdate{
-			ProjectID: scope.project, WorkItemID: issue.WorkItemID,
+			ProjectID: scope.Project, WorkItemID: issue.WorkItemID,
 			ExpectedRevision: item.Revision, ExpectedEventSequence: item.EventSequence,
 			ExpectedProjectRevision: project.ContentSettingsRevision,
 		}); err != nil {
 			return err
 		}
-		if _, err := w.BoardItem(ctx, scope.project, issue.WorkItemID); !errors.Is(err, corestore.ErrNotFound) {
+		if _, err := w.BoardItem(ctx, scope.Project, issue.WorkItemID); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("projection removal did not take effect inside the transaction: %v", err)
 		}
 		if head := readHead(); head != before {

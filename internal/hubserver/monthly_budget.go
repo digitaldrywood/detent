@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -23,10 +24,10 @@ type monthlyBudgetSettings struct {
 
 var ErrBillingBudgetUnavailable = errors.New("monthly budget enforcement requires the selected billing transaction")
 
-func readBillingMonthlySettings(ctx context.Context, repository tenantstore.Repository, scope nativeScope) (monthlyBudgetSettings, error) {
+func readBillingMonthlySettings(ctx context.Context, repository tenantstore.Repository, scope hubscope.NativeScope) (monthlyBudgetSettings, error) {
 	var settings monthlyBudgetSettings
-	err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		row, err := reader.BillingMonthlyPolicy(ctx, scope.project)
+	err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		row, err := reader.BillingMonthlyPolicy(ctx, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -39,10 +40,10 @@ func readBillingMonthlySettings(ctx context.Context, repository tenantstore.Repo
 	return settings, err
 }
 
-func readMonthlyBudgetSettings(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope) (monthlyBudgetSettings, error) {
+func readMonthlyBudgetSettings(ctx context.Context, q hubapi.NativeQueryer, scope hubscope.NativeScope) (monthlyBudgetSettings, error) {
 	var settings monthlyBudgetSettings
 	var raw string
-	err := q.QueryRowContext(ctx, `SELECT revision,policy_json FROM monthly_budget_policies WHERE organization_id=? AND project_id=? ORDER BY revision DESC LIMIT 1`, scope.organization, scope.project).Scan(&settings.Revision, &raw)
+	err := q.QueryRowContext(ctx, `SELECT revision,policy_json FROM monthly_budget_policies WHERE organization_id=? AND project_id=? ORDER BY revision DESC LIMIT 1`, scope.Organization, scope.Project).Scan(&settings.Revision, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return settings, nil
 	}
@@ -70,14 +71,14 @@ func monthlyBudgetSpend(totals []monthlyCostTotal) budget.MonthlySpend {
 	return spend
 }
 
-func readBillingMonthlyBudgetInput(ctx context.Context, reader billingstore.Reader, scope nativeScope, now time.Time) (billingstore.MonthlyBudgetInput, error) {
+func readBillingMonthlyBudgetInput(ctx context.Context, reader billingstore.Reader, scope hubscope.NativeScope, now time.Time) (billingstore.MonthlyBudgetInput, error) {
 	var input billingstore.MonthlyBudgetInput
 	for i, target := range []struct {
 		project tracker.ProjectID
 		policy  *billingstore.MonthlyPolicy
 		spend   *budget.MonthlySpend
-	}{{"", &input.OrganizationPolicy, &input.OrganizationSpend}, {scope.project, &input.ProjectPolicy, &input.ProjectSpend}} {
-		if i == 1 && scope.project == "" {
+	}{{"", &input.OrganizationPolicy, &input.OrganizationSpend}, {scope.Project, &input.ProjectPolicy, &input.ProjectSpend}} {
+		if i == 1 && scope.Project == "" {
 			continue
 		}
 		row, err := reader.BillingMonthlyPolicy(ctx, target.project)
@@ -98,10 +99,10 @@ func readBillingMonthlyBudgetInput(ctx context.Context, reader billingstore.Read
 	return input, nil
 }
 
-func checkMonthlyBudget(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope, exposure budget.CostExposure, admitted bool, now time.Time, selected ...tenantstore.Repository) (budget.MonthlyDecision, error) {
+func checkMonthlyBudget(ctx context.Context, q hubapi.NativeQueryer, scope hubscope.NativeScope, exposure budget.CostExposure, admitted bool, now time.Time, selected ...tenantstore.Repository) (budget.MonthlyDecision, error) {
 	if len(selected) > 0 && selected[0] != nil {
 		var decision budget.MonthlyDecision
-		err := selected[0].ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		err := selected[0].ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			input, err := readBillingMonthlyBudgetInput(ctx, reader, scope, now)
 			if err != nil {
 				return err
@@ -113,7 +114,7 @@ func checkMonthlyBudget(ctx context.Context, q hubapi.NativeQueryer, scope nativ
 		return decision, err
 	}
 	orgScope := scope
-	orgScope.project = ""
+	orgScope.Project = ""
 	organization, err := readMonthlyBudgetSettings(ctx, q, orgScope)
 	if err != nil {
 		return budget.MonthlyDecision{}, err
@@ -122,7 +123,7 @@ func checkMonthlyBudget(ctx context.Context, q hubapi.NativeQueryer, scope nativ
 	if err != nil {
 		return budget.MonthlyDecision{}, err
 	}
-	if scope.project == "" {
+	if scope.Project == "" {
 		project = monthlyBudgetSettings{}
 	}
 	if !organization.Policy.Enabled && !project.Policy.Enabled {
@@ -132,22 +133,22 @@ func checkMonthlyBudget(ctx context.Context, q hubapi.NativeQueryer, scope nativ
 	if err != nil {
 		return budget.MonthlyDecision{}, err
 	}
-	observations, err := readCostObservations(ctx, q, string(scope.organization), nil, window)
+	observations, err := readCostObservations(ctx, q, string(scope.Organization), nil, window)
 	if err != nil {
 		return budget.MonthlyDecision{}, err
 	}
-	luna, err := readLunaCostObservations(ctx, q, string(scope.organization), nil, window)
+	luna, err := readLunaCostObservations(ctx, q, string(scope.Organization), nil, window)
 	if err != nil {
 		return budget.MonthlyDecision{}, err
 	}
-	report, err := buildMonthlyCostReport(string(scope.organization), "organization", window, now, append(observations, luna...), nil)
+	report, err := buildMonthlyCostReport(string(scope.Organization), "organization", window, now, append(observations, luna...), nil)
 	if err != nil {
 		return budget.MonthlyDecision{}, err
 	}
 	orgSpend := monthlyBudgetSpend(report.Totals)
 	var projectSpend budget.MonthlySpend
 	for _, entry := range report.ByProject {
-		if entry.ProjectID == string(scope.project) {
+		if entry.ProjectID == string(scope.Project) {
 			projectSpend = monthlyBudgetSpend(entry.Totals)
 		}
 	}
@@ -161,7 +162,7 @@ func monthlyBudgetRefusal(decision budget.MonthlyDecision) string {
 	return "Monthly budget admission requires ready Todo or a durably admitted issue"
 }
 
-func monthlySpriteAllowed(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope, now time.Time, selected ...tenantstore.Repository) (bool, error) {
+func monthlySpriteAllowed(ctx context.Context, _ hubapi.NativeQueryer, scope hubscope.NativeScope, now time.Time, selected ...tenantstore.Repository) (bool, error) {
 	if len(selected) == 0 || selected[0] == nil {
 		return false, ErrBillingBudgetUnavailable
 	}
@@ -192,7 +193,7 @@ func (s *Service) stopMonthlyBudgetTurns(ctx context.Context, organization track
 		if err != nil {
 			continue
 		}
-		decision, err := checkMonthlyBudget(ctx, nil, nativeScope{organization: organization, project: project}, budget.CostExposure{LunaAPI: true}, true, s.config.now(), s.database.billingRepository)
+		decision, err := checkMonthlyBudget(ctx, nil, hubscope.NativeScope{Organization: organization, Project: project}, budget.CostExposure{LunaAPI: true}, true, s.config.now(), s.database.billingRepository)
 		if err != nil {
 			s.config.Logger.Warn("Check active conversation monthly budget", "error", err)
 			continue
@@ -203,7 +204,7 @@ func (s *Service) stopMonthlyBudgetTurns(ctx context.Context, organization track
 	}
 }
 
-func (s *Service) resumeMonthlyBudgetWork(ctx context.Context, scope nativeScope) {
+func (s *Service) resumeMonthlyBudgetWork(ctx context.Context, scope hubscope.NativeScope) {
 	if s.conversations != nil {
 		if err := s.conversations.WakePending(ctx); err != nil {
 			s.config.Logger.Warn("Resume budget-eligible conversations", "error", err)
@@ -222,7 +223,7 @@ func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organizatio
 	}
 	s.spriteWakeMu.Unlock()
 	for _, key := range keys {
-		decision, err := checkMonthlyBudget(ctx, nil, nativeScope{organization: key.organization}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.now(), s.database.billingRepository)
+		decision, err := checkMonthlyBudget(ctx, nil, hubscope.NativeScope{Organization: key.organization}, budget.CostExposure{SpriteInfrastructure: true}, true, s.config.now(), s.database.billingRepository)
 		if err != nil {
 			s.config.Logger.Warn("Check active Sprite lifecycle monthly budget", "error", err)
 			continue
@@ -239,12 +240,12 @@ func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organizatio
 	}
 }
 
-func monthlyBudgetRetainsRunner(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope, machine tracker.MachineID, selected ...tenantstore.Repository) (bool, error) {
+func monthlyBudgetRetainsRunner(ctx context.Context, _ hubapi.NativeQueryer, scope hubscope.NativeScope, machine tracker.MachineID, selected ...tenantstore.Repository) (bool, error) {
 	if len(selected) > 0 && selected[0] != nil {
 		var retained bool
-		err := selected[0].ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := selected[0].ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			enabled := false
-			for _, project := range []tracker.ProjectID{"", scope.project} {
+			for _, project := range []tracker.ProjectID{"", scope.Project} {
 				row, err := r.BillingMonthlyPolicy(ctx, project)
 				if errors.Is(err, corestore.ErrNotFound) {
 					continue
@@ -258,7 +259,7 @@ func monthlyBudgetRetainsRunner(ctx context.Context, _ hubapi.NativeQueryer, sco
 				return nil
 			}
 			var err error
-			retained, err = r.BillingMonthlyRetainsMachine(ctx, scope.project, machine)
+			retained, err = r.BillingMonthlyRetainsMachine(ctx, scope.Project, machine)
 			return err
 		})
 		return retained, err

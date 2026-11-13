@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -80,7 +81,7 @@ func TestProjectSecretPermissions(t *testing.T) {
 		{name: "worker", credential: hubapi.APICredential{Scope: hubapi.APIScopeWorker}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := canManageProjectSecrets(test.credential); got != test.want {
+			if got := hubscope.CanManageProjectSecrets(test.credential); got != test.want {
 				t.Fatalf("allowed=%t", got)
 			}
 		})
@@ -302,12 +303,12 @@ func TestProjectSecretLifecycle(t *testing.T) {
 					t.Fatalf("tool metadata=%s %v", result.Content, err)
 				}
 
-				scope := nativeScope{organization: tracker.OrganizationID("org_secret_lifecycle"), project: tracker.ProjectID(f.project), credential: hubapi.APICredential{ID: "internal-provisioner"}}
+				scope := hubscope.NativeScope{Organization: tracker.OrganizationID("org_secret_lifecycle"), Project: tracker.ProjectID(f.project), Credential: hubapi.APICredential{ID: "internal-provisioner"}}
 				if slug, err := f.service.checkProjectSprites(t.Context(), scope); err != nil || slug != "detent-test" {
 					t.Fatalf("internal use=%s %v", slug, err)
 				}
 				var rows []accessstore.Secret
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
 					rows, err = r.AccessSecrets(t.Context(), "", "", corestore.MaxPageSize)
 					return err
@@ -316,7 +317,7 @@ func TestProjectSecretLifecycle(t *testing.T) {
 				}
 				projectRows := rows[:0]
 				for _, row := range rows {
-					if row.ProjectID == scope.project && row.Kind == flySpritesToken {
+					if row.ProjectID == scope.Project && row.Kind == flySpritesToken {
 						projectRows = append(projectRows, row)
 					}
 				}

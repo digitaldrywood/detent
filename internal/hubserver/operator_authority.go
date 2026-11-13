@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"time"
 
@@ -10,13 +9,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
-
-type operatorEntryOriginKey struct{}
 
 func operatorRequestCredential(c echo.Context) (hubapi.APICredential, error) {
 	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
@@ -24,40 +20,6 @@ func operatorRequestCredential(c echo.Context) (hubapi.APICredential, error) {
 		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	return credential, nil
-}
-
-type operatorAuthorizationFailure struct {
-	cause error
-	kind  error
-}
-
-func (e *operatorAuthorizationFailure) Error() string { return e.kind.Error() }
-func (e *operatorAuthorizationFailure) Unwrap() error { return e.kind }
-func (e *operatorAuthorizationFailure) Is(target error) bool {
-	return errors.Is(e.kind, target) || target == tenantauth.ErrUnavailable && (errors.Is(e.kind, operatortool.ErrServiceUnavailable) || errors.Is(e.kind, operatortool.ErrProviderUnavailable))
-}
-
-func operatorAuthorizationError(err error) error {
-	var failure *operatorAuthorizationFailure
-	if errors.As(err, &failure) {
-		return failure
-	}
-	var native *hubapi.NativeError
-	if errors.As(err, &native) {
-		if native.Status == http.StatusForbidden || native.Status == http.StatusNotFound {
-			return operatortool.ErrAccessDenied
-		}
-	}
-	var denied *operatortool.AuthorizationError
-	if errors.As(err, &denied) && errors.As(denied.Cause, &native) {
-		return operatorAuthorizationError(denied.Cause)
-	}
-	classified := hubauth.Classify(err)
-	var moved *hubauth.AuthorizationFailure
-	if errors.As(classified, &moved) {
-		return &operatorAuthorizationFailure{cause: moved.Cause, kind: moved.Kind}
-	}
-	return classified
 }
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
@@ -91,10 +53,6 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 	return s.requestAuth().Operator(s.operatorAuthOptions())(next)
 }
 
-func operatorIdentity(credential hubapi.APICredential, organization string) operatortool.Identity {
-	return hubauth.Identity(authCredential(credential), organization)
-}
-
 func (s *Service) operatorCurrentAuthority(ctx context.Context, credential hubapi.APICredential, organization string) (operatortool.Authority, error) {
-	return s.requestAuth().CurrentAuthority(ctx, authCredential(credential), organization, s.operatorCheckOptions())
+	return s.requestAuth().CurrentAuthority(ctx, hubscope.AuthCredential(credential), organization, s.operatorCheckOptions())
 }

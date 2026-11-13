@@ -9,6 +9,7 @@ import (
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -36,7 +37,7 @@ func TestRenameProject(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "original")
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 			beforeRecord, err := f.service.readProjectRecord(t.Context(), scope)
 			if err != nil {
 				t.Fatal(err)
@@ -78,7 +79,7 @@ func TestRenameProject(t *testing.T) {
 			if project.Core.Slug != f.project.Slug {
 				t.Fatal("rename changed slug")
 			}
-			second, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: other.project.OrganizationID, project: other.project.ID})
+			second, err := f.service.readProjectRecord(t.Context(), hubscope.NativeScope{Organization: other.project.OrganizationID, Project: other.project.ID})
 			if err != nil || second.Core.Name != "second" {
 				t.Fatalf("other project = %+v, %v", second, err)
 			}
@@ -121,7 +122,7 @@ func TestRenameProjectMCP(t *testing.T) {
 				if failure.Code != "revision_conflict" || failure.CurrentRevision != 2 {
 					t.Fatalf("conflict = %+v", failure)
 				}
-				currentRecord, err := f.service.readProjectRecord(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+				currentRecord, err := f.service.readProjectRecord(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -165,7 +166,7 @@ func TestHostedProjectRename(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newBrowserHostedFixture(t, true)
-			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+			scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}
 			beforeRecord, err := f.service.readProjectRecord(t.Context(), scope)
 			if err != nil {
 				t.Fatal(err)
@@ -175,7 +176,7 @@ func TestHostedProjectRename(t *testing.T) {
 				if err := f.provider.SetMembershipRole(t.Context(), "membership_user_browser_owner", "member"); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					member, err := w.AccessMember(t.Context(), "user_browser_owner")
 					if err != nil {
 						return err
@@ -210,7 +211,7 @@ func TestHostedProjectRename(t *testing.T) {
 			}
 			if test.status == 200 {
 				var count int
-				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id=$1 AND project_id=$2 AND route=$3 AND status=200", scope.organization, f.project, "PATCH /api/v2/organizations/:organization/projects/:project").Scan(&count); err != nil {
+				if err := hostedPostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE organization_id=$1 AND project_id=$2 AND route=$3 AND status=200", scope.Organization, f.project, "PATCH /api/v2/organizations/:organization/projects/:project").Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				if count == 0 {

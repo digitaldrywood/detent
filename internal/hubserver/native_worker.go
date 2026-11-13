@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -48,7 +49,7 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Lease TTL is invalid"))
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	if request.WorkItemID == "" && len(request.ProviderCandidates) == 1 {
 		request.WorkItemID = request.ProviderCandidates[0].WorkItemID
 	}
@@ -93,8 +94,8 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	if strings.TrimSpace(string(request.ID)) == "" || len(request.ID) > 128 || strings.TrimSpace(request.Hostname) == "" || len(request.Hostname) > 200 || len(request.DisplayName) > 200 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || request.Capacity < 0 || !validRunnerPlatform(request.OS, request.Architecture) {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Machine identity, hostname, version, and nonnegative capacity are required"))
 	}
-	scope := nativeRequestScope(c)
-	if scope.credential.Runner.RunnerID != "" && request.ID != scope.credential.Runner.MachineID {
+	scope := hubscope.NativeRequestScope(c)
+	if scope.Credential.Runner.RunnerID != "" && request.ID != scope.Credential.Runner.MachineID {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
@@ -103,7 +104,7 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	if s.config.TenantRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeRunEventStorageUnavailable())
 	}
-	if scope.credential.Runner.RunnerID == "" {
+	if scope.Credential.Runner.RunnerID == "" {
 		if request.WorkspaceCapabilities != nil {
 			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Workspace capabilities require an enrolled runner"))
 		}
@@ -133,7 +134,7 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 			}
 		}
 	}
-	if scope.credential.Runner.RunnerID != "" {
+	if scope.Credential.Runner.RunnerID != "" {
 		if err := validateRunnerCheckoutReport(scope, request.CheckoutRepository); err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -141,8 +142,8 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	var snapshot runnerauth.RoutingSnapshot
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		credential := scope.credential
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		credential := scope.Credential
 		if credential.Runner.RunnerID == "" {
 			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 				return err
@@ -151,7 +152,7 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 			if !ok {
 				return hubapi.NativeRunEventStorageUnavailable()
 			}
-			return owner.RegisterOwnedMachine(ctx, leasestore.Machine{OrganizationID: scope.organization, ID: string(request.ID), Hostname: request.Hostname, DisplayName: request.DisplayName, Capacity: int64(request.Capacity), Version: request.Version}, credential.ID)
+			return owner.RegisterOwnedMachine(ctx, leasestore.Machine{OrganizationID: scope.Organization, ID: string(request.ID), Hostname: request.Hostname, DisplayName: request.DisplayName, Capacity: int64(request.Capacity), Version: request.Version}, credential.ID)
 		}
 		identity, err := w.RunnerIdentityByCredential(ctx, credential.ID)
 		if err != nil {
@@ -165,10 +166,10 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 			return err
 		}
 		now := s.config.now().UTC()
-		if !runnerIdentityMatchesHeldLease(identity, scope.organization, credential.Runner.RunnerID, credential.ID, request.ID, now) || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, now) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
-			return runnerUnauthorized()
+		if !runnerIdentityMatchesHeldLease(identity, scope.Organization, credential.Runner.RunnerID, credential.ID, request.ID, now) || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, now) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
+			return hubscope.RunnerUnauthorized()
 		}
-		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+		allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, now)
 		if err != nil {
 			return err
 		}
@@ -199,12 +200,12 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 			}
 		}
 		if request.Skills != nil {
-			if err := w.ReplaceRunnerProjectSkills(ctx, identity.RunnerID, scope.project, *request.Skills, now); err != nil {
+			if err := w.ReplaceRunnerProjectSkills(ctx, identity.RunnerID, scope.Project, *request.Skills, now); err != nil {
 				return err
 			}
 		}
 		if request.CheckoutRepository != nil {
-			if err := w.ReplaceRunnerCheckoutReport(ctx, runnerstore.CheckoutReport{OrganizationID: scope.organization, RunnerID: identity.RunnerID, ProjectID: scope.project, Repository: *request.CheckoutRepository, ReportedAt: now}); err != nil {
+			if err := w.ReplaceRunnerCheckoutReport(ctx, runnerstore.CheckoutReport{OrganizationID: scope.Organization, RunnerID: identity.RunnerID, ProjectID: scope.Project, Repository: *request.CheckoutRepository, ReportedAt: now}); err != nil {
 				return err
 			}
 		}
@@ -225,14 +226,14 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
-	if scope.credential.Runner.RunnerID == "" {
+	if scope.Credential.Runner.RunnerID == "" {
 		return c.JSON(http.StatusOK, request)
 	}
 	if err := s.readRegistrationClaimStateTenant(ctx, scope, &snapshot); err != nil {
 		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	if s.notifications != nil {
-		s.notifications.notify(dispatchNotificationKey(scope.organization))
+		s.notifications.notify(dispatchNotificationKey(scope.Organization))
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusOK, snapshot)

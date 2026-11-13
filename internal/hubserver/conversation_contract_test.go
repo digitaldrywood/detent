@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -287,10 +288,10 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 				t.Fatal(err)
 			}
 			got := []tracker.Actor{
-				(nativeScope{credential: hubapi.APICredential{ID: "actor-contract", Scope: hubapi.APIScopeOperator}}).actor(),
-				(nativeScope{credential: hubapi.APICredential{ID: "actor-contract", Scope: hubapi.APIScopeWorker}}).actor(),
+				(hubscope.NativeScope{Credential: hubapi.APICredential{ID: "actor-contract", Scope: hubapi.APIScopeOperator}}).Actor(),
+				(hubscope.NativeScope{Credential: hubapi.APICredential{ID: "actor-contract", Scope: hubapi.APIScopeWorker}}).Actor(),
 				*nativeIntegrationActor("github"),
-				healthIssueScope("", "").actor(),
+				healthIssueScope("", "").Actor(),
 			}
 			if !slices.Equal(got, want) {
 				t.Fatalf("server actors = %+v, client fixture = %+v", got, want)

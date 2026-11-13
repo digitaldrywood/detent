@@ -5,62 +5,27 @@ import (
 	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (scope nativeScope) reporterOwns(actor tracker.Actor) bool {
-	return scope.credential.HostedRole != "reporter" || scope.actor().PrincipalID != "" && actor.PrincipalID == scope.actor().PrincipalID
-}
-
-func (scope nativeScope) issueVisibilitySQL(alias string) (string, []any) {
-	if scope.credential.HostedRole != "reporter" {
-		return "1", nil
-	}
-	return "COALESCE(" + nativeIssuePrincipal(alias) + ", '') = ? AND ? <> ''", []any{scope.actor().PrincipalID, scope.actor().PrincipalID}
-}
-
-func reporterStatus(state string) string {
-	switch state {
-	case "Triage":
-		return "submitted"
-	case "Backlog", "Todo":
-		return "planned"
-	case "In Progress", "In Review", "Rework", "Merging", "Blocked":
-		return "in_progress"
-	case "Done":
-		return "done"
-	case "Cancelled":
-		return "cancelled"
-	default:
-		return ""
-	}
-}
-
-func (scope nativeScope) reporterIssue(issue tracker.NativeIssue) tracker.NativeIssue {
-	issue.ReporterStatus = ""
-	if scope.credential.HostedRole == "reporter" {
-		issue.ReporterStatus = reporterStatus(issue.State)
-	}
-	return issue
-}
-
-func requireReporterTriage(scope nativeScope, issue tracker.NativeIssue) error {
-	if scope.credential.HostedRole == "reporter" && issue.State != "Triage" {
+func requireReporterTriage(scope hubscope.NativeScope, issue tracker.NativeIssue) error {
+	if scope.Credential.HostedRole == "reporter" && issue.State != "Triage" {
 		return &hubapi.NativeError{Code: "report_already_with_team", Message: "This issue is already with the team. Add a comment to share more details.", Status: http.StatusForbidden, PublicMessage: true}
 	}
 	return nil
 }
 
-func reporterReadContext(ctx context.Context, scope nativeScope) context.Context {
-	if scope.credential.HostedRole != "reporter" {
+func reporterReadContext(ctx context.Context, scope hubscope.NativeScope) context.Context {
+	if scope.Credential.HostedRole != "reporter" {
 		return ctx
 	}
-	visibility, args := scope.issueVisibilitySQL("ri")
+	visibility, args := scope.IssueVisibilitySQL("ri")
 	statement := "SELECT ri.native_id FROM main.issues ri WHERE ri.organization_id=? AND (" + visibility + ")"
-	args = append([]any{scope.organization}, args...)
-	if scope.project != "" {
+	args = append([]any{scope.Organization}, args...)
+	if scope.Project != "" {
 		statement += " AND ri.project_id=?"
-		args = append(args, scope.project)
+		args = append(args, scope.Project)
 	}
 	existing, _ := reportsScopeFrom(ctx)
 	if existing.Issues != "" {
@@ -68,6 +33,6 @@ func reporterReadContext(ctx context.Context, scope nativeScope) context.Context
 		args = append(args, existing.IssueArgs...)
 	}
 	existing.Issues, existing.IssueArgs = statement, args
-	existing.ReporterPrincipal = scope.actor().PrincipalID
+	existing.ReporterPrincipal = scope.Actor().PrincipalID
 	return context.WithValue(ctx, reportsScopeKey{}, existing)
 }

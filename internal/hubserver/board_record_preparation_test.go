@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -105,12 +106,12 @@ func TestBoardPagePreparationDoesNotReadSharedCacheInWorkers(t *testing.T) {
 			ctx := t.Context()
 			var first *boardRecordPreparation
 			if projected {
-				first = service.prepareProjectedBoardPage(ctx, nativeScope{}, records, false, prepared)
+				first = service.prepareProjectedBoardPage(ctx, hubscope.NativeScope{}, records, false, prepared)
 			} else {
-				first = service.prepareBoardPage(ctx, nativeScope{}, records, time.Time{}, false, prepared)
+				first = service.prepareBoardPage(ctx, hubscope.NativeScope{}, records, time.Time{}, false, prepared)
 			}
 			t.Cleanup(first.close)
-			second := service.prepareProjectedBoardPage(t.Context(), nativeScope{}, records, false, prepared)
+			second := service.prepareProjectedBoardPage(t.Context(), hubscope.NativeScope{}, records, false, prepared)
 			t.Cleanup(second.close)
 			for _, page := range []*boardRecordPreparation{first, second} {
 				card, err := page.card(t.Context(), 0)

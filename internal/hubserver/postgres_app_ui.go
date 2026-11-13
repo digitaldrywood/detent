@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -41,7 +42,7 @@ func (s *Service) postgresAppBootstrapPayload(c echo.Context) error {
 	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status >= http.StatusInternalServerError {
-			return s.nativeAPIError(c, operatorAuthorizationError(err))
+			return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 		}
 		if status == http.StatusForbidden {
 			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", appBootstrapRefusal{Code: "forbidden", Message: "This account has no access to this organization", Details: appBootstrapRefusalDetails{Organization: s.config.Hosted.OrganizationID, CSRFToken: s.hostedPageCSRF(c)}})
@@ -77,7 +78,7 @@ func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential hubap
 		Organization:  appBootstrapOrganization{ID: string(organizationID), PublicURL: s.config.Hosted.PublicURL, Current: true, Role: credential.HostedRole},
 		Organizations: []appBootstrapOrganization{},
 		Actor: appBootstrapActor{
-			PrincipalID: operatorIdentity(credential, string(organizationID)).PrincipalID,
+			PrincipalID: hubscope.OperatorIdentity(credential, string(organizationID)).PrincipalID,
 			Subject:     credential.Hosted.Subject,
 			Email:       session.Email,
 			Role:        credential.HostedRole,
@@ -221,8 +222,8 @@ func (s *Service) postgresAppProjects(ctx context.Context, credential hubapi.API
 		project := appBootstrapProject{Icon: projectIntegrationRecord(record).Icon, ID: string(record.Core.ID), Name: record.Core.Name, Slug: record.Core.Slug, Profile: record.Core.Profile, States: record.States, CanWrite: rows[index].CanWrite, CanManageRunners: rows[index].ManageRunner}
 		viewer := credential.HostedRole == "viewer"
 		if credential.EntryKey != nil {
-			project.CanWrite = project.CanWrite && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite)
-			project.CanManageRunners = project.CanManageRunners && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin)
+			project.CanWrite = project.CanWrite && hubscope.HostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite)
+			project.CanManageRunners = project.CanManageRunners && hubscope.HostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin)
 		}
 		project.CanWrite = project.CanWrite && !viewer
 		project.CanManageRunners = project.CanManageRunners && !viewer
@@ -244,7 +245,7 @@ func (s *Service) postgresAppProjects(ctx context.Context, credential hubapi.API
 
 func (s *Service) postgresAppShell(c echo.Context) error {
 	path := c.Request().URL.Path
-	if !hostedReadRequest(c) || appReserved(path) || path == "/internal" || strings.HasPrefix(path, "/internal/") || s.config.TenantRepository == nil || s.config.AccessRepository == nil {
+	if !hubscope.HostedReadRequest(c) || appReserved(path) || path == "/internal" || strings.HasPrefix(path, "/internal/") || s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	if s.config.Hosted == nil {
@@ -257,7 +258,7 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 		return s.servePostgresAppShell(c, path)
 	}
 	if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
-		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+		if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 			return s.nativeAPIError(c, classified)
 		}
 		if first := strings.Split(strings.Trim(path, "/"), "/")[0]; readableurl.Validate(first) == nil && strings.Contains(strings.Trim(path, "/"), "/") {
@@ -269,7 +270,7 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 	if len(parts) >= 2 && parts[0] == "projects" {
 		credential, _, err := s.hostedCredential(c.Request().Context(), c)
 		if err != nil {
-			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return s.nativeAPIError(c, classified)
 			}
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
@@ -291,21 +292,21 @@ func (s *Service) postgresAppShell(c echo.Context) error {
 			return nil
 		})
 		if err != nil {
-			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return s.nativeAPIError(c, classified)
 			}
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
-		scope := nativeScope{organization: organizationID, project: project.Core.ID, credential: credential}
+		scope := hubscope.NativeScope{Organization: organizationID, Project: project.Core.ID, Credential: credential}
 		if err := s.authorizeProjectRecord(c.Request().Context(), scope, false); err != nil {
-			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return s.nativeAPIError(c, classified)
 			}
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 	}
 	if target, handled, err := s.readableShellPath(c); err != nil {
-		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+		if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 			return s.nativeAPIError(c, classified)
 		}
 		return s.nativeAPIError(c, hubapi.NativeNotFound())

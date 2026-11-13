@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -38,9 +39,9 @@ func (s *Service) readRunnerSessionPayload(ctx context.Context, record runnerses
 	return value, nil
 }
 
-func (s *Service) runnerSessionRead(ctx context.Context, scope nativeScope, id int64, lookup *runnersession.ResumeLookup) (runnersession.Record, error) {
+func (s *Service) runnerSessionRead(ctx context.Context, scope hubscope.NativeScope, id int64, lookup *runnersession.ResumeLookup) (runnersession.Record, error) {
 	var record runnersession.Record
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -50,11 +51,11 @@ func (s *Service) runnerSessionRead(ctx context.Context, scope nativeScope, id i
 		}
 		var err error
 		if lookup == nil {
-			record, err = reader.RunnerSession(ctx, scope.project, id)
+			record, err = reader.RunnerSession(ctx, scope.Project, id)
 		} else {
 			var attemptID string
 			if lookup.Lookup.NativeAttemptID != "" {
-				item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(lookup.Lookup.IssueID))
+				item, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(lookup.Lookup.IssueID))
 				if err != nil {
 					return err
 				}
@@ -71,7 +72,7 @@ func (s *Service) runnerSessionRead(ctx context.Context, scope nativeScope, id i
 				if err != nil {
 					return err
 				}
-				item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(lookup.Lookup.IssueID))
+				item, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(lookup.Lookup.IssueID))
 				if err != nil {
 					return err
 				}
@@ -91,13 +92,13 @@ func (s *Service) runnerSessionRead(ctx context.Context, scope nativeScope, id i
 				}
 				attemptID = attempt.ID
 			}
-			record, err = reader.FindRunnerSession(ctx, scope.project, lookup.Lookup.IssueID, attemptID, lookup.Lookup)
+			record, err = reader.FindRunnerSession(ctx, scope.Project, lookup.Lookup.IssueID, attemptID, lookup.Lookup)
 		}
 		if err != nil {
 			return err
 		}
-		item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(record.IssueID))
-		if err == nil && !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+		item, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(record.IssueID))
+		if err == nil && !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
 		}
 		return err
@@ -112,7 +113,7 @@ func (s *Service) getRunnerSession(c echo.Context) error {
 	if err != nil || id < 1 {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	record, err := s.runnerSessionRead(ctx, nativeRequestScope(c), id, nil)
+	record, err := s.runnerSessionRead(ctx, hubscope.NativeRequestScope(c), id, nil)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -130,7 +131,7 @@ func (s *Service) findRunnerSession(c echo.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	record, err := s.runnerSessionRead(ctx, nativeRequestScope(c), 0, &lookup)
+	record, err := s.runnerSessionRead(ctx, hubscope.NativeRequestScope(c), 0, &lookup)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -141,7 +142,7 @@ func (s *Service) findRunnerSession(c echo.Context) error {
 	return c.JSON(http.StatusOK, value)
 }
 
-func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, scope nativeScope, request runnersession.Mutation, issue string, lock bool) (leasestore.Attempt, policystore.Revision, error) {
+func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request runnersession.Mutation, issue string, lock bool) (leasestore.Attempt, policystore.Revision, error) {
 	if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 		return leasestore.Attempt{}, policystore.Revision{}, err
 	}
@@ -162,7 +163,7 @@ func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, 
 	if err != nil {
 		return leasestore.Attempt{}, policystore.Revision{}, err
 	}
-	item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(issue))
+	item, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(issue))
 	if err != nil {
 		return leasestore.Attempt{}, policystore.Revision{}, err
 	}
@@ -174,10 +175,10 @@ func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, 
 	if err != nil {
 		return leasestore.Attempt{}, policystore.Revision{}, err
 	}
-	if lease.IssueID != item.ID || lease.FencingToken != int64(request.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || scope.credential.Runner.RunnerID == "" || lease.MachineID != string(scope.credential.Runner.MachineID) {
+	if lease.IssueID != item.ID || lease.FencingToken != int64(request.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || scope.Credential.Runner.RunnerID == "" || lease.MachineID != string(scope.Credential.Runner.MachineID) {
 		return leasestore.Attempt{}, policystore.Revision{}, tracker.ErrStaleFencingToken
 	}
-	if owner.RunnerID != scope.credential.Runner.RunnerID {
+	if owner.RunnerID != scope.Credential.Runner.RunnerID {
 		return leasestore.Attempt{}, policystore.Revision{}, tracker.ErrStaleFencingToken
 	}
 	attempt, err := r.LatestAttempt(ctx, item.ID)
@@ -191,11 +192,11 @@ func (s *Service) runnerSessionFence(ctx context.Context, r tenantstore.Reader, 
 	if err != nil {
 		return attempt, policystore.Revision{}, err
 	}
-	current, err := r.ProjectPolicyRevision(ctx, scope.project, bound.PolicyID)
+	current, err := r.ProjectPolicyRevision(ctx, scope.Project, bound.PolicyID)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return attempt, current, err
 	}
-	if err != nil || bound.OrganizationID != scope.organization || bound.ProjectID != scope.project || bound.LeaseID != request.LeaseID || current.PolicyID != bound.PolicyID {
+	if err != nil || bound.OrganizationID != scope.Organization || bound.ProjectID != scope.Project || bound.LeaseID != request.LeaseID || current.PolicyID != bound.PolicyID {
 		return attempt, current, tracker.ErrStaleFencingToken
 	}
 	return attempt, current, nil
@@ -228,21 +229,21 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	var record runnersession.Record
 	var snapshot runnersession.Snapshot
 	if request.Start != nil {
 		if request.SessionID != 0 || request.ExpectedRevision != 0 || request.Start.StartedAt.IsZero() || request.Start.IssueID == "" || len(request.ProcessKey) < 32 {
 			return s.nativeAPIError(c, hubapi.NativePublicInvalid("new session requires an issue, start time and process key"))
 		}
-		record = runnersession.Record{Organization: scope.organization, Project: scope.project, IssueID: request.Start.IssueID, StartKey: request.Key, StartedAt: request.Start.StartedAt, Revision: 1}
+		record = runnersession.Record{Organization: scope.Organization, Project: scope.Project, IssueID: request.Start.IssueID, StartKey: request.Key, StartedAt: request.Start.StartedAt, Revision: 1}
 		snapshot.Start, snapshot.Identity = *request.Start, request.Start.RuntimeIdentity
 		snapshot.Resume = store.SessionResumeState{ResumedFromSessionID: request.Start.ResumedFromSessionID, OrphanRecoveryOutcome: request.Start.OrphanRecoveryOutcome, OrphanRecoveryFallbackReason: request.Start.OrphanRecoveryFallbackReason}
 		snapshot.Provider = store.SessionProviderIdentity{ThreadID: request.Start.ProviderThreadID, SessionID: request.Start.ProviderSessionID}
 		snapshot.Authority = runnerSessionProcessAuthority(request.ProcessKey)
 
 	}
-	command := eventstore.RunCommand{Project: scope.project, WorkItem: tracker.NativeWorkItemID(record.IssueID), LeaseID: string(request.LeaseID), SessionID: request.SessionID}
+	command := eventstore.RunCommand{Project: scope.Project, WorkItem: tracker.NativeWorkItemID(record.IssueID), LeaseID: string(request.LeaseID), SessionID: request.SessionID}
 	var attempt leasestore.Attempt
 	var approved policystore.Revision
 	err := s.readNativeRunCommand(ctx, scope, command, func(ctx context.Context, r tenantstore.Reader) error {
@@ -255,7 +256,7 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 				return hubapi.NativeRunEventStorageUnavailable()
 			}
 			var err error
-			record, err = reader.RunnerSession(ctx, scope.project, request.SessionID)
+			record, err = reader.RunnerSession(ctx, scope.Project, request.SessionID)
 			if err != nil {
 				return err
 			}
@@ -304,7 +305,7 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 			if !ok {
 				return hubapi.NativeRunEventStorageUnavailable()
 			}
-			current, err := reader.RunnerSession(ctx, scope.project, record.ID)
+			current, err := reader.RunnerSession(ctx, scope.Project, record.ID)
 			if err != nil {
 				return err
 			}
@@ -336,7 +337,7 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 		snapshot.Resume = *request.Resume
 	}
 	if (request.Worker != nil || request.Reaped != nil) && (snapshot.Authority == "" || subtle.ConstantTimeCompare([]byte(snapshot.Authority), []byte(runnerSessionProcessAuthority(request.ProcessKey))) != 1) {
-		return s.nativeAPIError(c, runnerUnauthorized())
+		return s.nativeAPIError(c, hubscope.RunnerUnauthorized())
 	}
 	request.ProcessKey = ""
 	if request.Worker != nil {
@@ -397,22 +398,22 @@ func (s *Service) mutateRunnerSession(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	record.Reference, err = s.runDetailStore().StoreDetail(ctx, string(scope.organization), raw)
+	record.Reference, err = s.runDetailStore().StoreDetail(ctx, string(scope.Organization), raw)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := validateNativeDetailReference(ctx, s.runDetailStore(), scope.organization, record.Reference, raw); err != nil {
+	if err := validateNativeDetailReference(ctx, s.runDetailStore(), scope.Organization, record.Reference, raw); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	historyRaw, err := json.Marshal(request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	historyRef, err := s.runDetailStore().StoreDetail(ctx, string(scope.organization), historyRaw)
+	historyRef, err := s.runDetailStore().StoreDetail(ctx, string(scope.Organization), historyRaw)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := validateNativeDetailReference(ctx, s.runDetailStore(), scope.organization, historyRef, historyRaw); err != nil {
+	if err := validateNativeDetailReference(ctx, s.runDetailStore(), scope.Organization, historyRef, historyRaw); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	err = s.writeNativeRunCommand(ctx, scope, command, func(ctx context.Context, w tenantstore.Writer) error {
@@ -456,12 +457,12 @@ func (s *Service) getRunnerSessionHistory(c echo.Context) error {
 	if err != nil || revision < 1 {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	if _, err := s.runnerSessionRead(ctx, scope, id, nil); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	var entries []runnersession.History
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -470,7 +471,7 @@ func (s *Service) getRunnerSessionHistory(c echo.Context) error {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		entries, err = reader.RunnerSessionHistory(ctx, scope.project, id, revision-1, 1)
+		entries, err = reader.RunnerSessionHistory(ctx, scope.Project, id, revision-1, 1)
 		return err
 	})
 	if err != nil {
@@ -479,7 +480,7 @@ func (s *Service) getRunnerSessionHistory(c echo.Context) error {
 	if len(entries) != 1 || entries[0].Revision != revision {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), entries[0].Reference)
+	raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.Organization), entries[0].Reference)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -489,12 +490,12 @@ func (s *Service) getRunnerSessionHistory(c echo.Context) error {
 func (s *Service) getRunnerSessionProcesses(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
-	if scope.credential.Runner.RunnerID == "" {
-		return s.nativeAPIError(c, runnerUnauthorized())
+	scope := hubscope.NativeRequestScope(c)
+	if scope.Credential.Runner.RunnerID == "" {
+		return s.nativeAPIError(c, hubscope.RunnerUnauthorized())
 	}
 	var records []runnersession.Record
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -503,7 +504,7 @@ func (s *Service) getRunnerSessionProcesses(c echo.Context) error {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		records, err = reader.RunnerSessionProcesses(ctx, scope.project, string(scope.credential.Runner.MachineID), c.QueryParam("attempt"), 200)
+		records, err = reader.RunnerSessionProcesses(ctx, scope.Project, string(scope.Credential.Runner.MachineID), c.QueryParam("attempt"), 200)
 		return err
 	})
 	if err != nil {
@@ -527,7 +528,7 @@ func (s *Service) getRunnerSessionProcesses(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
-func (s *Service) verifyRunnerSessionFinalization(ctx context.Context, scope nativeScope, record runnersession.Record, snapshot runnersession.Snapshot) error {
+func (s *Service) verifyRunnerSessionFinalization(ctx context.Context, scope hubscope.NativeScope, record runnersession.Record, snapshot runnersession.Snapshot) error {
 	if state := snapshot.Finalization; state != nil {
 		if state.Input.Phase == nil || !state.Finished || !state.UsageRecorded || !state.PhaseRecorded {
 			return runnersession.ErrFinalizationIncomplete
@@ -538,7 +539,7 @@ func (s *Service) verifyRunnerSessionFinalization(ctx context.Context, scope nat
 		return runnersession.ErrFinalizationIncomplete
 	}
 	var history []runnersession.History
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -546,14 +547,14 @@ func (s *Service) verifyRunnerSessionFinalization(ctx context.Context, scope nat
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
-		current, err := reader.RunnerSession(ctx, scope.project, record.ID)
+		current, err := reader.RunnerSession(ctx, scope.Project, record.ID)
 		if err != nil {
 			return err
 		}
 		if !reflect.DeepEqual(current, record) {
 			return corestore.ErrRevisionConflict
 		}
-		history, err = reader.RunnerSessionHistory(ctx, scope.project, record.ID, max(int64(0), record.Revision-runnersession.HistoryLimit), runnersession.HistoryLimit)
+		history, err = reader.RunnerSessionHistory(ctx, scope.Project, record.ID, max(int64(0), record.Revision-runnersession.HistoryLimit), runnersession.HistoryLimit)
 		return err
 	})
 	if err != nil {
@@ -568,7 +569,7 @@ func (s *Service) verifyRunnerSessionFinalization(ctx context.Context, scope nat
 		if row.SessionID != record.ID || row.Revision != record.Revision-int64(len(history)-1-i) {
 			return runnersession.ErrFinalizationIncomplete
 		}
-		raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), row.Reference)
+		raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.Organization), row.Reference)
 		if err != nil {
 			return fmt.Errorf("read session finalization history: %w", err)
 		}

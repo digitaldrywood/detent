@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 )
 
 func (s *Service) registerRoutes(e *echo.Echo) {
@@ -128,14 +129,14 @@ func ordinaryPostgresIdentifier(identifier string) bool {
 
 func (s *Service) refusedAPIError(c echo.Context, status int, code, reason string, response any, attributes ...any) error {
 	if status >= http.StatusInternalServerError {
-		scope := nativeRequestScope(c)
+		scope := hubscope.NativeRequestScope(c)
 		s.config.Logger.Error("API request unavailable", "error", code, "code", code, "refusal_code", code, "status", status,
-			"method", c.Request().Method, "route", c.Path(), "organization_id", string(scope.organization), "project_id", string(scope.project))
+			"method", c.Request().Method, "route", c.Path(), "organization_id", string(scope.Organization), "project_id", string(scope.Project))
 	}
 	if status >= http.StatusBadRequest && status < http.StatusInternalServerError && status != http.StatusUnauthorized && (status != http.StatusNotFound || slices.Contains(attributes, any("not_found_step")) || slices.Contains(attributes, any("not_found_source")) && (strings.HasSuffix(c.Path(), "/events") || strings.Contains(c.Path(), "/leases/"))) {
-		scope := nativeRequestScope(c)
+		scope := hubscope.NativeRequestScope(c)
 		attributes = append([]any{"error", reason, "code", code, "refusal_code", code, "reason", reason,
-			"method", c.Request().Method, "route", c.Path(), "organization_id", string(scope.organization), "project_id", string(scope.project)}, attributes...)
+			"method", c.Request().Method, "route", c.Path(), "organization_id", string(scope.Organization), "project_id", string(scope.Project)}, attributes...)
 		s.config.Logger.Warn("API request refused", attributes...)
 	}
 	if response == nil {

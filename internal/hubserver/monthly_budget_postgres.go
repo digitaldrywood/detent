@@ -11,13 +11,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func checkMonthlyLeasePG(ctx context.Context, reader tenantstore.Reader, project tracker.ProjectID, lease string, now time.Time) error {
-	input, err := readBillingMonthlyBudgetInput(ctx, reader, nativeScope{project: project}, now)
+	input, err := readBillingMonthlyBudgetInput(ctx, reader, hubscope.NativeScope{Project: project}, now)
 	if err != nil {
 		return err
 	}
@@ -47,9 +48,9 @@ func monthlyCostExposure(machine leasestore.Machine, workspace, runnerAPI bool) 
 	return budget.CostExposure{RunnerAPI: !workspace && runnerAPI, SpriteInfrastructure: machine.SpriteName != "" && machine.SpriteName == machine.Hostname}
 }
 
-func monthlySpriteAllowedPG(ctx context.Context, repository tenantstore.Repository, scope nativeScope, now time.Time) (bool, error) {
+func monthlySpriteAllowedPG(ctx context.Context, repository tenantstore.Repository, scope hubscope.NativeScope, now time.Time) (bool, error) {
 	var allowed bool
-	err := repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		input, err := readBillingMonthlyBudgetInput(ctx, r, scope, now)
 		if err != nil {
 			return err
@@ -65,7 +66,7 @@ func monthlySpriteAllowedPG(ctx context.Context, repository tenantstore.Reposito
 		if err != nil || !decision.Allowed {
 			return err
 		}
-		allowed, err = r.BillingMonthlyAdmittedCandidate(ctx, scope.project, now)
+		allowed, err = r.BillingMonthlyAdmittedCandidate(ctx, scope.Project, now)
 		return err
 	})
 	return allowed, err

@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -307,41 +308,41 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 
 	type read struct {
 		name string
-		run  func(context.Context, nativeFixture, nativeScope, string) error
+		run  func(context.Context, nativeFixture, hubscope.NativeScope, string) error
 	}
-	health := read{"health", func(ctx context.Context, f nativeFixture, _ nativeScope, _ string) error {
+	health := read{"health", func(ctx context.Context, f nativeFixture, _ hubscope.NativeScope, _ string) error {
 		if response, status := f.service.readInstanceHealth(ctx); status != http.StatusOK {
 			return fmt.Errorf("health = %d %q", status, response.Status)
 		}
 		return nil
 	}}
-	internalHealth := read{"internal health", func(ctx context.Context, f nativeFixture, _ nativeScope, _ string) error {
+	internalHealth := read{"internal health", func(ctx context.Context, f nativeFixture, _ hubscope.NativeScope, _ string) error {
 		return f.service.database.health(ctx)
 	}}
-	detail := read{"work item detail", func(ctx context.Context, f nativeFixture, scope nativeScope, item string) error {
+	detail := read{"work item detail", func(ctx context.Context, f nativeFixture, scope hubscope.NativeScope, item string) error {
 		issue, err := f.service.readWorkItem(ctx, scope, item)
 		if err == nil && string(issue.WorkItemID) != item {
 			return fmt.Errorf("work item detail = %s, want %s", issue.WorkItemID, item)
 		}
 		return err
 	}}
-	attempts := read{"attempts", func(ctx context.Context, f nativeFixture, scope nativeScope, item string) error {
+	attempts := read{"attempts", func(ctx context.Context, f nativeFixture, scope hubscope.NativeScope, item string) error {
 		_, err := f.service.readAttempts(ctx, scope, item, url.Values{})
 		return err
 	}}
-	changes := read{"changes", func(ctx context.Context, f nativeFixture, scope nativeScope, item string) error {
+	changes := read{"changes", func(ctx context.Context, f nativeFixture, scope hubscope.NativeScope, item string) error {
 		_, err := f.service.readChanges(ctx, scope, item)
 		return err
 	}}
-	findings := read{"health findings", func(ctx context.Context, f nativeFixture, scope nativeScope, _ string) error {
+	findings := read{"health findings", func(ctx context.Context, f nativeFixture, scope hubscope.NativeScope, _ string) error {
 		_, err := f.service.readHealthFindings(ctx, scope, "", "", "", 10)
 		return err
 	}}
-	capabilities := read{"capabilities", func(ctx context.Context, f nativeFixture, _ nativeScope, _ string) error {
+	capabilities := read{"capabilities", func(ctx context.Context, f nativeFixture, _ hubscope.NativeScope, _ string) error {
 		_, err := f.service.readNativeCapabilities(ctx)
 		return err
 	}}
-	board := read{"board", func(ctx context.Context, f nativeFixture, scope nativeScope, _ string) error {
+	board := read{"board", func(ctx context.Context, f nativeFixture, scope hubscope.NativeScope, _ string) error {
 		page, err := f.service.readIssues(ctx, scope, url.Values{"limit": {"2"}})
 		if err == nil && (page.Total != -1 || len(page.Items) != 2) {
 			err = fmt.Errorf("board total = %d, items = %d, want -1 and 2", page.Total, len(page.Items))
@@ -402,10 +403,10 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 			hold := func(reader tenantstore.Reader) error {
 				if test.write {
 					writer := reader.(tenantstore.Writer)
-					if err := writer.LockWorkItemProject(heldContext, scope.project); err != nil {
+					if err := writer.LockWorkItemProject(heldContext, scope.Project); err != nil {
 						return err
 					}
-					record, err := writer.ProjectRecord(heldContext, scope.project)
+					record, err := writer.ProjectRecord(heldContext, scope.Project)
 					if err != nil {
 						return err
 					}
@@ -414,7 +415,7 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 						return err
 					}
 				} else {
-					if _, err := reader.WorkItem(heldContext, scope.project, issue.WorkItemID); err != nil {
+					if _, err := reader.WorkItem(heldContext, scope.Project, issue.WorkItemID); err != nil {
 						return err
 					}
 				}
@@ -429,9 +430,9 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 			go func() {
 				defer close(heldDone)
 				if test.write {
-					heldErr = repository.WriteTenant(heldContext, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error { return hold(writer) })
+					heldErr = repository.WriteTenant(heldContext, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error { return hold(writer) })
 				} else {
-					heldErr = repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(heldContext, scope.organization, corestore.Serving, hold)
+					heldErr = repository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(heldContext, scope.Organization, corestore.Serving, hold)
 				}
 			}()
 			waitContext := testenv.WaitContext(t, t.Context())
@@ -466,13 +467,13 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 			}
 			writerAvailable := false
 			readerContext := testenv.WaitContext(t, t.Context())
-			err = repository.ReadTenant(readerContext, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			err = repository.ReadTenant(readerContext, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 				writer, ok := reader.(tenantstore.Writer)
 				writerAvailable = ok
 				if !ok {
 					return nil
 				}
-				record, err := reader.ProjectRecord(readerContext, scope.project)
+				record, err := reader.ProjectRecord(readerContext, scope.Project)
 				if err != nil {
 					return err
 				}
@@ -497,8 +498,8 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 				if heldErr != nil {
 					t.Fatalf("held read: %v", heldErr)
 				}
-				if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-					record, err := reader.ProjectRecord(t.Context(), scope.project)
+				if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					record, err := reader.ProjectRecord(t.Context(), scope.Project)
 					if err == nil && record.Core.Name != f.project.Name {
 						t.Fatalf("rejected reader write changed project: %q", record.Core.Name)
 					}
@@ -513,11 +514,11 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 			secondDone = make(chan struct{})
 			go func() {
 				defer close(secondDone)
-				secondErr = repository.WriteTenant(secondContext, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
-					if err := writer.LockWorkItemProject(secondContext, scope.project); err != nil {
+				secondErr = repository.WriteTenant(secondContext, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
+					if err := writer.LockWorkItemProject(secondContext, scope.Project); err != nil {
 						return err
 					}
-					record, err := writer.ProjectRecord(secondContext, scope.project)
+					record, err := writer.ProjectRecord(secondContext, scope.Project)
 					if err != nil {
 						return err
 					}
@@ -558,8 +559,8 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 			if secondErr != nil {
 				t.Fatalf("write after held write committed: %v", secondErr)
 			}
-			if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-				record, err := reader.ProjectRecord(t.Context(), scope.project)
+			if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				record, err := reader.ProjectRecord(t.Context(), scope.Project)
 				if err == nil && record.Core.Name != f.project.Name+" held second" {
 					t.Fatalf("serialized writes did not persist: %q", record.Core.Name)
 				}

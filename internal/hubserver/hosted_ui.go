@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -210,7 +211,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		}
 		return c.NoContent(status)
 	}
-	initialScope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(c.Param("project")), credential: initial}
+	initialScope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID()), Project: tracker.ProjectID(c.Param("project")), Credential: initial}
 	if err := s.requireHostedProject(c.Request().Context(), nil, initialScope, false); err != nil {
 		if hubapi.IsNativeNotFound(err) {
 			return s.nativeAPIError(c, err)
@@ -224,7 +225,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	workItemID := c.QueryParam("work_item")
 	if workItemID != "" {
 		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-		err := s.config.TenantRepository.ReadTenant(readCtx, initialScope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := s.config.TenantRepository.ReadTenant(readCtx, initialScope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			return requireDashboardRecordItem(readCtx, r, initialScope, workItemID)
 		})
 		cancelRead()
@@ -237,7 +238,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	if err := s.hostedAudit(c.Request().Context(), initial.Hosted, "action", "GET /projects/:project/events", string(initialScope.project), http.StatusOK); err != nil {
+	if err := s.hostedAudit(c.Request().Context(), initial.Hosted, "action", "GET /projects/:project/events", string(initialScope.Project), http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	board := c.QueryParam("board") == "true"

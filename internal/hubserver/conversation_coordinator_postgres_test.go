@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -114,7 +115,7 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 	for _, project := range projects {
 		t.Run(string(project), func(t *testing.T) {
 			key := "key_" + string(project)
-			scope := nativeScope{organization: organization, credential: hubapi.APICredential{ID: key, Hash: key + "-hash", Scope: hubapi.APIScopeOperator, HostedRole: "owner", HostedMembership: "example_membership", Hosted: &auth.HostedIdentity{Subject: "example_user"}}}
+			scope := hubscope.NativeScope{Organization: organization, Credential: hubapi.APICredential{ID: key, Hash: key + "-hash", Scope: hubapi.APIScopeOperator, HostedRole: "owner", HostedMembership: "example_membership", Hosted: &auth.HostedIdentity{Subject: "example_user"}}}
 			if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 				allowed, err := service.coordinatorAllowedProjects(t.Context(), r, scope, projects)
 				if err != nil {
@@ -132,13 +133,13 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 			if other == project {
 				other = projects[1]
 			}
-			scope.project = project
+			scope.Project = project
 			for _, restriction := range []string{"token grant", "entry projects", "entry blocked projects"} {
 				t.Run(restriction, func(t *testing.T) {
 					current := scope
-					current.credential.HostedKeyScope = apikey.ScopeRead
+					current.Credential.HostedKeyScope = apikey.ScopeRead
 					if restriction != "token grant" {
-						current.credential.EntryKey = &apikey.KeyAuthority{ID: key, Kind: "personal", Permission: apikey.ScopeRead, ProjectContext: apikey.ProjectContext{Access: "all"}}
+						current.Credential.EntryKey = &apikey.KeyAuthority{ID: key, Kind: "personal", Permission: apikey.ScopeRead, ProjectContext: apikey.ProjectContext{Access: "all"}}
 					}
 					id := conversation.NewConversationID()
 					text := "Private answer from " + string(other)
@@ -162,7 +163,7 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 						if !slices.Equal(allowed, projects) {
 							t.Fatalf("initial key access = %v", allowed)
 						}
-						audience, err := conversationReadAudienceRecord(t.Context(), w, organization, current.credential)
+						audience, err := conversationReadAudienceRecord(t.Context(), w, organization, current.Credential)
 						if err != nil {
 							return err
 						}
@@ -190,9 +191,9 @@ func TestCoordinatorProjectReadsRespectKeyGrants(t *testing.T) {
 							t.Fatal(err)
 						}
 					case "entry projects":
-						current.credential.EntryKey.ProjectContext = apikey.ProjectContext{Access: "selected", Projects: []string{string(project)}}
+						current.Credential.EntryKey.ProjectContext = apikey.ProjectContext{Access: "selected", Projects: []string{string(project)}}
 					case "entry blocked projects":
-						current.credential.EntryKey.BlockedProjects = []string{string(other)}
+						current.Credential.EntryKey.BlockedProjects = []string{string(other)}
 					}
 					if err := repository.ReadTenant(t.Context(), organization, corestore.Serving, func(r tenantstore.Reader) error {
 						allowed, err := service.coordinatorAllowedProjects(t.Context(), r, current, projects)

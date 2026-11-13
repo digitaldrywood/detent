@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -20,7 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) reportsTrackingIssues(ctx context.Context, scope nativeScope, classes []reportClassTotal, failures []nativeFailure) error {
+func (s *Service) reportsTrackingIssues(ctx context.Context, scope hubscope.NativeScope, classes []reportClassTotal, failures []nativeFailure) error {
 	if len(failures) > maxAnalyticsPopulation {
 		return hubapi.NativePublicInvalid("Report failure tracking population exceeds the read limit")
 	}
@@ -33,7 +34,7 @@ func (s *Service) reportsTrackingIssues(ctx context.Context, scope nativeScope, 
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	tracking := map[string]corestore.DoctorProposalIdentityResult{}
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -44,7 +45,7 @@ func (s *Service) reportsTrackingIssues(ctx context.Context, scope nativeScope, 
 		slices.Sort(keys)
 		for _, fingerprint := range keys {
 			class := fingerprints[fingerprint]
-			result, err := r.LookupDoctorProposalIdentity(ctx, corestore.DoctorProposalIdentitySelection{ProjectID: scope.project, Identity: corestore.DoctorProposalIdentity{Kind: "fingerprint", Value: fingerprint}, OpenOnly: true, Earliest: true})
+			result, err := r.LookupDoctorProposalIdentity(ctx, corestore.DoctorProposalIdentitySelection{ProjectID: scope.Project, Identity: corestore.DoctorProposalIdentity{Kind: "fingerprint", Value: fingerprint}, OpenOnly: true, Earliest: true})
 			if err != nil {
 				return err
 			}
@@ -95,7 +96,7 @@ func (s *Service) populatePostgresReportTracking(ctx context.Context, credential
 				if !slices.Contains(projects, string(attempt.ProjectID)) {
 					return hubapi.NativeNotFound()
 				}
-				if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: organization, project: attempt.ProjectID, credential: credential}, false); err != nil {
+				if err := s.authorizeAccessScope(ctx, r, hubscope.NativeScope{Organization: organization, Project: attempt.ProjectID, Credential: credential}, false); err != nil {
 					return err
 				}
 				authorized[attempt.ProjectID] = true
@@ -154,7 +155,7 @@ func (s *Service) populatePostgresReportTracking(ctx context.Context, credential
 			continue
 		}
 		classes := reportFailureClasses(projectFailures)
-		if err := s.reportsTrackingIssues(ctx, nativeScope{organization: organization, project: tracker.ProjectID(project), credential: credential}, classes, projectFailures); errors.Is(err, postgres.ErrDoctorProposalIdentitiesPending) {
+		if err := s.reportsTrackingIssues(ctx, hubscope.NativeScope{Organization: organization, Project: tracker.ProjectID(project), Credential: credential}, classes, projectFailures); errors.Is(err, postgres.ErrDoctorProposalIdentitiesPending) {
 			partial = true
 			continue
 		} else if err != nil {

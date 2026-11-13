@@ -70,7 +70,7 @@ func TestHostedFleetSprites(t *testing.T) {
 			if tt.known {
 				name = "customer-host"
 			}
-			spriteFixtureExec(t, f, "UPDATE machines SET sprite_name=$1 WHERE organization_id=$2 AND id=$3", name, scope.organization, runners[0].binding.MachineID)
+			spriteFixtureExec(t, f, "UPDATE machines SET sprite_name=$1 WHERE organization_id=$2 AND id=$3", name, scope.Organization, runners[0].binding.MachineID)
 			if tt.wakeFailure {
 				state := ""
 				for _, candidate := range f.project.States {
@@ -84,15 +84,15 @@ func TestHostedFleetSprites(t *testing.T) {
 				}
 			}
 			if tt.oldFailure {
-				spriteFixtureExec(t, f, "UPDATE machines SET sprite_wake_failed_at=$1 WHERE organization_id=$2 AND id=$3", f.service.config.now().Add(-5*time.Minute), scope.organization, runners[0].binding.MachineID)
+				spriteFixtureExec(t, f, "UPDATE machines SET sprite_wake_failed_at=$1 WHERE organization_id=$2 AND id=$3", f.service.config.now().Add(-5*time.Minute), scope.Organization, runners[0].binding.MachineID)
 			}
 			runner, err := readSpriteRunnerFixture(t, f, runners[0].binding.RunnerID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			visible := map[tracker.ProjectID]bool{scope.project: !tt.hidden}
+			visible := map[tracker.ProjectID]bool{scope.Project: !tt.hidden}
 			view := hostedFleetRunnerView(runner, "dev", visible, f.service.config.now())
-			if err := f.service.hostedFleetSprite(t.Context(), testenv.WaitContext(t, t.Context()), scope.credential, &view, runner, visible); err != nil {
+			if err := f.service.hostedFleetSprite(t.Context(), testenv.WaitContext(t, t.Context()), scope.Credential, &view, runner, visible); err != nil {
 				t.Fatal(err)
 			}
 			if view.Health != tt.wantHealth || (view.Sprite != nil) != tt.wantSprite || calls != tt.wantCalls {
@@ -103,7 +103,7 @@ func TestHostedFleetSprites(t *testing.T) {
 			}
 			if calls > 0 {
 				var auditUses int
-				if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM project_secret_audit WHERE organization_id=$1 AND project_id=$2 AND actor=$3 AND event='use'", scope.organization, scope.project, scope.credential.ID).Scan(&auditUses); err != nil || auditUses < calls {
+				if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), "SELECT count(*) FROM project_secret_audit WHERE organization_id=$1 AND project_id=$2 AND actor=$3 AND event='use'", scope.Organization, scope.Project, scope.Credential.ID).Scan(&auditUses); err != nil || auditUses < calls {
 					t.Fatalf("provider reads were not attributed to the fleet reader: %d, %v", auditUses, err)
 				}
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -33,7 +34,7 @@ func projectedBoardCard(row viewstore.BoardRecord) tracker.NativeBoardCard {
 	return tracker.NativeBoardCard{Issue: issue, StatusLine: d.StatusLine, Attempt: d.Attempt, Execution: d.Execution, Change: d.Change}
 }
 
-func (s *Service) prepareProjectedBoardPage(ctx context.Context, scope nativeScope, records []viewstore.BoardRecord, exact bool, prepared map[tracker.NativeWorkItemID]boardPreparedRecord) *boardRecordPreparation {
+func (s *Service) prepareProjectedBoardPage(ctx context.Context, scope hubscope.NativeScope, records []viewstore.BoardRecord, exact bool, prepared map[tracker.NativeWorkItemID]boardPreparedRecord) *boardRecordPreparation {
 	cards := make(map[tracker.NativeWorkItemID]tracker.NativeBoardCard, len(records))
 	issues := make([]*tracker.NativeIssue, 0, len(records))
 	var fallback []viewstore.BoardRecord
@@ -47,7 +48,7 @@ func (s *Service) prepareProjectedBoardPage(ctx context.Context, scope nativeSco
 			continue
 		}
 		card := projectedBoardCard(row)
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
 			card.Change = nil
 		}
 		cards[row.WorkItemID] = card

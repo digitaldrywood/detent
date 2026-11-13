@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -198,7 +199,7 @@ func TestConversationPayloadRequiresPublication(t *testing.T) {
 
 func postgresContentTestMessage(t *testing.T, f *postgresStorageArchiveFixture, conversationID string, role conversation.Role, text string, delivery conversation.Delivery) conversationMessageRecord {
 	t.Helper()
-	message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: conversationID, Role: role, Kind: conversation.MessageText, Text: text, Delivery: delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.scope.credential.ID}, CreatedAt: f.now(), UpdatedAt: f.now()}
+	message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: conversationID, Role: role, Kind: conversation.MessageText, Text: text, Delivery: delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.scope.Credential.ID}, CreatedAt: f.now(), UpdatedAt: f.now()}
 	raw, err := json.Marshal(conversationContent{Text: text})
 	if err != nil {
 		t.Fatal(err)
@@ -344,7 +345,7 @@ func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
 				return w.UpsertQuestion(t.Context(), conversationstore.Question{OrganizationID: f.project.OrganizationID, ConversationID: record.ID, Question: question})
 			})
 			ctx := conversationObjectIOContext(t, f.bodies)
-			read := func(scope nativeScope) (json.RawMessage, error) {
+			read := func(scope hubscope.NativeScope) (json.RawMessage, error) {
 				if endpoint == "snapshot" {
 					return f.service.readConversationSnapshot(ctx, scope, record.ID)
 				}
@@ -357,7 +358,7 @@ func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("authenticate different owner: status=%d error=%v", status, err)
 			}
-			denied := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: otherCredential}
+			denied := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: otherCredential}
 			_, err = read(denied)
 			var deniedError *hubapi.NativeError
 			if !errors.As(err, &deniedError) || deniedError.Code != "not_found" {

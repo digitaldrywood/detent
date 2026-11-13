@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -36,7 +37,7 @@ type nativeRuntimeTenantSnapshot struct {
 	reservation          *claimstore.ProviderReservation
 }
 
-func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
+func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.NativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
 	if len(admission) > 1 {
 		return tracker.NativeRuntimeEvidence{}, hubapi.NativeRunEventStorageUnavailable()
 	}
@@ -79,22 +80,22 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		return tracker.NativeRuntimeEvidence{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var snapshot nativeRuntimeTenantSnapshot
-	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.ProjectRecord(ctx, scope.project)
+		project, err := r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if project.Core.Profile != "native" || project.Core.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		row, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		row, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{Kind: hubapi.StringValue(row.ActorKind), PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{Kind: hubapi.StringValue(row.ActorKind), PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
 		}
 		version, err := r.CollaborationVersion(ctx, item, row.Revision)
@@ -102,7 +103,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 			return err
 		}
 		if localAttemptID > 0 {
-			matches, err := r.LocalAttemptMatches(ctx, scope.project, row.NativeID, localAttemptID)
+			matches, err := r.LocalAttemptMatches(ctx, scope.Project, row.NativeID, localAttemptID)
 			if errors.Is(err, leasestore.ErrLocalAttemptCoverageUnknown) {
 				return hubapi.NativePublicInvalid("Historical local attempt coverage is incomplete; select native_attempt_id")
 			}
@@ -122,44 +123,44 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		if err != nil {
 			return err
 		}
-		if attempt.OrganizationID != scope.organization || attempt.IssueID != row.ID {
+		if attempt.OrganizationID != scope.Organization || attempt.IssueID != row.ID {
 			return hubapi.NativeNotFound()
 		}
 		lease, err := r.Lease(ctx, attempt.LeaseID)
 		if err != nil {
 			return err
 		}
-		if lease.OrganizationID != scope.organization || lease.IssueID != row.ID || lease.FencingToken != attempt.FencingToken {
+		if lease.OrganizationID != scope.Organization || lease.IssueID != row.ID || lease.FencingToken != attempt.FencingToken {
 			return hubapi.NativeNotFound()
 		}
-		event, err := r.LatestRunEvent(ctx, scope.project, attempt.ID)
+		event, err := r.LatestRunEvent(ctx, scope.Project, attempt.ID)
 		if err != nil {
 			return err
 		}
-		if event.OrganizationID != scope.organization || event.ProjectID != scope.project || event.WorkItemID != row.NativeID || event.AttemptID != attempt.ID {
+		if event.OrganizationID != scope.Organization || event.ProjectID != scope.Project || event.WorkItemID != row.NativeID || event.AttemptID != attempt.ID {
 			return corestore.ErrNotFound
 		}
 		leasePolicy, err := r.LeasePolicy(ctx, tracker.LeaseID(lease.LeaseID))
 		if err != nil {
 			return err
 		}
-		if leasePolicy.OrganizationID != scope.organization || leasePolicy.ProjectID != scope.project || leasePolicy.LeaseID != tracker.LeaseID(lease.LeaseID) || leasePolicy.PolicyID == "" {
+		if leasePolicy.OrganizationID != scope.Organization || leasePolicy.ProjectID != scope.Project || leasePolicy.LeaseID != tracker.LeaseID(lease.LeaseID) || leasePolicy.PolicyID == "" {
 			return hubapi.PolicyMismatch("Lease policy is missing or outside the authorized project")
 		}
-		attemptPolicy, err := r.ProjectPolicyRevision(ctx, scope.project, leasePolicy.PolicyID)
+		attemptPolicy, err := r.ProjectPolicyRevision(ctx, scope.Project, leasePolicy.PolicyID)
 		if err != nil {
 			return err
 		}
-		currentPolicy, policyErr := r.ProjectPolicy(ctx, scope.project)
+		currentPolicy, policyErr := r.ProjectPolicy(ctx, scope.Project)
 		policyFound := policyErr == nil
 		if policyErr != nil && !errors.Is(policyErr, corestore.ErrNotFound) {
 			return policyErr
 		}
-		board, err := r.BoardSequence(ctx, scope.project)
+		board, err := r.BoardSequence(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		change, changeErr := r.LatestChange(ctx, scope.project, row.NativeID)
+		change, changeErr := r.LatestChange(ctx, scope.Project, row.NativeID)
 		if changeErr != nil && !errors.Is(changeErr, corestore.ErrNotFound) {
 			return changeErr
 		}
@@ -178,14 +179,14 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 			}
 		}
 		if history, ok := r.(eventstore.WorkflowTransitionReader); ok {
-			transition, err := history.LatestWorkflowTransition(ctx, scope.project, row.NativeID)
+			transition, err := history.LatestWorkflowTransition(ctx, scope.Project, row.NativeID)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}
 			if err == nil {
 				snapshot.transition = transition
 			}
-			decision, err := history.LatestSchedulerDecision(ctx, scope.project, row.NativeID)
+			decision, err := history.LatestSchedulerDecision(ctx, scope.Project, row.NativeID)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}
@@ -205,7 +206,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 		snapshot.leasePolicy, snapshot.boardSequence = leasePolicy, board.Sequence
 		activeLease, activeErr := r.ActiveLeaseForIssue(ctx, row.ID)
 		if activeErr == nil {
-			if activeLease.OrganizationID != scope.organization || activeLease.IssueID != row.ID {
+			if activeLease.OrganizationID != scope.Organization || activeLease.IssueID != row.ID {
 				return corestore.ErrNotFound
 			}
 			snapshot.currentLease = &activeLease
@@ -213,7 +214,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope nativeScope
 			if bindingErr != nil {
 				return bindingErr
 			}
-			if currentBinding.OrganizationID != scope.organization || currentBinding.ProjectID != scope.project || currentBinding.LeaseID != tracker.LeaseID(activeLease.LeaseID) || currentBinding.PolicyID == "" {
+			if currentBinding.OrganizationID != scope.Organization || currentBinding.ProjectID != scope.Project || currentBinding.LeaseID != tracker.LeaseID(activeLease.LeaseID) || currentBinding.PolicyID == "" {
 				return hubapi.PolicyMismatch("Current lease policy is missing or outside the authorized project")
 			}
 			snapshot.currentPolicyBinding = &currentBinding

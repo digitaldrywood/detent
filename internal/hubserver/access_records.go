@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -34,11 +35,11 @@ func (s *Service) accessOrganization() tracker.OrganizationID {
 	return tracker.OrganizationID(s.config.Hosted.OrganizationID)
 }
 
-func (s *Service) accessAuthority(scope nativeScope, write bool) accessstore.Authority {
+func (s *Service) accessAuthority(scope hubscope.NativeScope, write bool) accessstore.Authority {
 	return hubauth.Authority(s.authInput(scope), write)
 }
 
-func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader, scope nativeScope, write bool) error {
+func (s *Service) authorizeAccessScope(ctx context.Context, r accessstore.Reader, scope hubscope.NativeScope, write bool) error {
 	return hubapi.FromFeatureError(s.requestAuth().Authorize(ctx, r, s.authInput(scope), write))
 }
 
@@ -47,7 +48,7 @@ func (s *Service) accessWebSession(ctx context.Context, hash string, now time.Ti
 }
 
 func (s *Service) authenticateAccessHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (hubapi.APICredential, int, error) {
-	return nativeCredentialResult(s.requestAuth().AuthenticateAccessHash(ctx, hash, renewalRunner, renewalOrganization))
+	return hubscope.NativeCredentialResult(s.requestAuth().AuthenticateAccessHash(ctx, hash, renewalRunner, renewalOrganization))
 }
 
 func (s *Service) activeAccessMember(ctx context.Context, user string) (accessstore.Member, error) {

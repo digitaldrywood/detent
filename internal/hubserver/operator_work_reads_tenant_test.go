@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -149,7 +150,7 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 		}); err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: org, project: "example", credential: credential}
+		scope := hubscope.NativeScope{Organization: org, Project: "example", Credential: credential}
 		t.Run(string(org)+"/bounded change tool", func(t *testing.T) {
 			ctx := changeOperatorContext(t, service, string(org)+"_reader", string(org))
 			executor := hubOperatorExecutor{service}
@@ -289,7 +290,7 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 					}
 				}()
 				current := scope
-				current.credential.HostedRole = test.role
+				current.Credential.HostedRole = test.role
 				item, err := service.resolveOperatorNativeReadItem(t.Context(), nil, current, test.reference)
 				if err != nil {
 					err = hubapi.SafeWorkReadError(err)
@@ -308,7 +309,7 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 				}
 			})
 		}
-		identity := operatorIdentity(credential, string(org))
+		identity := hubscope.OperatorIdentity(credential, string(org))
 		ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
 			return operatortool.Authority{Identity: identity, Check: func(ctx context.Context, req operatortool.Requirement) error {
 				return repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error { return service.authorizeAccessScope(ctx, r, scope, false) })
@@ -342,7 +343,7 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 		for _, role := range []string{"", "reporter"} {
 			t.Run(string(org)+"/retained recovery/"+role, func(t *testing.T) {
 				scope := scope
-				scope.credential.HostedRole = role
+				scope.Credential.HostedRole = role
 				defer func() {
 					if value := recover(); value != nil {
 						t.Fatalf("operator recovery panicked with nil legacy database: %v", value)
@@ -489,7 +490,7 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 				t.Fatal(err)
 			}
 			reporter := scope
-			reporter.credential.HostedRole = "reporter"
+			reporter.Credential.HostedRole = "reporter"
 			result, err := (operatorWorkReads{service: service, scope: reporter}).ReadWork(ctx, operatortool.WorkItem, operatortool.WorkReadRequest{ProjectID: "example", Reference: "1", View: "recovery", Limit: 1})
 			if err == nil {
 				var response operatortool.WorkReadResult[tracker.NativeRecoveryPage]

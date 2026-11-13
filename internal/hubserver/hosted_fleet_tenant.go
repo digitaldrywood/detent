@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -92,7 +93,7 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 	result := hostedFleetResponse{Runners: []hostedFleetRunner{}, RunnerNames: map[string]hostedRunnerName{}, Current: detentVersion(s.config.Version), MinimumRunnerVersion: minimumRunnerVersion(s.config.Version)}
 	read := func(r tenantstore.Reader) error {
 		if selectedProject != "" {
-			scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: selectedProject, credential: credential}
+			scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID()), Project: selectedProject, Credential: credential}
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				return err
 			}
@@ -143,7 +144,7 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 		}
 		principal := ""
 		if credential.HostedRole == "reporter" {
-			principal = (nativeScope{credential: credential}).actor().PrincipalID
+			principal = (hubscope.NativeScope{Credential: credential}).Actor().PrincipalID
 		}
 		leases = slices.DeleteFunc(leases, func(lease runnerstore.FleetLease) bool {
 			return !visible[lease.Lease.ProjectID] || credential.HostedRole == "reporter" && (principal == "" || lease.ActorPrincipalID != principal)
@@ -223,7 +224,7 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 
 			owned := record.OwnerPrincipalID == credential.ID && credential.ID != "" || credential.Hosted != nil && record.OwnerUserID != "" && record.OwnerUserID == credential.Hosted.Subject
 			view.CanEditProjects = view.Editable && owned
-			view.CanConvertScope = view.Editable && (owned || canManageProjectSecrets(credential))
+			view.CanConvertScope = view.Editable && (owned || hubscope.CanManageProjectSecrets(credential))
 			capacity := runner.CapacityView("", now)
 			capacity.Projects = map[tracker.ProjectID]runnerauth.ProjectCapacityView{}
 			projectUsed := map[tracker.ProjectID]int{}

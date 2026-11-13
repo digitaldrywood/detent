@@ -10,12 +10,13 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) getReleaseDeliveryStatus(c echo.Context) error {
 	ctx := c.Request().Context()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	issue, err := s.readReleaseDeliveryIssue(ctx, scope, c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -41,13 +42,13 @@ func (s *Service) getReleaseDeliveryStatus(c echo.Context) error {
 	return c.JSON(http.StatusOK, status)
 }
 
-func readReleaseDelivery(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, item string) (tracker.ReleaseDelivery, bool, error) {
+func readReleaseDelivery(ctx context.Context, query hubapi.NativeQueryer, scope hubscope.NativeScope, item string) (tracker.ReleaseDelivery, bool, error) {
 	var d tracker.ReleaseDelivery
 	var at string
 	var version sql.NullString
 	err := query.QueryRowContext(ctx, `SELECT source_issue_id, source_change_id, source_merge_sha, repository, pr_number,
 head_ref, head_sha, base_ref, base_sha, frozen_sha, change_id, version_id, principal_id, actor_kind, via_key, associated_at
-FROM release_deliveries WHERE organization_id = ? AND project_id = ? AND work_item_id = ?`, scope.organization, scope.project, item).Scan(
+FROM release_deliveries WHERE organization_id = ? AND project_id = ? AND work_item_id = ?`, scope.Organization, scope.Project, item).Scan(
 		&d.SourceIssueID, &d.SourceChangeID, &d.SourceMergeSHA, &d.Repository, &d.PRNumber, &d.HeadRef, &d.HeadSHA, &d.BaseRef, &d.BaseSHA, &d.FrozenSHA,
 		&d.ChangeID, &version, &d.Actor.PrincipalID, &d.Actor.Kind, &d.Actor.ViaKey, &at)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -61,8 +62,8 @@ FROM release_deliveries WHERE organization_id = ? AND project_id = ? AND work_it
 	return d, err == nil, err
 }
 
-func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, item string, r tracker.AssociateReleasePick) error {
-	if scope.credential.Scope != hubapi.APIScopeOperator && scope.credential.Scope != hubapi.APIScopeAdmin || scope.credential.Runner.RunnerID != "" {
+func (s *Service) prepareReleasePick(ctx context.Context, scope hubscope.NativeScope, item string, r tracker.AssociateReleasePick) error {
+	if scope.Credential.Scope != hubapi.APIScopeOperator && scope.Credential.Scope != hubapi.APIScopeAdmin || scope.Credential.Runner.RunnerID != "" {
 		return hubapi.NativeNotFound()
 	}
 	if err := validateReleasePick(r); err != nil {
@@ -109,14 +110,14 @@ func (s *Service) associateReleasePick(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &r); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if err := s.prepareReleasePick(c.Request().Context(), nativeRequestScope(c), c.Param("item"), r); err != nil {
+	if err := s.prepareReleasePick(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), r); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
-	raw, err := s.associateReleasePickTenant(ctx, nativeRequestScope(c), c.Param("item"), c.Request().Method+" "+c.Request().URL.EscapedPath(), r)
+	raw, err := s.associateReleasePickTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Request().Method+" "+c.Request().URL.EscapedPath(), r)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	s.pullRequests.invalidate(pullRequestCacheKey(nativeRequestScope(c), c.Param("item")))
+	s.pullRequests.invalidate(pullRequestCacheKey(hubscope.NativeRequestScope(c), c.Param("item")))
 	return c.JSONBlob(http.StatusOK, raw)
 }

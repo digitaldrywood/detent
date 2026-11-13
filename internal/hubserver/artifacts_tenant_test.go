@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -494,7 +495,7 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 		c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response)
 		c.SetParamNames("item", "artifact", "revision")
 		c.SetParamValues(reference.WorkItemID, reference.ArtifactID, "1")
-		c.Set("native_scope", nativeScope{organization: organization, project: project})
+		c.Set("native_scope", hubscope.NativeScope{Organization: organization, Project: project})
 		if err := reader.getArtifactReference(c); err != nil {
 			t.Fatal(err)
 		}
@@ -508,11 +509,11 @@ func testPostgresArtifactReceipts(t *testing.T, admin *sql.DB, service *Service,
 		if stored.ArtifactID != reference.ArtifactID || stored.Revision != 1 {
 			t.Fatalf("reference = %+v", stored)
 		}
-		bindings, err := reader.artifactServicesCommand(t.Context(), nativeScope{organization: organization, project: project})
+		bindings, err := reader.artifactServicesCommand(t.Context(), hubscope.NativeScope{Organization: organization, Project: project})
 		if err != nil || len(bindings) != 1 || bindings[0].PublisherTokenID != "" {
 			t.Fatalf("artifact service bindings = %+v, error = %v", bindings, err)
 		}
-		references, err := reader.readArtifactReferences(t.Context(), nativeScope{organization: organization, project: project}, reference.WorkItemID)
+		references, err := reader.readArtifactReferences(t.Context(), hubscope.NativeScope{Organization: organization, Project: project}, reference.WorkItemID)
 		if err != nil {
 			t.Fatal(err)
 		}

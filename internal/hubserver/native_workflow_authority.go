@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -18,18 +19,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) authorizeNativeWorkflowScope(ctx context.Context, reader accessstore.Reader, scope nativeScope) error {
+func (s *Service) authorizeNativeWorkflowScope(ctx context.Context, reader accessstore.Reader, scope hubscope.NativeScope) error {
 	if err := s.authorizeAccessScope(ctx, reader, scope, true); err != nil {
 		return err
 	}
-	if scope.credential.Hosted == nil {
+	if scope.Credential.Hosted == nil {
 		return nil
 	}
 	member, err := reader.AuthorizeAccess(ctx, s.accessAuthority(scope, true), s.config.now())
 	if err != nil {
 		return err
 	}
-	if member.UserID != "" && hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
+	if member.UserID != "" && hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole) != scope.Credential.HostedRole {
 		return auth.ErrHostedIdentity
 	}
 	return nil
@@ -66,7 +67,7 @@ func canonicalWorkflowStates(states []tracker.NativeState) []tracker.NativeState
 	return result
 }
 
-func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Writer, scope nativeScope, lease leasestore.Lease, request tracker.Transition, prepared *preparedNativeLeaseCancellation, stopState string) error {
+func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, lease leasestore.Lease, request tracker.Transition, prepared *preparedNativeLeaseCancellation, stopState string) error {
 	fence := leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
 	if prepared.expiresLease(lease) || !lease.ExpiresAt.After(s.config.now().UTC()) {
 		_, err := w.ExpireWithCancellation(ctx, fence, prepared.attemptCancellation())
@@ -102,11 +103,11 @@ func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Wr
 		if attempt.ID != prepared.attempt.ID || attempt.LeaseID != lease.LeaseID || attempt.FencingToken != lease.FencingToken || attempt.Sequence != prepared.attempt.Sequence || attempt.Status != "running" {
 			return leasestore.ErrAttemptConflict
 		}
-		item, err := w.WorkItem(ctx, scope.project, prepared.workItem.NativeID)
+		item, err := w.WorkItem(ctx, scope.Project, prepared.workItem.NativeID)
 		if err != nil {
 			return err
 		}
-		authority := NativeRunEventAuthority{Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: item, Lease: lease, Event: prepared.event}
+		authority := NativeRunEventAuthority{Scope: scope, OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItem: item, Lease: lease, Event: prepared.event}
 		if err := (tenantNativeRunEventParticipant{service: s}).validateNativeRunEvent(ctx, w, &authority, true); err != nil {
 			return err
 		}
@@ -137,7 +138,7 @@ func (s *Service) settleHumanWorkflowLease(ctx context.Context, w tenantstore.Wr
 	return nil
 }
 
-func (s *Service) prepareHumanWorkflowCancellation(ctx context.Context, scope nativeScope, issueID int64, request tracker.Transition, stopState string) (*preparedNativeLeaseCancellation, bool, error) {
+func (s *Service) prepareHumanWorkflowCancellation(ctx context.Context, scope hubscope.NativeScope, issueID int64, request tracker.Transition, stopState string) (*preparedNativeLeaseCancellation, bool, error) {
 	expired, err := s.prepareExpiredNativeLeaseCancellation(ctx, scope, issueID, false)
 	if err != nil || expired != nil {
 		return expired, expired != nil, err
@@ -149,7 +150,7 @@ func (s *Service) prepareHumanWorkflowCancellation(ctx context.Context, scope na
 		return nil, false, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var lease leasestore.Lease
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeNativeWorkflowScope(ctx, r, scope); err != nil {
 			return err
 		}

@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -25,12 +26,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func boardRecordSelection(scope nativeScope, params url.Values) (viewstore.BoardSelection, error) {
+func boardRecordSelection(scope hubscope.NativeScope, params url.Values) (viewstore.BoardSelection, error) {
 	includeWorkspace, err := parseNativeIssueIncludes(params.Get("include"))
 	if err != nil {
 		return viewstore.BoardSelection{}, err
 	}
-	selection := viewstore.BoardSelection{ProjectID: scope.project, Reporter: scope.credential.HostedRole == "reporter", ReporterPrincipalID: scope.actor().PrincipalID, States: params["state"], Types: params["type"], Verification: params["verification"], Labels: params["label"], Assignees: params["assignee"], ClosedOrder: params.Get("sort") == "closed", ExcludeWorkspace: !includeWorkspace, Fingerprint: strings.TrimSpace(params.Get("fingerprint"))}
+	selection := viewstore.BoardSelection{ProjectID: scope.Project, Reporter: scope.Credential.HostedRole == "reporter", ReporterPrincipalID: scope.Actor().PrincipalID, States: params["state"], Types: params["type"], Verification: params["verification"], Labels: params["label"], Assignees: params["assignee"], ClosedOrder: params.Get("sort") == "closed", ExcludeWorkspace: !includeWorkspace, Fingerprint: strings.TrimSpace(params.Get("fingerprint"))}
 	for _, values := range []*[]string{&selection.States, &selection.Types, &selection.Verification, &selection.Labels, &selection.Assignees} {
 		*values = slices.DeleteFunc(slices.Clone(*values), func(value string) bool { return value == "" })
 	}
@@ -108,15 +109,15 @@ func boardRecordCursor(row viewstore.BoardRecord, closed bool, sequence int64) *
 	return position
 }
 
-func (s *Service) readBoardRecords(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+func (s *Service) readBoardRecords(ctx context.Context, scope hubscope.NativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	return s.readBoardRecordsFor(ctx, scope, params, false)
 }
 
-func (s *Service) readBoardRecordsFor(ctx context.Context, scope nativeScope, params url.Values, legacy bool) (tracker.NativeIssuePage, error) {
+func (s *Service) readBoardRecordsFor(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy bool) (tracker.NativeIssuePage, error) {
 	return s.readBoardProjection(ctx, scope, params, legacy, false, false)
 }
 
-func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, params url.Values, legacy, compact, lanes bool) (tracker.NativeIssuePage, error) {
+func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy, compact, lanes bool) (tracker.NativeIssuePage, error) {
 	if value, present := params["archive_url"]; present && (len(value) != 1 || value[0] != "true" && value[0] != "false") {
 		return tracker.NativeIssuePage{}, hubapi.NativePublicInvalid("archive_url supports true or false")
 	}
@@ -128,11 +129,11 @@ func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, pa
 	var page tracker.NativeIssuePage
 	var compatible bool
 	read := func(ctx context.Context) error {
-		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				return err
 			}
-			project, err := r.Project(ctx, scope.project)
+			project, err := r.Project(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -161,9 +162,9 @@ func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, pa
 	if repository, ok := s.config.TenantRepository.(interface {
 		ReadBoardRequest(context.Context, tracker.OrganizationID, string, func(context.Context) error) error
 	}); ok {
-		err = repository.ReadBoardRequest(ctx, scope.organization, scope.credential.ID, read)
+		err = repository.ReadBoardRequest(ctx, scope.Organization, scope.Credential.ID, read)
 	} else if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
-		err = repository.ReadRequest(ctx, scope.organization, read)
+		err = repository.ReadRequest(ctx, scope.Organization, read)
 	} else {
 		err = read(ctx)
 	}
@@ -173,7 +174,7 @@ func (s *Service) readBoardProjection(ctx context.Context, scope nativeScope, pa
 	return page, err
 }
 
-func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope, params url.Values, legacy, compact, lanes bool) (tracker.NativeIssuePage, error) {
+func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.NativeScope, params url.Values, legacy, compact, lanes bool) (tracker.NativeIssuePage, error) {
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return page, hubapi.NativeWorkItemStorageUnavailable()
@@ -212,9 +213,9 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 	if err != nil {
 		return page, err
 	}
-	path, maximum := "/api/v2/organizations/"+url.PathEscape(string(scope.organization))+"/projects/"+url.PathEscape(string(scope.project))+"/work-items", hubapi.MaxAPIPageLimit
+	path, maximum := "/api/v2/organizations/"+url.PathEscape(string(scope.Organization))+"/projects/"+url.PathEscape(string(scope.Project))+"/work-items", hubapi.MaxAPIPageLimit
 	if includeBoard {
-		path, maximum = "/board/"+string(scope.project), 2000
+		path, maximum = "/board/"+string(scope.Project), 2000
 	}
 	cursorParams := params
 	if !includeBoard {
@@ -250,7 +251,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 		}
 	}
 	var snapshot viewstore.BoardModelPage
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 			return err
 		}
@@ -333,7 +334,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope nativeScope
 		}
 		applyNativeShippedWindows(page.Work, windows, selectedWindow)
 	}
-	if err := s.hydrateBoardRecordActorNames(ctx, scope.organization, snapshot.Records, snapshot.WorkRecords); err != nil {
+	if err := s.hydrateBoardRecordActorNames(ctx, scope.Organization, snapshot.Records, snapshot.WorkRecords); err != nil {
 		return page, err
 	}
 	if selection.SearchText != "" || selection.Fingerprint != "" {
@@ -495,12 +496,12 @@ func (s *Service) hydrateBoardRecordActorNames(ctx context.Context, organization
 	return nil
 }
 
-func boardModelCard(scope nativeScope, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
+func boardModelCard(scope hubscope.NativeScope, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
 	if row.PageIssue == nil {
 		return tracker.NativeBoardCard{}, viewstore.ErrInvalidView
 	}
 	issue := *row.PageIssue
-	if scope.credential.HostedRole == "reporter" {
+	if scope.Credential.HostedRole == "reporter" {
 		facts := row.ReporterRelations
 		if facts == nil {
 			return tracker.NativeBoardCard{}, viewstore.ErrInvalidView
@@ -512,7 +513,7 @@ func boardModelCard(scope nativeScope, row viewstore.BoardRecord) (tracker.Nativ
 	issue = boardIssueCollections(issue)
 	card := tracker.NativeBoardCard{Issue: issue, Attempt: row.Display.Attempt, Execution: row.Display.Execution, Change: row.Display.Change}
 	card.StatusLine = nativeBoardStatusLine(card)
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
+	if !scope.ReporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
 		card.Change = nil
 		card.Issue.Change, card.Issue.ListChange, card.Issue.PullRequest = nil, nil, nil
 	}
@@ -539,7 +540,7 @@ func boardIssueCollections(issue tracker.NativeIssue) tracker.NativeIssue {
 	return issue
 }
 
-func (s *Service) boardAccessVersion(ctx context.Context, r tenantstore.Reader, scope nativeScope) (string, error) {
+func (s *Service) boardAccessVersion(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) (string, error) {
 	authority := s.accessAuthority(scope, false)
 	revisions, err := r.BoardAccessRevisions(ctx, authority.CredentialID, authority.UserID)
 	if err != nil {
@@ -557,7 +558,7 @@ func (s *Service) boardAccessVersion(ctx context.Context, r tenantstore.Reader, 
 		}
 		memberRole = member.Role
 	}
-	raw, err := json.Marshal([]any{scope.organization, authority.CredentialID, authority.UserID, authority.Role, memberRole, credential.Scope, credential.ProjectAccess, credential.KeyScope, revisions, scope.credential.EntryKey})
+	raw, err := json.Marshal([]any{scope.Organization, authority.CredentialID, authority.UserID, authority.Role, memberRole, credential.Scope, credential.ProjectAccess, credential.KeyScope, revisions, scope.Credential.EntryKey})
 	if err != nil {
 		return "", err
 	}
@@ -565,7 +566,7 @@ func (s *Service) boardAccessVersion(ctx context.Context, r tenantstore.Reader, 
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+func (s *Service) readQueueWorkItems(ctx context.Context, scope hubscope.NativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}, Total: -1}
 	ctx = s.runDetailContext(ctx)
 	ctx = context.WithValue(ctx, runtimeAdmissionPageKey{}, &runtimeAdmissionPage{})
@@ -578,14 +579,14 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 			return page, hubapi.NativePublicInvalid("Query contains an unsupported field or value")
 		}
 	}
-	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, "/api/v2/organizations/"+string(scope.organization)+"/projects/"+string(scope.project)+"/work-items", params, corestore.MaxPageSize, hubapi.DefaultAPIPageLimit)
+	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, "/api/v2/organizations/"+string(scope.Organization)+"/projects/"+string(scope.Project)+"/work-items", params, corestore.MaxPageSize, hubapi.DefaultAPIPageLimit)
 	if err != nil {
 		return page, err
 	}
 	defer clear(key)
-	query := claimstore.QueueListQuery{ProjectID: scope.project, Scope: "fleet", States: params["state"], Labels: params["label"], Assignees: params["assignee"], Repositories: params["repository"], Limit: corestore.MaxPageSize + 1}
-	if params.Get("queue_scope") == "project" || params.Get("queue_scope") == string(scope.project) {
-		query.Scope = string(scope.project)
+	query := claimstore.QueueListQuery{ProjectID: scope.Project, Scope: "fleet", States: params["state"], Labels: params["label"], Assignees: params["assignee"], Repositories: params["repository"], Limit: corestore.MaxPageSize + 1}
+	if params.Get("queue_scope") == "project" || params.Get("queue_scope") == string(scope.Project) {
+		query.Scope = string(scope.Project)
 	} else if value := params.Get("queue_scope"); value != "" && value != "fleet" {
 		return page, hubapi.NativePublicInvalid("queue_scope supports fleet or project")
 	}
@@ -611,8 +612,8 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 		}
 		query.Priorities = append(query.Priorities, priority)
 	}
-	if scope.credential.HostedRole == "reporter" {
-		query.Principal = scope.actor().PrincipalID
+	if scope.Credential.HostedRole == "reporter" {
+		query.Principal = scope.Actor().PrincipalID
 	}
 	if cursor.After != "" {
 		var envelope hubsecrets.Envelope
@@ -644,11 +645,11 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 	if !ok {
 		return page, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -679,7 +680,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 		var matched []claimstore.QueueListRow
 		for _, row := range rows[:min(corestore.MaxPageSize, len(rows))] {
 			if row.Matches {
-				candidates = append(candidates, claimstore.Candidate{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: row.Entry.WorkItemID, ID: row.ID, Revision: row.Revision})
+				candidates = append(candidates, claimstore.Candidate{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.Entry.WorkItemID, ID: row.ID, Revision: row.Revision})
 				matched = append(matched, row)
 			}
 		}
@@ -687,7 +688,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		metadata, err := batch.ClaimPreviewPlanRows(ctx, scope.project, candidates)
+		metadata, err := batch.ClaimPreviewPlanRows(ctx, scope.Project, candidates)
 		if err != nil {
 			return err
 		}
@@ -701,7 +702,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 			if source.Item.NativeID != candidates[index].WorkItemID || source.Item.Revision != candidates[index].Revision {
 				return corestore.ErrRevisionConflict
 			}
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(source.Item.ActorPrincipalID)}) {
+			if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(source.Item.ActorPrincipalID)}) {
 				continue
 			}
 			selectedRows[source.Item.NativeID] = selected{row: matched[index], item: source.Item, version: source.Version}
@@ -767,16 +768,16 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 			break
 		}
 		size += len(encoded)
-		page.Items = append(page.Items, s.nativeIssueResponse(scope.reporterIssue(issue)))
+		page.Items = append(page.Items, s.nativeIssueResponse(scope.ReporterIssue(issue)))
 		last = row.Position
 	}
 	if len(page.Items) > 0 {
 		var current []tenantstore.ClaimPreviewPlanRow
-		err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				return err
 			}
-			project, err := r.Project(ctx, scope.project)
+			project, err := r.Project(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -790,9 +791,9 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 			candidates := make([]claimstore.Candidate, 0, len(page.Items))
 			for _, issue := range page.Items {
 				selected := selectedRows[issue.WorkItemID]
-				candidates = append(candidates, claimstore.Candidate{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, ID: selected.item.ID, Revision: selected.item.Revision})
+				candidates = append(candidates, claimstore.Candidate{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, ID: selected.item.ID, Revision: selected.item.Revision})
 			}
-			current, err = batch.ClaimPreviewPlanRows(ctx, scope.project, candidates)
+			current, err = batch.ClaimPreviewPlanRows(ctx, scope.Project, candidates)
 			return err
 		})
 		if err != nil {
@@ -804,7 +805,7 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope nativeScope, par
 		kept := page.Items[:0]
 		for index, issue := range page.Items {
 			row := current[index]
-			if row.Item.NativeID == "" && errors.Is(row.Err, corestore.ErrNotFound) || row.Item.NativeID == issue.WorkItemID && (row.Item.Revision != int64(issue.Revision) || row.Item.Archived || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.Item.ActorPrincipalID)})) {
+			if row.Item.NativeID == "" && errors.Is(row.Err, corestore.ErrNotFound) || row.Item.NativeID == issue.WorkItemID && (row.Item.Revision != int64(issue.Revision) || row.Item.Archived || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.Item.ActorPrincipalID)})) {
 				page.Partial = true
 				continue
 			}

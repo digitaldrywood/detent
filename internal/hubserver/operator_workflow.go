@@ -11,51 +11,52 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.RawMessage) (context.Context, nativeScope, error) {
+func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.RawMessage) (context.Context, hubscope.NativeScope, error) {
 	request, err := operatortool.DecodeNativeMoveItem(raw)
 	if err != nil {
-		return ctx, nativeScope{}, err
+		return ctx, hubscope.NativeScope{}, err
 	}
 	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, Action: operatortool.MoveItem, ProjectID: request.ProjectID})
 	if err != nil {
-		return ctx, nativeScope{}, err
+		return ctx, hubscope.NativeScope{}, err
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
-		return ctx, nativeScope{}, operatortool.ErrAccessDenied
+		return ctx, hubscope.NativeScope{}, operatortool.ErrAccessDenied
 	}
 	scope, err := resolve(ctx)
 	if err != nil {
-		return ctx, nativeScope{}, workflowSafeError(err)
+		return ctx, hubscope.NativeScope{}, workflowSafeError(err)
 	}
-	scope.project = tracker.ProjectID(request.ProjectID)
-	scope.action = operatortool.MoveItem
-	scope.actionItem, scope.actionTarget = request.Identifier, request.TargetState
-	if scope.credential.HostedRole == "reporter" && request.TargetState != "Cancelled" {
-		return ctx, nativeScope{}, operatortool.ErrAccessDenied
+	scope.Project = tracker.ProjectID(request.ProjectID)
+	scope.Action = operatortool.MoveItem
+	scope.ActionItem, scope.ActionTarget = request.Identifier, request.TargetState
+	if scope.Credential.HostedRole == "reporter" && request.TargetState != "Cancelled" {
+		return ctx, hubscope.NativeScope{}, operatortool.ErrAccessDenied
 	}
 	issue, err := e.service.resolveWorkflowItem(ctx, scope, request.Identifier)
 	if err != nil {
-		return ctx, nativeScope{}, workflowSafeError(err)
+		return ctx, hubscope.NativeScope{}, workflowSafeError(err)
 	}
 	if issue.Profile == "github_compatible" {
 		if strings.TrimSpace(request.WorkflowLabel) == "" {
-			return ctx, nativeScope{}, &operatortool.RequestError{Code: "invalid_request", Message: "Compatibility workflow transitions require an explicit workflow label"}
+			return ctx, hubscope.NativeScope{}, &operatortool.RequestError{Code: "invalid_request", Message: "Compatibility workflow transitions require an explicit workflow label"}
 		}
 	} else if issue.Profile != "native" {
-		return ctx, nativeScope{}, operatortool.ErrServiceUnavailable
+		return ctx, hubscope.NativeScope{}, operatortool.ErrServiceUnavailable
 	} else if request.WorkflowLabel != "" {
-		return ctx, nativeScope{}, &operatortool.RequestError{Code: "invalid_request", Message: "Native workflow transitions do not accept a workflow label"}
+		return ctx, hubscope.NativeScope{}, &operatortool.RequestError{Code: "invalid_request", Message: "Native workflow transitions do not accept a workflow label"}
 	}
 	return ctx, scope, nil
 }
 
-func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope nativeScope, request operatortool.MoveItemArguments) (chat.Action, error) {
+func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope hubscope.NativeScope, request operatortool.MoveItemArguments) (chat.Action, error) {
 	issue, err := e.service.resolveWorkflowItem(ctx, scope, request.Identifier)
 	if err != nil {
 		return chat.Action{}, workflowSafeError(err)
@@ -64,7 +65,7 @@ func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope nati
 	if err != nil {
 		return chat.Action{}, workflowSafeError(err)
 	}
-	if err := validateNativeWorkflowTransition(states, issue.State, request.TargetState, scope.credential.Scope); err != nil {
+	if err := validateNativeWorkflowTransition(states, issue.State, request.TargetState, scope.Credential.Scope); err != nil {
 		if issue.State == request.TargetState && slices.ContainsFunc(states, func(state tracker.NativeState) bool {
 			return state.Name == issue.State && state.Dispatchable && !state.Terminal
 		}) {

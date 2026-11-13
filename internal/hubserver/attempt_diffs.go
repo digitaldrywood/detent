@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -41,7 +42,7 @@ func attemptDiffTooLarge(limit int64) error {
 	}
 }
 
-func normalizeAttemptDiff(scope nativeScope, request tracker.AttemptDiffRequest) ([]tracker.AttemptDiffFile, int64, error) {
+func normalizeAttemptDiff(scope hubscope.NativeScope, request tracker.AttemptDiffRequest) ([]tracker.AttemptDiffFile, int64, error) {
 	files, patchBytes := tracker.NormalizeDiffFiles(request.Files)
 	if patchBytes > tracker.MaxDiffBytes {
 		return nil, 0, attemptDiffTooLarge(tracker.MaxDiffBytes)
@@ -57,7 +58,7 @@ func normalizeAttemptDiff(scope nativeScope, request tracker.AttemptDiffRequest)
 			if file.Patch != "" {
 				return nil, 0, hubapi.NativePublicInvalid("Diff body must use exactly one storage representation")
 			}
-			if err := file.PatchBody.Validate(string(scope.organization), string(scope.project), tracker.MaxDiffPatchBytes); err != nil {
+			if err := file.PatchBody.Validate(string(scope.Organization), string(scope.Project), tracker.MaxDiffPatchBytes); err != nil {
 				return nil, 0, hubapi.NativeInvalid(err.Error())
 			}
 		}
@@ -107,7 +108,7 @@ func (s *Service) postAttemptDiff(c echo.Context) error {
 	if len(request.BaseSHA) > tracker.MaxDiffSHABytes || len(request.HeadSHA) > tracker.MaxDiffSHABytes {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Commit identities are bounded to "+strconv.Itoa(tracker.MaxDiffSHABytes)+" bytes"))
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	ctx := c.Request().Context()
 	receipt, err := s.postAttemptDiffTenant(ctx, scope, attemptID, request, c.Get("attempt_diff_check") == true)
 	if err != nil {
@@ -150,14 +151,14 @@ func (s *Service) getAttemptDiff(c echo.Context) error {
 		}
 		source = raw
 	}
-	result, err := s.readAttemptDiff(c.Request().Context(), nativeRequestScope(c), "", attemptID, source, seq)
+	result, err := s.readAttemptDiff(c.Request().Context(), hubscope.NativeRequestScope(c), "", attemptID, source, seq)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return nativeArchiveJSON(c, http.StatusOK, result)
 }
 
-func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
+func (s *Service) readAttemptDiff(ctx context.Context, scope hubscope.NativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
 	if s.config.TenantRepository == nil {
 		return tracker.AttemptDiff{}, nativeUnavailable("Attempt diff storage is unavailable")
 	}
@@ -183,14 +184,14 @@ func (s *Service) getWorkItemDiff(c echo.Context) error {
 		}
 		source = raw
 	}
-	result, err := s.readWorkItemDiff(c.Request().Context(), nativeRequestScope(c), c.Param("item"), source)
+	result, err := s.readWorkItemDiff(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), source)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return nativeArchiveJSON(c, http.StatusOK, result)
 }
 
-func (s *Service) readWorkItemDiff(ctx context.Context, scope nativeScope, item, source string) (tracker.WorkItemDiff, error) {
+func (s *Service) readWorkItemDiff(ctx context.Context, scope hubscope.NativeScope, item, source string) (tracker.WorkItemDiff, error) {
 	if s.config.TenantRepository == nil {
 		return tracker.WorkItemDiff{}, nativeUnavailable("Attempt diff storage is unavailable")
 	}

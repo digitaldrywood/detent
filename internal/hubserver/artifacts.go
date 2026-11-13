@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -43,7 +44,7 @@ func (s *Service) hostedArtifactPublisher(c echo.Context, credential hubapi.APIC
 	if c.Path() != hubapi.NativeBase+"/artifact-services/:service/receipts" && c.Path() != hubapi.NativeBase+"/artifact-services/:service/authorize" {
 		return false
 	}
-	id, err := s.artifactPublisherToken(ctx, nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project"))}, c.Param("service"))
+	id, err := s.artifactPublisherToken(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Project: tracker.ProjectID(c.Param("project"))}, c.Param("service"))
 	return err == nil && id == credential.ID
 }
 
@@ -69,7 +70,7 @@ func (s *Service) bindArtifactService(c echo.Context) error {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
 	options := hubapi.NativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath()}
-	result, err := s.executeProjectRecordMutation(c.Request().Context(), nativeRequestScope(c), options, request.Mutation, request)
+	result, err := s.executeProjectRecordMutation(c.Request().Context(), hubscope.NativeRequestScope(c), options, request.Mutation, request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -77,7 +78,7 @@ func (s *Service) bindArtifactService(c echo.Context) error {
 }
 
 func (s *Service) artifactServices(c echo.Context) error {
-	result, err := s.artifactServicesCommand(c.Request().Context(), nativeRequestScope(c))
+	result, err := s.artifactServicesCommand(c.Request().Context(), hubscope.NativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -87,20 +88,20 @@ func (s *Service) artifactServices(c echo.Context) error {
 func (s *Service) artifactPublisher(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	id, err := s.artifactPublisherToken(ctx, scope, c.Param("service"))
-	if err != nil || id != scope.credential.ID {
+	if err != nil || id != scope.Credential.ID {
 		return hubapi.NativeNotFound()
 	}
 	return nil
 }
 
-func (s *Service) artifactPublisherToken(ctx context.Context, scope nativeScope, service string) (id string, err error) {
+func (s *Service) artifactPublisherToken(ctx context.Context, scope hubscope.NativeScope, service string) (id string, err error) {
 	if s.config.TenantRepository == nil {
 		return "", hubapi.NativeWorkItemStorageUnavailable()
 	}
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		binding, err := r.ArtifactService(ctx, scope.project, service)
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		binding, err := r.ArtifactService(ctx, scope.Project, service)
 		id = binding.PublisherTokenID
 		return err
 	})
@@ -115,8 +116,8 @@ func (s *Service) artifactReceipt(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &ref); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
-	if ref.SchemaVersion != 1 || ref.Validate() != nil || ref.OrganizationID != string(scope.organization) || ref.ProjectID != string(scope.project) || ref.ServiceID != c.Param("service") || !artifact.ValidID(ref.ArtifactID, "artifact") || !artifact.ValidID(ref.ManifestID, "manifest") || !artifact.ValidHash(ref.SHA256, 64) || ref.Revision < 1 || ref.Revision > artifact.MaxObjects+1 || !slices.Contains([]string{"log", "diff", "screenshot", "video"}, ref.Kind) || !slices.Contains([]string{"partial", "complete", "interrupted"}, ref.State) || ref.Availability != "available" || ref.Bytes < 0 || ref.Bytes > artifact.MaxArtifactBytes || ref.Objects < 0 || ref.Objects > artifact.MaxObjects || ref.ExpiresAt.IsZero() || ref.ObservedAt.IsZero() {
+	scope := hubscope.NativeRequestScope(c)
+	if ref.SchemaVersion != 1 || ref.Validate() != nil || ref.OrganizationID != string(scope.Organization) || ref.ProjectID != string(scope.Project) || ref.ServiceID != c.Param("service") || !artifact.ValidID(ref.ArtifactID, "artifact") || !artifact.ValidID(ref.ManifestID, "manifest") || !artifact.ValidHash(ref.SHA256, 64) || ref.Revision < 1 || ref.Revision > artifact.MaxObjects+1 || !slices.Contains([]string{"log", "diff", "screenshot", "video"}, ref.Kind) || !slices.Contains([]string{"partial", "complete", "interrupted"}, ref.State) || ref.Availability != "available" || ref.Bytes < 0 || ref.Bytes > artifact.MaxArtifactBytes || ref.Objects < 0 || ref.Objects > artifact.MaxObjects || ref.ExpiresAt.IsZero() || ref.ObservedAt.IsZero() {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid artifact receipt"))
 	}
 	if err := s.publishArtifactReceiptTenant(c.Request().Context(), scope, ref); err != nil {
@@ -127,14 +128,14 @@ func (s *Service) artifactReceipt(c echo.Context) error {
 }
 
 func (s *Service) artifactReferences(c echo.Context) error {
-	refs, err := s.readArtifactReferences(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
+	refs, err := s.readArtifactReferences(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, refs)
 }
 
-func (s *Service) readArtifactReferences(ctx context.Context, scope nativeScope, item string) ([]artifact.Reference, error) {
+func (s *Service) readArtifactReferences(ctx context.Context, scope hubscope.NativeScope, item string) ([]artifact.Reference, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil {
@@ -144,13 +145,13 @@ func (s *Service) readArtifactReferences(ctx context.Context, scope nativeScope,
 	if err != nil {
 		return nil, err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+	if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 		return nil, hubapi.NativeNotFound()
 	}
 	var refs []artifact.Reference
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		refs, err = r.ArtifactReferences(ctx, scope.project, tracker.NativeWorkItemID(item), 64)
+		refs, err = r.ArtifactReferences(ctx, scope.Project, tracker.NativeWorkItemID(item), 64)
 		return err
 	})
 	if err != nil {
@@ -169,8 +170,8 @@ func (s *Service) authorizeArtifactUpload(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &r); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
-	if r.Validate() != nil || r.OrganizationID != string(scope.organization) || r.ProjectID != string(scope.project) || r.WorkItemID != c.Param("item") || r.LeaseID == "" || r.FencingToken <= 0 || r.Key == "" || len(r.Key) > 128 || !slices.Contains([]string{"log", "diff", "screenshot", "video"}, r.Kind) || r.Bytes <= 0 || r.Bytes > artifact.MaxArtifactBytes || scope.credential.Scope != hubapi.APIScopeWorker {
+	scope := hubscope.NativeRequestScope(c)
+	if r.Validate() != nil || r.OrganizationID != string(scope.Organization) || r.ProjectID != string(scope.Project) || r.WorkItemID != c.Param("item") || r.LeaseID == "" || r.FencingToken <= 0 || r.Key == "" || len(r.Key) > 128 || !slices.Contains([]string{"log", "diff", "screenshot", "video"}, r.Kind) || r.Bytes <= 0 || r.Bytes > artifact.MaxArtifactBytes || scope.Credential.Scope != hubapi.APIScopeWorker {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	if err := s.authorizeArtifactUploadTenant(c.Request().Context(), scope, r); err != nil {
@@ -190,7 +191,7 @@ func (s *Service) artifactReadGrant(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &input); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	result, err := s.artifactReadGrantCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("artifact"), input.Revision, s.config.now())
+	result, err := s.artifactReadGrantCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("artifact"), input.Revision, s.config.now())
 	if errors.Is(err, artifact.ErrExpired) {
 		return s.refusedAPIError(c, http.StatusGone, "expired", "Artifact retention has expired", hubapi.APIErrorResponse{Code: "expired", Message: "Artifact retention has expired"})
 	}
@@ -216,14 +217,14 @@ func (s *Service) authorizeArtifactRead(c echo.Context) error {
 	if r.Token == "" || len(r.Token) > 4096 || !artifact.ValidID(r.ArtifactID, "artifact") || r.Revision < 1 {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	grant, owner, err := s.readArtifactGrantTenant(ctx, scope, c.Param("service"), r)
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	if s.config.Hosted != nil {
 		reader, err := s.hostedArtifactReader(c, grant.PrincipalID, grant.SessionHash)
-		if err != nil || !(nativeScope{organization: scope.organization, project: scope.project, credential: reader}).reporterOwns(owner) {
+		if err != nil || !(hubscope.NativeScope{Organization: scope.Organization, Project: scope.Project, Credential: reader}).ReporterOwns(owner) {
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
 	}
@@ -235,9 +236,9 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	if sessionHash == "" {
-		scope := nativeRequestScope(c)
+		scope := hubscope.NativeRequestScope(c)
 		var stored accessstore.Credential
-		err := s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := s.config.TenantRepository.ReadTenant(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			stored, err = r.AccessCredential(readCtx, principal)
 			if err != nil {
@@ -255,7 +256,7 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 		if err != nil {
 			return hubapi.APICredential{}, err
 		}
-		credential, _, err := s.authenticateTenantAPIHash(readCtx, scope.organization, stored.Hash, "", "")
+		credential, _, err := s.authenticateTenantAPIHash(readCtx, scope.Organization, stored.Hash, "", "")
 		if err != nil || credential.ID != principal {
 			return hubapi.APICredential{}, auth.ErrHostedIdentity
 		}
@@ -272,27 +273,27 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 	if err != nil || credential.ID != principal {
 		return hubapi.APICredential{}, auth.ErrHostedIdentity
 	}
-	scope := nativeRequestScope(c)
-	scope.credential = credential
+	scope := hubscope.NativeRequestScope(c)
+	scope.Credential = credential
 	if s.config.TenantRepository == nil {
 		return hubapi.APICredential{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	if err := s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return s.authorizeAccessScope(readCtx, r, scope, false)
 	}); err != nil {
 		return hubapi.APICredential{}, err
 	}
-	return credential, s.hostedAudit(ctx, session.Identity, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0)
+	return credential, s.hostedAudit(ctx, session.Identity, "action", c.Request().Method+" "+c.Path(), string(scope.Project), 0)
 }
 
-func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope) (result []artifact.Binding, err error) {
+func (s *Service) artifactServicesCommand(ctx context.Context, scope hubscope.NativeScope) (result []artifact.Binding, err error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		result, err = r.ArtifactServices(ctx, scope.project)
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		result, err = r.ArtifactServices(ctx, scope.Project)
 		return err
 	})
 	for i := range result {
@@ -301,7 +302,7 @@ func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope
 	return result, hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) artifactReadGrantCommand(ctx context.Context, scope nativeScope, item, artifactID string, revision int64, now time.Time) (artifact.Grant, error) {
+func (s *Service) artifactReadGrantCommand(ctx context.Context, scope hubscope.NativeScope, item, artifactID string, revision int64, now time.Time) (artifact.Grant, error) {
 	if s.config.TenantRepository == nil {
 		return artifact.Grant{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -315,13 +316,13 @@ func (s *Service) getArtifactReference(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid artifact revision"))
 	}
-	result, err := s.artifactReferenceCommand(ctx, nativeRequestScope(c), c.Param("item"), c.Param("artifact"), revision, s.config.now())
+	result, err := s.artifactReferenceCommand(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("artifact"), revision, s.config.now())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
 }
-func (s *Service) artifactReferenceCommand(ctx context.Context, scope nativeScope, item, id string, revision int64, now time.Time) (artifact.Reference, error) {
+func (s *Service) artifactReferenceCommand(ctx context.Context, scope hubscope.NativeScope, item, id string, revision int64, now time.Time) (artifact.Reference, error) {
 	var result artifact.Reference
 	if s.config.TenantRepository == nil {
 		return result, hubapi.NativeWorkItemStorageUnavailable()
@@ -330,12 +331,12 @@ func (s *Service) artifactReferenceCommand(ctx context.Context, scope nativeScop
 	if err != nil {
 		return result, err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+	if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 		return result, hubapi.NativeNotFound()
 	}
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		result, err = r.ArtifactReference(ctx, scope.project, tracker.NativeWorkItemID(item), id, revision)
+		result, err = r.ArtifactReference(ctx, scope.Project, tracker.NativeWorkItemID(item), id, revision)
 		return err
 	})
 	if err != nil {

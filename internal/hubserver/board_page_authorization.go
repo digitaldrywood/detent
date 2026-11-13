@@ -6,13 +6,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) authorizeBoardModel(ctx context.Context, reader tenantstore.Reader, scope nativeScope, snapshot *viewstore.BoardModelPage) error {
+func (s *Service) authorizeBoardModel(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, snapshot *viewstore.BoardModelPage) error {
 	ids := make([]tracker.NativeWorkItemID, 0, len(snapshot.Records)+len(snapshot.WorkRecords))
 	bytes := 0
 	changes := []string{}
@@ -53,8 +54,8 @@ func (s *Service) authorizeBoardModel(ctx context.Context, reader tenantstore.Re
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	reporter := ""
-	if scope.credential.HostedRole == "reporter" {
-		reporter = scope.actor().PrincipalID
+	if scope.Credential.HostedRole == "reporter" {
+		reporter = scope.Actor().PrincipalID
 	}
 	allowed, err := model.BoardAuthorizedItems(ctx, s.accessAuthority(scope, false), ids, changes, reporter)
 	if err != nil {
@@ -72,7 +73,7 @@ func (s *Service) authorizeBoardModel(ctx context.Context, reader tenantstore.Re
 				issue.Change, issue.ListChange, issue.PullRequest = nil, nil, nil
 				row.PageIssue = &issue
 			}
-			if allowed.Items[row.WorkItemID] != scope.project {
+			if allowed.Items[row.WorkItemID] != scope.Project {
 				return accessstore.ErrDenied
 			}
 			card, err := boardModelCard(scope, *row)

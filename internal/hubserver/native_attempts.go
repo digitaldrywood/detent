@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -220,7 +221,7 @@ func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObs
 
 func (s *Service) listNativeAttempts(c echo.Context) error {
 	ctx := c.Request().Context()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	params, err := nativeReadQuery(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -266,12 +267,12 @@ func (p *nativeAttemptPage) finish() {
 	p.encoded = append(p.encoded, '}', '\n')
 }
 
-func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeAttempt], error) {
+func (s *Service) readAttempts(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.NativeAttempt], error) {
 	result, err := s.readNativeAttemptPage(ctx, scope, item, params, json.Marshal)
 	return result.Page, err
 }
 
-func (s *Service) readNativeAttemptPage(ctx context.Context, scope nativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (nativeAttemptPage, error) {
+func (s *Service) readNativeAttemptPage(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (nativeAttemptPage, error) {
 	return s.readNativeAttemptPageTenant(ctx, scope, item, params, marshal)
 }
 
@@ -319,21 +320,21 @@ func nativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.Native
 
 func (s *Service) getNativeAttempt(c echo.Context) error {
 	if c.QueryParam("view") == "cleanup" {
-		result, err := s.readNativeCleanupAttempt(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("attempt"))
+		result, err := s.readNativeCleanupAttempt(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("attempt"))
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		return c.JSON(http.StatusOK, result)
 	}
-	result, err := s.readNativeAttempt(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("attempt"))
+	result, err := s.readNativeAttempt(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("attempt"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return nativeArchiveJSON(c, http.StatusOK, result)
 }
 
-func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
-	if !scope.credential.Runner.Valid() {
+func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
+	if !scope.Credential.Runner.Valid() {
 		return tracker.NativeAttempt{}, hubapi.NativeNotFound()
 	}
 	ctx = s.runDetailContext(ctx)
@@ -344,18 +345,18 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope nativeScop
 		return tracker.NativeAttempt{}, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var snapshot tenantAttemptSnapshot
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if project.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		issue, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		issue, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
@@ -370,17 +371,17 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope nativeScop
 		if err != nil {
 			return err
 		}
-		if snapshot.lease.IssueID != issue.ID || snapshot.lease.FencingToken != snapshot.attempt.FencingToken || snapshot.lease.MachineID != string(scope.credential.Runner.MachineID) || snapshot.lease.ReleasedAt == nil {
+		if snapshot.lease.IssueID != issue.ID || snapshot.lease.FencingToken != snapshot.attempt.FencingToken || snapshot.lease.MachineID != string(scope.Credential.Runner.MachineID) || snapshot.lease.ReleasedAt == nil {
 			return corestore.ErrNotFound
 		}
 		runner, err := r.RunnerForLease(ctx, snapshot.lease.LeaseID)
 		if err != nil {
 			return err
 		}
-		if runner.RunnerID != scope.credential.Runner.RunnerID {
+		if runner.RunnerID != scope.Credential.Runner.RunnerID {
 			return corestore.ErrNotFound
 		}
-		snapshot.event, err = r.LatestRunEvent(ctx, scope.project, id)
+		snapshot.event, err = r.LatestRunEvent(ctx, scope.Project, id)
 		if err != nil {
 			return err
 		}
@@ -399,10 +400,10 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope nativeScop
 	if err != nil {
 		return tracker.NativeAttempt{}, err
 	}
-	if !nativeAttemptRunMatches(snapshot, data) || data.RunnerID != scope.credential.Runner.RunnerID {
+	if !nativeAttemptRunMatches(snapshot, data) || data.RunnerID != scope.Credential.Runner.RunnerID {
 		return tracker.NativeAttempt{}, artifact.ErrIntegrity
 	}
-	if !nativeRunCleanupRequired(data) || data.MachineID != scope.credential.Runner.MachineID {
+	if !nativeRunCleanupRequired(data) || data.MachineID != scope.Credential.Runner.MachineID {
 		return tracker.NativeAttempt{}, hubapi.NativeNotFound()
 	}
 	return tracker.NativeAttempt{
@@ -415,7 +416,7 @@ func (s *Service) readNativeCleanupAttempt(ctx context.Context, scope nativeScop
 	}, nil
 }
 
-func (s *Service) readNativeAttempt(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
+func (s *Service) readNativeAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()

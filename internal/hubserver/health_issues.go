@@ -1,7 +1,10 @@
 package hubserver
 
-import "github.com/digitaldrywood/detent/internal/tracker"
+import (
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
 
-func healthIssueScope(organization tracker.OrganizationID, project tracker.ProjectID) nativeScope {
-	return nativeScope{organization: organization, project: project, sourceActor: nativeIntegrationActor("health_detector")}
+func healthIssueScope(organization tracker.OrganizationID, project tracker.ProjectID) hubscope.NativeScope {
+	return hubscope.NativeScope{Organization: organization, Project: project, SourceActor: nativeIntegrationActor("health_detector")}
 }

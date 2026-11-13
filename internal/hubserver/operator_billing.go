@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -46,7 +47,7 @@ func (s *Service) operatorBillingCredential(ctx context.Context, kind string, wr
 		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	credential, err := resolve(ctx)
-	if err != nil || operatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+	if err != nil || hubscope.OperatorIdentity(credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
 		return hubapi.APICredential{}, operatortool.ErrAccessDenied
 	}
 	// The resolver and the application's role predicates are evaluated together;

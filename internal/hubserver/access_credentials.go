@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -38,13 +39,13 @@ func (s *Service) createAccessToken(ctx context.Context, request hubapi.TokenReq
 	if row.ID == "" {
 		return hubapi.TokenResponse{}, hubapi.NativePublicInvalid("Token identity is required")
 	}
-	var scope nativeScope
+	var scope hubscope.NativeScope
 	if request.Issuer != nil {
 		issuer := *request.Issuer
 		if issuer.Hosted == nil || issuer.Hosted.SupportActor != "" || issuer.HostedKeyScope != "" {
 			return hubapi.TokenResponse{}, auth.ErrHostedIdentity
 		}
-		if request.Scope != hubapi.APIScopeOperator && request.Scope != hubapi.APIScopeAdmin || (request.Scope == hubapi.APIScopeAdmin) != (request.KeyScope == apikey.ScopeAdmin) || !hostedRoleAllows(issuer.HostedRole, request.KeyScope, "credentials") {
+		if request.Scope != hubapi.APIScopeOperator && request.Scope != hubapi.APIScopeAdmin || (request.Scope == hubapi.APIScopeAdmin) != (request.KeyScope == apikey.ScopeAdmin) || !hubscope.HostedRoleAllows(issuer.HostedRole, request.KeyScope, "credentials") {
 			return hubapi.TokenResponse{}, hubapi.NativePublicInvalid("Select a scope allowed by your current role")
 		}
 		if request.ExpiresAt != nil && (!request.ExpiresAt.After(now) || request.ExpiresAt.After(now.Add(90*24*time.Hour))) {
@@ -56,7 +57,7 @@ func (s *Service) createAccessToken(ctx context.Context, request hubapi.TokenReq
 		}
 		identity, current, err := s.hostedMutationIdentity(ctx, issuer)
 		if err != nil {
-			return hubapi.TokenResponse{}, operatorAuthorizationError(err)
+			return hubapi.TokenResponse{}, hubscope.OperatorAuthorizationError(err)
 		}
 		if identity.Subject != issuer.Hosted.Subject || current.ID != issuer.HostedMembership {
 			return hubapi.TokenResponse{}, auth.ErrHostedIdentity
@@ -69,7 +70,7 @@ func (s *Service) createAccessToken(ctx context.Context, request hubapi.TokenReq
 			return hubapi.TokenResponse{}, hubapi.NativePublicInvalid("Choose a personal or service key")
 		}
 		row.NativeOnly, row.UserID, row.MembershipID, row.KeyScope, row.ProjectAccess = true, issuer.Hosted.Subject, issuer.HostedMembership, string(request.KeyScope), string(access)
-		scope = nativeScope{organization: row.OrganizationID, credential: issuer, action: "credentials", requireHostedAdmin: request.KeyScope == apikey.ScopeAdmin}
+		scope = hubscope.NativeScope{Organization: row.OrganizationID, Credential: issuer, Action: "credentials", RequireHostedAdmin: request.KeyScope == apikey.ScopeAdmin}
 	}
 	err = s.accessWrite(ctx, row.OrganizationID, func(w tenantstore.Writer) error {
 		if err := s.authorizeCredentialMaintenanceWrite(ctx, w, row.OrganizationID); err != nil {
@@ -80,14 +81,14 @@ func (s *Service) createAccessToken(ctx context.Context, request hubapi.TokenReq
 			if err != nil {
 				return err
 			}
-			if !hostedRoleAllows(hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole), request.KeyScope, "credentials") {
+			if !hubscope.HostedRoleAllows(hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole), request.KeyScope, "credentials") {
 				return auth.ErrHostedIdentity
 			}
 			for _, project := range request.ProjectIDs {
 				if !hostedSafeID(project) {
 					return hubapi.NativeNotFound()
 				}
-				scope.project = tracker.ProjectID(project)
+				scope.Project = tracker.ProjectID(project)
 				if err := s.authorizeAccessScope(ctx, w, scope, false); err != nil {
 					return err
 				}
@@ -151,7 +152,7 @@ func (s *Service) accessHostedKeys(ctx context.Context, credential hubapi.APICre
 	for {
 		var rows []accessstore.Credential
 		err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
-			if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: s.accessOrganization(), credential: credential}, false); err != nil {
+			if err := s.authorizeAccessScope(ctx, r, hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential}, false); err != nil {
 				return err
 			}
 			var err error

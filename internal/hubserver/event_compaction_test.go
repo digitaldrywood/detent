@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -151,7 +152,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 					if !strings.Contains(response.Body.String(), "Human decision retained") {
 						t.Fatal("human comment was lost")
 					}
-					if _, err := admin.ExecContext(t.Context(), `DELETE FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, a.scope.organization, a.scope.project, a.issue.WorkItemID); err == nil {
+					if _, err := admin.ExecContext(t.Context(), `DELETE FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, a.scope.Organization, a.scope.Project, a.issue.WorkItemID); err == nil {
 						t.Fatal("ordinary history deletion allowed")
 					}
 				})
@@ -334,18 +335,18 @@ func TestEventCompactionRollback(t *testing.T) {
 	a.advance(2 * time.Hour)
 	beforeRows, beforePayloads := a.canonicalEvents(t)
 	scope := nativeAttemptListingScope(t, a.nativeFixture)
-	value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: a.scope.organization, ProjectID: a.scope.project, AggregateType: "issue", AggregateID: a.issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: a.service.config.now(), Data: tracker.CollaborationData{Run: &a.start.Data}}
+	value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: a.scope.Organization, ProjectID: a.scope.Project, AggregateType: "issue", AggregateID: a.issue.WorkItemID, Type: "run.observed", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: a.service.config.now(), Data: tracker.CollaborationData{Run: &a.start.Data}}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, err := eventstore.NewContent(a.service.runDetailStore()).PrepareEvent(t.Context(), a.scope.organization, raw)
+	row, err := eventstore.NewContent(a.service.runDetailStore()).PrepareEvent(t.Context(), a.scope.Organization, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	injected := errors.New("injected rollback")
-	err = a.service.config.TenantRepository.WriteTenant(t.Context(), a.scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: a.scope.organization, ID: "archive_" + row.PayloadSHA256, Reference: eventstore.Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), CreatedAt: a.service.config.now()}); err != nil {
+	err = a.service.config.TenantRepository.WriteTenant(t.Context(), a.scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: a.scope.Organization, ID: "archive_" + row.PayloadSHA256, Reference: eventstore.Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes), CreatedAt: a.service.config.now()}); err != nil {
 			return err
 		}
 		if _, err := w.AppendEvent(t.Context(), row); err != nil {
@@ -365,9 +366,9 @@ func TestEventCompactionRollback(t *testing.T) {
 		t.Fatal("rollback changed immutable event references or payload bytes")
 	}
 	var stored []eventstore.Event
-	if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		stored, err = r.Events(t.Context(), a.scope.project, a.issue.WorkItemID, 0, corestore.MaxPageSize)
+		stored, err = r.Events(t.Context(), a.scope.Project, a.issue.WorkItemID, 0, corestore.MaxPageSize)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -385,7 +386,7 @@ func TestEventCompactionRollback(t *testing.T) {
 	if spans != 6 {
 		t.Fatalf("rollback lost activity payloads: %d", spans)
 	}
-	if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		_, err := r.(attemptArchiveReader).ArchiveObjectByKey(t.Context(), row.PayloadObjectKey)
 		if !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("rollback retained archive ownership: %v", err)
@@ -394,7 +395,7 @@ func TestEventCompactionRollback(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conversationTestAdmin(t, a.service).ExecContext(t.Context(), `DELETE FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, a.scope.organization, a.scope.project, a.issue.WorkItemID); err == nil {
+	if _, err := conversationTestAdmin(t, a.service).ExecContext(t.Context(), `DELETE FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, a.scope.Organization, a.scope.Project, a.issue.WorkItemID); err == nil {
 		t.Fatal("rollback lost deletion protection")
 	}
 }
@@ -407,7 +408,7 @@ type terminalAttemptFixture struct {
 	lease   tracker.NativeLease
 	start   tracker.NativeRunEvent
 	path    string
-	scope   nativeScope
+	scope   hubscope.NativeScope
 	posted  int64
 	runtime func(string) *tracker.NativeRuntimeObservation
 }
@@ -427,7 +428,7 @@ func newTerminalAttemptFixture(t *testing.T, shared ...*terminalAttemptFixture) 
 
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	a := &terminalAttemptFixture{nativeFixture: f, clock: clock, issue: f.create(t, "terminal history"), worker: f.worker(t, "worker")}
-	a.scope = nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	a.scope = hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	a.path = f.base + "/work-items/" + string(a.issue.WorkItemID) + "/events"
 	a.lease = claimNativeAttempt(t, f, a.worker, "machine", "session", a.issue.WorkItemID)
 	a.runtime = func(phase string) *tracker.NativeRuntimeObservation {
@@ -492,9 +493,9 @@ func (a *terminalAttemptFixture) runEvents(t *testing.T) map[string]int {
 	after := int64(0)
 	for {
 		var page []eventstore.Event
-		if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			page, err = r.Events(t.Context(), a.scope.project, a.issue.WorkItemID, after, corestore.MaxPageSize)
+			page, err = r.Events(t.Context(), a.scope.Project, a.issue.WorkItemID, after, corestore.MaxPageSize)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -517,9 +518,9 @@ func (a *terminalAttemptFixture) canonicalEvents(t *testing.T) ([]eventstore.Eve
 	after := int64(0)
 	for {
 		var page []eventstore.Event
-		if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := a.service.config.TenantRepository.ReadTenant(t.Context(), a.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			page, err = r.HistoryEvents(t.Context(), a.scope.project, a.issue.WorkItemID, after, corestore.MaxPageSize)
+			page, err = r.HistoryEvents(t.Context(), a.scope.Project, a.issue.WorkItemID, after, corestore.MaxPageSize)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -533,7 +534,7 @@ func (a *terminalAttemptFixture) canonicalEvents(t *testing.T) ([]eventstore.Eve
 	payloads := map[string][]byte{}
 	for _, row := range rows {
 		ref := eventstore.Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes)
-		raw, err := a.service.runDetailStore().ReadDetail(t.Context(), string(a.scope.organization), ref)
+		raw, err := a.service.runDetailStore().ReadDetail(t.Context(), string(a.scope.Organization), ref)
 		if err != nil {
 			t.Fatal(err)
 		}

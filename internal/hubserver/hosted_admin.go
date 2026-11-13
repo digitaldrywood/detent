@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -44,7 +45,7 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 		if err != nil && status >= http.StatusInternalServerError {
 			return s.nativeAPIError(c, errors.Join(tenantauth.ErrUnavailable, err))
 		}
-		if err == nil && credential.HostedRole == "reporter" && !hostedReadRequest(c) {
+		if err == nil && credential.HostedRole == "reporter" && !hubscope.HostedReadRequest(c) {
 			return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 		}
 		if err != nil || credential.Hosted == nil || c.Param("organization") != s.config.Hosted.OrganizationID {
@@ -56,8 +57,8 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 				return s.nativeAPIError(c, hubapi.NativeNotFound())
 			}
 			if err := s.requireHostedUsageGrants(c.Request().Context(), credential); err != nil {
-				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-					return s.nativeAPIError(c, operatorAuthorizationError(err))
+				if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+					return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 				}
 				return s.nativeAPIError(c, hubapi.NativeNotFound())
 			}
@@ -73,13 +74,13 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 				}
 				return next(c)
 			}
-			runner, err := s.readRunnerRouting(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"))
+			runner, err := s.readRunnerRouting(c.Request().Context(), hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential}, c.Param("runner"))
 			if err != nil {
 				return s.nativeAPIError(c, err)
 			}
 			if err := s.requireHostedRunnerProjects(c.Request().Context(), credential, runnerManagementProjects(runner)); err != nil {
-				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-					return s.nativeAPIError(c, operatorAuthorizationError(err))
+				if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+					return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 				}
 				if c.Request().Method == http.MethodGet {
 					return s.nativeAPIError(c, hubapi.NativeNotFound())
@@ -89,8 +90,8 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 			credential.ManageRunners = true
 		case strings.HasPrefix(c.Path(), enrollmentBase) || strings.HasPrefix(c.Path(), runnerBase) || c.Path() == "/api/v2/organizations/:organization/machines/:machine/routing":
 			if err := s.requireHostedRunnerAdministration(c.Request().Context(), credential); err != nil {
-				if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
-					return s.nativeAPIError(c, operatorAuthorizationError(err))
+				if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+					return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 				}
 				return c.JSON(http.StatusNotFound, hubapi.APIErrorResponse{Code: "not_found", Message: err.Error()})
 			}
@@ -119,7 +120,7 @@ func (s *Service) requireHostedUsageGrants(ctx context.Context, credential hubap
 		return err
 	})
 	if err != nil {
-		return operatorAuthorizationError(err)
+		return hubscope.OperatorAuthorizationError(err)
 	}
 	if missing {
 		return operatortool.ErrAccessDenied
@@ -246,7 +247,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
 	credential, err := s.hostedAdministrator(c)
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
 	}
 	role := c.FormValue("role")
@@ -258,7 +259,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
 	if err := s.validateHostedInvitationGrants(readCtx, credential, email, nil); err != nil {
-		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
 		}
 		return s.hostedError(c, http.StatusForbidden, "You cannot replace this member's project access")
@@ -304,14 +305,14 @@ func (s *Service) hostedManagedMemberFor(ctx context.Context, credential hubapi.
 
 func (s *Service) revokeHostedMember(c echo.Context) error {
 	credential, err := s.hostedAdministrator(c)
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
 	}
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot remove organization members")
 	}
 	if err := s.removeHostedMemberFor(c.Request().Context(), credential, c.Param("member")); err != nil {
-		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
 		}
 		return s.hostedError(c, http.StatusForbidden, "This member could not be removed; the organization must retain an owner")
@@ -327,7 +328,7 @@ func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (r
 
 func (s *Service) changeHostedRole(c echo.Context) error {
 	credential, err := s.hostedAdministrator(c)
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
 	}
 	role := c.FormValue("role")
@@ -335,7 +336,7 @@ func (s *Service) changeHostedRole(c echo.Context) error {
 		return s.hostedError(c, http.StatusForbidden, "You cannot assign this organization role")
 	}
 	if _, err := s.changeHostedRoleFor(c.Request().Context(), credential, c.Param("member"), role); err != nil {
-		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
 		}
 		return s.hostedError(c, http.StatusForbidden, "This role could not be changed; the organization must retain an owner")
@@ -346,7 +347,7 @@ func (s *Service) changeHostedRole(c echo.Context) error {
 
 func (s *Service) changeHostedGrant(c echo.Context) error {
 	credential, err := s.hostedAdministrator(c)
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
 	}
 	if err != nil {
@@ -358,7 +359,7 @@ func (s *Service) changeHostedGrant(c echo.Context) error {
 	}
 	err = s.hostedGrant(c.Request().Context(), credential, user, project, hostedFormTrue(c, "write"), hostedFormTrue(c, "runner"), hostedFormTrue(c, "revoke"))
 	if err != nil {
-		if !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
 		}
 		return s.hostedError(c, http.StatusForbidden, "The project grant could not be changed")
@@ -373,7 +374,7 @@ func (s *Service) hostedGrant(ctx context.Context, credential hubapi.APICredenti
 
 func (s *Service) createHostedProject(c echo.Context) error {
 	credential, err := s.hostedAdministrator(c)
-	if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
 	}
 	if err != nil {
@@ -395,7 +396,7 @@ func (s *Service) createHostedProject(c echo.Context) error {
 		if errors.Is(err, mutation.ErrConflict) {
 			return s.hostedError(c, http.StatusConflict, "The project could not be created; check that its name is unique")
 		}
-		if errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) {
+		if errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 			return s.hostedError(c, http.StatusForbidden, "You cannot create projects")
 		}
 		return s.hostedError(c, http.StatusServiceUnavailable, "The project could not be created. Try again.")

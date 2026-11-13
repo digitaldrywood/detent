@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -21,7 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeScope, id string, revision tracker.Revision, key string) (json.RawMessage, error) {
+func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope hubscope.NativeScope, id string, revision tracker.Revision, key string) (json.RawMessage, error) {
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
@@ -60,7 +61,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 	if !integration.ManualImportEnabled || integration.Repository == "" {
 		return nil, hubapi.NativePublicInvalid("Manual intake is disabled")
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return s.database.requireHostedFeatureRecord(ctx, r, "github_integration", s.config.now())
 	}); err != nil {
 		return nil, err
@@ -82,13 +83,13 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 			return nil, hubapi.NativePublicInvalid("GitHub import page did not advance within its budget")
 		}
 		intakeScope := scope
-		intakeScope.integrationRepository = integration.Repository
-		intakeScope.githubIntakeRevision = &githubIntakeRevision{importID: current.ID, revision: int64(current.Revision)}
-		intakeScope.sourceActor = nativeIntegrationActor("github")
+		intakeScope.IntegrationRepository = integration.Repository
+		intakeScope.GitHubIntakeRevision = &hubscope.GitHubIntakeRevision{ImportID: current.ID, Revision: int64(current.Revision)}
+		intakeScope.SourceActor = nativeIntegrationActor("github")
 		historicalSource := project.Core.Profile == "github_compatible"
 		if !historicalSource && current.WorkItemID != "" {
-			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				_, err := r.LinkedSource(ctx, scope.project, tracker.NativeWorkItemID(current.WorkItemID))
+			err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				_, err := r.LinkedSource(ctx, scope.Project, tracker.NativeWorkItemID(current.WorkItemID))
 				return err
 			})
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -124,15 +125,15 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 			next.SourceUpdatedAt = hubapi.FormatHubTime(source.UpdatedAt)
 		} else if current.Stage == "comments" && len(page.Records) > 0 {
 			var linked eventstore.LinkedSource
-			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				linked, err = r.LinkedSource(ctx, scope.project, tracker.NativeWorkItemID(current.WorkItemID))
+				linked, err = r.LinkedSource(ctx, scope.Project, tracker.NativeWorkItemID(current.WorkItemID))
 				return err
 			})
 			if err != nil {
 				return nil, err
 			}
-			snapshot, err := eventstore.NewContent(s.runDetailStore()).LinkedIssueSnapshot(ctx, scope.organization, eventstore.Reference(linked.SnapshotObjectKey, linked.SnapshotSHA256, linked.SnapshotBytes, linked.SnapshotContentBytes))
+			snapshot, err := eventstore.NewContent(s.runDetailStore()).LinkedIssueSnapshot(ctx, scope.Organization, eventstore.Reference(linked.SnapshotObjectKey, linked.SnapshotSHA256, linked.SnapshotBytes, linked.SnapshotContentBytes))
 			if err != nil {
 				return nil, err
 			}
@@ -153,11 +154,11 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 			if err != nil {
 				return nil, err
 			}
-			ref, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
+			ref, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, raw)
 			if err != nil {
 				return nil, err
 			}
-			records = append(records, projectstore.GitHubImportRecord{OrganizationID: scope.organization, ProjectID: scope.project, ImportID: id, SourceKey: record.SourceKey, Kind: record.Kind, CurrentDependency: record.Kind == "dependency", DependencyID: record.DependencyID, ProvenanceExternalID: record.Provenance.ExternalID, Payload: ref})
+			records = append(records, projectstore.GitHubImportRecord{OrganizationID: scope.Organization, ProjectID: scope.Project, ImportID: id, SourceKey: record.SourceKey, Kind: record.Kind, CurrentDependency: record.Kind == "dependency", DependencyID: record.DependencyID, ProvenanceExternalID: record.Provenance.ExternalID, Payload: ref})
 		}
 		next.Pages++
 		next.Cursor = page.NextCursor
@@ -194,7 +195,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		if err := s.database.requireHostedFeatureRecord(ctx, w, "github_integration", s.config.now()); err != nil {
 			return err
 		}
-		latestProject, err := w.ProjectRecord(ctx, scope.project)
+		latestProject, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -205,7 +206,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 		if !ok {
 			return hubapi.ErrPostgresFeatureUnavailable
 		}
-		latest, err := owner.GitHubImport(ctx, scope.project, id)
+		latest, err := owner.GitHubImport(ctx, scope.Project, id)
 		if err != nil {
 			return err
 		}
@@ -230,7 +231,7 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 			if !ok {
 				return hubapi.ErrPostgresFeatureUnavailable
 			}
-			if err := owner.ResetCurrentGitHubImportDependencies(ctx, scope.project, id); err != nil {
+			if err := owner.ResetCurrentGitHubImportDependencies(ctx, scope.Project, id); err != nil {
 				return err
 			}
 		}
@@ -248,18 +249,18 @@ func (s *Service) advanceGitHubImportRecord(ctx context.Context, scope nativeSco
 	})
 }
 
-func (s *Service) fetchGitHubImportRecordPage(ctx context.Context, scope nativeScope, integration ProjectIntegration, job GitHubImport) (GitHubImportPage, error) {
+func (s *Service) fetchGitHubImportRecordPage(ctx context.Context, scope hubscope.NativeScope, integration ProjectIntegration, job GitHubImport) (GitHubImportPage, error) {
 	request := GitHubImportRequest{Repository: integration.Repository, Profile: integration.Profile, IssueNumber: job.IssueNumber, Stage: job.Stage, Cursor: job.Cursor}
 	var sequence int64
 	if job.Stage == "edits" {
 		var source projectstore.GitHubImportRecord
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			gitHubImportRecordReader, ok := r.(projectstore.GitHubImportRecordReader)
 			if !ok {
 				return hubapi.ErrPostgresFeatureUnavailable
 			}
-			source, err = gitHubImportRecordReader.GitHubImportEditSource(ctx, scope.project, job.ID, job.EditSequence)
+			source, err = gitHubImportRecordReader.GitHubImportEditSource(ctx, scope.Project, job.ID, job.EditSequence)
 			return err
 		})
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -290,24 +291,24 @@ type historicalGitHubImportPlan struct {
 	search     searchstore.Document
 }
 
-func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope nativeScope, project projectstore.Record, job GitHubImport, page GitHubImportPage) (historicalGitHubImportPlan, error) {
+func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope hubscope.NativeScope, project projectstore.Record, job GitHubImport, page GitHubImportPage) (historicalGitHubImportPlan, error) {
 	var plan historicalGitHubImportPlan
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		if job.WorkItemID != "" {
-			plan.item, err = r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(job.WorkItemID))
+			plan.item, err = r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(job.WorkItemID))
 		} else if page.Issue != nil {
-			plan.item, err = r.WorkItemByProvenance(ctx, scope.project, "github", page.Issue.NodeID)
+			plan.item, err = r.WorkItemByProvenance(ctx, scope.Project, "github", page.Issue.NodeID)
 		} else {
 			return corestore.ErrNotFound
 		}
 		if errors.Is(err, corestore.ErrNotFound) && job.Stage == "issue" && project.Core.Profile == "github_compatible" {
-			number, err := r.NextWorkItemNumber(ctx, scope.project)
+			number, err := r.NextWorkItemNumber(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
 			plan.create = true
-			plan.item = corestore.WorkItem{OrganizationID: scope.organization, ProjectID: scope.project, NativeID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: number}
+			plan.item = corestore.WorkItem{OrganizationID: scope.Organization, ProjectID: scope.Project, NativeID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: number}
 			return nil
 		}
 		return err
@@ -344,7 +345,7 @@ func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope nativ
 			return plan, err
 		}
 		if plan.create {
-			plan.issue = tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.item.NativeID, Number: int(plan.item.Number), Profile: "github_compatible"}, CreatedAt: source.CreatedAt, Actor: *nativeIntegrationActor("github"), Dependencies: []tracker.NativeWorkItemID{}, Blockers: []tracker.NativeDependency{}, Dependents: []tracker.NativeDependency{}, DependencyReady: true}
+			plan.issue = tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.item.NativeID, Number: int(plan.item.Number), Profile: "github_compatible"}, CreatedAt: source.CreatedAt, Actor: *nativeIntegrationActor("github"), Dependencies: []tracker.NativeWorkItemID{}, Blockers: []tracker.NativeDependency{}, Dependents: []tracker.NativeDependency{}, DependencyReady: true}
 			if plan.issue.CreatedAt.IsZero() {
 				plan.issue.CreatedAt = now
 			}
@@ -368,7 +369,7 @@ func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope nativ
 			plan.issue.ClosedAt = &closed
 		}
 		plan.writeIssue = true
-		plan.fields, err = s.prepareWorkItemFields(ctx, scope.organization, workItemRecordPlan{issue: plan.issue})
+		plan.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, workItemRecordPlan{issue: plan.issue})
 		if err != nil {
 			return plan, err
 		}
@@ -376,19 +377,19 @@ func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope nativ
 		if err != nil {
 			return plan, err
 		}
-		plan.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.item.NativeID, RecordID: string(plan.item.NativeID), Revision: int64(plan.issue.Revision)}, raw)
+		plan.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.item.NativeID, RecordID: string(plan.item.NativeID), Revision: int64(plan.issue.Revision)}, raw)
 		if err != nil {
 			return plan, err
 		}
-		raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: plan.item.NativeID, ID: hubapi.NewID("evt"), Type: "github.imported", SchemaVersion: 1, Actor: *nativeIntegrationActor("github"), RecordedAt: source.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision}})
+		raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.item.NativeID, ID: hubapi.NewID("evt"), Type: "github.imported", SchemaVersion: 1, Actor: *nativeIntegrationActor("github"), RecordedAt: source.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision}})
 		if err != nil {
 			return plan, err
 		}
-		plan.event, err = content.PrepareEvent(ctx, scope.organization, raw)
+		plan.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
 		if err != nil {
 			return plan, err
 		}
-		plan.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.item.NativeID, ID: "issue:" + string(plan.item.NativeID), SourceID: string(plan.item.NativeID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+		plan.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.item.NativeID, ID: "issue:" + string(plan.item.NativeID), SourceID: string(plan.item.NativeID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
 		if err != nil {
 			return plan, err
 		}
@@ -410,8 +411,8 @@ func (s *Service) prepareHistoricalGitHubImport(ctx context.Context, scope nativ
 			continue
 		}
 		seen[key] = true
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			_, err := r.CommentBySource(ctx, scope.project, plan.item.NativeID, key)
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := r.CommentBySource(ctx, scope.Project, plan.item.NativeID, key)
 			return err
 		})
 		if err == nil {

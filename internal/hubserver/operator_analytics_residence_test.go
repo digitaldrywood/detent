@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -175,8 +176,8 @@ func TestNativeAnalyticsResidencePopulation(t *testing.T) {
 			issue := seedAnalyticsResidenceIssue(t, f, "population", "Todo", base, false)
 			if kind == "archived live filter" {
 				gated := seedAnalyticsResidenceIssue(t, f, "gated", "Human Review", base, false)
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-					row, err := w.WorkItem(t.Context(), scope.project, issue)
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+					row, err := w.WorkItem(t.Context(), scope.Project, issue)
 					if err != nil {
 						return err
 					}
@@ -249,7 +250,7 @@ func TestNativeAnalyticsResidencePopulation(t *testing.T) {
 	}
 }
 
-func analyticsResidenceTestScope(t *testing.T, f nativeFixture) nativeScope {
+func analyticsResidenceTestScope(t *testing.T, f nativeFixture) hubscope.NativeScope {
 	t.Helper()
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		project, err := w.ProjectRecord(t.Context(), f.project.ID)
@@ -269,7 +270,7 @@ func analyticsResidenceTestScope(t *testing.T, f nativeFixture) nativeScope {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("analytics authority status=%d error=%v", status, err)
 	}
-	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	return hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 }
 
 func seedAnalyticsResidenceIssue(t *testing.T, f nativeFixture, id, state string, at time.Time, unrecorded bool) tracker.NativeWorkItemID {
@@ -340,7 +341,7 @@ func historyTestJSON(t *testing.T, value any) []byte {
 	return raw
 }
 
-func readAnalyticsResidenceTestReport(t *testing.T, ctx context.Context, f nativeFixture, details *memoryRunDetails, scope nativeScope, request operatortool.AnalyticsRequest, window operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
+func readAnalyticsResidenceTestReport(t *testing.T, ctx context.Context, f nativeFixture, details *memoryRunDetails, scope hubscope.NativeScope, request operatortool.AnalyticsRequest, window operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
 	t.Helper()
 	previous := details.beforeRead
 	details.beforeRead = func(context.Context) error {
@@ -354,7 +355,7 @@ func readAnalyticsResidenceTestReport(t *testing.T, ctx context.Context, f nativ
 	if err != nil {
 		return nativeAnalyticsProject{}, err
 	}
-	out := nativeAnalyticsProject{ProjectID: string(scope.project), Window: window, Unavailable: []string{}}
+	out := nativeAnalyticsProject{ProjectID: string(scope.Project), Window: window, Unavailable: []string{}}
 	for from := window.From; from.Before(window.To); from = from.Add(window.Bucket) {
 		out.Digest = append(out.Digest, nativeAnalyticsBucket{From: from, To: hubapi.MinTime(from.Add(window.Bucket), window.To)})
 	}

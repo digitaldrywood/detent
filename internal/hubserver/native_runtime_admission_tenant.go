@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -33,7 +34,7 @@ type runtimeAdmissionPage struct {
 	observations map[string]tracker.NativeAdmissionObservation
 }
 
-func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeScope, issue tracker.NativeIssue, evidence *tracker.NativeRuntimeEvidence, supplied []tracker.NativeAdmissionContext) error {
+func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, evidence *tracker.NativeRuntimeEvidence, supplied []tracker.NativeAdmissionContext) error {
 	now := s.config.now().UTC()
 	var records []runnerstore.RuntimeCapacityRunner
 	var capacity runnerstore.RuntimeCapacitySnapshot
@@ -51,7 +52,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 	if !ok {
 		return hubapi.NativeRunEventStorageUnavailable()
 	}
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -64,7 +65,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		revision, err = r.ProjectPolicy(ctx, scope.project)
+		revision, err = r.ProjectPolicy(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -72,7 +73,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		if shared != nil && shared.capacity != nil {
 			capacity = *shared.capacity
 		} else {
-			capacity, err = fleet.RuntimeCapacitySnapshot(ctx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.project, RunnerID: scope.credential.Runner.RunnerID, At: now, Explanation: explanationRead(ctx)})
+			capacity, err = fleet.RuntimeCapacitySnapshot(ctx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, RunnerID: scope.Credential.Runner.RunnerID, At: now, Explanation: explanationRead(ctx)})
 			if err != nil {
 				return err
 			}
@@ -83,7 +84,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		}
 		records, truncated = capacity.Records, capacity.Truncated
 		if evidence.CurrentLease == nil {
-			item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+			item, err := r.WorkItem(ctx, scope.Project, issue.WorkItemID)
 			if err != nil {
 				return err
 			}
@@ -106,7 +107,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		if shared != nil && shared.observations != nil {
 			observations = shared.observations
 		} else {
-			observations, err = admission.RunnerAdmissionObservations(ctx, scope.project, ids)
+			observations, err = admission.RunnerAdmissionObservations(ctx, scope.Project, ids)
 			if err != nil {
 				return err
 			}
@@ -114,13 +115,13 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 				shared.observations = observations
 			}
 		}
-		project, err := r.ProjectRecord(ctx, scope.project)
+		project, err := r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		plan.project = project
 		if issue.IssueContract != nil && issue.IssueContract.ReleaseDelivery != nil {
-			item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+			item, err := r.WorkItem(ctx, scope.Project, issue.WorkItemID)
 			if err != nil {
 				return err
 			}
@@ -138,7 +139,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 				states = append(states, state.Name)
 			}
 		}
-		candidates, err = r.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: scope.project, Scope: string(scope.project), WorkItemID: issue.WorkItemID, States: states, AvailableAt: now, Limit: 1})
+		candidates, err = r.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: scope.Project, Scope: string(scope.Project), WorkItemID: issue.WorkItemID, States: states, AvailableAt: now, Limit: 1})
 		if err != nil {
 			return err
 		}
@@ -147,7 +148,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 			if !ok {
 				return hubapi.NativeRunEventStorageUnavailable()
 			}
-			rows, err := batch.ClaimPreviewPlanRows(ctx, scope.project, candidates.Items[:1])
+			rows, err := batch.ClaimPreviewPlanRows(ctx, scope.Project, candidates.Items[:1])
 			if err != nil {
 				return err
 			}
@@ -160,18 +161,18 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 			answeredPlan = nativeClaimPlanFromBatch(nativeClaimPlan{project: project}, candidates.Items[0], rows[0])
 		}
 		if project.Core.Profile == "github_compatible" {
-			item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+			item, err := r.WorkItem(ctx, scope.Project, issue.WorkItemID)
 			if err != nil {
 				return err
 			}
 			if item.Revision != int64(issue.Revision) {
 				return corestore.ErrRevisionConflict
 			}
-			facts, err := r.WorkItemFacts(ctx, scope.project, item.NativeID)
+			facts, err := r.WorkItemFacts(ctx, scope.Project, item.NativeID)
 			if err != nil {
 				return err
 			}
-			sourceCandidate = claimstore.Candidate{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item.NativeID, Revision: item.Revision, Repository: facts.Repository}
+			sourceCandidate = claimstore.Candidate{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.NativeID, Revision: item.Revision, Repository: facts.Repository}
 		}
 		if len(candidates.Items) == 0 && project.Core.RequireDependencies {
 			unresolved, dependencyPartial, err = s.readRuntimeUnresolvedDependencies(ctx, r, scope, issue, project)
@@ -189,7 +190,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 	if err != nil {
 		return err
 	}
-	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), descriptor)
+	workflow, err := projectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), descriptor)
 	if err != nil {
 		return err
 	}
@@ -235,7 +236,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 	if evidence.CurrentLease == nil && nonExecutable != "" {
 		evidence.Scheduling.Outcome, evidence.Scheduling.Reason = "skipped", nonExecutable
 	}
-	landingReady, landingLimit := runtimeLandingCapacity(capacity.Providers, scope.project)
+	landingReady, landingLimit := runtimeLandingCapacity(capacity.Providers, scope.Project)
 	if !explanationRead(ctx) && capacity.Truncated {
 		landingReady, landingLimit = false, nativeLandingCapacityUnknown
 	}
@@ -248,8 +249,8 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 	runners := runtimeRunnersFromSnapshot(capacity, scope, now)
 	for index, record := range records {
 		runner := runners[index]
-		view := tracker.NativeRuntimeCapacity{ProviderCapacity: runner.ProviderCapacity, RunnerID: runner.RunnerID, ObservedAt: runner.LastHeartbeatAt, Health: runner.Health, Available: max(0, min(runner.HostCapacity-runner.HostUsed, runner.RemainingCapacity(scope.project))), Exclusions: []string{}}
-		for _, exclusion := range runner.Exclusions(scope.project, descriptor.Requirements, false) {
+		view := tracker.NativeRuntimeCapacity{ProviderCapacity: runner.ProviderCapacity, RunnerID: runner.RunnerID, ObservedAt: runner.LastHeartbeatAt, Health: runner.Health, Available: max(0, min(runner.HostCapacity-runner.HostUsed, runner.RemainingCapacity(scope.Project))), Exclusions: []string{}}
+		for _, exclusion := range runner.Exclusions(scope.Project, descriptor.Requirements, false) {
 			view.Exclusions = append(view.Exclusions, exclusion.Code)
 		}
 		if landingRequired && !landingReady {
@@ -263,7 +264,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 		entry := tracker.NativeRuntimeAdmission{RunnerID: runner.RunnerID, RunnerRevision: runner.Revision, PolicyID: descriptor.ID, Source: "native_claim_candidate_snapshot", ObservedAt: now, Outcome: "unknown", Reason: "Current runner selectors are unavailable", Unavailable: []string{}}
 		observation, found := observations[runner.RunnerID]
 		selected := observation.Context
-		if len(supplied) == 1 && scope.credential.Runner.RunnerID == runner.RunnerID {
+		if len(supplied) == 1 && scope.Credential.Runner.RunnerID == runner.RunnerID {
 			selected, found = supplied[0], true
 			entry.SelectorSource = "registered_runner_published_context"
 		} else {
@@ -271,7 +272,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope nativeSc
 			entry.SelectorSource = "registered_runner_heartbeat"
 		}
 		found = found && selected.Validate() == nil && !now.Before(selected.ObservedAt) && now.Before(selected.ObservedAt.Add(runnerauth.HeartbeatTimeout))
-		exclusions := runner.Exclusions(scope.project, descriptor.Requirements, false)
+		exclusions := runner.Exclusions(scope.Project, descriptor.Requirements, false)
 		var versionRefusal *hubapi.NativeError
 		if err := runnerVersionError(minimumRunnerVersion(s.config.Version), record.MachineVersion); err != nil && !errors.As(err, &versionRefusal) {
 			return err
@@ -397,19 +398,19 @@ func nativeRuntimeIssueContractEvaluation(plan nativeClaimPlan) (nativeContractE
 	return nativeContractEvaluation{ReasonCode: "issue_contract_unsatisfied", Reason: strings.Join(reasons, "; "), Missing: evaluation.Missing}, nil
 }
 
-func (s *Service) readRuntimeUnresolvedDependencies(ctx context.Context, r tenantstore.Reader, scope nativeScope, issue tracker.NativeIssue, project projectstore.Record) ([]tracker.NativeDependency, bool, error) {
+func (s *Service) readRuntimeUnresolvedDependencies(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, issue tracker.NativeIssue, project projectstore.Record) ([]tracker.NativeDependency, bool, error) {
 	const limit = 100
-	anchor, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+	anchor, err := r.WorkItem(ctx, scope.Project, issue.WorkItemID)
 	if err != nil {
 		return nil, false, err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(anchor.ActorPrincipalID)}) {
+	if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(anchor.ActorPrincipalID)}) {
 		return nil, false, corestore.ErrNotFound
 	}
 	if anchor.Revision != int64(issue.Revision) {
 		return nil, false, corestore.ErrRevisionConflict
 	}
-	rows, err := r.WorkItemBlockers(ctx, scope.project, issue.WorkItemID, corestore.WorkItemBlockerCursor{}, limit)
+	rows, err := r.WorkItemBlockers(ctx, scope.Project, issue.WorkItemID, corestore.WorkItemBlockerCursor{}, limit)
 	if err != nil {
 		return nil, false, err
 	}
@@ -417,7 +418,7 @@ func (s *Service) readRuntimeUnresolvedDependencies(ctx context.Context, r tenan
 		record  projectstore.Record
 		visible bool
 	}
-	projects := map[tracker.ProjectID]targetProject{scope.project: {record: project, visible: true}}
+	projects := map[tracker.ProjectID]targetProject{scope.Project: {record: project, visible: true}}
 	var unresolved []tracker.NativeDependency
 	organizationSlug := ""
 	if s.config.Hosted != nil && len(rows) > 0 {
@@ -431,7 +432,7 @@ func (s *Service) readRuntimeUnresolvedDependencies(ctx context.Context, r tenan
 		target, found := projects[edge.ProjectID]
 		if !found {
 			targetScope := scope
-			targetScope.project = edge.ProjectID
+			targetScope.Project = edge.ProjectID
 			err := s.authorizeAccessScope(ctx, r, targetScope, false)
 			if err != nil && !errors.Is(err, accessstore.ErrDenied) && !errors.Is(err, auth.ErrHostedIdentity) && !errors.Is(err, operatortool.ErrAccessDenied) && !hubapi.IsNativeNotFound(err) && !errors.Is(err, corestore.ErrNotFound) {
 				return nil, false, err
@@ -455,7 +456,7 @@ func (s *Service) readRuntimeUnresolvedDependencies(ctx context.Context, r tenan
 		if item.NativeID != edge.WorkItemID {
 			return nil, false, corestore.ErrRevisionConflict
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 			continue
 		}
 		stateName := hubapi.StringValue(item.WorkflowStateName)

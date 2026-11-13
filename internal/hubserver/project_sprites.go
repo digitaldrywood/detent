@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -26,7 +27,7 @@ import (
 // checkProjectSprites is the internal use path: unseal for one fixed provider
 // call, audit before the call, and clear the byte buffer on every exit. No API
 // or coordinator tool exposes a plaintext reader or an arbitrary callback.
-func (s *Service) checkProjectSprites(ctx context.Context, scope nativeScope) (string, error) {
+func (s *Service) checkProjectSprites(ctx context.Context, scope hubscope.NativeScope) (string, error) {
 	scope, _, envelope, err := s.resolveSpritesSecret(ctx, nil, scope)
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, corestore.ErrNotFound) {
 		return "", err
@@ -37,7 +38,7 @@ func (s *Service) checkProjectSprites(ctx context.Context, scope nativeScope) (s
 	if err := s.auditSecretUse(ctx, scope, envelope.Version); err != nil {
 		return "", err
 	}
-	token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(scope.organization), string(scope.project), flySpritesToken))
+	token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(scope.Organization), string(scope.Project), flySpritesToken))
 	if err != nil {
 		return "", err
 	}
@@ -59,7 +60,7 @@ type spriteLifecyclePass struct {
 	pendingState string
 }
 
-func (s *Service) scheduleSpriteWake(ctx context.Context, scope nativeScope, result json.RawMessage) {
+func (s *Service) scheduleSpriteWake(ctx context.Context, scope hubscope.NativeScope, result json.RawMessage) {
 	if s.config.SecretKeys == nil {
 		return
 	}
@@ -76,12 +77,12 @@ func (s *Service) scheduleSpriteWake(ctx context.Context, scope nativeScope, res
 	s.scheduleSpriteLifecycle(ctx, scope, issue.State)
 }
 
-func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope, state string) {
+func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope hubscope.NativeScope, state string) {
 	if s.config.SecretKeys == nil {
 		return
 	}
 	if state != "" {
-		allowed, err := monthlySpriteAllowed(ctx, nil, nativeScope{organization: scope.organization}, s.config.now(), s.database.billingRepository)
+		allowed, err := monthlySpriteAllowed(ctx, nil, hubscope.NativeScope{Organization: scope.Organization}, s.config.now(), s.database.billingRepository)
 		if err != nil {
 			s.config.Logger.Warn("Check Sprite lifecycle monthly budget", "error", err)
 			return
@@ -90,7 +91,7 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 			return
 		}
 	}
-	key := spriteWakeKey{organization: scope.organization}
+	key := spriteWakeKey{organization: scope.Organization}
 	s.spriteWakeMu.Lock()
 	defer s.spriteWakeMu.Unlock()
 	if ctx.Err() != nil {
@@ -128,7 +129,7 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 			}
 		}
 		if err := s.scaleSpritePool(wakeContext, scope, state != ""); err != nil && wakeContext.Err() == nil {
-			s.config.Logger.Warn("Sprite pool lifecycle failed", "organization", scope.organization, "project", scope.project, "error", err)
+			s.config.Logger.Warn("Sprite pool lifecycle failed", "organization", scope.Organization, "project", scope.Project, "error", err)
 		}
 	}()
 }
@@ -140,10 +141,10 @@ func (s *Service) stopSpriteRunners() {
 	s.spriteWakeWork.Wait()
 }
 
-func (s *Service) spriteWakeDispatchable(ctx context.Context, scope nativeScope, state string) (bool, error) {
+func (s *Service) spriteWakeDispatchable(ctx context.Context, scope hubscope.NativeScope, state string) (bool, error) {
 	dispatchable := false
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
-		project, err := r.ProjectRecord(ctx, scope.project)
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
+		project, err := r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -161,11 +162,11 @@ type spriteWakeCandidate struct {
 	runnerID    string
 	machineID   tracker.MachineID
 	name        string
-	secretScope nativeScope
+	secretScope hubscope.NativeScope
 	envelope    hubsecrets.Envelope
 }
 
-func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, state string) (int, error) {
+func (s *Service) wakeSpriteRunners(ctx context.Context, scope hubscope.NativeScope, state string) (int, error) {
 	if s.config.SecretKeys == nil {
 		return 0, nil
 	}
@@ -199,7 +200,7 @@ func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, stat
 	}
 }
 
-func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope nativeScope, state string, last *string) (spriteWakeCandidate, bool, error) {
+func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope hubscope.NativeScope, state string, last *string) (spriteWakeCandidate, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	dispatchable, err := s.spriteWakeDispatchable(ctx, scope, state)
@@ -209,7 +210,7 @@ func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope nativeScope
 	now := s.config.now()
 	configured := false
 	var runners []placementRunner
-	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err = s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.SpriteReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
@@ -245,14 +246,14 @@ func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope nativeScope
 		if runner.Hostname <= *last || !runner.Sprite || runner.State != "active" || runner.Health == "revoked" || runner.Health == "expired" || runner.Pending || !runner.LastHeartbeatAt.Before(now.Add(-spriteRunnerIdle)) {
 			continue
 		}
-		if runner.Scope != "organization" && !slices.Contains(runner.ProjectIDs, scope.project) {
+		if runner.Scope != "organization" && !slices.Contains(runner.ProjectIDs, scope.Project) {
 			continue
 		}
 		*last = runner.Hostname
 		if configured {
 			compatible := false
 			for _, r := range placement.Runners {
-				if r.RunnerID != runner.RunnerID || !r.Sprite || r.Pending || !placementRunnerCompatible(r, scope.project, placement.Requirements, now, true) {
+				if r.RunnerID != runner.RunnerID || !r.Sprite || r.Pending || !placementRunnerCompatible(r, scope.Project, placement.Requirements, now, true) {
 					continue
 				}
 				for id, requirement := range placement.Items {
@@ -281,10 +282,10 @@ func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope nativeScope
 	return spriteWakeCandidate{}, false, nil
 }
 
-func (s *Service) spriteWakeSecret(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope, name string) (nativeScope, hubsecrets.Envelope, error) {
+func (s *Service) spriteWakeSecret(ctx context.Context, _ hubapi.NativeQueryer, scope hubscope.NativeScope, name string) (hubscope.NativeScope, hubsecrets.Envelope, error) {
 	var provider string
 	managed := false
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.SpriteReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
@@ -300,23 +301,23 @@ func (s *Service) spriteWakeSecret(ctx context.Context, _ hubapi.NativeQueryer, 
 			return nil
 		}
 		managed = true
-		scope.project, provider = tracker.ProjectID(member.TokenProjectID), member.ProviderOrganization
+		scope.Project, provider = tracker.ProjectID(member.TokenProjectID), member.ProviderOrganization
 		return nil
 	})
 	if err != nil {
-		return nativeScope{}, hubsecrets.Envelope{}, err
+		return hubscope.NativeScope{}, hubsecrets.Envelope{}, err
 	}
 	secretScope, slug, envelope, err := s.resolveSpritesSecret(ctx, nil, scope)
 	if err != nil {
-		return nativeScope{}, hubsecrets.Envelope{}, err
+		return hubscope.NativeScope{}, hubsecrets.Envelope{}, err
 	}
 	if managed && slug != provider {
-		return nativeScope{}, hubsecrets.Envelope{}, corestore.ErrNotFound
+		return hubscope.NativeScope{}, hubsecrets.Envelope{}, corestore.ErrNotFound
 	}
 	return secretScope, envelope, nil
 }
 
-func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretScope nativeScope, client *http.Client, name string, envelope hubsecrets.Envelope) (bool, error) {
+func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretScope hubscope.NativeScope, client *http.Client, name string, envelope hubsecrets.Envelope) (bool, error) {
 	allowed, err := monthlySpriteAllowed(ctx, nil, scope, s.config.now(), s.database.billingRepository)
 	if err != nil || !allowed {
 		return false, err
@@ -324,7 +325,7 @@ func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretS
 	if err := s.auditSecretUse(ctx, secretScope, envelope.Version); err != nil {
 		return false, err
 	}
-	token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(secretScope.organization), string(secretScope.project), flySpritesToken))
+	token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(secretScope.Organization), string(secretScope.Project), flySpritesToken))
 	if err != nil {
 		return false, err
 	}
@@ -344,14 +345,14 @@ func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretS
 	return readErr == nil && response.StatusCode >= 200 && response.StatusCode <= 299, nil
 }
 
-func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope nativeScope) (int, error) {
+func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope hubscope.NativeScope) (int, error) {
 	type target struct {
 		project tracker.ProjectID
 		state   string
 		rank    int64
 	}
 	var targets []target
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		after := tracker.ProjectID("")
 		for {
 			page, err := r.Projects(ctx, after, corestore.MaxPageSize)
@@ -407,7 +408,7 @@ func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope nativ
 	})
 	total := 0
 	for _, target := range targets {
-		scope.project = target.project
+		scope.Project = target.project
 		count, err := s.wakeSpriteRunners(ctx, scope, target.state)
 		if err != nil {
 			return total, err
@@ -417,7 +418,7 @@ func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope nativ
 	return total, nil
 }
 
-func (s *Service) recordSpriteWakeFacts(ctx context.Context, scope nativeScope, candidate spriteWakeCandidate, failedAt string, started bool) error {
+func (s *Service) recordSpriteWakeFacts(ctx context.Context, scope hubscope.NativeScope, candidate spriteWakeCandidate, failedAt string, started bool) error {
 	now := s.config.now()
 	update := leasestore.SpriteWake{MachineID: string(candidate.machineID), RunnerID: candidate.runnerID, Name: candidate.name, ObservedAt: now}
 	if failedAt != "" {
@@ -430,7 +431,7 @@ func (s *Service) recordSpriteWakeFacts(ctx context.Context, scope nativeScope, 
 	if started {
 		update.WokenAt = &now
 	}
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.UpdateMachineSpriteWake(ctx, update) })
+	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { return w.UpdateMachineSpriteWake(ctx, update) })
 }
 
 func spriteFactsForMachine(machine leasestore.Machine) machineSpriteFacts {

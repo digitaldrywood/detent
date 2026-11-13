@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -45,17 +46,17 @@ type localBoardImportMutation struct {
 	identities []postgres.DoctorProposalIdentity
 }
 
-func localBoardMapping(ctx context.Context, r tenantstore.Reader, scope nativeScope, key string) (postgres.LocalImportMapping, error) {
+func localBoardMapping(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, key string) (postgres.LocalImportMapping, error) {
 	reader, ok := r.(interface {
 		LocalImportMapping(context.Context, postgres.LocalImportMappingInput) (postgres.LocalImportMapping, error)
 	})
 	if !ok {
 		return postgres.LocalImportMapping{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	return reader.LocalImportMapping(ctx, postgres.LocalImportMappingInput{OrganizationID: scope.organization, ProjectID: scope.project, SourceKey: key})
+	return reader.LocalImportMapping(ctx, postgres.LocalImportMappingInput{OrganizationID: scope.Organization, ProjectID: scope.Project, SourceKey: key})
 }
 
-func (s *Service) planLocalBoardRecord(ctx context.Context, scope nativeScope, request localboard.Request) (localBoardImportPlan, error) {
+func (s *Service) planLocalBoardRecord(ctx context.Context, scope hubscope.NativeScope, request localboard.Request) (localBoardImportPlan, error) {
 	record := request.Record
 	plan := localBoardImportPlan{result: localboard.Result{SourceID: record.SourceID, SourceState: record.State, Action: "created", Comments: len(record.Comments), Dependencies: len(record.Dependencies)}}
 	raw, err := json.Marshal(record)
@@ -65,12 +66,12 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope nativeScope, r
 	digest := sha256.Sum256(raw)
 	plan.digest = hex.EncodeToString(digest[:])
 	var version eventstore.CollaborationVersion
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeWorkItemRecordScope(ctx, r, scope); err != nil {
 			return err
 		}
 		var err error
-		plan.project, err = r.ProjectRecord(ctx, scope.project)
+		plan.project, err = r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -89,7 +90,7 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope nativeScope, r
 			if mapping.SourceKind != record.Kind || mapping.SourceDigest != plan.digest {
 				return hubapi.NativePublicInvalid("Local board source changed after import")
 			}
-			plan.current, err = r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(mapping.WorkItemID))
+			plan.current, err = r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(mapping.WorkItemID))
 			if err != nil {
 				return err
 			}
@@ -105,13 +106,13 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope nativeScope, r
 			}
 			url := "https://github.com/" + strings.ToLower(record.Repository) + "/issues/" + strconv.Itoa(record.Number)
 			ids := []tracker.NativeWorkItemID{}
-			source, err := r.LinkedSourceByURL(ctx, scope.project, url)
+			source, err := r.LinkedSourceByURL(ctx, scope.Project, url)
 			if err == nil {
 				ids = append(ids, source.WorkItemID)
 			} else if !errors.Is(err, corestore.ErrNotFound) {
 				return err
 			}
-			item, err := r.WorkItemBySource(ctx, scope.project, "github:"+url)
+			item, err := r.WorkItemBySource(ctx, scope.Project, "github:"+url)
 			if err == nil {
 				ids = append(ids, item.NativeID)
 			} else if !errors.Is(err, corestore.ErrNotFound) {
@@ -122,7 +123,7 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope nativeScope, r
 			if len(ids) != 1 {
 				return hubapi.NativePublicInvalid("GitHub local item requires exactly one existing onboarding intake match")
 			}
-			plan.current, err = r.WorkItem(ctx, scope.project, ids[0])
+			plan.current, err = r.WorkItem(ctx, scope.Project, ids[0])
 			if err != nil {
 				return err
 			}
@@ -132,7 +133,7 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope nativeScope, r
 			}
 			plan.result.Action, plan.result.WorkItemID = "updated", plan.current.NativeID
 		} else {
-			plan.current, err = r.WorkItemBySource(ctx, scope.project, record.Kind+":"+record.Key)
+			plan.current, err = r.WorkItemBySource(ctx, scope.Project, record.Kind+":"+record.Key)
 			if err == nil {
 				version, err = r.CollaborationVersion(ctx, string(plan.current.NativeID), plan.current.Revision)
 				if err != nil {
@@ -140,7 +141,7 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope nativeScope, r
 				}
 				plan.result.Action, plan.result.WorkItemID = "updated", plan.current.NativeID
 			} else if errors.Is(err, corestore.ErrNotFound) {
-				number, err := r.NextWorkItemNumber(ctx, scope.project)
+				number, err := r.NextWorkItemNumber(ctx, scope.Project)
 				if err != nil {
 					return err
 				}
@@ -153,7 +154,7 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope nativeScope, r
 			missing := make([]localboard.Comment, 0, len(record.Comments))
 			for _, comment := range record.Comments {
 				key := record.Kind + ":" + localboard.SourceKey(record.Key, "comment", record.Kind, comment.ID)
-				_, err := r.CommentBySource(ctx, scope.project, plan.current.NativeID, key)
+				_, err := r.CommentBySource(ctx, scope.Project, plan.current.NativeID, key)
 				if errors.Is(err, corestore.ErrNotFound) {
 					missing = append(missing, comment)
 				} else if err != nil {
@@ -166,7 +167,7 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope nativeScope, r
 		for _, key := range record.Dependencies {
 			mapping, err := localBoardMapping(ctx, r, scope, key)
 			if errors.Is(err, corestore.ErrNotFound) && request.DryRun {
-				plan.dependencies = append(plan.dependencies, corestore.WorkItem{OrganizationID: scope.organization, ProjectID: scope.project, NativeID: tracker.NativeWorkItemID("dry_" + key)})
+				plan.dependencies = append(plan.dependencies, corestore.WorkItem{OrganizationID: scope.Organization, ProjectID: scope.Project, NativeID: tracker.NativeWorkItemID("dry_" + key)})
 				continue
 			}
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -175,7 +176,7 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope nativeScope, r
 			if err != nil {
 				return err
 			}
-			item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(mapping.WorkItemID))
+			item, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(mapping.WorkItemID))
 			if err != nil {
 				return err
 			}
@@ -210,7 +211,7 @@ func (s *Service) planLocalBoardRecord(ctx context.Context, scope nativeScope, r
 	return s.planLocalBoardMutations(ctx, scope, record, plan)
 }
 
-func (s *Service) planLocalBoardMutations(ctx context.Context, scope nativeScope, record localboard.Record, plan localBoardImportPlan) (localBoardImportPlan, error) {
+func (s *Service) planLocalBoardMutations(ctx context.Context, scope hubscope.NativeScope, record localboard.Record, plan localBoardImportPlan) (localBoardImportPlan, error) {
 	now := s.config.now().UTC().Truncate(time.Microsecond)
 	provenance := &tracker.Provenance{Provider: record.Kind, ExternalID: record.Key, AuthorID: record.Author, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, ObservedAt: now}
 	current := plan.current
@@ -268,7 +269,7 @@ func (s *Service) planLocalBoardMutations(ctx context.Context, scope nativeScope
 			continue
 		}
 		issue.Dependencies = slices.Clone(issue.Dependencies)
-		relationship := &corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: current.NativeID, RelatedProjectID: scope.project, RelatedWorkItemID: related.NativeID, Type: "dependency"}
+		relationship := &corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: current.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: related.NativeID, Type: "dependency"}
 		p := workItemRecordPlan{project: plan.project, current: current, issue: issue, related: related, relationship: relationship, relationshipType: "dependency", relationshipOperate: "add"}
 		p, err := s.planWorkItemRecord(ctx, scope, p, tracker.DependencyMutation{ExpectedRevision: issue.Revision, RelatedWorkItemID: related.NativeID, Operation: "add"})
 		if err != nil {
@@ -282,7 +283,7 @@ func (s *Service) planLocalBoardMutations(ctx context.Context, scope nativeScope
 	return plan, nil
 }
 
-func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope nativeScope, m localBoardImportMutation, dry bool) (localBoardImportMutation, error) {
+func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope hubscope.NativeScope, m localBoardImportMutation, dry bool) (localBoardImportMutation, error) {
 	p := m.plan
 	id, item, revision, at := string(p.issue.WorkItemID), p.issue.WorkItemID, int64(p.issue.Revision), p.issue.UpdatedAt
 	text := searchstore.Text{Title: p.issue.Title, Body: p.issue.Body, Labels: p.issue.Labels}
@@ -296,7 +297,7 @@ func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope nativeSco
 	if err != nil {
 		return m, err
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, ID: hubapi.NewID("evt"), Type: p.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: at, Data: m.data})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item, ID: hubapi.NewID("evt"), Type: p.eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: at, Data: m.data})
 	if err != nil {
 		return m, err
 	}
@@ -304,7 +305,7 @@ func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope nativeSco
 	if err != nil {
 		return m, err
 	}
-	actorRaw, err := json.Marshal(scope.actor())
+	actorRaw, err := json.Marshal(scope.Actor())
 	if err != nil {
 		return m, err
 	}
@@ -328,25 +329,25 @@ func (s *Service) prepareLocalBoardMutation(ctx context.Context, scope nativeSco
 	if p.comment.ID == "" {
 		m.identities = postgres.DeriveDoctorProposalIdentities(p.issue.Body)
 	}
-	m.fields, err = s.prepareWorkItemFields(ctx, scope.organization, p)
+	m.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, p)
 	if err != nil {
 		return m, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	m.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, RecordID: id, Revision: revision}, raw)
+	m.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, RecordID: id, Revision: revision}, raw)
 	if err != nil {
 		return m, err
 	}
-	m.event, err = content.PrepareEvent(ctx, scope.organization, eventRaw)
+	m.event, err = content.PrepareEvent(ctx, scope.Organization, eventRaw)
 	if err != nil {
 		return m, err
 	}
-	m.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
+	m.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
 	return m, err
 }
 
-func (s *Service) importLocalBoardRecord(ctx context.Context, scope nativeScope, request localboard.Request) (localboard.Result, error) {
-	scope.importedContent = true
+func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.NativeScope, request localboard.Request) (localboard.Result, error) {
+	scope.ImportedContent = true
 	if s.config.TenantRepository == nil {
 		return localboard.Result{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -368,7 +369,7 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope nativeScope,
 			}
 		}
 		if request.DryRun {
-			err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return s.localBoardAllowances(ctx, scope, r, nil, plan) })
+			err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { return s.localBoardAllowances(ctx, scope, r, nil, plan) })
 			return plan.result, hubapi.ProjectRecordError(err)
 		}
 		repository, ok := s.config.TenantRepository.(interface {
@@ -381,7 +382,7 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope nativeScope,
 		if err != nil {
 			return plan.result, err
 		}
-		err = repository.WriteLocalBoardImport(ctx, scope.organization, func(w tenantstore.Writer) error {
+		err = repository.WriteLocalBoardImport(ctx, scope.Organization, func(w tenantstore.Writer) error {
 			if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
 				return err
 			}
@@ -400,10 +401,10 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope nativeScope,
 					return err
 				}
 			}
-			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
-			project, err := w.ProjectRecord(ctx, scope.project)
+			project, err := w.ProjectRecord(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -419,7 +420,7 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope nativeScope,
 			}
 			slices.SortFunc(endpoints, func(a, b corestore.WorkItem) int { return strings.Compare(string(a.NativeID), string(b.NativeID)) })
 			for _, endpoint := range slices.CompactFunc(endpoints, func(a, b corestore.WorkItem) bool { return a.NativeID == b.NativeID }) {
-				current, err := w.LockWorkItem(ctx, scope.project, endpoint.NativeID)
+				current, err := w.LockWorkItem(ctx, scope.Project, endpoint.NativeID)
 				if err != nil {
 					return err
 				}
@@ -433,7 +434,7 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope nativeScope,
 			for _, m := range plan.mutations {
 				p := m.plan
 				if p.current.NativeID != "" {
-					current, err := w.LockWorkItem(ctx, scope.project, p.current.NativeID)
+					current, err := w.LockWorkItem(ctx, scope.Project, p.current.NativeID)
 					if err != nil {
 						return err
 					}
@@ -467,7 +468,7 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope nativeScope,
 					if !ok {
 						return hubapi.NativeWorkItemStorageUnavailable()
 					}
-					if err := binder.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: m.version.WorkItemID, Revision: m.version.Revision, VersionSHA256: m.version.PayloadSHA256, Identities: m.identities}); err != nil {
+					if err := binder.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: m.version.WorkItemID, Revision: m.version.Revision, VersionSHA256: m.version.PayloadSHA256, Identities: m.identities}); err != nil {
 						return err
 					}
 				}
@@ -481,10 +482,10 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope nativeScope,
 			if !ok {
 				return hubapi.NativeWorkItemStorageUnavailable()
 			}
-			if _, err := writer.PutLocalImportMapping(ctx, postgres.PutLocalImportMappingInput{OrganizationID: scope.organization, ProjectID: scope.project, SourceKey: request.Record.Key, SourceKind: request.Record.Kind, SourceDigest: plan.digest, WorkItemID: string(plan.result.WorkItemID), ImportedAt: s.config.now()}); err != nil {
+			if _, err := writer.PutLocalImportMapping(ctx, postgres.PutLocalImportMappingInput{OrganizationID: scope.Organization, ProjectID: scope.Project, SourceKey: request.Record.Key, SourceKind: request.Record.Kind, SourceDigest: plan.digest, WorkItemID: string(plan.result.WorkItemID), ImportedAt: s.config.now()}); err != nil {
 				return err
 			}
-			return s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), 200)
+			return s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), 200)
 		})
 		err = errors.Join(err, releaseWorkItemAuthority(authority))
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
@@ -500,7 +501,7 @@ func (s *Service) importLocalBoardRecord(ctx context.Context, scope nativeScope,
 	}
 }
 
-func (s *Service) localBoardAllowances(ctx context.Context, scope nativeScope, r tenantstore.Reader, w tenantstore.Writer, plan localBoardImportPlan) error {
+func (s *Service) localBoardAllowances(ctx context.Context, scope hubscope.NativeScope, r tenantstore.Reader, w tenantstore.Writer, plan localBoardImportPlan) error {
 	if s.database.plans() == nil {
 		return nil
 	}
@@ -557,7 +558,7 @@ func (s *Service) localBoardAllowances(ctx context.Context, scope nativeScope, r
 			return &hostedLimitError{Resource: value.metric, Allowance: limit, Consumption: used}
 		}
 		if w != nil {
-			result, err := w.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: scope.organization, ID: "local_import/" + string(scope.project) + "/" + plan.digest + "/" + value.metric, WindowStart: window, Metric: value.metric, Amount: value.amount}, limit)
+			result, err := w.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: scope.Organization, ID: "local_import/" + string(scope.Project) + "/" + plan.digest + "/" + value.metric, WindowStart: window, Metric: value.metric, Amount: value.amount}, limit)
 			if err != nil {
 				return err
 			}

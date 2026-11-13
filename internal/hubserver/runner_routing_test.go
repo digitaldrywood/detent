@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -434,7 +435,7 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 			var readErr error
 			go func() {
 				defer close(done)
-				result, readErr = f.service.readRunnerRouting(ctx, nativeScope{organization: f.project.OrganizationID, credential: credential}, r.binding.RunnerID)
+				result, readErr = f.service.readRunnerRouting(ctx, hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: credential}, r.binding.RunnerID)
 			}()
 			defer func() { releaseRead(); <-done }()
 			select {
@@ -501,7 +502,7 @@ func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture, 
 	if err != nil {
 		t.Fatalf("admission reader status=%d error=%v", status, err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	full, err := f.service.readRunnerRouting(t.Context(), scope, r.binding.RunnerID)
 	if err != nil {
 		t.Fatal(err)
@@ -510,9 +511,9 @@ func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture, 
 	var snapshot runnerstore.RuntimeCapacitySnapshot
 	var identity runnerstore.Identity
 	var backend isolation.Report
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
-		snapshot, err = reader.(runnerstore.RuntimeCapacityReader).RuntimeCapacitySnapshot(t.Context(), runnerstore.RuntimeCapacityQuery{ProjectID: scope.project, RunnerID: r.binding.RunnerID, At: now})
+		snapshot, err = reader.(runnerstore.RuntimeCapacityReader).RuntimeCapacitySnapshot(t.Context(), runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, RunnerID: r.binding.RunnerID, At: now})
 		if err != nil {
 			return err
 		}
@@ -561,14 +562,14 @@ func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture, 
 		t.Fatalf("admission facts differ from full runner read: full=%+v admission=%+v", comparable, admission)
 	}
 	if len(joining) > 0 && joining[0] != "" {
-		batch, found := strings.CutPrefix(joining[0], string(r.binding.MachineID)+"/"+string(scope.project)+"/")
+		batch, found := strings.CutPrefix(joining[0], string(r.binding.MachineID)+"/"+string(scope.Project)+"/")
 		if !found || batch == "" {
 			t.Fatalf("invalid joining group %s", joining[0])
 		}
 		var usage claimstore.CapacityUsage
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			var err error
-			usage, err = reader.ClaimCapacityUsage(t.Context(), string(r.binding.MachineID), r.binding.RunnerID, scope.project, batch, now)
+			usage, err = reader.ClaimCapacityUsage(t.Context(), string(r.binding.MachineID), r.binding.RunnerID, scope.Project, batch, now)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -582,14 +583,14 @@ func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture, 
 			remaining.Leases = append(remaining.Leases, lease)
 		}
 		joined := runtimeRunnersFromSnapshot(remaining, scope, now)[0]
-		if int64(joined.HostUsed) != usage.Host || int64(joined.Used) != usage.Runner || int64(joined.ProjectUsed[scope.project]) != usage.Project {
+		if int64(joined.HostUsed) != usage.Host || int64(joined.Used) != usage.Runner || int64(joined.ProjectUsed[scope.Project]) != usage.Project {
 			t.Fatalf("joining capacity differs from retained lease snapshot: expected=%+v usage=%+v", joined, usage)
 		}
 		admission.HostUsed, admission.Used = int(usage.Host), int(usage.Runner)
 		if admission.ProjectUsed == nil {
 			admission.ProjectUsed = map[tracker.ProjectID]int{}
 		}
-		admission.ProjectUsed[scope.project] = int(usage.Project)
+		admission.ProjectUsed[scope.Project] = int(usage.Project)
 	}
 	return admission
 }
@@ -1026,7 +1027,7 @@ func TestRunnerClaimRevalidatesStaleAuthentication(t *testing.T) {
 			if err != nil {
 				t.Fatalf("held authentication status=%d error=%v", status, err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: heldCredential}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: heldCredential}
 			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), test.statement, r.binding.RunnerID); err != nil {
 				t.Fatal(err)
 			}

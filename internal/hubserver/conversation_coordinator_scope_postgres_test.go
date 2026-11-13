@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -65,7 +66,7 @@ func TestConversationCoordinatorRejectsRecordOutsideScope(t *testing.T) {
 		}
 	}
 	for _, organization := range organizations {
-		scope := nativeScope{organization: organization, project: "project_first", credential: hubapi.APICredential{ID: "owner", Hash: string(organization), Scope: hubapi.APIScopeOperator}}
+		scope := hubscope.NativeScope{Organization: organization, Project: "project_first", Credential: hubapi.APICredential{ID: "owner", Hash: string(organization), Scope: hubapi.APIScopeOperator}}
 		for _, page := range []struct {
 			args coordinatorRunnerArguments
 			ids  []string
@@ -90,7 +91,7 @@ func TestConversationCoordinatorRejectsRecordOutsideScope(t *testing.T) {
 		if _, err := service.coordinatorRunner(t.Context(), scope, "runner_foreign"); err == nil {
 			t.Fatal("runner from another project was visible")
 		}
-		record := conversationRecord{OrganizationID: organization, ProjectID: scope.project, Visibility: conversation.VisibilityShared}
+		record := conversationRecord{OrganizationID: organization, ProjectID: scope.Project, Visibility: conversation.VisibilityShared}
 		for _, write := range []bool{false, true} {
 			if err := coordinator.authorizeRecord(t.Context(), scope, record, write); err != nil {
 				t.Fatalf("same scope %s write=%t: %v", organization, write, err)

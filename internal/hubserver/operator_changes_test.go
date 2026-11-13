@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -51,7 +52,7 @@ func changeOperatorContext(t *testing.T, s *Service, token, organization string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	connection := operatortool.Connection{ID: "test-connection", Client: "test-client", Identity: operatorIdentity(credential, organization), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+	connection := operatortool.Connection{ID: "test-connection", Client: "test-client", Identity: hubscope.OperatorIdentity(credential, organization), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 		current, _, err := s.authenticateTenantAPIHash(ctx, tracker.OrganizationID(organization), apikey.HashToken(token), "", "")
 		if err != nil {
 			return operatortool.Authority{}, err
@@ -66,7 +67,7 @@ func changeToolCall(name string, args operatortool.ChangeArguments) operatortool
 }
 
 func TestOperatorChangeWithoutPostgresCannotUseLegacyStorage(t *testing.T) {
-	app := hubChangeApplication{service: &Service{}, scope: nativeScope{credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}}
+	app := hubChangeApplication{service: &Service{}, scope: hubscope.NativeScope{Credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}}
 	args := operatortool.ChangeArguments{ProjectID: "example-project", ItemID: "wi_example", RequestID: "example-command"}
 	for _, name := range []string{operatortool.ListChanges, operatortool.GetChange, operatortool.GetChangeReviewPolicy, operatortool.ArtifactReferences} {
 		t.Run(name, func(t *testing.T) {
@@ -491,7 +492,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 					t.Fatal("landing receipt lost identity or explicit output excerpt")
 				}
 				var storedRow eventstore.LandingReceipt
-				err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 					var err error
 					storedRow, err = r.LandingReceipt(t.Context(), nativeAttempt)
 					return err
@@ -595,7 +596,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		}
 	})
 	foreignScope := scope
-	foreignScope.project = "prj_foreign"
+	foreignScope.Project = "prj_foreign"
 	foreignAudit, err := f.service.readValidationAuditTenant(t.Context(), foreignScope, "", "", "", "")
 	if err != nil || len(foreignAudit.Occurrences) != 0 {
 		t.Fatalf("foreign evidence=%+v %v", foreignAudit, err)
@@ -679,7 +680,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 	if json.Unmarshal(created.Content, &createdResult) != nil || createdResult.ChangeID == "" || !strings.HasSuffix(createdResult.URL, "/changes/"+createdResult.ChangeID) {
 		t.Fatalf("unusable creation result: %s", created.Content)
 	}
-	changes, err := f.service.readChanges(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(linked.WorkItemID))
+	changes, err := f.service.readChanges(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, string(linked.WorkItemID))
 	if err != nil || len(changes) != 1 || changes[0].ID != createdResult.ChangeID {
 		t.Fatalf("lost linked Change: %+v %v", changes, err)
 	}
@@ -1478,8 +1479,8 @@ func TestOperatorArchivedChangeReads(t *testing.T) {
 func operatorChangeRevokeGrant(t *testing.T, f nativeFixture) {
 	t.Helper()
 	scope := analyticsTestScope(t, f)
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.DeleteAccessTokenGrant(t.Context(), scope.credential.ID, scope.project)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteAccessTokenGrant(t.Context(), scope.Credential.ID, scope.Project)
 	}); err != nil {
 		t.Fatal(err)
 	}

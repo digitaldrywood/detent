@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -85,7 +86,7 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 						t.Fatal(err)
 					}
 					connection := operatortool.CurrentConnection(ctx)
-					connection.Identity = operatorIdentity(credential, "org_security")
+					connection.Identity = hubscope.OperatorIdentity(credential, "org_security")
 					connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
 						current, _, err := f.service.authenticateAPIToken(ctx, key.Token, "", "")
 						if err != nil {

@@ -12,12 +12,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope hubscope.NativeScope, reference string) (tracker.NativeIssue, error) {
 	if strings.Contains(reference, "/") {
 		id, err := s.readableReference(ctx, scope, reference)
 		if err != nil {
@@ -30,7 +31,7 @@ func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope nativ
 	if !nativeID {
 		value := reference
 		if prefix, suffix, found := strings.Cut(reference, "#"); found {
-			if prefix != "" && prefix != string(scope.project) {
+			if prefix != "" && prefix != string(scope.Project) {
 				return tracker.NativeIssue{}, explain.ErrNotFound
 			}
 			value = suffix
@@ -43,11 +44,11 @@ func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope nativ
 	}
 	var row corestore.WorkItem
 	var version eventstore.CollaborationVersion
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -55,15 +56,15 @@ func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope nativ
 			return corestore.ErrNotFound
 		}
 		if nativeID {
-			row, err = r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(reference))
-			if errors.Is(err, corestore.ErrNotFound) && scope.credential.HostedRole != "reporter" {
+			row, err = r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(reference))
+			if errors.Is(err, corestore.ErrNotFound) && scope.Credential.HostedRole != "reporter" {
 				other, lookupErr := r.WorkItemByNativeID(ctx, tracker.NativeWorkItemID(reference))
 				if lookupErr != nil {
 					return lookupErr
 				}
-				if other.ProjectID != scope.project {
+				if other.ProjectID != scope.Project {
 					otherScope := scope
-					otherScope.project = other.ProjectID
+					otherScope.Project = other.ProjectID
 					authErr := s.authorizeAccessScope(ctx, r, otherScope, false)
 					if errors.Is(authErr, accessstore.ErrDenied) || errors.Is(authErr, auth.ErrHostedIdentity) || errors.Is(authErr, corestore.ErrNotFound) || hubapi.IsNativeNotFound(authErr) {
 						return operatortool.ErrProjectScopeRequired
@@ -75,12 +76,12 @@ func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope nativ
 				return corestore.ErrNotFound
 			}
 		} else {
-			row, err = r.WorkItemByNumber(ctx, scope.project, number)
+			row, err = r.WorkItemByNumber(ctx, scope.Project, number)
 		}
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		version, err = r.CollaborationVersion(ctx, string(row.NativeID), row.Revision)
@@ -94,8 +95,8 @@ func (s *Service) resolveOperatorRecordReadItem(ctx context.Context, scope nativ
 		err = s.hydrateWorkItemRelationshipFacts(ctx, scope, &item)
 	}
 	if err == nil {
-		err = s.hydrateWorkItemActorNames(ctx, scope.organization, []*tracker.NativeIssue{&item})
+		err = s.hydrateWorkItemActorNames(ctx, scope.Organization, []*tracker.NativeIssue{&item})
 	}
 	item.OmittedFields = append(item.OmittedFields, "change_sequence")
-	return scope.reporterIssue(item), err
+	return scope.ReporterIssue(item), err
 }

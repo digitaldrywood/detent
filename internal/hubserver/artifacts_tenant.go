@@ -11,22 +11,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) artifactReadGrantTenant(ctx context.Context, scope nativeScope, item, artifactID string, revision int64, now time.Time) (result artifact.Grant, err error) {
+func (s *Service) artifactReadGrantTenant(ctx context.Context, scope hubscope.NativeScope, item, artifactID string, revision int64, now time.Time) (result artifact.Grant, err error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	if scope.credential.Hosted != nil {
-		session, err := s.WebSession(ctx, scope.credential.SessionHash, now)
+	if scope.Credential.Hosted != nil {
+		session, err := s.WebSession(ctx, scope.Credential.SessionHash, now)
 		if err != nil {
 			return result, err
 		}
 		if s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && (session.Identity == nil || session.Identity.SupportActor == "") {
 			return result, auth.ErrHostedIdentity
 		}
-		if _, _, err := s.hostedMutationIdentity(ctx, scope.credential); err != nil {
+		if _, _, err := s.hostedMutationIdentity(ctx, scope.Credential); err != nil {
 			return result, err
 		}
 	}
@@ -34,25 +35,25 @@ func (s *Service) artifactReadGrantTenant(ctx context.Context, scope nativeScope
 	if err != nil {
 		return result, err
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, false); err != nil {
 			return err
 		}
-		if _, err := w.AccessTokenGrant(ctx, scope.credential.ID, scope.project); err != nil {
+		if _, err := w.AccessTokenGrant(ctx, scope.Credential.ID, scope.Project); err != nil {
 			return err
 		}
-		workItem, err := w.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		workItem, err := w.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
 		}
-		ref, err := w.ArtifactReference(ctx, scope.project, tracker.NativeWorkItemID(item), artifactID, revision)
+		ref, err := w.ArtifactReference(ctx, scope.Project, tracker.NativeWorkItemID(item), artifactID, revision)
 		if err != nil {
 			return err
 		}
-		binding, err := w.ArtifactService(ctx, scope.project, ref.ServiceID)
+		binding, err := w.ArtifactService(ctx, scope.Project, ref.ServiceID)
 		if err != nil {
 			return err
 		}
@@ -60,22 +61,22 @@ func (s *Service) artifactReadGrantTenant(ctx context.Context, scope nativeScope
 			return artifact.ErrMissing
 		}
 		expires := hubapi.MinTime(now.Add(time.Minute), ref.ExpiresAt)
-		if scope.credential.Hosted != nil {
-			expires = hubapi.MinTime(expires, scope.credential.Hosted.ExpiresAt)
+		if scope.Credential.Hosted != nil {
+			expires = hubapi.MinTime(expires, scope.Credential.Hosted.ExpiresAt)
 		}
 		if !now.Before(expires) {
 			return artifact.ErrExpired
 		}
 		result = artifact.Grant{Token: token, Origin: binding.Origin, ArtifactID: ref.ArtifactID, Revision: ref.Revision, SHA256: ref.SHA256, ExpiresAt: expires}
-		return w.CreateArtifactReadGrant(ctx, artifactstore.ReadGrant{ProjectID: scope.project, TokenHash: apikey.HashToken(token), PrincipalID: scope.credential.ID, ServiceID: ref.ServiceID, ArtifactID: ref.ArtifactID, Revision: ref.Revision, ExpiresAt: expires, SessionHash: scope.credential.SessionHash}, now)
+		return w.CreateArtifactReadGrant(ctx, artifactstore.ReadGrant{ProjectID: scope.Project, TokenHash: apikey.HashToken(token), PrincipalID: scope.Credential.ID, ServiceID: ref.ServiceID, ArtifactID: ref.ArtifactID, Revision: ref.Revision, ExpiresAt: expires, SessionHash: scope.Credential.SessionHash}, now)
 	})
 	return result, hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) readArtifactGrantTenant(ctx context.Context, scope nativeScope, service string, request artifact.ReadAuthorization) (grant artifactstore.ReadGrant, owner tracker.Actor, err error) {
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+func (s *Service) readArtifactGrantTenant(ctx context.Context, scope hubscope.NativeScope, service string, request artifact.ReadAuthorization) (grant artifactstore.ReadGrant, owner tracker.Actor, err error) {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		grant, err = r.ArtifactReadGrant(ctx, scope.project, apikey.HashToken(request.Token))
+		grant, err = r.ArtifactReadGrant(ctx, scope.Project, apikey.HashToken(request.Token))
 		if err != nil {
 			return err
 		}
@@ -89,17 +90,17 @@ func (s *Service) readArtifactGrantTenant(ctx context.Context, scope nativeScope
 		if !credential.Valid(credential.Hash, s.config.now()) {
 			return corestore.ErrNotFound
 		}
-		if _, err := r.AccessTokenGrant(ctx, grant.PrincipalID, scope.project); err != nil {
+		if _, err := r.AccessTokenGrant(ctx, grant.PrincipalID, scope.Project); err != nil {
 			return err
 		}
-		item, err := r.WorkItem(ctx, scope.project, grant.WorkItemID)
+		item, err := r.WorkItem(ctx, scope.Project, grant.WorkItemID)
 		owner.PrincipalID = hubapi.StringValue(item.ActorPrincipalID)
 		return err
 	})
 	return grant, owner, err
 }
 
-func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativeScope, reservation artifact.Reservation) error {
+func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope hubscope.NativeScope, reservation artifact.Reservation) error {
 	if s.config.TenantRepository == nil {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -110,8 +111,8 @@ func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativ
 	if err != nil {
 		return hubapi.ProjectRecordError(err)
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		binding, err := w.ArtifactService(ctx, scope.project, reservation.ServiceID)
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		binding, err := w.ArtifactService(ctx, scope.Project, reservation.ServiceID)
 		if err != nil {
 			return err
 		}
@@ -121,7 +122,7 @@ func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativ
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		item, err := w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(reservation.WorkItemID))
+		item, err := w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(reservation.WorkItemID))
 		if err != nil {
 			return err
 		}
@@ -146,24 +147,24 @@ func (s *Service) authorizeArtifactUploadTenant(ctx context.Context, scope nativ
 	return hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) publishArtifactReceiptTenant(ctx context.Context, scope nativeScope, reference artifact.Reference) error {
+func (s *Service) publishArtifactReceiptTenant(ctx context.Context, scope hubscope.NativeScope, reference artifact.Reference) error {
 	if s.config.TenantRepository == nil {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		binding, err := w.ArtifactService(ctx, scope.project, reference.ServiceID)
+		binding, err := w.ArtifactService(ctx, scope.Project, reference.ServiceID)
 		if err != nil {
 			return err
 		}
-		if binding.PublisherTokenID != scope.credential.ID {
+		if binding.PublisherTokenID != scope.Credential.ID {
 			return hubapi.NativeNotFound()
 		}
-		item, err := w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(reference.WorkItemID))
+		item, err := w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(reference.WorkItemID))
 		if err != nil {
 			return err
 		}
@@ -175,7 +176,7 @@ func (s *Service) publishArtifactReceiptTenant(ctx context.Context, scope native
 			return hubapi.NativeNotFound()
 		}
 		if reference.VersionID != "" {
-			matches, err := w.ArtifactVersionAttemptMatches(ctx, scope.project, reference.VersionID, reference.AttemptID)
+			matches, err := w.ArtifactVersionAttemptMatches(ctx, scope.Project, reference.VersionID, reference.AttemptID)
 			if err != nil {
 				return err
 			}
@@ -183,7 +184,7 @@ func (s *Service) publishArtifactReceiptTenant(ctx context.Context, scope native
 				return hubapi.NativeNotFound()
 			}
 		}
-		_, readErr := w.ArtifactReference(ctx, scope.project, tracker.NativeWorkItemID(reference.WorkItemID), reference.ArtifactID, reference.Revision)
+		_, readErr := w.ArtifactReference(ctx, scope.Project, tracker.NativeWorkItemID(reference.WorkItemID), reference.ArtifactID, reference.Revision)
 		if readErr != nil && !errors.Is(readErr, corestore.ErrNotFound) {
 			return readErr
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -90,7 +91,7 @@ func (s *Service) coordinatorSettingsTarget(ctx context.Context, record conversa
 	if err != nil {
 		return coordinatorSettingsRefusal(name)
 	}
-	r, err := s.coordinatorRunner(ctx, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, target.RunnerID)
+	r, err := s.coordinatorRunner(ctx, hubscope.NativeScope{Organization: record.OrganizationID, Project: record.ProjectID, Credential: credential}, target.RunnerID)
 	if err != nil || !r.AllowsProject(record.ProjectID) {
 		return coordinatorSettingsRefusal(name)
 	}
@@ -206,7 +207,7 @@ func (s *Service) executeCoordinatorSettingsAction(ctx context.Context, action c
 		if operatortool.DecodeArguments(args.Change, &change) != nil {
 			return result, operatortool.ErrInvalidArguments
 		}
-		view, readErr := s.readRunnerCapacity(ctx, nativeScope{organization: record.OrganizationID, credential: credential}, args.RunnerID, change.Backend)
+		view, readErr := s.readRunnerCapacity(ctx, hubscope.NativeScope{Organization: record.OrganizationID, Credential: credential}, args.RunnerID, change.Backend)
 		if readErr != nil {
 			result.Message = "Capacity change accepted; current application evidence is unavailable. Read get_runner_capacity again."
 			return result, nil

@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -66,7 +67,7 @@ func TestProgressLeaseValidationDoesNotDeadlockClaim(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		writer := &progressLeaseOrderWriter{issue: make(chan struct{}, 1), lease: make(chan struct{}, 1), issueWait: make(chan struct{})}
 		writer.lease <- struct{}{}
-		owner := nativeProgressOwner{service: &Service{config: Config{now: time.Now}}, scope: nativeScope{credential: hubapi.APICredential{Scope: hubapi.APIScopeWorker}}}
+		owner := nativeProgressOwner{service: &Service{config: Config{now: time.Now}}, scope: hubscope.NativeScope{Credential: hubapi.APICredential{Scope: hubapi.APIScopeWorker}}}
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
@@ -123,8 +124,8 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 		return issue
 	}
 	admin := conversationTestAdmin(t, f.service)
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		project, err := w.ProjectRecord(t.Context(), scope.project)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), scope.Project)
 		if err != nil {
 			return err
 		}
@@ -167,15 +168,15 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 	}
 	appendHistory := func(t *testing.T, issue tracker.NativeIssue, eventType string) {
 		t.Helper()
-		raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID, AggregateType: "issue", Type: eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: f.service.config.now()})
+		raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: issue.WorkItemID, AggregateType: "issue", Type: eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: f.service.config.now()})
 		if err != nil {
 			t.Fatal(err)
 		}
-		event, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), scope.organization, raw)
+		event, err := eventstore.NewContent(f.service.runDetailStore()).PrepareEvent(t.Context(), scope.Organization, raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -250,7 +251,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 				`SELECT count(*) FROM native_commands WHERE organization_id=$1 AND actor_id='native-progress' AND operation='native progress/'||$2||'/'||$3`,
 			} {
 				var count int
-				if err := admin.QueryRowContext(t.Context(), query, scope.organization, scope.project, issue.WorkItemID).Scan(&count); err != nil {
+				if err := admin.QueryRowContext(t.Context(), query, scope.Organization, scope.Project, issue.WorkItemID).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				if count != 0 {
@@ -259,7 +260,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			}
 			if outcome == progresscheck.SystemDefect {
 				var count int
-				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2 AND title=$3`, scope.organization, scope.project, decision.DefectTitle).Scan(&count); err != nil {
+				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2 AND title=$3`, scope.Organization, scope.Project, decision.DefectTitle).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				if count != 0 {
@@ -282,7 +283,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 				t.Fatalf("read = %+v, found %v, %v", read, found, err)
 			}
 			var comments int
-			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, scope.organization, scope.project, issue.WorkItemID).Scan(&comments); err != nil {
+			if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`, scope.Organization, scope.Project, issue.WorkItemID).Scan(&comments); err != nil {
 				t.Fatal(err)
 			}
 			if comments != 1 {
@@ -360,7 +361,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 					}
 				}
 				var defects int
-				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2 AND title=$3`, scope.organization, scope.project, decision.DefectTitle).Scan(&defects); err != nil {
+				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM issues WHERE organization_id=$1 AND project_id=$2 AND title=$3`, scope.Organization, scope.Project, decision.DefectTitle).Scan(&defects); err != nil {
 					t.Fatal(err)
 				}
 				if defects != 1 {
@@ -694,7 +695,7 @@ func TestPostgresProgressLocksGraphBeforeScopedEndpoints(t *testing.T) {
 		if rollbackErr != nil {
 			t.Fatal(rollbackErr)
 		}
-		owner := nativeProgressOwner{scope: nativeScope{organization: organization, project: "prj_first"}}
+		owner := nativeProgressOwner{scope: hubscope.NativeScope{Organization: organization, Project: "prj_first"}}
 		tasks.Add(1)
 		go func() {
 			defer tasks.Done()

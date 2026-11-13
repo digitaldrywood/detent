@@ -34,6 +34,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -515,7 +516,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				scope := nativeScope{organization: org, project: "project_scale", credential: credential}
+				scope := hubscope.NativeScope{Organization: org, Project: "project_scale", Credential: credential}
 				for sample := range 6 {
 					statements, begins := 0, 0
 					timing := &requestTiming{Start: time.Now(), Trace: func(query string, _ []driver.NamedValue) {

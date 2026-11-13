@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -58,7 +59,7 @@ func (s *Service) hydrateLinkedIssueSourceRecord(ctx context.Context, organizati
 	return *result, nil
 }
 
-func requireLinkedIssueLease(ctx context.Context, r tenantstore.Reader, scope nativeScope, item corestore.WorkItem, mutation tracker.Mutation, now time.Time) error {
+func requireLinkedIssueLease(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item corestore.WorkItem, mutation tracker.Mutation, now time.Time) error {
 	if mutation.LeaseID == "" || mutation.FencingToken <= 0 {
 		return tracker.ErrStaleFencingToken
 	}
@@ -69,17 +70,17 @@ func requireLinkedIssueLease(ctx context.Context, r tenantstore.Reader, scope na
 	if lease.IssueID != item.ID || lease.FencingToken != int64(mutation.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
 		return tracker.ErrStaleFencingToken
 	}
-	if scope.credential.Runner.RunnerID == "" || string(scope.credential.Runner.MachineID) != lease.MachineID {
+	if scope.Credential.Runner.RunnerID == "" || string(scope.Credential.Runner.MachineID) != lease.MachineID {
 		return hubapi.NativeNotFound()
 	}
 	identity, err := r.RunnerForLease(ctx, string(mutation.LeaseID))
 	if err != nil {
 		return err
 	}
-	if identity.RunnerID != scope.credential.Runner.RunnerID || identity.TokenID != scope.credential.ID {
+	if identity.RunnerID != scope.Credential.Runner.RunnerID || identity.TokenID != scope.Credential.ID {
 		return hubapi.NativeNotFound()
 	}
-	allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+	allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, now)
 	if err != nil {
 		return err
 	}
@@ -97,8 +98,8 @@ type linkedIssueCommentPlan struct {
 	bytes   int64
 }
 
-func (s *Service) prepareLinkedIssueCreation(ctx context.Context, scope nativeScope, plan workItemRecordPlan) (workItemRecordPlan, error) {
-	if !plan.create || plan.existing || plan.linkedSource == nil || s.config.ImportBackend == nil || scope.integrationRepository != "" {
+func (s *Service) prepareLinkedIssueCreation(ctx context.Context, scope hubscope.NativeScope, plan workItemRecordPlan) (workItemRecordPlan, error) {
+	if !plan.create || plan.existing || plan.linkedSource == nil || s.config.ImportBackend == nil || scope.IntegrationRepository != "" {
 		return plan, nil
 	}
 	snapshot, err := s.fetchLinkedSnapshot(ctx, scope, plan.linkedSource.URL)
@@ -128,7 +129,7 @@ func (s *Service) prepareLinkedIssueCreation(ctx context.Context, scope nativeSc
 		plan.linkedComments = append(plan.linkedComments, comment)
 	}
 	snapshot.Comments = nil
-	reference, err := eventstore.NewContent(s.runDetailStore()).PrepareLinkedIssueSnapshot(ctx, scope.organization, *snapshot)
+	reference, err := eventstore.NewContent(s.runDetailStore()).PrepareLinkedIssueSnapshot(ctx, scope.Organization, *snapshot)
 	if err != nil {
 		return plan, err
 	}
@@ -158,11 +159,11 @@ func validateLinkedIssueSnapshot(snapshot tracker.GitHubIssueSnapshot) error {
 	return nil
 }
 
-func (s *Service) prepareLinkedIssueComment(ctx context.Context, scope nativeScope, itemID tracker.NativeWorkItemID, imported tracker.GitHubIssueComment, sequence int64, now time.Time) (linkedIssueCommentPlan, error) {
+func (s *Service) prepareLinkedIssueComment(ctx context.Context, scope hubscope.NativeScope, itemID tracker.NativeWorkItemID, imported tracker.GitHubIssueComment, sequence int64, now time.Time) (linkedIssueCommentPlan, error) {
 	content := eventstore.NewContent(s.runDetailStore())
 	key := imported.Provenance.Provider + ":" + imported.Provenance.ExternalID
 	commentID := payloadNativeID(ctx, "cmt")
-	comment := tracker.NativeComment{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: itemID, ID: commentID, Revision: 1, Body: imported.Body, Actor: *nativeIntegrationActor("github"), Provenance: &imported.Provenance, CreatedAt: imported.Provenance.CreatedAt, UpdatedAt: imported.Provenance.UpdatedAt}
+	comment := tracker.NativeComment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemID, ID: commentID, Revision: 1, Body: imported.Body, Actor: *nativeIntegrationActor("github"), Provenance: &imported.Provenance, CreatedAt: imported.Provenance.CreatedAt, UpdatedAt: imported.Provenance.UpdatedAt}
 	if comment.CreatedAt.IsZero() {
 		comment.CreatedAt = now
 	}
@@ -179,21 +180,21 @@ func (s *Service) prepareLinkedIssueComment(ctx context.Context, scope nativeSco
 	if err != nil {
 		return linkedIssueCommentPlan{}, err
 	}
-	bodyKey, err := s.prepareWorkItemField(ctx, scope.organization, bodyRaw)
+	bodyKey, err := s.prepareWorkItemField(ctx, scope.Organization, bodyRaw)
 	if err != nil {
 		return linkedIssueCommentPlan{}, err
 	}
 	provider, externalID := imported.Provenance.Provider, imported.Provenance.ExternalID
-	commentPlan := linkedIssueCommentPlan{comment: comment, row: corestore.Comment{OrganizationID: scope.organization, ID: commentID, ProjectID: scope.project, WorkItemID: itemID, Revision: 1, Sequence: comment.Sequence, BodyObjectKey: bodyKey, ActorKind: "integration", ActorPrincipalID: "github", ProvenanceProvider: &provider, ProvenanceExternalID: &externalID, SourceKey: &key, CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt}}
-	commentPlan.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: itemID, RecordID: commentID, Revision: 1}, commentRaw)
+	commentPlan := linkedIssueCommentPlan{comment: comment, row: corestore.Comment{OrganizationID: scope.Organization, ID: commentID, ProjectID: scope.Project, WorkItemID: itemID, Revision: 1, Sequence: comment.Sequence, BodyObjectKey: bodyKey, ActorKind: "integration", ActorPrincipalID: "github", ProvenanceProvider: &provider, ProvenanceExternalID: &externalID, SourceKey: &key, CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt}}
+	commentPlan.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemID, RecordID: commentID, Revision: 1}, commentRaw)
 	if err != nil {
 		return linkedIssueCommentPlan{}, err
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: itemID, ID: payloadNativeID(ctx, "evt"), Type: "comment.created", SchemaVersion: 1, Actor: comment.Actor, RecordedAt: comment.CreatedAt, Data: tracker.CollaborationData{CommentID: commentID}})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: itemID, ID: payloadNativeID(ctx, "evt"), Type: "comment.created", SchemaVersion: 1, Actor: comment.Actor, RecordedAt: comment.CreatedAt, Data: tracker.CollaborationData{CommentID: commentID}})
 	if err != nil {
 		return linkedIssueCommentPlan{}, err
 	}
-	commentPlan.event, err = content.PrepareEvent(ctx, scope.organization, eventRaw)
+	commentPlan.event, err = content.PrepareEvent(ctx, scope.Organization, eventRaw)
 	if err != nil {
 		return linkedIssueCommentPlan{}, err
 	}
@@ -206,23 +207,23 @@ func (s *Service) prepareLinkedIssueComment(ctx context.Context, scope nativeSco
 }
 
 func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHubIntake) error {
-	raw, err := s.applyLinkedIssueRecord(c.Request().Context(), nativeRequestScope(c), tracker.NativeWorkItemID(c.Param("item")), c.Request().Method+" "+c.Request().URL.EscapedPath(), request)
+	raw, err := s.applyLinkedIssueRecord(c.Request().Context(), hubscope.NativeRequestScope(c), tracker.NativeWorkItemID(c.Param("item")), c.Request().Method+" "+c.Request().URL.EscapedPath(), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusOK, raw)
 }
 
-func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope, itemID tracker.NativeWorkItemID, operation string, request tracker.GitHubIntake) (json.RawMessage, error) {
+func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.NativeScope, itemID tracker.NativeWorkItemID, operation string, request tracker.GitHubIntake) (json.RawMessage, error) {
 	ctx = isolateContentContext(s.runDetailContext(ctx))
-	if scope.credential.Scope != hubapi.APIScopeWorker && scope.credential.Scope != hubapi.APIScopeAdmin && scope.credential.Scope != hubapi.APIScopeOperator {
+	if scope.Credential.Scope != hubapi.APIScopeWorker && scope.Credential.Scope != hubapi.APIScopeAdmin && scope.Credential.Scope != hubapi.APIScopeOperator {
 		return nil, hubapi.NativeNotFound()
 	}
 	if s.config.AccessRepository == nil {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	if scope.credential.Scope != hubapi.APIScopeWorker {
-		scope.requireHostedAdmin = true
+	if scope.Credential.Scope != hubapi.APIScopeWorker {
+		scope.RequireHostedAdmin = true
 	}
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
@@ -255,13 +256,13 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 	var version eventstore.CollaborationVersion
 	var source eventstore.LinkedSource
 	now := s.config.now().UTC()
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		row, err = r.WorkItem(ctx, scope.project, itemID)
+		row, err = r.WorkItem(ctx, scope.Project, itemID)
 		if err != nil {
 			return err
 		}
-		project, err = r.ProjectRecord(ctx, scope.project)
+		project, err = r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -269,11 +270,11 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 		if err != nil {
 			return err
 		}
-		source, err = r.LinkedSource(ctx, scope.project, itemID)
+		source, err = r.LinkedSource(ctx, scope.Project, itemID)
 		if err != nil {
 			return err
 		}
-		if scope.credential.Scope == hubapi.APIScopeWorker {
+		if scope.Credential.Scope == hubapi.APIScopeWorker {
 			return requireLinkedIssueLease(ctx, r, scope, row, request.Mutation, now)
 		}
 		return nil
@@ -291,7 +292,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 	originalIssue := issue
 	stale := false
 	if source.SnapshotObjectKey != "" {
-		old, err := content.LinkedIssueSnapshot(ctx, scope.organization, eventstore.Reference(source.SnapshotObjectKey, source.SnapshotSHA256, source.SnapshotBytes, source.SnapshotContentBytes))
+		old, err := content.LinkedIssueSnapshot(ctx, scope.Organization, eventstore.Reference(source.SnapshotObjectKey, source.SnapshotSHA256, source.SnapshotBytes, source.SnapshotContentBytes))
 		if err != nil {
 			return nil, err
 		}
@@ -318,8 +319,8 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 	newComments := make([]linkedIssueCommentPlan, 0, len(snapshot.Comments))
 	for _, imported := range snapshot.Comments {
 		key := imported.Provenance.Provider + ":" + imported.Provenance.ExternalID
-		lookupErr := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			_, err := r.CommentBySource(ctx, scope.project, itemID, key)
+		lookupErr := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			_, err := r.CommentBySource(ctx, scope.Project, itemID, key)
 			return err
 		})
 		if lookupErr == nil {
@@ -337,7 +338,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 	snapshot.Comments = nil
 	var snapshotRef attachment.ArchiveReference
 	if !stale {
-		snapshotRef, err = content.PrepareLinkedIssueSnapshot(ctx, scope.organization, snapshot)
+		snapshotRef, err = content.PrepareLinkedIssueSnapshot(ctx, scope.Organization, snapshot)
 		if err != nil {
 			return nil, err
 		}
@@ -354,29 +355,29 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 			return nil, err
 		}
 		issuePlan = workItemRecordPlan{project: project, current: row, issue: issue, fields: []string{"source_intake"}, eventType: "github.imported"}
-		fields, err = s.prepareWorkItemFields(ctx, scope.organization, issuePlan)
+		fields, err = s.prepareWorkItemFields(ctx, scope.Organization, issuePlan)
 		if err != nil {
 			return nil, err
 		}
-		issueVersion, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: itemID, RecordID: string(itemID), Revision: int64(issue.Revision)}, issueRaw)
+		issueVersion, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemID, RecordID: string(itemID), Revision: int64(issue.Revision)}, issueRaw)
 		if err != nil {
 			return nil, err
 		}
 		reason := canonical
-		if verified := scope.scheduledRepair; verified != nil && verified.importURL == canonical && verified.importReason != "" {
-			reason += ": " + verified.importReason
+		if verified := scope.ScheduledRepair; verified != nil && verified.ImportURL == canonical && verified.ImportReason != "" {
+			reason += ": " + verified.ImportReason
 		}
-		issueEventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: itemID, ID: payloadNativeID(ctx, "evt"), Type: "github.imported", SchemaVersion: 1, Actor: *nativeIntegrationActor("github"), RecordedAt: issue.UpdatedAt, Data: tracker.CollaborationData{Revision: issue.Revision, Operation: "source_intake", Reason: reason}})
+		issueEventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: itemID, ID: payloadNativeID(ctx, "evt"), Type: "github.imported", SchemaVersion: 1, Actor: *nativeIntegrationActor("github"), RecordedAt: issue.UpdatedAt, Data: tracker.CollaborationData{Revision: issue.Revision, Operation: "source_intake", Reason: reason}})
 		if err != nil {
 			return nil, err
 		}
-		issueEvent, err = content.PrepareEvent(ctx, scope.organization, issueEventRaw)
+		issueEvent, err = content.PrepareEvent(ctx, scope.Organization, issueEventRaw)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if !stale {
-		searchDocument, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: itemID, ID: "issue:" + string(itemID), SourceID: string(itemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
+		searchDocument, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemID, ID: "issue:" + string(itemID), SourceID: string(itemID), Kind: "issue", Scope: "issue", Revision: int64(issue.Revision), UpdatedAt: issue.UpdatedAt}, searchstore.Text{Title: issue.Title, Body: issue.Body, Labels: issue.Labels})
 		if err != nil {
 			return nil, err
 		}
@@ -384,11 +385,11 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 	if stale {
 		issue = originalIssue
 	}
-	response, err := json.Marshal(relationshipOmittedIssue(scope.reporterIssue(issue)))
+	response, err := json.Marshal(relationshipOmittedIssue(scope.ReporterIssue(issue)))
 	if err != nil {
 		return nil, err
 	}
-	receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
+	receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
 	if err != nil {
 		return nil, err
 	}
@@ -398,8 +399,8 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	trustedBeforeCommit := scope.scheduledRepair.trustedLinkedImport()
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	trustedBeforeCommit := scope.ScheduledRepair.TrustedLinkedImport()
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
@@ -409,7 +410,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+		prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if prior.RequestHash != hash {
 				return hubapi.NativeConflict(0)
@@ -419,7 +420,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
 		if s.database.plans() != nil {
@@ -431,19 +432,19 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 				return err
 			}
 		}
-		current, err := w.LockWorkItem(ctx, scope.project, itemID)
+		current, err := w.LockWorkItem(ctx, scope.Project, itemID)
 		if err != nil {
 			return err
 		}
 		if current.Revision != row.Revision || current.EventSequence != row.EventSequence {
 			return corestore.ErrSerializationFailure
 		}
-		if scope.credential.Scope == hubapi.APIScopeWorker {
+		if scope.Credential.Scope == hubapi.APIScopeWorker {
 			if err := requireLinkedIssueLease(ctx, w, scope, current, request.Mutation, s.config.now()); err != nil {
 				return err
 			}
 		}
-		currentSource, err := w.LinkedSource(ctx, scope.project, itemID)
+		currentSource, err := w.LinkedSource(ctx, scope.Project, itemID)
 		if err != nil {
 			return err
 		}
@@ -461,7 +462,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 		}
 		for _, imported := range newComments {
 			key := imported.comment.Provenance.Provider + ":" + imported.comment.Provenance.ExternalID
-			if _, err := w.CommentBySource(ctx, scope.project, itemID, key); err == nil {
+			if _, err := w.CommentBySource(ctx, scope.Project, itemID, key); err == nil {
 				continue
 			} else if !errors.Is(err, corestore.ErrNotFound) {
 				return err
@@ -494,7 +495,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope nativeScope,
 		return err
 	})
 	if err != nil {
-		if trustedBeforeCommit && !scope.scheduledRepair.trustedLinkedImport() && errors.Is(err, corestore.ErrSerializationFailure) {
+		if trustedBeforeCommit && !scope.ScheduledRepair.TrustedLinkedImport() && errors.Is(err, corestore.ErrSerializationFailure) {
 			return s.applyLinkedIssueRecord(ctx, scope, itemID, operation, request)
 		}
 		return nil, hubapi.ProjectRecordError(err)

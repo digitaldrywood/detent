@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
@@ -87,7 +88,7 @@ func (w *workspaceService) newLifecycle() *workspacehub.Service {
 			return workspaceLifecycleWriter{workspaceLifecycleReader: workspaceLifecycleReader{owner}, workspaceLifecycleStateWriter: workspaceLifecycleStateWriter{owner}, owner: owner}
 		},
 		PrepareIssueClose: func(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, item string, now time.Time) (func(context.Context, tenantstore.Writer) error, error) {
-			scope := nativeScope{organization: organization, project: project, sourceActor: &tracker.Actor{Kind: "system", PrincipalID: "workspace_service"}}
+			scope := hubscope.NativeScope{Organization: organization, Project: project, SourceActor: &tracker.Actor{Kind: "system", PrincipalID: "workspace_service"}}
 			plan, err := w.server.prepareWorkspaceIssueClose(ctx, scope, item, now)
 			return plan.write, err
 		},
@@ -261,8 +262,8 @@ type terminalRecordingRecord = workspacerelay.RecordingRecord
 
 const terminalRecordingPage = workspacerelay.RecordingPage
 
-func terminalRecordingReadable(scope nativeScope, record terminalRecordingRecord) bool {
-	return workspacerelay.RecordingReadable(authCredential(scope.credential), record)
+func terminalRecordingReadable(scope hubscope.NativeScope, record terminalRecordingRecord) bool {
+	return workspacerelay.RecordingReadable(hubscope.AuthCredential(scope.Credential), record)
 }
 
 func relayActorName(email string) string { return workspacerelay.ActorName(email) }

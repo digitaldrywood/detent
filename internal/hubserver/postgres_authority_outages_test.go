@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -96,7 +97,7 @@ func TestPostgresAuthorityLookupOutages(t *testing.T) {
 				ctx := c.Request().Context()
 				err := repository.ReadTenant(ctx, tracker.OrganizationID(org), corestore.Serving, func(r tenantstore.Reader) error { _, err := r.AuthorizeAccess(ctx, authority, now); return err })
 				if err != nil {
-					return service.nativeAPIError(c, operatorAuthorizationError(err))
+					return service.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 				}
 				return c.NoContent(http.StatusNoContent)
 			})

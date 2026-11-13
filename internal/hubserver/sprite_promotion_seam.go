@@ -9,17 +9,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/spritepromotion"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
-func (s *Service) spritePromotionService(scope nativeScope) *spritepromotion.Service {
+func (s *Service) spritePromotionService(scope hubscope.NativeScope) *spritepromotion.Service {
 	return spritepromotion.New(spritepromotion.Deps{
-		Organization: scope.organization, Keys: s.config.SecretKeys, Now: s.config.now, Decode: decodeCoordinatorArguments,
+		Organization: scope.Organization, Keys: s.config.SecretKeys, Now: s.config.now, Decode: decodeCoordinatorArguments,
 		Read: func(ctx context.Context, read func(tenantstore.Reader) error) error {
-			return s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+			return s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 				if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 					return err
 				}

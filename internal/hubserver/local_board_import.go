@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/localboard"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -21,7 +22,7 @@ func (s *Service) importLocalBoard(c echo.Context) error {
 		}
 		return s.invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	if err := localboard.Validate(request.Record); err != nil {
 		return s.nativeAPIError(c, hubapi.NativeInvalid(err.Error()))
 	}

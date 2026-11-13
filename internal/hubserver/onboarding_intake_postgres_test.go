@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -31,9 +32,9 @@ func TestProjectGitHubBatchUsesPostgresRecords(t *testing.T) {
 	}
 	for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
 		t.Run(string(project), func(t *testing.T) {
-			scope := nativeScope{organization: "org_example", project: project, credential: hubapi.APICredential{ID: "admin", Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken("example-token")}}
-			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-				_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: project, Name: string(project), Profile: "native"}, States: nativeFixtureStates()})
+			scope := hubscope.NativeScope{Organization: "org_example", Project: project, Credential: hubapi.APICredential{ID: "admin", Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken("example-token")}}
+			if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+				_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.Organization, ID: project, Name: string(project), Profile: "native"}, States: nativeFixtureStates()})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -47,17 +48,17 @@ func TestProjectGitHubBatchUsesPostgresRecords(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			payload, err := eventstore.NewContent(details).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: scope.organization}, raw)
+			payload, err := eventstore.NewContent(details).PrepareReceipt(t.Context(), eventstore.Receipt{OrganizationID: scope.Organization}, raw)
 			if err != nil {
 				t.Fatal(err)
 			}
 			record := projectstore.IntakeBatch{ProjectID: project, ID: batch.ID, Revision: batch.Revision, Status: batch.Status, HubOwned: batch.HubOwned, Payload: payload}
-			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.(projectstore.IntakeBatchWriter).SaveProjectIntakeBatch(t.Context(), record, 0)
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.(projectstore.IntakeBatchWriter).SaveProjectIntakeBatch(t.Context(), record, 0)
 			}); !errors.Is(err, corestore.ErrRevisionConflict) {
 				t.Fatalf("stale batch write = %v", err)
@@ -72,7 +73,7 @@ func TestProjectGitHubBatchUsesPostgresRecords(t *testing.T) {
 		})
 	}
 	for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
-		scope := nativeScope{organization: "org_example", project: project, credential: hubapi.APICredential{ID: "admin", Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken("example-token")}}
+		scope := hubscope.NativeScope{Organization: "org_example", Project: project, Credential: hubapi.APICredential{ID: "admin", Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken("example-token")}}
 		actual, err := service.projectGitHubBatch(t.Context(), scope)
 		if err != nil || actual.Batch == nil || actual.Batch.ID != "batch_"+string(project) {
 			t.Fatalf("independent project batch = %+v, %v", actual, err)

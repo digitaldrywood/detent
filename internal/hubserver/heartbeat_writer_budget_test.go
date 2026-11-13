@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -290,7 +291,7 @@ func TestHeartbeatAndRenewWriterBudget(t *testing.T) {
 					conflicting.Admissions[0].Predicate = "conflicting_same_time"
 					conflict.Diagnostics = &conflicting
 					err = repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
-						scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+						scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 						if err := f.service.authorizeAccessScope(t.Context(), w, scope, true); err != nil {
 							return err
 						}

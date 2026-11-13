@@ -49,12 +49,12 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 			}
 			fixture := newNativeFixture(t, f.service, f.project.OrganizationID, test.name)
 			scope := analyticsTestScope(t, fixture)
-			issue := seedAnalyticsTestWorkItem(t, f.service, scope.organization, scope.project, "failure", 1, test.name, "Todo", now.Add(-time.Hour))
-			attemptID := "attempt-" + string(scope.project)
+			issue := seedAnalyticsTestWorkItem(t, f.service, scope.Organization, scope.Project, "failure", 1, test.name, "Todo", now.Add(-time.Hour))
+			attemptID := "attempt-" + string(scope.Project)
 			seedAnalyticsTestAttempt(t, hostedPostgresAdmin(t, f.service), f.service, scope, issue.WorkItemID, attemptID, test.status, now.Add(-3*time.Minute), now, test.data, test.malformedPhases)
 			if err := f.service.config.TenantRepository.(*postgres.Repository).ImportReportUsageFacts(t.Context(), []reportstore.UsageRecord{
-				{OrganizationID: scope.organization, UpdatedAt: now, UsageFact: reportstore.UsageFact{ProjectID: scope.project, WorkItemID: issue.WorkItemID, AttemptID: attemptID, Period: now.Add(-2 * time.Hour), Provider: "codex", Model: "test", Input: 100, CachedInput: 50, Output: 20, Cost: 0.5, Currency: "USD"}},
-				{OrganizationID: scope.organization, UpdatedAt: now, UsageFact: reportstore.UsageFact{ProjectID: scope.project, WorkItemID: issue.WorkItemID, AttemptID: attemptID, Period: now.Add(-2 * time.Hour), Provider: "codex", Model: "other", Input: 10, CachedInput: 10, Cost: 0.25, Currency: "USD"}},
+				{OrganizationID: scope.Organization, UpdatedAt: now, UsageFact: reportstore.UsageFact{ProjectID: scope.Project, WorkItemID: issue.WorkItemID, AttemptID: attemptID, Period: now.Add(-2 * time.Hour), Provider: "codex", Model: "test", Input: 100, CachedInput: 50, Output: 20, Cost: 0.5, Currency: "USD"}},
+				{OrganizationID: scope.Organization, UpdatedAt: now, UsageFact: reportstore.UsageFact{ProjectID: scope.Project, WorkItemID: issue.WorkItemID, AttemptID: attemptID, Period: now.Add(-2 * time.Hour), Provider: "codex", Model: "other", Input: 10, CachedInput: 10, Cost: 0.25, Currency: "USD"}},
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -81,7 +81,7 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 				t.Fatalf("group=%#v", g)
 			}
 			foreign := scope
-			foreign.project = "prj_foreign"
+			foreign.Project = "prj_foreign"
 			hidden, _, _, err := f.service.readNativeFailuresTenant(t.Context(), foreign, "", w)
 			if !hubapi.IsNativeNotFound(err) || len(hidden) != 0 {
 				t.Fatalf("scope leak: %#v %v", hidden, err)
@@ -118,8 +118,8 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 				}
 				fixture := newNativeFixture(t, f.service, f.project.OrganizationID, test.name)
 				scope := analyticsTestScope(t, fixture)
-				issue := seedAnalyticsTestWorkItem(t, f.service, scope.organization, scope.project, "boundary", 1, test.name, "Todo", test.at.Add(-time.Hour))
-				seedAnalyticsTestAttempt(t, hostedPostgresAdmin(t, f.service), f.service, scope, issue.WorkItemID, "boundary-"+string(scope.project), "failed", hubapi.MinTime(test.at, updated).Add(-3*time.Minute), updated, data)
+				issue := seedAnalyticsTestWorkItem(t, f.service, scope.Organization, scope.Project, "boundary", 1, test.name, "Todo", test.at.Add(-time.Hour))
+				seedAnalyticsTestAttempt(t, hostedPostgresAdmin(t, f.service), f.service, scope, issue.WorkItemID, "boundary-"+string(scope.Project), "failed", hubapi.MinTime(test.at, updated).Add(-3*time.Minute), updated, data)
 				failures, partial, _, err := f.service.readNativeFailuresTenant(t.Context(), scope, "", w)
 				if err != nil || partial || len(failures) != test.want {
 					t.Fatalf("window failures=%#v partial=%v err=%v", failures, partial, err)
@@ -133,10 +133,10 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 		t.Run(fmt.Sprintf("population %d", count), func(t *testing.T) {
 			fixture := newNativeFixture(t, f.service, f.project.OrganizationID, fmt.Sprintf("population %d", count))
 			scope := analyticsTestScope(t, fixture)
-			issue := seedAnalyticsTestWorkItem(t, f.service, scope.organization, scope.project, "population", 1, "population", "Todo", now.Add(-time.Hour))
+			issue := seedAnalyticsTestWorkItem(t, f.service, scope.Organization, scope.Project, "population", 1, "population", "Todo", now.Add(-time.Hour))
 			db := hostedPostgresAdmin(t, f.service)
 			for index := range count {
-				seedAnalyticsTestAttempt(t, db, f.service, scope, issue.WorkItemID, fmt.Sprintf("%s-failure-%04d", scope.project, index), "failed", now.Add(-3*time.Minute), now, tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "count 1 failed"}})
+				seedAnalyticsTestAttempt(t, db, f.service, scope, issue.WorkItemID, fmt.Sprintf("%s-failure-%04d", scope.Project, index), "failed", now.Add(-3*time.Minute), now, tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "count 1 failed"}})
 			}
 			ctx, paging, err := analyticsPagingContext(t.Context(), "")
 			if err != nil {
@@ -156,7 +156,7 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 					t.Fatal(err)
 				}
 				tail, tailPartial, _, err := f.service.readNativeFailuresTenant(tailCtx, scope, issue.WorkItemID, w)
-				if err != nil || len(tail) != 1 || !tailPartial || tail[0].AttemptID != fmt.Sprintf("%s-failure-0000", scope.project) {
+				if err != nil || len(tail) != 1 || !tailPartial || tail[0].AttemptID != fmt.Sprintf("%s-failure-0000", scope.Project) {
 					t.Fatalf("failure tail=%+v partial=%v error=%v", tail, tailPartial, err)
 				}
 			}

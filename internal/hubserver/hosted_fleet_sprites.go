@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -35,7 +36,7 @@ func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credenti
 			if !visible[project] {
 				continue
 			}
-			scope := nativeScope{organization: runner.OrganizationID, project: project, credential: credential}
+			scope := hubscope.NativeScope{Organization: runner.OrganizationID, Project: project, Credential: credential}
 			scope, organization, envelope, err := s.resolveSpritesSecret(ctx, nil, scope)
 			if errors.Is(err, corestore.ErrNotFound) {
 				continue
@@ -67,11 +68,11 @@ func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credenti
 	return nil
 }
 
-func (s *Service) readSpriteStatus(ctx context.Context, scope nativeScope, name, organization string, envelope hubsecrets.Envelope) (string, error) {
+func (s *Service) readSpriteStatus(ctx context.Context, scope hubscope.NativeScope, name, organization string, envelope hubsecrets.Envelope) (string, error) {
 	if err := s.auditSecretUse(ctx, scope, envelope.Version); err != nil {
 		return "", err
 	}
-	token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(scope.organization), string(scope.project), flySpritesToken))
+	token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(scope.Organization), string(scope.Project), flySpritesToken))
 	if err != nil {
 		return "", err
 	}

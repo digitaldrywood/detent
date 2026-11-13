@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -73,14 +74,14 @@ func readPlacementPolicy(ctx context.Context, r tenantstore.Reader) (policy.Plac
 	return placement.Resolved(), int(row.MaxRunners), placement.Validate()
 }
 
-func readPlacementSpriteUsage(ctx context.Context, r tenantstore.Reader, scope nativeScope, now time.Time, joining ...string) (int, error) {
+func readPlacementSpriteUsage(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, now time.Time, joining ...string) (int, error) {
 	owner, ok := r.(postgres.SpriteReader)
 	if !ok {
 		return 0, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	group := ""
 	if len(joining) > 0 && joining[0] != "" {
-		group = joining[0] + "/" + scope.credential.Runner.RunnerID
+		group = joining[0] + "/" + scope.Credential.Runner.RunnerID
 	}
 	return owner.SpriteLeaseUsage(ctx, now, group)
 }
@@ -105,7 +106,7 @@ func readSpriteMembers(ctx context.Context, owner postgres.SpriteReader) ([]post
 	}
 }
 
-func readPlacementRunners(ctx context.Context, r tenantstore.Reader, scope nativeScope, now time.Time) ([]placementRunner, error) {
+func readPlacementRunners(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, now time.Time) ([]placementRunner, error) {
 	reader, ok := r.(runnerstore.RoutingPageReader)
 	if !ok {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
@@ -118,16 +119,16 @@ func readPlacementRunners(ctx context.Context, r tenantstore.Reader, scope nativ
 	for offset := 0; ; offset += corestore.MaxPageSize {
 		var page []runnerstore.RoutingRecord
 		var err error
-		if scope.project == "" {
+		if scope.Project == "" {
 			page, err = reader.RunnerRoutingRecords(ctx, corestore.MaxPageSize, offset, now)
 		} else {
-			page, err = reader.RunnerProjectRoutingRecords(ctx, scope.project, corestore.MaxPageSize, offset, now)
+			page, err = reader.RunnerProjectRoutingRecords(ctx, scope.Project, corestore.MaxPageSize, offset, now)
 		}
 		if err != nil {
 			return nil, err
 		}
 		for _, record := range page {
-			if scope.project != "" {
+			if scope.Project != "" {
 				allowed, err := spriteAllocationRunnerAllowedRecord(ctx, r, scope, record)
 				if err != nil {
 					return nil, err
@@ -173,15 +174,15 @@ type placementSource struct {
 	allocationManaged bool
 }
 
-func (s *Service) readPlacementSource(ctx context.Context, scope nativeScope, now time.Time) (placementSource, error) {
+func (s *Service) readPlacementSource(ctx context.Context, scope hubscope.NativeScope, now time.Time) (placementSource, error) {
 	var source placementSource
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return source, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		source.project, err = r.ProjectRecord(ctx, scope.project)
+		source.project, err = r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -197,7 +198,7 @@ func (s *Service) readPlacementSource(ctx context.Context, scope nativeScope, no
 		if err != nil {
 			return err
 		}
-		source.policy, err = r.ProjectPolicy(ctx, scope.project)
+		source.policy, err = r.ProjectPolicy(ctx, scope.Project)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -217,19 +218,19 @@ func (s *Service) readPlacementSource(ctx context.Context, scope nativeScope, no
 		if err != nil {
 			return err
 		}
-		_, err = owner.SpriteAllocation(ctx, scope.project)
+		_, err = owner.SpriteAllocation(ctx, scope.Project)
 		source.allocationManaged = err == nil
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		query := claimstore.CandidateQuery{ProjectID: scope.project, Scope: string(scope.project), AvailableAt: now, Limit: corestore.MaxPageSize}
+		query := claimstore.CandidateQuery{ProjectID: scope.Project, Scope: string(scope.Project), AvailableAt: now, Limit: corestore.MaxPageSize}
 		for {
 			page, err := r.CandidatePage(ctx, query)
 			if err != nil {
 				return err
 			}
 			for _, candidate := range page.Items {
-				item, err := r.WorkItem(ctx, scope.project, candidate.WorkItemID)
+				item, err := r.WorkItem(ctx, scope.Project, candidate.WorkItemID)
 				if err != nil {
 					return err
 				}
@@ -315,11 +316,11 @@ func (c *placementCapacity) available(r placementRunner, project tracker.Project
 	return free
 }
 
-func (s *Service) readPlacementSnapshot(ctx context.Context, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate) (placementSnapshot, error) {
+func (s *Service) readPlacementSnapshot(ctx context.Context, scope hubscope.NativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate) (placementSnapshot, error) {
 	return s.readPlacementSnapshotWithCapacity(ctx, scope, now, overrides, newPlacementCapacity(), make(map[string]bool))
 }
 
-func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope nativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, localCapacity *placementCapacity, counted map[string]bool) (placementSnapshot, error) {
+func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope hubscope.NativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate, localCapacity *placementCapacity, counted map[string]bool) (placementSnapshot, error) {
 	var result placementSnapshot
 	source, err := s.readPlacementSource(ctx, scope, now)
 	if err != nil {
@@ -337,7 +338,7 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope n
 	if err != nil {
 		return result, err
 	}
-	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), descriptor)
+	workflow, err := projectPolicyWorkflow(ctx, string(scope.Organization)+"/"+string(scope.Project), descriptor)
 	if err != nil {
 		return result, err
 	}
@@ -416,11 +417,11 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope n
 			if r.Sprite {
 				continue
 			}
-			result.Local[id] += newPlacementCapacity().available(r, scope.project, result.Requirements, requirement, now, false)
+			result.Local[id] += newPlacementCapacity().available(r, scope.Project, result.Requirements, requirement, now, false)
 		}
 		if placement.Mode != "sprites_only" {
 			for _, r := range result.Runners {
-				if !r.Sprite && localCapacity.available(r, scope.project, result.Requirements, requirement, now, true) > 0 {
+				if !r.Sprite && localCapacity.available(r, scope.Project, result.Requirements, requirement, now, true) > 0 {
 					result.LocalFree++
 					localAssigned[id] = true
 					break
@@ -438,7 +439,7 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope n
 			continue
 		}
 		for _, r := range result.Runners {
-			if !r.Sprite || spriteCapacity.available(r, scope.project, result.Requirements, requirement, now, true) == 0 {
+			if !r.Sprite || spriteCapacity.available(r, scope.Project, result.Requirements, requirement, now, true) == 0 {
 				continue
 			}
 			counted[r.Enrollment] = true
@@ -454,7 +455,7 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope n
 	for _, member := range source.members {
 		owner := ""
 		if source.allocationManaged {
-			owner = string(scope.project)
+			owner = string(scope.Project)
 		}
 		if member.AllocationProjectID != owner || member.State != "bootstrapping" && member.State != "enrolled" {
 			continue
@@ -555,7 +556,7 @@ type claimPlacementSnapshot struct {
 	snapshot *placementSnapshot
 }
 
-func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope nativeScope, identity runnerstore.Identity, machine leasestore.Machine, plan nativeClaimPlan, overrides []tracker.NativeCapacityCandidate, workspace bool, joining string, now time.Time, snapshot *placementSnapshot) (bool, string, error) {
+func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, identity runnerstore.Identity, machine leasestore.Machine, plan nativeClaimPlan, overrides []tracker.NativeCapacityCandidate, workspace bool, joining string, now time.Time, snapshot *placementSnapshot) (bool, string, error) {
 	allowed, err := spriteAllocationRunnerAllowedFacts(ctx, r, scope, identity, machine, true)
 	if err != nil {
 		return false, "", err
@@ -604,7 +605,7 @@ func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope nati
 			}
 		}
 		for _, runner := range snapshot.Runners {
-			if !runner.Sprite && newPlacementCapacity().available(runner, scope.project, snapshot.Requirements, requirement, now, false) > 0 {
+			if !runner.Sprite && newPlacementCapacity().available(runner, scope.Project, snapshot.Requirements, requirement, now, false) > 0 {
 				return false, "Local-first placement has compatible free local capacity", nil
 			}
 		}
@@ -618,10 +619,10 @@ func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope nati
 	return allowed, fmt.Sprintf("%s: ready Todo=%d, threshold=%d, local free=%d, Sprite used=%d, overflow slots=%d", reason, snapshot.ReadyTodo, placement.TodoThreshold, snapshot.LocalFree, used, placement.OverflowSlots), nil
 }
 
-func (s *Service) readOrganizationPlacementSnapshot(ctx context.Context, scope nativeScope, now time.Time) (placementSnapshot, error) {
+func (s *Service) readOrganizationPlacementSnapshot(ctx context.Context, scope hubscope.NativeScope, now time.Time) (placementSnapshot, error) {
 	result := placementSnapshot{Items: make(map[tracker.WorkItemID]providercapacity.Requirement), Local: make(map[tracker.WorkItemID]int)}
 	var placement policy.Placement
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		var err error
 		placement, _, err = readPlacementPolicy(ctx, r)
 		return err
@@ -632,7 +633,7 @@ func (s *Service) readOrganizationPlacementSnapshot(ctx context.Context, scope n
 	result.Policy = placement
 	var projects []corestore.Project
 	managed := map[tracker.ProjectID]bool{}
-	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err = s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.SpriteReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
@@ -699,13 +700,13 @@ func (s *Service) readOrganizationPlacementSnapshot(ctx context.Context, scope n
 	counted := make(map[string]bool)
 	for _, project := range projects {
 		projectScope := scope
-		projectScope.project = project.ID
+		projectScope.Project = project.ID
 		snapshot, err := s.readPlacementSnapshotWithCapacity(ctx, projectScope, now, nil, capacity, counted)
 		if err != nil {
 			return result, err
 		}
 		var allocation projectSpriteAllocation
-		err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+		err = s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 			var err error
 			allocation, _, err = projectSpriteAllocationRecord(ctx, r, projectScope)
 			return err
@@ -729,7 +730,7 @@ func (s *Service) readOrganizationPlacementSnapshot(ctx context.Context, scope n
 			}
 		}
 	}
-	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err = s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		var err error
 		result.SpriteUsed, err = readPlacementSpriteUsage(ctx, r, scope, now)
 		return err

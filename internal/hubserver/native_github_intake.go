@@ -8,6 +8,7 @@ import (
 
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -46,7 +47,7 @@ func linkedSnapshotProviderError(err error, retryAt time.Time) error {
 	return &linkedSnapshotSourceError{err: err, retryAt: retryAt}
 }
 
-func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope nativeScope, sourceURL string) (*tracker.GitHubIssueSnapshot, error) {
+func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope hubscope.NativeScope, sourceURL string) (*tracker.GitHubIssueSnapshot, error) {
 	canonical, repository, number, err := tracker.ParseGitHubIssueURL(sourceURL)
 	if err != nil {
 		return nil, hubapi.NativeInvalid(err.Error())

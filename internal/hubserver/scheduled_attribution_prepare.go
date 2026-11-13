@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -18,10 +19,10 @@ type scheduledAttributionRecord struct {
 	search  searchstore.Document
 }
 
-func (s *Service) prepareScheduledAttributionRecord(ctx context.Context, scope nativeScope, plan workItemRecordPlan, data tracker.CollaborationData) (scheduledAttributionRecord, error) {
+func (s *Service) prepareScheduledAttributionRecord(ctx context.Context, scope hubscope.NativeScope, plan workItemRecordPlan, data tracker.CollaborationData) (scheduledAttributionRecord, error) {
 	p := scheduledAttributionRecord{plan: plan}
 	var err error
-	p.fields, err = s.prepareWorkItemFields(ctx, scope.organization, plan)
+	p.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
 	if err != nil {
 		return p, err
 	}
@@ -41,18 +42,18 @@ func (s *Service) prepareScheduledAttributionRecord(ctx context.Context, scope n
 	if err != nil {
 		return p, err
 	}
-	p.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.current.NativeID, RecordID: id, Revision: revision}, raw)
+	p.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.current.NativeID, RecordID: id, Revision: revision}, raw)
 	if err != nil {
 		return p, err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: plan.current.NativeID, Type: plan.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: at, Data: data})
+	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.current.NativeID, Type: plan.eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: at, Data: data})
 	if err != nil {
 		return p, err
 	}
-	p.event, err = content.PrepareEvent(ctx, scope.organization, raw)
+	p.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
 	if err != nil {
 		return p, err
 	}
-	p.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.current.NativeID, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
+	p.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.current.NativeID, ID: kind + ":" + id, SourceID: id, Kind: kind, Scope: "issue", Revision: revision, UpdatedAt: at}, text)
 	return p, err
 }

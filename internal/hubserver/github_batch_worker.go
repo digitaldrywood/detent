@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -60,16 +61,16 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) completeRunnerGitHubBatch(ctx context.Context, scope nativeScope) error {
+func (s *Service) completeRunnerGitHubBatch(ctx context.Context, scope hubscope.NativeScope) error {
 	return s.advanceGitHubBatchRecord(ctx, scope)
 }
 
-func (s *Service) advanceGitHubBatch(ctx context.Context, scope nativeScope) error {
+func (s *Service) advanceGitHubBatch(ctx context.Context, scope hubscope.NativeScope) error {
 	return s.advanceGitHubBatchRecord(ctx, scope)
 }
 
-func (s *Service) gitHubIntegrationScope(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID) (nativeScope, error) {
-	scope := nativeScope{integrationOwned: true, organization: organization, project: project, credential: hubapi.APICredential{ID: "github", Scope: hubapi.APIScopeAdmin}, sourceActor: nativeIntegrationActor("github")}
+func (s *Service) gitHubIntegrationScope(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID) (hubscope.NativeScope, error) {
+	scope := hubscope.NativeScope{IntegrationOwned: true, Organization: organization, Project: project, Credential: hubapi.APICredential{ID: "github", Scope: hubapi.APIScopeAdmin}, SourceActor: nativeIntegrationActor("github")}
 	err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		p, err := r.ProjectRecord(ctx, project)
 		if err != nil {
@@ -78,11 +79,11 @@ func (s *Service) gitHubIntegrationScope(ctx context.Context, organization track
 		if p.Core.DeletedAt != nil || p.Core.Profile != "native" {
 			return corestore.ErrNotFound
 		}
-		scope.integrationRepository = p.Settings.CheckoutRepository
-		if scope.integrationRepository == "" {
-			scope.integrationRepository = p.Settings.Repository
+		scope.IntegrationRepository = p.Settings.CheckoutRepository
+		if scope.IntegrationRepository == "" {
+			scope.IntegrationRepository = p.Settings.Repository
 		}
-		if scope.integrationRepository == "" {
+		if scope.IntegrationRepository == "" {
 			return corestore.ErrNotFound
 		}
 		return nil

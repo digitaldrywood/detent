@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/integrationpage"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -18,18 +19,18 @@ func (s *Service) integrationPageService() *integrationpage.Service {
 	return integrationpage.New(integrationpage.Deps{
 		Repository: s.config.TenantRepository, Details: s.runDetailStore(), Now: s.config.now, Logger: s.config.Logger,
 		Workflow: s.projectRecordWorkflow, RecordError: hubapi.ProjectRecordError,
-		Resolve: s.resolveNativeRequestScope, Scope: func(c echo.Context) hubapi.Scope { return s.featureScope(nativeRequestScope(c)) },
+		Resolve: s.resolveNativeRequestScope, Scope: func(c echo.Context) hubapi.Scope { return s.featureScope(hubscope.NativeRequestScope(c)) },
 		ReadProject: func(ctx context.Context, scope hubapi.Scope) (projectstore.Record, error) {
-			return s.readProjectRecord(ctx, nativeScope{organization: scope.Organization, project: scope.Project})
+			return s.readProjectRecord(ctx, hubscope.NativeScope{Organization: scope.Organization, Project: scope.Project})
 		},
 		Live: func(c echo.Context, value *projectstore.Integration) error {
-			return s.applyProjectIntegrationLive(c.Request().Context(), nativeRequestScope(c), value)
+			return s.applyProjectIntegrationLive(c.Request().Context(), hubscope.NativeRequestScope(c), value)
 		},
 		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 		Audit: func(c echo.Context, _ hubapi.Scope) error {
-			scope := nativeRequestScope(c)
-			if scope.credential.Hosted != nil && (!hostedReadRequest(c) || scope.credential.Hosted.SupportActor != "") {
-				return s.hostedAudit(c.Request().Context(), scope.credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0)
+			scope := hubscope.NativeRequestScope(c)
+			if scope.Credential.Hosted != nil && (!hubscope.HostedReadRequest(c) || scope.Credential.Hosted.SupportActor != "") {
+				return s.hostedAudit(c.Request().Context(), scope.Credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.Project), 0)
 			}
 			return nil
 		},

@@ -8,10 +8,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
-func (s *Service) checkReleasePublicationRules(ctx context.Context, scope nativeScope, plan releaseDeliveryCheck, approved ChangeVersionApproval) error {
+func (s *Service) checkReleasePublicationRules(ctx context.Context, scope hubscope.NativeScope, plan releaseDeliveryCheck, approved ChangeVersionApproval) error {
 	historicalSource := false
 	if plan.publishing {
 		issue := plan.issue
@@ -65,7 +66,7 @@ func (s *Service) checkReleasePublicationRules(ctx context.Context, scope native
 			if audit == nil || audit.Landing {
 				continue
 			}
-			key := securityaudit.Key{ProjectID: string(scope.project), Repository: sourceVersion.Repository, PRNumber: prNumber, BaseSHA: sourceVersion.BaseSHA, HeadSHA: sourceVersion.HeadSHA}
+			key := securityaudit.Key{ProjectID: string(scope.Project), Repository: sourceVersion.Repository, PRNumber: prNumber, BaseSHA: sourceVersion.BaseSHA, HeadSHA: sourceVersion.HeadSHA}
 			evaluation := securityaudit.Evaluate(audit.Run, nil, key, "", []string{"p1", "p2"})
 			if plan.found && evaluation.Reason == securityaudit.ReasonReviewerMismatch {
 				evaluation = securityaudit.EvaluateLandedSource(audit.Run, key)

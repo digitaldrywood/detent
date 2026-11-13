@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -21,7 +22,7 @@ type tenantRunCleanupPredecessor struct {
 	committed map[int64]eventstore.Event
 }
 
-func readTenantRunCleanupPredecessor(ctx context.Context, r tenantstore.Reader, scope nativeScope, request tracker.NativeRunEvent) (*tenantRunCleanupPredecessor, bool, error) {
+func readTenantRunCleanupPredecessor(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, request tracker.NativeRunEvent) (*tenantRunCleanupPredecessor, bool, error) {
 	if request.Data.Sequence <= 1 {
 		return nil, false, nil
 	}
@@ -35,7 +36,7 @@ func readTenantRunCleanupPredecessor(ctx context.Context, r tenantstore.Reader, 
 	if attempt.LeaseID != string(request.Data.LeaseID) || attempt.FencingToken != int64(request.Data.FencingToken) || attempt.RunID != request.Data.RunID {
 		return nil, false, leasestore.ErrAttemptConflict
 	}
-	event, err := r.LatestRunEvent(ctx, scope.project, attempt.ID)
+	event, err := r.LatestRunEvent(ctx, scope.Project, attempt.ID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -52,14 +53,14 @@ func readTenantRunCleanupPredecessor(ctx context.Context, r tenantstore.Reader, 
 		if prefix.Data.Sequence > attempt.Sequence {
 			continue
 		}
-		row, err := reader.RunEvent(ctx, scope.project, event.WorkItemID, nativeAttemptHistoryID(prefix.Type, prefix.Data))
+		row, err := reader.RunEvent(ctx, scope.Project, event.WorkItemID, nativeAttemptHistoryID(prefix.Type, prefix.Data))
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil, false, leasestore.ErrAttemptConflict
 		}
 		if err != nil {
 			return nil, false, err
 		}
-		if row.OrganizationID != scope.organization || row.ProjectID != scope.project || row.WorkItemID != event.WorkItemID || row.Type != prefix.Type {
+		if row.OrganizationID != scope.Organization || row.ProjectID != scope.Project || row.WorkItemID != event.WorkItemID || row.Type != prefix.Type {
 			return nil, false, artifact.ErrIntegrity
 		}
 		previous.committed[prefix.Data.Sequence] = row

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventbroker"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -30,8 +31,8 @@ type (
 	ConversationWorkerIdentity  = conversations.ConversationWorkerIdentity
 )
 
-func conversationInput(scope nativeScope) hubauth.Input {
-	return hubauth.Input{Organization: scope.organization, Project: scope.project, Credential: authCredential(scope.credential), Admin: scope.requireHostedAdmin, Action: scope.action, IntegrationRepository: scope.integrationRepository, IntegrationOwned: scope.integrationOwned}
+func conversationInput(scope hubscope.NativeScope) hubauth.Input {
+	return hubauth.Input{Organization: scope.Organization, Project: scope.Project, Credential: hubscope.AuthCredential(scope.Credential), Admin: scope.RequireHostedAdmin, Action: scope.Action, IntegrationRepository: scope.IntegrationRepository, IntegrationOwned: scope.IntegrationOwned}
 }
 
 func conversationSubscribe(broker *eventbroker.Broker, key string) (*notificationSubscription, func()) {
@@ -170,7 +171,7 @@ func (s *Service) conversationDeps() conversations.Deps {
 			return issue, toFeatureError(err)
 		},
 		GrantedProjects: func(ctx context.Context, reader accessstore.Reader, organization tracker.OrganizationID, credential hubauth.Credential, projects []accessstore.ProjectAccess) ([]accessstore.ProjectAccess, error) {
-			granted, err := s.grantedAccessProjects(ctx, reader, organization, nativeCredential(credential), projects)
+			granted, err := s.grantedAccessProjects(ctx, reader, organization, hubscope.NativeCredential(credential), projects)
 			return granted, toFeatureError(err)
 		},
 		ProjectParticipantsUnavailable: hubapi.ErrProjectParticipants,
@@ -285,7 +286,7 @@ func appendPGConversationEvent(p0 context.Context, p1 tenantstore.Writer, p2 tra
 	return hubapi.FromFeatureError(conversations.AppendPGConversationEvent(p0, p1, p2, p3, p4, p5, p6))
 }
 
-func authorizeConversationLinkedItemPG(p0 context.Context, p1 tenantstore.Reader, p2 nativeScope, p3 conversations.ConversationRecord) error {
+func authorizeConversationLinkedItemPG(p0 context.Context, p1 tenantstore.Reader, p2 hubscope.NativeScope, p3 conversations.ConversationRecord) error {
 	return hubapi.FromFeatureError(conversations.AuthorizeConversationLinkedItemPG(p0, p1, conversationInput(p2), p3))
 }
 
@@ -295,7 +296,7 @@ func contentArchiveID(p0 string, p1 attachment.ArchiveReference) string {
 	return conversations.ContentArchiveID(p0, p1)
 }
 
-func conversationActorFor(p0 nativeScope) conversation.Actor {
+func conversationActorFor(p0 hubscope.NativeScope) conversation.Actor {
 	return conversations.ConversationActorFor(conversationInput(p0))
 }
 
@@ -338,7 +339,7 @@ func conversationQuestionID(p0 context.Context) string {
 }
 
 func conversationReadAudienceRecord(p0 context.Context, p1 tenantstore.Reader, p2 tracker.OrganizationID, p3 hubapi.APICredential) (string, error) {
-	value, err := conversations.ConversationReadAudienceRecord(p0, p1, p2, authCredential(p3))
+	value, err := conversations.ConversationReadAudienceRecord(p0, p1, p2, hubscope.AuthCredential(p3))
 	return value, hubapi.FromFeatureError(err)
 }
 
@@ -451,57 +452,57 @@ func translateConversationError(p0 error) error {
 func updatePGWorkerMessage(p0 context.Context, p1 tenantstore.Writer, p2 conversationstore.Message, p3 time.Time, p4 *conversation.ReceiptError) error {
 	return hubapi.FromFeatureError(conversations.UpdatePGWorkerMessage(p0, p1, p2, p3, p4))
 }
-func (s *Service) authorizeConversationRemoval(ctx context.Context, r tenantstore.Reader, scope nativeScope, record conversations.ConversationRecord) error {
+func (s *Service) authorizeConversationRemoval(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, record conversations.ConversationRecord) error {
 	r0 := s.conversationServer().AuthorizeConversationRemoval(ctx, r, s.authInput(scope), record)
 	return hubapi.FromFeatureError(r0)
 }
 
-func (s *Service) authorizeConversationScopePG(ctx context.Context, scope nativeScope, write bool) error {
+func (s *Service) authorizeConversationScopePG(ctx context.Context, scope hubscope.NativeScope, write bool) error {
 	r0 := s.conversationServer().AuthorizeConversationScopePG(ctx, s.authInput(scope), write)
 	return hubapi.FromFeatureError(r0)
 }
 
-func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader tenantstore.Reader, scope nativeScope, itemID string, identity conversations.WorkerIdentity, runID string, allowReleased bool, allowUnstarted bool) (leasestore.Lease, leasestore.Attempt, error) {
+func (s *Service) authorizeConversationWorkerLeasePG(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, itemID string, identity conversations.WorkerIdentity, runID string, allowReleased bool, allowUnstarted bool) (leasestore.Lease, leasestore.Attempt, error) {
 	r0, r1, r2 := s.conversationServer().AuthorizeConversationWorkerLeasePG(ctx, reader, s.authInput(scope), itemID, identity, runID, allowReleased, allowUnstarted)
 	return r0, r1, hubapi.FromFeatureError(r2)
 }
 
-func (s *Service) authorizeConversationWorkerPG(ctx context.Context, reader tenantstore.Reader, scope nativeScope, record conversations.ConversationRecord, identity conversations.WorkerIdentity, runID string, allowReleased bool, allowUnstarted bool) (leasestore.Lease, error) {
+func (s *Service) authorizeConversationWorkerPG(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, record conversations.ConversationRecord, identity conversations.WorkerIdentity, runID string, allowReleased bool, allowUnstarted bool) (leasestore.Lease, error) {
 	r0, r1 := s.conversationServer().AuthorizeConversationWorkerPG(ctx, reader, s.authInput(scope), record, identity, runID, allowReleased, allowUnstarted)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) commandCreateConversation(ctx context.Context, scope nativeScope, request conversations.ConversationCreateRequest) (json.RawMessage, error) {
+func (s *Service) commandCreateConversation(ctx context.Context, scope hubscope.NativeScope, request conversations.ConversationCreateRequest) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().CommandCreateConversation(ctx, s.authInput(scope), request)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) commandDeleteAttachment(ctx context.Context, scope nativeScope, conversationID string, id string) (json.RawMessage, error) {
+func (s *Service) commandDeleteAttachment(ctx context.Context, scope hubscope.NativeScope, conversationID string, id string) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().CommandDeleteAttachment(ctx, s.authInput(scope), conversationID, id)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope, id string, request conversations.ConversationLinkRequest) (json.RawMessage, error) {
+func (s *Service) commandLinkConversation(ctx context.Context, scope hubscope.NativeScope, id string, request conversations.ConversationLinkRequest) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().CommandLinkConversation(ctx, s.authInput(scope), id, request)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScope, id string, request conversations.ConversationPatchRequest) (json.RawMessage, error) {
+func (s *Service) commandPatchConversation(ctx context.Context, scope hubscope.NativeScope, id string, request conversations.ConversationPatchRequest) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().CommandPatchConversation(ctx, s.authInput(scope), id, request)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) commandPatchConversationPG(ctx context.Context, scope nativeScope, id string, request conversations.ConversationPatchRequest, title string) (json.RawMessage, error) {
+func (s *Service) commandPatchConversationPG(ctx context.Context, scope hubscope.NativeScope, id string, request conversations.ConversationPatchRequest, title string) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().CommandPatchConversationPG(ctx, s.authInput(scope), id, request, title)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope, id string, command conversation.Command) (json.RawMessage, error) {
+func (s *Service) commandPostConversation(ctx context.Context, scope hubscope.NativeScope, id string, command conversation.Command) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().CommandPostConversation(ctx, s.authInput(scope), id, command)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope, id string, upload conversations.ConversationAttachmentUpload) (json.RawMessage, error) {
+func (s *Service) commandUploadAttachment(ctx context.Context, scope hubscope.NativeScope, id string, upload conversations.ConversationAttachmentUpload) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().CommandUploadAttachment(ctx, s.authInput(scope), id, upload)
 	return r0, hubapi.FromFeatureError(r1)
 }
@@ -526,12 +527,12 @@ func (s *Service) hasLunaCoordinator() bool {
 	return r0
 }
 
-func (s *Service) readAttachmentPG(ctx context.Context, scope nativeScope, conversationID string, id string) (conversations.ConversationAttachmentRecord, []byte, error) {
+func (s *Service) readAttachmentPG(ctx context.Context, scope hubscope.NativeScope, conversationID string, id string) (conversations.ConversationAttachmentRecord, []byte, error) {
 	r0, r1, r2 := s.conversationServer().ReadAttachmentPG(ctx, s.authInput(scope), conversationID, id)
 	return r0, r1, hubapi.FromFeatureError(r2)
 }
 
-func (s *Service) readConversationMessages(ctx context.Context, scope nativeScope, id string, before int64, limit int) (json.RawMessage, error) {
+func (s *Service) readConversationMessages(ctx context.Context, scope hubscope.NativeScope, id string, before int64, limit int) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().ReadConversationMessages(ctx, s.authInput(scope), id, before, limit)
 	return r0, hubapi.FromFeatureError(r1)
 }
@@ -541,47 +542,47 @@ func (s *Service) readConversationObject(ctx context.Context, organization strin
 	return hubapi.FromFeatureError(r0)
 }
 
-func (s *Service) readConversationSnapshot(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
+func (s *Service) readConversationSnapshot(ctx context.Context, scope hubscope.NativeScope, id string) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().ReadConversationSnapshot(ctx, s.authInput(scope), id)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeScope, id string, item string, diagnoseMissing bool) (json.RawMessage, error) {
+func (s *Service) readConversationSnapshotFor(ctx context.Context, scope hubscope.NativeScope, id string, item string, diagnoseMissing bool) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().ReadConversationSnapshotFor(ctx, s.authInput(scope), id, item, diagnoseMissing)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, filter conversations.ConversationListQuery) (json.RawMessage, error) {
+func (s *Service) readConversationsPage(ctx context.Context, scope hubscope.NativeScope, filter conversations.ConversationListQuery) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().ReadConversationsPage(ctx, s.authInput(scope), filter)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) readPGConversation(ctx context.Context, scope nativeScope, id string) (conversations.ConversationRecord, error) {
+func (s *Service) readPGConversation(ctx context.Context, scope hubscope.NativeScope, id string) (conversations.ConversationRecord, error) {
 	r0, r1 := s.conversationServer().ReadPGConversation(ctx, s.authInput(scope), id)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) readPGConversationPage(ctx context.Context, scope nativeScope, id string, before int64, limit int) (conversations.ConversationPageRead, error) {
+func (s *Service) readPGConversationPage(ctx context.Context, scope hubscope.NativeScope, id string, before int64, limit int) (conversations.ConversationPageRead, error) {
 	r0, r1 := s.conversationServer().ReadPGConversationPage(ctx, s.authInput(scope), id, before, limit)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) readWorkItemConversationSnapshot(ctx context.Context, scope nativeScope, item string) (json.RawMessage, error) {
+func (s *Service) readWorkItemConversationSnapshot(ctx context.Context, scope hubscope.NativeScope, item string) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().ReadWorkItemConversationSnapshot(ctx, s.authInput(scope), item)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) readWorkItemReferences(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
+func (s *Service) readWorkItemReferences(ctx context.Context, scope hubscope.NativeScope, id string) (json.RawMessage, error) {
 	r0, r1 := s.conversationServer().ReadWorkItemReferences(ctx, s.authInput(scope), id)
 	return r0, hubapi.FromFeatureError(r1)
 }
 
-func (s *Service) readableConversationProjects(ctx context.Context, scope nativeScope) ([]tracker.ProjectID, bool, error) {
+func (s *Service) readableConversationProjects(ctx context.Context, scope hubscope.NativeScope) ([]tracker.ProjectID, bool, error) {
 	r0, r1, r2 := s.conversationServer().ReadableConversationProjects(ctx, s.authInput(scope))
 	return r0, r1, hubapi.FromFeatureError(r2)
 }
 
-func (s *Service) replayPGConversationEvents(ctx context.Context, scope nativeScope, stream *conversations.ConversationStream, id string, cursor int64, through int64) (int64, error) {
+func (s *Service) replayPGConversationEvents(ctx context.Context, scope hubscope.NativeScope, stream *conversations.ConversationStream, id string, cursor int64, through int64) (int64, error) {
 	r0, r1 := s.conversationServer().ReplayPGConversationEvents(ctx, s.authInput(scope), stream, id, cursor, through)
 	return r0, hubapi.FromFeatureError(r1)
 }

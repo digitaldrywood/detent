@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -46,13 +47,13 @@ func placementNativeFixture(t *testing.T, cfg Config) nativeFixture {
 	return f
 }
 
-func placementFixtureScope(t *testing.T, f nativeFixture) nativeScope {
+func placementFixtureScope(t *testing.T, f nativeFixture) hubscope.NativeScope {
 	t.Helper()
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("placement administration status%d: %v", status, err)
 	}
-	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	return hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 }
 
 func placementFixtureWrite(t *testing.T, f nativeFixture, write func(tenantstore.Writer) error) {
@@ -62,11 +63,11 @@ func placementFixtureWrite(t *testing.T, f nativeFixture, write func(tenantstore
 	}
 }
 
-func setPlacementFixture(t *testing.T, f nativeFixture, placement policy.Placement, ceiling int) nativeScope {
+func setPlacementFixture(t *testing.T, f nativeFixture, placement policy.Placement, ceiling int) hubscope.NativeScope {
 	t.Helper()
 	scope := placementFixtureScope(t, f)
 	found := false
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		_, err := r.(postgres.SpriteReader).SpritePool(t.Context())
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
@@ -78,7 +79,7 @@ func setPlacementFixture(t *testing.T, f nativeFixture, placement policy.Placeme
 	}
 	var bootstrap attachment.ArchiveReference
 	if !found {
-		ref, err := prepareChangeContent(f.service.contentContext(t.Context()), string(scope.organization), []byte("true"))
+		ref, err := prepareChangeContent(f.service.contentContext(t.Context()), string(scope.Organization), []byte("true"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -93,7 +94,7 @@ func setPlacementFixture(t *testing.T, f nativeFixture, placement policy.Placeme
 			if bootstrapKey == "" {
 				return corestore.ErrRevisionConflict
 			}
-			row = postgres.SpritePool{OrganizationID: scope.organization, IdleSeconds: 300, IsolationTier: isolation.NativeTrusted, ConfiguredBy: scope.credential.ID, BootstrapObjectKey: new(bootstrapKey)}
+			row = postgres.SpritePool{OrganizationID: scope.Organization, IdleSeconds: 300, IsolationTier: isolation.NativeTrusted, ConfiguredBy: scope.Credential.ID, BootstrapObjectKey: new(bootstrapKey)}
 		} else if err != nil {
 			return err
 		}
@@ -114,7 +115,7 @@ func setPlacementFixture(t *testing.T, f nativeFixture, placement policy.Placeme
 		if err != nil {
 			return err
 		}
-		return w.AddArchiveOwner(t.Context(), artifactstore.ArchiveOwner{OrganizationID: scope.organization, ArchiveID: object.ID, Kind: "sprite-pool", ID: string(scope.organization), CreatedAt: f.service.config.now()})
+		return w.AddArchiveOwner(t.Context(), artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "sprite-pool", ID: string(scope.Organization), CreatedAt: f.service.config.now()})
 	})
 	return scope
 }
@@ -123,7 +124,7 @@ func setPlacementAllocationFixture(t *testing.T, f nativeFixture, desired int, r
 	t.Helper()
 	scope := placementFixtureScope(t, f)
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
-		_, err := w.(postgres.SpriteWriter).PutSpriteAllocation(t.Context(), postgres.SpriteAllocation{OrganizationID: scope.organization, ProjectID: scope.project, DesiredCount: int32(desired), RequestedAt: f.service.config.now(), ConfiguredBy: scope.credential.ID}, int64(revision))
+		_, err := w.(postgres.SpriteWriter).PutSpriteAllocation(t.Context(), postgres.SpriteAllocation{OrganizationID: scope.Organization, ProjectID: scope.Project, DesiredCount: int32(desired), RequestedAt: f.service.config.now(), ConfiguredBy: scope.Credential.ID}, int64(revision))
 		return err
 	})
 	result, err := f.service.readProjectSpriteAllocation(t.Context(), scope)
@@ -184,10 +185,10 @@ func placementFixtureState(t *testing.T, f nativeFixture, item tracker.NativeIss
 	return item
 }
 
-func placementFixtureRunners(t *testing.T, f nativeFixture, scope nativeScope) ([]placementRunner, error) {
+func placementFixtureRunners(t *testing.T, f nativeFixture, scope hubscope.NativeScope) ([]placementRunner, error) {
 	t.Helper()
 	var rows []placementRunner
-	err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		rows, err = readPlacementRunners(t.Context(), r, scope, f.service.config.now())
 		return err
@@ -581,7 +582,7 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 					return w.UpdateMachineSpriteWake(t.Context(), leasestore.SpriteWake{MachineID: string(sprite.binding.MachineID), RunnerID: sprite.binding.RunnerID, Name: sprite.redemption.Hostname, WokenAt: new(f.service.config.now()), ObservedAt: f.service.config.now()})
 				})
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 			if test.organization {
 				later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
 				approveHubTestPolicy(t, f.service, later.base+"/policy", hubTestPolicy())
@@ -591,7 +592,7 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 
 			}
 			var usage int
-			err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
 				usage, err = readPlacementSpriteUsage(t.Context(), r, scope, f.service.config.now())
 				return err
@@ -729,7 +730,7 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 				t.Fatalf("running=%d claimed=%d promoted=%d", running, claimed, promoted)
 			}
 			if placement.SpriteLimit() > 0 {
-				decision, err := f.service.readPlacementSnapshot(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, f.service.config.now(), nil)
+				decision, err := f.service.readPlacementSnapshot(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, f.service.config.now(), nil)
 				if err != nil || decision.Reason != "Configured maximum Sprite concurrency is full" || decision.SpriteTarget != 0 {
 					t.Fatalf("concurrency diagnostic=%+v err=%v", decision.placementDecision, err)
 				}
@@ -841,12 +842,12 @@ func TestPlacementWake(t *testing.T) {
 			})}
 			f := placementNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), SpritesHTTPClient: client})
 			scope := placementFixtureScope(t, f)
-			envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD(scope.organization, scope.project, flySpritesToken))
+			envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), accessstore.SecretAAD(scope.Organization, scope.Project, flySpritesToken))
 			if err != nil {
 				t.Fatal(err)
 			}
 			placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
-				return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: scope.organization, ProjectID: scope.project, Kind: flySpritesToken, OrganizationSlug: "example-org", Envelope: envelope, UpdatedAt: f.service.config.now()}, accessstore.SecretAudit{OrganizationID: scope.organization, ProjectID: scope.project, Actor: scope.credential.ID, Kind: flySpritesToken, Event: "set", KeyVersion: envelope.Version, RecordedAt: f.service.config.now()})
+				return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: scope.Organization, ProjectID: scope.Project, Kind: flySpritesToken, OrganizationSlug: "example-org", Envelope: envelope, UpdatedAt: f.service.config.now()}, accessstore.SecretAudit{OrganizationID: scope.Organization, ProjectID: scope.Project, Actor: scope.Credential.ID, Kind: flySpritesToken, Event: "set", KeyVersion: envelope.Version, RecordedAt: f.service.config.now()})
 			})
 			keys := f.service.config.SecretKeys
 			f.service.config.SecretKeys = nil
@@ -891,7 +892,7 @@ func TestPlacementSettingsCompatibility(t *testing.T) {
 	f := placementNativeFixture(t, Config{})
 	scope := placementFixtureScope(t, f)
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
-		_, err := w.(postgres.SpriteWriter).PutSpritePool(t.Context(), postgres.SpritePool{OrganizationID: scope.organization, ConfiguredBy: scope.credential.ID, IdleSeconds: 300, IsolationTier: isolation.NativeTrusted, PlacementMode: "blended"}, 0)
+		_, err := w.(postgres.SpriteWriter).PutSpritePool(t.Context(), postgres.SpritePool{OrganizationID: scope.Organization, ConfiguredBy: scope.Credential.ID, IdleSeconds: 300, IsolationTier: isolation.NativeTrusted, PlacementMode: "blended"}, 0)
 		return err
 	})
 	view, err := f.service.readSpritePool(t.Context(), scope)

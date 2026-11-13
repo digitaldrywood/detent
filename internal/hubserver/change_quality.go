@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -63,7 +64,7 @@ type preparedTenantQualityEscape struct {
 	reopen    *eventstore.Event
 }
 
-func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, request tracker.DiscussChange, now time.Time) (*preparedTenantQualityEscape, error) {
+func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.DiscussChange, now time.Time) (*preparedTenantQualityEscape, error) {
 	escape := request.Escape
 	if escape == nil {
 		return nil, nil
@@ -78,7 +79,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 	}
 	var previous eventstore.Evidence
 	var project projectstore.Record
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
@@ -94,7 +95,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 		if err != nil {
 			return err
 		}
-		if prepared.landing.ProjectID != scope.project || prepared.landing.WorkItemID != change.WorkItemID {
+		if prepared.landing.ProjectID != scope.Project || prepared.landing.WorkItemID != change.WorkItemID {
 			return artifact.ErrIntegrity
 		}
 		occurrences, ok := r.(eventstore.QualityEscapeReader)
@@ -109,7 +110,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 			prepared.previous = &previous
 		}
 		if escape.Kind == "reopened" {
-			event, err := r.RunEvent(ctx, scope.project, change.WorkItemID, escape.OccurrenceID)
+			event, err := r.RunEvent(ctx, scope.Project, change.WorkItemID, escape.OccurrenceID)
 			if err != nil {
 				if errors.Is(err, corestore.ErrNotFound) {
 					return hubapi.NativePublicInvalid("Reopen occurrence must reference its recorded Done transition")
@@ -117,7 +118,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 				return err
 			}
 			prepared.reopen = &event
-			project, err = r.ProjectRecord(ctx, scope.project)
+			project, err = r.ProjectRecord(ctx, scope.Project)
 			return err
 		}
 		return nil
@@ -133,7 +134,7 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 	if escape.ObservedAt.Before(landing.LandedAt) || escape.ObservedAt.After(now) {
 		return nil, hubapi.NativePublicInvalid("Escape must identify a landed version and an occurrence between landing and now")
 	}
-	if escape.HumanOverride && (scope.credential.SessionHash == "" || scope.actor().Kind != "human") {
+	if escape.HumanOverride && (scope.Credential.SessionHash == "" || scope.Actor().Kind != "human") {
 		return nil, hubapi.NativePublicInvalid("Human classification overrides require a human browser session")
 	}
 	if escape.Cause != "infrastructure" && !escape.HumanOverride {
@@ -187,21 +188,21 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope nativeSc
 	return prepared, nil
 }
 
-func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope nativeScope, escape tracker.QualityEscape) (*tenantQualityWitness, error) {
+func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope hubscope.NativeScope, escape tracker.QualityEscape) (*tenantQualityWitness, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	candidates := []tenantQualityWitness{}
 	clipped := false
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
 		cursor := corestore.ScanCursor{}
 		items := []corestore.WorkItem{}
 		for len(items) < maxAnalyticsPopulation {
-			page, err := r.ScanWorkItems(ctx, scope.project, cursor, min(corestore.MaxPageSize, maxAnalyticsPopulation-len(items)))
+			page, err := r.ScanWorkItems(ctx, scope.Project, cursor, min(corestore.MaxPageSize, maxAnalyticsPopulation-len(items)))
 			if err != nil {
 				return err
 			}
@@ -215,14 +216,14 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope nati
 			}
 		}
 		for _, item := range items {
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+			if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				continue
 			}
 			candidates = append(candidates, tenantQualityWitness{item: item})
 		}
 		budget := maxAnalyticsPopulation - len(items)
 		for _, item := range items {
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+			if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				continue
 			}
 			cursor = corestore.ScanCursor{}
@@ -231,7 +232,7 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope nati
 					clipped = true
 					break
 				}
-				page, err := r.ScanComments(ctx, scope.project, item.NativeID, cursor, min(corestore.MaxPageSize, budget))
+				page, err := r.ScanComments(ctx, scope.Project, item.NativeID, cursor, min(corestore.MaxPageSize, budget))
 				if err != nil {
 					return err
 				}
@@ -314,7 +315,7 @@ func (s *Service) prepareScheduledQualityWitness(ctx context.Context, scope nati
 	return nil, hubapi.NativePublicInvalid("Scheduled escape must quote an existing red scheduled-suite occurrence; candidate commits alone do not establish attribution")
 }
 
-func recheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope nativeScope, change tracker.ChangeRequest, escape tracker.QualityEscape, prepared *preparedTenantQualityEscape) error {
+func recheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, change tracker.ChangeRequest, escape tracker.QualityEscape, prepared *preparedTenantQualityEscape) error {
 	owner, ok := w.(eventstore.VersionLandingReader)
 	if !ok {
 		return hubapi.NativeWorkItemStorageUnavailable()
@@ -344,15 +345,15 @@ func recheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope
 		return corestore.ErrRevisionConflict
 	}
 	if witness := prepared.scheduled; witness != nil {
-		item, err := w.WorkItem(ctx, scope.project, witness.item.NativeID)
+		item, err := w.WorkItem(ctx, scope.Project, witness.item.NativeID)
 		if err != nil {
 			return err
 		}
-		if item.Revision != witness.item.Revision || !reflect.DeepEqual(item.BodyObjectKey, witness.item.BodyObjectKey) || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+		if item.Revision != witness.item.Revision || !reflect.DeepEqual(item.BodyObjectKey, witness.item.BodyObjectKey) || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 			return corestore.ErrRevisionConflict
 		}
 		if witness.comment != nil {
-			comment, err := w.Comment(ctx, scope.project, item.NativeID, witness.comment.ID)
+			comment, err := w.Comment(ctx, scope.Project, item.NativeID, witness.comment.ID)
 			if err != nil {
 				return err
 			}
@@ -362,14 +363,14 @@ func recheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope
 		}
 	}
 	if prepared.reopen != nil {
-		event, err := w.RunEvent(ctx, scope.project, change.WorkItemID, prepared.reopen.ID)
+		event, err := w.RunEvent(ctx, scope.Project, change.WorkItemID, prepared.reopen.ID)
 		if err != nil {
 			return err
 		}
 		if !reflect.DeepEqual(event, *prepared.reopen) {
 			return corestore.ErrRevisionConflict
 		}
-		project, err := w.ProjectRecord(ctx, scope.project)
+		project, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

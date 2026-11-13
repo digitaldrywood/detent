@@ -12,12 +12,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenantstore.Reader, scope nativeScope, projects []tracker.ProjectID, routingScope string) error {
+func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, projects []tracker.ProjectID, routingScope string) error {
 	if err := s.authorizeAccessScope(ctx, reader, scope, true); err != nil {
 		return err
 	}
@@ -30,16 +31,16 @@ func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenan
 			return corestore.ErrNotFound
 		}
 		selected := scope
-		selected.project = project
+		selected.Project = project
 		if err := s.authorizeAccessScope(ctx, reader, selected, true); err != nil {
 			return err
 		}
-		if scope.credential.Hosted != nil {
-			member, err := reader.AccessMember(ctx, scope.credential.Hosted.Subject)
+		if scope.Credential.Hosted != nil {
+			member, err := reader.AccessMember(ctx, scope.Credential.Hosted.Subject)
 			if err != nil {
 				return err
 			}
-			if hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole) == "member" {
+			if hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole) == "member" {
 				grant, err := reader.AccessProjectGrant(ctx, member.UserID, project)
 				if err != nil || !grant.ManageRunner {
 					return accessstore.ErrDenied
@@ -47,8 +48,8 @@ func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenan
 			}
 		}
 	}
-	if scope.credential.Hosted != nil && routingScope == "organization" {
-		credential := scope.credential
+	if scope.Credential.Hosted != nil && routingScope == "organization" {
+		credential := scope.Credential
 		member, err := reader.AccessMember(ctx, credential.Hosted.Subject)
 		if err != nil {
 			return err
@@ -77,7 +78,7 @@ func (s *Service) authorizeRunnerRoutingAccess(ctx context.Context, reader tenan
 	return nil
 }
 
-func (s *Service) readRunnerRoutingReceipt(ctx context.Context, scope nativeScope, resource string, receipt eventstore.Receipt, content *eventstore.Content) (json.RawMessage, error) {
+func (s *Service) readRunnerRoutingReceipt(ctx context.Context, scope hubscope.NativeScope, resource string, receipt eventstore.Receipt, content *eventstore.Content) (json.RawMessage, error) {
 	raw, err := content.Receipt(ctx, receipt)
 	if err != nil {
 		return nil, err
@@ -86,7 +87,7 @@ func (s *Service) readRunnerRoutingReceipt(ctx context.Context, scope nativeScop
 	if err := json.Unmarshal(raw, &represented); err != nil {
 		return nil, artifact.ErrIntegrity
 	}
-	if represented.OrganizationID != scope.organization || represented.RunnerID != resource || represented.Scope != "projects" && represented.Scope != "organization" {
+	if represented.OrganizationID != scope.Organization || represented.RunnerID != resource || represented.Scope != "projects" && represented.Scope != "organization" {
 		return nil, artifact.ErrIntegrity
 	}
 	projects := []tracker.ProjectID{}
@@ -114,7 +115,7 @@ func (s *Service) readRunnerRoutingReceipt(ctx context.Context, scope nativeScop
 		slices.Sort(projects)
 		projects = slices.Compact(projects)
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		return s.authorizeRunnerRoutingAccess(ctx, reader, scope, projects, represented.Scope)
 	}); err != nil {
 		return nil, hubapi.ProjectRecordError(err)

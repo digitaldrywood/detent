@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -75,9 +76,9 @@ type Service struct {
 	config                  Config
 	outbox                  *outboxWorker
 	ready                   atomic.Bool
-	wakeSpriteRunnersAfter  func(nativeScope, json.RawMessage)
-	startSpriteLifecycle    func(nativeScope, string)
-	startSpritePoolForQueue func(nativeScope)
+	wakeSpriteRunnersAfter  func(hubscope.NativeScope, json.RawMessage)
+	startSpriteLifecycle    func(hubscope.NativeScope, string)
+	startSpritePoolForQueue func(hubscope.NativeScope)
 	spriteWakeMu            sync.Mutex
 	spriteWakes             map[spriteWakeKey]*spriteLifecyclePass
 	spriteWakeWork          sync.WaitGroup
@@ -91,7 +92,7 @@ type Service struct {
 	projectionCursors       sync.Map
 	cleanupPollCursors      sync.Map
 	boardRefreshCursor      string
-	boardRetentionScope     nativeScope
+	boardRetentionScope     hubscope.NativeScope
 	lastNativeCleanup       time.Time
 	githubBatchCursor       tracker.ProjectID
 	workerStopOnce          sync.Once
@@ -303,13 +304,13 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 	if service.config.ProjectParticipants == nil && service.config.TenantRepository != nil && service.config.AccessRepository != nil {
 		service.config.ProjectParticipants = tenantProjectParticipants{service: service}
 	}
-	service.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) {
+	service.wakeSpriteRunnersAfter = func(scope hubscope.NativeScope, result json.RawMessage) {
 		service.scheduleSpriteWake(workerContext, scope, result)
 	}
-	service.startSpriteLifecycle = func(scope nativeScope, state string) {
+	service.startSpriteLifecycle = func(scope hubscope.NativeScope, state string) {
 		service.scheduleSpriteLifecycle(workerContext, scope, state)
 	}
-	service.startSpritePoolForQueue = func(scope nativeScope) {
+	service.startSpritePoolForQueue = func(scope hubscope.NativeScope) {
 		service.scheduleSpritePoolForQueue(workerContext, scope)
 	}
 	if database.postgres == nil || cfg.OutboxBackend != nil {

@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,9 +21,9 @@ type tenantChangeVersionAuthority struct {
 	content    *eventstore.Content
 }
 
-func (a tenantChangeVersionAuthority) Prepare(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion, _ time.Time) (ChangeVersionApproval, error) {
+func (a tenantChangeVersionAuthority) Prepare(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion, _ time.Time) (ChangeVersionApproval, error) {
 	var rows currentChangePolicyRows
-	err := a.repository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := a.repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		rows, err = readCurrentChangePolicyRows(ctx, r, scope)
 		return err
@@ -34,13 +35,13 @@ func (a tenantChangeVersionAuthority) Prepare(ctx context.Context, scope nativeS
 	if err != nil {
 		return ChangeVersionApproval{}, hubapi.ProjectRecordError(err)
 	}
-	if change.OrganizationID != scope.organization || change.ProjectID != scope.project || result.Policy.ID != request.PolicyID {
+	if change.OrganizationID != scope.Organization || change.ProjectID != scope.Project || result.Policy.ID != request.PolicyID {
 		return ChangeVersionApproval{}, hubapi.PolicyMismatch("Current approved policy changed; read the current policy and retry")
 	}
 	return result, nil
 }
 
-func (a tenantChangeVersionAuthority) Authorize(ctx context.Context, w tenantstore.Writer, scope nativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion, prepared ChangeVersionApproval, _ time.Time) error {
+func (a tenantChangeVersionAuthority) Authorize(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, change tracker.ChangeRequest, request tracker.PublishChangeVersion, prepared ChangeVersionApproval, _ time.Time) error {
 	rows, err := readCurrentChangePolicyRows(ctx, w, scope)
 	if err != nil {
 		return err
@@ -48,7 +49,7 @@ func (a tenantChangeVersionAuthority) Authorize(ctx context.Context, w tenantsto
 	if rows.Project.PolicyID != prepared.Policy.ID || rows.hasReview && rows.Review.ReviewPolicyID != prepared.ReviewPolicy.ID || !rows.hasReview && defaultChangeReviewPolicy(prepared.Policy).ID != prepared.ReviewPolicy.ID {
 		return hubapi.PolicyMismatch("Current approved Change policy changed during publication")
 	}
-	if change.OrganizationID != scope.organization || change.ProjectID != scope.project || change.WorkItemID == "" || request.PolicyID != prepared.Policy.ID {
+	if change.OrganizationID != scope.Organization || change.ProjectID != scope.Project || change.WorkItemID == "" || request.PolicyID != prepared.Policy.ID {
 		return corestore.ErrTenantMismatch
 	}
 	return nil
@@ -60,7 +61,7 @@ type currentChangePolicyRows struct {
 	hasReview bool
 }
 
-func readCurrentChangePolicyRows(ctx context.Context, r tenantstore.Reader, scope nativeScope) (currentChangePolicyRows, error) {
+func readCurrentChangePolicyRows(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) (currentChangePolicyRows, error) {
 	rows, err := readChangeSummaryPolicyRows(ctx, r, scope)
 	if err == nil && rows.hasReview && rows.Review.PolicyRevisionID != rows.Project.PolicyID {
 		return rows, &hubapi.NativeError{Code: "policy_mismatch", Message: "Change review policy does not match the approved repository policy; read the current policy and retry", Status: http.StatusConflict, PublicMessage: true}
@@ -68,34 +69,34 @@ func readCurrentChangePolicyRows(ctx context.Context, r tenantstore.Reader, scop
 	return rows, err
 }
 
-func readChangeSummaryPolicyRows(ctx context.Context, r tenantstore.Reader, scope nativeScope) (currentChangePolicyRows, error) {
+func readChangeSummaryPolicyRows(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) (currentChangePolicyRows, error) {
 	var rows currentChangePolicyRows
-	project, err := r.ProjectPolicy(ctx, scope.project)
+	project, err := r.ProjectPolicy(ctx, scope.Project)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return rows, errNoApprovedRepositoryPolicy
 	}
 	if err != nil {
 		return rows, err
 	}
-	if project.OrganizationID != scope.organization || project.ProjectID != scope.project || project.PolicyID == "" || project.ApprovedBy == "" || project.ApprovedAt.IsZero() {
+	if project.OrganizationID != scope.Organization || project.ProjectID != scope.Project || project.PolicyID == "" || project.ApprovedBy == "" || project.ApprovedAt.IsZero() {
 		return rows, corestore.ErrTenantMismatch
 	}
 	rows.Project = project
-	review, err := r.ReviewPolicy(ctx, scope.project)
+	review, err := r.ReviewPolicy(ctx, scope.Project)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return rows, nil
 	}
 	if err != nil {
 		return rows, err
 	}
-	if review.OrganizationID != scope.organization || review.ProjectID != scope.project || review.PolicyRevisionID == "" || review.ReviewPolicyID == "" || review.Revision < 1 || review.UpdatedBy == "" || review.UpdatedAt.IsZero() {
+	if review.OrganizationID != scope.Organization || review.ProjectID != scope.Project || review.PolicyRevisionID == "" || review.ReviewPolicyID == "" || review.Revision < 1 || review.UpdatedBy == "" || review.UpdatedAt.IsZero() {
 		return rows, corestore.ErrTenantMismatch
 	}
 	rows.Review, rows.hasReview = review, true
 	return rows, nil
 }
 
-func hydrateCurrentChangeVersionApproval(ctx context.Context, content *eventstore.Content, scope nativeScope, rows currentChangePolicyRows, policyID string) (ChangeVersionApproval, error) {
+func hydrateCurrentChangeVersionApproval(ctx context.Context, content *eventstore.Content, scope hubscope.NativeScope, rows currentChangePolicyRows, policyID string) (ChangeVersionApproval, error) {
 	descriptor, err := content.ProjectPolicy(ctx, rows.Project)
 	if err != nil {
 		return ChangeVersionApproval{}, err
@@ -119,11 +120,11 @@ func hydrateCurrentChangeVersionApproval(ctx context.Context, content *eventstor
 	return ChangeVersionApproval{Policy: descriptor, ReviewPolicy: rules}, nil
 }
 
-func hydrateChangeSummaryPolicy(ctx context.Context, content *eventstore.Content, scope nativeScope, rows currentChangePolicyRows) (ChangeVersionApproval, error) {
+func hydrateChangeSummaryPolicy(ctx context.Context, content *eventstore.Content, scope hubscope.NativeScope, rows currentChangePolicyRows) (ChangeVersionApproval, error) {
 	if rows.hasReview && rows.Review.PolicyRevisionID == rows.Project.PolicyID {
 		return hydrateCurrentChangeVersionApproval(ctx, content, scope, rows, "")
 	}
-	if rows.Project.OrganizationID != scope.organization || rows.Project.ProjectID != scope.project || rows.hasReview && (rows.Review.OrganizationID != scope.organization || rows.Review.ProjectID != scope.project) {
+	if rows.Project.OrganizationID != scope.Organization || rows.Project.ProjectID != scope.Project || rows.hasReview && (rows.Review.OrganizationID != scope.Organization || rows.Review.ProjectID != scope.Project) {
 		return ChangeVersionApproval{}, corestore.ErrTenantMismatch
 	}
 	descriptor, err := content.ProjectPolicy(ctx, rows.Project)

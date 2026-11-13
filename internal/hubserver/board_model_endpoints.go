@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -17,7 +18,7 @@ import (
 )
 
 func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	params, err := nativeReadQuery(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -32,11 +33,11 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 	defer cancel()
 	var response any
 	read := func(ctx context.Context) error {
-		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 				return err
 			}
-			project, err := reader.Project(ctx, scope.project)
+			project, err := reader.Project(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -81,7 +82,7 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 				}
 				visible := make([]viewstore.BoardStatusRecord, 0, len(rows))
 				for _, row := range rows {
-					if allowed.Items[row.WorkItemID] != scope.project {
+					if allowed.Items[row.WorkItemID] != scope.Project {
 						continue
 					}
 					if row.Change != nil && !allowed.Changes[row.Change.ID] {
@@ -107,7 +108,7 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 	if repository, ok := s.config.TenantRepository.(interface {
 		ReadBoardRequest(context.Context, tracker.OrganizationID, string, func(context.Context) error) error
 	}); ok {
-		err = repository.ReadBoardRequest(ctx, scope.organization, scope.credential.ID, read)
+		err = repository.ReadBoardRequest(ctx, scope.Organization, scope.Credential.ID, read)
 	} else {
 		err = read(ctx)
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -144,7 +145,7 @@ func seedThreadUnreadHistory(t *testing.T, viewer nativeFixture, prefix string, 
 	ctx := t.Context()
 	organization := viewer.project.OrganizationID
 	credential := threadUnreadCredential(t, viewer)
-	principal := operatorIdentity(credential, string(organization)).PrincipalID
+	principal := hubscope.OperatorIdentity(credential, string(organization)).PrincipalID
 	at := conversationTime(viewer.service.config.now())
 	post, err := threadstore.NewContent(viewer.service.runDetailStore()).PreparePost(ctx, organization, threadstore.PostRecord{
 		Post: teamPost{Author: principal, Name: "Example member", Kind: "note", Body: "Finding", CreatedAt: at}, RequestKey: "history-post", InputHash: strings.Repeat("a", 64),
@@ -198,7 +199,7 @@ func TestTeamThreadUnreadSummaryBoundsHistoryWork(t *testing.T) {
 	post(foreign, "general")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, threadBase(f)+"/"+general.ID, f.token, nil), 200)
 	credential := threadUnreadCredential(t, f)
-	principal := operatorIdentity(credential, string(f.project.OrganizationID)).PrincipalID
+	principal := hubscope.OperatorIdentity(credential, string(f.project.OrganizationID)).PrincipalID
 	seedThreadUnreadHistory(t, f, "read", 253, principal)
 	read := func(viewer nativeFixture, project tracker.ProjectID, refresh bool) teamUnreadSummary {
 		t.Helper()
@@ -249,7 +250,7 @@ func TestTeamThreadUnreadSummaryBoundsHistoryWork(t *testing.T) {
 	if got := read(f, f.project.ID, false); got.Pending || got.Count == nil || *got.Count != 1 {
 		t.Fatalf("older unread thread missing: %+v", got)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: credential}
 	statements = nil
 	if _, err := worker.requestTeamUnread(ctx, scope, []string{string(f.project.ID)}, false); err != nil {
 		t.Fatal(err)

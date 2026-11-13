@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -297,7 +298,7 @@ func TestOrganizationProductivity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("owner credential status=%d: %v", status, err)
 			}
-			raw, err := service.transitionNativeIssueTenant(t.Context(), nativeScope{organization: org, project: projects[0], credential: owner}, string(id), tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "filer-transition-" + string(id)}, ExpectedRevision: 1, State: "Done", Reason: "user_requested"})
+			raw, err := service.transitionNativeIssueTenant(t.Context(), hubscope.NativeScope{Organization: org, Project: projects[0], Credential: owner}, string(id), tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "filer-transition-" + string(id)}, ExpectedRevision: 1, State: "Done", Reason: "user_requested"})
 			if err != nil {
 				t.Fatal(err)
 			}

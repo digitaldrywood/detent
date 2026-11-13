@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -21,12 +22,12 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 	if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 		return operatortool.ErrAccessDenied
 	}
-	if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}, true); err != nil {
+	if err := s.authorizeAccessScope(ctx, r, hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential, RequireHostedAdmin: true}, true); err != nil {
 		return err
 	}
 	tenant, err := r.AccessTenant(ctx)
 	if err != nil {
-		return operatorAuthorizationError(err)
+		return hubscope.OperatorAuthorizationError(err)
 	}
 	if tenant.ProviderID != credential.Hosted.OrganizationID {
 		return operatortool.ErrAccessDenied
@@ -39,7 +40,7 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 		selected[grant.ProjectID] = true
 		project, err := r.ProjectRecord(ctx, tracker.ProjectID(grant.ProjectID))
 		if err != nil {
-			return operatorAuthorizationError(err)
+			return hubscope.OperatorAuthorizationError(err)
 		}
 		if project.Core.DeletedAt != nil {
 			return operatortool.ErrAccessDenied
@@ -49,7 +50,7 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 		}
 		projectGrant, err := r.AccessProjectGrant(ctx, credential.Hosted.Subject, tracker.ProjectID(grant.ProjectID))
 		if err != nil {
-			return operatorAuthorizationError(err)
+			return hubscope.OperatorAuthorizationError(err)
 		}
 		if grant.Write && !projectGrant.CanWrite || grant.Runner && !projectGrant.ManageRunner {
 			return &hubapi.NativeError{Code: "forbidden", Message: "You can only grant project access that you hold", Status: 403, PublicMessage: true}
@@ -122,7 +123,7 @@ func (s *Service) validateAccessInvitationGrants(ctx context.Context, r tenantst
 func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantstore.Reader, credential hubapi.APICredential, project tracker.ProjectID, write, runner bool) error {
 	row, err := r.ProjectRecord(ctx, project)
 	if err != nil {
-		return operatorAuthorizationError(err)
+		return hubscope.OperatorAuthorizationError(err)
 	}
 	if row.Core.DeletedAt != nil {
 		return operatortool.ErrAccessDenied
@@ -138,7 +139,7 @@ func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantsto
 	}
 	grant, err := r.AccessProjectGrant(ctx, credential.Hosted.Subject, project)
 	if err != nil {
-		return operatorAuthorizationError(err)
+		return hubscope.OperatorAuthorizationError(err)
 	}
 	if write && !grant.CanWrite || runner && !grant.ManageRunner {
 		return &hubapi.NativeError{Code: "forbidden", Message: "You can only grant project access that you hold", Status: 403, PublicMessage: true}
@@ -148,11 +149,11 @@ func (s *Service) validateAccessInvitationGrant(ctx context.Context, r tenantsto
 		tokenID = credential.HostedPrincipal
 	}
 	if _, err := r.AccessTokenGrant(ctx, tokenID, project); err != nil {
-		return operatorAuthorizationError(err)
+		return hubscope.OperatorAuthorizationError(err)
 	}
 	if credential.Hosted != nil {
 		if _, err := r.AccessTokenGrant(ctx, credential.HostedPrincipal, project); err != nil {
-			return operatorAuthorizationError(err)
+			return hubscope.OperatorAuthorizationError(err)
 		}
 	}
 	return nil
@@ -167,14 +168,14 @@ func (s *Service) pendingAccessInvitationFor(ctx context.Context, credential hub
 	err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		tenant, err := r.AccessTenant(ctx)
 		if err != nil {
-			return operatorAuthorizationError(err)
+			return hubscope.OperatorAuthorizationError(err)
 		}
 		if tenant.ProviderID != credential.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
 		row, err = r.AccessInvitation(ctx, id)
 		if err != nil {
-			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return classified
 			}
 			return hubapi.NativeNotFound()
@@ -219,7 +220,7 @@ func (s *Service) createAccessInvitation(ctx context.Context, credential hubapi.
 	}
 	view = hostedInvitationView{ID: invitation.ID, Email: email, Role: role, CreatedAt: hubapi.FormatHubTime(now), ExpiresAt: hubapi.FormatHubTime(expires), Grants: append([]hostedMemberGrant{}, grants...)}
 	err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
-		scope := nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}
+		scope := hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential, RequireHostedAdmin: true}
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -252,13 +253,13 @@ func (s *Service) editAccessInvitation(ctx context.Context, credential hubapi.AP
 		return err
 	}
 	err = s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
-		scope := nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}
+		scope := hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential, RequireHostedAdmin: true}
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return fmt.Errorf("authorize invitation edit: %w", err)
 		}
 		current, err := w.AccessInvitation(ctx, id)
 		if err != nil {
-			if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+			if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 				return classified
 			}
 			return hubapi.NativeNotFound()
@@ -296,12 +297,12 @@ func (s *Service) editAccessInvitation(ctx context.Context, credential hubapi.AP
 func (s *Service) revokeAccessInvitation(ctx context.Context, credential hubapi.APICredential, id string) error {
 	var current accessstore.Invitation
 	if err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
-		if err := s.authorizeAccessScope(ctx, r, nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}, true); err != nil {
+		if err := s.authorizeAccessScope(ctx, r, hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential, RequireHostedAdmin: true}, true); err != nil {
 			return err
 		}
 		tenant, err := r.AccessTenant(ctx)
 		if err != nil {
-			return operatorAuthorizationError(err)
+			return hubscope.OperatorAuthorizationError(err)
 		}
 		if credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied
@@ -325,12 +326,12 @@ func (s *Service) revokeAccessInvitation(ctx context.Context, credential hubapi.
 		return errors.Join(operatortool.ErrProviderUnavailable, err)
 	}
 	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
-		if err := s.authorizeAccessScope(ctx, w, nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}, true); err != nil {
+		if err := s.authorizeAccessScope(ctx, w, hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential, RequireHostedAdmin: true}, true); err != nil {
 			return err
 		}
 		tenant, err := w.AccessTenant(ctx)
 		if err != nil {
-			return operatorAuthorizationError(err)
+			return hubscope.OperatorAuthorizationError(err)
 		}
 		if credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied
@@ -365,12 +366,12 @@ func (s *Service) reserveAccessInvitationSeat(ctx context.Context, credential hu
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
-		if err := s.authorizeAccessScope(ctx, w, nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}, true); err != nil {
+		if err := s.authorizeAccessScope(ctx, w, hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential, RequireHostedAdmin: true}, true); err != nil {
 			return err
 		}
 		tenant, err := w.AccessTenant(ctx)
 		if err != nil {
-			return operatorAuthorizationError(err)
+			return hubscope.OperatorAuthorizationError(err)
 		}
 		if credential.Hosted == nil || tenant.ProviderID != credential.Hosted.OrganizationID {
 			return operatortool.ErrAccessDenied

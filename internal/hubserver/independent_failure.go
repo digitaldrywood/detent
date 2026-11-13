@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -61,7 +62,7 @@ func independentRunFailures(issue tracker.NativeIssue, data tracker.NativeRunDat
 	return tracker.IndependentGateFailures(result)
 }
 
-func (s *Service) prepareIndependentRepairs(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, failures []failureattribution.Evidence, source string, now time.Time) (*preparedIndependentRepairs, error) {
+func (s *Service) prepareIndependentRepairs(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, failures []failureattribution.Evidence, source string, now time.Time) (*preparedIndependentRepairs, error) {
 	if len(failures) == 0 {
 		return nil, nil
 	}
@@ -91,12 +92,12 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope nativeSco
 		request := independentRepairRequest(failure, source)
 		origin, _ := issueorigin.Parse(request.Body)
 		var selection postgres.DoctorProposalIdentityResult
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 				return err
 			}
 			var err error
-			selection, err = r.LookupDoctorProposalIdentity(ctx, postgres.DoctorProposalIdentitySelection{ProjectID: scope.project, Identity: postgres.DoctorProposalIdentity{Kind: "fingerprint", Value: origin.Fingerprint}})
+			selection, err = r.LookupDoctorProposalIdentity(ctx, postgres.DoctorProposalIdentitySelection{ProjectID: scope.Project, Identity: postgres.DoctorProposalIdentity{Kind: "fingerprint", Value: origin.Fingerprint}})
 			return err
 		})
 		if errors.Is(err, postgres.ErrDoctorProposalIdentitiesPending) {
@@ -173,7 +174,7 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope nativeSco
 		}
 		out.repairs = append(out.repairs, repair)
 	}
-	if err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		refusal, err := s.checkIndependentRepairs(ctx, w, scope, out)
 		if err == nil && refusal != "" {
 			out.refusal = refusal
@@ -207,7 +208,7 @@ func (s *Service) prepareIndependentRepairs(ctx context.Context, scope nativeSco
 	return out, nil
 }
 
-func (s *Service) checkIndependentRepairs(ctx context.Context, w tenantstore.Writer, scope nativeScope, plan *preparedIndependentRepairs) (string, error) {
+func (s *Service) checkIndependentRepairs(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, plan *preparedIndependentRepairs) (string, error) {
 	if plan == nil {
 		return "", nil
 	}
@@ -217,21 +218,21 @@ func (s *Service) checkIndependentRepairs(ctx context.Context, w tenantstore.Wri
 	if err := w.LockRelationshipGraph(ctx); err != nil {
 		return "", err
 	}
-	if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+	if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 		return "", err
 	}
-	project, err := w.ProjectRecord(ctx, scope.project)
+	project, err := w.ProjectRecord(ctx, scope.Project)
 	if err != nil {
 		return "", err
 	}
 	if project.Core.DeletedAt != nil || !sameWorkItemProjectPlan(plan.source.project, project) {
 		return "", corestore.ErrSerializationFailure
 	}
-	current, err := w.LockWorkItem(ctx, scope.project, plan.source.current.NativeID)
+	current, err := w.LockWorkItem(ctx, scope.Project, plan.source.current.NativeID)
 	if err != nil {
 		return "", err
 	}
-	if current.Revision != plan.source.current.Revision || current.Archived || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
+	if current.Revision != plan.source.current.Revision || current.Archived || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 		return "", corestore.ErrSerializationFailure
 	}
 	refusal := plan.refusal
@@ -242,7 +243,7 @@ func (s *Service) checkIndependentRepairs(ctx context.Context, w tenantstore.Wri
 		if repair.target.NativeID == "" {
 			continue
 		}
-		target, err := w.LockWorkItem(ctx, scope.project, repair.target.NativeID)
+		target, err := w.LockWorkItem(ctx, scope.Project, repair.target.NativeID)
 		if err != nil {
 			return "", err
 		}
@@ -253,7 +254,7 @@ func (s *Service) checkIndependentRepairs(ctx context.Context, w tenantstore.Wri
 			refusal = "Dependencies cannot form a cycle"
 			continue
 		}
-		edge := corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: current.NativeID, RelatedProjectID: scope.project, RelatedWorkItemID: target.NativeID, Type: "dependency"}
+		edge := corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: current.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: target.NativeID, Type: "dependency"}
 		if err := w.CheckDependency(ctx, edge); errors.Is(err, corestore.ErrDependencyCycle) {
 			refusal = "Dependencies cannot form a cycle"
 		} else if err != nil {
@@ -263,14 +264,14 @@ func (s *Service) checkIndependentRepairs(ctx context.Context, w tenantstore.Wri
 	return refusal, nil
 }
 
-func (s *Service) applyIndependentRepairs(ctx context.Context, w tenantstore.Writer, scope nativeScope, plan *preparedIndependentRepairs) error {
+func (s *Service) applyIndependentRepairs(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, plan *preparedIndependentRepairs) error {
 	if plan == nil || plan.refusal != "" {
 		return nil
 	}
 	for _, repair := range plan.repairs {
 		p := repair.record
 		if p.plan.create && p.plan.comment.ID == "" {
-			current, err := w.ProjectPolicy(ctx, scope.project)
+			current, err := w.ProjectPolicy(ctx, scope.Project)
 			if errors.Is(err, corestore.ErrNotFound) && !repair.policyFound {
 				err = nil
 			} else if err == nil && (!repair.policyFound || !sameNativeClaimProjectPolicy(current, repair.policy)) {
@@ -288,7 +289,7 @@ func (s *Service) applyIndependentRepairs(ctx context.Context, w tenantstore.Wri
 				return err
 			}
 		}
-		edge := corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.source.current.NativeID, RelatedProjectID: scope.project, RelatedWorkItemID: p.plan.issue.WorkItemID, Type: "dependency"}
+		edge := corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.source.current.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: p.plan.issue.WorkItemID, Type: "dependency"}
 		if err := w.SetRelationship(ctx, edge, "add", p.plan.issue.UpdatedAt); err != nil {
 			return err
 		}
@@ -299,7 +300,7 @@ func (s *Service) applyIndependentRepairs(ctx context.Context, w tenantstore.Wri
 	return nil
 }
 
-func (s *Service) applyIndependentRecord(ctx context.Context, w tenantstore.Writer, scope nativeScope, p scheduledAttributionRecord) error {
+func (s *Service) applyIndependentRecord(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, p scheduledAttributionRecord) error {
 	if err := writeWorkItemRecord(ctx, w, p.plan, p.fields); err != nil {
 		return err
 	}
@@ -317,7 +318,7 @@ func (s *Service) applyIndependentRecord(ctx context.Context, w tenantstore.Writ
 		return err
 	}
 	if p.plan.comment.ID == "" {
-		return w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: p.version.WorkItemID, Revision: p.version.Revision, VersionSHA256: p.version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(p.plan.issue.Body)})
+		return w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: p.version.WorkItemID, Revision: p.version.Revision, VersionSHA256: p.version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(p.plan.issue.Body)})
 	}
 	return nil
 }

@@ -174,7 +174,7 @@ func TestNativeRetention(t *testing.T) {
 		f.clock.Add(int64(60 * 24 * time.Hour))
 		now := f.now()
 		at := now.Add(-31 * 24 * time.Hour)
-		record := conversationstore.Conversation{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: conversation.NewConversationID(), OwnerPrincipalID: f.scope.credential.ID, Origin: "user", Title: "Old conversation", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusSettled, CreatedAt: at, UpdatedAt: at, SettledAt: new(at), Execution: conversation.Execution{Status: conversation.ExecutionCompleted, Settled: true, Owner: conversation.Owner{LeaseID: "settled_retention"}}}
+		record := conversationstore.Conversation{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: conversation.NewConversationID(), OwnerPrincipalID: f.scope.Credential.ID, Origin: "user", Title: "Old conversation", Visibility: conversation.VisibilityPrivate, Status: conversation.StatusSettled, CreatedAt: at, UpdatedAt: at, SettledAt: new(at), Execution: conversation.Execution{Status: conversation.ExecutionCompleted, Settled: true, Owner: conversation.Owner{LeaseID: "settled_retention"}}}
 		f.write(t, func(w tenantstore.Writer) error {
 			var err error
 			record, err = w.CreateConversation(t.Context(), record)

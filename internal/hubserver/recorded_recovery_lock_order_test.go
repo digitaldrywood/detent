@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
@@ -175,7 +176,7 @@ func TestRecordedRecoveryDoesNotHoldGraphWhileWaitingForClaimRunner(t *testing.T
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("recovery fixture authentication: %d %v", status, err)
 	}
-	scope := nativeScope{organization: org, project: project, credential: credential}
+	scope := hubscope.NativeScope{Organization: org, Project: project, Credential: credential}
 	var source corestore.WorkItem
 	if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error

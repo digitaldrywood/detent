@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -210,7 +211,7 @@ func TestPostgresRunnerSessionMutationOrdersLocksWithLeaseRenewal(t *testing.T) 
 				if err != nil || status != http.StatusOK {
 					t.Fatalf("authenticate: status=%d err=%v", status, err)
 				}
-				owner := nativeProgressOwner{service: f.service, scope: nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}, request: progresscheck.Request{IssueID: string(f.leases[0].WorkItemID), PolicyID: f.policy.PolicyID, Instance: string(f.bindings[0].MachineID)}, leaseID: f.leases[0].ID, fencingToken: f.leases[0].FencingToken}
+				owner := nativeProgressOwner{service: f.service, scope: hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: credential}, request: progresscheck.Request{IssueID: string(f.leases[0].WorkItemID), PolicyID: f.policy.PolicyID, Instance: string(f.bindings[0].MachineID)}, leaseID: f.leases[0].ID, fencingToken: f.leases[0].FencingToken}
 				mutate = func() error {
 					return f.service.config.TenantRepository.WriteTenant(ctx, "org_startup", corestore.Serving, func(w tenantstore.Writer) error { return owner.validateProgressLeaseWriter(ctx, w) })
 				}
@@ -298,7 +299,7 @@ func TestPostgresRunnerSessionFencePreservesStorageErrors(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("authenticate: status=%d err=%v", status, err)
 	}
-	scope := nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}
+	scope := hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: credential}
 	request := runnersession.Mutation{LeaseID: f.leases[0].ID, FencingToken: f.leases[0].FencingToken}
 	for _, test := range []struct {
 		name                  string

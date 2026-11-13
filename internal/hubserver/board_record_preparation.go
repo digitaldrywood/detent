@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -71,13 +72,13 @@ type boardPreparedRecord struct {
 	err    error
 }
 
-func (s *Service) hydrateBoardRecords(ctx context.Context, scope nativeScope, records []viewstore.BoardRecord) map[tracker.NativeWorkItemID]boardPreparedRecord {
+func (s *Service) hydrateBoardRecords(ctx context.Context, scope hubscope.NativeScope, records []viewstore.BoardRecord) map[tracker.NativeWorkItemID]boardPreparedRecord {
 	refs := make([]attachment.ArchiveReference, 0, len(records))
 	for _, record := range records {
 		refs = append(refs, record.Payload)
 	}
 	finishPayloads := timeSpan(ctx, "board_payloads")
-	s.prefetchDetails(ctx, string(scope.organization), refs)
+	s.prefetchDetails(ctx, string(scope.Organization), refs)
 	decoded := prepareBoardRecordPage(ctx, records, func(ctx context.Context, row viewstore.BoardRecord) (tracker.NativeBoardCard, error) {
 		return viewstore.NewContent(s.runDetailStoreFor(ctx)).BoardRecord(ctx, row)
 	})
@@ -105,7 +106,7 @@ func (s *Service) hydrateBoardRecords(ctx context.Context, scope nativeScope, re
 	return prepared
 }
 
-func (s *Service) prepareBoardPage(ctx context.Context, scope nativeScope, records []viewstore.BoardRecord, now time.Time, currentChange bool, prepared map[tracker.NativeWorkItemID]boardPreparedRecord) *boardRecordPreparation {
+func (s *Service) prepareBoardPage(ctx context.Context, scope hubscope.NativeScope, records []viewstore.BoardRecord, now time.Time, currentChange bool, prepared map[tracker.NativeWorkItemID]boardPreparedRecord) *boardRecordPreparation {
 	missing := make([]viewstore.BoardRecord, 0, len(records))
 	for _, row := range records {
 		prior, exists := prepared[row.WorkItemID]

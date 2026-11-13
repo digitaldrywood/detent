@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -71,7 +72,7 @@ func (s *Service) localAppCredential(c echo.Context) (hubapi.APICredential, int,
 }
 
 func (s *Service) localAppCredentialContext(ctx context.Context, c echo.Context) (hubapi.APICredential, int, error) {
-	return nativeCredentialResult(s.requestAuth().LocalCredential(ctx, c))
+	return hubscope.NativeCredentialResult(s.requestAuth().LocalCredential(ctx, c))
 }
 
 func (s *Service) localAppBootstrap(c echo.Context) error {
@@ -87,8 +88,8 @@ func (s *Service) localAppBootstrap(c echo.Context) error {
 		CSRFToken: "local", SignInPath: "/login", Version: s.config.Version,
 		Feature: s.appBootstrapFeature(), SelfHosted: true,
 	}
-	scope := nativeScope{organization: tracker.OrganizationID(s.localOrganization), credential: credential, requireHostedAdmin: true}
-	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.localOrganization), Credential: credential, RequireHostedAdmin: true}
+	err = s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -160,10 +161,10 @@ func (s *Service) localAppOnly(next echo.HandlerFunc) echo.HandlerFunc {
 		if org := c.Param("organization"); org != "" && org != s.localOrganization {
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
-		if !hostedReadRequest(c) {
+		if !hubscope.HostedReadRequest(c) {
 			ctx := c.Request().Context()
-			scope := nativeScope{organization: tracker.OrganizationID(s.localOrganization), credential: credential, requireHostedAdmin: true}
-			err := s.accessWrite(ctx, scope.organization, func(w tenantstore.Writer) error {
+			scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.localOrganization), Credential: credential, RequireHostedAdmin: true}
+			err := s.accessWrite(ctx, scope.Organization, func(w tenantstore.Writer) error {
 				if err := w.LockAccessOrganization(ctx); err != nil {
 					return err
 				}
@@ -174,7 +175,7 @@ func (s *Service) localAppOnly(next echo.HandlerFunc) echo.HandlerFunc {
 					return err
 				}
 				now := s.config.now()
-				return w.CreateAccessMember(ctx, accessstore.Member{OrganizationID: scope.organization, UserID: appSubject(credential), Email: credential.Name, MembershipID: "local_" + credential.ID, Role: "admin", Active: true, PrincipalID: credential.ID, NotifyIssues: true, CreatedAt: now, UpdatedAt: now})
+				return w.CreateAccessMember(ctx, accessstore.Member{OrganizationID: scope.Organization, UserID: appSubject(credential), Email: credential.Name, MembershipID: "local_" + credential.ID, Role: "admin", Active: true, PrincipalID: credential.ID, NotifyIssues: true, CreatedAt: now, UpdatedAt: now})
 			})
 			if err != nil {
 				return s.nativeAPIError(c, err)
@@ -203,7 +204,7 @@ func (s *Service) localAppCreateProject(c echo.Context) error {
 	if c.Param("organization") != s.localOrganization {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	scope := nativeScope{organization: tracker.OrganizationID(s.localOrganization), credential: credential}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.localOrganization), Credential: credential}
 	c.Set("native_scope", scope)
 	request := createNativeProjectRequest{Mutation: input.Mutation, Name: input.Name, States: HostedProjectStates()}
 	return s.nativeMutation(c, request.Mutation, request, nil)

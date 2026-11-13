@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -35,11 +36,11 @@ func (s *Service) registerProjectSecretRoutes(e *echo.Echo) {
 	read := s.requireNativeScope(hubapi.APIScopeOperator, hubapi.APIScopeAdmin)
 	manage := func(next echo.HandlerFunc) echo.HandlerFunc {
 		return read(func(c echo.Context) error {
-			scope := nativeRequestScope(c)
-			if !canManageProjectSecrets(scope.credential) {
+			scope := hubscope.NativeRequestScope(c)
+			if !hubscope.CanManageProjectSecrets(scope.Credential) {
 				return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Changing provider secrets requires owner or admin access", hubapi.APIErrorResponse{Code: "forbidden", Message: "Changing provider secrets requires owner or admin access"})
 			}
-			scope.requireHostedAdmin = true
+			scope.RequireHostedAdmin = true
 			c.Set("native_scope", scope)
 			return next(c)
 		})
@@ -49,39 +50,29 @@ func (s *Service) registerProjectSecretRoutes(e *echo.Echo) {
 	e.DELETE(hubapi.NativeBase+"/secrets/:kind", s.removeProjectSecret, manage)
 }
 
-func canManageProjectSecrets(credential hubapi.APICredential) bool {
-	if credential.Runner.RunnerID != "" {
-		return false
-	}
-	if credential.Hosted != nil {
-		return credential.HostedRole == "owner" || credential.HostedRole == "admin"
-	}
-	return credential.Scope == hubapi.APIScopeAdmin && !credential.NativeOnly
-}
-
 func (s *Service) projectSecretMetadata(c echo.Context) error {
 	if c.Param("kind") != flySpritesToken {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	status, err := s.readAccessSecretStatus(c.Request().Context(), nativeRequestScope(c))
+	status, err := s.readAccessSecretStatus(c.Request().Context(), hubscope.NativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, status)
 }
 
-func secretActor(scope nativeScope) string {
-	if scope.credential.Hosted != nil {
-		if scope.credential.Hosted.SupportActor != "" {
-			return scope.credential.Hosted.SupportActor
+func secretActor(scope hubscope.NativeScope) string {
+	if scope.Credential.Hosted != nil {
+		if scope.Credential.Hosted.SupportActor != "" {
+			return scope.Credential.Hosted.SupportActor
 		}
-		return scope.credential.Hosted.Subject
+		return scope.Credential.Hosted.Subject
 	}
-	return scope.credential.ID
+	return scope.Credential.ID
 }
 
-func (s *Service) auditSecretUse(ctx context.Context, scope nativeScope, version int) error {
-	return s.accessWrite(ctx, scope.organization, func(w tenantstore.Writer) error {
+func (s *Service) auditSecretUse(ctx context.Context, scope hubscope.NativeScope, version int) error {
+	return s.accessWrite(ctx, scope.Organization, func(w tenantstore.Writer) error {
 		return w.RecordAccessSecretAudit(ctx, s.accessSecretAudit(scope, "use", version))
 	})
 }
@@ -107,7 +98,7 @@ func (s *Service) setProjectSecret(c echo.Context) error {
 	if s.config.SecretKeys == nil {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The Hub operator must configure a secret master key")
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	return s.setAccessProjectSecret(c, scope, token)
 }
 
@@ -115,20 +106,20 @@ func (s *Service) removeProjectSecret(c echo.Context) error {
 	if c.Param("kind") != flySpritesToken {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	if err := s.removeAccessProjectSecret(c.Request().Context(), nativeRequestScope(c)); err != nil {
+	if err := s.removeAccessProjectSecret(c.Request().Context(), hubscope.NativeRequestScope(c)); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, projectSecretStatus{Kind: flySpritesToken})
 }
 
-func resolveSpritesSecret(ctx context.Context, db hubapi.NativeQueryer, scope nativeScope) (nativeScope, string, hubsecrets.Envelope, error) {
+func resolveSpritesSecret(ctx context.Context, db hubapi.NativeQueryer, scope hubscope.NativeScope) (hubscope.NativeScope, string, hubsecrets.Envelope, error) {
 	var envelope hubsecrets.Envelope
 	var slug string
 	var source tracker.ProjectID
 	err := db.QueryRowContext(ctx, `SELECT project_id,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version FROM (
  SELECT project_id,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,0 AS rank FROM project_secrets WHERE organization_id=? AND project_id=? AND kind=?
- UNION ALL SELECT '',organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,1 FROM organization_secrets WHERE organization_id=? AND kind=?) ORDER BY rank LIMIT 1`, scope.organization, scope.project, flySpritesToken, scope.organization, flySpritesToken).Scan(&source, &slug, &envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
-	scope.project = source
+ UNION ALL SELECT '',organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,1 FROM organization_secrets WHERE organization_id=? AND kind=?) ORDER BY rank LIMIT 1`, scope.Organization, scope.Project, flySpritesToken, scope.Organization, flySpritesToken).Scan(&source, &slug, &envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
+	scope.Project = source
 	return scope, slug, envelope, err
 }
 
@@ -138,7 +129,7 @@ func (s *Service) organizationSpritesScope(next echo.HandlerFunc) echo.HandlerFu
 		if err != nil {
 			return s.hostedAPIError(c, err)
 		}
-		if c.Request().Method != http.MethodGet && !canManageProjectSecrets(scope.credential) {
+		if c.Request().Method != http.MethodGet && !hubscope.CanManageProjectSecrets(scope.Credential) {
 			return s.nativeAPIError(c, &hubapi.NativeError{Code: "forbidden", Message: "Changing Sprites settings requires owner or admin access", Status: http.StatusForbidden, PublicMessage: true})
 		}
 		c.Set("native_scope", scope)

@@ -6,12 +6,13 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestValidateWorkItemReceiptIssue(t *testing.T) {
-	scope := nativeScope{organization: "org_example", project: "prj_example"}
+	scope := hubscope.NativeScope{Organization: "org_example", Project: "prj_example"}
 	native := tracker.NativeWorkItemID(hubapi.NewID("wi"))
 	for _, test := range []struct {
 		name    string
@@ -28,7 +29,7 @@ func TestValidateWorkItemReceiptIssue(t *testing.T) {
 		{name: "unknown profile", id: native, profile: "example", item: string(native), want: receiptstore.ErrExpired},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: test.id, Number: 1, Revision: 2, Profile: test.profile}, Title: "Example", State: "Cancelled"}
+			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: test.id, Number: 1, Revision: 2, Profile: test.profile}, Title: "Example", State: "Cancelled"}
 			raw, err := json.Marshal(relationshipOmittedIssue(issue))
 			if err != nil {
 				t.Fatal(err)

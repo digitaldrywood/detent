@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -165,21 +166,21 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 	return t.submitCoordinatorAction(ctx, record, call, action)
 }
 
-func (s *Service) coordinatorScope(ctx context.Context, project tracker.ProjectID, manage bool) (nativeScope, error) {
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+func (s *Service) coordinatorScope(ctx context.Context, project tracker.ProjectID, manage bool) (hubscope.NativeScope, error) {
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
-		return nativeScope{}, operatortool.ErrAccessDenied
+		return hubscope.NativeScope{}, operatortool.ErrAccessDenied
 	}
 	scope, err := resolve(ctx)
-	if err != nil || manage && !canManageProjectSecrets(scope.credential) {
-		return nativeScope{}, operatortool.ErrAccessDenied
+	if err != nil || manage && !hubscope.CanManageProjectSecrets(scope.Credential) {
+		return hubscope.NativeScope{}, operatortool.ErrAccessDenied
 	}
-	scope.project = project
-	scope.requireHostedAdmin = manage
+	scope.Project = project
+	scope.RequireHostedAdmin = manage
 	return scope, nil
 }
 
-func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope nativeScope, settings spritePoolSettings) error {
+func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope hubscope.NativeScope, settings spritePoolSettings) error {
 	if err := validateSpritePoolSettings(&settings); err != nil {
 		return err
 	}
@@ -247,7 +248,7 @@ func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action cha
 	return chat.ActionExecution{Message: "Sprite pool lifecycle requested. Read get_sprite_pool and get_sprite_bootstrap_log to watch progress. A connected runner still needs customer provider sign-in, Git access, checkout and approved project policy before it can push work."}, nil
 }
 
-func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeScope, view spritePoolView, connector string, project tracker.ProjectID) (any, error) {
+func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope hubscope.NativeScope, view spritePoolView, connector string, project tracker.ProjectID) (any, error) {
 	secret, err := s.readAccessSecretStatus(ctx, scope)
 	if err != nil {
 		return nil, err
@@ -305,7 +306,7 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 		members = append(members, item)
 	}
 	setupScope := scope
-	setupScope.project = project
+	setupScope.Project = project
 	declared, err := s.projectRunnerSetupDeclaration(ctx, setupScope)
 	if err != nil {
 		return nil, err
@@ -313,7 +314,7 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 	return map[string]any{"share_idle_capacity": view.ShareIdleCapacity, "runner_setup_declared": declared, "token": secret, "token_validation": validation, "connector_url": connector, "isolation_tier": view.IsolationTier, "isolation_tier_unavailable_reason": view.IsolationTierUnavailableReason, "min_runners": view.MinRunners, "max_runners": view.MaxRunners, "idle_seconds": view.IdleSeconds, "revision": view.Revision, "bootstrap_configured": strings.TrimSpace(view.Bootstrap) != "", "connected_runners": connected, "members": members, "login_guide": "https://github.com/digitaldrywood/detent/blob/develop/docs/sprite-runners.md#6-sign-in-to-your-agents"}, nil
 }
 
-func (s *Service) projectRunnerSetupDeclaration(ctx context.Context, scope nativeScope) (*bool, error) {
+func (s *Service) projectRunnerSetupDeclaration(ctx context.Context, scope hubscope.NativeScope) (*bool, error) {
 	onboarding, err := s.projectOnboarding(ctx, scope)
 	if err != nil {
 		return nil, err

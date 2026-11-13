@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -25,14 +26,14 @@ type nativePageQuery struct {
 	item         string
 }
 
-func prepareNativePageQuery(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope, item string, families ...string) (hubapi.NativeQueryer, error) {
+func prepareNativePageQuery(ctx context.Context, q hubapi.NativeQueryer, scope hubscope.NativeScope, item string, families ...string) (hubapi.NativeQueryer, error) {
 	if slices.Contains(families, "native_board_filter_facts") && !slices.Contains(families, "native_board_filter_values") {
 		families = append(families, "native_board_filter_values")
 	}
-	prepared := &nativePageQuery{NativeQueryer: q, facts: map[string]nativePageFact{}, organization: scope.organization, project: scope.project, item: item}
+	prepared := &nativePageQuery{NativeQueryer: q, facts: map[string]nativePageFact{}, organization: scope.Organization, project: scope.Project, item: item}
 	if prior, ok := q.(*nativePageQuery); ok {
 		prepared.NativeQueryer = prior.NativeQueryer
-		if prior.organization == scope.organization && prior.project == scope.project && prior.item == item {
+		if prior.organization == scope.Organization && prior.project == scope.Project && prior.item == item {
 			for key, fact := range prior.facts {
 				prepared.facts[key] = fact
 			}
@@ -51,7 +52,7 @@ func prepareNativePageQuery(ctx context.Context, q hubapi.NativeQueryer, scope n
 	return prepared, nil
 }
 
-func readLegacyPageFact(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope, item, family string) (_ nativePageFact, resultErr error) {
+func readLegacyPageFact(ctx context.Context, q hubapi.NativeQueryer, scope hubscope.NativeScope, item, family string) (_ nativePageFact, resultErr error) {
 	if family == "report_attempts" || family == "report_events" {
 		return readLegacyReportFact(ctx, q, scope, family)
 	}
@@ -88,13 +89,13 @@ func readLegacyPageFact(ctx context.Context, q hubapi.NativeQueryer, scope nativ
 	if family == "native_workflow_ranks" {
 		org, project = "p.organization_id", "p.id"
 	}
-	if scope.organization != "" {
+	if scope.Organization != "" {
 		query += " AND " + org + "=?"
-		args = append(args, scope.organization)
+		args = append(args, scope.Organization)
 	}
-	if scope.project != "" {
+	if scope.Project != "" {
 		query += " AND " + project + "=?"
-		args = append(args, scope.project)
+		args = append(args, scope.Project)
 	}
 	if item != "" && family != "native_workflow_ranks" {
 		query += " AND " + key + "=?"
@@ -176,9 +177,6 @@ func readLegacyPageFact(ctx context.Context, q hubapi.NativeQueryer, scope nativ
 	return f, rows.Err()
 }
 
-func nativeIssuePrincipal(alias string) string {
-	return "(SELECT actor_principal_id FROM native_issue_actors WHERE id=" + alias + ".id)"
-}
 func decodePageEvent(raw string, data *tracker.CollaborationData) error {
 	if !strings.HasPrefix(strings.TrimSpace(raw), "{") {
 		return nil

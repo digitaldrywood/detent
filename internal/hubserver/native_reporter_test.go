@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -251,15 +252,18 @@ func TestReporterLinksAttachmentsAndBoardStream(t *testing.T) {
 	if len(changes) != 1 || changes[0].WorkItemID != own.WorkItemID || len(changes[0].LinkedIssues) != 1 {
 		t.Fatalf("changes=%+v", changes)
 	}
-	contexts := make(chan nativeScope, 1)
-	v.service.echo.GET(hubapi.NativeBase+"/reporter-board-scope", func(c echo.Context) error { contexts <- nativeRequestScope(c); return c.NoContent(http.StatusOK) }, v.service.requireNativeScope(hubapi.APIScopeOperator))
+	contexts := make(chan hubscope.NativeScope, 1)
+	v.service.echo.GET(hubapi.NativeBase+"/reporter-board-scope", func(c echo.Context) error {
+		contexts <- hubscope.NativeRequestScope(c)
+		return c.NoContent(http.StatusOK)
+	}, v.service.requireNativeScope(hubapi.APIScopeOperator))
 	requireNativeStatus(t, v.request(t, v.users["reporter"], http.MethodGet, v.base+"/reporter-board-scope", nil), http.StatusOK)
 	scope := <-contexts
-	scope.organization, scope.project = "org_security", v.project
+	scope.Organization, scope.Project = "org_security", v.project
 	drainTestNativeBoard(t, v.service)
 	var sequence int64
-	if err := v.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		current, err := r.BoardSequence(t.Context(), scope.project)
+	if err := v.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		current, err := r.BoardSequence(t.Context(), scope.Project)
 		sequence = current.Sequence
 		return err
 	}); err != nil {
@@ -309,7 +313,7 @@ func TestReporterLinksAttachmentsAndBoardStream(t *testing.T) {
 func TestReporterStatus(t *testing.T) {
 	for _, test := range []struct{ state, want string }{{"Triage", "submitted"}, {"Backlog", "planned"}, {"Todo", "planned"}, {"In Progress", "in_progress"}, {"In Review", "in_progress"}, {"Rework", "in_progress"}, {"Merging", "in_progress"}, {"Blocked", "in_progress"}, {"Done", "done"}, {"Cancelled", "cancelled"}} {
 		t.Run(test.state, func(t *testing.T) {
-			if got := reporterStatus(test.state); got != test.want {
+			if got := hubscope.ReporterStatus(test.state); got != test.want {
 				t.Fatalf("got %q, want %q", got, test.want)
 			}
 		})
@@ -368,7 +372,7 @@ func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
 				r := reporterEntryRequest(t, f, deployment, key.Token, transport, http.MethodPost, f.base+"/work-items", raw, nil)
 				requireNativeStatus(t, r, http.StatusOK)
 				decodeHubResponse(t, r, &own)
-				if own.Actor.PrincipalID != (nativeScope{organization: "org_security", credential: catalog.credential}).actor().PrincipalID || own.ReporterStatus != "submitted" {
+				if own.Actor.PrincipalID != (hubscope.NativeScope{Organization: "org_security", Credential: catalog.credential}).Actor().PrincipalID || own.ReporterStatus != "submitted" {
 					t.Fatalf("identity=%+v principal=%q", own.Actor, catalog.credential.HostedPrincipal)
 				}
 				raw, err = json.Marshal(tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "edit-" + transport}, ExpectedRevision: own.Revision, Title: new("Corrected report")})
@@ -505,7 +509,7 @@ func TestReporterAggregateReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: "org_security", project: v.project, credential: catalog.credential}
+	scope := hubscope.NativeScope{Organization: "org_security", Project: v.project, Credential: catalog.credential}
 	w := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: v.service.config.now().UTC(), Bucket: time.Hour}
 	activity, err := v.service.readActivityReport(ctx, catalog.credential, operatortool.ActivityRequest{ProjectID: string(v.project), Limit: 100}, w)
 	if err != nil {

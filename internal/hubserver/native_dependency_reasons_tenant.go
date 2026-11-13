@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -21,7 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope nativeScope, anchor string, request tracker.UpdateDependencyReason) (json.RawMessage, error) {
+func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope hubscope.NativeScope, anchor string, request tracker.UpdateDependencyReason) (json.RawMessage, error) {
 	if !validDependencyReason(request.Text) || (request.Kind != "blocked" && request.Kind != "unblocks") || request.ExpectedRevision < 0 || request.ExpectedRevision == math.MaxInt64 {
 		return nil, hubapi.NativePublicInvalid("Reason must be plain text of at most 140 characters and kind blocked or unblocks")
 	}
@@ -49,7 +50,7 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 	}
 	var pinned policystore.Revision
 	var requirements policy.Requirements
-	if scope.credential.Scope == hubapi.APIScopeWorker && request.LeaseID != "" {
+	if scope.Credential.Scope == hubapi.APIScopeWorker && request.LeaseID != "" {
 		pinned, requirements, err = s.dependencyReasonPolicy(ctx, scope, request.LeaseID)
 		if err != nil {
 			return nil, err
@@ -63,8 +64,8 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 	if err != nil {
 		return nil, err
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		return loadDependencyReasonRecords(ctx, r, scope.project, []*tracker.NativeIssue{&issue})
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return loadDependencyReasonRecords(ctx, r, scope.Project, []*tracker.NativeIssue{&issue})
 	}); err != nil {
 		return nil, err
 	}
@@ -80,22 +81,22 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 	if err != nil {
 		return nil, err
 	}
-	prepared, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash}, raw)
+	prepared, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash}, raw)
 	if err != nil {
 		return nil, err
 	}
 	var replay *eventstore.Receipt
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockRelationshipGraph(ctx); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		previous, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+		previous, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
 				return hubapi.NativeConflict(0)
@@ -111,11 +112,11 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 		ids = slices.Compact(ids)
 		var anchorRow, target corestore.WorkItem
 		for _, id := range ids {
-			current, err := w.LockWorkItem(ctx, scope.project, id)
+			current, err := w.LockWorkItem(ctx, scope.Project, id)
 			if err != nil {
 				return err
 			}
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
+			if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 				return corestore.ErrNotFound
 			}
 			if id == tracker.NativeWorkItemID(anchor) {
@@ -129,7 +130,7 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 			return hubapi.NativeConflict(tracker.Revision(request.ExpectedRevision))
 		}
 		now := s.config.now().UTC()
-		if scope.credential.Scope == hubapi.APIScopeWorker {
+		if scope.Credential.Scope == hubapi.APIScopeWorker {
 			if err := s.authorizeDependencyReasonLease(ctx, w, scope, anchorRow, request.Mutation, pinned, requirements, now); err != nil {
 				return err
 			}
@@ -138,13 +139,13 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		edges, err := writer.DependencyReasonEdges(ctx, scope.project, request.WorkItemID, request.Kind)
+		edges, err := writer.DependencyReasonEdges(ctx, scope.Project, request.WorkItemID, request.Kind)
 		if err != nil {
 			return err
 		}
 		related := make([]string, 0, len(edges))
 		for _, edge := range edges {
-			if edge.ProjectID != scope.project || !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(edge.ActorPrincipalID)}) {
+			if edge.ProjectID != scope.Project || !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(edge.ActorPrincipalID)}) {
 				return hubapi.NativeConflict(tracker.Revision(reason.Revision))
 			}
 			related = append(related, string(edge.WorkItemID))
@@ -157,7 +158,7 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 				return err
 			}
 		}
-		if err := writer.CompareAndSwapDependencyReason(ctx, corestore.DependencyReason{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: request.WorkItemID, Kind: request.Kind, Reason: result}, request.ExpectedRevision); err != nil {
+		if err := writer.CompareAndSwapDependencyReason(ctx, corestore.DependencyReason{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: request.WorkItemID, Kind: request.Kind, Reason: result}, request.ExpectedRevision); err != nil {
 			return err
 		}
 		_, err = w.PutReceipt(ctx, prepared)
@@ -175,8 +176,8 @@ func (s *Service) updateNativeDependencyReasonTenant(ctx context.Context, scope 
 	return raw, nil
 }
 
-func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantstore.Writer, scope nativeScope, anchor corestore.WorkItem, command tracker.Mutation, pinned policystore.Revision, requirements policy.Requirements, now time.Time) error {
-	credential, err := w.AccessCredential(ctx, scope.credential.ID)
+func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, anchor corestore.WorkItem, command tracker.Mutation, pinned policystore.Revision, requirements policy.Requirements, now time.Time) error {
+	credential, err := w.AccessCredential(ctx, scope.Credential.ID)
 	if err != nil {
 		return err
 	}
@@ -201,10 +202,10 @@ func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantst
 		}
 		now = s.config.now().UTC()
 	}
-	if scope.credential.EntryKey != nil || identity.OrganizationID != scope.organization || identity.RunnerID != scope.credential.Runner.RunnerID || identity.RemovedAt != nil || !identity.ExpiresAt.After(now) || identity.State == "disabled" || credential.Scope != "worker" || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, now) {
-		return runnerUnauthorized()
+	if scope.Credential.EntryKey != nil || identity.OrganizationID != scope.Organization || identity.RunnerID != scope.Credential.Runner.RunnerID || identity.RemovedAt != nil || !identity.ExpiresAt.After(now) || identity.State == "disabled" || credential.Scope != "worker" || credential.Kind != "service" || !credential.Valid(scope.Credential.Hash, now) {
+		return hubscope.RunnerUnauthorized()
 	}
-	allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+	allowed, err := w.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, now)
 	if err != nil {
 		return err
 	}
@@ -221,42 +222,42 @@ func (s *Service) authorizeDependencyReasonLease(ctx context.Context, w tenantst
 		}
 		return tracker.ErrStaleFencingToken
 	}
-	if lease.OrganizationID != scope.organization || lease.IssueID != anchor.ID || lease.FencingToken != int64(command.FencingToken) || lease.ReleasedAt != nil || lease.RenewedAt.After(now) || !lease.ExpiresAt.After(now) {
+	if lease.OrganizationID != scope.Organization || lease.IssueID != anchor.ID || lease.FencingToken != int64(command.FencingToken) || lease.ReleasedAt != nil || lease.RenewedAt.After(now) || !lease.ExpiresAt.After(now) {
 		return tracker.ErrStaleFencingToken
 	}
-	if !runnerIdentityMatchesHeldLease(assigned, scope.organization, identity.RunnerID, credential.ID, identity.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
-		return runnerUnauthorized()
+	if !runnerIdentityMatchesHeldLease(assigned, scope.Organization, identity.RunnerID, credential.ID, identity.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Claim) {
+		return hubscope.RunnerUnauthorized()
 	}
 	currentPolicy, err := w.LeasePolicy(ctx, command.LeaseID)
 	if err != nil {
 		return err
 	}
-	revision, err := w.ProjectPolicyRevision(ctx, scope.project, currentPolicy.PolicyID)
+	revision, err := w.ProjectPolicyRevision(ctx, scope.Project, currentPolicy.PolicyID)
 	if err != nil {
 		return err
 	}
-	if currentPolicy.OrganizationID != scope.organization || currentPolicy.ProjectID != scope.project || currentPolicy.LeaseID != command.LeaseID || revision.OrganizationID != pinned.OrganizationID || revision.ProjectID != pinned.ProjectID || revision.PolicyID != pinned.PolicyID || revision.PayloadSHA256 != pinned.PayloadSHA256 || revision.PayloadObjectKey != pinned.PayloadObjectKey || revision.PayloadBytes != pinned.PayloadBytes || revision.PayloadContentBytes != pinned.PayloadContentBytes {
+	if currentPolicy.OrganizationID != scope.Organization || currentPolicy.ProjectID != scope.Project || currentPolicy.LeaseID != command.LeaseID || revision.OrganizationID != pinned.OrganizationID || revision.ProjectID != pinned.ProjectID || revision.PolicyID != pinned.PolicyID || revision.PayloadSHA256 != pinned.PayloadSHA256 || revision.PayloadObjectKey != pinned.PayloadObjectKey || revision.PayloadBytes != pinned.PayloadBytes || revision.PayloadContentBytes != pinned.PayloadContentBytes {
 		return hubapi.PolicyMismatch("Lease policy changed during the request")
 	}
-	runner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID}, Operations: identity.Operations, Routing: runnerauth.Routing{Scope: identity.Scope, ProjectIDs: []tracker.ProjectID{scope.project}, Tags: identity.Tags, State: identity.State}}
-	return runnerExcluded(runner.Exclusions(scope.project, requirements, true))
+	runner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID}, Operations: identity.Operations, Routing: runnerauth.Routing{Scope: identity.Scope, ProjectIDs: []tracker.ProjectID{scope.Project}, Tags: identity.Tags, State: identity.State}}
+	return runnerExcluded(runner.Exclusions(scope.Project, requirements, true))
 }
 
-func (s *Service) dependencyReasonPolicy(ctx context.Context, scope nativeScope, lease tracker.LeaseID) (policystore.Revision, policy.Requirements, error) {
+func (s *Service) dependencyReasonPolicy(ctx context.Context, scope hubscope.NativeScope, lease tracker.LeaseID) (policystore.Revision, policy.Requirements, error) {
 	var revision policystore.Revision
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		pinned, err := r.LeasePolicy(ctx, lease)
 		if err != nil {
 			return err
 		}
-		if pinned.OrganizationID != scope.organization || pinned.ProjectID != scope.project || pinned.LeaseID != lease || pinned.PolicyID == "" {
+		if pinned.OrganizationID != scope.Organization || pinned.ProjectID != scope.Project || pinned.LeaseID != lease || pinned.PolicyID == "" {
 			return hubapi.PolicyMismatch("Lease policy is outside the authorized project")
 		}
-		revision, err = r.ProjectPolicyRevision(ctx, scope.project, pinned.PolicyID)
+		revision, err = r.ProjectPolicyRevision(ctx, scope.Project, pinned.PolicyID)
 		if err != nil {
 			return err
 		}
-		if revision.OrganizationID != scope.organization || revision.ProjectID != scope.project || revision.PolicyID != pinned.PolicyID {
+		if revision.OrganizationID != scope.Organization || revision.ProjectID != scope.Project || revision.PolicyID != pinned.PolicyID {
 			return hubapi.PolicyMismatch("Lease policy is outside the authorized project")
 		}
 		return nil

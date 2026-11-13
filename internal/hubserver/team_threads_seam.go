@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/threads"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -28,14 +29,14 @@ func (s *Service) threadsService() *threads.Service {
 	})
 }
 
-func (s *Service) threadCaller(scope nativeScope) threads.Caller {
-	bind := func(project tracker.ProjectID, item string) nativeScope {
+func (s *Service) threadCaller(scope hubscope.NativeScope) threads.Caller {
+	bind := func(project tracker.ProjectID, item string) hubscope.NativeScope {
 		bound := scope
-		bound.project, bound.actionItem = project, item
+		bound.Project, bound.ActionItem = project, item
 		return bound
 	}
-	actor := scope.actor()
-	return threads.NewCaller(s.requestAuth(), s.authInput(scope), threads.CallerDeps{Item: scope.actionItem, Actor: &actor,
+	actor := scope.Actor()
+	return threads.NewCaller(s.requestAuth(), s.authInput(scope), threads.CallerDeps{Item: scope.ActionItem, Actor: &actor,
 		Authorize: func(ctx context.Context, reader accessstore.Reader, project tracker.ProjectID, item string, write bool) error {
 			return s.authorizeAccessScope(ctx, reader, bind(project, item), write)
 		},
@@ -49,12 +50,12 @@ func (s *Service) threadCaller(scope nativeScope) threads.Caller {
 	})
 }
 
-func (s *Service) listThreadRecords(ctx context.Context, scope nativeScope, in teamThreadInput) (teamThreadPage, error) {
+func (s *Service) listThreadRecords(ctx context.Context, scope hubscope.NativeScope, in teamThreadInput) (teamThreadPage, error) {
 	page, err := s.threadsService().List(ctx, s.threadCaller(scope), in)
 	return page, hubapi.FromFeatureError(err)
 }
 
-func (s *Service) requestTeamUnread(ctx context.Context, scope nativeScope, projects []string, refresh bool) (teamUnreadSummary, error) {
+func (s *Service) requestTeamUnread(ctx context.Context, scope hubscope.NativeScope, projects []string, refresh bool) (teamUnreadSummary, error) {
 	summary, err := s.threadsService().RequestUnread(ctx, s.threadCaller(scope), projects, refresh)
 	return summary, hubapi.FromFeatureError(err)
 }
@@ -71,7 +72,7 @@ func (s *Service) threadHTTPDeps() threads.HTTPDeps {
 	return threads.HTTPDeps{Service: s.threadsService, Auth: s.requestAuth, Operator: s.operatorAuthority,
 		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 		Resolve: func(ctx context.Context) (hubauth.Input, error) {
-			resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+			resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 			if !ok {
 				return hubauth.Input{}, operatortool.ErrAccessDenied
 			}

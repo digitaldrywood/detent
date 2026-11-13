@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -119,7 +120,7 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 					if err != nil {
 						t.Fatalf("version reader status=%d error=%v", status, err)
 					}
-					scope := nativeScope{organization: organization, project: project, credential: credential}
+					scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}
 					content := eventstore.NewContent(details)
 					comment := ""
 					if kind == "comment" {
@@ -234,7 +235,7 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 							t.Fatalf("denied version reader status=%d error=%v", status, err)
 						}
 						denied := scope
-						denied.credential = deniedCredential
+						denied.Credential = deniedCredential
 						if _, err := service.readVersion(t.Context(), denied, string(item), comment, 1); err == nil || fetches != 0 {
 							t.Fatalf("unauthorized historical read error=%v fetches=%d", err, fetches)
 						}
@@ -294,7 +295,7 @@ func TestNativeTransitionHistoryBytes(t *testing.T) {
 	content := eventstore.NewContent(f.service.runDetailStore())
 	for revision, expected := range snapshots {
 		var version eventstore.CollaborationVersion
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			version, err = r.CollaborationVersion(t.Context(), string(issue.WorkItemID), int64(revision))
 			return err
@@ -338,8 +339,8 @@ func TestNativeNoOpRevisions(t *testing.T) {
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	states := nativeFixtureStates()
 	states[0].Transitions = append(states[0].Transitions, "Todo")
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		project, err := w.ProjectRecord(t.Context(), scope.project)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), scope.Project)
 		if err != nil {
 			return err
 		}
@@ -359,7 +360,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 	} {
 		t.Run("same state command "+test.reason, func(t *testing.T) {
 			var beforeVersions, beforeEvents int
-			if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.Organization, issue.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
 				t.Fatal(err)
 			}
 			for index := range 2 {
@@ -376,7 +377,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 				}
 			}
 			var versions, events int
-			if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.Organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
 				t.Fatal(err)
 			}
 			if versions != beforeVersions || events != beforeEvents {
@@ -385,7 +386,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 		})
 	}
 	var beforeVersions, beforeEvents int
-	if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
+	if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.Organization, issue.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
 		t.Fatal(err)
 	}
 	for _, field := range []string{"title", "body", "labels", "assignees", "priority"} {
@@ -417,7 +418,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 			t.Fatal(err)
 		}
 		var versions, events int
-		if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
+		if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.Organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
 			t.Fatal(err)
 		}
 		if result.Revision != issue.Revision || !result.UpdatedAt.Equal(issue.UpdatedAt) || !reflect.DeepEqual(before, after) || !reflect.DeepEqual(beforeVersion, afterVersion) || versions != beforeVersions || events != beforeEvents || updates != 0 {
@@ -467,7 +468,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path+"/comments/"+comment.ID, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "stale-comment"}, ExpectedRevision: 1, Body: comment.Body}), http.StatusConflict)
 	var versions, events int
-	if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
+	if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.Organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
 		t.Fatal(err)
 	}
 	if versions != beforeVersions+3 || events != beforeEvents+3 {
@@ -481,7 +482,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 		t.Fatalf("real transition did not advance once: %+v", transitioned)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "stale-transition"}, ExpectedRevision: result.Revision, State: "In Progress", Reason: "user_requested"}), http.StatusConflict)
-	if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
+	if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.Organization, issue.WorkItemID).Scan(&versions, &events); err != nil {
 		t.Fatal(err)
 	}
 	if versions != beforeVersions+4 || events != beforeEvents+4 {
@@ -491,8 +492,8 @@ func TestNativeNoOpRevisions(t *testing.T) {
 		now := time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
 		states[1].Transitions = append(states[1].Transitions, "Blocked")
 		states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Blocked", "Todo"}})
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			project, err := w.ProjectRecord(t.Context(), scope.project)
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			project, err := w.ProjectRecord(t.Context(), scope.Project)
 			if err != nil {
 				return err
 			}
@@ -524,7 +525,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 			}
 		}
 		var holdVersions, holdEvents int
-		if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&holdVersions, &holdEvents); err != nil {
+		if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.Organization, issue.WorkItemID).Scan(&holdVersions, &holdEvents); err != nil {
 			t.Fatal(err)
 		}
 		if holdVersions != versions+1 || holdEvents != events+2 {

@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/activity"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportdata"
 
 	"github.com/labstack/echo/v4"
@@ -22,8 +23,8 @@ func (s *Service) activityHTTP() *activity.HTTPService {
 	}})
 }
 func (s *Service) activityCaller(credential hubapi.APICredential) activity.Caller {
-	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential}
-	return activity.Caller{Credential: authCredential(credential), Scope: s.featureScope(scope), IsNotFound: hubapi.IsNativeNotFound}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID()), Credential: credential}
+	return activity.Caller{Credential: hubscope.AuthCredential(credential), Scope: s.featureScope(scope), IsNotFound: hubapi.IsNativeNotFound}
 }
 func (s *Service) executeActivityRead(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	return s.activityHTTP().Execute(ctx, call)

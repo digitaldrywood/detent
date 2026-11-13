@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -33,8 +34,8 @@ func (e hubProjectExecutor) runnerProjectDiagnostics(ctx context.Context, args o
 }
 
 func (s *Service) getRunnerProjectDiagnostics(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	args := operatortool.LocalProjectArguments{ProjectID: string(scope.project), RunnerID: c.QueryParam("runner_id"), IssueID: c.QueryParam("issue_id"), AttemptID: c.QueryParam("attempt_id"), Cursor: c.QueryParam("cursor")}
+	scope := hubscope.NativeRequestScope(c)
+	args := operatortool.LocalProjectArguments{ProjectID: string(scope.Project), RunnerID: c.QueryParam("runner_id"), IssueID: c.QueryParam("issue_id"), AttemptID: c.QueryParam("attempt_id"), Cursor: c.QueryParam("cursor")}
 	if value := c.QueryParam("limit"); value != "" {
 		n, err := strconv.Atoi(value)
 		if err != nil {
@@ -61,7 +62,7 @@ func (s *Service) getRunnerProjectDiagnostics(c echo.Context) error {
 	return c.JSON(http.StatusOK, page)
 }
 
-func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope nativeScope, args operatortool.LocalProjectArguments) (runnerauth.DiagnosticPage, error) {
+func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope hubscope.NativeScope, args operatortool.LocalProjectArguments) (runnerauth.DiagnosticPage, error) {
 	return s.readRunnerProjectDiagnosticsTenant(ctx, scope, args)
 }
 
@@ -69,10 +70,10 @@ type nativeDiagnosticWorkItemBatchReader interface {
 	WorkItemsByNativeIDs(context.Context, tracker.ProjectID, []tracker.NativeWorkItemID) ([]corestore.WorkItem, error)
 }
 
-func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope nativeScope, args operatortool.LocalProjectArguments) (runnerauth.DiagnosticPage, error) {
+func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope hubscope.NativeScope, args operatortool.LocalProjectArguments) (runnerauth.DiagnosticPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	scope.project = tracker.ProjectID(args.ProjectID)
+	scope.Project = tracker.ProjectID(args.ProjectID)
 	now := s.config.now().UTC()
 	page, err := (*runnerauth.ProjectDiagnostics)(nil).Page(args.ProjectID, args.RunnerID, args.IssueID, args.AttemptID, args.Cursor, args.Limit, now)
 	if err != nil {
@@ -83,9 +84,9 @@ func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope 
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		if scope.credential.HostedRole == "reporter" && args.IssueID != "" {
-			item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(args.IssueID))
-			if errors.Is(err, corestore.ErrNotFound) || err == nil && !scope.reporterOwns(tracker.Actor{Kind: hubapi.StringValue(item.ActorKind), PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+		if scope.Credential.HostedRole == "reporter" && args.IssueID != "" {
+			item, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(args.IssueID))
+			if errors.Is(err, corestore.ErrNotFound) || err == nil && !scope.ReporterOwns(tracker.Actor{Kind: hubapi.StringValue(item.ActorKind), PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				return hubapi.NativeNotFound()
 			}
 			if err != nil {
@@ -99,7 +100,7 @@ func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope 
 		runnerIDs := []string{}
 		truncated := false
 		if args.RunnerID != "" {
-			authorized, err := r.RunnerProjectAuthorized(ctx, args.RunnerID, scope.project, now)
+			authorized, err := r.RunnerProjectAuthorized(ctx, args.RunnerID, scope.Project, now)
 			if err != nil {
 				return err
 			}
@@ -107,7 +108,7 @@ func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope 
 				runnerIDs = append(runnerIDs, args.RunnerID)
 			}
 		} else {
-			runnerIDs, truncated, err = reader.RunnerProjectObservationRunners(ctx, scope.project, now, 100)
+			runnerIDs, truncated, err = reader.RunnerProjectObservationRunners(ctx, scope.Project, now, 100)
 			if err != nil {
 				return err
 			}
@@ -127,7 +128,7 @@ func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope 
 		if err != nil {
 			return err
 		}
-		authorized, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+		authorized, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, now)
 		if err != nil {
 			return err
 		}
@@ -135,7 +136,7 @@ func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope 
 			page.Unavailable["runner"] = "not_authorized_or_unreported"
 			return nil
 		}
-		observation, _, err := r.RunnerProjectObservation(ctx, identity.RunnerID, scope.project, "")
+		observation, _, err := r.RunnerProjectObservation(ctx, identity.RunnerID, scope.Project, "")
 		if errors.Is(err, corestore.ErrNotFound) {
 			page.Unavailable["runner"] = "not_authorized_or_unreported"
 			return nil
@@ -172,7 +173,7 @@ func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope 
 			return nil
 		}
 		diagnostics := observation.Diagnostics
-		if scope.credential.HostedRole == "reporter" {
+		if scope.Credential.HostedRole == "reporter" {
 			visible, err := diagnosticReporterIssues(ctx, r, scope, diagnostics, args.IssueID)
 			if err != nil {
 				return err
@@ -205,9 +206,9 @@ func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope 
 	}
 
 	if repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository); ok {
-		err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, read)
+		err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, read)
 	} else {
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, read)
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, read)
 	}
 	if err != nil {
 		return runnerauth.DiagnosticPage{}, err
@@ -215,7 +216,7 @@ func (s *Service) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope 
 	return page, nil
 }
 
-func diagnosticReporterIssues(ctx context.Context, reader tenantstore.Reader, scope nativeScope, diagnostics *runnerauth.ProjectDiagnostics, selected string) (map[string]bool, error) {
+func diagnosticReporterIssues(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, diagnostics *runnerauth.ProjectDiagnostics, selected string) (map[string]bool, error) {
 	visible := map[string]bool{}
 	if selected != "" {
 		visible[selected] = true
@@ -239,12 +240,12 @@ func diagnosticReporterIssues(ctx context.Context, reader tenantstore.Reader, sc
 	}
 	for start := 0; start < len(nativeIDs); start += corestore.MaxPageSize {
 		end := min(len(nativeIDs), start+corestore.MaxPageSize)
-		items, err := batch.WorkItemsByNativeIDs(ctx, scope.project, nativeIDs[start:end])
+		items, err := batch.WorkItemsByNativeIDs(ctx, scope.Project, nativeIDs[start:end])
 		if err != nil {
 			return nil, err
 		}
 		for _, item := range items {
-			if scope.reporterOwns(tracker.Actor{Kind: hubapi.StringValue(item.ActorKind), PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+			if scope.ReporterOwns(tracker.Actor{Kind: hubapi.StringValue(item.ActorKind), PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 				visible[string(item.NativeID)] = true
 			}
 		}

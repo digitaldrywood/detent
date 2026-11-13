@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -30,7 +31,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 	if request.LandingCapacity < 0 {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Landing capacity must be non-negative"))
 	}
-	page, err := s.previewProviderCandidatesTenant(c.Request().Context(), nativeRequestScope(c), request, s.config.now().UTC())
+	page, err := s.previewProviderCandidatesTenant(c.Request().Context(), hubscope.NativeRequestScope(c), request, s.config.now().UTC())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -38,7 +39,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 	return c.JSON(http.StatusOK, page)
 }
 
-func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nativeScope, request tracker.NativeCapacityPreview, now time.Time) (tracker.NativeCapacityPage, error) {
+func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeCapacityPreview, now time.Time) (tracker.NativeCapacityPage, error) {
 	ctx = s.withRequestDetails(ctx)
 	limit := request.Limit
 	if limit == 0 {
@@ -51,32 +52,32 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 	if !ok {
 		return tracker.NativeCapacityPage{}, hubapi.NativeRunEventStorageUnavailable()
 	}
-	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		identity, err := r.RunnerIdentityByCredential(ctx, scope.credential.ID)
+		identity, err := r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
 		if err != nil {
 			return err
 		}
 		if !runnerIdentityCanClaim(identity, scope, request.MachineID, now) {
 			return tracker.ErrMachineNotFound
 		}
-		allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.project, now)
+		allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, now)
 		if err != nil {
 			return err
 		}
 		if !allowed {
 			return tracker.ErrMachineNotFound
 		}
-		project, err := r.ProjectRecord(ctx, scope.project)
+		project, err := r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if !nativeClaimProjectEnabled(project) {
 			return ErrNoClaimableWork
 		}
-		projectPolicy, err = r.ProjectPolicy(ctx, scope.project)
+		projectPolicy, err = r.ProjectPolicy(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -86,7 +87,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 		query := nativeTenantCandidateQuery(scope, request.NativeClaim, "", now)
 		query.Limit = limit
 		if request.After > 0 {
-			anchor, err := r.WorkItemByID(ctx, scope.project, int64(request.After))
+			anchor, err := r.WorkItemByID(ctx, scope.Project, int64(request.After))
 			if err != nil {
 				return corestore.ErrInvalidCursor
 			}
@@ -100,7 +101,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 		shared := nativeClaimPlan{project: project, policy: projectPolicy}
 		batchReader, canBatch := r.(tenantstore.ClaimPreviewPlanRowsReader)
 		if canBatch && request.SessionID == "" && len(candidates) > 0 {
-			rows, err := batchReader.ClaimPreviewPlanRows(ctx, scope.project, candidates)
+			rows, err := batchReader.ClaimPreviewPlanRows(ctx, scope.Project, candidates)
 			if err != nil {
 				return err
 			}
@@ -179,7 +180,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 			}
 		}
 	}
-	s.prefetchDetails(ctx, string(scope.organization), refs)
+	s.prefetchDetails(ctx, string(scope.Organization), refs)
 	var descriptor *policy.Descriptor
 	if len(plans) > 0 {
 		loaded, err := eventstore.NewContent(s.runDetailStoreFor(ctx)).ProjectPolicy(ctx, projectPolicy)
@@ -216,7 +217,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope nat
 		}
 		if plan.landingRequired || request.LandingCapacity > 0 {
 			if !landingCapacityChecked {
-				landingCapacityAvailable, err = s.nativeClaimLandingCapacityAvailable(ctx, scope.organization, scope.project, request.LandingCapacity, now)
+				landingCapacityAvailable, err = s.nativeClaimLandingCapacityAvailable(ctx, scope.Organization, scope.Project, request.LandingCapacity, now)
 				if err != nil {
 					return tracker.NativeCapacityPage{}, err
 				}
@@ -251,6 +252,6 @@ func (s *Service) nativeClaimLandingCapacityAvailable(ctx context.Context, organ
 	return allowed, err
 }
 
-func (s *Service) reportIncompletePreviewCandidate(ctx context.Context, scope nativeScope, candidate claimstore.Candidate, err error) {
-	s.config.Logger.WarnContext(ctx, "skip incomplete preview candidate", "organization_id", scope.organization, "project_id", scope.project, "work_item_id", candidate.WorkItemID, "error", err)
+func (s *Service) reportIncompletePreviewCandidate(ctx context.Context, scope hubscope.NativeScope, candidate claimstore.Candidate, err error) {
+	s.config.Logger.WarnContext(ctx, "skip incomplete preview candidate", "organization_id", scope.Organization, "project_id", scope.Project, "work_item_id", candidate.WorkItemID, "error", err)
 }

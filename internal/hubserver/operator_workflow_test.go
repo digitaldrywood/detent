@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -299,7 +300,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 				t.Fatalf("fixture must exceed the result cap: history=%d bytes=%d, %v", len(full.History), len(fullJSON), err)
 			}
 			call := projectCall(t, "approve_project_policy", string(f.project), "approve", operatortool.PolicyApprovalInput{ExpectedID: previous.ID, Policy: descriptor, RepositoryPolicy: true})
-			operation := projectOperationID(nativeScope{organization: "org_security", project: f.project}, http.MethodPut, "/policy")
+			operation := projectOperationID(hubscope.NativeScope{Organization: "org_security", Project: f.project}, http.MethodPut, "/policy")
 			var stored eventstore.Receipt
 			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {
 				var err error

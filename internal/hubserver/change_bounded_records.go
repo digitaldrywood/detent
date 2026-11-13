@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -33,20 +34,20 @@ func encodeBoundedChangeRecordCursor(cursor boundedChangeRecordCursor) (string, 
 	return base64.RawURLEncoding.EncodeToString(raw), err
 }
 
-func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope, args operatortool.ChangeArguments, result operatortool.ChangeResult) (operatortool.ChangeResult, error) {
+func (s *Service) readBoundedChangeRecord(ctx context.Context, scope hubscope.NativeScope, args operatortool.ChangeArguments, result operatortool.ChangeResult) (operatortool.ChangeResult, error) {
 	change, err := s.readChangeRecord(ctx, scope, args.ItemID, args.ChangeID)
 	if err != nil {
 		return result, err
 	}
 	var row eventstore.Change
 	var current, selected eventstore.Version
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		row, err = r.Change(ctx, change.ID)
 		if err != nil {
 			return err
 		}
-		if row.ProjectID != scope.project || row.Revision != int64(change.Revision) || hubapi.ValueOrEmpty(row.CurrentVersionID) != change.CurrentVersion {
+		if row.ProjectID != scope.Project || row.Revision != int64(change.Revision) || hubapi.ValueOrEmpty(row.CurrentVersionID) != change.CurrentVersion {
 			return corestore.ErrRevisionConflict
 		}
 		if change.CurrentVersion != "" {
@@ -64,17 +65,17 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope
 	if err != nil {
 		return result, hubapi.ProjectRecordError(err)
 	}
-	selection := boundedChangeRecordCursor{changeReadCursor: changeReadCursor{Change: change.ID, Head: change.CurrentVersion, Version: selected.ID, Section: args.Section}, Organization: scope.organization, Project: scope.project, Item: tracker.NativeWorkItemID(args.ItemID), Revision: change.Revision, EvidenceSequence: row.EvidenceSequence}
+	selection := boundedChangeRecordCursor{changeReadCursor: changeReadCursor{Change: change.ID, Head: change.CurrentVersion, Version: selected.ID, Section: args.Section}, Organization: scope.Organization, Project: scope.Project, Item: tracker.NativeWorkItemID(args.ItemID), Revision: change.Revision, EvidenceSequence: row.EvidenceSequence}
 	if args.Cursor != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(args.Cursor)
-		if err != nil || operatortool.DecodeArguments(raw, &selection) != nil || selection.Offset < 0 || selection.Offset > 0 && (selection.Section != "reviews" || len(selection.Digest) != 64) || selection.After < 0 || selection.Through < selection.After || selection.Organization != scope.organization || selection.Project != scope.project || selection.Item != tracker.NativeWorkItemID(args.ItemID) || selection.Change != change.ID || selection.Version == "" && change.CurrentVersion != "" || !validChangeReadSection(selection.Section) || selection.Section == "current" || args.Section != "" && args.Section != selection.Section || args.VersionID != "" && args.VersionID != selection.Version {
+		if err != nil || operatortool.DecodeArguments(raw, &selection) != nil || selection.Offset < 0 || selection.Offset > 0 && (selection.Section != "reviews" || len(selection.Digest) != 64) || selection.After < 0 || selection.Through < selection.After || selection.Organization != scope.Organization || selection.Project != scope.Project || selection.Item != tracker.NativeWorkItemID(args.ItemID) || selection.Change != change.ID || selection.Version == "" && change.CurrentVersion != "" || !validChangeReadSection(selection.Section) || selection.Section == "current" || args.Section != "" && args.Section != selection.Section || args.VersionID != "" && args.VersionID != selection.Version {
 			return result, operatortool.ErrInvalidArguments
 		}
 		if selection.Head != change.CurrentVersion || selection.Revision != change.Revision || selection.EvidenceSequence < 0 || selection.EvidenceSequence > row.EvidenceSequence {
 			return result, mutation.ErrConflict
 		}
 		if selection.Version != selected.ID {
-			err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
 				selected, err = r.Version(ctx, change.ID, selection.Version)
 				return err
@@ -193,12 +194,12 @@ func (s *Service) readBoundedChangeRecord(ctx context.Context, scope nativeScope
 	return result, nil
 }
 
-func (s *Service) readExactChangeVersionRecord(ctx context.Context, scope nativeScope, item, changeID, versionID string) (tracker.ChangeVersion, error) {
+func (s *Service) readExactChangeVersionRecord(ctx context.Context, scope hubscope.NativeScope, item, changeID, versionID string) (tracker.ChangeVersion, error) {
 	change, err := s.readChangeRecord(ctx, scope, item, changeID)
 	if err != nil {
 		return tracker.ChangeVersion{}, err
 	}
-	row, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, versionID)
+	row, err := s.readChangeVersionRecord(ctx, scope.Organization, change.ID, versionID)
 	if err != nil {
 		return tracker.ChangeVersion{}, hubapi.ProjectRecordError(err)
 	}
@@ -219,17 +220,17 @@ func (s *Service) readExactChangeVersionRecord(ctx context.Context, scope native
 	return version, nil
 }
 
-func (s *Service) recheckChangeReadAuthority(ctx context.Context, scope nativeScope) error {
-	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+func (s *Service) recheckChangeReadAuthority(ctx context.Context, scope hubscope.NativeScope) error {
+	return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		if scope.credential.Hosted != nil {
+		if scope.Credential.Hosted != nil {
 			member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, false), s.config.now())
 			if err != nil {
 				return err
 			}
-			if member.UserID != "" && hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
+			if member.UserID != "" && hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole) != scope.Credential.HostedRole {
 				return auth.ErrHostedIdentity
 			}
 		}
@@ -237,10 +238,10 @@ func (s *Service) recheckChangeReadAuthority(ctx context.Context, scope nativeSc
 	})
 }
 
-func (s *Service) readChangeRecordSection(ctx context.Context, scope nativeScope, args operatortool.ChangeArguments, result *operatortool.ChangeResult, cursor boundedChangeRecordCursor, budget int, single, omitHistory bool) (operatortool.ChangeReadPage, error) {
+func (s *Service) readChangeRecordSection(ctx context.Context, scope hubscope.NativeScope, args operatortool.ChangeArguments, result *operatortool.ChangeResult, cursor boundedChangeRecordCursor, budget int, single, omitHistory bool) (operatortool.ChangeReadPage, error) {
 	var versions []eventstore.Version
 	var evidence []eventstore.Evidence
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		if cursor.Section == "versions" {
 			versions, err = r.Versions(ctx, cursor.Change, cursor.After, changeLimit(args)+1)
@@ -277,7 +278,7 @@ func (s *Service) readChangeRecordSection(ctx context.Context, scope nativeScope
 			if omitHistory {
 				break
 			}
-			if row.OrganizationID != scope.organization || row.ChangeID != cursor.Change {
+			if row.OrganizationID != scope.Organization || row.ChangeID != cursor.Change {
 				return operatortool.ChangeReadPage{}, eventstore.ErrInvalidRecord
 			}
 			if row.ID == cursor.Version {
@@ -301,7 +302,7 @@ func (s *Service) readChangeRecordSection(ctx context.Context, scope nativeScope
 				pastBoundary = true
 				break
 			}
-			if row.OrganizationID != scope.organization || row.ChangeID != cursor.Change {
+			if row.OrganizationID != scope.Organization || row.ChangeID != cursor.Change {
 				return operatortool.ChangeReadPage{}, eventstore.ErrInvalidRecord
 			}
 			matches := row.Kind == strings.TrimSuffix(cursor.Section, "s") && (hubapi.ValueOrEmpty(row.VersionID) == cursor.Version || cursor.Section == "discussion" && hubapi.ValueOrEmpty(row.VersionID) == "")
@@ -328,7 +329,7 @@ func (s *Service) readChangeRecordSection(ctx context.Context, scope nativeScope
 		if used+size > budget || cursor.Offset > 0 {
 			*result.Detail = before
 			if single && used == 0 && cursor.Section == "reviews" {
-				fragment := &tracker.NativeRecoveryPage{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(args.ItemID)}, Section: cursor.Section, RecordID: strconv.FormatInt(sequence, 10), VersionID: cursor.Version}
+				fragment := &tracker.NativeRecoveryPage{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(args.ItemID)}, Section: cursor.Section, RecordID: strconv.FormatInt(sequence, 10), VersionID: cursor.Version}
 				if err := recoveryRecordFragment(fragment, raw, cursor.Offset, cursor.Digest); err != nil {
 					return operatortool.ChangeReadPage{}, err
 				}
@@ -418,7 +419,7 @@ func appendBoundedChangeEvidence(detail *tracker.ChangeDetail, row eventstore.Ev
 	return nil
 }
 
-func (s *Service) readBoundedChangeSummary(ctx context.Context, scope nativeScope, change tracker.ChangeRequest, current eventstore.Version, through int64) (tracker.ChangeSummary, error) {
+func (s *Service) readBoundedChangeSummary(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, current eventstore.Version, through int64) (tracker.ChangeSummary, error) {
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	detail := tracker.ChangeDetail{Change: change}
 	if current.ID == "" {
@@ -440,7 +441,7 @@ func (s *Service) readBoundedChangeSummary(ctx context.Context, scope nativeScop
 			checks = append(checks, check.CheckRunID)
 		}
 	}
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		rows, err = readChangeSummaryPolicyRows(ctx, r, scope)
 		if err != nil {
@@ -462,7 +463,7 @@ func (s *Service) readBoundedChangeSummary(ctx context.Context, scope nativeScop
 	}
 
 	for _, row := range evidence {
-		if row.ChangeID != change.ID || row.OrganizationID != scope.organization || hubapi.ValueOrEmpty(row.VersionID) != current.ID || row.Sequence > through {
+		if row.ChangeID != change.ID || row.OrganizationID != scope.Organization || hubapi.ValueOrEmpty(row.VersionID) != current.ID || row.Sequence > through {
 			return tracker.ChangeSummary{}, eventstore.ErrInvalidRecord
 		}
 		raw, err := content.Evidence(ctx, row)
@@ -477,7 +478,7 @@ func (s *Service) readBoundedChangeSummary(ctx context.Context, scope nativeScop
 	return s.summarizeChangeWithAuditDispositions(ctx, scope, detail, policyID, reviewID, s.config.now(), prior)
 }
 
-func (s *Service) readBoundedChangePushes(ctx context.Context, scope nativeScope, item string, versions []tracker.ChangeVersion) ([]tracker.ChangePublicationPush, error) {
+func (s *Service) readBoundedChangePushes(ctx context.Context, scope hubscope.NativeScope, item string, versions []tracker.ChangeVersion) ([]tracker.ChangePublicationPush, error) {
 	var result []tracker.ChangePublicationPush
 	var events []eventstore.Event
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
@@ -487,13 +488,13 @@ func (s *Service) readBoundedChangePushes(ctx context.Context, scope nativeScope
 		}
 		reference := tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 		{
-			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				reader, ok := r.(eventstore.ChangeRecoveryReader)
 				if !ok {
 					return corestore.ErrInvalidPage
 				}
 				var err error
-				events, err = reader.ChangePublicationCheckpoints(ctx, scope.project, tracker.NativeWorkItemID(item), reference)
+				events, err = reader.ChangePublicationCheckpoints(ctx, scope.Project, tracker.NativeWorkItemID(item), reference)
 				return err
 			})
 			if err != nil {
@@ -505,7 +506,7 @@ func (s *Service) readBoundedChangePushes(ctx context.Context, scope nativeScope
 			if err != nil {
 				return nil, err
 			}
-			if row.OrganizationID != scope.organization || row.ProjectID != scope.project || row.WorkItemID != tracker.NativeWorkItemID(item) || row.Type != "run.checkpointed" {
+			if row.OrganizationID != scope.Organization || row.ProjectID != scope.Project || row.WorkItemID != tracker.NativeWorkItemID(item) || row.Type != "run.checkpointed" {
 				return nil, eventstore.ErrInvalidRecord
 			}
 			run := event.Data.Run
@@ -520,13 +521,13 @@ func (s *Service) readBoundedChangePushes(ctx context.Context, scope nativeScope
 				break
 			}
 			valid := false
-			err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				reader, ok := r.(eventstore.ChangeRecoveryReader)
 				if !ok {
 					return corestore.ErrInvalidPage
 				}
 				var err error
-				valid, err = reader.ChangePublicationProvenance(ctx, scope.project, tracker.NativeWorkItemID(item), *run)
+				valid, err = reader.ChangePublicationProvenance(ctx, scope.Project, tracker.NativeWorkItemID(item), *run)
 				return err
 			})
 			if err != nil {

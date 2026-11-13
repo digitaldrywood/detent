@@ -6,6 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -24,8 +25,8 @@ func (s *Service) registerOnboardingRoutes(e *echo.Echo) {
 	e.PUT(hubapi.NativeBase+"/onboarding/artifact-services/:service", s.bindArtifactService, s.requireOnboardingAdmin())
 }
 
-func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onboarding.Project, error) {
-	if scope.credential.Scope == hubapi.APIScopeWorker {
+func (s *Service) projectOnboarding(ctx context.Context, scope hubscope.NativeScope) (onboarding.Project, error) {
+	if scope.Credential.Scope == hubapi.APIScopeWorker {
 		progress, err := s.readOnboardingProgressRecord(ctx, scope)
 		return onboarding.Project{Progress: progress}, err
 	}
@@ -51,7 +52,7 @@ func (s *Service) saveOnboarding(c echo.Context) error {
 func (s *Service) requireOnboardingAdmin() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return s.requireNativeScope(hubapi.APIScopeOperator, hubapi.APIScopeAdmin)(func(c echo.Context) error {
-			credential := nativeRequestScope(c).credential
+			credential := hubscope.NativeRequestScope(c).Credential
 			if credential.Hosted != nil {
 				if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 					return s.nativeAPIError(c, hubapi.NativeNotFound())

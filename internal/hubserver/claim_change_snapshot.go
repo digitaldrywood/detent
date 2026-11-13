@@ -7,11 +7,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope nativeScope, plans []nativeClaimPlan) error {
+func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plans []nativeClaimPlan) error {
 	ids := []string{}
 	for _, plan := range plans {
 		if (hubapi.StringsEqualFold(plan.candidate.State, "Merging") || plan.landingPending) && plan.changeRecord.ID != "" {
@@ -25,7 +26,7 @@ func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope
 	if !ok {
 		return hubapi.NativeRunEventStorageUnavailable()
 	}
-	rows, err := reader.ClaimChangeRows(ctx, scope.project, ids)
+	rows, err := reader.ClaimChangeRows(ctx, scope.Project, ids)
 	if err != nil {
 		return err
 	}
@@ -39,7 +40,7 @@ func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope
 	return nil
 }
 
-func (s *Service) prepareNativeClaimLegacyAuditFacts(ctx context.Context, scope nativeScope, plans []nativeClaimPlan) error {
+func (s *Service) prepareNativeClaimLegacyAuditFacts(ctx context.Context, scope hubscope.NativeScope, plans []nativeClaimPlan) error {
 	runs := []int64{}
 	seen := map[int64]bool{}
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
@@ -82,7 +83,7 @@ func (s *Service) prepareNativeClaimLegacyAuditFacts(ctx context.Context, scope 
 		return hubapi.NativeRunEventStorageUnavailable()
 	}
 	var rows map[int64][]eventstore.AuditDisposition
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
@@ -91,7 +92,7 @@ func (s *Service) prepareNativeClaimLegacyAuditFacts(ctx context.Context, scope 
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		rows, err = reader.ClaimAuditDispositionRows(ctx, scope.project, runs)
+		rows, err = reader.ClaimAuditDispositionRows(ctx, scope.Project, runs)
 		return err
 	})
 	if err != nil {

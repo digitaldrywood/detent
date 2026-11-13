@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -31,11 +32,11 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
 	f := newUsageHostedFixture(t, func(cfg *Config) { cfg.now = func() time.Time { return now } })
 	installReportsBudgetTrace(t, f.service)
-	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+	scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}
 	seedProductionProject(t, f.service, scope, productionProjectShape{issues: 990, attempts: 990, usage: 660, leases: 1682, comments: 7000, days: 180})
 	content := eventstore.NewContent(f.service.runDetailStore())
 	admin := hostedPostgresAdmin(t, f.service)
-	rows, err := admin.QueryContext(t.Context(), `SELECT id FROM change_requests WHERE organization_id=$1 AND project_id=$2 AND id LIKE 'change_wi_shaped_%' ORDER BY id`, scope.organization, scope.project)
+	rows, err := admin.QueryContext(t.Context(), `SELECT id FROM change_requests WHERE organization_id=$1 AND project_id=$2 AND id LIKE 'change_wi_shaped_%' ORDER BY id`, scope.Organization, scope.Project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 	rows.Close()
 	for _, id := range ids {
 		var change eventstore.Change
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error { var err error; change, err = r.Change(t.Context(), id); return err }); err != nil {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { var err error; change, err = r.Change(t.Context(), id); return err }); err != nil {
 			t.Fatal(err)
 		}
 		for number := 1; number <= 6; number++ {
@@ -65,11 +66,11 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 				kind = "discussion"
 				value = tracker.ChangeDiscussion{ID: fmt.Sprintf("%s_%d", id, number), VersionID: *change.LandedVersionID, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, CreatedAt: *change.LandedAt, Body: strings.Repeat("x", 4096), Escape: &tracker.QualityEscape{OccurrenceID: fmt.Sprintf("%s_%d", id, number), Kind: "reopened", Cause: "missing_criterion", ObservedAt: *change.LandedAt, EvidenceReference: "record", EvidenceQuote: "Recorded failure", BasisQuote: "Frozen contract"}}
 			}
-			evidence, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: scope.organization, ChangeID: id, Kind: kind}, historyTestJSON(t, value))
+			evidence, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: id, Kind: kind}, historyTestJSON(t, value))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), evidence); return err }); err != nil {
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvidence(t.Context(), evidence); return err }); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -133,7 +134,7 @@ func TestReportsLongRangeReadBudget(t *testing.T) {
 			mu.Lock()
 			captured := append([]tracedStatement(nil), statements...)
 			mu.Unlock()
-			reportsAssertPostgresPlans(t, admin, scope.organization, captured, "issues", "collaboration_events", "native_attempts", "change_requests", "report_escape_facts")
+			reportsAssertPostgresPlans(t, admin, scope.Organization, captured, "issues", "collaboration_events", "native_attempts", "change_requests", "report_escape_facts")
 
 		})
 	}

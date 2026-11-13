@@ -21,6 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/actionstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -782,7 +783,7 @@ func TestHostedEventsWriteDeadlineFailureClosesBeforeWrite(t *testing.T) {
 			finished := make(chan struct{})
 			go func() {
 				defer close(finished)
-				result <- s.serveDashboardEvents(c, nativeScope{organization: "org_example"}, 0, false, false, "", "")
+				result <- s.serveDashboardEvents(c, hubscope.NativeScope{Organization: "org_example"}, 0, false, false, "", "")
 			}()
 			t.Cleanup(func() { cancel(); <-finished })
 			<-ready

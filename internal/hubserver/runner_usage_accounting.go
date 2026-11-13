@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -16,13 +17,13 @@ import (
 func (s *Service) accountRunnerUsage(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	var source leasestore.Attempt
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
-		item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(c.Param("item")))
+		item, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(c.Param("item")))
 		if err != nil {
 			return err
 		}
@@ -45,7 +46,7 @@ func (s *Service) accountRunnerUsage(c echo.Context) error {
 	if stored.Sequence != source.Sequence || stored.LeaseID != tracker.LeaseID(source.LeaseID) || stored.FencingToken != tracker.FencingToken(source.FencingToken) {
 		return s.nativeAPIError(c, corestore.ErrRevisionConflict)
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}

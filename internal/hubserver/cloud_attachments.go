@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
 	"github.com/labstack/echo/v4"
@@ -27,15 +28,15 @@ type cloudContentField struct {
 	value string
 }
 
-func cloudContentAttachmentReferences(body string, scope nativeScope) ([]attachment.Reference, error) {
-	refs, err := attachment.MarkdownReferences(body, string(scope.organization), string(scope.project))
+func cloudContentAttachmentReferences(body string, scope hubscope.NativeScope) ([]attachment.Reference, error) {
+	refs, err := attachment.MarkdownReferences(body, string(scope.Organization), string(scope.Project))
 	if err != nil {
 		return nil, err
 	}
 	for _, match := range cloudAttachmentReference.FindAllStringSubmatch(body, -1) {
 		refs = append(refs, attachment.Reference{URL: "attachment:" + match[1], ID: match[1]})
 	}
-	return append(refs, attachment.References(body, string(scope.organization), string(scope.project))...), nil
+	return append(refs, attachment.References(body, string(scope.Organization), string(scope.Project))...), nil
 }
 
 func (s *Service) registerCloudAttachmentRoutes(e *echo.Echo) {
@@ -78,8 +79,8 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 	if s.config.TenantRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
-	scope := nativeRequestScope(c)
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	scope := hubscope.NativeRequestScope(c)
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
@@ -103,7 +104,7 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 
-	return c.JSON(http.StatusOK, map[string]string{"principal_id": nativeRequestScope(c).credential.ID})
+	return c.JSON(http.StatusOK, map[string]string{"principal_id": hubscope.NativeRequestScope(c).Credential.ID})
 }
 
 func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.UploadRequest) error {
@@ -119,29 +120,29 @@ func (s *Service) recordCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) getCloudAttachment(c echo.Context) error {
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	record, err := s.readCloudAttachment(c.Request().Context(), scope, c.Param("attachment"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	record.AuthorizedPrincipal = scope.credential.ID
+	record.AuthorizedPrincipal = scope.Credential.ID
 	return c.JSON(http.StatusOK, record)
 }
 
-func (s *Service) readCloudAttachment(ctx context.Context, scope nativeScope, id string) (attachment.Metadata, error) {
+func (s *Service) readCloudAttachment(ctx context.Context, scope hubscope.NativeScope, id string) (attachment.Metadata, error) {
 	return s.readAttachmentRecordTenant(ctx, scope, id)
 }
 
 func (s *Service) deleteCloudAttachment(c echo.Context) error {
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	if err := s.deleteCloudAttachmentCommand(c.Request().Context(), scope, c.Param("attachment")); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope nativeScope, id string) error {
-	if scope.credential.Scope == hubapi.APIScopeWorker {
+func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope hubscope.NativeScope, id string) error {
+	if scope.Credential.Scope == hubapi.APIScopeWorker {
 		return hubapi.NativeNotFound()
 	}
 	return s.deleteCloudAttachmentTenant(ctx, scope, id)
@@ -155,13 +156,13 @@ func (s *Service) referenceCloudAttachment(c echo.Context) error {
 	if err := c.Bind(&input); err != nil || input.WorkItemID == "" {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("A work item is required"))
 	}
-	if err := s.referenceCloudAttachmentCommand(c.Request().Context(), nativeRequestScope(c), c.Param("attachment"), attachment.SourceReference{WorkItemID: input.WorkItemID, CommentID: input.CommentID}); err != nil {
+	if err := s.referenceCloudAttachmentCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("attachment"), attachment.SourceReference{WorkItemID: input.WorkItemID, CommentID: input.CommentID}); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope nativeScope, id string, input attachment.SourceReference) error {
+func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope hubscope.NativeScope, id string, input attachment.SourceReference) error {
 	return s.referenceCloudAttachmentTenant(ctx, scope, id, input)
 }
 

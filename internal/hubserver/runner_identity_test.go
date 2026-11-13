@@ -18,6 +18,7 @@ import (
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -167,7 +168,7 @@ func TestRunnerRemoval(t *testing.T) {
 			if err != nil || authStatus != http.StatusOK {
 				t.Fatalf("project credential status=%d: %v", authStatus, err)
 			}
-			scope := nativeScope{organization: organization, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: organization, Project: f.project.ID, Credential: credential}
 			var runtime tracker.NativeRuntimeEvidence
 			if err := f.service.readRuntimeAdmissionTenant(t.Context(), scope, item, &runtime, nil); err != nil {
 				t.Fatal(err)
@@ -241,7 +242,7 @@ func assertRunnerRemovalWithZeroClock(t *testing.T, f nativeFixture, runnerID st
 		return time.Time{}
 	}
 	service := &Service{database: f.service.database, config: config}
-	scope := nativeScope{organization: organization, credential: admin}
+	scope := hubscope.NativeScope{Organization: organization, Credential: admin}
 	_, err = service.revokeRunnerIdentityCommand(t.Context(), scope, runnerID)
 	if !errors.Is(err, want) {
 		t.Fatalf("runner removal error = %v, want %v", err, want)

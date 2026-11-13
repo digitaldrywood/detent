@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -234,7 +235,7 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
+	scope := hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
 	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "heartbeat-race-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 	plan, err := service.readNativeClaimPlan(t.Context(), scope, request, startedAt)
 	if err != nil || !nativeClaimIssueContractAllowed(plan) {
@@ -362,7 +363,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			t.Fatal(err)
 		}
 	}
-	draftScope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
+	draftScope := hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 	draftPage, err := service.readBoardRecords(t.Context(), draftScope, url.Values{"limit": {"200"}, "include": {"board"}})
 	if err != nil || len(draftPage.Cards) != 2 {
 		t.Fatalf("draft board cards=%d error=%v", len(draftPage.Cards), err)
@@ -443,7 +444,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 	base := projectPath + "/" + string(project.ID)
 	requirement := providercapacity.Requirement{Role: "code", Backend: report.Backend, Model: report.Models[0]}
 	request := tracker.NativeClaim{LandingCapacity: 1, PolicyID: descriptor.ID, WorkItemID: items[0].WorkItemID, MachineID: binding.MachineID, SessionID: "session_first", TTLSeconds: 300, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}, ProviderCandidates: []tracker.NativeCapacityCandidate{{WorkItemID: items[0].WorkItemID, Revision: items[0].Revision, Requirement: requirement}}}
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: "credential_runner", Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: binding, OrganizationID: organization.ID}}}
+	scope := hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: hubapi.APICredential{ID: "credential_runner", Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: binding, OrganizationID: organization.ID}}}
 	plan, err := service.readNativeClaimPlan(t.Context(), scope, request, now)
 	if err != nil || !nativeClaimIssueContractAllowed(plan) {
 		t.Fatalf("read claim plan = %+v, error %v", plan, err)
@@ -1277,7 +1278,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 		if err != nil || status != http.StatusOK {
 			t.Fatalf("authenticate compatible runner: status=%d error=%v", status, err)
 		}
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+		scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 		plan, err := f.service.readNativeClaimPlan(t.Context(), scope, request, f.service.config.now())
 		if err != nil {
 			t.Fatal(err)
@@ -1430,7 +1431,7 @@ func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
+			scope := hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
 			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: machineID, SessionID: "contract-scan-session", TTLSeconds: 300, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 
 			targeted := request

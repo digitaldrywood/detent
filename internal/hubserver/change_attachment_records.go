@@ -11,16 +11,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scope nativeScope, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string, locked bool) ([]string, error) {
-	project, err := r.ProjectRecord(ctx, scope.project)
+func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string, locked bool) ([]string, error) {
+	project, err := r.ProjectRecord(ctx, scope.Project)
 	if err != nil {
 		return nil, err
 	}
-	if !project.Settings.RequireVisualAttachments || scope.importedContent {
+	if !project.Settings.RequireVisualAttachments || scope.ImportedContent {
 		return nil, nil
 	}
 	var ids []string
@@ -34,7 +35,7 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 		}
 	}
 	for _, artifact := range artifacts {
-		if ref, ok := attachment.URIReference(artifact.URI, string(scope.organization), string(scope.project)); ok {
+		if ref, ok := attachment.URIReference(artifact.URI, string(scope.Organization), string(scope.Project)); ok {
 			ids = append(ids, ref.ID)
 		}
 	}
@@ -48,9 +49,9 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 			if !ok {
 				return nil, hubapi.NativeWorkItemStorageUnavailable()
 			}
-			row, err = locker.LockAttachment(ctx, scope.project, id)
+			row, err = locker.LockAttachment(ctx, scope.Project, id)
 		} else {
-			row, err = r.Attachment(ctx, scope.project, id)
+			row, err = r.Attachment(ctx, scope.Project, id)
 		}
 		if errors.Is(err, corestore.ErrNotFound) {
 			continue
@@ -64,7 +65,7 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 	}
 	resolve := func(id string) (attachment.Metadata, error) { return metadata[id], nil }
 	for _, field := range fields {
-		err := attachment.ValidateVisualReferences(field.value, string(scope.organization), string(scope.project), resolve)
+		err := attachment.ValidateVisualReferences(field.value, string(scope.Organization), string(scope.Project), resolve)
 		var refusal *attachment.VisualReferenceError
 		if errors.As(err, &refusal) {
 			return nil, hubapi.NativePublicInvalid(fmt.Sprintf("%s block %d: %s", field.name, refusal.Block, attachment.VisualReferenceMessage))
@@ -73,7 +74,7 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 			return nil, err
 		}
 	}
-	err = changerequest.ValidateVisualArtifacts(artifacts, string(scope.organization), string(scope.project), resolve)
+	err = changerequest.ValidateVisualArtifacts(artifacts, string(scope.Organization), string(scope.Project), resolve)
 	var refusal *attachment.VisualReferenceError
 	if errors.As(err, &refusal) {
 		return nil, hubapi.NativePublicInvalid(fmt.Sprintf("%s[%d]: %s", artifactName, refusal.Block-1, attachment.VisualReferenceMessage))
@@ -89,13 +90,13 @@ func validateChangeRecordContent(ctx context.Context, r tenantstore.Reader, scop
 	return ids, nil
 }
 
-func bindChangeRecordContent(ctx context.Context, w tenantstore.Writer, scope nativeScope, item string, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string) error {
+func bindChangeRecordContent(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item string, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string) error {
 	ids, err := validateChangeRecordContent(ctx, w, scope, fields, artifacts, artifactName, true)
 	if err != nil {
 		return err
 	}
 	for _, id := range ids {
-		if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.project, AttachmentID: id, WorkItemID: tracker.NativeWorkItemID(item), RetainWithWorkItem: true}); err != nil {
+		if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.Project, AttachmentID: id, WorkItemID: tracker.NativeWorkItemID(item), RetainWithWorkItem: true}); err != nil {
 			return err
 		}
 	}

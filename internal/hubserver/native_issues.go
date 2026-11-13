@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -30,14 +31,14 @@ func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeI
 	return issue
 }
 
-func (s *Service) nativeIssueJSON(ctx context.Context, scope nativeScope, body json.RawMessage) (json.RawMessage, error) {
+func (s *Service) nativeIssueJSON(ctx context.Context, scope hubscope.NativeScope, body json.RawMessage) (json.RawMessage, error) {
 	var challenge duplicateChallenge
 	if err := json.Unmarshal(body, &challenge); err != nil {
 		return nil, err
 	}
 	if challenge.ChallengeToken != "" {
-		if scope.credential.HostedRole == "reporter" {
-			visible := []possibleDuplicate{}
+		if scope.Credential.HostedRole == "reporter" {
+			visible := []hubscope.PossibleDuplicate{}
 			for _, match := range challenge.PossibleDuplicates {
 				if err := s.requireReporterWorkItemRecord(ctx, scope, string(match.WorkItemID)); errors.Is(err, sql.ErrNoRows) || hubapi.IsNativeNotFound(err) {
 					continue
@@ -63,7 +64,7 @@ func (s *Service) nativeIssueJSON(ctx context.Context, scope nativeScope, body j
 	if err := json.Unmarshal(body, &issue); err != nil {
 		return nil, err
 	}
-	if !scope.reporterOwns(issue.Actor) {
+	if !scope.ReporterOwns(issue.Actor) {
 		return nil, hubapi.NativeNotFound()
 	}
 	path, err := s.nativeIssueRecordBrowserPath(ctx, scope, string(issue.WorkItemID))
@@ -73,7 +74,7 @@ func (s *Service) nativeIssueJSON(ctx context.Context, scope nativeScope, body j
 	} else {
 		issue.WebURL = path
 	}
-	return json.Marshal(s.nativeIssueResponse(scope.reporterIssue(issue)))
+	return json.Marshal(s.nativeIssueResponse(scope.ReporterIssue(issue)))
 }
 
 func nativeActorDisplayName(principal, organization string) string {
@@ -82,7 +83,7 @@ func nativeActorDisplayName(principal, organization string) string {
  FROM api_tokens t WHERE t.id = ` + principal + `), '')`
 }
 
-func readNativeIssueProjection(ctx context.Context, query hubapi.NativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
+func readNativeIssueProjection(ctx context.Context, query hubapi.NativeQueryer, scope hubscope.NativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	var issue tracker.NativeIssue
 	var internalID tracker.WorkItemID
 	var labels, assignees, actor, displayName, created, updated, activity, externalID, contractJSON string
@@ -99,15 +100,15 @@ func readNativeIssueProjection(ctx context.Context, query hubapi.NativeQueryer, 
 	if compact {
 		bodyColumn = "''"
 	}
-	visibility, args := scope.issueVisibilitySQL("i")
-	if scope.credential.HostedRole == "reporter" {
+	visibility, args := scope.IssueVisibilitySQL("i")
+	if scope.Credential.HostedRole == "reporter" {
 		visibility = "(" + visibility + " OR (i.actor_principal_id IS NULL AND ?<>''))"
-		args = append(args, scope.actor().PrincipalID)
+		args = append(args, scope.Actor().PrincipalID)
 	}
-	args = append([]any{scope.organization, scope.project, id}, args...)
+	args = append([]any{scope.Organization, scope.Project, id}, args...)
 	err := query.QueryRowContext(ctx, `SELECT o.slug, p.slug, i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
  i.issue_type, i.report_context_json, i.verification_state, i.verified_by_json, i.verified_at, i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
- i.actor_json,i.actor_kind,i.actor_principal_id, `+nativeActorDisplayName(nativeIssuePrincipal("i"), "i.organization_id")+`, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
+ i.actor_json,i.actor_kind,i.actor_principal_id, `+nativeActorDisplayName(hubscope.NativeIssuePrincipal("i"), "i.organization_id")+`, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
  COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url,
  CASE WHEN ws.terminal = 1 THEN i.terminal_entered_at ELSE NULL END,
@@ -139,11 +140,11 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 	if actorPrincipal.Valid {
 		issue.Actor.PrincipalID = actorPrincipal.String
 	}
-	if !scope.reporterOwns(issue.Actor) {
+	if !scope.ReporterOwns(issue.Actor) {
 		return tracker.NativeIssue{}, 0, sql.ErrNoRows
 	}
 	if !actorPrincipal.Valid {
-		if err := query.QueryRowContext(ctx, "SELECT "+nativeActorDisplayName("?", "?"), scope.organization, issue.Actor.PrincipalID).Scan(&displayName); err != nil {
+		if err := query.QueryRowContext(ctx, "SELECT "+nativeActorDisplayName("?", "?"), scope.Organization, issue.Actor.PrincipalID).Scan(&displayName); err != nil {
 			return issue, 0, err
 		}
 	}
@@ -190,7 +191,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 		return issue, 0, err
 	}
 
-	issue = scope.reporterIssue(issue)
+	issue = scope.ReporterIssue(issue)
 	issue.Actor.DisplayName = displayName
 	if provenance.Valid {
 		if err := json.Unmarshal([]byte(provenance.String), &issue.Provenance); err != nil {
@@ -272,7 +273,7 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 	if params.Get("view") == "recovery" {
 		return s.getNativeRecoveryTenant(c, params)
 	}
-	issue, err := s.workItemResource(c.Request().Context(), nativeRequestScope(c), c.Param("item"), params)
+	issue, err := s.workItemResource(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), params)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -316,14 +317,14 @@ func validateNativeContent(title, body string, labels, assignees []string, prior
 	return nil
 }
 
-func validateNativeProvenance(scope nativeScope, provenance *tracker.Provenance) error {
+func validateNativeProvenance(scope hubscope.NativeScope, provenance *tracker.Provenance) error {
 	if provenance == nil {
 		return nil
 	}
-	if scope.sourceActor != nil && scope.sourceActor.Agent == "progress-check" && provenance.Provider == "progress-check" && strings.TrimSpace(provenance.ExternalID) != "" && len(provenance.ExternalID) <= 200 {
+	if scope.SourceActor != nil && scope.SourceActor.Agent == "progress-check" && provenance.Provider == "progress-check" && strings.TrimSpace(provenance.ExternalID) != "" && len(provenance.ExternalID) <= 200 {
 		return nil
 	}
-	if scope.credential.Scope == hubapi.APIScopeWorker {
+	if scope.Credential.Scope == hubapi.APIScopeWorker {
 		return hubapi.NativePublicInvalid("Imported provenance requires an operator")
 	}
 	if provenance.Provider != "github" && provenance.Provider != "local_sqlite" && provenance.Provider != "github_local" {
@@ -354,7 +355,7 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	result, err := s.createNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), request)
+	result, err := s.createNativeIssueCommand(c.Request().Context(), hubscope.NativeRequestScope(c), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -403,10 +404,10 @@ func defaultNativeIssueState(states []tracker.NativeState) string {
 	return ""
 }
 
-func validateNativeIssueState(scope nativeScope, project tracker.NativeProject, state string, machineIntake bool) error {
+func validateNativeIssueState(scope hubscope.NativeScope, project tracker.NativeProject, state string, machineIntake bool) error {
 	for _, candidate := range project.States {
 		if candidate.Name == state {
-			if candidate.OperatorOnly && scope.credential.Scope == hubapi.APIScopeWorker && !machineIntake {
+			if candidate.OperatorOnly && scope.Credential.Scope == hubapi.APIScopeWorker && !machineIntake {
 				return hubapi.NativePublicInvalid("Workflow target requires an operator")
 			}
 			return nil
@@ -442,7 +443,7 @@ func (s *Service) updateNativeIssue(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	result, err := s.updateNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	result, err := s.updateNativeIssueCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -454,18 +455,18 @@ func (s *Service) transitionNativeIssue(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	result, err := s.transitionNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	result, err := s.transitionNativeIssueCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusOK, result)
 }
 
-func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
+func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
 	return s.transitionNativeIssueCommandWithChat(ctx, scope, item, request, "")
 }
 
-func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scope nativeScope, item string, request tracker.Transition, conversationID string) (json.RawMessage, error) {
+func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition, conversationID string) (json.RawMessage, error) {
 	if conversationID != "" {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -493,28 +494,28 @@ func (s *Service) changeNativeDependency(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	result, err := s.changeNativeDependencyCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	result, err := s.changeNativeDependencyCommand(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSONBlob(http.StatusOK, result)
 }
 
-func (s *Service) requireReporterWorkItemRecord(ctx context.Context, scope nativeScope, item string) error {
+func (s *Service) requireReporterWorkItemRecord(ctx context.Context, scope hubscope.NativeScope, item string) error {
 	row, _, err := s.readWorkItemRecord(ctx, scope, item)
 	if err != nil {
 		return err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+	if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 		return hubapi.NativeNotFound()
 	}
 	return nil
 }
 
-func (s *Service) nativeIssueRecordBrowserPath(ctx context.Context, scope nativeScope, id string) (string, error) {
+func (s *Service) nativeIssueRecordBrowserPath(ctx context.Context, scope hubscope.NativeScope, id string) (string, error) {
 	var path string
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		item, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(id))
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		item, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(id))
 		if err != nil {
 			return err
 		}

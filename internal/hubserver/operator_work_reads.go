@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -43,7 +44,7 @@ type nativeWorkScheduledRepair struct {
 // These are the same reads used by the native HTTP application, not a proxy.
 type operatorWorkReads struct {
 	service *Service
-	scope   nativeScope
+	scope   hubscope.NativeScope
 }
 
 func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request operatortool.WorkReadRequest) (result operatortool.Result, resultErr error) {
@@ -56,7 +57,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	}()
 	s := r.service
 	scope := r.scope
-	scope.project = tracker.ProjectID(request.ProjectID)
+	scope.Project = tracker.ProjectID(request.ProjectID)
 	ctx = s.archiveContext(ctx, scope, request.ArchiveURL)
 	defer func() {
 		if resultErr == nil && len(result.Content) > 0 {
@@ -111,11 +112,11 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		if err != nil {
 			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
-		approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+		approval, err := s.readTenantProjectPolicy(ctx, scope.Organization, scope.Project)
 		if err != nil {
 			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
-		contract, err := approvedProjectIssueContract(ctx, scope.organization, scope.project, approval)
+		contract, err := approvedProjectIssueContract(ctx, scope.Organization, scope.Project, approval)
 		if err != nil {
 			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
@@ -146,7 +147,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		}
 		labels, err := s.readNativeLabels(ctx, scope)
 		if err == nil {
-			err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				return s.authorizeBulkExportItem(ctx, r, scope, "")
 			})
 		}
@@ -165,7 +166,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	request.Reference = string(item.WorkItemID)
 	switch name {
 	case operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings:
-		if name == operatortool.GitHubScopeTimings && scope.credential.Runner.RunnerID != "" && scope.credential.Runner.RunnerID != request.RunnerID {
+		if name == operatortool.GitHubScopeTimings && scope.Credential.Runner.RunnerID != "" && scope.Credential.Runner.RunnerID != request.RunnerID {
 			return operatortool.Result{}, explain.ErrNotFound
 		}
 		if request.Cursor != "" {
@@ -189,7 +190,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	case operatortool.WorkItem:
 		if request.View == "recovery" {
 			params := url.Values{"view": {"recovery"}, "limit": {"1"}, "cursor": {request.Cursor}}
-			recovery, err := s.readNativeRecoveryPageTenant(ctx, scope, request.Reference, "/api/v2/organizations/"+url.PathEscape(string(scope.organization))+"/projects/"+url.PathEscape(string(scope.project))+"/work-items/"+url.PathEscape(request.Reference), params)
+			recovery, err := s.readNativeRecoveryPageTenant(ctx, scope, request.Reference, "/api/v2/organizations/"+url.PathEscape(string(scope.Organization))+"/projects/"+url.PathEscape(string(scope.Project))+"/work-items/"+url.PathEscape(request.Reference), params)
 			return hubWorkResult(r, request, recovery.Continuation, err)
 		}
 		view := operatortool.NativeItemView(request.ProjectID, item)
@@ -266,11 +267,11 @@ func hubWorkResult[T any](r operatorWorkReads, request operatortool.WorkReadRequ
 	return operatortool.EncodeResult(view)
 }
 
-func (s *Service) resolveOperatorNativeReadItem(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+func (s *Service) resolveOperatorNativeReadItem(ctx context.Context, _ hubapi.NativeQueryer, scope hubscope.NativeScope, reference string) (tracker.NativeIssue, error) {
 	return s.resolveOperatorRecordReadItem(ctx, scope, reference)
 }
 
-func (s *Service) resolveOperatorNativeItem(ctx context.Context, _ hubapi.NativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+func (s *Service) resolveOperatorNativeItem(ctx context.Context, _ hubapi.NativeQueryer, scope hubscope.NativeScope, reference string) (tracker.NativeIssue, error) {
 	item, err := s.resolveOperatorRecordReadItem(ctx, scope, reference)
 	if errors.Is(err, explain.ErrNotFound) || errors.Is(err, operatortool.ErrProjectScopeRequired) {
 		return tracker.NativeIssue{}, hubapi.NativeNotFound()
@@ -291,7 +292,7 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 		return explain.IssueExplanation{}, err
 	}
 	scope := r.scope
-	scope.project = tracker.ProjectID(query.ProjectID)
+	scope.Project = tracker.ProjectID(query.ProjectID)
 	issue, err := r.service.resolveOperatorRecordReadItem(ctx, scope, query.Reference)
 	if err != nil {
 		return explain.IssueExplanation{}, hubapi.SafeWorkReadError(err)
@@ -310,7 +311,7 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 	return out, nil
 }
 
-func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope, issue tracker.NativeIssue) (tracker.NativeRuntimeEvidence, []nativeFailure, bool, error) {
+func (s *Service) readOperatorExplanation(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue) (tracker.NativeRuntimeEvidence, []nativeFailure, bool, error) {
 	item := string(issue.WorkItemID)
 	now := s.config.now().UTC()
 	evidence := tracker.NativeRuntimeEvidence{Issue: issue.RuntimeReference(), Selection: "latest", ObservedAt: now,
@@ -354,7 +355,7 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope
 		failures = append(failures, nativeFailure{AttemptID: attempt.AttemptID, WorkItem: item, At: at, Started: attempt.StartedAt, Finished: attempt.UpdatedAt, Example: example, Class: class})
 	}
 	var decisions eventstore.SchedulerDecisionRows
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeBulkExportItem(ctx, r, scope, issue.WorkItemID); err != nil {
 			return err
 		}
@@ -363,7 +364,7 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		decisions, err = reader.SchedulerDecisions(ctx, scope.project, issue.WorkItemID)
+		decisions, err = reader.SchedulerDecisions(ctx, scope.Project, issue.WorkItemID)
 		return err
 	})
 	if err == nil {
@@ -372,7 +373,7 @@ func (s *Service) readOperatorExplanation(ctx context.Context, scope nativeScope
 	return evidence, failures, partial, err
 }
 
-func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope nativeScope, item string) ([]tenantAttemptSnapshot, int64, bool, error) {
+func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope hubscope.NativeScope, item string) ([]tenantAttemptSnapshot, int64, bool, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return nil, 0, false, hubapi.NativeRunEventStorageUnavailable()
@@ -380,25 +381,25 @@ func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope native
 	var snapshots []tenantAttemptSnapshot
 	var sequence int64
 	var partial bool
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if project.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		work, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		work, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{Kind: hubapi.StringValue(work.ActorKind), PrincipalID: hubapi.StringValue(work.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{Kind: hubapi.StringValue(work.ActorKind), PrincipalID: hubapi.StringValue(work.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
 		}
-		board, err := r.BoardSequence(ctx, scope.project)
+		board, err := r.BoardSequence(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -409,21 +410,21 @@ func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope native
 		}
 		partial = page.Next != (leasestore.AttemptCursor{})
 		for _, attempt := range page.Items {
-			if attempt.OrganizationID != scope.organization || attempt.IssueID != work.ID {
+			if attempt.OrganizationID != scope.Organization || attempt.IssueID != work.ID {
 				return corestore.ErrNotFound
 			}
 			lease, err := r.Lease(ctx, attempt.LeaseID)
 			if err != nil {
 				return err
 			}
-			if lease.OrganizationID != scope.organization || lease.IssueID != work.ID || lease.FencingToken != attempt.FencingToken {
+			if lease.OrganizationID != scope.Organization || lease.IssueID != work.ID || lease.FencingToken != attempt.FencingToken {
 				return corestore.ErrNotFound
 			}
-			event, err := r.LatestRunEvent(ctx, scope.project, attempt.ID)
+			event, err := r.LatestRunEvent(ctx, scope.Project, attempt.ID)
 			if err != nil {
 				return err
 			}
-			if event.OrganizationID != scope.organization || event.ProjectID != scope.project || event.WorkItemID != work.NativeID || event.AttemptID != attempt.ID {
+			if event.OrganizationID != scope.Organization || event.ProjectID != scope.Project || event.WorkItemID != work.NativeID || event.AttemptID != attempt.ID {
 				return corestore.ErrNotFound
 			}
 			snapshot := tenantAttemptSnapshot{attempt: attempt, lease: lease, event: event}
@@ -448,7 +449,7 @@ func approvedProjectIssueContract(ctx context.Context, organization tracker.Orga
 	return config.ResolvePolicyIssueContract(approval.Policy)
 }
 
-func (s *Service) projectReporterTemplates(ctx context.Context, scope nativeScope, page *projectstore.Page) (config.ReporterContracts, error) {
+func (s *Service) projectReporterTemplates(ctx context.Context, scope hubscope.NativeScope, page *projectstore.Page) (config.ReporterContracts, error) {
 	if page != nil {
 		templates := config.DefaultReporterContracts()
 		for kind, sections := range page.ReporterTemplates {
@@ -458,11 +459,11 @@ func (s *Service) projectReporterTemplates(ctx context.Context, scope nativeScop
 		}
 		return templates, nil
 	}
-	approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+	approval, err := s.readTenantProjectPolicy(ctx, scope.Organization, scope.Project)
 	if err != nil {
 		return nil, err
 	}
-	return approvedReporterTemplates(ctx, scope.organization, scope.project, approval)
+	return approvedReporterTemplates(ctx, scope.Organization, scope.Project, approval)
 }
 
 func approvedReporterTemplates(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, approval policy.Approval) (config.ReporterContracts, error) {

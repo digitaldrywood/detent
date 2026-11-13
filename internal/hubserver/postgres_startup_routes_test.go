@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -625,7 +626,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 		if !ok {
 			return fmt.Errorf("runner diagnostic writer unavailable")
 		}
-		return storeRunnerProjectObservationTenant(t.Context(), nativeScope{organization: "org_startup", project: project.ID, credential: workerCredential}, diagnosticView, diagnosticAt.Add(time.Second), writer)
+		return storeRunnerProjectObservationTenant(t.Context(), hubscope.NativeScope{Organization: "org_startup", Project: project.ID, Credential: workerCredential}, diagnosticView, diagnosticAt.Add(time.Second), writer)
 	}); err != nil {
 		t.Fatalf("store typed PostgreSQL runner diagnostics: %v", err)
 	}
@@ -655,7 +656,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 		if !ok {
 			return fmt.Errorf("runner diagnostic writer unavailable")
 		}
-		return storeRunnerProjectObservationTenant(t.Context(), nativeScope{organization: "org_startup", project: project.ID, credential: workerCredential}, diagnosticView, updatedDiagnosticAt.Add(time.Second), writer)
+		return storeRunnerProjectObservationTenant(t.Context(), hubscope.NativeScope{Organization: "org_startup", Project: project.ID, Credential: workerCredential}, diagnosticView, updatedDiagnosticAt.Add(time.Second), writer)
 	}); err != nil {
 		t.Fatalf("store reporter PostgreSQL runner diagnostics: %v", err)
 	}
@@ -744,7 +745,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 	if err != nil {
 		t.Fatal(err)
 	}
-	currentWorkItem, _, err := service.readWorkItemRecord(t.Context(), nativeScope{organization: "org_startup", project: project.ID, credential: ownerCredential}, string(issue.WorkItemID))
+	currentWorkItem, _, err := service.readWorkItemRecord(t.Context(), hubscope.NativeScope{Organization: "org_startup", Project: project.ID, Credential: ownerCredential}, string(issue.WorkItemID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -780,7 +781,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, workerToken, input), http.StatusConflict)
-			row, _, err := service.readWorkItemRecord(t.Context(), nativeScope{organization: "org_startup", project: project.ID, credential: ownerCredential}, string(issue.WorkItemID))
+			row, _, err := service.readWorkItemRecord(t.Context(), hubscope.NativeScope{Organization: "org_startup", Project: project.ID, Credential: ownerCredential}, string(issue.WorkItemID))
 			if err != nil || row.EventSequence != currentWorkItem.EventSequence {
 				t.Fatalf("rejected execution binding changed issue evidence: sequence=%d want=%d error=%v", row.EventSequence, currentWorkItem.EventSequence, err)
 			}
@@ -803,7 +804,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("authenticate progress worker: status=%d error=%v", status, err)
 	}
-	progressOwner := nativeProgressOwner{service: service, scope: nativeScope{organization: "org_startup", project: project.ID, credential: workerCredential}, request: progress.Request, leaseID: landingAttempt.LeaseID, fencingToken: landingAttempt.FencingToken, expectedRevision: progressPost.ExpectedRevision}
+	progressOwner := nativeProgressOwner{service: service, scope: hubscope.NativeScope{Organization: "org_startup", Project: project.ID, Credential: workerCredential}, request: progress.Request, leaseID: landingAttempt.LeaseID, fencingToken: landingAttempt.FencingToken, expectedRevision: progressPost.ExpectedRevision}
 	for _, test := range []struct {
 		name    string
 		mutate  string
@@ -828,7 +829,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 			})
 			owner := progressOwner
 			if test.owner {
-				owner.scope.credential = ownerCredential
+				owner.scope.Credential = ownerCredential
 			}
 			if _, found, err := owner.Load(t.Context(), string(project.ID), string(issue.WorkItemID), progressRequestID); err == nil || found {
 				t.Fatalf("revoked authority replayed progress receipt: found=%t error=%v", found, err)
@@ -1204,7 +1205,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 		if len(seen) != runnerstore.SourceRecoveryPageLimit+1 || pageCalls != 2 {
 			t.Fatalf("project destination pagination: runners=%d pages=%d", len(seen), pageCalls)
 		}
-		secondary, _, err := service.readWorkItemRecord(t.Context(), nativeScope{organization: "org_startup", project: project.ID, credential: ownerCredential}, string(secondIssue.WorkItemID))
+		secondary, _, err := service.readWorkItemRecord(t.Context(), hubscope.NativeScope{Organization: "org_startup", Project: project.ID, Credential: ownerCredential}, string(secondIssue.WorkItemID))
 		if err != nil {
 			t.Fatal(err)
 		}

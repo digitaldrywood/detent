@@ -315,7 +315,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 						continue
 					}
 					found = true
-					plan, raw := reportsExplainPostgresPlan(t, admin, scope.organization, statement)
+					plan, raw := reportsExplainPostgresPlan(t, admin, scope.Organization, statement)
 					if violations := reportsBudgetPlanViolations(statement, plan); len(violations) > 0 {
 						t.Fatalf("terminal history lookup is not indexed and bounded: %v plan=%s", violations, raw)
 					}
@@ -341,7 +341,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				t.Fatalf("workflow transition changed progress evidence: before=%+v after=%+v", beforeTransition, request)
 			}
 			var attempts int
-			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3", scope.organization, scope.project, f.issue.WorkItemID).Scan(&attempts); err != nil || attempts != test.attempts {
+			if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3", scope.Organization, scope.Project, f.issue.WorkItemID).Scan(&attempts); err != nil || attempts != test.attempts {
 				t.Fatalf("evidence fetch started the check execution: attempts=%d err=%v", attempts, err)
 			}
 			if len(request.Attempts) != min(test.attempts-test.staleRunning, progresscheck.MaxAttempts) {
@@ -462,7 +462,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				t.Fatalf("publication observed %d boundary events", observed)
 			}
 			var attemptID string
-			if err := admin.QueryRowContext(t.Context(), "SELECT a.id FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3 AND a.status='running' ORDER BY a.fencing_token DESC LIMIT 1", scope.organization, scope.project, f.issue.WorkItemID).Scan(&attemptID); err != nil {
+			if err := admin.QueryRowContext(t.Context(), "SELECT a.id FROM native_attempts a JOIN issues i ON i.organization_id=a.organization_id AND i.id=a.issue_id WHERE i.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3 AND a.status='running' ORDER BY a.fencing_token DESC LIMIT 1", scope.Organization, scope.Project, f.issue.WorkItemID).Scan(&attemptID); err != nil {
 				t.Fatal(err)
 			}
 			snapshot, err := f.service.readNativeAttemptSnapshotTenant(t.Context(), scope, string(f.issue.WorkItemID), attemptID)
@@ -640,7 +640,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 					t.Fatal("stale evidence or released authority published decision")
 				}
 				var count int
-				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE organization_id=$1 AND actor_id=$2 AND operation=$3", scope.organization, nativeProgressReceiptActor, nativeProgressReceiptOperation(scope, string(f.issue.WorkItemID))).Scan(&count); err != nil {
+				if err := admin.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE organization_id=$1 AND actor_id=$2 AND operation=$3", scope.Organization, nativeProgressReceiptActor, nativeProgressReceiptOperation(scope, string(f.issue.WorkItemID))).Scan(&count); err != nil {
 					t.Fatal(err)
 				}
 				if count != 0 {
@@ -656,8 +656,8 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				t.Fatalf("decision self-invalidated: id=%s want=%s record=%+v err=%v", replayID, id, replay.Record, err)
 			}
 			comments := 0
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-				rows, err := reader.SelectComments(t.Context(), scope.project, f.issue.WorkItemID, int64(1<<63-1), true, corestore.MaxPageSize)
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				rows, err := reader.SelectComments(t.Context(), scope.Project, f.issue.WorkItemID, int64(1<<63-1), true, corestore.MaxPageSize)
 				comments = len(rows)
 				return err
 			}); err != nil {

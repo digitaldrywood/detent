@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -39,15 +40,15 @@ func savedViewResponse(r viewstore.Record, user string) savedWorkView {
 	return v
 }
 
-func (s *Service) viewRecordScope(c echo.Context) (nativeScope, error) {
+func (s *Service) viewRecordScope(c echo.Context) (hubscope.NativeScope, error) {
 	credential, _, err := s.appCredential(c)
 	if err != nil {
-		return nativeScope{}, err
+		return hubscope.NativeScope{}, err
 	}
 	if c.Param("organization") != s.appOrganizationID() {
-		return nativeScope{}, hubapi.NativeNotFound()
+		return hubscope.NativeScope{}, hubapi.NativeNotFound()
 	}
-	return nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(c.Param("project")), credential: credential}, nil
+	return hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID()), Project: tracker.ProjectID(c.Param("project")), Credential: credential}, nil
 }
 
 func (s *Service) workViewPreferenceRecord(c echo.Context) error {
@@ -56,14 +57,14 @@ func (s *Service) workViewPreferenceRecord(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	ctx := c.Request().Context()
-	user := appSubject(scope.credential)
+	user := appSubject(scope.Credential)
 	value := workViewPreference{}
 	if c.Request().Method == http.MethodGet {
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				return err
 			}
-			query, err := r.WorkViewPreference(ctx, user, string(scope.project))
+			query, err := r.WorkViewPreference(ctx, user, string(scope.Project))
 			if errors.Is(err, corestore.ErrNotFound) {
 				return nil
 			}
@@ -85,11 +86,11 @@ func (s *Service) workViewPreferenceRecord(c echo.Context) error {
 				return s.nativeAPIError(c, hubapi.NativePublicInvalid("The view query is invalid"))
 			}
 		}
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := s.authorizeAccessScope(ctx, w, scope, false); err != nil {
 				return err
 			}
-			return w.SetWorkViewPreference(ctx, user, string(scope.project), value.Query)
+			return w.SetWorkViewPreference(ctx, user, string(scope.Project), value.Query)
 		})
 	}
 	if err != nil {
@@ -104,7 +105,7 @@ func (s *Service) savedWorkViewsRecord(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	ctx := c.Request().Context()
-	user, id := appSubject(scope.credential), c.Param("view")
+	user, id := appSubject(scope.Credential), c.Param("view")
 	selection := viewstore.Selection{UserID: user, EnforceProjectGrants: s.config.Hosted != nil}
 	if c.Request().Method == http.MethodGet {
 		return s.readSavedWorkViewsRecord(c, scope, selection, id)
@@ -126,7 +127,7 @@ func (s *Service) savedWorkViewsRecord(c echo.Context) error {
 	}
 	v.ID, v.OwnerID = id, user
 	var result viewstore.Record
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, false); err != nil {
 			return err
 		}
@@ -140,12 +141,12 @@ func (s *Service) savedWorkViewsRecord(c echo.Context) error {
 		default:
 			for _, project := range v.ProjectIDs {
 				projectScope := scope
-				projectScope.project = tracker.ProjectID(project)
+				projectScope.Project = tracker.ProjectID(project)
 				if err := s.authorizeAccessScope(ctx, w, projectScope, false); err != nil {
 					return err
 				}
 			}
-			if err := w.PutSavedWorkView(ctx, selection, savedViewRecord(v, scope.organization), create); err != nil {
+			if err := w.PutSavedWorkView(ctx, selection, savedViewRecord(v, scope.Organization), create); err != nil {
 				return err
 			}
 		}
@@ -168,7 +169,7 @@ func (s *Service) savedWorkViewsRecord(c echo.Context) error {
 	return c.JSON(http.StatusOK, savedViewResponse(result, user))
 }
 
-func (s *Service) readSavedWorkViewsRecord(c echo.Context, scope nativeScope, selection viewstore.Selection, id string) error {
+func (s *Service) readSavedWorkViewsRecord(c echo.Context, scope hubscope.NativeScope, selection viewstore.Selection, id string) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	params := c.QueryParams()
@@ -181,7 +182,7 @@ func (s *Service) readSavedWorkViewsRecord(c echo.Context, scope nativeScope, se
 	}
 	page := savedWorkViewsPage{Views: []savedWorkView{}}
 	var single savedWorkView
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}

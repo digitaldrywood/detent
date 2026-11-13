@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -299,7 +300,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	streamScope := nativeScope{organization: org, project: f.project, credential: streamCredential}
+	streamScope := hubscope.NativeScope{Organization: org, Project: f.project, Credential: streamCredential}
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.AddAccessOrganizationSlug(t.Context(), "retained-org")
 	}); err != nil {
@@ -417,7 +418,7 @@ func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
 				call := f.service.echo.NewContext(request, httptest.NewRecorder())
 				credential, _, authErr := f.service.appCredential(call)
 				params, parseErr := url.ParseQuery(query)
-				_, readErr := f.service.readIssues(t.Context(), nativeScope{organization: org, project: f.project, credential: credential}, params)
+				_, readErr := f.service.readIssues(t.Context(), hubscope.NativeScope{Organization: org, Project: f.project, Credential: credential}, params)
 				t.Fatalf("issue list status=%d auth=%v parse=%v read=%v response=%s", response.Code, authErr, parseErr, readErr, response.Body.String())
 			}
 			var result tracker.NativeIssuePage

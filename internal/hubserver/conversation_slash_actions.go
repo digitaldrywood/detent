@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -70,7 +71,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 	if err := decodeCoordinatorArguments(call.Arguments, &args); err != nil {
 		return nil, err
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
 		return nil, operatortool.ErrAccessDenied
 	}
@@ -78,7 +79,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 	if err != nil {
 		return nil, err
 	}
-	scope.project = record.ProjectID
+	scope.Project = record.ProjectID
 	issue, err := t.coordinator.server.resolveOperatorNativeItem(ctx, nil, scope, args.WorkItemID)
 	if err != nil {
 		return nil, err
@@ -112,7 +113,7 @@ func (t *coordinatorToolset) slashAction(ctx context.Context, record conversatio
 		if err != nil {
 			return nil, err
 		}
-		if err := validateNativeWorkflowTransition(project.States, issue.State, targetState, scope.credential.Scope); err != nil {
+		if err := validateNativeWorkflowTransition(project.States, issue.State, targetState, scope.Credential.Scope); err != nil {
 			return nil, err
 		}
 	}

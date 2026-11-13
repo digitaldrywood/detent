@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -30,12 +31,12 @@ type nativeContractEvaluation struct {
 	Missing    []string
 }
 
-func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope nativeScope, plan workItemRecordPlan) (policystore.Revision, bool, error) {
-	reporterCreate := scope.credential.HostedRole == "reporter" && plan.create
+func (s *Service) validateWorkItemRecordFilingTenant(ctx context.Context, scope hubscope.NativeScope, plan workItemRecordPlan) (policystore.Revision, bool, error) {
+	reporterCreate := scope.Credential.HostedRole == "reporter" && plan.create
 	var revision policystore.Revision
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
-		revision, err = reader.ProjectPolicy(ctx, scope.project)
+		revision, err = reader.ProjectPolicy(ctx, scope.Project)
 		return err
 	})
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
@@ -111,24 +112,16 @@ func validateConfiguredWorkflowPolicy(project projectstore.Record, descriptor po
 	return validateNativeWorkflowPolicy(project, descriptor, found)
 }
 
-type nativeScheduledRepair struct {
-	policyID     string
-	evidence     gate.ScheduledEvidence
-	importURL    string
-	importBody   string
-	importReason string
-}
-
-func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nativeScope, snapshot tracker.GitHubIssueSnapshot) *nativeScheduledRepair {
+func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope hubscope.NativeScope, snapshot tracker.GitHubIssueSnapshot) *hubscope.NativeScheduledRepair {
 	origin, machine := issueorigin.Parse(snapshot.Body)
 	if !machine || origin.Kind != "doctor" || origin.Instance != "github-actions" {
 		return nil
 	}
-	result := &nativeScheduledRepair{importURL: snapshot.URL, importBody: snapshot.Body, importReason: "Scheduled CI import requires an approved repair delegation and verified GitHub Actions provenance"}
+	result := &hubscope.NativeScheduledRepair{ImportURL: snapshot.URL, ImportBody: snapshot.Body, ImportReason: "Scheduled CI import requires an approved repair delegation and verified GitHub Actions provenance"}
 	if snapshot.Provenance.Provider != "github" || snapshot.Provenance.AuthorID != "github-actions[bot]" || strings.Contains(strings.ToLower(snapshot.Body), "detent:no-dispatch") || s.config.ImportBackend == nil {
 		return result
 	}
-	approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+	approval, err := s.readTenantProjectPolicy(ctx, scope.Organization, scope.Project)
 	found := approval.Policy.ID != ""
 	if err != nil || !found || approval.Policy.Authored == nil {
 		return result
@@ -137,7 +130,7 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	if err != nil || contract.ScheduledImportBody() == "" {
 		return result
 	}
-	result.importReason = "Scheduled CI import requires complete sections matching the approved bounded repair contract"
+	result.ImportReason = "Scheduled CI import requires complete sections matching the approved bounded repair contract"
 	digests := config.IssueContractSectionDigests(snapshot.Body)
 	for section, digest := range config.IssueContractSectionDigests(contract.ScheduledImportBody()) {
 		if digests[section] != digest {
@@ -147,7 +140,7 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	evidence := gate.ParseScheduledEvidence(snapshot.Body)
 	_, sourceRepository, _, err := tracker.ParseGitHubIssueURL(snapshot.URL)
 	repository, repoErr := s.scheduledRepository(ctx, scope)
-	result.importReason = "Scheduled CI import requires a verified failed job from the configured repository CI workflow"
+	result.ImportReason = "Scheduled CI import requires a verified failed job from the configured repository CI workflow"
 	if err != nil || repoErr != nil || len(evidence) != 1 || !strings.EqualFold(repository, sourceRepository) || !strings.EqualFold(repository, evidence[0].Repository) || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return result
 	}
@@ -159,20 +152,20 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	if err != nil || page.Scheduled == nil {
 		return result
 	}
-	result.policyID, result.evidence, result.importReason = approval.Policy.ID, *page.Scheduled, ""
+	result.PolicyID, result.Evidence, result.ImportReason = approval.Policy.ID, *page.Scheduled, ""
 	return result
 }
 
-func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope, request tracker.CreateIssue) *nativeScheduledRepair {
+func (s *Service) observeScheduledRepair(ctx context.Context, scope hubscope.NativeScope, request tracker.CreateIssue) *hubscope.NativeScheduledRepair {
 	origin, machine := issueorigin.Parse(request.Body)
-	if !machine || origin.Kind != "doctor" || origin.Instance != "github-actions" || scope.credential.Scope == hubapi.APIScopeWorker || request.GitHubIssueURL != "" || request.Provenance != nil || s.config.ImportBackend == nil {
+	if !machine || origin.Kind != "doctor" || origin.Instance != "github-actions" || scope.Credential.Scope == hubapi.APIScopeWorker || request.GitHubIssueURL != "" || request.Provenance != nil || s.config.ImportBackend == nil {
 		return nil
 	}
 	evidence := gate.ParseScheduledEvidence(request.Body)
 	if len(evidence) != 1 || !scheduledRepairOriginMatches(origin.Source, evidence[0]) {
 		return nil
 	}
-	approval, err := s.readTenantProjectPolicy(ctx, scope.organization, scope.project)
+	approval, err := s.readTenantProjectPolicy(ctx, scope.Organization, scope.Project)
 	found := approval.Policy.ID != ""
 	if err != nil || !found || approval.Policy.Authored == nil {
 		return nil
@@ -193,7 +186,7 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 	if err != nil || page.Scheduled == nil {
 		return nil
 	}
-	return &nativeScheduledRepair{policyID: approval.Policy.ID, evidence: *page.Scheduled}
+	return &hubscope.NativeScheduledRepair{PolicyID: approval.Policy.ID, Evidence: *page.Scheduled}
 }
 
 func scheduledRepairOriginMatches(source string, evidence gate.ScheduledEvidence) bool {

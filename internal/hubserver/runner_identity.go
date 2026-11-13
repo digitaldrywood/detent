@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -88,36 +89,36 @@ func (s *Service) changeRunnerCredential(c echo.Context, replacement string) err
 func (s *Service) changeRunnerCredentialTenant(ctx context.Context, credential hubapi.APICredential, replacement string) (runnerauth.Identity, error) {
 	organization := credential.Runner.OrganizationID
 	if s.config.TenantRepository == nil || organization == "" || credential.ID == "" {
-		return runnerauth.Identity{}, runnerUnauthorized()
+		return runnerauth.Identity{}, hubscope.RunnerUnauthorized()
 	}
 	updated := runnerauth.Identity{}
 	err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.RunnerIdentity(ctx, credential.Runner.RunnerID)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
-				return runnerUnauthorized()
+				return hubscope.RunnerUnauthorized()
 			}
 			return err
 		}
 		if record.RemovedAt != nil || record.TokenID != credential.ID || record.OrganizationID != organization || record.RunnerID != credential.Runner.RunnerID {
-			return runnerUnauthorized()
+			return hubscope.RunnerUnauthorized()
 		}
 		current, err := w.CredentialByHash(ctx, credential.Hash)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
-				return runnerUnauthorized()
+				return hubscope.RunnerUnauthorized()
 			}
 			return err
 		}
 		now := s.config.now()
 		if current.ID != credential.ID || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || current.ExpiresAt == nil || !current.ExpiresAt.After(current.CreatedAt) || !validRunnerCredentialForRenewal(current, credential.Hash, now, replacement == "") || current.UserID != "" || current.MembershipID != "" {
-			return runnerUnauthorized()
+			return hubscope.RunnerUnauthorized()
 		}
 		if replacement != "" && !record.ExpiresAt.After(now) {
-			return runnerUnauthorized()
+			return hubscope.RunnerUnauthorized()
 		}
 		if record.MachineID != credential.Runner.MachineID || record.Scope != credential.Runner.Scope || !slices.Equal(record.Operations, credential.Runner.Operations) {
-			return runnerUnauthorized()
+			return hubscope.RunnerUnauthorized()
 		}
 		newHash := current.Hash
 		kind := "renewed"
@@ -147,9 +148,9 @@ func (s *Service) changeRunnerCredentialTenant(ctx context.Context, credential h
 func (s *Service) revokeRunnerIdentity(c echo.Context) error {
 	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
-		return s.nativeAPIError(c, runnerUnauthorized())
+		return s.nativeAPIError(c, hubscope.RunnerUnauthorized())
 	}
-	_, err := s.revokeRunnerIdentityCommand(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, c.Param("runner"))
+	_, err := s.revokeRunnerIdentityCommand(c.Request().Context(), hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential}, c.Param("runner"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -157,20 +158,20 @@ func (s *Service) revokeRunnerIdentity(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope nativeScope, resource string) (any, error) {
+func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope hubscope.NativeScope, resource string) (any, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.requireRunnerAdministrationTenant(ctx, w, scope); err != nil {
 			return err
 		}
-		return s.revokeRunnerIdentityTenant(ctx, w, scope.organization, resource, scope.credential.ID, s.config.now().UTC())
+		return s.revokeRunnerIdentityTenant(ctx, w, scope.Organization, resource, scope.Credential.ID, s.config.now().UTC())
 	})
 	if err != nil {
 		return nil, err
 	}
 	if s.notifications != nil {
-		s.notifications.notify(dispatchNotificationKey(scope.organization))
+		s.notifications.notify(dispatchNotificationKey(scope.Organization))
 	}
 	return struct{}{}, nil
 }

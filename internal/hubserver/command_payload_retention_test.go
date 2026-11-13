@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -38,7 +39,7 @@ func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.localOrganization = string(organization)
-		for _, operation := range []string{"POST /example", "PUT /example", "PATCH /example", "DELETE /example", "runner_routing example-runner", "runner_capacity example-runner", "runner_update example-runner", "urgent_runner_update", "drain_local_project example-runner example-project", "resume_local_project example-runner example-project", nativeOperation(nativeScope{organization: organization, project: "example-project"}, "POST", "/conversations/example-conversation/messages"), "mcp file_issue", "attachment.record example-attachment"} {
+		for _, operation := range []string{"POST /example", "PUT /example", "PATCH /example", "DELETE /example", "runner_routing example-runner", "runner_capacity example-runner", "runner_update example-runner", "urgent_runner_update", "drain_local_project example-runner example-project", "resume_local_project example-runner example-project", nativeOperation(hubscope.NativeScope{Organization: organization, Project: "example-project"}, "POST", "/conversations/example-conversation/messages"), "mcp file_issue", "attachment.record example-attachment"} {
 			t.Run(string(organization)+"/"+operation, func(t *testing.T) {
 				clock.Store(start.UnixNano())
 				ctx := t.Context()
@@ -47,7 +48,7 @@ func TestCommandPayloadRetentionNeverRepeatsEffects(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				scope := nativeScope{organization: organization, credential: hubapi.APICredential{ID: actor, Hash: actor, Scope: hubapi.APIScopeAdmin}}
+				scope := hubscope.NativeScope{Organization: organization, Credential: hubapi.APICredential{ID: actor, Hash: actor, Scope: hubapi.APIScopeAdmin}}
 				raw := fmt.Sprintf(`{"organization":%q,"output":%q}`, organization, strings.Repeat("x", 64<<10))
 				command := hostedCommand{organization: string(organization), actor: actor, operation: operation, key: "external", input: input}
 				effects := 0

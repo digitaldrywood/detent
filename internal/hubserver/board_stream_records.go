@@ -9,17 +9,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) requireBoardRecordProject(ctx context.Context, scope nativeScope) error {
-	return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+func (s *Service) requireBoardRecordProject(ctx context.Context, scope hubscope.NativeScope) error {
+	return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -30,16 +31,16 @@ func (s *Service) requireBoardRecordProject(ctx context.Context, scope nativeSco
 	})
 }
 
-func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDelivery, sub *dashboardSubscription, scope nativeScope) (bool, error) {
+func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDelivery, sub *dashboardSubscription, scope hubscope.NativeScope) (bool, error) {
 	frame := tracker.NativeBoardFrame{Deltas: []tracker.NativeBoardDelta{}}
 	var rows []viewstore.BoardDelta
 	var head int64
 	var projectSlug string
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -51,7 +52,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 		if err != nil {
 			return err
 		}
-		sequence, err := r.BoardSequence(ctx, scope.project)
+		sequence, err := r.BoardSequence(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -60,7 +61,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 		if frame.Gap {
 			return nil
 		}
-		rows, err = r.BoardDeltas(ctx, scope.project, sub.sequence, min(d.config.pageSize, corestore.MaxPageSize))
+		rows, err = r.BoardDeltas(ctx, scope.Project, sub.sequence, min(d.config.pageSize, corestore.MaxPageSize))
 		return err
 	})
 	if err != nil {
@@ -95,20 +96,20 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 				if item.ref == nil {
 					continue
 				}
-				card, err := viewstore.NewContent(s.runDetailStore()).Board(ctx, scope.organization, *item.ref)
+				card, err := viewstore.NewContent(s.runDetailStore()).Board(ctx, scope.Organization, *item.ref)
 				if err != nil {
 					return false, err
 				}
-				if card.Issue.ProjectID != scope.project || card.Issue.WorkItemID != row.WorkItemID {
+				if card.Issue.ProjectID != scope.Project || card.Issue.WorkItemID != row.WorkItemID {
 					return false, viewstore.ErrInvalidView
 				}
-				if scope.credential.HostedRole == "reporter" {
-					err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-						current, err := r.WorkItem(ctx, scope.project, row.WorkItemID)
+				if scope.Credential.HostedRole == "reporter" {
+					err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+						current, err := r.WorkItem(ctx, scope.Project, row.WorkItemID)
 						if err != nil {
 							return err
 						}
-						if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
+						if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 							return corestore.ErrNotFound
 						}
 						return nil
@@ -134,7 +135,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 					}
 				}
 				card.Issue.WebURL = issueBrowserPath(organizationSlug, projectSlug, card.Issue.Number)
-				card.Issue = s.nativeIssueResponse(scope.reporterIssue(card.Issue))
+				card.Issue = s.nativeIssueResponse(scope.ReporterIssue(card.Issue))
 				card.StatusLine = nativeBoardStatusLine(card)
 				*item.card = &card
 			}

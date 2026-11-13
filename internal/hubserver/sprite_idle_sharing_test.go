@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -247,13 +248,13 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			if test.ownReady && test.budget != "own monthly" && landing.service == nil {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, own, "own")), http.StatusOK)
 			}
-			allocation, err := readSpriteAllocationFixture(t, f, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			allocation, err := readSpriteAllocationFixture(t, f, hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID})
 			if err != nil || allocation.DesiredCount != 1 || allocation.AllocatedCount != 1 {
 				t.Fatalf("allocation changed: %+v %v", allocation, err)
 			}
 			if test.status == http.StatusOK && !test.managed && landing.service == nil {
 				spriteFixtureExec(t, f, `UPDATE leases SET released_at=$1 WHERE organization_id=$2 AND machine_id=$3`, f.service.config.now(), f.project.OrganizationID, r.binding.MachineID)
-				placement, err := f.service.readOrganizationPlacementSnapshot(t.Context(), nativeScope{organization: f.project.OrganizationID}, f.service.config.now())
+				placement, err := f.service.readOrganizationPlacementSnapshot(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID}, f.service.config.now())
 				if err != nil || placement.SpriteFree != 1 || placement.Provisionable != 0 {
 					t.Fatalf("idle sharing provisioned extra capacity: %+v %v", placement, err)
 				}

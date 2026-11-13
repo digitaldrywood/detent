@@ -249,7 +249,7 @@ func seedScaleSoakAttempts(t *testing.T, seed *scaleSoakSeed, config scaleSoakCo
 			seed.payloads = append(seed.payloads, ref.Key)
 			event := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: item.OrganizationID, ProjectID: item.ProjectID,
 				AggregateType: "issue", AggregateID: item.WorkItemID, Type: kind, SchemaVersion: 1, RecordedAt: now,
-				Actor: nativeAttemptListingScope(t, f).actor(), Data: tracker.CollaborationData{Run: &data}}
+				Actor: nativeAttemptListingScope(t, f).Actor(), Data: tracker.CollaborationData{Run: &data}}
 			raw, err = json.Marshal(event)
 			if err != nil {
 				t.Fatal(err)

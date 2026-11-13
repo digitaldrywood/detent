@@ -16,6 +16,7 @@ import (
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -241,14 +242,14 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 				ObservedAt time.Time           `json:"observed_at"`
 			}{fleet, more, s.config.now()}
 		case operatortool.GetRunnerUpdate:
-			value, err = s.readRunnerUpdate(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential}, r.RunnerID)
+			value, err = s.readRunnerUpdate(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), Credential: credential}, r.RunnerID)
 		case operatortool.GetUrgentRunnerUpdate:
-			value, err = s.readUrgentRunnerUpdateCommand(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential})
+			value, err = s.readUrgentRunnerUpdateCommand(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), Credential: credential})
 		case operatortool.GetRunnerCapacity:
-			value, err = s.readRunnerCapacity(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential}, r.RunnerID, r.Backend)
+			value, err = s.readRunnerCapacity(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), Credential: credential}, r.RunnerID, r.Backend)
 		case operatortool.GetRunnerRouting:
 			var runner runnerauth.Runner
-			runner, err = s.readRunnerRouting(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential}, r.RunnerID)
+			runner, err = s.readRunnerRouting(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), Credential: credential}, r.RunnerID)
 			value = hubRunnerRoutingProjection(runner)
 		case operatortool.ListRunnerRouting:
 			runners, readErr := s.listRunnerRoutingData(ctx, tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), r.Limit+1, r.Offset)
@@ -432,7 +433,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		if operatortool.DecodeArguments(r.Change, &change) != nil {
 			return a, operatortool.ErrInvalidArguments
 		}
-		current, err := e.service.readUrgentRunnerUpdateCommand(ctx, nativeScope{organization: tracker.OrganizationID(org), credential: credential})
+		current, err := e.service.readUrgentRunnerUpdateCommand(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(org), Credential: credential})
 		if err != nil {
 			return a, safeHubOperatorError(err)
 		}
@@ -448,7 +449,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		a.CurrentState = strconv.FormatInt(urgent.Revision, 10)
 		a.MaterialChange = true
 	case operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.RevokeRunnerIdentity:
-		runner, err := e.service.readRunnerRouting(ctx, nativeScope{organization: tracker.OrganizationID(org), credential: credential}, r.RunnerID)
+		runner, err := e.service.readRunnerRouting(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(org), Credential: credential}, r.RunnerID)
 		if errors.Is(err, sql.ErrNoRows) || hubapi.IsNativeNotFound(err) {
 			return a, &operatortool.RequestError{Code: "not_found", Message: "runner_id: no runner with this ID exists in this organization"}
 		}
@@ -581,7 +582,7 @@ func (e hubFleetExecutor) executeCommand(ctx context.Context, a chatpkg.Action) 
 	if err != nil {
 		return nil, err
 	}
-	scope := nativeScope{organization: tracker.OrganizationID(a.OrganizationID), credential: credential}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(a.OrganizationID), Credential: credential}
 	var r hubFleetRequest
 	if operatortool.DecodeArguments(a.Arguments, &r) != nil {
 		return nil, operatortool.ErrInvalidArguments

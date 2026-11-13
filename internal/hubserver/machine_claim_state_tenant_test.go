@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -25,7 +26,7 @@ import (
 func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 	f := newRunnerPGFixture(t)
 	reader, ok := any(f.service).(interface {
-		readRegistrationClaimStateTenant(context.Context, nativeScope, *runnerauth.RoutingSnapshot) error
+		readRegistrationClaimStateTenant(context.Context, hubscope.NativeScope, *runnerauth.RoutingSnapshot) error
 	})
 	if !ok {
 		t.Fatal("tenant registration claim-state hydration is unavailable")
@@ -59,10 +60,10 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}
+		scope := hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: credential}
 		snapshot := runnerauth.RoutingSnapshot{RunnerID: f.bindings[index].RunnerID}
 		t.Run("invalid cleanup cursor", func(t *testing.T) {
-			key := releasedExecutionCursorKey{organization: scope.organization, project: scope.project, runner: snapshot.RunnerID}
+			key := releasedExecutionCursorKey{organization: scope.Organization, project: scope.Project, runner: snapshot.RunnerID}
 			previous, present := f.service.cleanupPollCursors.Load(key)
 			t.Cleanup(func() {
 				if present {
@@ -77,7 +78,7 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			}
 		})
 		admin := f.admin
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			current, err := r.Attempt(t.Context(), data.AttemptID)
 			if err == nil && (current.WorkerCleanupRequired == nil || *current.WorkerCleanupRequired != (index == 0) || current.RuntimeSummarySequence != current.Sequence) {
 				t.Fatalf("producer cleanup fact = %+v", current)
@@ -86,7 +87,7 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL,runtime_summary_sequence=NULL WHERE organization_id=$1 AND id=$2", scope.organization, data.AttemptID); err != nil {
+		if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL,runtime_summary_sequence=NULL WHERE organization_id=$1 AND id=$2", scope.Organization, data.AttemptID); err != nil {
 			t.Fatal(err)
 		}
 		if index == 0 {
@@ -96,16 +97,16 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 					t.Fatalf("invalid-prefix fixture sorts after worker: %q >= %q", id, data.AttemptID)
 				}
 				var fence int64
-				if err := admin.QueryRowContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,expires_at,acquired_at,renewed_at,released_at,project_id,runner_id) SELECT organization_id,$3,issue_id,machine_id,$3,work_item_revision,expires_at,acquired_at,renewed_at,released_at,project_id,runner_id FROM leases WHERE organization_id=$1 AND lease_id=$2 RETURNING fencing_token`, scope.organization, lease.ID, id).Scan(&fence); err != nil {
+				if err := admin.QueryRowContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,expires_at,acquired_at,renewed_at,released_at,project_id,runner_id) SELECT organization_id,$3,issue_id,machine_id,$3,work_item_revision,expires_at,acquired_at,renewed_at,released_at,project_id,runner_id FROM leases WHERE organization_id=$1 AND lease_id=$2 RETURNING fencing_token`, scope.Organization, lease.ID, id).Scan(&fence); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := admin.ExecContext(t.Context(), "INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at) SELECT organization_id,$3,runner_id,assigned_at FROM runner_lease_assignments WHERE organization_id=$1 AND lease_id=$2", scope.organization, lease.ID, id); err != nil {
+				if _, err := admin.ExecContext(t.Context(), "INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at) SELECT organization_id,$3,runner_id,assigned_at FROM runner_lease_assignments WHERE organization_id=$1 AND lease_id=$2", scope.Organization, lease.ID, id); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := admin.ExecContext(t.Context(), "INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) SELECT organization_id,$3,issue_id FROM native_attempt_runs WHERE organization_id=$1 AND run_id=$2", scope.organization, data.RunID, id); err != nil {
+				if _, err := admin.ExecContext(t.Context(), "INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) SELECT organization_id,$3,issue_id FROM native_attempt_runs WHERE organization_id=$1 AND run_id=$2", scope.Organization, data.RunID, id); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at) SELECT organization_id,project_id,$3,issue_id,$3,$4,$3,1,'cancelled',work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at FROM native_attempts WHERE organization_id=$1 AND id=$2`, scope.organization, data.AttemptID, id, fence); err != nil {
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at) SELECT organization_id,project_id,$3,issue_id,$3,$4,$3,1,'cancelled',work_item_revision,dispatch_generation,payload_object_key,started_at,updated_at FROM native_attempts WHERE organization_id=$1 AND id=$2`, scope.Organization, data.AttemptID, id, fence); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -115,7 +116,7 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 0 {
 				t.Fatalf("unverified prefix offered cleanup: %+v", snapshot.ClaimState)
 			}
-			key := releasedExecutionCursorKey{organization: scope.organization, project: scope.project, runner: snapshot.RunnerID}
+			key := releasedExecutionCursorKey{organization: scope.Organization, project: scope.Project, runner: snapshot.RunnerID}
 			if cursor, ok := f.service.cleanupPollCursors.Load(key); !ok || cursor != "a_invalid_099" {
 				t.Fatalf("unknown prefix did not advance bounded cursor: %v", cursor)
 			}
@@ -134,7 +135,7 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 		if err := readSnapshot(); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			current, err := r.Attempt(t.Context(), data.AttemptID)
 			if err == nil && (current.WorkerCleanupRequired == nil || *current.WorkerCleanupRequired != (index == 0) || current.RuntimeSummarySequence != current.Sequence) {
 				t.Fatalf("fallback cleanup fact = %+v", current)
@@ -179,7 +180,7 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			if err != nil || !errors.Is(cleanupErr, artifact.ErrIntegrity) || snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 1 {
 				t.Fatalf("corrupt archive errors: registration=%v cleanup=%v", err, cleanupErr)
 			}
-			if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL WHERE organization_id=$1 AND id=$2", scope.organization, data.AttemptID); err != nil {
+			if _, err := admin.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL WHERE organization_id=$1 AND id=$2", scope.Organization, data.AttemptID); err != nil {
 				t.Fatal(err)
 			}
 			f.service.config.RunDetails = invalidRegistrationArchive{DetailStore: original}
@@ -188,7 +189,7 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			if err != nil || snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 0 {
 				t.Fatalf("unverified unknown cleanup was offered: error=%v claims=%+v", err, snapshot.ClaimState)
 			}
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				current, err := r.Attempt(t.Context(), data.AttemptID)
 				if err == nil && current.WorkerCleanupRequired != nil {
 					t.Fatalf("invalid proof became known: %+v", current)
@@ -213,8 +214,8 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 0 {
 				t.Fatalf("acknowledged cleanup remained eligible: %+v", snapshot.ClaimState)
 			}
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				claims, err := r.(runnerstore.ClaimStateReader).RunnerClaimState(t.Context(), snapshot.RunnerID, scope.project, "", 100, time.Now().UTC())
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				claims, err := r.(runnerstore.ClaimStateReader).RunnerClaimState(t.Context(), snapshot.RunnerID, scope.Project, "", 100, time.Now().UTC())
 				if err == nil && len(claims.Candidates) != 0 {
 					t.Fatalf("heartbeat reoffered acknowledged cleanup: %+v", claims.Candidates)
 				}

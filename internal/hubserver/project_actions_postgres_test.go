@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -80,7 +81,7 @@ func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
 			if action.ID == "" || action.Revision != 1 || action.Command != "printf example" || action.OrganizationID != string(organization) {
 				t.Fatalf("unexpected action: %+v", action)
 			}
-			scope := nativeScope{organization: organization, project: tracker.ProjectID(action.ProjectID)}
+			scope := hubscope.NativeScope{Organization: organization, Project: tracker.ProjectID(action.ProjectID)}
 			if err := service.checkOperatorResource(t.Context(), nil, scope, operatortool.Requirement{ResourceKind: "action", ResourceID: action.ID}); err != nil {
 				t.Fatalf("typed action authority: %v", err)
 			}
@@ -88,7 +89,7 @@ func TestPostgresProjectActionsUseTenantOwner(t *testing.T) {
 				t.Fatalf("missing action authority: %v", err)
 			}
 			foreign := scope
-			foreign.project = "other_project"
+			foreign.Project = "other_project"
 			if err := service.checkOperatorResource(t.Context(), nil, foreign, operatortool.Requirement{ResourceKind: "action", ResourceID: action.ID}); !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("foreign project action authority: %v", err)
 			}

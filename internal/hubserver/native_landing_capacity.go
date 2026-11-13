@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -46,23 +47,23 @@ type nativeLandingRenewal struct {
 	evaluatedAt time.Time
 }
 
-func (s *Service) prepareNativeLandingRenewal(ctx context.Context, scope nativeScope, leaseID string, capacity int) (*nativeLandingRenewal, error) {
+func (s *Service) prepareNativeLandingRenewal(ctx context.Context, scope hubscope.NativeScope, leaseID string, capacity int) (*nativeLandingRenewal, error) {
 	if capacity <= 0 {
 		return nil, nil
 	}
 	p := &nativeLandingRenewal{evaluatedAt: s.config.now().UTC()}
 	var item corestore.WorkItem
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		p.lease, err = r.Lease(ctx, leaseID)
 		if err != nil || p.lease.LandingCapacity > 0 {
 			return err
 		}
-		item, err = r.WorkItemByID(ctx, scope.project, p.lease.IssueID)
+		item, err = r.WorkItemByID(ctx, scope.Project, p.lease.IssueID)
 		if err != nil {
 			return err
 		}
-		p.change, err = r.LatestChange(ctx, scope.project, item.NativeID)
+		p.change, err = r.LatestChange(ctx, scope.Project, item.NativeID)
 		if err != nil {
 			return err
 		}
@@ -109,7 +110,7 @@ func (s *Service) prepareNativeLandingRenewal(ctx context.Context, scope nativeS
 	return p, nil
 }
 
-func (s *Service) reserveNativeLandingRenewal(ctx context.Context, w tenantstore.Writer, scope nativeScope, p *nativeLandingRenewal, lease leasestore.Lease, capacity int64) (int64, error) {
+func (s *Service) reserveNativeLandingRenewal(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, p *nativeLandingRenewal, lease leasestore.Lease, capacity int64) (int64, error) {
 	if p == nil {
 		return capacity, nil
 	}
@@ -118,7 +119,7 @@ func (s *Service) reserveNativeLandingRenewal(ctx context.Context, w tenantstore
 	}
 	now := s.config.now().UTC()
 	if lease.LandingCapacity == 0 {
-		current, err := w.LatestChange(ctx, scope.project, p.change.WorkItemID)
+		current, err := w.LatestChange(ctx, scope.Project, p.change.WorkItemID)
 		if err != nil {
 			return 0, err
 		}
@@ -145,12 +146,12 @@ func (s *Service) reserveNativeLandingRenewal(ctx context.Context, w tenantstore
 		return capacity, nil
 	}
 	if !lease.ExpiresAt.After(now) {
-		identity, err := w.RunnerIdentity(ctx, scope.credential.Runner.RunnerID)
+		identity, err := w.RunnerIdentity(ctx, scope.Credential.Runner.RunnerID)
 		if err != nil {
 			return 0, err
 		}
 		capacityLimit := min(identity.CapacityLimit, identity.ReportedCapacity, int64(identity.CapacityConfig.LocalLimit), int64(identity.CapacityConfig.ClientLimit), int64(identity.CapacityConfig.RuntimeLimit))
-		projectLimit, projectLimited := identity.ProjectCapacityLimits[scope.project]
+		projectLimit, projectLimited := identity.ProjectCapacityLimits[scope.Project]
 		if projectLimited {
 			capacityLimit = min(capacityLimit, int64(projectLimit))
 		}
@@ -163,7 +164,7 @@ func (s *Service) reserveNativeLandingRenewal(ctx context.Context, w tenantstore
 		if err != nil {
 			return 0, err
 		}
-		usage, err := w.ClaimCapacityUsage(ctx, lease.MachineID, identity.RunnerID, scope.project, "", now)
+		usage, err := w.ClaimCapacityUsage(ctx, lease.MachineID, identity.RunnerID, scope.Project, "", now)
 		if err != nil {
 			return 0, err
 		}
@@ -171,7 +172,7 @@ func (s *Service) reserveNativeLandingRenewal(ctx context.Context, w tenantstore
 			return 0, tracker.ErrLeaseConflict
 		}
 	}
-	usage, err := w.LandingCapacityUsageExcludingLease(ctx, scope.project, now, lease.LeaseID)
+	usage, err := w.LandingCapacityUsageExcludingLease(ctx, scope.Project, now, lease.LeaseID)
 	if err != nil {
 		return 0, err
 	}

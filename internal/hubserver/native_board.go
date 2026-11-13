@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -30,11 +31,11 @@ func (s *Service) maintainNativeBoard(ctx context.Context) {
 		var next tracker.ProjectID
 		err := s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
 			var err error
-			next, err = w.TrimBoardDeltas(ctx, s.boardRetentionScope.project)
+			next, err = w.TrimBoardDeltas(ctx, s.boardRetentionScope.Project)
 			return err
 		})
 		if err == nil {
-			s.boardRetentionScope = nativeScope{organization: organization, project: next}
+			s.boardRetentionScope = hubscope.NativeScope{Organization: organization, Project: next}
 		} else if !errors.Is(err, context.Canceled) {
 			s.config.Logger.ErrorContext(ctx, "trim native board history", "error", err)
 		}

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -23,7 +24,7 @@ import (
 
 func configureHumanWorkflowProject(t *testing.T, service *Service, organization tracker.OrganizationID, project tracker.ProjectID) {
 	t.Helper()
-	scope := nativeScope{organization: organization, project: project}
+	scope := hubscope.NativeScope{Organization: organization, Project: project}
 	original, err := service.readTenantProjectRecord(t.Context(), scope)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +85,7 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("authenticate fixture actor: status=%d error=%v", status, err)
 	}
-	scope := nativeScope{organization: organization, project: project, credential: credential, action: operatortool.FileIssue}
+	scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: credential, Action: operatortool.FileIssue}
 	plan, err := service.loadWorkItemPlan(t.Context(), scope, "", "", request)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +112,7 @@ func seedConfiguredHumanWorkflowIssue(t *testing.T, service *Service, organizati
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization, ProjectID: project, AggregateID: plan.issue.WorkItemID, Type: plan.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization, ProjectID: project, AggregateID: plan.issue.WorkItemID, Type: plan.eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
 	if err != nil {
 		t.Fatal(err)
 	}

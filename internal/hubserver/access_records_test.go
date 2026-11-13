@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -68,12 +69,12 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 		if allowed, err := service.appAllRunnerGrants(t.Context(), credential); err != nil || !allowed {
 			t.Fatal("typed administrator cannot manage runners")
 		}
-		scope := nativeScope{organization: org, project: "prj_example", credential: credential, requireHostedAdmin: true}
+		scope := hubscope.NativeScope{Organization: org, Project: "prj_example", Credential: credential, RequireHostedAdmin: true}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: member.UserID, ProjectID: scope.project, CanWrite: true}); err != nil {
+			if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: member.UserID, ProjectID: scope.Project, CanWrite: true}); err != nil {
 				return err
 			}
-			return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credential.ID, ProjectID: scope.project})
+			return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: org, TokenID: credential.ID, ProjectID: scope.Project})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -81,7 +82,7 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 			t.Fatal("runner access accepted without management grant")
 		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: member.UserID, ProjectID: scope.project, CanWrite: true, ManageRunner: true})
+			return w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: org, UserID: member.UserID, ProjectID: scope.Project, CanWrite: true, ManageRunner: true})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -102,18 +103,18 @@ func TestPostgresTenantAccessWithoutSQLite(t *testing.T) {
 		if _, status, err := service.authenticateAPIToken(t.Context(), token.Token, "", ""); err == nil || status != http.StatusUnauthorized {
 			t.Fatalf("revoked key status=%d error=%v", status, err)
 		}
-		envelope, err := service.config.SecretKeys.Seal([]byte("example secret"), accessstore.SecretAAD(org, scope.project, flySpritesToken))
+		envelope, err := service.config.SecretKeys.Seal([]byte("example secret"), accessstore.SecretAAD(org, scope.Project, flySpritesToken))
 		if err != nil {
 			t.Fatal(err)
 		}
-		secret := accessstore.Secret{OrganizationID: org, ProjectID: scope.project, Kind: flySpritesToken, OrganizationSlug: "example", Envelope: envelope, UpdatedAt: now}
+		secret := accessstore.Secret{OrganizationID: org, ProjectID: scope.Project, Kind: flySpritesToken, OrganizationSlug: "example", Envelope: envelope, UpdatedAt: now}
 		if err := service.accessSecretWrite(t.Context(), scope, func(w tenantstore.Writer) error {
 			return w.StoreAccessSecret(t.Context(), secret, service.accessSecretAudit(scope, "set", envelope.Version))
 		}); err != nil {
 			t.Fatal(err)
 		}
 		resolved, slug, readEnvelope, err := service.resolveSpritesSecret(t.Context(), nil, scope)
-		if err != nil || resolved.project != scope.project || slug != "example" || readEnvelope.Version != envelope.Version {
+		if err != nil || resolved.Project != scope.Project || slug != "example" || readEnvelope.Version != envelope.Version {
 			t.Fatalf("secret execution read error=%v", err)
 		}
 		metadata, err := service.readAccessSecretStatus(t.Context(), scope)
@@ -270,7 +271,7 @@ func TestAccessInvitationLifecycleIsTenantScoped(t *testing.T) {
 		}
 	}
 	if err := services["org_first"].accessRead(t.Context(), "org_first", func(r tenantstore.Reader) error {
-		return services["org_first"].authorizeAccessScope(t.Context(), r, nativeScope{organization: "org_first", credential: credentials["org_first"], requireHostedAdmin: true}, true)
+		return services["org_first"].authorizeAccessScope(t.Context(), r, hubscope.NativeScope{Organization: "org_first", Credential: credentials["org_first"], RequireHostedAdmin: true}, true)
 	}); err != nil {
 		t.Fatalf("first tenant admin authorization before edit: %v", err)
 	}

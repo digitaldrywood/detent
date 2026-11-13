@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -54,11 +55,11 @@ func newDispatchGuardFixture(t *testing.T) dispatchGuardFixture {
 	return f
 }
 
-func (f dispatchGuardFixture) scope() nativeScope {
-	return nativeScope{
-		organization: f.project.OrganizationID,
-		project:      f.project.ID,
-		credential:   f.authority,
+func (f dispatchGuardFixture) scope() hubscope.NativeScope {
+	return hubscope.NativeScope{
+		Organization: f.project.OrganizationID,
+		Project:      f.project.ID,
+		Credential:   f.authority,
 	}
 }
 
@@ -70,7 +71,7 @@ func (f dispatchGuardFixture) candidate(t *testing.T) bool {
 	request := tracker.NativeClaim{WorkItemID: f.issue.WorkItemID, PolicyID: f.policy, MachineID: f.runner.binding.MachineID, ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	now := f.service.config.now()
 	var plan nativeClaimPlan
-	err := f.service.config.TenantRepository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := f.service.config.TenantRepository.(tenantstore.SnapshotRepository).ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := f.service.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
@@ -242,20 +243,20 @@ func rewriteDispatchAttemptFixture(t *testing.T, f dispatchGuardFixture, mutate 
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := f.service.runDetailStore().StoreDetail(ctx, string(scope.organization), raw)
+	ref, err := f.service.runDetailStore().StoreDetail(ctx, string(scope.Organization), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateNativeDetailReference(ctx, f.service.runDetailStore(), scope.organization, ref, raw); err != nil {
+	if err := validateNativeDetailReference(ctx, f.service.runDetailStore(), scope.Organization, ref, raw); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: f.service.config.now()})
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: f.service.config.now()})
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := conversationTestAdmin(t, f.service).ExecContext(ctx, `UPDATE native_attempts SET payload_object_key=$1,claim_disposition=NULL WHERE organization_id=$2 AND id=$3 AND sequence=$4 AND payload_object_key=$5 AND lease_id=$6 AND fencing_token=$7 AND run_id=$8 AND status=$9`, ref.Key, scope.organization, f.attempt, before.attempt.Sequence, before.attempt.PayloadObjectKey, before.attempt.LeaseID, before.attempt.FencingToken, before.attempt.RunID, before.attempt.Status)
+	result, err := conversationTestAdmin(t, f.service).ExecContext(ctx, `UPDATE native_attempts SET payload_object_key=$1,claim_disposition=NULL WHERE organization_id=$2 AND id=$3 AND sequence=$4 AND payload_object_key=$5 AND lease_id=$6 AND fencing_token=$7 AND run_id=$8 AND status=$9`, ref.Key, scope.Organization, f.attempt, before.attempt.Sequence, before.attempt.PayloadObjectKey, before.attempt.LeaseID, before.attempt.FencingToken, before.attempt.RunID, before.attempt.Status)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +271,7 @@ func rewriteDispatchAttemptFixture(t *testing.T, f dispatchGuardFixture, mutate 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.SetAttemptClaimFacts(ctx, facts) }); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { return w.SetAttemptClaimFacts(ctx, facts) }); err != nil {
 		t.Fatal(err)
 	}
 	retained, err := f.service.readNativeAttemptRunTenant(ctx, before)
@@ -919,7 +920,7 @@ func TestClaimCandidatesIgnoreAnsweredOnProjectionProfile(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("fixture worker authority status%d: %v", status, err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	request := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("projected-session"), ProtocolMajor: tracker.NativeProtocolMajor, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	lease, err := f.service.claimNativeIssueTenant(t.Context(), scope, request, 10*time.Minute)
 	if err != nil || lease.LeaseID == "" {
@@ -994,15 +995,15 @@ func TestNativeRecordedDependencyUsesCurrentEdges(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("fixture authority status%d: %v", status, err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	candidate := func(t *testing.T) bool {
 		t.Helper()
 		found := false
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := f.service.authorizeAccessScope(t.Context(), r, scope, false); err != nil {
 				return err
 			}
-			page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: scope.project, Scope: string(scope.project), WorkItemID: f.issue.WorkItemID, AvailableAt: f.service.config.now(), Limit: 1})
+			page, err := r.CandidatePage(t.Context(), claimstore.CandidateQuery{ProjectID: scope.Project, Scope: string(scope.Project), WorkItemID: f.issue.WorkItemID, AvailableAt: f.service.config.now(), Limit: 1})
 			found = len(page.Items) == 1
 			return err
 		}); err != nil {
@@ -1043,20 +1044,20 @@ func TestNativeRecordedDependencyUsesCurrentEdges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := f.service.runDetailStore().StoreDetail(t.Context(), string(scope.organization), raw)
+	ref, err := f.service.runDetailStore().StoreDetail(t.Context(), string(scope.Organization), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateNativeDetailReference(t.Context(), f.service.runDetailStore(), scope.organization, ref, raw); err != nil {
+	if err := validateNativeDetailReference(t.Context(), f.service.runDetailStore(), scope.Organization, ref, raw); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: f.service.config.now()})
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: "archive_" + ref.SHA256, Reference: ref, CreatedAt: f.service.config.now()})
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), `UPDATE native_attempts SET payload_object_key=$1,claim_disposition='' WHERE organization_id=$2 AND id=$3 AND sequence=$4 AND payload_object_key=$5 AND lease_id=$6 AND fencing_token=$7 AND run_id=$8 AND status=$9`, ref.Key, scope.organization, f.attempt, before.attempt.Sequence, before.attempt.PayloadObjectKey, before.attempt.LeaseID, before.attempt.FencingToken, before.attempt.RunID, before.attempt.Status)
+	result, err := conversationTestAdmin(t, f.service).ExecContext(t.Context(), `UPDATE native_attempts SET payload_object_key=$1,claim_disposition='' WHERE organization_id=$2 AND id=$3 AND sequence=$4 AND payload_object_key=$5 AND lease_id=$6 AND fencing_token=$7 AND run_id=$8 AND status=$9`, ref.Key, scope.Organization, f.attempt, before.attempt.Sequence, before.attempt.PayloadObjectKey, before.attempt.LeaseID, before.attempt.FencingToken, before.attempt.RunID, before.attempt.Status)
 	if err != nil {
 		t.Fatal(err)
 	}

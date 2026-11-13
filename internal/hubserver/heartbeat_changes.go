@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -24,13 +25,13 @@ const (
 	postgresHeartbeatCursorVersion = 2
 )
 
-func readHeartbeatChangesTenant(ctx context.Context, reader tenantstore.Reader, scope nativeScope, cursor nativeCursor, key []byte, reset bool, digest, policyID string, now time.Time) (*runnerauth.HeartbeatChanges, error) {
+func readHeartbeatChangesTenant(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, cursor nativeCursor, key []byte, reset bool, digest, policyID string, now time.Time) (*runnerauth.HeartbeatChanges, error) {
 	changes := &runnerauth.HeartbeatChanges{Reset: reset, CapabilitiesDigest: digest, PolicyID: policyID, Items: []runnerauth.HeartbeatItem{}}
 	var previous heartbeatPosition
 	if !reset && (json.Unmarshal([]byte(cursor.After), &previous) != nil || previous.Version != postgresHeartbeatCursorVersion || previous.Sequence < 0 || previous.Observed.IsZero() || previous.Observed.After(now)) {
 		changes.Reset = true
 	}
-	sequence, err := reader.ProjectEventSequence(ctx, scope.project)
+	sequence, err := reader.ProjectEventSequence(ctx, scope.Project)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +39,7 @@ func readHeartbeatChangesTenant(ctx context.Context, reader tenantstore.Reader, 
 		changes.Reset = true
 	}
 	if !changes.Reset {
-		projectChanges, err := reader.ProjectChanges(ctx, scope.project, previous.Sequence, sequence, previous.Observed, 201)
+		projectChanges, err := reader.ProjectChanges(ctx, scope.Project, previous.Sequence, sequence, previous.Observed, 201)
 		if err != nil {
 			return nil, err
 		}
@@ -53,7 +54,7 @@ func readHeartbeatChangesTenant(ctx context.Context, reader tenantstore.Reader, 
 	if changes.Reset {
 		changes.Items = []runnerauth.HeartbeatItem{}
 	}
-	candidates, err := reader.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: scope.project, Scope: string(scope.project), RunnerSelection: true, AvailableAt: now, Limit: 1})
+	candidates, err := reader.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: scope.Project, Scope: string(scope.Project), RunnerSelection: true, AvailableAt: now, Limit: 1})
 	if err != nil {
 		return nil, err
 	}

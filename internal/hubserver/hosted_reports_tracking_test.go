@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -60,7 +61,7 @@ func TestReportsTrackingIssues(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			classes := reportFailureClasses(failures)
 			if err := f.service.reportsTrackingIssues(t.Context(), scope, classes, failures); err != nil {
 				t.Fatal(err)
@@ -105,7 +106,7 @@ func TestReportsTrackingIssues(t *testing.T) {
 					t.Fatal(err)
 				}
 				isolatedClasses := reportFailureClasses(failures)
-				if err := f.service.reportsTrackingIssues(t.Context(), nativeScope{organization: isolated.project.OrganizationID, project: isolated.project.ID, credential: credential}, isolatedClasses, failures); err != nil {
+				if err := f.service.reportsTrackingIssues(t.Context(), hubscope.NativeScope{Organization: isolated.project.OrganizationID, Project: isolated.project.ID, Credential: credential}, isolatedClasses, failures); err != nil {
 					t.Fatal(err)
 				}
 				for _, class := range isolatedClasses {
@@ -132,7 +133,7 @@ func TestReportsTrackingIssues(t *testing.T) {
 				}
 			}
 			deniedScope := scope
-			deniedScope.project = other.project.ID
+			deniedScope.Project = other.project.ID
 			if err := f.service.reportsTrackingIssues(t.Context(), deniedScope, reportFailureClasses(failures), failures); err == nil {
 				t.Fatal("tracking lookup bypassed project authorization")
 			}
@@ -151,10 +152,10 @@ func TestReportsTrackingIssues(t *testing.T) {
 			event.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "hub request timed out", ErrorClass: "protocol", ObservedAt: f.service.config.now()}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			reportService := &Service{config: f.service.config}
-			reportService.config.Hosted = &HostedConfig{OrganizationID: string(scope.organization)}
+			reportService.config.Hosted = &HostedConfig{OrganizationID: string(scope.Organization)}
 			now := f.service.config.now()
 			window := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}
-			report, err := reportService.readPostgresHostedReport(t.Context(), credential, []string{string(scope.project)}, window, reportsFilter{}, true)
+			report, err := reportService.readPostgresHostedReport(t.Context(), credential, []string{string(scope.Project)}, window, reportsFilter{}, true)
 			wantTracking := ""
 			if tt.linked {
 				wantTracking = string(issue.WorkItemID)
@@ -163,9 +164,9 @@ func TestReportsTrackingIssues(t *testing.T) {
 				t.Fatalf("live report tracking=%+v prior=%v unavailable=%v error=%v", report.Failures, report.PriorFailed, report.Unavailable, err)
 			}
 			var sourceEvent eventstore.Event
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				sourceEvent, err = r.(nativeRunEventReader).RunEvent(t.Context(), scope.project, failed.WorkItemID, nativeAttemptHistoryID(event.Type, event.Data))
+				sourceEvent, err = r.(nativeRunEventReader).RunEvent(t.Context(), scope.Project, failed.WorkItemID, nativeAttemptHistoryID(event.Type, event.Data))
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -180,14 +181,14 @@ func TestReportsTrackingIssues(t *testing.T) {
 			objects.mu.Lock()
 			delete(objects.data, sourceEvent.PayloadObjectKey)
 			objects.mu.Unlock()
-			missing, err := reportService.readPostgresHostedReport(t.Context(), credential, []string{string(scope.project)}, window, reportsFilter{}, true)
+			missing, err := reportService.readPostgresHostedReport(t.Context(), credential, []string{string(scope.Project)}, window, reportsFilter{}, true)
 			objects.mu.Lock()
 			objects.data[sourceEvent.PayloadObjectKey] = saved
 			objects.mu.Unlock()
 			if err != nil || !slices.Contains(missing.Unavailable, "failure_tracking_partial") || len(missing.Failures) != 1 || missing.Failures[0].TrackingWorkItemID != "" || missing.Failures[0].Count != 1 {
 				t.Fatalf("missing immutable failure evidence became complete tracking: failures=%+v unavailable=%v error=%v", missing.Failures, missing.Unavailable, err)
 			}
-			if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), `UPDATE issues SET doctor_identity_revision=NULL WHERE organization_id=$1 AND project_id=$2 AND native_id=$3`, scope.organization, scope.project, issue.WorkItemID); err != nil {
+			if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), `UPDATE issues SET doctor_identity_revision=NULL WHERE organization_id=$1 AND project_id=$2 AND native_id=$3`, scope.Organization, scope.Project, issue.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
 			if !tt.archived {
@@ -196,7 +197,7 @@ func TestReportsTrackingIssues(t *testing.T) {
 				}
 			}
 			if !tt.archived {
-				pending, err := reportService.readPostgresHostedReport(t.Context(), credential, []string{string(scope.project)}, window, reportsFilter{}, true)
+				pending, err := reportService.readPostgresHostedReport(t.Context(), credential, []string{string(scope.Project)}, window, reportsFilter{}, true)
 				if err != nil || !slices.Contains(pending.Unavailable, "failure_tracking_partial") || len(pending.Failures) != 1 || pending.Failures[0].TrackingWorkItemID != "" {
 					t.Fatalf("pending identity coverage became complete no-match: %+v error=%v", pending, err)
 				}

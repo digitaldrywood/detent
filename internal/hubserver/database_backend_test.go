@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -609,7 +610,7 @@ func TestPostgresSharedEntryHealthAndOwnerBootstrap(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				sub := &dashboardSubscription{request: request, claims: claims, scope: nativeScope{organization: "org_startup", project: "project_first", credential: credential}, initial: true, params: url.Values{}, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
+				sub := &dashboardSubscription{request: request, claims: claims, scope: hubscope.NativeScope{Organization: "org_startup", Project: "project_first", Credential: credential}, initial: true, params: url.Values{}, frames: make(chan dashboardFrame, 4), done: make(chan struct{})}
 				delivery := newDashboardDelivery(service)
 				delivery.config.pageSize = 1
 				firstPage := 0

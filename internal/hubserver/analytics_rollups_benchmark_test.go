@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/diagnosticstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -103,7 +104,7 @@ func BenchmarkAnalyticsReportSubreads(b *testing.B) {
 	if err != nil || status != http.StatusOK {
 		b.Fatalf("benchmark authentication status=%d error=%v", status, err)
 	}
-	scope := nativeScope{organization: fixture.organization, project: project, credential: credential}
+	scope := hubscope.NativeScope{Organization: fixture.organization, Project: project, Credential: credential}
 	content := eventstore.NewContent(fixture.details)
 	encode := func(value any) []byte {
 		raw, err := json.Marshal(value)

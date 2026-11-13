@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -111,7 +112,7 @@ func TestPostgresConversationDispatchReachesFencedRunner(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
+	scope := hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: hubapi.APICredential{ID: credentialID, Hash: tokenHash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: runnerID, MachineID: machineID}, OrganizationID: organization.ID}}}
 	now := clock.Now()
 	conversationID := conversation.NewConversationID()
 	if service.config.ConversationDispatch == nil {

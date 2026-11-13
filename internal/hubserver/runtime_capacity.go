@@ -4,6 +4,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -38,7 +39,7 @@ func runtimeProviderCapacity(snapshot runnerstore.RuntimeProviderSnapshot) provi
 	return result
 }
 
-func runtimeRunnersFromSnapshot(snapshot runnerstore.RuntimeCapacitySnapshot, scope nativeScope, now time.Time) []runnerauth.Runner {
+func runtimeRunnersFromSnapshot(snapshot runnerstore.RuntimeCapacitySnapshot, scope hubscope.NativeScope, now time.Time) []runnerauth.Runner {
 	providers := runtimeProviderCapacity(snapshot.Providers)
 	result := make([]runnerauth.Runner, 0, len(snapshot.Records))
 	for _, record := range snapshot.Records {

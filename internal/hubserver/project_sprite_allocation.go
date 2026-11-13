@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -39,7 +40,7 @@ type projectSpriteAllocationRequest struct {
 func (s *Service) getProjectSpriteAllocation(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	result, err := s.readProjectSpriteAllocation(ctx, nativeRequestScope(c))
+	result, err := s.readProjectSpriteAllocation(ctx, hubscope.NativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -48,15 +49,15 @@ func (s *Service) getProjectSpriteAllocation(c echo.Context) error {
 }
 
 func (s *Service) setProjectSpriteAllocation(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	if !canManageProjectSecrets(scope.credential) {
+	scope := hubscope.NativeRequestScope(c)
+	if !hubscope.CanManageProjectSecrets(scope.Credential) {
 		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Sprite allocations require owner or admin access", hubapi.APIErrorResponse{Code: "forbidden", Message: "Sprite allocations require owner or admin access"})
 	}
 	var request projectSpriteAllocationRequest
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope.requireHostedAdmin = true
+	scope.RequireHostedAdmin = true
 	result, err := s.setProjectSpriteAllocationRecord(c.Request().Context(), scope, "PUT "+c.Request().URL.EscapedPath(), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -65,7 +66,7 @@ func (s *Service) setProjectSpriteAllocation(c echo.Context) error {
 	return c.JSONBlob(http.StatusOK, result)
 }
 
-func readSpriteAllocationProjects(ctx context.Context, r tenantstore.Reader, scope nativeScope) ([]tracker.ProjectID, error) {
+func readSpriteAllocationProjects(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) ([]tracker.ProjectID, error) {
 	owner, ok := r.(postgres.SpriteReader)
 	if !ok {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
@@ -111,9 +112,9 @@ func readSpriteAllocationProjects(ctx context.Context, r tenantstore.Reader, sco
 	return result, nil
 }
 
-func (s *Service) readSpriteAllocationProjects(ctx context.Context, scope nativeScope) ([]tracker.ProjectID, error) {
+func (s *Service) readSpriteAllocationProjects(ctx context.Context, scope hubscope.NativeScope) ([]tracker.ProjectID, error) {
 	var result []tracker.ProjectID
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		var err error
 		result, err = readSpriteAllocationProjects(ctx, r, scope)
 		return err
@@ -123,18 +124,18 @@ func (s *Service) readSpriteAllocationProjects(ctx context.Context, scope native
 
 var errSpriteReservationStale = errors.New("project Sprite count changed before this member was ready")
 
-func spriteAllocationRunnerAllowedRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, record runnerstore.RoutingRecord) (bool, error) {
+func spriteAllocationRunnerAllowedRecord(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, record runnerstore.RoutingRecord) (bool, error) {
 	identity := record.Record.Identity
-	granted := identity.Scope == "organization" || slices.Contains(identity.ProjectIDs, scope.project)
+	granted := identity.Scope == "organization" || slices.Contains(identity.ProjectIDs, scope.Project)
 	return spriteAllocationRunnerAllowedFacts(ctx, r, scope, identity, record.Record.Machine, granted)
 }
 
-func spriteAllocationRunnerAllowedFacts(ctx context.Context, r tenantstore.Reader, scope nativeScope, identity runnerstore.Identity, machine leasestore.Machine, granted bool) (bool, error) {
+func spriteAllocationRunnerAllowedFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, identity runnerstore.Identity, machine leasestore.Machine, granted bool) (bool, error) {
 	owner, ok := r.(postgres.SpriteReader)
 	if !ok {
 		return false, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	target, err := owner.SpriteAllocation(ctx, scope.project)
+	target, err := owner.SpriteAllocation(ctx, scope.Project)
 	managed := err == nil
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return false, err
@@ -173,19 +174,19 @@ func spriteAllocationRunnerAllowedFacts(ctx context.Context, r tenantstore.Reade
 	if err != nil {
 		return false, err
 	}
-	if member.State != "enrolled" || identity.State != "active" || allocation.DesiredCount <= 0 || !granted || member.AllocationProjectID != scope.project && !pool.ShareIdleCapacity {
+	if member.State != "enrolled" || identity.State != "active" || allocation.DesiredCount <= 0 || !granted || member.AllocationProjectID != scope.Project && !pool.ShareIdleCapacity {
 		return false, nil
 	}
-	checks, err := r.RunnerLocalChecks(ctx, identity.RunnerID, scope.project)
+	checks, err := r.RunnerLocalChecks(ctx, identity.RunnerID, scope.Project)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return false, nil
 	}
 	return err == nil && checks.WorkReady(), err
 }
 
-func (s *Service) spriteAllocationRunnerAllowed(ctx context.Context, scope nativeScope, runnerID string) (bool, error) {
+func (s *Service) spriteAllocationRunnerAllowed(ctx context.Context, scope hubscope.NativeScope, runnerID string) (bool, error) {
 	var allowed bool
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		owner, ok := r.(runnerstore.RoutingReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
@@ -200,8 +201,8 @@ func (s *Service) spriteAllocationRunnerAllowed(ctx context.Context, scope nativ
 	return allowed, err
 }
 
-func spritePoolProviderFree(ctx context.Context, r tenantstore.Reader, scope nativeScope, count int, now time.Time) (int, bool, error) {
-	scope.project = ""
+func spritePoolProviderFree(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, count int, now time.Time) (int, bool, error) {
+	scope.Project = ""
 	runners, err := readPlacementRunners(ctx, r, scope, now)
 	if err != nil {
 		return 0, false, err
@@ -254,21 +255,21 @@ func spritePoolProviderFree(ctx context.Context, r tenantstore.Reader, scope nat
 	return max(capacity-count, 0), true, nil
 }
 
-func (s *Service) projectSpriteAllocationAuthority(ctx context.Context, r tenantstore.Reader, scope nativeScope) (bool, error) {
+func (s *Service) projectSpriteAllocationAuthority(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) (bool, error) {
 	owner, ok := r.(postgres.SpriteReader)
 	if !ok {
 		return false, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	return owner.SpriteAllocationAuthority(ctx, scope.project, s.config.now())
+	return owner.SpriteAllocationAuthority(ctx, scope.Project, s.config.now())
 }
 
-func projectSpriteAllocationRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope) (projectSpriteAllocation, postgres.SpriteAllocation, error) {
-	result := projectSpriteAllocation{ProjectID: scope.project}
+func projectSpriteAllocationRecord(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) (projectSpriteAllocation, postgres.SpriteAllocation, error) {
+	result := projectSpriteAllocation{ProjectID: scope.Project}
 	owner, ok := r.(postgres.SpriteReader)
 	if !ok {
 		return result, postgres.SpriteAllocation{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	row, err := owner.SpriteAllocation(ctx, scope.project)
+	row, err := owner.SpriteAllocation(ctx, scope.Project)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return result, row, nil
 	}
@@ -276,7 +277,7 @@ func projectSpriteAllocationRecord(ctx context.Context, r tenantstore.Reader, sc
 		return result, row, err
 	}
 	result.Managed, result.DesiredCount, result.ProvisionFailures, result.Revision = true, int(row.DesiredCount), int(row.ProvisionFailures), tracker.Revision(row.Revision)
-	result.AllocatedCount, err = owner.SpriteAllocationSize(ctx, scope.project)
+	result.AllocatedCount, err = owner.SpriteAllocationSize(ctx, scope.Project)
 	if err != nil {
 		return result, row, err
 	}
@@ -284,9 +285,9 @@ func projectSpriteAllocationRecord(ctx context.Context, r tenantstore.Reader, sc
 	return result, row, nil
 }
 
-func (s *Service) readProjectSpriteAllocation(ctx context.Context, scope nativeScope) (projectSpriteAllocation, error) {
+func (s *Service) readProjectSpriteAllocation(ctx context.Context, scope hubscope.NativeScope) (projectSpriteAllocation, error) {
 	var result projectSpriteAllocation
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -297,8 +298,8 @@ func (s *Service) readProjectSpriteAllocation(ctx context.Context, scope nativeS
 	return result, hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) setProjectSpriteAllocationRecord(ctx context.Context, scope nativeScope, operation string, request projectSpriteAllocationRequest) (json.RawMessage, error) {
-	scope.requireHostedAdmin = true
+func (s *Service) setProjectSpriteAllocationRecord(ctx context.Context, scope hubscope.NativeScope, operation string, request projectSpriteAllocationRequest) (json.RawMessage, error) {
+	scope.RequireHostedAdmin = true
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
@@ -314,7 +315,7 @@ func (s *Service) setProjectSpriteAllocationRecord(ctx context.Context, scope na
 	}
 	var current projectSpriteAllocation
 	var row postgres.SpriteAllocation
-	err = s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err = s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
@@ -337,11 +338,11 @@ func (s *Service) setProjectSpriteAllocationRecord(ctx context.Context, scope na
 	if current.Revision != request.ExpectedRevision {
 		return nil, hubapi.NativeConflict(current.Revision)
 	}
-	actor := scope.credential.ID
-	if scope.credential.HostedPrincipal != "" {
-		actor = scope.credential.HostedPrincipal
+	actor := scope.Credential.ID
+	if scope.Credential.HostedPrincipal != "" {
+		actor = scope.Credential.HostedPrincipal
 	}
-	row.OrganizationID, row.ProjectID, row.DesiredCount, row.ConfiguredBy = scope.organization, scope.project, int32(request.DesiredCount), actor
+	row.OrganizationID, row.ProjectID, row.DesiredCount, row.ConfiguredBy = scope.Organization, scope.Project, int32(request.DesiredCount), actor
 	if row.RequestedAt.IsZero() || request.DesiredCount >= current.AllocatedCount {
 		row.RequestedAt = s.config.now()
 	}
@@ -359,7 +360,7 @@ func (s *Service) setProjectSpriteAllocationRecord(ctx context.Context, scope na
 		if _, err := owner.SpritePool(ctx); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
 		latest, _, err := projectSpriteAllocationRecord(ctx, w, scope)

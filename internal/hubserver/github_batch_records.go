@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -24,12 +25,12 @@ import (
 
 type githubBatchRecord struct {
 	tracker.GitHubBatch
-	RequireAdminKey  bool                  `json:"require_admin_key,omitempty"`
-	Issuer           *operatorChatIdentity `json:"issuer,omitempty"`
-	FallbackRunnerID string                `json:"fallback_runner_id,omitempty"`
+	RequireAdminKey  bool                           `json:"require_admin_key,omitempty"`
+	Issuer           *hubscope.OperatorChatIdentity `json:"issuer,omitempty"`
+	FallbackRunnerID string                         `json:"fallback_runner_id,omitempty"`
 }
 
-func (s *Service) loadGitHubBatchRecord(ctx context.Context, scope nativeScope) (*tracker.GitHubBatch, error) {
+func (s *Service) loadGitHubBatchRecord(ctx context.Context, scope hubscope.NativeScope) (*tracker.GitHubBatch, error) {
 	record, err := s.loadGitHubBatchState(ctx, scope)
 	if err != nil {
 		return nil, err
@@ -37,12 +38,12 @@ func (s *Service) loadGitHubBatchRecord(ctx context.Context, scope nativeScope) 
 	return &record.GitHubBatch, nil
 }
 
-func (s *Service) loadGitHubBatchState(ctx context.Context, scope nativeScope) (*githubBatchRecord, error) {
+func (s *Service) loadGitHubBatchState(ctx context.Context, scope hubscope.NativeScope) (*githubBatchRecord, error) {
 	if s.config.TenantRepository == nil {
 		return nil, hubapi.ErrPostgresFeatureUnavailable
 	}
 	var row projectstore.IntakeBatch
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -51,7 +52,7 @@ func (s *Service) loadGitHubBatchState(ctx context.Context, scope nativeScope) (
 		if !ok {
 			return hubapi.ErrPostgresFeatureUnavailable
 		}
-		row, err = intakeBatchReader.ProjectIntakeBatch(ctx, scope.project)
+		row, err = intakeBatchReader.ProjectIntakeBatch(ctx, scope.Project)
 		return err
 	})
 	if err != nil {
@@ -65,35 +66,35 @@ func (s *Service) loadGitHubBatchState(ctx context.Context, scope nativeScope) (
 	if err := json.Unmarshal(raw, &batch); err != nil {
 		return nil, err
 	}
-	if row.ProjectID != scope.project || row.Payload.OrganizationID != scope.organization || batch.ID != row.ID || batch.Revision != row.Revision || batch.Status != row.Status || batch.HubOwned != row.HubOwned {
+	if row.ProjectID != scope.Project || row.Payload.OrganizationID != scope.Organization || batch.ID != row.ID || batch.Revision != row.Revision || batch.Status != row.Status || batch.HubOwned != row.HubOwned {
 		return nil, eventstore.ErrInvalidRecord
 	}
 	return &batch, nil
 }
 
-func (s *Service) prepareGitHubBatchRecord(ctx context.Context, scope nativeScope, batch *tracker.GitHubBatch) (projectstore.IntakeBatch, error) {
+func (s *Service) prepareGitHubBatchRecord(ctx context.Context, scope hubscope.NativeScope, batch *tracker.GitHubBatch) (projectstore.IntakeBatch, error) {
 	record := githubBatchRecord{GitHubBatch: *batch}
-	if scope.githubIntakeRevision != nil {
-		record.RequireAdminKey = scope.githubIntakeRevision.requireAdminKey
-		record.Issuer = scope.githubIntakeRevision.issuer
-		record.FallbackRunnerID = scope.githubIntakeRevision.fallbackRunner
+	if scope.GitHubIntakeRevision != nil {
+		record.RequireAdminKey = scope.GitHubIntakeRevision.RequireAdminKey
+		record.Issuer = scope.GitHubIntakeRevision.Issuer
+		record.FallbackRunnerID = scope.GitHubIntakeRevision.FallbackRunner
 	}
 	raw, err := json.Marshal(record)
 	if err != nil {
 		return projectstore.IntakeBatch{}, err
 	}
-	payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
-	return projectstore.IntakeBatch{ProjectID: scope.project, ID: batch.ID, Revision: batch.Revision, Status: batch.Status, HubOwned: batch.HubOwned, Payload: payload}, err
+	payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, raw)
+	return projectstore.IntakeBatch{ProjectID: scope.Project, ID: batch.ID, Revision: batch.Revision, Status: batch.Status, HubOwned: batch.HubOwned, Payload: payload}, err
 }
 
-func (s *Service) saveGitHubBatchRecord(ctx context.Context, scope nativeScope, batch *tracker.GitHubBatch) error {
+func (s *Service) saveGitHubBatchRecord(ctx context.Context, scope hubscope.NativeScope, batch *tracker.GitHubBatch) error {
 	expected := batch.Revision
 	batch.Revision++
 	row, err := s.prepareGitHubBatchRecord(ctx, scope, batch)
 	if err != nil {
 		return err
 	}
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Background, func(w tenantstore.Writer) error {
+	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Background, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -105,12 +106,12 @@ func (s *Service) saveGitHubBatchRecord(ctx context.Context, scope nativeScope, 
 	})
 }
 
-func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope nativeScope, operation string, request tracker.GitHubBatchCommand) (json.RawMessage, error) {
+func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope hubscope.NativeScope, operation string, request tracker.GitHubBatchCommand) (json.RawMessage, error) {
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		return s.gitHubBatchRequestAuthority(ctx, reader, scope, scope.requireHostedAdmin)
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		return s.gitHubBatchRequestAuthority(ctx, reader, scope, scope.RequireHostedAdmin)
 	}); err != nil {
 		return nil, err
 	}
@@ -137,20 +138,20 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope nativeScop
 	if stored != nil {
 		batch = &stored.GitHubBatch
 	}
-	origin, _ := ctx.Value(operatorEntryOriginKey{}).(string)
+	origin, _ := ctx.Value(hubscope.OperatorEntryOriginKey{}).(string)
 	if origin == "" {
 		origin = operatortool.CurrentConnection(ctx).Origin
 	}
-	issuer := operatorChatIdentity{Identity: operatorIdentity(scope.credential, string(scope.organization)), Origin: origin}
-	if !issuer.Valid() || scope.credential.EntryKey != nil && origin == "" {
+	issuer := hubscope.OperatorChatIdentity{Identity: hubscope.OperatorIdentity(scope.Credential, string(scope.Organization)), Origin: origin}
+	if !issuer.Valid() || scope.Credential.EntryKey != nil && origin == "" {
 		return nil, operatortool.ErrAccessDenied
 	}
-	scope.githubIntakeRevision = &githubIntakeRevision{issuer: &issuer, requireAdminKey: scope.requireHostedAdmin}
+	scope.GitHubIntakeRevision = &hubscope.GitHubIntakeRevision{Issuer: &issuer, RequireAdminKey: scope.RequireHostedAdmin}
 	if stored != nil {
-		scope.githubIntakeRevision.fallbackRunner = stored.FallbackRunnerID
+		scope.GitHubIntakeRevision.FallbackRunner = stored.FallbackRunnerID
 	}
 	if request.RunnerID != "" {
-		scope.githubIntakeRevision.fallbackRunner = request.RunnerID
+		scope.GitHubIntakeRevision.FallbackRunner = request.RunnerID
 	}
 	expected := int64(0)
 	if batch != nil {
@@ -183,19 +184,19 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope nativeScop
 		if err := validateBatchProjectSource(project.States, request.ProjectV2); err != nil {
 			return nil, err
 		}
-		actor := scope.actor()
+		actor := scope.Actor()
 		limit, err := s.githubBatchRecordLimit(ctx, scope)
 		if err != nil {
 			return nil, err
 		}
 		batch = &tracker.GitHubBatch{ID: hubapi.NewID("intake"), Revision: expected, HubOwned: true, Automatic: request.Action == "start", RequestedBy: &actor, Limit: limit, Discovery: tracker.GitHubDiscovery{Repository: strings.ToLower(repository), Snapshots: true, Labels: request.Labels, IncludeClosed: request.IncludeClosed, ProjectV2: request.ProjectV2}, Status: "discovering", Page: tracker.GitHubDiscoveryPage{Issues: []tracker.GitHubIssuePreview{}}, Items: []tracker.GitHubBatchItem{}}
 		if s.config.ImportBackend == nil {
-			if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-				return s.requireGitHubBatchRunner(ctx, reader, scope, scope.githubIntakeRevision.fallbackRunner, batch.Discovery.Repository, s.config.now())
+			if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				return s.requireGitHubBatchRunner(ctx, reader, scope, scope.GitHubIntakeRevision.FallbackRunner, batch.Discovery.Repository, s.config.now())
 			}); err != nil {
 				return nil, err
 			}
-			batch.HubOwned, batch.RunnerID = false, scope.githubIntakeRevision.fallbackRunner
+			batch.HubOwned, batch.RunnerID = false, scope.GitHubIntakeRevision.FallbackRunner
 		}
 		if request.Action == "start" {
 			if err := configureBatchRecordDestination(project.States, batch, request); err != nil {
@@ -229,7 +230,7 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope nativeScop
 			}
 		}
 		batch.Status = "importing"
-		actor := scope.actor()
+		actor := scope.Actor()
 		batch.RequestedBy = &actor
 	case "retry":
 		if batch == nil {
@@ -270,10 +271,10 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope nativeScop
 			}
 			batch.Status = "importing"
 		}
-		actor := scope.actor()
+		actor := scope.Actor()
 		batch.RequestedBy = &actor
 		if request.RunnerID != "" && !batch.HubOwned {
-			if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 				return s.requireGitHubBatchRunner(ctx, reader, scope, request.RunnerID, batch.Discovery.Repository, s.config.now())
 			}); err != nil {
 				return nil, err
@@ -299,13 +300,13 @@ func (s *Service) commandGitHubBatchRecord(ctx context.Context, scope nativeScop
 		return nil, err
 	}
 	return s.tenantReceiptMutation(ctx, scope, operation, request.Mutation, request, projectGitHubBatchView(project.States, batch), func(w tenantstore.Writer) error {
-		if err := s.gitHubBatchRequestAuthority(ctx, w, scope, scope.githubIntakeRevision.requireAdminKey); err != nil {
+		if err := s.gitHubBatchRequestAuthority(ctx, w, scope, scope.GitHubIntakeRevision.RequireAdminKey); err != nil {
 			return err
 		}
 		if err := s.database.requireHostedFeatureRecord(ctx, w, "github_integration", s.config.now()); err != nil {
 			return err
 		}
-		current, err := w.ProjectRecord(ctx, scope.project)
+		current, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -372,13 +373,13 @@ func configureBatchRecordDestination(states []tracker.NativeState, batch *tracke
 	return nil
 }
 
-func (s *Service) importGitHubSnapshotRecord(ctx context.Context, scope nativeScope, key string, preview tracker.GitHubIssuePreview, snapshot tracker.GitHubIssueSnapshot, state string, labels []string) (tracker.NativeIssue, error) {
+func (s *Service) importGitHubSnapshotRecord(ctx context.Context, scope hubscope.NativeScope, key string, preview tracker.GitHubIssuePreview, snapshot tracker.GitHubIssueSnapshot, state string, labels []string) (tracker.NativeIssue, error) {
 	canonical, repository, number, err := tracker.ParseGitHubIssueURL(preview.URL)
-	if err != nil || !strings.EqualFold(repository, scope.integrationRepository) || number != preview.Number || snapshot.URL != canonical {
+	if err != nil || !strings.EqualFold(repository, scope.IntegrationRepository) || number != preview.Number || snapshot.URL != canonical {
 		return tracker.NativeIssue{}, hubapi.NativePublicInvalid("GitHub source does not match its repository")
 	}
-	scope.scheduledRepair = s.observeImportedScheduledRepair(ctx, scope, snapshot)
-	if verified := scope.scheduledRepair; verified != nil && verified.importReason == "" && verified.policyID != "" {
+	scope.ScheduledRepair = s.observeImportedScheduledRepair(ctx, scope, snapshot)
+	if verified := scope.ScheduledRepair; verified != nil && verified.ImportReason == "" && verified.PolicyID != "" {
 		if err := validateNativeContent(snapshot.Title, snapshot.Body, nil, nil, nil); err != nil {
 			return tracker.NativeIssue{}, err
 		}
@@ -487,7 +488,7 @@ func githubBatchSourceFailure(err error, now time.Time, reported time.Time) (str
 	return message, retry
 }
 
-func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope nativeScope) error {
+func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope hubscope.NativeScope) error {
 	record, err := s.loadGitHubBatchState(ctx, scope)
 	if err != nil {
 		return err
@@ -514,13 +515,13 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope nativeScop
 		return corestore.ErrNotFound
 	}
 	if batch.RequestedBy != nil {
-		scope.sourceActor = batch.RequestedBy
+		scope.SourceActor = batch.RequestedBy
 	}
 	save := func() error {
 		if err := s.saveGitHubBatchRecord(ctx, scope, batch); err != nil {
 			return err
 		}
-		scope.githubIntakeRevision.revision = batch.Revision
+		scope.GitHubIntakeRevision.Revision = batch.Revision
 		return nil
 	}
 	if batch.Status == "discovering" {
@@ -530,13 +531,13 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope nativeScop
 			if !errors.Is(fetchErr, githubconnector.ErrNotFound) && !errors.Is(fetchErr, githubconnector.ErrRateLimited) && !(errors.As(fetchErr, &status) && (status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusTooManyRequests)) {
 				return fetchErr
 			}
-			if (errors.Is(fetchErr, githubconnector.ErrNotFound) || status != nil && status.StatusCode == http.StatusNotFound) && scope.githubIntakeRevision.fallbackRunner != "" {
-				if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-					return s.requireGitHubBatchRunner(ctx, reader, scope, scope.githubIntakeRevision.fallbackRunner, batch.Discovery.Repository, s.config.now())
+			if (errors.Is(fetchErr, githubconnector.ErrNotFound) || status != nil && status.StatusCode == http.StatusNotFound) && scope.GitHubIntakeRevision.FallbackRunner != "" {
+				if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+					return s.requireGitHubBatchRunner(ctx, reader, scope, scope.GitHubIntakeRevision.FallbackRunner, batch.Discovery.Repository, s.config.now())
 				}); err != nil {
 					return err
 				}
-				batch.HubOwned, batch.RunnerID = false, scope.githubIntakeRevision.fallbackRunner
+				batch.HubOwned, batch.RunnerID = false, scope.GitHubIntakeRevision.FallbackRunner
 				return save()
 			}
 			batch.Status = "discovery_failed"
@@ -616,7 +617,7 @@ func (s *Service) advanceGitHubBatchRecord(ctx context.Context, scope nativeScop
 	return save()
 }
 
-func (s *Service) prepareGitHubBatchItem(ctx context.Context, scope nativeScope, project projectstore.Record, batch *tracker.GitHubBatch, item *tracker.GitHubBatchItem, preview tracker.GitHubIssuePreview) (*tracker.NativeIssue, error) {
+func (s *Service) prepareGitHubBatchItem(ctx context.Context, scope hubscope.NativeScope, project projectstore.Record, batch *tracker.GitHubBatch, item *tracker.GitHubBatchItem, preview tracker.GitHubIssuePreview) (*tracker.NativeIssue, error) {
 	destination, labels, err := batchIssueDestination(project.States, batch, preview)
 	if err != nil {
 		return nil, err
@@ -635,7 +636,7 @@ func (s *Service) prepareGitHubBatchItem(ctx context.Context, scope nativeScope,
 		}
 		if item.WorkItemID == "" {
 			if preview.Snapshot != nil {
-				scope.scheduledRepair = s.observeImportedScheduledRepair(ctx, scope, *preview.Snapshot)
+				scope.ScheduledRepair = s.observeImportedScheduledRepair(ctx, scope, *preview.Snapshot)
 				if err := validateLinkedIssueSnapshot(*preview.Snapshot); err != nil {
 					return nil, err
 				}
@@ -678,7 +679,7 @@ func (s *Service) prepareGitHubBatchItem(ctx context.Context, scope nativeScope,
 	return &issue, nil
 }
 
-func (s *Service) advanceGitHubBatchItem(ctx context.Context, scope nativeScope, project projectstore.Record, batch *tracker.GitHubBatch, item *tracker.GitHubBatchItem, preview tracker.GitHubIssuePreview) error {
+func (s *Service) advanceGitHubBatchItem(ctx context.Context, scope hubscope.NativeScope, project projectstore.Record, batch *tracker.GitHubBatch, item *tracker.GitHubBatchItem, preview tracker.GitHubIssuePreview) error {
 	issue, err := s.prepareGitHubBatchItem(ctx, scope, project, batch, item, preview)
 	if err != nil || issue == nil {
 		return err
@@ -693,14 +694,14 @@ func (s *Service) advanceGitHubBatchItem(ctx context.Context, scope nativeScope,
 	return s.completeGitHubBatchSnapshot(ctx, scope, batch, item, preview, *snapshot)
 }
 
-func (s *Service) completeGitHubBatchSnapshot(ctx context.Context, scope nativeScope, batch *tracker.GitHubBatch, item *tracker.GitHubBatchItem, preview tracker.GitHubIssuePreview, snapshot tracker.GitHubIssueSnapshot) error {
+func (s *Service) completeGitHubBatchSnapshot(ctx context.Context, scope hubscope.NativeScope, batch *tracker.GitHubBatch, item *tracker.GitHubBatchItem, preview tracker.GitHubIssuePreview, snapshot tracker.GitHubIssueSnapshot) error {
 	if len(snapshot.Comments) > 1000 {
 		return hubapi.NativePublicInvalid("Linked issue discussion exceeds the intake bound")
 	}
 	if snapshot.Provenance.Provider != "github" || snapshot.Provenance.ExternalID != preview.ID {
 		return hubapi.NativePublicInvalid("Snapshot stable source identity does not match preview")
 	}
-	scope.scheduledRepair = s.observeImportedScheduledRepair(ctx, scope, snapshot)
+	scope.ScheduledRepair = s.observeImportedScheduledRepair(ctx, scope, snapshot)
 	_, err := s.applyLinkedIssueRecord(ctx, scope, item.WorkItemID, "github.snapshot", tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: batch.ID + ":" + preview.ID + ":snapshot"}, Snapshot: snapshot})
 	if err != nil {
 		return err
@@ -709,15 +710,15 @@ func (s *Service) completeGitHubBatchSnapshot(ctx context.Context, scope nativeS
 	return nil
 }
 
-func (s *Service) existingGitHubBatchItem(ctx context.Context, scope nativeScope, batch *tracker.GitHubBatch, preview tracker.GitHubIssuePreview) (tracker.NativeWorkItemID, bool, error) {
+func (s *Service) existingGitHubBatchItem(ctx context.Context, scope hubscope.NativeScope, batch *tracker.GitHubBatch, preview tracker.GitHubIssuePreview) (tracker.NativeWorkItemID, bool, error) {
 	var id tracker.NativeWorkItemID
 	owned := false
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, true); err != nil {
 			return err
 		}
 		find := func() error {
-			source, err := reader.LinkedSourceByURL(ctx, scope.project, preview.URL)
+			source, err := reader.LinkedSourceByURL(ctx, scope.Project, preview.URL)
 			if err == nil {
 				id = source.WorkItemID
 				return nil
@@ -726,7 +727,7 @@ func (s *Service) existingGitHubBatchItem(ctx context.Context, scope nativeScope
 				return err
 			}
 			for _, key := range []string{"github:" + preview.URL, "github:" + preview.ID} {
-				item, err := reader.WorkItemBySource(ctx, scope.project, key)
+				item, err := reader.WorkItemBySource(ctx, scope.Project, key)
 				if err == nil {
 					id = item.NativeID
 					return nil
@@ -735,7 +736,7 @@ func (s *Service) existingGitHubBatchItem(ctx context.Context, scope nativeScope
 					return err
 				}
 			}
-			item, err := reader.WorkItemByProvenance(ctx, scope.project, "github", preview.ID)
+			item, err := reader.WorkItemByProvenance(ctx, scope.Project, "github", preview.ID)
 			if err == nil {
 				id = item.NativeID
 			}
@@ -745,7 +746,7 @@ func (s *Service) existingGitHubBatchItem(ctx context.Context, scope nativeScope
 			return err
 		}
 		operation := nativeIssueCreationOperation(scope)
-		_, err := reader.Receipt(ctx, scope.credential.ID, operation, batch.ID+":"+preview.ID)
+		_, err := reader.Receipt(ctx, scope.Credential.ID, operation, batch.ID+":"+preview.ID)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -755,12 +756,12 @@ func (s *Service) existingGitHubBatchItem(ctx context.Context, scope nativeScope
 	return id, owned, err
 }
 
-func (s *Service) githubBatchRecordLimit(ctx context.Context, scope nativeScope) (int, error) {
+func (s *Service) githubBatchRecordLimit(ctx context.Context, scope hubscope.NativeScope) (int, error) {
 	if s.database.plans() == nil {
 		return 1000, nil
 	}
 	var entitlement HostedEntitlement
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		entitlement, err = s.database.hostedEntitlementRecord(ctx, r, s.config.now())
 		return err
@@ -775,12 +776,12 @@ func (s *Service) githubBatchRecordLimit(ctx context.Context, scope nativeScope)
 	return limit, nil
 }
 
-func (s *Service) closeGitHubBatchSources(ctx context.Context, scope nativeScope, operation string, request tracker.GitHubBatchCommand, project projectstore.Record, batch *tracker.GitHubBatch, expected int64) (json.RawMessage, error) {
+func (s *Service) closeGitHubBatchSources(ctx context.Context, scope hubscope.NativeScope, operation string, request tracker.GitHubBatchCommand, project projectstore.Record, batch *tracker.GitHubBatch, expected int64) (json.RawMessage, error) {
 	if batch.Status != "finished" || s.config.OutboxBackend == nil || s.database.linkedSourceBase == "" {
 		return nil, intakeInvalid("Finish intake and configure source publication before requesting source closure")
 	}
 	var organizationSlug string
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, true); err != nil {
 			return err
 		}
@@ -814,11 +815,11 @@ func (s *Service) closeGitHubBatchSources(ctx context.Context, scope nativeScope
 		if err != nil {
 			return nil, err
 		}
-		payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, desired)
+		payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, desired)
 		if err != nil {
 			return nil, err
 		}
-		outbound = append(outbound, projectstore.GitHubOutbound{ProjectID: scope.project, WorkItemID: item.WorkItemID, Key: "native:" + string(item.WorkItemID) + ":intake", Repository: batch.Discovery.Repository, IssueNumber: int64(item.Number), Kind: string(MutationWorkpad), CreatedAt: s.config.now(), Payload: payload})
+		outbound = append(outbound, projectstore.GitHubOutbound{ProjectID: scope.Project, WorkItemID: item.WorkItemID, Key: "native:" + string(item.WorkItemID) + ":intake", Repository: batch.Discovery.Repository, IssueNumber: int64(item.Number), Kind: string(MutationWorkpad), CreatedAt: s.config.now(), Payload: payload})
 		item.SourceCloseRequested = true
 		if len(outbound) == githubBatchMaintenanceLimit {
 			break
@@ -830,13 +831,13 @@ func (s *Service) closeGitHubBatchSources(ctx context.Context, scope nativeScope
 		return nil, err
 	}
 	return s.tenantReceiptMutation(ctx, scope, operation, request.Mutation, request, projectGitHubBatchView(project.States, batch), func(writer tenantstore.Writer) error {
-		if err := s.gitHubBatchRequestAuthority(ctx, writer, scope, scope.githubIntakeRevision.requireAdminKey); err != nil {
+		if err := s.gitHubBatchRequestAuthority(ctx, writer, scope, scope.GitHubIntakeRevision.RequireAdminKey); err != nil {
 			return err
 		}
 		if err := s.database.requireHostedFeatureRecord(ctx, writer, "github_integration", s.config.now()); err != nil {
 			return err
 		}
-		current, err := writer.ProjectRecord(ctx, scope.project)
+		current, err := writer.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -848,10 +849,10 @@ func (s *Service) closeGitHubBatchSources(ctx context.Context, scope nativeScope
 			return hubapi.ErrPostgresFeatureUnavailable
 		}
 		for _, item := range outbound {
-			if _, err := writer.WorkItem(ctx, scope.project, item.WorkItemID); err != nil {
+			if _, err := writer.WorkItem(ctx, scope.Project, item.WorkItemID); err != nil {
 				return err
 			}
-			source, err := writer.LinkedSource(ctx, scope.project, item.WorkItemID)
+			source, err := writer.LinkedSource(ctx, scope.Project, item.WorkItemID)
 			if err != nil {
 				return err
 			}
@@ -871,26 +872,26 @@ func (s *Service) closeGitHubBatchSources(ctx context.Context, scope nativeScope
 	})
 }
 
-func (s *Service) gitHubBatchRequestAuthority(ctx context.Context, reader tenantstore.Reader, scope nativeScope, requireAdminKey bool) error {
+func (s *Service) gitHubBatchRequestAuthority(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, requireAdminKey bool) error {
 	if requireAdminKey {
 		return s.configurationRequestAuthority(ctx, reader, scope, s.config.now(), "github_intake")
 	}
-	if scope.credential.Runner.RunnerID != "" {
+	if scope.Credential.Runner.RunnerID != "" {
 		return hubapi.NativeNotFound()
 	}
-	if scope.credential.Hosted != nil {
-		if scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
+	if scope.Credential.Hosted != nil {
+		if scope.Credential.HostedRole != "owner" && scope.Credential.HostedRole != "admin" {
 			return hubapi.NativeNotFound()
 		}
-	} else if scope.credential.Scope != hubapi.APIScopeAdmin {
+	} else if scope.Credential.Scope != hubapi.APIScopeAdmin {
 		return hubapi.NativeNotFound()
 	}
-	scope.requireHostedAdmin = false
+	scope.RequireHostedAdmin = false
 	return s.authorizeWorkItemRecordScope(ctx, reader, scope)
 }
 
-func (s *Service) bindGitHubBatchIssuer(ctx context.Context, scope nativeScope, record *githubBatchRecord) (nativeScope, error) {
-	if record.Issuer == nil || !record.Issuer.Valid() || record.Issuer.OrganizationID != string(scope.organization) || record.RequestedBy == nil {
+func (s *Service) bindGitHubBatchIssuer(ctx context.Context, scope hubscope.NativeScope, record *githubBatchRecord) (hubscope.NativeScope, error) {
+	if record.Issuer == nil || !record.Issuer.Valid() || record.Issuer.OrganizationID != string(scope.Organization) || record.RequestedBy == nil {
 		return scope, &hubapi.NativeError{Code: "intake_authority_unavailable", Message: "Confirm the intake with current operator authority before continuing", Status: http.StatusConflict, PublicMessage: true}
 	}
 	authority, err := s.resolveOperatorChatAuthority(ctx, record.Issuer.Identity, record.Issuer.Origin)
@@ -901,25 +902,25 @@ func (s *Service) bindGitHubBatchIssuer(ctx context.Context, scope nativeScope, 
 	if record.RequireAdminKey {
 		required = apikey.ScopeAdmin
 	}
-	if err := authority.Check(ctx, operatortool.Requirement{Scope: required, OrganizationID: string(scope.organization), ProjectID: string(scope.project)}); err != nil {
+	if err := authority.Check(ctx, operatortool.Requirement{Scope: required, OrganizationID: string(scope.Organization), ProjectID: string(scope.Project)}); err != nil {
 		return scope, err
 	}
 	issuer, err := (hubProjectExecutor{s}).projectScope(authority.BindContext(ctx))
 	if err != nil {
 		return scope, err
 	}
-	issuer.project = scope.project
-	issuer.requireHostedAdmin = record.RequireAdminKey
-	actor := issuer.actor()
+	issuer.Project = scope.Project
+	issuer.RequireHostedAdmin = record.RequireAdminKey
+	actor := issuer.Actor()
 	if actor.Kind != record.RequestedBy.Kind || actor.PrincipalID != record.RequestedBy.PrincipalID {
 		return scope, operatortool.ErrAccessDenied
 	}
-	scope.githubIntakeRevision = &githubIntakeRevision{batchID: record.ID, revision: record.Revision, issuer: record.Issuer, authority: &issuer, fallbackRunner: record.FallbackRunnerID, requireAdminKey: record.RequireAdminKey}
-	scope.sourceActor = record.RequestedBy
+	scope.GitHubIntakeRevision = &hubscope.GitHubIntakeRevision{BatchID: record.ID, Revision: record.Revision, Issuer: record.Issuer, Authority: &issuer, FallbackRunner: record.FallbackRunnerID, RequireAdminKey: record.RequireAdminKey}
+	scope.SourceActor = record.RequestedBy
 	return scope, nil
 }
 
-func (s *Service) requireGitHubBatchRunner(ctx context.Context, reader tenantstore.Reader, scope nativeScope, runner, repository string, now time.Time) error {
+func (s *Service) requireGitHubBatchRunner(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, runner, repository string, now time.Time) error {
 	if runner == "" {
 		return intakeInvalid("Select an active enrolled runner with a recent matching checkout report")
 	}
@@ -934,35 +935,35 @@ func (s *Service) requireGitHubBatchRunner(ctx context.Context, reader tenantsto
 	if err != nil {
 		return err
 	}
-	if identity.OrganizationID != scope.organization || identity.State != "active" || identity.RemovedAt != nil || !now.Before(identity.ExpiresAt) || !slices.Contains(identity.Operations, "heartbeat") || credential.RevokedAt != nil || credential.ExpiresAt != nil && !now.Before(*credential.ExpiresAt) || credential.CreatedAt.After(now) || credential.Scope != "worker" || credential.Kind != "service" {
+	if identity.OrganizationID != scope.Organization || identity.State != "active" || identity.RemovedAt != nil || !now.Before(identity.ExpiresAt) || !slices.Contains(identity.Operations, "heartbeat") || credential.RevokedAt != nil || credential.ExpiresAt != nil && !now.Before(*credential.ExpiresAt) || credential.CreatedAt.After(now) || credential.Scope != "worker" || credential.Kind != "service" {
 		return intakeInvalid("Select an active enrolled runner with a recent matching checkout report")
 	}
-	if scope.credential.Runner.RunnerID != "" && (scope.credential.Runner.RunnerID != runner || scope.credential.ID != identity.TokenID || scope.credential.Runner.MachineID != identity.MachineID) {
+	if scope.Credential.Runner.RunnerID != "" && (scope.Credential.Runner.RunnerID != runner || scope.Credential.ID != identity.TokenID || scope.Credential.Runner.MachineID != identity.MachineID) {
 		return hubapi.NativeNotFound()
 	}
-	allowed, err := reader.RunnerProjectAuthorized(ctx, runner, scope.project, now)
+	allowed, err := reader.RunnerProjectAuthorized(ctx, runner, scope.Project, now)
 	if err != nil {
 		return err
 	}
 	if !allowed {
 		return hubapi.NativeNotFound()
 	}
-	checkout, err := reader.RunnerCheckoutReport(ctx, runner, scope.project)
+	checkout, err := reader.RunnerCheckoutReport(ctx, runner, scope.Project)
 	if err != nil {
 		return err
 	}
-	if checkout.OrganizationID != scope.organization || checkout.RunnerID != runner || checkout.ProjectID != scope.project || !strings.EqualFold(checkout.Repository, repository) || !checkout.ReportedAt.After(now.Add(-5*time.Minute)) {
+	if checkout.OrganizationID != scope.Organization || checkout.RunnerID != runner || checkout.ProjectID != scope.Project || !strings.EqualFold(checkout.Repository, repository) || !checkout.ReportedAt.After(now.Add(-5*time.Minute)) {
 		return intakeInvalid("Select an active enrolled runner with a recent matching checkout report")
 	}
 	return nil
 }
 
-func githubBatchTask(scope nativeScope, batch *tracker.GitHubBatch) (*tracker.GitHubBatchTask, error) {
+func githubBatchTask(scope hubscope.NativeScope, batch *tracker.GitHubBatch) (*tracker.GitHubBatchTask, error) {
 	if batch.HubOwned {
 		return nil, nil
 	}
 	if batch.Status == "discovering" {
-		return &tracker.GitHubBatchTask{ProjectID: scope.project, BatchID: batch.ID, Revision: batch.Revision, Discovery: &batch.Discovery}, nil
+		return &tracker.GitHubBatchTask{ProjectID: scope.Project, BatchID: batch.ID, Revision: batch.Revision, Discovery: &batch.Discovery}, nil
 	}
 	if batch.Status != "importing" {
 		return nil, nil
@@ -985,11 +986,11 @@ func githubBatchTask(scope nativeScope, batch *tracker.GitHubBatch) (*tracker.Gi
 	if len(previews) == 0 {
 		return nil, nil
 	}
-	return &tracker.GitHubBatchTask{ProjectID: scope.project, BatchID: batch.ID, Revision: batch.Revision, Item: &previews[0], Items: previews}, nil
+	return &tracker.GitHubBatchTask{ProjectID: scope.Project, BatchID: batch.ID, Revision: batch.Revision, Item: &previews[0], Items: previews}, nil
 }
 
-func (s *Service) readGitHubBatchTaskRecord(ctx context.Context, scope nativeScope) (*tracker.GitHubBatchTask, error) {
-	if scope.project == "" {
+func (s *Service) readGitHubBatchTaskRecord(ctx context.Context, scope hubscope.NativeScope) (*tracker.GitHubBatchTask, error) {
+	if scope.Project == "" {
 		return nil, nil
 	}
 	record, err := s.loadGitHubBatchState(ctx, scope)
@@ -999,10 +1000,10 @@ func (s *Service) readGitHubBatchTaskRecord(ctx context.Context, scope nativeSco
 	if err != nil {
 		return nil, err
 	}
-	if record.HubOwned || record.RunnerID != scope.credential.Runner.RunnerID || record.Status != "discovering" && record.Status != "importing" {
+	if record.HubOwned || record.RunnerID != scope.Credential.Runner.RunnerID || record.Status != "discovering" && record.Status != "importing" {
 		return nil, nil
 	}
-	background, err := s.gitHubIntegrationScope(ctx, scope.organization, scope.project)
+	background, err := s.gitHubIntegrationScope(ctx, scope.Organization, scope.Project)
 	if err != nil {
 		return nil, err
 	}
@@ -1014,8 +1015,8 @@ func (s *Service) readGitHubBatchTaskRecord(ctx context.Context, scope nativeSco
 		}
 		return nil, err
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		if err := s.gitHubBatchRequestAuthority(ctx, reader, *background.githubIntakeRevision.authority, background.githubIntakeRevision.requireAdminKey); err != nil {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := s.gitHubBatchRequestAuthority(ctx, reader, *background.GitHubIntakeRevision.Authority, background.GitHubIntakeRevision.RequireAdminKey); err != nil {
 			return err
 		}
 		return s.requireGitHubBatchRunner(ctx, reader, scope, record.RunnerID, record.Discovery.Repository, s.config.now())
@@ -1036,7 +1037,7 @@ func finishGitHubBatchItems(batch *tracker.GitHubBatch) {
 	}
 }
 
-func (s *Service) reconcileRunnerGitHubBatch(ctx context.Context, scope nativeScope, batch *tracker.GitHubBatch) error {
+func (s *Service) reconcileRunnerGitHubBatch(ctx context.Context, scope hubscope.NativeScope, batch *tracker.GitHubBatch) error {
 	project, err := s.readProjectRecord(ctx, scope)
 	if err != nil {
 		return err
@@ -1044,7 +1045,7 @@ func (s *Service) reconcileRunnerGitHubBatch(ctx context.Context, scope nativeSc
 	if project.Settings.Intake != "manual" {
 		return corestore.ErrNotFound
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Background, func(reader tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Background, func(reader tenantstore.Reader) error {
 		return s.requireGitHubBatchRunner(ctx, reader, scope, batch.RunnerID, batch.Discovery.Repository, s.config.now())
 	}); err != nil {
 		return err
@@ -1080,12 +1081,12 @@ func (s *Service) reconcileRunnerGitHubBatch(ctx context.Context, scope nativeSc
 	if changed {
 		return s.saveGitHubBatchRecord(ctx, scope, batch)
 	}
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Background, func(writer tenantstore.Writer) error {
-		return writer.(projectstore.GitHubIntakeWriter).DeferGitHubIntake(ctx, scope.project, s.config.now(), s.config.jitter())
+	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Background, func(writer tenantstore.Writer) error {
+		return writer.(projectstore.GitHubIntakeWriter).DeferGitHubIntake(ctx, scope.Project, s.config.now(), s.config.jitter())
 	})
 }
 
-func (s *Service) reportGitHubBatchRecord(ctx context.Context, scope nativeScope, operation string, request tracker.GitHubBatchResult) (json.RawMessage, error) {
+func (s *Service) reportGitHubBatchRecord(ctx context.Context, scope hubscope.NativeScope, operation string, request tracker.GitHubBatchResult) (json.RawMessage, error) {
 	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
@@ -1095,13 +1096,13 @@ func (s *Service) reportGitHubBatchRecord(ctx context.Context, scope nativeScope
 		return nil, err
 	}
 	batch := &record.GitHubBatch
-	if batch.HubOwned || batch.RunnerID != scope.credential.Runner.RunnerID || batch.ID != request.BatchID {
+	if batch.HubOwned || batch.RunnerID != scope.Credential.Runner.RunnerID || batch.ID != request.BatchID {
 		return nil, hubapi.NativeNotFound()
 	}
 	if err := validateBatchDiagnostic(request.Error, request.RetryAt); err != nil {
 		return nil, err
 	}
-	background, err := s.gitHubIntegrationScope(ctx, scope.organization, scope.project)
+	background, err := s.gitHubIntegrationScope(ctx, scope.Organization, scope.Project)
 	if err != nil {
 		return nil, err
 	}
@@ -1109,8 +1110,8 @@ func (s *Service) reportGitHubBatchRecord(ctx context.Context, scope nativeScope
 	if err != nil {
 		return nil, err
 	}
-	background.githubIntakeRevision.reporter = &scope
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	background.GitHubIntakeRevision.Reporter = &scope
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		return s.requireGitHubBatchRunner(ctx, reader, scope, batch.RunnerID, batch.Discovery.Repository, s.config.now())
 	}); err != nil {
 		return nil, err
@@ -1246,13 +1247,13 @@ func (s *Service) reportGitHubBatchRecord(ctx context.Context, scope nativeScope
 		if err := s.requireGitHubBatchRunner(ctx, writer, scope, batch.RunnerID, batch.Discovery.Repository, s.config.now()); err != nil {
 			return err
 		}
-		if err := s.gitHubBatchRequestAuthority(ctx, writer, *background.githubIntakeRevision.authority, background.githubIntakeRevision.requireAdminKey); err != nil {
+		if err := s.gitHubBatchRequestAuthority(ctx, writer, *background.GitHubIntakeRevision.Authority, background.GitHubIntakeRevision.RequireAdminKey); err != nil {
 			return err
 		}
-		if err := writer.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := writer.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		current, err := writer.ProjectRecord(ctx, scope.project)
+		current, err := writer.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}

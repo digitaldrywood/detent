@@ -8,6 +8,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -23,14 +24,14 @@ func (s *Service) githubRequestCounts(c echo.Context) error {
 }
 
 func (s *Service) getCutoverReceipt(c echo.Context) error {
-	result, err := s.readCutoverReceipt(c.Request().Context(), nativeRequestScope(c))
+	result, err := s.readCutoverReceipt(c.Request().Context(), hubscope.NativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
 }
 
-func (s *Service) projectIntegration(ctx context.Context, scope nativeScope) (ProjectIntegration, error) {
+func (s *Service) projectIntegration(ctx context.Context, scope hubscope.NativeScope) (ProjectIntegration, error) {
 	record, err := s.readProjectRecord(ctx, scope)
 	if err != nil {
 		return ProjectIntegration{}, err
@@ -43,7 +44,7 @@ func (s *Service) projectIntegration(ctx context.Context, scope nativeScope) (Pr
 	return result, s.applyProjectIntegrationLive(ctx, scope, &result)
 }
 
-func (s *Service) applyProjectIntegrationLive(ctx context.Context, scope nativeScope, result *ProjectIntegration) error {
+func (s *Service) applyProjectIntegrationLive(ctx context.Context, scope hubscope.NativeScope, result *ProjectIntegration) error {
 	if result.CheckoutRepository != "" {
 		verified, err := s.verifiedProjectCheckout(ctx, nil, scope, result.CheckoutRepository, s.config.now())
 		if err != nil {
@@ -87,8 +88,8 @@ func (s *Service) updateProjectIntegration(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
-	scope.requireHostedAdmin = true
+	scope := hubscope.NativeRequestScope(c)
+	scope.RequireHostedAdmin = true
 	c.Set("native_scope", scope)
 	return s.nativeMutation(c, request.Mutation, request, nil)
 }

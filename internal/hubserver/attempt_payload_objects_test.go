@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -218,7 +219,7 @@ func TestAttemptPayloadObjectsAndTypedReads(t *testing.T) {
 				t.Run("source authority/"+authority.name, func(t *testing.T) {
 					request := tracker.PublishChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{RunID: f.run, AttemptID: f.attempt, PolicyID: authority.policy}}
 					request.LeaseID, request.FencingToken = f.lease.ID, authority.fence
-					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+					scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 					_, err := f.service.prepareChangeVersionRun(t.Context(), scope, tracker.ChangeRequest{WorkItemID: f.issue.WorkItemID}, request)
 					if (err == nil) != authority.allowed {
 						t.Fatalf("source authority allowed=%v error=%v", authority.allowed, err)
@@ -243,10 +244,10 @@ func TestAttemptPayloadObjectsAndTypedReads(t *testing.T) {
 			var storedEvent eventstore.Event
 			var sourceAttempt leasestore.Attempt
 			var sourceArchive artifactstore.ArchiveObject
-			if err := admin.QueryRowContext(ctx, `SELECT payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND attempt_id=$4 AND type='run.finished' ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, f.issue.WorkItemID, f.attempt).Scan(&storedEvent.PayloadObjectKey, &storedEvent.PayloadSHA256, &storedEvent.PayloadBytes, &storedEvent.PayloadContentBytes); err != nil {
+			if err := admin.QueryRowContext(ctx, `SELECT payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND attempt_id=$4 AND type='run.finished' ORDER BY sequence DESC LIMIT 1`, scope.Organization, scope.Project, f.issue.WorkItemID, f.attempt).Scan(&storedEvent.PayloadObjectKey, &storedEvent.PayloadSHA256, &storedEvent.PayloadBytes, &storedEvent.PayloadContentBytes); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
 				sourceAttempt, err = r.Attempt(ctx, f.attempt)
 				if err != nil {
@@ -282,7 +283,7 @@ func TestAttemptPayloadObjectsAndTypedReads(t *testing.T) {
 			if len(population.Items) != 1 || population.Items[0].AttemptID != f.attempt {
 				t.Fatalf("analytics did not retain the selected attempt: %+v", population)
 			}
-			if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				after, err := r.Attempt(ctx, f.attempt)
 				if err != nil {
 					return err
@@ -307,7 +308,7 @@ func TestAttemptPayloadObjectsAndTypedReads(t *testing.T) {
 			}
 
 			var artifactKey string
-			if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				row, err := r.Attempt(ctx, f.attempt)
 				if err != nil {
 					return err
@@ -659,12 +660,12 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			admin := hostedPostgresAdmin(t, f.service)
 			var report eventstore.Event
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				report, err = r.LatestRunEvent(t.Context(), scope.project, f.attempt)
+				report, err = r.LatestRunEvent(t.Context(), scope.Project, f.attempt)
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -674,7 +675,7 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 				t.Fatal("run completion was not archived")
 			}
 			if !test.projected {
-				if _, err := admin.ExecContext(t.Context(), `UPDATE collaboration_events SET event_revision=0 WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4`, scope.organization, scope.project, issue.WorkItemID, report.ID); err != nil {
+				if _, err := admin.ExecContext(t.Context(), `UPDATE collaboration_events SET event_revision=0 WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND id=$4`, scope.Organization, scope.Project, issue.WorkItemID, report.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -682,9 +683,9 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 				issue = payloadSeedRecoveryEdits(t, f.nativeFixture, issue, test.postRunEdits)
 			}
 			var row corestore.WorkItem
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				row, err = r.WorkItem(t.Context(), scope.project, issue.WorkItemID)
+				row, err = r.WorkItem(t.Context(), scope.Project, issue.WorkItemID)
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -712,7 +713,7 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 			recovery, proofErr := f.service.prepareRecordedRecoveryTenant(readContext, scope, row, issue, proof)
 			f.service.config.Content = originalContent
 			if proofErr == nil {
-				proofErr = probe.WriteTenant(readContext, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				proofErr = probe.WriteTenant(readContext, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					return f.service.authorizeRecordedRecoveryTenant(readContext, w, scope, *recovery)
 				})
 			}
@@ -741,7 +742,7 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 							if changed == "issue revision" {
 								statement, id = "UPDATE issues SET revision=revision+1 WHERE organization_id=$1 AND native_id=$2", string(issue.WorkItemID)
 							}
-							if _, err := admin.ExecContext(ctx, statement, scope.organization, id); err != nil {
+							if _, err := admin.ExecContext(ctx, statement, scope.Organization, id); err != nil {
 								return nil, err
 							}
 						}
@@ -761,7 +762,7 @@ func TestArchivedBlockerHistoryAuthorizesDependencyRecovery(t *testing.T) {
 					if changed == "issue revision" {
 						statement, id = "UPDATE issues SET revision=revision-1 WHERE organization_id=$1 AND native_id=$2", string(issue.WorkItemID)
 					}
-					if _, err := admin.ExecContext(t.Context(), statement, scope.organization, id); err != nil {
+					if _, err := admin.ExecContext(t.Context(), statement, scope.Organization, id); err != nil {
 						t.Fatal(err)
 					}
 					requireNativeStatus(t, response, http.StatusConflict)
@@ -892,11 +893,11 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 			content := eventstore.NewContent(f.service.runDetailStore())
 			var row eventstore.LandingReceipt
 			if test.legacy {
-				fixture := newCoreNeutralFixture(t, scope.organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
-				fixture.add("policy_revisions", map[string]any{"scope": string(scope.organization) + "/" + string(scope.project), "policy_id": version.PolicyID, "metadata_json": string(historyTestJSON(t, version.Policy))})
-				fixture.add("change_requests", map[string]any{"id": change.ID, "organization_id": scope.organization, "project_id": scope.project, "work_item_id": f.issue.WorkItemID, "record_json": string(historyTestJSON(t, change))})
+				fixture := newCoreNeutralFixture(t, scope.Organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
+				fixture.add("policy_revisions", map[string]any{"scope": string(scope.Organization) + "/" + string(scope.Project), "policy_id": version.PolicyID, "metadata_json": string(historyTestJSON(t, version.Policy))})
+				fixture.add("change_requests", map[string]any{"id": change.ID, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": f.issue.WorkItemID, "record_json": string(historyTestJSON(t, change))})
 				for _, item := range change.LinkedIssues {
-					fixture.add("change_issue_links", map[string]any{"change_id": change.ID, "organization_id": scope.organization, "project_id": scope.project, "work_item_id": item})
+					fixture.add("change_issue_links", map[string]any{"change_id": change.ID, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": item})
 				}
 				fixture.add("change_versions", map[string]any{"id": version.ID, "change_id": change.ID, "number": version.Number, "policy_revision_id": version.PolicyID, "record_json": string(historyTestJSON(t, version)), "repository": version.Repository})
 				if version.Source != nil {
@@ -904,14 +905,14 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 				}
 				fixture.add("change_landing_receipts", map[string]any{"attempt_id": attempt.ID, "version_id": version.ID, "record_json": string(historyTestJSON(t, receipt))})
 				objects := f.service.runDetailStore()
-				source := CoreChangeImportSource{BundlePath: fixture.write(), OrganizationID: scope.organization, SourceObjects: objects, Objects: objects}
+				source := CoreChangeImportSource{BundlePath: fixture.write(), OrganizationID: scope.Organization, SourceObjects: objects, Objects: objects}
 				var first eventstore.LandingReceipt
 				for pass := range 2 {
 					count, err := ImportCoreChanges(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source)
 					if err != nil || count != 1 {
 						t.Fatalf("historical landing import count=%d error=%v", count, err)
 					}
-					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 						var err error
 						row, err = r.LandingReceipt(t.Context(), attempt.ID)
 						return err
@@ -925,11 +926,11 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 				}
 			} else {
 				var err error
-				row, err = content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: scope.organization, AttemptID: attempt.ID, VersionID: version.ID, Repository: version.Repository, BaseRef: receipt.BaseRef}, receipt)
+				row, err = content.PrepareLandingReceipt(t.Context(), eventstore.LandingReceipt{OrganizationID: scope.Organization, AttemptID: attempt.ID, VersionID: version.ID, Repository: version.Repository, BaseRef: receipt.BaseRef}, receipt)
 				if err != nil {
 					t.Fatal(err)
 				}
-				coordinatorFixtureWrite(t, f.service, scope.organization, func(w tenantstore.Writer) error {
+				coordinatorFixtureWrite(t, f.service, scope.Organization, func(w tenantstore.Writer) error {
 					var err error
 					row, err = w.CreateLandingReceipt(t.Context(), row)
 					return err
@@ -939,14 +940,14 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(before, receipt) {
 				t.Fatalf("receipt after publication differs: %v", err)
 			}
-			canonical, _, err := attachment.PrepareArchive(string(scope.organization), 1, bytes.NewReader(historyTestJSON(t, receipt)))
+			canonical, _, err := attachment.PrepareArchive(string(scope.Organization), 1, bytes.NewReader(historyTestJSON(t, receipt)))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if row.OrganizationID != scope.organization || row.AttemptID != attempt.ID || row.VersionID != version.ID || row.MergeSHA != receipt.MergeSHA || eventstore.Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes) != canonical {
+			if row.OrganizationID != scope.Organization || row.AttemptID != attempt.ID || row.VersionID != version.ID || row.MergeSHA != receipt.MergeSHA || eventstore.Reference(row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes) != canonical {
 				t.Fatal("landing receipt lost scoped canonical custody or typed merge SHA")
 			}
-			matching, _, err := attachment.PrepareArchive(string(scope.organization), 1, bytes.NewReader(historyTestJSON(t, sourceReceipt)))
+			matching, _, err := attachment.PrepareArchive(string(scope.Organization), 1, bytes.NewReader(historyTestJSON(t, sourceReceipt)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -957,7 +958,7 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			sourceRaw, err := f.service.runDetailStore().ReadDetail(t.Context(), string(scope.organization), sourceRef)
+			sourceRaw, err := f.service.runDetailStore().ReadDetail(t.Context(), string(scope.Organization), sourceRef)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -965,7 +966,7 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 			if json.Unmarshal(sourceRaw, &sourceRun) != nil || sourceRun.Runtime == nil || !reflect.DeepEqual(sourceRun.Runtime.Landing, &sourceReceipt) {
 				t.Fatal("landing publication changed immutable source runtime receipt")
 			}
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				current, err := r.Attempt(t.Context(), attempt.ID)
 				if err == nil && current.PayloadObjectKey != sourceRef.Key {
 					return artifact.ErrIntegrity
@@ -978,16 +979,16 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 			scheduled := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: strings.Repeat("a", 64), RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Check", RunURL: "https://github.com/" + repository + "/actions/runs/123/attempts/1", JobURL: "https://github.com/" + repository + "/actions/jobs/456", HeadSHA: receipt.MergeSHA, Conclusion: "failure"}
 			body := issueorigin.Stamp("Scheduled check failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/" + repository + "/actions/runs/123", Fingerprint: scheduled.OccurrenceKey})
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "landing-validation"}, Body: body}), http.StatusOK)
-			issue, err := coordinatorActionIssue(t.Context(), f.service, scope.organization, scope.project, f.issue.WorkItemID)
+			issue, err := coordinatorActionIssue(t.Context(), f.service, scope.Organization, scope.Project, f.issue.WorkItemID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if test.invalid != "" {
-				invalid, err := content.PreparePayload(t.Context(), scope.organization, []byte(test.invalid))
+				invalid, err := content.PreparePayload(t.Context(), scope.Organization, []byte(test.invalid))
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `UPDATE change_landing_receipts SET payload_object_key=$1,payload_sha256=$2,payload_bytes=$3,payload_content_bytes=$4 WHERE organization_id=$5 AND attempt_id=$6`, invalid.Key, invalid.SHA256, invalid.CompressedSize, invalid.UncompressedSize, scope.organization, attempt.ID); err != nil {
+				if _, err := hostedPostgresAdmin(t, f.service).ExecContext(t.Context(), `UPDATE change_landing_receipts SET payload_object_key=$1,payload_sha256=$2,payload_bytes=$3,payload_content_bytes=$4 WHERE organization_id=$5 AND attempt_id=$6`, invalid.Key, invalid.SHA256, invalid.CompressedSize, invalid.UncompressedSize, scope.Organization, attempt.ID); err != nil {
 					t.Fatal(err)
 				}
 				row.PayloadObjectKey, row.PayloadSHA256, row.PayloadBytes, row.PayloadContentBytes = invalid.Key, invalid.SHA256, invalid.CompressedSize, invalid.UncompressedSize
@@ -1119,7 +1120,7 @@ func payloadAssertHistoricalAttemptReads(t *testing.T, data tracker.NativeRunDat
 				t.Fatalf("historical payload import count=%d error=%v", count, err)
 			}
 			for _, suffix := range []string{"", "_second"} {
-				scope := nativeScope{organization: organization, project: "prj_execution_import"}
+				scope := hubscope.NativeScope{Organization: organization, Project: "prj_execution_import"}
 				item := "wi_execution_import" + suffix
 				id := "attempt_execution_import" + suffix
 				var snapshot tenantAttemptSnapshot
@@ -1137,7 +1138,7 @@ func payloadAssertHistoricalAttemptReads(t *testing.T, data tracker.NativeRunDat
 					if err != nil {
 						return err
 					}
-					snapshot.event.OrganizationID, snapshot.event.ProjectID, snapshot.event.WorkItemID = organization, scope.project, tracker.NativeWorkItemID(item)
+					snapshot.event.OrganizationID, snapshot.event.ProjectID, snapshot.event.WorkItemID = organization, scope.Project, tracker.NativeWorkItemID(item)
 					return readTenantAttemptPayload(t.Context(), r, &snapshot)
 				}); err != nil {
 					t.Fatal(err)
@@ -1257,7 +1258,7 @@ func payloadAssertHistoricalDiff(t *testing.T, patch string) {
 			}
 			for _, suffix := range []string{"", "_second"} {
 				id := "attempt_execution_import" + suffix
-				got, err := service.readAttemptDiffTenant(t.Context(), nativeScope{organization: organization, project: "prj_execution_import"}, "wi_execution_import"+suffix, id, "attempt", 1)
+				got, err := service.readAttemptDiffTenant(t.Context(), hubscope.NativeScope{Organization: organization, Project: "prj_execution_import"}, "wi_execution_import"+suffix, id, "attempt", 1)
 				if err != nil {
 					t.Fatal(err)
 				}

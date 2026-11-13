@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -172,7 +173,7 @@ func TestPostgresKeyRoutesPreserveTenantAndCurrentAuthority(t *testing.T) {
 				if !errors.Is(err, test.want) {
 					t.Fatalf("runner authority error = %v, want %v", err, test.want)
 				}
-				if test.want == tenantauth.ErrUnavailable && !errors.Is(operatorAuthorizationError(err), operatortool.ErrServiceUnavailable) {
+				if test.want == tenantauth.ErrUnavailable && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrServiceUnavailable) {
 					t.Fatalf("missing repository did not report service unavailable: %v", err)
 				}
 			})

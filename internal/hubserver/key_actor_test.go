@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -106,7 +107,7 @@ func TestNativeKeyActor(t *testing.T) {
 		{"hosted runner", hubapi.APICredential{ID: "runner", Scope: hubapi.APIScopeOperator, HostedKeyKind: "service", Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: "runner"}}}, tracker.Actor{Kind: "runner", PrincipalID: "runner"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := (nativeScope{credential: test.credential}).actor(); got != test.want {
+			if got := (hubscope.NativeScope{Credential: test.credential}).Actor(); got != test.want {
 				t.Fatalf("actor=%+v want=%+v", got, test.want)
 			}
 		})
@@ -154,7 +155,7 @@ func TestMCPKeyIssueContract(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: "org_security", project: f.project, credential: issuer}
+			scope := hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: issuer}
 			if _, err := f.service.approveTestTenantPolicy(t.Context(), "org_security/"+string(f.project), issuer.ID, policy.Change{Policy: hubTestPolicy()}); err != nil {
 				t.Fatal(err)
 			}
@@ -168,7 +169,7 @@ func TestMCPKeyIssueContract(t *testing.T) {
 						t.Fatalf("create key=%+v error=%v", key, err)
 					}
 					creationScope := scope
-					creationScope.sourceActor = nativeIntegrationActor("worker")
+					creationScope.SourceActor = nativeIntegrationActor("worker")
 					raw, err := f.service.createNativeIssueCommand(t.Context(), creationScope, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + kind}, Title: "Key contract", Body: body, State: "Todo"})
 					if err != nil {
 						t.Fatal(err)
@@ -279,8 +280,8 @@ func TestMCPKeyIssueContract(t *testing.T) {
 						t.Fatalf("original large issue history changed: %v", err)
 					}
 					var editedEvent eventstore.Event
-					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-						events, err := r.Events(t.Context(), scope.project, issue.WorkItemID, 0, 3)
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+						events, err := r.Events(t.Context(), scope.Project, issue.WorkItemID, 0, 3)
 						if err != nil {
 							return err
 						}
@@ -372,7 +373,7 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: "org_security", project: f.project, credential: issuer}
+	scope := hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: issuer}
 	key, err := f.service.createHostedAPIKeyFor(t.Context(), issuer, hostedKeyRequest{Kind: "personal", Name: "revision writes", Scope: apikey.ScopeWrite, NeverExpires: true, ProjectAccess: hubapi.HostedProjectsAll})
 	if err != nil {
 		t.Fatal(err)
@@ -453,7 +454,7 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 				case operatortool.MoveItem:
 					fields["target_state"] = "Done"
 				case operatortool.TransferItem:
-					if _, err := f.service.approveTestTenantPolicy(t.Context(), string(scope.organization)+"/"+string(scope.project), issuer.ID, policy.Change{Policy: hubTestPolicy()}); err != nil {
+					if _, err := f.service.approveTestTenantPolicy(t.Context(), string(scope.Organization)+"/"+string(scope.Project), issuer.ID, policy.Change{Policy: hubTestPolicy()}); err != nil {
 						t.Fatal(err)
 					}
 					input := changeTestInput()
@@ -463,7 +464,7 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 					service := f.service
 					service.config.NativeRunEvents = tenantNativeRunEventParticipant{service: service}
 					repository := service.config.TenantRepository
-					orgID, projectID := scope.organization, scope.project
+					orgID, projectID := scope.Organization, scope.Project
 					binding := runnerauth.NewBinding()
 					workerID, runnerID := hubapi.NewID("credential"), binding.RunnerID
 					workerToken, err := apikey.GenerateToken()
@@ -520,7 +521,7 @@ func TestMCPKeyRevisionedWrites(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						response := shared.serve(t, hostedSharedRequest{kind: cloudassert.KindMachine, bearer: workerToken, method: http.MethodPost, target: "/organizations/" + string(scope.organization) + f.base + "/work-items/" + string(item.WorkItemID) + "/events", body: string(encoded)})
+						response := shared.serve(t, hostedSharedRequest{kind: cloudassert.KindMachine, bearer: workerToken, method: http.MethodPost, target: "/organizations/" + string(scope.Organization) + f.base + "/work-items/" + string(item.WorkItemID) + "/events", body: string(encoded)})
 						requireNativeStatus(t, response, http.StatusOK)
 					}
 					ctx := f.service.contentContext(t.Context())

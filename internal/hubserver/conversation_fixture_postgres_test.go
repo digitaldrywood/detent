@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -67,7 +68,7 @@ func (f conversationFixture) publishedRecordEvents(ctx context.Context, record c
 	}); err != nil {
 		return nil, err
 	}
-	scope := nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: hubapi.APICredential{ID: credential.ID, Hash: credential.Hash, Scope: hubapi.APIScopeOperator}}
+	scope := hubscope.NativeScope{Organization: record.OrganizationID, Project: record.ProjectID, Credential: hubapi.APICredential{ID: credential.ID, Hash: credential.Hash, Scope: hubapi.APIScopeOperator}}
 	current, err := chat.Server.ReadPGConversation(ctx, conversationInput(scope), record.ID)
 	if err != nil {
 		return nil, err

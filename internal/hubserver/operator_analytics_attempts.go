@@ -11,12 +11,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, runner string, usage []reportstore.UsageFact, usageClipped bool) (nativeAnalyticsAttemptPopulation, string, error) {
+func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context, scope hubscope.NativeScope, w operatortool.AnalyticsWindow, runner string, usage []reportstore.UsageFact, usageClipped bool) (nativeAnalyticsAttemptPopulation, string, error) {
 	out := nativeAnalyticsAttemptPopulation{Items: []nativeAnalyticsAttempt{}, Partial: usageClipped, Clipped: usageClipped}
 	if len(usage) > maxAnalyticsPopulation+1 {
 		return out, "", corestore.ErrInvalidPage
@@ -32,7 +33,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 	}
 	var page reportstore.AnalyticsAttemptPage
 	var events []eventstore.Event
-	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
 		if err != nil {
 			return err
@@ -41,7 +42,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		page, err = owner.ReadAnalyticsAttemptPage(ctx, reportstore.AnalyticsAttemptQuery{ProjectID: scope.project, Principal: principal, RunnerID: runner, RunnerIDs: analyticsCohortRunners(ctx), From: w.From, To: w.To, After: after, Limit: maxAnalyticsPopulation})
+		page, err = owner.ReadAnalyticsAttemptPage(ctx, reportstore.AnalyticsAttemptQuery{ProjectID: scope.Project, Principal: principal, RunnerID: runner, RunnerIDs: analyticsCohortRunners(ctx), From: w.From, To: w.To, After: after, Limit: maxAnalyticsPopulation})
 		if err != nil {
 			return err
 		}
@@ -54,7 +55,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 		for i, row := range page.Items {
 			ids[i] = row.AttemptID
 		}
-		selected, err := batch.LatestRunEvents(ctx, scope.project, ids)
+		selected, err := batch.LatestRunEvents(ctx, scope.Project, ids)
 		if err != nil {
 			return err
 		}
@@ -67,7 +68,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 		}
 		for _, row := range page.Items {
 			event, ok := byAttempt[row.AttemptID]
-			if !ok || event.OrganizationID != scope.organization || event.ProjectID != scope.project || event.WorkItemID != row.WorkItemID || event.AttemptID != row.AttemptID {
+			if !ok || event.OrganizationID != scope.Organization || event.ProjectID != scope.Project || event.WorkItemID != row.WorkItemID || event.AttemptID != row.AttemptID {
 				return artifact.ErrIntegrity
 			}
 			events = append(events, event)
@@ -82,7 +83,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 	counts := map[string]int{}
 	observed := 0
 	for _, row := range usage {
-		if row.ProjectID != scope.project {
+		if row.ProjectID != scope.Project {
 			return out, "", artifact.ErrIntegrity
 		}
 		if row.Period.Before(w.From) || !row.Period.Before(w.To) {
@@ -104,7 +105,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 		if err != nil {
 			return out, "", fmt.Errorf("read analytics attempt: %w", err)
 		}
-		if value.Data.Run == nil || value.Data.Run.AttemptID != row.AttemptID || value.OrganizationID != scope.organization || value.ProjectID != scope.project || value.AggregateID != row.WorkItemID {
+		if value.Data.Run == nil || value.Data.Run.AttemptID != row.AttemptID || value.OrganizationID != scope.Organization || value.ProjectID != scope.Project || value.AggregateID != row.WorkItemID {
 			return out, "", artifact.ErrIntegrity
 		}
 		run := value.Data.Run
@@ -150,7 +151,7 @@ func (s *Service) readNativeAnalyticsAttemptPopulationTenant(ctx context.Context
 	return out, next, nil
 }
 
-func (s *Service) readNativeAnalyticsUsagePopulationTenant(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow) (reportstore.AnalyticsUsagePage, string, error) {
+func (s *Service) readNativeAnalyticsUsagePopulationTenant(ctx context.Context, scope hubscope.NativeScope, w operatortool.AnalyticsWindow) (reportstore.AnalyticsUsagePage, string, error) {
 	after, cursor, key, err := s.analyticsUsageCursor(ctx, scope, w)
 	if err != nil {
 		return reportstore.AnalyticsUsagePage{}, "", err
@@ -161,7 +162,7 @@ func (s *Service) readNativeAnalyticsUsagePopulationTenant(ctx context.Context, 
 		return reportstore.AnalyticsUsagePage{}, "", hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var page reportstore.AnalyticsUsagePage
-	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
 		if err != nil {
 			return err
@@ -170,7 +171,7 @@ func (s *Service) readNativeAnalyticsUsagePopulationTenant(ctx context.Context, 
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		page, err = owner.ReadAnalyticsUsagePage(ctx, reportstore.AnalyticsUsageQuery{ProjectID: scope.project, Principal: principal, From: w.From, To: w.To, After: after, Limit: maxAnalyticsPopulation})
+		page, err = owner.ReadAnalyticsUsagePage(ctx, reportstore.AnalyticsUsageQuery{ProjectID: scope.Project, Principal: principal, From: w.From, To: w.To, After: after, Limit: maxAnalyticsPopulation})
 		return err
 	})
 	if err != nil {

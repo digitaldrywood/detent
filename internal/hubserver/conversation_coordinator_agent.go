@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -48,10 +49,10 @@ func withCoordinatorAgent(ctx context.Context, agent string) context.Context {
 			return credential, err
 		})
 	}
-	if resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error)); ok {
-		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(ctx context.Context) (nativeScope, error) {
+	if resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error)); ok {
+		ctx = context.WithValue(ctx, hubscope.NativeOperatorScopeKey{}, func(ctx context.Context) (hubscope.NativeScope, error) {
 			scope, err := resolve(ctx)
-			scope.credential.Agent = agent
+			scope.Credential.Agent = agent
 			return scope, err
 		})
 	}

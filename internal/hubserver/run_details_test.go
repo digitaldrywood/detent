@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -243,7 +244,7 @@ func TestNativeRunDetailReferences(t *testing.T) {
 		if err != nil || status != http.StatusOK {
 			return fmt.Errorf("authenticate hosted runner read status=%d: %w", status, err)
 		}
-		scope := nativeScope{organization: f.project.OrganizationID, credential: credential}
+		scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: credential}
 		routing, err := service.readRunnerRouting(f.service.runDetailContext(ctx), scope, runner.binding.RunnerID)
 		if err != nil {
 			return err
@@ -1045,13 +1046,13 @@ type runtimeHistoryAttempt struct {
 	checkpoint attachment.ArchiveReference
 }
 
-func seedRuntimeHistoryAttempt(t *testing.T, repository tenantstore.Repository, store attachment.DetailStore, scope nativeScope, issue tracker.NativeIssue, runner runnerFixture, index int, preserves bool) runtimeHistoryAttempt {
+func seedRuntimeHistoryAttempt(t *testing.T, repository tenantstore.Repository, store attachment.DetailStore, scope hubscope.NativeScope, issue tracker.NativeIssue, runner runnerFixture, index int, preserves bool) runtimeHistoryAttempt {
 	t.Helper()
 	ctx := t.Context()
 	descriptor := hubTestPolicy()
 	var lease leasestore.Lease
-	err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		row, err := w.WorkItem(ctx, scope.project, issue.WorkItemID)
+	err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		row, err := w.WorkItem(ctx, scope.Project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
@@ -1060,10 +1061,10 @@ func seedRuntimeHistoryAttempt(t *testing.T, repository tenantstore.Repository, 
 		if err != nil {
 			return err
 		}
-		if err := w.AssignRunnerLease(ctx, runnerstore.LeaseAssignment{OrganizationID: scope.organization, RunnerID: runner.binding.RunnerID, LeaseID: lease.LeaseID, AssignedAt: lease.AcquiredAt}); err != nil {
+		if err := w.AssignRunnerLease(ctx, runnerstore.LeaseAssignment{OrganizationID: scope.Organization, RunnerID: runner.binding.RunnerID, LeaseID: lease.LeaseID, AssignedAt: lease.AcquiredAt}); err != nil {
 			return err
 		}
-		return w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: scope.organization, ProjectID: scope.project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: descriptor.ID, BoundAt: lease.AcquiredAt})
+		return w.BindLeasePolicy(ctx, policystore.LeasePolicy{OrganizationID: scope.Organization, ProjectID: scope.Project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: descriptor.ID, BoundAt: lease.AcquiredAt})
 	})
 	if err != nil {
 		t.Fatalf("seed history lease: %v", err)
@@ -1085,7 +1086,7 @@ func seedRuntimeHistoryAttempt(t *testing.T, repository tenantstore.Repository, 
 		if err != nil {
 			t.Fatal(err)
 		}
-		ref, err := store.StoreDetail(ctx, string(scope.organization), raw)
+		ref, err := store.StoreDetail(ctx, string(scope.Organization), raw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1094,20 +1095,20 @@ func seedRuntimeHistoryAttempt(t *testing.T, repository tenantstore.Repository, 
 	payload := storeJSON(data)
 	checkpointRef := storeJSON(checkpointPayload{Checkpoint: checkpoint})
 	rawEvent, err := json.Marshal(tracker.CollaborationEvent{
-		ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: issue.WorkItemID,
-		Type: "run.finished", SchemaVersion: 1, RecordedAt: lease.AcquiredAt, Actor: scope.actor(),
+		ID: hubapi.NewID("event"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: issue.WorkItemID,
+		Type: "run.finished", SchemaVersion: 1, RecordedAt: lease.AcquiredAt, Actor: scope.Actor(),
 		Data: tracker.CollaborationData{Run: &data, Revision: tracker.Revision(lease.WorkItemRevision)},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := eventstore.NewContent(store).PrepareEvent(ctx, scope.organization, rawEvent)
+	event, err := eventstore.NewContent(store).PrepareEvent(ctx, scope.Organization, rawEvent)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fence := leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
 	var attempt leasestore.Attempt
-	err = repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		var err error
 		attempt, err = w.RecordAttempt(ctx, leasestore.AttemptEvent{
 			ID: data.AttemptID, RunID: data.RunID, Fence: fence, Sequence: data.Sequence, Status: "failed",
@@ -1150,7 +1151,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 				if err != nil || status != http.StatusOK {
 					t.Fatalf("fixture credential status=%d: %v", status, err)
 				}
-				scope := nativeScope{organization: organization.ID, project: f.project.ID, credential: credential}
+				scope := hubscope.NativeScope{Organization: organization.ID, Project: f.project.ID, Credential: credential}
 				var first string
 				var latest runtimeHistoryAttempt
 				for i := range history {

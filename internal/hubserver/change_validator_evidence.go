@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,8 +23,8 @@ type validatorReviewEvidence struct {
 	auditDispositionRows []eventstore.AuditDisposition
 }
 
-func validateValidatorReviewEvidence(scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, request tracker.ReviewChange, evidence validatorReviewEvidence) (tracker.MachineID, error) {
-	worker := scope.credential.Scope == hubapi.APIScopeWorker
+func validateValidatorReviewEvidence(scope hubscope.NativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, request tracker.ReviewChange, evidence validatorReviewEvidence) (tracker.MachineID, error) {
+	worker := scope.Credential.Scope == hubapi.APIScopeWorker
 	implementationReview := request.ImplementationReview != nil
 	audit := request.SecurityAudit != nil
 	landingAudit := audit && request.SecurityAudit.Landing
@@ -136,12 +137,12 @@ func validateValidatorReviewEvidence(scope nativeScope, change tracker.ChangeReq
 			return "", auditInvalid("security audit evidence is incomplete: missing: run.id is missing or invalid", "run.id")
 		case run.IssueID != string(change.WorkItemID):
 			return "", auditInvalid("security audit identity differs from the work item: run.issue_id", "run.issue_id")
-		case run.ProjectID != string(scope.project):
+		case run.ProjectID != string(scope.Project):
 			return "", auditInvalid("security audit identity differs from the work item: run.project_id", "run.project_id")
 		case run.ID != result.SessionID:
 			return "", auditInvalid("security audit identity differs from the work item: run.id differs from session_id", "session_id")
 		}
-		evaluation := securityaudit.Evaluate(run, evidence.auditDispositions, securityaudit.Key{ProjectID: string(scope.project), Repository: version.Repository, PRNumber: run.PRNumber, BaseSHA: result.BaseSHA, HeadSHA: result.HeadSHA}, securityaudit.ServiceIdentity(string(scope.project)), workflow.Config.Gate.SecurityAudit.BlockOn)
+		evaluation := securityaudit.Evaluate(run, evidence.auditDispositions, securityaudit.Key{ProjectID: string(scope.Project), Repository: version.Repository, PRNumber: run.PRNumber, BaseSHA: result.BaseSHA, HeadSHA: result.HeadSHA}, securityaudit.ServiceIdentity(string(scope.Project)), workflow.Config.Gate.SecurityAudit.BlockOn)
 		verdict := gate.ValidatorVerdictPass
 		if evaluation.Reason == securityaudit.ReasonUnresolvedFindings {
 			verdict = gate.ValidatorVerdictRework

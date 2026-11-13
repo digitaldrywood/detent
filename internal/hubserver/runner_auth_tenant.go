@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -23,7 +24,7 @@ func (s *Service) authenticateTenantAPIHash(ctx context.Context, organization tr
 }
 
 func (s *Service) authenticateRepositoryAPIHash(ctx context.Context, repository tenantstore.Repository, organization tracker.OrganizationID, hash, renewalRunner, renewalOrganization string) (hubapi.APICredential, int, error) {
-	return nativeCredentialResult(s.requestAuth().AuthenticateRepositoryAPIHash(ctx, repository, organization, hash, renewalRunner, renewalOrganization))
+	return hubscope.NativeCredentialResult(s.requestAuth().AuthenticateRepositoryAPIHash(ctx, repository, organization, hash, renewalRunner, renewalOrganization))
 }
 
 func (s *Service) readRunnerIdentityTenant(ctx context.Context, organization tracker.OrganizationID, runnerID string) (runnerauth.Identity, error) {

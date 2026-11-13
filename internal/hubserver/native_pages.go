@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -18,7 +19,7 @@ func (s *Service) nativePage(c echo.Context) (int, nativeCursor, []byte, error) 
 	if err != nil {
 		return 0, nativeCursor{}, nil, err
 	}
-	return s.readNativePage(c.Request().Context(), nativeRequestScope(c), c.Request().URL.EscapedPath(), params)
+	return s.readNativePage(c.Request().Context(), hubscope.NativeRequestScope(c), c.Request().URL.EscapedPath(), params)
 }
 
 func nativeReadQuery(c echo.Context) (url.Values, error) {
@@ -29,7 +30,7 @@ func nativeReadQuery(c echo.Context) (url.Values, error) {
 	return params, nil
 }
 
-func (s *Service) readNativePage(ctx context.Context, scope nativeScope, path string, params url.Values) (int, nativeCursor, []byte, error) {
+func (s *Service) readNativePage(ctx context.Context, scope hubscope.NativeScope, path string, params url.Values) (int, nativeCursor, []byte, error) {
 	return s.readNativePageLimit(ctx, scope, path, params, hubapi.MaxAPIPageLimit, hubapi.DefaultAPIPageLimit)
 }
 
@@ -47,7 +48,7 @@ func nativePageOrder(params url.Values, column, after string) (string, string, e
 	}
 }
 
-func nativeCreatedBy(scope nativeScope, params url.Values) (string, error) {
+func nativeCreatedBy(scope hubscope.NativeScope, params url.Values) (string, error) {
 	value := strings.TrimSpace(params.Get("created_by"))
 	if len(value) > 256 {
 		return "", hubapi.NativePublicInvalid("created_by is invalid")
@@ -55,7 +56,7 @@ func nativeCreatedBy(scope nativeScope, params url.Values) (string, error) {
 	if value != "me" {
 		return value, nil
 	}
-	actor := scope.actor()
+	actor := scope.Actor()
 	if actor.Kind != "human" || actor.PrincipalID == "" {
 		return "", hubapi.NativePublicInvalid("created_by=me requires a human identity")
 	}
@@ -112,7 +113,7 @@ func parseNativeIssueIncludes(value string) (bool, error) {
 
 func (s *Service) listNativeIssues(c echo.Context) error {
 	ctx := c.Request().Context()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	params, err := nativeReadQuery(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -127,21 +128,21 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 	return c.JSON(http.StatusOK, page)
 }
 
-func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+func (s *Service) readIssues(ctx context.Context, scope hubscope.NativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	return s.readIssuesProjection(ctx, scope, params, false)
 }
 
-func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, params url.Values, compact bool) (tracker.NativeIssuePage, error) {
+func (s *Service) readIssuesProjection(ctx context.Context, scope hubscope.NativeScope, params url.Values, compact bool) (tracker.NativeIssuePage, error) {
 	return s.readBoardProjection(ctx, scope, params, false, compact, false)
 }
 
-func (s *Service) readIssueLanes(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+func (s *Service) readIssueLanes(ctx context.Context, scope hubscope.NativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	return s.readBoardProjection(ctx, scope, params, false, false, true)
 }
 
 func (s *Service) listNativeComments(c echo.Context) error {
 	ctx := c.Request().Context()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	params, err := nativeReadQuery(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -153,13 +154,13 @@ func (s *Service) listNativeComments(c echo.Context) error {
 	return c.JSON(http.StatusOK, page)
 }
 
-func (s *Service) readComments(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
+func (s *Service) readComments(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
 	return s.readCommentRecords(ctx, scope, item, params)
 }
 
 func (s *Service) listNativeHistory(c echo.Context) error {
 	ctx := c.Request().Context()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	params, err := nativeReadQuery(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -171,7 +172,7 @@ func (s *Service) listNativeHistory(c echo.Context) error {
 	return nativeArchiveJSON(c, http.StatusOK, page)
 }
 
-func (s *Service) readHistory(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
+func (s *Service) readHistory(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
 	return s.readHistoryTenant(ctx, scope, item, params)
 }
 

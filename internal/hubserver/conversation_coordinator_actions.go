@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -35,7 +36,7 @@ func (s *Service) bindCoordinatorConnection(ctx context.Context, key string) (co
 		return ctx, nil
 	}
 	origin := cmp.Or(connection.Identity.SessionID, connection.Identity.CredentialID)
-	if entryOrigin, ok := ctx.Value(operatorEntryOriginKey{}).(string); ok {
+	if entryOrigin, ok := ctx.Value(hubscope.OperatorEntryOriginKey{}).(string); ok {
 		if entryOrigin == "" {
 			return ctx, operatortool.ErrAccessDenied
 		}
@@ -122,7 +123,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	if err != nil {
 		return nil, err
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
 		return nil, operatortool.ErrAccessDenied
 	}
@@ -130,7 +131,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	if err != nil {
 		return nil, operatortool.ErrAccessDenied
 	}
-	scope.project = record.ProjectID
+	scope.Project = record.ProjectID
 	var args coordinatorActionArguments
 	limit := hubapi.CoordinatorToolArgumentBytes
 	if call.Name == "update_project_integration" {
@@ -288,13 +289,13 @@ func coordinatorActionRequestID(messageID string, call runner.AgentToolCall) str
 	return "luna_" + hex.EncodeToString(digest[:])
 }
 
-func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope nativeScope, issue tracker.NativeIssue, target, answer string) error {
+func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, target, answer string) error {
 	if !strings.EqualFold(issue.State, "Blocked") || strings.EqualFold(target, issue.State) || strings.TrimSpace(answer) != "" {
 		return nil
 	}
 	var attemptID string
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		item, err := r.WorkItem(ctx, scope.Project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
@@ -396,7 +397,7 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 		}
 		return chat.ActionExecution{Message: "Integration updated."}, nil
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
@@ -404,7 +405,7 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 	if err != nil {
 		return chat.ActionExecution{}, err
 	}
-	scope.project = tracker.ProjectID(action.ProjectID)
+	scope.Project = tracker.ProjectID(action.ProjectID)
 	if action.Kind == chat.ActionStopRun {
 		return s.executeCoordinatorStopRun(ctx, scope, action)
 	}
@@ -484,7 +485,7 @@ func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Ac
 	if err != nil {
 		return nil, err
 	}
-	record, err := s.readPGConversation(ctx, nativeScope{organization: tracker.OrganizationID(action.OrganizationID), project: tracker.ProjectID(action.ProjectID), credential: credential}, action.ConversationID)
+	record, err := s.readPGConversation(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(action.OrganizationID), Project: tracker.ProjectID(action.ProjectID), Credential: credential}, action.ConversationID)
 	if err != nil {
 		return nil, operatortool.ErrAccessDenied
 	}
@@ -564,7 +565,7 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &action); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
@@ -575,11 +576,11 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	if err := s.authorizeConversationScopePG(readCtx, scope, true); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if (!coordinatorSettingsTool(string(action.Kind)) && !coordinatorWorkflowMutation(string(action.Kind)) && !coordinatorCatalogWrite(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind))) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
+	if (!coordinatorSettingsTool(string(action.Kind)) && !coordinatorWorkflowMutation(string(action.Kind)) && !coordinatorCatalogWrite(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind))) || action.ProjectID != string(scope.Project) || action.RequestID == "" || len(action.RequestID) > 128 {
 		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
-	action.ConversationID, action.OrganizationID = record.ID, string(scope.organization)
+	action.ConversationID, action.OrganizationID = record.ID, string(scope.Organization)
 	action.ID = action.RequestID
 	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: action.ProjectID, ResourceID: action.IssueID, Action: string(action.Kind), Source: "chat", CorrelationID: hubapi.NewID("luna")}
 	action.Mutation, err = action.Mutation.Bind(action.RequestID, action.Arguments)

@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -135,7 +136,7 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 			c := echo.New().NewContext(request, response)
 			c.SetParamNames("lease")
 			c.SetParamValues(string(f.leases[0].ID))
-			c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
+			c.Set("native_scope", hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: credential})
 			exchanges.Store(0)
 			if err := service.renewNativeLeaseTenant(c); err != nil {
 				t.Fatal(err)
@@ -217,7 +218,7 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 					t.Fatalf("noncompact policy read project=%s row=%+v error=%v", project, row, err)
 				}
 			}
-			compact := service.nativeLeaseReader(r, nativeScope{project: "prj_runner"})
+			compact := service.nativeLeaseReader(r, hubscope.NativeScope{Project: "prj_runner"})
 			if _, err := compact.Lease(t.Context(), before.LeaseID); err != nil {
 				return err
 			}
@@ -240,7 +241,7 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 		c := echo.New().NewContext(request, response)
 		c.SetParamNames("lease")
 		c.SetParamValues(before.LeaseID)
-		c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
+		c.Set("native_scope", hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: credential})
 		if err := service.renewNativeLeaseTenant(c); err != nil {
 			t.Fatal(err)
 		}
@@ -376,7 +377,7 @@ func TestReviewTerminalLease(t *testing.T) {
 				c := echo.New().NewContext(request, response)
 				c.SetParamNames("lease")
 				c.SetParamValues(string(lease.ID))
-				c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: caller})
+				c.Set("native_scope", hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: caller})
 				if err := service.renewNativeLeaseTenant(c); err != nil {
 					t.Fatal(err)
 				}
@@ -406,7 +407,7 @@ func TestReviewTerminalLease(t *testing.T) {
 					c = echo.New().NewContext(request, response)
 					c.SetParamNames("lease")
 					c.SetParamValues(string(lease.ID))
-					c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
+					c.Set("native_scope", hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: credential})
 					if err := service.releaseNativeLeaseTenant(c); err != nil {
 						t.Fatal(err)
 					}
@@ -461,7 +462,7 @@ func TestLeaseCommandLocksRunnerBeforeFence(t *testing.T) {
 				c := echo.New().NewContext(request, response)
 				c.SetParamNames("lease")
 				c.SetParamValues(string(f.leases[0].ID))
-				c.Set("native_scope", nativeScope{organization: "org_startup", project: "prj_runner", credential: credential})
+				c.Set("native_scope", hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: credential})
 				var err error
 				wantStatus := http.StatusOK
 				if operation == "renew" {

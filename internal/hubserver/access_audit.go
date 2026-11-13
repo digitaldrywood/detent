@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -25,18 +26,18 @@ func (s *Service) recordAccessAudit(ctx context.Context, identity *auth.HostedId
 	return s.accessWrite(ctx, row.OrganizationID, func(w tenantstore.Writer) error { _, err := w.RecordAccessAudit(ctx, *row); return err })
 }
 
-func (s *Service) prepareWorkItemMutationAudit(ctx context.Context, scope nativeScope, options hubapi.NativeCommandOptions) (*accessstore.Audit, error) {
-	identity := scope.credential.Hosted
+func (s *Service) prepareWorkItemMutationAudit(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions) (*accessstore.Audit, error) {
+	identity := scope.Credential.Hosted
 	if identity == nil {
 		return nil, nil
 	}
-	actor := scope.actor()
+	actor := scope.Actor()
 	metadata, ok := mutation.FromContext(ctx)
 	switch {
 	case ok:
 		metadata.ActorKind, metadata.PrincipalID, metadata.ViaKey = actor.Kind, actor.PrincipalID, actor.ViaKey
 	case actor.ViaKey != "":
-		metadata = mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.organization), ProjectID: string(scope.project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: hubapi.NewID("api")}
+		metadata = mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.Organization), ProjectID: string(scope.Project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: hubapi.NewID("api")}
 	default:
 		return nil, nil
 	}
@@ -48,7 +49,7 @@ func (s *Service) prepareWorkItemMutationAudit(ctx context.Context, scope native
 	default:
 		return nil, nil
 	}
-	return s.prepareAccessAudit(mutation.WithContext(ctx, metadata), identity, "action", route, string(scope.project), http.StatusOK)
+	return s.prepareAccessAudit(mutation.WithContext(ctx, metadata), identity, "action", route, string(scope.Project), http.StatusOK)
 }
 
 func (s *Service) prepareAccessAudit(ctx context.Context, identity *auth.HostedIdentity, event, route, project string, status int) (*accessstore.Audit, error) {
@@ -127,8 +128,8 @@ func (s *Service) logoutAccessSession(ctx context.Context, hash string, identity
 	return outcome, nil
 }
 
-func (s *Service) recordEntryAccessKeyAudit(ctx context.Context, audit *entryKeyAudit, status int) error {
-	if audit == nil || audit.readOnly() && status < http.StatusBadRequest {
+func (s *Service) recordEntryAccessKeyAudit(ctx context.Context, audit *hubscope.EntryKeyAudit, status int) error {
+	if audit == nil || audit.ReadOnly() && status < http.StatusBadRequest {
 		return nil
 	}
 	return s.accessWrite(ctx, s.accessOrganization(), func(w tenantstore.Writer) error {
@@ -136,19 +137,19 @@ func (s *Service) recordEntryAccessKeyAudit(ctx context.Context, audit *entryKey
 	})
 }
 
-func (s *Service) recordEntryAccessKeyAuditWith(ctx context.Context, w tenantstore.Writer, audit *entryKeyAudit, status int) error {
+func (s *Service) recordEntryAccessKeyAuditWith(ctx context.Context, w tenantstore.Writer, audit *hubscope.EntryKeyAudit, status int) error {
 	if audit == nil {
 		return nil
 	}
-	if audit.readOnly() && status < http.StatusBadRequest {
+	if audit.ReadOnly() && status < http.StatusBadRequest {
 		return nil
 	}
-	claims := audit.claims
+	claims := audit.Claims
 	now := s.config.now()
-	if audit.rowID != 0 {
-		return w.UpdateAccessKeyAudit(ctx, audit.rowID, claims.Key.ID, audit.operation, tracker.ProjectID(audit.project), audit.resource, status)
+	if audit.RowID != 0 {
+		return w.UpdateAccessKeyAudit(ctx, audit.RowID, claims.Key.ID, audit.Operation, tracker.ProjectID(audit.Project), audit.Resource, status)
 	}
 	var err error
-	audit.rowID, err = w.RecordAccessAudit(ctx, accessstore.Audit{OrganizationID: s.accessOrganization(), SessionID: claims.Key.ID, ActualActor: claims.Subject, EffectiveUser: claims.Subject, Event: "key_call", Route: audit.operation, ProjectID: tracker.ProjectID(audit.project), Status: status, StartedAt: claims.IssuedAt, ExpiresAt: claims.ExpiresAt, RecordedAt: now, RecordedAtNS: now.UnixNano(), KeyID: claims.Key.ID, KeyKind: claims.Key.Kind, KeyOwner: claims.Subject, Resource: audit.resource})
+	audit.RowID, err = w.RecordAccessAudit(ctx, accessstore.Audit{OrganizationID: s.accessOrganization(), SessionID: claims.Key.ID, ActualActor: claims.Subject, EffectiveUser: claims.Subject, Event: "key_call", Route: audit.Operation, ProjectID: tracker.ProjectID(audit.Project), Status: status, StartedAt: claims.IssuedAt, ExpiresAt: claims.ExpiresAt, RecordedAt: now, RecordedAtNS: now.UnixNano(), KeyID: claims.Key.ID, KeyKind: claims.Key.Kind, KeyOwner: claims.Subject, Resource: audit.Resource})
 	return err
 }

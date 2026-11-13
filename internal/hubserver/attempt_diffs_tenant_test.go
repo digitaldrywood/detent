@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -234,7 +235,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 			t.Fatal("stored diff lost patch truncation or counts")
 		}
 		reader := &Service{config: Config{TenantRepository: repository, RunDetails: service.runDetailStore()}}
-		direct, err := reader.readAttemptDiff(t.Context(), nativeScope{organization: organization, project: project}, string(fixture.item), fixture.attempt.ID, tracker.DiffSourceAttempt, 1)
+		direct, err := reader.readAttemptDiff(t.Context(), hubscope.NativeScope{Organization: organization, Project: project}, string(fixture.item), fixture.attempt.ID, tracker.DiffSourceAttempt, 1)
 		if err != nil || direct.ID != receipt.DiffID || len(direct.Files) != 3 || direct.Files[0].Patch != "+example" {
 			t.Fatalf("diff without legacy database=%+v error=%v", direct, err)
 		}
@@ -398,7 +399,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, scopeErr := service.readAttemptDiff(t.Context(), nativeScope{organization: organization, project: "project_other"}, "", first.attempt.ID, tracker.DiffSourceAttempt, 1)
+	_, scopeErr := service.readAttemptDiff(t.Context(), hubscope.NativeScope{Organization: organization, Project: "project_other"}, "", first.attempt.ID, tracker.DiffSourceAttempt, 1)
 	if !errors.Is(scopeErr, corestore.ErrNotFound) {
 		t.Fatalf("foreign project diff read error=%v", scopeErr)
 	}
@@ -507,9 +508,9 @@ func TestAttemptDiffReadsRequireTypedOwner(t *testing.T) {
 			service := &Service{}
 			var err error
 			if operation == "attempt" {
-				_, err = service.readAttemptDiff(t.Context(), nativeScope{}, "item", "attempt", "attempt", 1)
+				_, err = service.readAttemptDiff(t.Context(), hubscope.NativeScope{}, "item", "attempt", "attempt", 1)
 			} else {
-				_, err = service.readWorkItemDiff(t.Context(), nativeScope{}, "item", "attempt")
+				_, err = service.readWorkItemDiff(t.Context(), hubscope.NativeScope{}, "item", "attempt")
 			}
 			var unavailable *hubapi.NativeError
 			if !errors.As(err, &unavailable) || unavailable.Status != http.StatusServiceUnavailable {

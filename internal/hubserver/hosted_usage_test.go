@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -101,9 +102,9 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 		var facts []reportstore.UsageFact
 		scope := analyticsTestScope(t, f)
 		window := usageWindow{From: f.service.config.now().Add(-time.Hour), To: f.service.config.now().Add(time.Hour)}
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			var err error
-			facts, err = reader.(reportstore.UsageReader).ReadReportUsage(t.Context(), reportstore.OverviewQuery{Projects: []tracker.ProjectID{scope.project}, From: window.From, Split: window.From, To: window.To, Limit: maxAnalyticsPopulation})
+			facts, err = reader.(reportstore.UsageReader).ReadReportUsage(t.Context(), reportstore.OverviewQuery{Projects: []tracker.ProjectID{scope.Project}, From: window.From, Split: window.From, To: window.To, Limit: maxAnalyticsPopulation})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -223,7 +224,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 				legacyRun := start.Data
 				legacyRun.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "legacy-model", Input: 1010 * weight, CostEstimate: 1.01 * float64(weight), Currency: "USD"}}
 				scope := analyticsTestScope(t, fixture)
-				legacyValue := tracker.CollaborationEvent{ID: "legacy-zero-usage", OrganizationID: organization, ProjectID: fixture.project.ID, AggregateType: "issue", AggregateID: claimed.issue.WorkItemID, Type: "run.checkpointed", SchemaVersion: 1, RecordedAt: base.Add(-time.Hour), Actor: scope.actor(), Data: tracker.CollaborationData{Run: &legacyRun}}
+				legacyValue := tracker.CollaborationEvent{ID: "legacy-zero-usage", OrganizationID: organization, ProjectID: fixture.project.ID, AggregateType: "issue", AggregateID: claimed.issue.WorkItemID, Type: "run.checkpointed", SchemaVersion: 1, RecordedAt: base.Add(-time.Hour), Actor: scope.Actor(), Data: tracker.CollaborationData{Run: &legacyRun}}
 				raw, err := json.Marshal(legacyValue)
 				if err != nil {
 					t.Fatal(err)
@@ -460,7 +461,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 						case "non-run event":
 							data := checkpoint.Data
 							data.Usage, data.Handoff = nil, nil
-							value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: organization, ProjectID: fixture.project.ID, AggregateType: "issue", AggregateID: claimed.issue.WorkItemID, Type: "attempt.noted", SchemaVersion: 1, Actor: analyticsTestScope(t, fixture).actor(), RecordedAt: clock.Now(), Data: tracker.CollaborationData{Run: &data}}
+							value := tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: organization, ProjectID: fixture.project.ID, AggregateType: "issue", AggregateID: claimed.issue.WorkItemID, Type: "attempt.noted", SchemaVersion: 1, Actor: analyticsTestScope(t, fixture).Actor(), RecordedAt: clock.Now(), Data: tracker.CollaborationData{Run: &data}}
 							raw, err := json.Marshal(value)
 							if err != nil {
 								t.Fatal(err)
@@ -691,7 +692,7 @@ func TestHostedUsageReportAccess(t *testing.T) {
 		if err := admin.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE organization_id=$1 AND project_id=$2 ORDER BY id LIMIT 1", "org_browser_preview", f.project).Scan(&item); err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+		scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}
 		for _, outcome := range []string{"ready", "skipped"} {
 			appendAnalyticsTestEvent(t, f.service, scope, item, "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: outcome, Reason: "host_capacity", At: now}}, now)
 		}

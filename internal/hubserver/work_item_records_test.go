@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -39,7 +40,7 @@ const workItemRecordBody = "## Acceptance criteria\nThe issue is served.\n## Mus
 
 func TestRunnerUnsupportedMutationsAreInvalid(t *testing.T) {
 	service := &Service{config: Config{AccessRepository: struct{ tenantstore.Repository }{}}}
-	scope := nativeScope{credential: hubapi.APICredential{Scope: hubapi.APIScopeWorker}}
+	scope := hubscope.NativeScope{Credential: hubapi.APICredential{Scope: hubapi.APIScopeWorker}}
 	for _, test := range []struct {
 		name  string
 		input any
@@ -268,7 +269,7 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 					foreign := projectBase + "/missing-project/work-items/" + string(issue.WorkItemID)
 					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, foreign, testHubAdminToken, nil), http.StatusNotFound)
 					if repository != nil {
-						scope := nativeScope{organization: org.ID, project: project.ID, sourceActor: &tracker.Actor{Kind: "human", PrincipalID: "different-principal"}, credential: hubapi.APICredential{HostedRole: "reporter"}}
+						scope := hubscope.NativeScope{Organization: org.ID, Project: project.ID, SourceActor: &tracker.Actor{Kind: "human", PrincipalID: "different-principal"}, Credential: hubapi.APICredential{HostedRole: "reporter"}}
 						if _, err := service.readWorkItem(t.Context(), scope, string(issue.WorkItemID)); !hubapi.IsNativeNotFound(err) {
 							t.Fatalf("reporter read error=%v", err)
 						}
@@ -561,7 +562,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	if refreshedSource.DependencyReady || !slices.Contains(refreshedSource.OmittedFields, "dependency_ready") {
 		t.Fatalf("basic item read did not omit readiness: %+v", refreshedSource)
 	}
-	refreshedSource, err = service.readWorkItemSourcePage(t.Context(), nativeScope{organization: firstOrganization.ID, project: firstProject.ID, credential: credential}, string(source.WorkItemID))
+	refreshedSource, err = service.readWorkItemSourcePage(t.Context(), hubscope.NativeScope{Organization: firstOrganization.ID, Project: firstProject.ID, Credential: credential}, string(source.WorkItemID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +576,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 	}
 	related := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "add-related"}, ExpectedRevision: 3, RelatedWorkItemID: target.WorkItemID, RelationshipType: "related", Operation: "add"}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, related), http.StatusOK)
-	scope := nativeScope{organization: firstOrganization.ID, project: firstProject.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: firstOrganization.ID, Project: firstProject.ID, Credential: credential}
 	firstPage, err := service.readWorkItemRelationshipPage(t.Context(), scope, operatortool.WorkReadRequest{Reference: string(source.WorkItemID), Limit: 1}, linked)
 	if err != nil || firstPage.NextCursor == "" || !slices.Equal(firstPage.Dependencies, []tracker.NativeWorkItemID{target.WorkItemID}) {
 		t.Fatalf("first relationship page=%+v error=%v", firstPage, err)
@@ -682,8 +683,8 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	reporterScope := scope
-	reporterScope.credential.HostedRole = "reporter"
-	reporterScope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "example-reporter"}
+	reporterScope.Credential.HostedRole = "reporter"
+	reporterScope.SourceActor = &tracker.Actor{Kind: "human", PrincipalID: "example-reporter"}
 	reporterRead := sourceOnlyRead
 	if err := service.hydrateWorkItemRelationshipFacts(t.Context(), reporterScope, &reporterRead); err != nil {
 		t.Fatal(err)
@@ -749,7 +750,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			legacyScope := nativeScope{organization: organization.ID, project: f.project.ID, credential: credential}
+			legacyScope := hubscope.NativeScope{Organization: organization.ID, Project: f.project.ID, Credential: credential}
 			if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 				return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization.ID, TokenID: credential.ID, ProjectID: other.project.ID})
 			}); err != nil {
@@ -863,7 +864,7 @@ func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization.ID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: plan.issue.WorkItemID, Type: plan.eventType, SchemaVersion: 1, Actor: legacyScope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+					eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: organization.ID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: plan.issue.WorkItemID, Type: plan.eventType, SchemaVersion: 1, Actor: legacyScope.Actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1141,16 +1142,16 @@ func TestWorkItemRecordReplayRechecksAccessInTenantWrite(t *testing.T) {
 	})
 	repository := f.service.config.TenantRepository
 	member := f.user(t, "writer", "member", "writer@example.test", "", "")
-	scope := nativeScope{organization: tracker.OrganizationID("org_security"), project: f.project}
-	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID("org_security"), Project: f.project}
+	if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		member, err := w.AccessMember(t.Context(), member.identity.Subject)
 		if err != nil {
 			return err
 		}
-		if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: scope.organization, UserID: member.UserID, ProjectID: scope.project, CanWrite: true}); err != nil {
+		if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: scope.Organization, UserID: member.UserID, ProjectID: scope.Project, CanWrite: true}); err != nil {
 			return err
 		}
-		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: scope.organization, TokenID: member.PrincipalID, ProjectID: scope.project})
+		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: scope.Organization, TokenID: member.PrincipalID, ProjectID: scope.Project})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1169,8 +1170,8 @@ func TestWorkItemRecordReplayRechecksAccessInTenantWrite(t *testing.T) {
 		t.Fatalf("revoke member before tenant write: %v", revokeErr)
 	}
 	requireNativeStatus(t, response, http.StatusForbidden)
-	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		items, err := r.WorkItems(t.Context(), scope.project, 0, 10)
+	if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		items, err := r.WorkItems(t.Context(), scope.Project, 0, 10)
 		if err != nil {
 			return err
 		}
@@ -1184,15 +1185,15 @@ func TestWorkItemRecordReplayRechecksAccessInTenantWrite(t *testing.T) {
 }
 
 func TestWorkItemProvenanceDedupRespectsReporterVisibility(t *testing.T) {
-	scope := nativeScope{organization: tracker.OrganizationID("org_security"), project: tracker.ProjectID("prj_security")}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID("org_security"), Project: tracker.ProjectID("prj_security")}
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
 		cfg.RunDetails = &memoryRunDetails{}
 	})
 	repository := f.service.config.TenantRepository
 	states := append(nativeFixtureStates(), tracker.NativeState{Name: "Triage", Transitions: []string{"Todo"}})
-	project := projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: scope.project, Name: "Example project", Slug: "example-project", Profile: "native", RequireDependencies: true}, States: states}
-	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		created, err := w.ProjectRecord(t.Context(), scope.project)
+	project := projectstore.Record{Core: corestore.Project{OrganizationID: scope.Organization, ID: scope.Project, Name: "Example project", Slug: "example-project", Profile: "native", RequireDependencies: true}, States: states}
+	if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		created, err := w.ProjectRecord(t.Context(), scope.Project)
 		if err != nil {
 			return err
 		}
@@ -1206,15 +1207,15 @@ func TestWorkItemProvenanceDedupRespectsReporterVisibility(t *testing.T) {
 	owner := f.user(t, "owner", "reporter", "owner@example.test", "", "")
 	other := f.user(t, "other", "reporter", "other@example.test", "", "")
 	for _, reporter := range []hostedSecurityUser{owner, other} {
-		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			member, err := w.AccessMember(t.Context(), reporter.identity.Subject)
 			if err != nil {
 				return err
 			}
-			if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: scope.organization, UserID: member.UserID, ProjectID: scope.project, CanWrite: true}); err != nil {
+			if err := w.SetAccessProjectGrant(t.Context(), accessstore.ProjectGrant{OrganizationID: scope.Organization, UserID: member.UserID, ProjectID: scope.Project, CanWrite: true}); err != nil {
 				return err
 			}
-			return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: scope.organization, TokenID: member.PrincipalID, ProjectID: scope.project})
+			return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: scope.Organization, TokenID: member.PrincipalID, ProjectID: scope.Project})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -1340,7 +1341,7 @@ func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 	if edited.State != "Blocked" || edited.IssueContract == nil || edited.IssueContract.ReturnState != "Todo" || edited.IssueContract.HumanAction != "" {
 		t.Fatalf("body edit did not clear recovery action while preserving return state: %+v", edited.IssueContract)
 	}
-	row, storedVersion, err := service.readWorkItemRecord(t.Context(), nativeScope{organization: organization.ID, project: issue.ProjectID}, string(issue.WorkItemID))
+	row, storedVersion, err := service.readWorkItemRecord(t.Context(), hubscope.NativeScope{Organization: organization.ID, Project: issue.ProjectID}, string(issue.WorkItemID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1390,7 +1391,7 @@ func TestWorkItemRecordCommentEditConflictAfterConcurrentWrite(t *testing.T) {
 			}
 			missingParentReads := 0
 			service.config.RunDetails = missingDetailReferenceStore{DetailStore: originalDetails, key: itemVersion.PayloadObjectKey, reads: &missingParentReads}
-			commentScope := nativeScope{organization: organization.ID, project: project.ID}
+			commentScope := hubscope.NativeScope{Organization: organization.ID, Project: project.ID}
 			if _, err := service.readWorkItem(t.Context(), commentScope, string(issue.WorkItemID)); !errors.Is(err, artifact.ErrMissing) {
 				t.Fatalf("parent read error = %v, want missing archive", err)
 			}
@@ -1405,8 +1406,8 @@ func TestWorkItemRecordCommentEditConflictAfterConcurrentWrite(t *testing.T) {
 				t.Fatalf("comment list read parent archive %d times, want zero", missingParentReads)
 			}
 			unauthorizedScope := commentScope
-			unauthorizedScope.credential.HostedRole = "reporter"
-			unauthorizedScope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "example-other-reporter"}
+			unauthorizedScope.Credential.HostedRole = "reporter"
+			unauthorizedScope.SourceActor = &tracker.Actor{Kind: "human", PrincipalID: "example-other-reporter"}
 			_, unauthorizedErr := service.readCommentRecords(t.Context(), unauthorizedScope, string(issue.WorkItemID), url.Values{})
 			var unauthorizedResponse *hubapi.NativeError
 			if !errors.As(unauthorizedErr, &unauthorizedResponse) || unauthorizedResponse.Status != http.StatusNotFound {
@@ -1488,10 +1489,10 @@ func TestWorkItemRecordMutationRequiresHostedFeature(t *testing.T) {
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: tracker.OrganizationID("org_security"), project: f.project}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID("org_security"), Project: f.project}
 
 	free := normalizeHostedPlan(pilotHostedPlans().Plans[0])
-	freePG := billingstore.Plan{OrganizationID: scope.organization, PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, MonthlyUSDCents: free.MonthlyUSDCents, RuntimeID: free.ID, Allowances: free.Allowances, Features: free.Features}
+	freePG := billingstore.Plan{OrganizationID: scope.Organization, PlanReference: billingstore.PlanReference{ID: free.ID, Version: free.Version}, Name: free.Name, MonthlyUSDCents: free.MonthlyUSDCents, RuntimeID: free.ID, Allowances: free.Allowances, Features: free.Features}
 	withoutCollaboration := freePG
 	withoutCollaboration.PlanReference = billingstore.PlanReference{ID: "test_free_without_collaboration", Version: 1}
 	withoutCollaboration.Features = slices.DeleteFunc(slices.Clone(freePG.Features), func(feature string) bool { return feature == "collaboration" })
@@ -1500,8 +1501,8 @@ func TestWorkItemRecordMutationRequiresHostedFeature(t *testing.T) {
 	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "issue"}, Title: "Example issue", Body: workItemRecordBody}
 	response := f.request(t, owner, http.MethodPost, path, request)
 	requireNativeStatus(t, response, http.StatusTooManyRequests)
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		items, err := r.WorkItems(t.Context(), scope.project, 0, 10)
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		items, err := r.WorkItems(t.Context(), scope.Project, 0, 10)
 		if err != nil {
 			return err
 		}
@@ -1596,7 +1597,7 @@ func TestWorkItemRecordRollback(t *testing.T) {
 			}
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "rollback"}, Title: "Example issue", Body: workItemRecordBody}
 			service.config.AccessRepository = nil
-			_, err = service.executeWorkItemRecordMutation(t.Context(), nativeScope{organization: org.ID, project: project.ID, credential: credential}, hubapi.NativeCommandOptions{}, request.Mutation, request, "")
+			_, err = service.executeWorkItemRecordMutation(t.Context(), hubscope.NativeScope{Organization: org.ID, Project: project.ID, Credential: credential}, hubapi.NativeCommandOptions{}, request.Mutation, request, "")
 			if err == nil {
 				t.Fatal("PostgreSQL mutation accepted missing access authority")
 			}

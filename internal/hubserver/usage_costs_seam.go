@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -72,7 +73,7 @@ func (s *Service) costService() *usagecosts.Service {
 	}
 	return usagecosts.New(deps)
 }
-func (s *Service) prepareRunnerCostRecords(ctx context.Context, scope nativeScope, request tracker.NativeRunEvent, facts runnerUsageFacts, now time.Time, historical ...billingstore.CostObservation) ([]billingstore.CostObservation, error) {
+func (s *Service) prepareRunnerCostRecords(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeRunEvent, facts runnerUsageFacts, now time.Time, historical ...billingstore.CostObservation) ([]billingstore.CostObservation, error) {
 	v, e := s.costService().PrepareRunnerRecords(ctx, s.featureScope(scope), request, facts, now, historical...)
 	return v, hubapi.FromFeatureError(e)
 }
@@ -96,21 +97,23 @@ func (s *Service) registerCostUsageRoutes(e *echo.Echo) {
 		return s.requireNativeScope(allowed...)
 	}, InstanceAdmin: s.requireInstanceAdmin(), HostedOrganization: hosted, AccessRead: s.accessRead, Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 		Scope: func(c echo.Context, admin bool) hubapi.Scope {
-			scope := nativeRequestScope(c)
+			scope := hubscope.NativeRequestScope(c)
 			if admin {
-				scope.requireHostedAdmin = true
+				scope.RequireHostedAdmin = true
 				c.Set("native_scope", scope)
 			}
 			return s.featureScope(scope)
 		},
-		CanManage: func(c echo.Context) bool { return canManageProjectSecrets(nativeRequestScope(c).credential) },
+		CanManage: func(c echo.Context) bool {
+			return hubscope.CanManageProjectSecrets(hubscope.NativeRequestScope(c).Credential)
+		},
 		RefuseImport: func(c echo.Context) error {
 			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Importing infrastructure usage requires owner or admin access", hubapi.APIErrorResponse{Code: "forbidden", Message: "Importing infrastructure usage requires owner or admin access"})
 		}})
 }
-func (s *Service) importSpriteUsageCommand(ctx context.Context, scope nativeScope, request spriteUsageRequest) ([]byte, error) {
-	manage := canManageProjectSecrets(scope.credential)
-	scope.requireHostedAdmin = true
+func (s *Service) importSpriteUsageCommand(ctx context.Context, scope hubscope.NativeScope, request spriteUsageRequest) ([]byte, error) {
+	manage := hubscope.CanManageProjectSecrets(scope.Credential)
+	scope.RequireHostedAdmin = true
 	raw, err := s.costService().Import(ctx, s.featureScope(scope), request, manage)
 	return raw, hubapi.FromFeatureError(err)
 }

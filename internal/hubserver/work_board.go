@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -64,10 +65,10 @@ func (s *Service) workBoard(c echo.Context) error {
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
-	scopes := make([]nativeScope, len(input.ProjectIDs))
+	scopes := make([]hubscope.NativeScope, len(input.ProjectIDs))
 	for i, id := range input.ProjectIDs {
-		scopes[i] = nativeScope{organization: tracker.OrganizationID(org), project: tracker.ProjectID(id), credential: credential}
-		if err := s.accessRead(ctx, scopes[i].organization, func(r tenantstore.Reader) error {
+		scopes[i] = hubscope.NativeScope{Organization: tracker.OrganizationID(org), Project: tracker.ProjectID(id), Credential: credential}
+		if err := s.accessRead(ctx, scopes[i].Organization, func(r tenantstore.Reader) error {
 			return s.authorizeAccessScope(ctx, r, scopes[i], false)
 		}); err != nil {
 			return s.nativeAPIError(c, err)
@@ -84,7 +85,7 @@ func (s *Service) workBoard(c echo.Context) error {
 	return c.JSON(http.StatusOK, projects)
 }
 
-func (s *Service) readWorkBoardProject(ctx context.Context, scope nativeScope, state savedWorkState) (workBoardProject, error) {
+func (s *Service) readWorkBoardProject(ctx context.Context, scope hubscope.NativeScope, state savedWorkState) (workBoardProject, error) {
 	record, err := s.readProjectRecord(ctx, scope)
 	if err != nil {
 		return workBoardProject{}, fmt.Errorf("read project: %w", err)

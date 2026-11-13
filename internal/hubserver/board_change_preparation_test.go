@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -170,7 +171,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: org, project: "example", credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
+		scope := hubscope.NativeScope{Organization: org, Project: "example", Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 		for index := range 200 {
 			id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
 			changeID := fmt.Sprintf("change_%03d", index)
@@ -369,7 +370,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			var records []viewstore.BoardRecord
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				records, err = r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: scope.project, Limit: 1})
+				records, err = r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: scope.Project, Limit: 1})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -409,7 +410,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 			}
 		})
 		reporter := scope
-		reporter.credential.HostedRole = "reporter"
+		reporter.Credential.HostedRole = "reporter"
 		reporterPage, err := service.readBoardRecords(t.Context(), reporter, url.Values{"limit": {"200"}, "archived": {"all"}, "include": {"board"}})
 		if err != nil || len(reporterPage.Cards) != 199 {
 			t.Fatalf("reporter cards%d error%v", len(reporterPage.Cards), err)
@@ -434,12 +435,12 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 		}
 
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
-			row, err := w.BoardItem(t.Context(), scope.project, "wi_001")
+			row, err := w.BoardItem(t.Context(), scope.Project, "wi_001")
 			if err != nil {
 				return err
 			}
 			row.Display.ChangePrincipalID = "other_principal"
-			return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: scope.project, WorkItemID: row.WorkItemID, ExpectedRevision: row.SourceRevision, ExpectedEventSequence: row.SourceEventSequence, ExpectedProjectRevision: row.SourceProjectRevision, Current: &row})
+			return w.ReplaceBoardItem(t.Context(), viewstore.BoardUpdate{ProjectID: scope.Project, WorkItemID: row.WorkItemID, ExpectedRevision: row.SourceRevision, ExpectedEventSequence: row.SourceEventSequence, ExpectedProjectRevision: row.SourceProjectRevision, Current: &row})
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -587,14 +588,14 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		scope := nativeScope{organization: org, project: "example", credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
+		scope := hubscope.NativeScope{Organization: org, Project: "example", Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 		assertExact := func(t *testing.T, page tracker.NativeIssuePage) {
 			details.beforeRead = func(context.Context) error { return errors.New("page request accessed an object") }
 			defer func() { details.beforeRead = nil }()
 			var records []viewstore.BoardRecord
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				records, err = r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: scope.project, Limit: 2})
+				records, err = r.BoardPage(t.Context(), viewstore.BoardSelection{ProjectID: scope.Project, Limit: 2})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -617,7 +618,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 					t.Fatalf("unexpected scoped item %s", actual.Issue.WorkItemID)
 				}
 				issue := actual.Issue
-				if issue.OrganizationID != org || issue.ProjectID != scope.project || issue.Title != expected.Title || issue.Body != "" || !slices.Contains(issue.OmittedFields, "body") || issue.State != expected.State || issue.Actor.Kind != expected.Actor.Kind || issue.Actor.PrincipalID != expected.Actor.PrincipalID || issue.Actor.DisplayName != "Hub test administrator" || !issue.CreatedAt.Equal(expected.CreatedAt) || !issue.UpdatedAt.Equal(expected.UpdatedAt) {
+				if issue.OrganizationID != org || issue.ProjectID != scope.Project || issue.Title != expected.Title || issue.Body != "" || !slices.Contains(issue.OmittedFields, "body") || issue.State != expected.State || issue.Actor.Kind != expected.Actor.Kind || issue.Actor.PrincipalID != expected.Actor.PrincipalID || issue.Actor.DisplayName != "Hub test administrator" || !issue.CreatedAt.Equal(expected.CreatedAt) || !issue.UpdatedAt.Equal(expected.UpdatedAt) {
 					t.Errorf("projected issue identity or payload changed: %+v", issue)
 				}
 				if !reflect.DeepEqual(issue.Provenance, expected.Provenance) || !reflect.DeepEqual(issue.IssueContract, expected.IssueContract) || !reflect.DeepEqual(issue.ReportContext, expected.ReportContext) || !reflect.DeepEqual(issue.ReleaseDelivery, expected.ReleaseDelivery) {
@@ -701,7 +702,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 				t.Fatalf("missing review policy fixture: hasReview=%v error=%v", rows.hasReview, err)
 			}
 			authority := tenantChangeVersionAuthority{repository: repository, content: content}
-			_, err := authority.Prepare(t.Context(), scope, tracker.ChangeRequest{OrganizationID: org, ProjectID: scope.project}, tracker.PublishChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: checkedDescriptor.ID}}, now)
+			_, err := authority.Prepare(t.Context(), scope, tracker.ChangeRequest{OrganizationID: org, ProjectID: scope.Project}, tracker.PublishChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: checkedDescriptor.ID}}, now)
 			var refusal *hubapi.NativeError
 			if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
 				t.Fatalf("publication without required checks accepted: %v", err)
@@ -715,11 +716,11 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			}
 			for index := range 2 {
 				id := tracker.NativeWorkItemID(fmt.Sprintf("wi_%03d", index))
-				if err := service.refreshBoardRecord(t.Context(), org, viewstore.BoardCandidate{ProjectID: scope.project, WorkItemID: id}, now); err != nil {
+				if err := service.refreshBoardRecord(t.Context(), org, viewstore.BoardCandidate{ProjectID: scope.Project, WorkItemID: id}, now); err != nil {
 					t.Fatalf("missing review policy prevents backfill: %v", err)
 				}
 				if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-					row, err := r.BoardItem(t.Context(), scope.project, id)
+					row, err := r.BoardItem(t.Context(), scope.Project, id)
 					if err == nil && (row.OrganizationID != org || !row.Display.Ready || row.PageIssue == nil || row.ListIssue == nil) {
 						t.Errorf("incomplete scoped card/page/list projection: %+v", row)
 					}
@@ -744,7 +745,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 				counts, err := r.(interface {
 					BoardSummaryModel(context.Context, viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error)
-				}).BoardSummaryModel(t.Context(), viewstore.BoardSelection{ProjectID: scope.project})
+				}).BoardSummaryModel(t.Context(), viewstore.BoardSelection{ProjectID: scope.Project})
 				if err == nil {
 					var total int64
 					for _, row := range counts {
@@ -805,7 +806,7 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 			t.Fatalf("Todo summary list items=%d total=%d error=%v", len(listed.Items), listed.Total, err)
 		}
 		for _, issue := range listed.Items {
-			if issue.OrganizationID != org || issue.ProjectID != scope.project || issue.State != "Todo" {
+			if issue.OrganizationID != org || issue.ProjectID != scope.Project || issue.State != "Todo" {
 				t.Fatalf("Todo summary list escaped scope: %+v", issue.NativeReference)
 			}
 		}
@@ -854,9 +855,9 @@ func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
 		}
 		if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
 			foreign := scope
-			foreign.organization = "org_first"
-			if org == foreign.organization {
-				foreign.organization = "org_second"
+			foreign.Organization = "org_first"
+			if org == foreign.Organization {
+				foreign.Organization = "org_second"
 			}
 			_, err := readChangeSummaryPolicyRows(t.Context(), r, foreign)
 			return err

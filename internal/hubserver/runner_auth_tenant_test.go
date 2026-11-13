@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -136,7 +137,7 @@ func TestRunnerCapabilitiesOrganizationHintScopesTenantAuthentication(t *testing
 		if err := w.RevokeAccessMember(t.Context(), "user_example", service.config.now()); err != nil {
 			return err
 		}
-		scope := nativeScope{organization: first.ID, credential: personal}
+		scope := hubscope.NativeScope{Organization: first.ID, Credential: personal}
 		if err := service.authorizeAccessScope(t.Context(), w, scope, true); !errors.Is(err, accessstore.ErrDenied) {
 			t.Fatalf("revoked membership authorized inside writer: %v", err)
 		}
@@ -578,7 +579,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	recommendationScope := nativeScope{organization: organization.ID, credential: hubapi.APICredential{ID: "admin", Hash: adminHash, Scope: hubapi.APIScopeAdmin}}
+	recommendationScope := hubscope.NativeScope{Organization: organization.ID, Credential: hubapi.APICredential{ID: "admin", Hash: adminHash, Scope: hubapi.APIScopeAdmin}}
 	recommendationRunner, err := service.readRunnerRouting(t.Context(), recommendationScope, "runner_0000000000000000000000000000e001")
 	if err != nil {
 		t.Fatal(err)
@@ -1023,7 +1024,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("authenticate heartbeat cursor credential: status=%d err=%v", status, err)
 	}
-	_, legacyCursor, cursorKey, err := service.readNativePage(t.Context(), nativeScope{organization: organization.ID, project: project.ID, credential: heartbeatCredential}, path+"/changes", url.Values{"cursor": {""}})
+	_, legacyCursor, cursorKey, err := service.readNativePage(t.Context(), hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: heartbeatCredential}, path+"/changes", url.Values{"cursor": {""}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1110,7 +1111,7 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	connector, repositoryID, enabled, err := service.projectRepositoryBinding(t.Context(), nil, nativeScope{organization: organization.ID, project: project.ID})
+	connector, repositoryID, enabled, err := service.projectRepositoryBinding(t.Context(), nil, hubscope.NativeScope{Organization: organization.ID, Project: project.ID})
 	if err != nil || connector == nil || connector.Repository != "owner/repository" || repositoryID != 0 || enabled {
 		t.Fatalf("postgres checkout binding=%+v repository_id=%d enabled=%t error=%v", connector, repositoryID, enabled, err)
 	}

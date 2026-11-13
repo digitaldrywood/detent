@@ -12,13 +12,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readAnalyticsLandingPopulationTenant(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, name string, reopened []tracker.NativeWorkItemID, escaped []string) (analyticsLandingPopulation, error) {
+func (s *Service) readAnalyticsLandingPopulationTenant(ctx context.Context, scope hubscope.NativeScope, w operatortool.AnalyticsWindow, name string, reopened []tracker.NativeWorkItemID, escaped []string) (analyticsLandingPopulation, error) {
 	out := analyticsLandingPopulation{Items: []nativeAnalyticsLanding{}}
 	after, cursor, key, err := s.analyticsFactSeek(ctx, scope, w, name)
 	if err != nil {
@@ -30,7 +31,7 @@ func (s *Service) readAnalyticsLandingPopulationTenant(ctx context.Context, scop
 		return out, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var page eventstore.AnalyticsLandingPage
-	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
 		if err != nil {
 			return err
@@ -39,7 +40,7 @@ func (s *Service) readAnalyticsLandingPopulationTenant(ctx context.Context, scop
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		page, err = owner.ReadAnalyticsLandingPage(ctx, eventstore.AnalyticsLandingQuery{ProjectID: scope.project, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, AllVersions: name == "quality_landings", After: after.Landing, ReopenedItems: reopened, EscapedVersions: escaped})
+		page, err = owner.ReadAnalyticsLandingPage(ctx, eventstore.AnalyticsLandingQuery{ProjectID: scope.Project, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, AllVersions: name == "quality_landings", After: after.Landing, ReopenedItems: reopened, EscapedVersions: escaped})
 		return err
 	})
 	if err != nil {
@@ -48,7 +49,7 @@ func (s *Service) readAnalyticsLandingPopulationTenant(ctx context.Context, scop
 	out.Partial, out.HistoryUnknown = page.Partial, page.HistoryUnknown
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	for _, row := range page.Items {
-		if row.OrganizationID != scope.organization || row.ProjectID != scope.project {
+		if row.OrganizationID != scope.Organization || row.ProjectID != scope.Project {
 			return out, artifact.ErrIntegrity
 		}
 		if !analyticsCohortAllows(ctx, row.WorkItemID) {
@@ -80,7 +81,7 @@ func (s *Service) readAnalyticsLandingPopulationTenant(ctx context.Context, scop
 	return out, nil
 }
 
-func (s *Service) readAnalyticsQualityInputsTenant(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow) (analyticsQualityInputs, error) {
+func (s *Service) readAnalyticsQualityInputsTenant(ctx context.Context, scope hubscope.NativeScope, w operatortool.AnalyticsWindow) (analyticsQualityInputs, error) {
 	out := analyticsQualityInputs{Landings: []nativeAnalyticsLanding{}, Events: []qualityHistoryEvent{}, Discussions: []qualityDiscussion{}}
 	ctx, _, err := analyticsPagingContext(ctx, "")
 	if err != nil {
@@ -102,7 +103,7 @@ func (s *Service) readAnalyticsQualityInputsTenant(ctx context.Context, scope na
 	defer clear(evidenceKey)
 	var workflow eventstore.AnalyticsWorkflowPage
 	var evidence eventstore.AnalyticsEvidencePage
-	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
 		if err != nil {
 			return err
@@ -115,11 +116,11 @@ func (s *Service) readAnalyticsQualityInputsTenant(ctx context.Context, scope na
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		workflow, err = workflowOwner.ReadAnalyticsWorkflowPage(ctx, eventstore.AnalyticsWorkflowQuery{ProjectID: scope.project, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: after.Workflow})
+		workflow, err = workflowOwner.ReadAnalyticsWorkflowPage(ctx, eventstore.AnalyticsWorkflowQuery{ProjectID: scope.Project, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: after.Workflow})
 		if err != nil {
 			return err
 		}
-		evidence, err = evidenceOwner.ReadAnalyticsEvidencePage(ctx, eventstore.AnalyticsEvidenceQuery{ProjectID: scope.project, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: evidenceAfter.Evidence})
+		evidence, err = evidenceOwner.ReadAnalyticsEvidencePage(ctx, eventstore.AnalyticsEvidenceQuery{ProjectID: scope.Project, Principal: principal, From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: evidenceAfter.Evidence})
 		return err
 	})
 	if err != nil {
@@ -132,7 +133,7 @@ func (s *Service) readAnalyticsQualityInputsTenant(ctx context.Context, scope na
 	escaped := []string{}
 	seenEscaped := map[string]bool{}
 	for _, row := range workflow.Items {
-		if row.Event.OrganizationID != scope.organization || row.Event.ProjectID != scope.project {
+		if row.Event.OrganizationID != scope.Organization || row.Event.ProjectID != scope.Project {
 			return out, artifact.ErrIntegrity
 		}
 		if !analyticsCohortAllows(ctx, row.Event.WorkItemID) {
@@ -149,7 +150,7 @@ func (s *Service) readAnalyticsQualityInputsTenant(ctx context.Context, scope na
 		}
 	}
 	for _, row := range evidence.Items {
-		if row.Evidence.OrganizationID != scope.organization {
+		if row.Evidence.OrganizationID != scope.Organization {
 			return out, artifact.ErrIntegrity
 		}
 		if !analyticsCohortAllows(ctx, row.WorkItemID) {
@@ -230,7 +231,7 @@ func (s *Service) readAnalyticsQualityInputsTenant(ctx context.Context, scope na
 	return out, nil
 }
 
-func (s *Service) readAnalyticsWorkedPopulationTenant(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow) ([]qualityHistoryEvent, bool, []string, error) {
+func (s *Service) readAnalyticsWorkedPopulationTenant(ctx context.Context, scope hubscope.NativeScope, w operatortool.AnalyticsWindow) ([]qualityHistoryEvent, bool, []string, error) {
 	out := []qualityHistoryEvent{}
 	unavailable := []string{}
 	after, cursor, key, err := s.analyticsAttemptCursor(ctx, scope, w, "", "quality_worked")
@@ -244,7 +245,7 @@ func (s *Service) readAnalyticsWorkedPopulationTenant(ctx context.Context, scope
 	}
 	var page reportstore.AnalyticsAttemptPage
 	unknownEvents := map[string]eventstore.Event{}
-	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
 		if err != nil {
 			return err
@@ -253,7 +254,7 @@ func (s *Service) readAnalyticsWorkedPopulationTenant(ctx context.Context, scope
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		page, err = owner.ReadAnalyticsAttemptPage(ctx, reportstore.AnalyticsAttemptQuery{ProjectID: scope.project, Principal: principal, RunnerIDs: analyticsCohortRunners(ctx), From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: after, StartedInWindow: true, OldestFirst: true})
+		page, err = owner.ReadAnalyticsAttemptPage(ctx, reportstore.AnalyticsAttemptQuery{ProjectID: scope.Project, Principal: principal, RunnerIDs: analyticsCohortRunners(ctx), From: w.From, To: w.To, Limit: maxAnalyticsPopulation, After: after, StartedInWindow: true, OldestFirst: true})
 		if err != nil {
 			return err
 		}
@@ -270,12 +271,12 @@ func (s *Service) readAnalyticsWorkedPopulationTenant(ctx context.Context, scope
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		events, err := batch.LatestRunEvents(ctx, scope.project, unknown)
+		events, err := batch.LatestRunEvents(ctx, scope.Project, unknown)
 		if err != nil {
 			return err
 		}
 		for _, event := range events {
-			if event.OrganizationID != scope.organization || event.ProjectID != scope.project || event.AttemptID == "" {
+			if event.OrganizationID != scope.Organization || event.ProjectID != scope.Project || event.AttemptID == "" {
 				return artifact.ErrIntegrity
 			}
 			if _, duplicate := unknownEvents[event.AttemptID]; duplicate {
@@ -290,7 +291,7 @@ func (s *Service) readAnalyticsWorkedPopulationTenant(ctx context.Context, scope
 	}
 	partial := page.Partial
 	for _, row := range page.Items {
-		if row.ProjectID != scope.project {
+		if row.ProjectID != scope.Project {
 			return out, false, nil, artifact.ErrIntegrity
 		}
 		if !analyticsCohortAllows(ctx, row.WorkItemID) {
@@ -352,7 +353,7 @@ func (s *Service) readAnalyticsWorkedPopulationTenant(ctx context.Context, scope
 	return out, partial, slices.Compact(unavailable), nil
 }
 
-func (s *Service) readAnalyticsQualityTenant(ctx context.Context, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (analyticsQuality, error) {
+func (s *Service) readAnalyticsQualityTenant(ctx context.Context, scope hubscope.NativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (analyticsQuality, error) {
 	inputs, err := s.readAnalyticsQualityInputsTenant(ctx, scope, w)
 	if err != nil {
 		return analyticsQuality{}, err

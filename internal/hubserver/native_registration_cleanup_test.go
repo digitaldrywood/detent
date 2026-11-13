@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -38,7 +39,7 @@ func TestTenantRunReconnectPreservesWorkerCleanupIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			attempt, err := f.service.readNativeAttemptTenant(t.Context(), nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}, string(lease.WorkItemID), data.AttemptID)
+			attempt, err := f.service.readNativeAttemptTenant(t.Context(), hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: credential}, string(lease.WorkItemID), data.AttemptID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -75,7 +76,7 @@ func TestTenantRunReconnectPreservesWorkerCleanupIdentity(t *testing.T) {
 			replay.PriorEvents = nil
 			older.PriorEvents = []tracker.NativeRunEvent{prefix, replay}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], older), http.StatusOK)
-			afterUpgrade, err := f.service.readNativeAttemptTenant(t.Context(), nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}, string(lease.WorkItemID), data.AttemptID)
+			afterUpgrade, err := f.service.readNativeAttemptTenant(t.Context(), hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: credential}, string(lease.WorkItemID), data.AttemptID)
 			if err != nil {
 				t.Fatal(err)
 			}

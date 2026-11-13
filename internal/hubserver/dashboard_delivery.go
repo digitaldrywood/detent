@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -59,7 +60,7 @@ type dashboardFrame struct {
 type dashboardSubscription struct {
 	request      *http.Request
 	claims       any
-	scope        nativeScope
+	scope        hubscope.NativeScope
 	params       url.Values
 	workspace    string
 	item         string
@@ -121,7 +122,7 @@ type dashboardProjectKey struct {
 }
 
 func (s *dashboardSubscription) projectKey() dashboardProjectKey {
-	return dashboardProjectKey{s.scope.organization, s.scope.project}
+	return dashboardProjectKey{s.scope.Organization, s.scope.Project}
 }
 
 type dashboardProjectState struct {
@@ -195,7 +196,7 @@ func (d *dashboardDelivery) stop() {
 func (d *dashboardDelivery) add(sub *dashboardSubscription) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.closed || d.tenants[sub.scope.organization] >= d.config.tenantLimit {
+	if d.closed || d.tenants[sub.scope.Organization] >= d.config.tenantLimit {
 		return false
 	}
 	sub.frames = make(chan dashboardFrame, d.config.queueSize)
@@ -207,7 +208,7 @@ func (d *dashboardDelivery) add(sub *dashboardSubscription) bool {
 		d.projects[key] = make(map[*dashboardSubscription]struct{})
 	}
 	d.projects[key][sub] = struct{}{}
-	d.tenants[sub.scope.organization]++
+	d.tenants[sub.scope.Organization]++
 	select {
 	case d.wake <- struct{}{}:
 	default:
@@ -227,9 +228,9 @@ func (d *dashboardDelivery) remove(sub *dashboardSubscription) {
 		if len(d.projects[key]) == 0 {
 			delete(d.projects, key)
 		}
-		d.tenants[sub.scope.organization]--
-		if d.tenants[sub.scope.organization] == 0 {
-			delete(d.tenants, sub.scope.organization)
+		d.tenants[sub.scope.Organization]--
+		if d.tenants[sub.scope.Organization] == 0 {
+			delete(d.tenants, sub.scope.Organization)
 		}
 	}
 }
@@ -433,7 +434,7 @@ func (d *dashboardDelivery) deliver(ctx context.Context) {
 	}
 }
 
-func (s *Service) serveDashboardEvents(c echo.Context, scope nativeScope, sequence int64, initial, board bool, workspace, item string) error {
+func (s *Service) serveDashboardEvents(c echo.Context, scope hubscope.NativeScope, sequence int64, initial, board bool, workspace, item string) error {
 	d := s.dashboard
 	if d == nil {
 		return c.NoContent(http.StatusServiceUnavailable)
@@ -502,11 +503,11 @@ func (s *Service) dashboardPage(ctx context.Context, d *dashboardDelivery, sub *
 	if err != nil {
 		return false, err
 	}
-	if credential.HostedRole != sub.scope.credential.HostedRole {
+	if credential.HostedRole != sub.scope.Credential.HostedRole {
 		return false, hubapi.NativeNotFound()
 	}
 	scope := sub.scope
-	scope.credential = credential
+	scope.Credential = credential
 	if s.config.TenantRepository == nil {
 		return false, hubapi.NativeWorkItemStorageUnavailable()
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,7 +28,7 @@ func replaceIssuePageFilterValues(ctx context.Context, q nativeExecer, id int64,
 	return err
 }
 
-func readLegacyPageFilterValues(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope, item, family string) (_ nativePageFact, resultErr error) {
+func readLegacyPageFilterValues(ctx context.Context, q hubapi.NativeQueryer, scope hubscope.NativeScope, item, family string) (_ nativePageFact, resultErr error) {
 	board := family == "native_board_filter_values"
 	f := nativePageFact{name: family, columns: "issue_id,kind,value", known: "SELECT v.issue_id,v.kind,v.value FROM main.native_issue_page_filter_values v JOIN main.issues i ON i.id=v.issue_id WHERE i.page_filters_ready=1"}
 	query := "SELECT id,labels_json,assignees_json FROM main.issues WHERE page_filters_ready IS NULL"
@@ -39,13 +40,13 @@ func readLegacyPageFilterValues(ctx context.Context, q hubapi.NativeQueryer, sco
 		keyColumn = "work_item_id"
 	}
 	var args []any
-	if scope.organization != "" {
+	if scope.Organization != "" {
 		query += " AND organization_id=?"
-		args = append(args, scope.organization)
+		args = append(args, scope.Organization)
 	}
-	if scope.project != "" {
+	if scope.Project != "" {
 		query += " AND project_id=?"
-		args = append(args, scope.project)
+		args = append(args, scope.Project)
 	}
 	if item != "" {
 		query += " AND " + keyColumn + "=?"

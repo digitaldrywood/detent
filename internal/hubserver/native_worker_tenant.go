@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -54,9 +55,9 @@ type nativeLeaseCommandReader struct {
 	monthlyPolicies  []billingstore.MonthlyPolicy
 }
 
-func (s *Service) nativeLeaseReader(r tenantstore.Reader, scope nativeScope) *nativeLeaseCommandReader {
+func (s *Service) nativeLeaseReader(r tenantstore.Reader, scope hubscope.NativeScope) *nativeLeaseCommandReader {
 	_, compact := s.config.NativeRunEvents.(tenantNativeRunEventParticipant)
-	return &nativeLeaseCommandReader{Reader: r, project: scope.project, compact: compact}
+	return &nativeLeaseCommandReader{Reader: r, project: scope.Project, compact: compact}
 }
 
 func (r *nativeLeaseCommandReader) Lease(ctx context.Context, id string) (leasestore.Lease, error) {
@@ -168,7 +169,7 @@ func (r *nativeLeaseCommandReader) ProviderReservation(ctx context.Context, id t
 	return row, err
 }
 
-func (s *Service) nativeLeaseResponseDetails(ctx context.Context, r tenantstore.Reader, scope nativeScope, lease leasestore.Lease) (NativeLeaseResponseDetails, error) {
+func (s *Service) nativeLeaseResponseDetails(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, lease leasestore.Lease) (NativeLeaseResponseDetails, error) {
 	details, err := s.config.NativeRunEvents.NativeLeaseResponse(ctx, r, scope, lease)
 	if err != nil {
 		return NativeLeaseResponseDetails{}, err
@@ -199,14 +200,14 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Lease TTL is invalid"))
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	landing, err := s.prepareNativeLandingRenewal(c.Request().Context(), scope, c.Param("lease"), request.LandingCapacity)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	var lease leasestore.Lease
 	var details NativeLeaseResponseDetails
-	err = s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(c.Request().Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		reader := s.nativeLeaseReader(w, scope)
 		current, err := reader.Lease(c.Request().Context(), c.Param("lease"))
 		if err != nil {
@@ -216,7 +217,7 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 			landing = &nativeLandingRenewal{lease: current}
 		}
 		if landing != nil {
-			if err := w.LockWorkItemProject(c.Request().Context(), scope.project); err != nil {
+			if err := w.LockWorkItemProject(c.Request().Context(), scope.Project); err != nil {
 				return err
 			}
 			reader = s.nativeLeaseReader(w, scope)
@@ -269,13 +270,13 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 	if request.CancelAttempt && request.Reason != "cancelled" || !slices.Contains([]string{"completed", "cancelled", "failed", "work_item_hydration_failed", "work_item_identity_missing", "released"}, request.Reason) {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Release reason is invalid"))
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	leaseID := c.Param("lease")
 	prepared, err := s.prepareNativeLeaseCancellationTenant(c.Request().Context(), scope, leaseID, request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	command := eventstore.RunCommand{Project: scope.project, LeaseID: leaseID, Operation: "release"}
+	command := eventstore.RunCommand{Project: scope.Project, LeaseID: leaseID, Operation: "release"}
 	if prepared.attempt.ID != "" {
 		command.WorkItem, command.AttemptID = prepared.workItem.NativeID, prepared.attempt.ID
 		command.Sequences = []int64{prepared.attempt.Sequence + 1}
@@ -286,18 +287,18 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 		if _, err := reader.RunnerForLease(ctx, leaseID); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
 		lease, err := reader.Lease(ctx, leaseID)
 		if err != nil {
 			return err
 		}
-		item, err := reader.WorkItemByID(ctx, scope.project, lease.IssueID)
+		item, err := reader.WorkItemByID(ctx, scope.Project, lease.IssueID)
 		if err != nil {
 			return err
 		}
-		lockedItem, err := w.LockWorkItem(ctx, scope.project, item.NativeID)
+		lockedItem, err := w.LockWorkItem(ctx, scope.Project, item.NativeID)
 		if err != nil {
 			return err
 		}
@@ -314,7 +315,7 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 			if attempt.ID != prepared.attempt.ID || attempt.LeaseID != prepared.attempt.LeaseID || attempt.FencingToken != prepared.attempt.FencingToken || attempt.Sequence != prepared.attempt.Sequence || attempt.Status != "running" {
 				return leasestore.ErrAttemptConflict
 			}
-			workItem, err := w.WorkItem(ctx, scope.project, prepared.workItem.NativeID)
+			workItem, err := w.WorkItem(ctx, scope.Project, prepared.workItem.NativeID)
 			if err != nil {
 				return err
 			}
@@ -323,7 +324,7 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 			}
 			attemptEvent := leasestore.AttemptEvent{ID: attempt.ID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: attempt.RunID,
 				Sequence: attempt.Sequence + 1, Status: "cancelled", DispatchGeneration: attempt.DispatchGeneration, PayloadObjectKey: prepared.payloadReference.Key, PayloadReference: prepared.payloadReference, WorkerCleanupRequired: new(nativeRunCleanupRequired(prepared.event.Data))}
-			runAuthority := NativeRunEventAuthority{Scope: scope, OrganizationID: scope.organization, ProjectID: scope.project, WorkItem: workItem, Lease: lease, Event: prepared.event}
+			runAuthority := NativeRunEventAuthority{Scope: scope, OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItem: workItem, Lease: lease, Event: prepared.event}
 			if err := s.config.NativeRunEvents.ValidateNativeRunEvent(ctx, w, &runAuthority); err != nil {
 				return err
 			}
@@ -360,11 +361,11 @@ func (s *Service) releaseNativeLeaseTenant(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-func (s *Service) prepareNativeLeaseCancellationTenant(ctx context.Context, scope nativeScope, leaseID string, request tracker.NativeLeaseMutation) (*preparedNativeLeaseCancellation, error) {
+func (s *Service) prepareNativeLeaseCancellationTenant(ctx context.Context, scope hubscope.NativeScope, leaseID string, request tracker.NativeLeaseMutation) (*preparedNativeLeaseCancellation, error) {
 	return s.prepareLeaseCancellationTenant(ctx, scope, leaseID, request, false)
 }
 
-func (s *Service) prepareLeaseCancellationTenant(ctx context.Context, scope nativeScope, leaseID string, request tracker.NativeLeaseMutation, human bool) (*preparedNativeLeaseCancellation, error) {
+func (s *Service) prepareLeaseCancellationTenant(ctx context.Context, scope hubscope.NativeScope, leaseID string, request tracker.NativeLeaseMutation, human bool) (*preparedNativeLeaseCancellation, error) {
 	if s.runDetailStore() == nil {
 		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}
@@ -373,7 +374,7 @@ func (s *Service) prepareLeaseCancellationTenant(ctx context.Context, scope nati
 	var attempt leasestore.Attempt
 	var event eventstore.Event
 	var workItem corestore.WorkItem
-	err := s.readNativeRunCommand(ctx, scope, eventstore.RunCommand{Project: scope.project, LeaseID: leaseID}, func(ctx context.Context, r tenantstore.Reader) error {
+	err := s.readNativeRunCommand(ctx, scope, eventstore.RunCommand{Project: scope.Project, LeaseID: leaseID}, func(ctx context.Context, r tenantstore.Reader) error {
 		r = s.nativeLeaseReader(r, scope)
 		var err error
 		lease, err = r.Lease(ctx, leaseID)
@@ -401,14 +402,14 @@ func (s *Service) prepareLeaseCancellationTenant(ctx context.Context, scope nati
 			attempt = leasestore.Attempt{}
 			return nil
 		}
-		event, err = r.LatestRunEvent(ctx, scope.project, attempt.ID)
+		event, err = r.LatestRunEvent(ctx, scope.Project, attempt.ID)
 		if err != nil {
 			return err
 		}
 		if event.WorkItemID == "" {
 			return corestore.ErrNotFound
 		}
-		workItem, err = r.WorkItem(ctx, scope.project, event.WorkItemID)
+		workItem, err = r.WorkItem(ctx, scope.Project, event.WorkItemID)
 		if err != nil || workItem.ID != lease.IssueID {
 			if err != nil {
 				return err
@@ -425,22 +426,22 @@ func (s *Service) prepareLeaseCancellationTenant(ctx context.Context, scope nati
 	}
 	runnerID := ""
 	if !human {
-		runnerID = scope.credential.Runner.RunnerID
+		runnerID = scope.Credential.Runner.RunnerID
 	}
-	prepared, err := s.prepareLeaseCancellationContent(ctx, scope.organization, scope.project, lease, attempt, workItem, event, request.Reason, runnerID)
+	prepared, err := s.prepareLeaseCancellationContent(ctx, scope.Organization, scope.Project, lease, attempt, workItem, event, request.Reason, runnerID)
 	if errors.Is(err, errLatestRunEventMismatch) {
 		return nil, nativeExecutionConflict("Latest run event does not belong to the lease's running attempt")
 	}
 	return prepared, err
 }
 
-func (s *Service) prepareExpiredNativeLeaseCancellation(ctx context.Context, scope nativeScope, issueID int64, includeReleased bool) (*preparedNativeLeaseCancellation, error) {
+func (s *Service) prepareExpiredNativeLeaseCancellation(ctx context.Context, scope hubscope.NativeScope, issueID int64, includeReleased bool) (*preparedNativeLeaseCancellation, error) {
 	var lease leasestore.Lease
 	var attempt leasestore.Attempt
 	var workItem corestore.WorkItem
 	var event eventstore.Event
 	var policyID string
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		current, err := r.LeaseLossCandidate(ctx, issueID, includeReleased)
 		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -455,11 +456,11 @@ func (s *Service) prepareExpiredNativeLeaseCancellation(ctx context.Context, sco
 		if lease.IssueID != issueID || lease.FencingToken != current.FencingToken {
 			return artifact.ErrIntegrity
 		}
-		workItem, err = r.WorkItemByID(ctx, scope.project, issueID)
+		workItem, err = r.WorkItemByID(ctx, scope.Project, issueID)
 		if err != nil {
 			return err
 		}
-		event, err = r.LatestRunEvent(ctx, scope.project, current.ID)
+		event, err = r.LatestRunEvent(ctx, scope.Project, current.ID)
 		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
 			event, err = eventstore.Event{}, nil
 			bound, policyErr := r.LeasePolicy(ctx, tracker.LeaseID(lease.LeaseID))
@@ -486,9 +487,9 @@ func (s *Service) prepareExpiredNativeLeaseCancellation(ctx context.Context, sco
 	}
 	var prepared *preparedNativeLeaseCancellation
 	if event.AttemptID == "" {
-		prepared, err = s.prepareAttemptCancellationContent(ctx, scope.organization, scope.project, lease, attempt, workItem, policyID, reason)
+		prepared, err = s.prepareAttemptCancellationContent(ctx, scope.Organization, scope.Project, lease, attempt, workItem, policyID, reason)
 	} else {
-		prepared, err = s.prepareLeaseCancellationContent(ctx, scope.organization, scope.project, lease, attempt, workItem, event, reason, "")
+		prepared, err = s.prepareLeaseCancellationContent(ctx, scope.Organization, scope.Project, lease, attempt, workItem, event, reason, "")
 	}
 	if err != nil {
 		return nil, err
@@ -589,13 +590,13 @@ func (s *Service) prepareCancelledRunContent(ctx context.Context, organization t
 	return &preparedNativeLeaseCancellation{attempt: attempt, workItem: workItem, payloadReference: ref, event: prepared, history: history}, nil
 }
 
-func (s *Service) respondNativeLeaseTenant(c echo.Context, scope nativeScope, leaseID string) error {
+func (s *Service) respondNativeLeaseTenant(c echo.Context, scope hubscope.NativeScope, leaseID string) error {
 	if s.config.NativeRunEvents == nil {
 		return s.nativeAPIError(c, hubapi.NativeRunEventStorageUnavailable())
 	}
 	var lease leasestore.Lease
 	var details NativeLeaseResponseDetails
-	err := s.config.TenantRepository.ReadTenant(c.Request().Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(c.Request().Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 
 		reader := s.nativeLeaseReader(r, scope)
 		var err error

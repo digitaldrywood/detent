@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -335,7 +336,7 @@ func TestBoardProjectionDeletedChangeAndRealErrorsPostgres(t *testing.T) {
 						t.Fatalf("size %d statements/exchanges=%v, first fixture=%v (bound 75)", test.size, counts, auditCounts)
 					}
 					t.Logf("size=%d statements=%d exchanges=%d", test.size, counts[0], counts[1])
-					scope := nativeScope{organization: org, project: "example"}
+					scope := hubscope.NativeScope{Organization: org, Project: "example"}
 					if _, _, err := service.prepareValidatorAuditDispositions(t.Context(), scope, changeID, securityaudit.Run{ID: 1}); !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, accessstore.ErrDenied) {
 						t.Fatalf("request with missing credentials was accepted: %v", err)
 					}

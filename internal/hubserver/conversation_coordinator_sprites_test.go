@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -24,15 +25,15 @@ func TestCoordinatorSpritePoolReplay(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
-			scope := nativeScope{organization: f.project.OrganizationID, credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
-			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				credential, err := r.CredentialByHash(t.Context(), scope.credential.Hash)
-				scope.credential.ID = credential.ID
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				credential, err := r.CredentialByHash(t.Context(), scope.Credential.Hash)
+				scope.Credential.ID = credential.ID
 				return err
 			}); err != nil {
 				t.Fatal(err)
 			}
-			ctx := context.WithValue(t.Context(), nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
+			ctx := context.WithValue(t.Context(), hubscope.NativeOperatorScopeKey{}, func(context.Context) (hubscope.NativeScope, error) { return scope, nil })
 			change := coordinatorSpriteChange{Input: coordinatorSpriteArguments{MinRunners: new(0), MaxRunners: new(0), IdleSeconds: test.idle, ShareIdleCapacity: new(true)}}
 			raw, err := json.Marshal(change)
 			if err != nil {

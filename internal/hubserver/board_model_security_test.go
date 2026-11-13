@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -34,7 +35,7 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatalf("credential status=%d: %v", status, err)
 			}
-			scope := nativeScope{organization: org, project: source.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: org, Project: source.project.ID, Credential: credential}
 			now := service.config.now().UTC().Truncate(time.Microsecond)
 			sourceID, sameID, crossID := tracker.NativeWorkItemID("wi_source"), tracker.NativeWorkItemID("wi_same"), tracker.NativeWorkItemID("wi_cross")
 			links := []tracker.NativeDependency{
@@ -88,7 +89,7 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 				t.Fatal(err)
 			}
 			details.beforeRead = func(context.Context) error { return errors.New("serving read accessed an object") }
-			check := func(label string, scope nativeScope, want []tracker.NativeWorkItemID, wantChange bool) {
+			check := func(label string, scope hubscope.NativeScope, want []tracker.NativeWorkItemID, wantChange bool) {
 				t.Helper()
 				for _, include := range []string{"", "board", "work"} {
 					page, err := service.readBoardRecords(t.Context(), scope, url.Values{"include": {include}, "limit": {"10"}})
@@ -158,7 +159,7 @@ func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
 			}
 			check("target revoked", scope, []tracker.NativeWorkItemID{sameID}, true)
 			reporter := scope
-			reporter.credential.HostedRole, reporter.credential.HostedPrincipal = "reporter", "owner"
+			reporter.Credential.HostedRole, reporter.Credential.HostedPrincipal = "reporter", "owner"
 			check("reporter owns target", reporter, []tracker.NativeWorkItemID{sameID}, true)
 			for _, test := range []struct {
 				principal string

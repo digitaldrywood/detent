@@ -24,6 +24,7 @@ import (
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -97,7 +98,7 @@ type spritePoolProvider struct {
 	stage            func(string)
 }
 
-func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeScope, *spritePoolProvider) {
+func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, hubscope.NativeScope, *spritePoolProvider) {
 	t.Helper()
 	provider := &spritePoolProvider{fail: failure}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -341,10 +342,10 @@ func TestSpritePoolLifecycle(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f, scope, provider := newSpritePoolFixture(t, test.failure)
 			if test.tier != "" {
-				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET isolation_tier=$1 WHERE organization_id=$2`, test.tier, scope.organization)
+				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET isolation_tier=$1 WHERE organization_id=$2`, test.tier, scope.Organization)
 			}
 			if test.emptyBootstrap {
-				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET bootstrap_object_key=NULL WHERE organization_id=$1`, scope.organization)
+				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET bootstrap_object_key=NULL WHERE organization_id=$1`, scope.Organization)
 			}
 			var err error
 			if test.names != nil {
@@ -418,7 +419,7 @@ func TestSpritePoolLifecycle(t *testing.T) {
 				f.service.spriteWakeWork.Wait()
 			}
 			view.Bootstrap = "private-saved-bootstrap"
-			status, err := f.service.coordinatorSpritePoolStatus(t.Context(), scope, view, "/settings/integrations#sprites", scope.project)
+			status, err := f.service.coordinatorSpritePoolStatus(t.Context(), scope, view, "/settings/integrations#sprites", scope.Project)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -568,7 +569,7 @@ func TestSpritePoolNameCollisions(t *testing.T) {
 				if i < test.conflicts {
 					var state string
 					var revoked bool
-					if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), `SELECT m.state,e.revoked_at IS NOT NULL FROM runner_sprite_memberships m JOIN runner_enrollments e ON e.organization_id=m.organization_id AND e.id=m.enrollment_id WHERE m.organization_id=$1 AND m.name=$2`, scope.organization, name).Scan(&state, &revoked); err != nil {
+					if err := nativeAttemptTestDatabase(t, f).QueryRowContext(t.Context(), `SELECT m.state,e.revoked_at IS NOT NULL FROM runner_sprite_memberships m JOIN runner_enrollments e ON e.organization_id=m.organization_id AND e.id=m.enrollment_id WHERE m.organization_id=$1 AND m.name=$2`, scope.Organization, name).Scan(&state, &revoked); err != nil {
 						t.Fatal(err)
 					}
 					if state != "deleted" || !revoked {
@@ -659,7 +660,7 @@ func TestSpritePoolFreshAuthority(t *testing.T) {
 			f, scope, provider := newSpritePoolFixture(t, "")
 			switch test.change {
 			case "secret":
-				spriteFixtureExec(t, f, `DELETE FROM organization_secrets WHERE organization_id=$1`, scope.organization)
+				spriteFixtureExec(t, f, `DELETE FROM organization_secrets WHERE organization_id=$1`, scope.Organization)
 			case "actor":
 				placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
 					pool, err := w.(postgres.SpriteReader).SpritePool(t.Context())
@@ -669,9 +670,9 @@ func TestSpritePoolFreshAuthority(t *testing.T) {
 					return w.RevokeAccessCredential(t.Context(), pool.ConfiguredBy, f.service.config.now())
 				})
 			case "disable":
-				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=0 WHERE organization_id=$1`, scope.organization)
+				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=0 WHERE organization_id=$1`, scope.Organization)
 			case "project":
-				scope.organization = "org_foreign"
+				scope.Organization = "org_foreign"
 			}
 			err := f.service.scaleSpritePool(t.Context(), scope, true)
 			if (err != nil) != test.wantError {
@@ -750,7 +751,7 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 			switch test.change {
 			case "busy", "busy ceiling":
 				if test.change == "busy ceiling" {
-					spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=0 WHERE organization_id=$1`, scope.organization)
+					spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=0 WHERE organization_id=$1`, scope.Organization)
 				}
 				now := f.service.config.now()
 				insertSpriteLeaseFixture(t, f, "lease-busy", "session-busy", "", now, now.Add(time.Hour))
@@ -759,21 +760,21 @@ func TestSpritePoolDeletionBoundaries(t *testing.T) {
 					setSpriteAllocationFixture(t, f, 1, 2)
 					break
 				}
-				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET min_runners=1 WHERE organization_id=$1`, scope.organization)
+				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET min_runners=1 WHERE organization_id=$1`, scope.Organization)
 			case "recent":
 				setSpriteMembersIdleSince(t, f, f.service.config.now())
 			case "expired":
-				spriteFixtureExec(t, f, `UPDATE runner_sprite_memberships SET state='bootstrapping' WHERE organization_id=$1`, scope.organization)
-				spriteFixtureExec(t, f, `UPDATE runner_enrollments SET created_at=LEAST(created_at,$1::timestamptz-interval '1 hour'),expires_at=$1 WHERE organization_id=$2 AND id IN (SELECT enrollment_id FROM runner_sprite_memberships WHERE organization_id=$2)`, f.service.config.now().Add(-time.Minute), scope.organization)
+				spriteFixtureExec(t, f, `UPDATE runner_sprite_memberships SET state='bootstrapping' WHERE organization_id=$1`, scope.Organization)
+				spriteFixtureExec(t, f, `UPDATE runner_enrollments SET created_at=LEAST(created_at,$1::timestamptz-interval '1 hour'),expires_at=$1 WHERE organization_id=$2 AND id IN (SELECT enrollment_id FROM runner_sprite_memberships WHERE organization_id=$2)`, f.service.config.now().Add(-time.Minute), scope.Organization)
 			case "organization":
-				spriteFixtureExec(t, f, `UPDATE organization_secrets SET organization_slug='another-org' WHERE organization_id=$1`, scope.organization)
+				spriteFixtureExec(t, f, `UPDATE organization_secrets SET organization_slug='another-org' WHERE organization_id=$1`, scope.Organization)
 			case "retiring":
-				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=1 WHERE organization_id=$1`, scope.organization)
+				spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=1 WHERE organization_id=$1`, scope.Organization)
 				view, err := f.service.readSpritePool(t.Context(), scope)
 				if err != nil {
 					t.Fatal(err)
 				}
-				spriteFixtureExec(t, f, `UPDATE runner_sprite_memberships SET state='deleting' WHERE organization_id=$1 AND name=$2`, scope.organization, view.Members[0].Name)
+				spriteFixtureExec(t, f, `UPDATE runner_sprite_memberships SET state='deleting' WHERE organization_id=$1 AND name=$2`, scope.Organization, view.Members[0].Name)
 				if err := f.service.deletePoolSprite(t.Context(), scope, view.Members[1]); err != nil {
 					t.Fatal(err)
 				}
@@ -927,7 +928,7 @@ func createSpriteMemberFixture(t *testing.T, f nativeFixture, member runnerstore
 
 func setSpriteAllocationFixture(t *testing.T, f nativeFixture, desired int, revision tracker.Revision) projectSpriteAllocation {
 	t.Helper()
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	var result projectSpriteAllocation
 	placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
 		owner := w.(postgres.SpriteWriter)
@@ -938,7 +939,7 @@ func setSpriteAllocationFixture(t *testing.T, f nativeFixture, desired int, revi
 		if err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(t.Context(), scope.project); err != nil {
+		if err := w.LockWorkItemProject(t.Context(), scope.Project); err != nil {
 			return err
 		}
 		current, row, err := projectSpriteAllocationRecord(t.Context(), w, scope)
@@ -948,7 +949,7 @@ func setSpriteAllocationFixture(t *testing.T, f nativeFixture, desired int, revi
 		if current.Revision != revision {
 			return hubapi.NativeConflict(current.Revision)
 		}
-		row.OrganizationID, row.ProjectID, row.DesiredCount, row.ConfiguredBy = scope.organization, scope.project, int32(desired), credential.ID
+		row.OrganizationID, row.ProjectID, row.DesiredCount, row.ConfiguredBy = scope.Organization, scope.Project, int32(desired), credential.ID
 		if row.RequestedAt.IsZero() || desired >= current.AllocatedCount {
 			row.RequestedAt = f.service.config.now()
 		}
@@ -961,10 +962,10 @@ func setSpriteAllocationFixture(t *testing.T, f nativeFixture, desired int, revi
 	return result
 }
 
-func readSpriteAllocationFixture(t *testing.T, f nativeFixture, scope nativeScope) (projectSpriteAllocation, error) {
+func readSpriteAllocationFixture(t *testing.T, f nativeFixture, scope hubscope.NativeScope) (projectSpriteAllocation, error) {
 	t.Helper()
 	var result projectSpriteAllocation
-	err := f.service.accessRead(t.Context(), scope.organization, func(r tenantstore.Reader) error {
+	err := f.service.accessRead(t.Context(), scope.Organization, func(r tenantstore.Reader) error {
 		var err error
 		result, _, err = projectSpriteAllocationRecord(t.Context(), r, scope)
 		return err
@@ -1190,10 +1191,10 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 			setSpriteAllocationFixture(t, later, 3, 0)
 			first, second := f, later
 			if order == "oldest" {
-				spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2 AND project_id=$3`, f.service.config.now().Add(-time.Hour), scope.organization, later.project.ID)
+				spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2 AND project_id=$3`, f.service.config.now().Add(-time.Hour), scope.Organization, later.project.ID)
 				first, second = later, f
 			} else {
-				spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2`, f.service.config.now(), scope.organization)
+				spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2`, f.service.config.now(), scope.Organization)
 				if later.project.ID < f.project.ID {
 					first, second = later, f
 				}
@@ -1202,7 +1203,7 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 			f.service.spriteWakeWork.Wait()
 			read := func(project nativeFixture) projectSpriteAllocation {
 				t.Helper()
-				allocation, err := readSpriteAllocationFixture(t, f, nativeScope{organization: scope.organization, project: project.project.ID})
+				allocation, err := readSpriteAllocationFixture(t, f, hubscope.NativeScope{Organization: scope.Organization, Project: project.project.ID})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1217,7 +1218,7 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 			setSpriteMemberChecks(t, first, spriteMemberReady)
 			for _, runner := range provider.runners {
 				for _, project := range []nativeFixture{first, second} {
-					allowed, err := f.service.spriteAllocationRunnerAllowed(t.Context(), nativeScope{organization: scope.organization, project: project.project.ID}, runner.RunnerID)
+					allowed, err := f.service.spriteAllocationRunnerAllowed(t.Context(), hubscope.NativeScope{Organization: scope.Organization, Project: project.project.ID}, runner.RunnerID)
 					if err != nil || allowed != (project.project.ID == first.project.ID) {
 						t.Fatalf("claim project=%s allowed=%t err=%v", project.project.ID, allowed, err)
 					}
@@ -1238,7 +1239,7 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 			if len(provider.created) != 3 || len(provider.deleted) != 1 {
 				t.Fatalf("created=%d deleted=%d", len(provider.created), len(provider.deleted))
 			}
-			spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=1 WHERE organization_id=$1`, scope.organization)
+			spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=1 WHERE organization_id=$1`, scope.Organization)
 			setSpriteMembersIdleSince(t, f, f.service.config.now().Add(-time.Hour))
 			f.service.startSpriteLifecycle(scope, "")
 			f.service.spriteWakeWork.Wait()
@@ -1272,7 +1273,7 @@ func TestProjectSpriteBudgetSelection(t *testing.T) {
 				later.create(t, "later first")
 				later.create(t, "later second")
 			}
-			spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2 AND project_id=$3`, f.service.config.now().Add(-time.Hour), scope.organization, f.project.ID)
+			spriteFixtureExec(t, f, `UPDATE project_sprite_allocations SET requested_at=$1 WHERE organization_id=$2 AND project_id=$3`, f.service.config.now().Add(-time.Hour), scope.Organization, f.project.ID)
 			f.service.config.Hosted, f.service.config.SecretKeys = hosted, keys
 			if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
 				t.Fatal(err)
@@ -1304,7 +1305,7 @@ func TestProjectSpriteBudgetSelection(t *testing.T) {
 func TestProjectSpriteConcurrentReservations(t *testing.T) {
 	f, scope, provider := newSpritePoolFixture(t, "")
 	setSpriteAllocationFixture(t, f, 4, 0)
-	spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=1 WHERE organization_id=$1`, scope.organization)
+	spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=1 WHERE organization_id=$1`, scope.Organization)
 	start := make(chan struct{})
 	results := make(chan error, 4)
 	for range 4 {
@@ -1341,7 +1342,7 @@ func TestProjectSpriteAllocationLimits(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, scope, provider := newSpritePoolFixture(t, "")
-			spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET min_runners=$1,max_runners=3 WHERE organization_id=$2`, test.organizationMembers, scope.organization)
+			spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET min_runners=$1,max_runners=3 WHERE organization_id=$2`, test.organizationMembers, scope.Organization)
 			if test.organizationMembers > 0 {
 				if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
 					t.Fatal(err)
@@ -1479,7 +1480,7 @@ func TestHostedProjectSpriteAllocationAuthority(t *testing.T) {
 	}
 	response := f.rawAPI(t, "owner", http.MethodPut, "/api/v2/organizations/org_browser_preview/projects/"+f.project+"/sprite-pool/allocation", `{"idempotency_key":"allocate","expected_revision":"0","desired_count":2}`, map[string]string{"X-CSRF-Token": hostedCSRF(cookie.Value)})
 	browserHostedStatus(t, response, http.StatusOK)
-	scope := nativeScope{organization: organization, project: tracker.ProjectID(f.project)}
+	scope := hubscope.NativeScope{Organization: organization, Project: tracker.ProjectID(f.project)}
 	authority := func() (bool, error) {
 		var allowed bool
 		err := f.service.accessRead(t.Context(), organization, func(r tenantstore.Reader) error {
@@ -1502,7 +1503,7 @@ func TestHostedProjectSpriteAllocationAuthority(t *testing.T) {
 	}
 }
 
-func projectSpriteMembers(t *testing.T, f nativeFixture, scope nativeScope) []spritePoolMember {
+func projectSpriteMembers(t *testing.T, f nativeFixture, scope hubscope.NativeScope) []spritePoolMember {
 	t.Helper()
 	view, err := f.service.readSpritePool(t.Context(), scope)
 	if err != nil {
@@ -1522,7 +1523,7 @@ func projectSpriteMembers(t *testing.T, f nativeFixture, scope nativeScope) []sp
 
 func TestProjectSpriteScaleSequence(t *testing.T) {
 	f, scope, provider := newSpritePoolFixture(t, "")
-	spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=3 WHERE organization_id=$1`, scope.organization)
+	spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=3 WHERE organization_id=$1`, scope.Organization)
 	revision := tracker.Revision(0)
 	for _, step := range []struct{ desired, created, deleted int }{{1, 1, 0}, {3, 3, 0}, {1, 3, 2}, {0, 3, 3}, {2, 5, 3}} {
 		revision = setSpriteAllocationFixture(t, f, step.desired, revision).Revision
@@ -1621,7 +1622,7 @@ func TestProjectSpriteDrain(t *testing.T) {
 			}
 			insertSpriteLeaseFixture(t, f, "lease-drain", "session-drain", member.RunnerID, now, expires)
 			placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
-				return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: scope.organization, LeaseID: "lease-drain", RunnerID: member.RunnerID, AssignedAt: now})
+				return w.AssignRunnerLease(t.Context(), runnerstore.LeaseAssignment{OrganizationID: scope.Organization, LeaseID: "lease-drain", RunnerID: member.RunnerID, AssignedAt: now})
 			})
 			setSpriteAllocationFixture(t, f, 0, 1)
 			for range 2 {
@@ -1701,8 +1702,8 @@ func TestProjectSpriteProvisioningRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		interrupted := projectSpriteMembers(t, f, scope)[0]
-		spriteFixtureExec(t, f, `UPDATE runner_sprite_memberships SET state='bootstrapping' WHERE organization_id=$1 AND name=$2`, scope.organization, interrupted.Name)
-		spriteFixtureExec(t, f, `UPDATE runner_enrollments SET created_at=LEAST(created_at,$1::timestamptz-interval '1 hour'),expires_at=$1 WHERE organization_id=$2 AND id=$3`, f.service.config.now().Add(-time.Minute), scope.organization, interrupted.EnrollmentID)
+		spriteFixtureExec(t, f, `UPDATE runner_sprite_memberships SET state='bootstrapping' WHERE organization_id=$1 AND name=$2`, scope.Organization, interrupted.Name)
+		spriteFixtureExec(t, f, `UPDATE runner_enrollments SET created_at=LEAST(created_at,$1::timestamptz-interval '1 hour'),expires_at=$1 WHERE organization_id=$2 AND id=$3`, f.service.config.now().Add(-time.Minute), scope.Organization, interrupted.EnrollmentID)
 		if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
 			t.Fatal(err)
 		}
@@ -1749,9 +1750,9 @@ func TestProjectSpriteLoginReadiness(t *testing.T) {
 				f.service.spriteWakeWork.Wait()
 			}
 			heartbeat := f.service.config.now().Add(-test.heartbeatAgo)
-			spriteFixtureExec(t, f, `UPDATE runner_identities SET last_heartbeat_at=$1 WHERE organization_id=$2 AND machine_id=$3`, heartbeat, scope.organization, runner.MachineID)
+			spriteFixtureExec(t, f, `UPDATE runner_identities SET last_heartbeat_at=$1 WHERE organization_id=$2 AND machine_id=$3`, heartbeat, scope.Organization, runner.MachineID)
 			if test.wakeFailed {
-				spriteFixtureExec(t, f, `UPDATE machines SET sprite_wake_failed_at=$1 WHERE organization_id=$2 AND id=$3`, heartbeat.Add(time.Second), scope.organization, runner.MachineID)
+				spriteFixtureExec(t, f, `UPDATE machines SET sprite_wake_failed_at=$1 WHERE organization_id=$2 AND id=$3`, heartbeat.Add(time.Second), scope.Organization, runner.MachineID)
 			}
 			allowed, err := f.service.spriteAllocationRunnerAllowed(t.Context(), scope, runner.RunnerID)
 			if err != nil || allowed != test.allowed {
@@ -1798,7 +1799,7 @@ func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 	event := nativeStartedEvent(lease)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
-	spriteFixtureExec(t, f, `UPDATE native_attempts SET status='succeeded',work_item_revision=1000,dispatch_generation=1000 WHERE organization_id=$1 AND id=$2`, scope.organization, event.Data.AttemptID)
+	spriteFixtureExec(t, f, `UPDATE native_attempts SET status='succeeded',work_item_revision=1000,dispatch_generation=1000 WHERE organization_id=$1 AND id=$2`, scope.Organization, event.Data.AttemptID)
 	setPlacementFixture(t, f, policy.Placement{Mode: "sprites_only"}, 2)
 	f.service.config.SecretKeys, f.service.config.Hosted = keys, hosted
 	store.mu.Lock()
@@ -1818,7 +1819,7 @@ func TestZZSpriteBootstrapProbe(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://hub.example.test"}
 	scope := placementFixtureScope(t, f)
-	scope.project = ""
+	scope.Project = ""
 	if err := f.service.updateSpritePool(t.Context(), scope, spritePoolSettings{MaxRunners: 1, Bootstrap: "true"}, nil); err != nil {
 		t.Fatalf("write: %v", err)
 	}

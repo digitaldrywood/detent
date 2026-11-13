@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -19,7 +20,7 @@ import (
 func (s *Service) getRunnerSpend(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	var day *time.Time
 	if raw := c.QueryParam("day"); raw != "" {
 		parsed, err := time.Parse(time.DateOnly, raw)
@@ -32,7 +33,7 @@ func (s *Service) getRunnerSpend(c echo.Context) error {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("select exactly one day or issue"))
 	}
 	var result store.TokenSpend
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -41,11 +42,11 @@ func (s *Service) getRunnerSpend(c echo.Context) error {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var reporter *string
-		if scope.credential.HostedRole == "reporter" {
-			reporter = new(scope.actor().PrincipalID)
+		if scope.Credential.HostedRole == "reporter" {
+			reporter = new(scope.Actor().PrincipalID)
 		}
 		var err error
-		result, err = reader.RunnerTokenSpend(ctx, scope.project, c.QueryParam("issue"), day, reporter)
+		result, err = reader.RunnerTokenSpend(ctx, scope.Project, c.QueryParam("issue"), day, reporter)
 		return err
 	})
 	if err != nil {
@@ -60,13 +61,13 @@ func (s *Service) getRunnerSpend(c echo.Context) error {
 func (s *Service) getRunnerModelQuantiles(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	limit, err := strconv.ParseInt(c.QueryParam("limit"), 10, 64)
 	if err != nil || limit < 1 || limit > 200 || c.QueryParam("model") == "" {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("model and a limit from 1 to 200 are required"))
 	}
 	var result store.ModelTokenQuantiles
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -75,11 +76,11 @@ func (s *Service) getRunnerModelQuantiles(c echo.Context) error {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var reporter *string
-		if scope.credential.HostedRole == "reporter" {
-			reporter = new(scope.actor().PrincipalID)
+		if scope.Credential.HostedRole == "reporter" {
+			reporter = new(scope.Actor().PrincipalID)
 		}
 		var err error
-		result, err = reader.RunnerModelTokenQuantiles(ctx, scope.project, store.ModelTokenQuantileQuery{Model: c.QueryParam("model"), Limit: limit}, reporter)
+		result, err = reader.RunnerModelTokenQuantiles(ctx, scope.Project, store.ModelTokenQuantileQuery{Model: c.QueryParam("model"), Limit: limit}, reporter)
 		return err
 	})
 	if err != nil {

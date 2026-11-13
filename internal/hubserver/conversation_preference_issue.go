@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -25,7 +26,7 @@ type conversationPreferenceIssue struct {
 	changed bool
 }
 
-func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope nativeScope, record conversationRecord, preferences conversation.Preferences) (conversationPreferenceIssue, error) {
+func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope hubscope.NativeScope, record conversationRecord, preferences conversation.Preferences) (conversationPreferenceIssue, error) {
 	var result conversationPreferenceIssue
 	if record.WorkItemID == "" {
 		return result, nil
@@ -39,7 +40,7 @@ func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope 
 	if body == plan.issue.Body {
 		return result, nil
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		return s.authorizeWorkItemRecordScope(ctx, reader, scope)
 	}); err != nil {
 		return result, err
@@ -50,7 +51,7 @@ func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope 
 	plan.issue.UpdatedAt, plan.issue.LastActivityAt = now, now
 	plan.fields = []string{"body"}
 	result.plan, result.changed = plan, true
-	result.fields, err = s.prepareWorkItemFields(ctx, scope.organization, plan)
+	result.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
 	if err != nil {
 		return result, err
 	}
@@ -59,19 +60,19 @@ func (s *Service) prepareConversationPreferenceIssue(ctx context.Context, scope 
 		return result, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	result.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, RecordID: record.WorkItemID, Revision: int64(plan.issue.Revision)}, raw)
+	result.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, RecordID: record.WorkItemID, Revision: int64(plan.issue.Revision)}, raw)
 	if err != nil {
 		return result, err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.issue.WorkItemID, Type: "issue.edited", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields}})
 	if err != nil {
 		return result, err
 	}
-	result.event, err = content.PrepareEvent(ctx, scope.organization, raw)
+	result.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
 	if err != nil {
 		return result, err
 	}
-	result.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + record.WorkItemID, SourceID: record.WorkItemID, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+	result.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + record.WorkItemID, SourceID: record.WorkItemID, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
 	return result, err
 }
 

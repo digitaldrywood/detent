@@ -15,15 +15,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func (s *Service) actionRecords(ctx context.Context, scope nativeScope) ([]actionstore.Record, error) {
+func (s *Service) actionRecords(ctx context.Context, scope hubscope.NativeScope) ([]actionstore.Record, error) {
 	var records []actionstore.Record
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -32,17 +33,17 @@ func (s *Service) actionRecords(ctx context.Context, scope nativeScope) ([]actio
 			return projectActionsUnavailable("Project action storage is unavailable")
 		}
 		var err error
-		records, err = reader.ProjectActions(ctx, scope.project)
+		records, err = reader.ProjectActions(ctx, scope.Project)
 		return err
 	})
 	return records, hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) hydrateActionRecord(ctx context.Context, scope nativeScope, r actionstore.Record) (workspacesession.Action, error) {
-	if r.Command.Validate(string(scope.organization)) != nil {
+func (s *Service) hydrateActionRecord(ctx context.Context, scope hubscope.NativeScope, r actionstore.Record) (workspacesession.Action, error) {
+	if r.Command.Validate(string(scope.Organization)) != nil {
 		return workspacesession.Action{}, artifact.ErrIntegrity
 	}
-	raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), r.Command)
+	raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.Organization), r.Command)
 	if err != nil {
 		return workspacesession.Action{}, err
 	}
@@ -50,7 +51,7 @@ func (s *Service) hydrateActionRecord(ctx context.Context, scope nativeScope, r 
 	return r.Action, nil
 }
 
-func (s *Service) readActionRecords(ctx context.Context, scope nativeScope) (json.RawMessage, error) {
+func (s *Service) readActionRecords(ctx context.Context, scope hubscope.NativeScope) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	records, err := s.actionRecords(ctx, scope)
@@ -88,7 +89,7 @@ func normalizeActionRecord(a *workspacesession.Action) error {
 	return nil
 }
 
-func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, method, id string, mutation tracker.Mutation, input any) (json.RawMessage, error) {
+func (s *Service) mutateActionRecord(ctx context.Context, scope hubscope.NativeScope, method, id string, mutation tracker.Mutation, input any) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if method != "DELETE" && (strings.TrimSpace(mutation.IdempotencyKey) == "" || len(mutation.IdempotencyKey) > 128) {
@@ -132,7 +133,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 		if len(records) >= workspacesession.MaxActionsPerProject {
 			return nil, hubapi.NativePublicInvalid("A project may hold at most 50 actions")
 		}
-		next.Action = workspacesession.Action{ID: hubapi.NewID("action"), OrganizationID: string(scope.organization), ProjectID: string(scope.project), Name: request.Name, Command: request.Command, Keybinding: request.Keybinding, Icon: request.Icon, PreviewURL: request.PreviewURL, OpenPreview: request.OpenPreview, RunOnWorktreeCreation: request.RunOnWorktreeCreation, CreatedBy: scope.actor().PrincipalID, Revision: 1, CreatedAt: now, UpdatedAt: now}
+		next.Action = workspacesession.Action{ID: hubapi.NewID("action"), OrganizationID: string(scope.Organization), ProjectID: string(scope.Project), Name: request.Name, Command: request.Command, Keybinding: request.Keybinding, Icon: request.Icon, PreviewURL: request.PreviewURL, OpenPreview: request.OpenPreview, RunOnWorktreeCreation: request.RunOnWorktreeCreation, CreatedBy: scope.Actor().PrincipalID, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	case projectActionPatch:
 		if previous.Action.ID == "" {
 			return nil, hubapi.NativeNotFound()
@@ -175,14 +176,14 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 			return nil, err
 		}
 		command := []byte(next.Action.Command)
-		next.Command, err = s.runDetailStore().StoreDetail(ctx, string(scope.organization), command)
+		next.Command, err = s.runDetailStore().StoreDetail(ctx, string(scope.Organization), command)
 		if err != nil {
 			return nil, err
 		}
-		if next.Command.Validate(string(scope.organization)) != nil || next.Command.BindingID != "" || next.Command.CustomerOwned || next.Command.SchemaVersion != 1 || next.Command.UncompressedSize != int64(len(command)) {
+		if next.Command.Validate(string(scope.Organization)) != nil || next.Command.BindingID != "" || next.Command.CustomerOwned || next.Command.SchemaVersion != 1 || next.Command.UncompressedSize != int64(len(command)) {
 			return nil, artifact.ErrIntegrity
 		}
-		verified, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), next.Command)
+		verified, err := s.runDetailStore().ReadDetail(ctx, string(scope.Organization), next.Command)
 		if err != nil {
 			return nil, err
 		}
@@ -193,17 +194,17 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 		if err != nil {
 			return nil, err
 		}
-		receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: mutation.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
+		receipt, err = content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: mutation.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 		if err != nil {
 			return nil, err
 		}
 	}
 	var replay *eventstore.Receipt
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
 		writer, ok := w.(actionstore.Writer)
@@ -211,7 +212,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 			return projectActionsUnavailable("Project action storage is unavailable")
 		}
 		if method != "DELETE" {
-			stored, err := w.Receipt(ctx, scope.credential.ID, operation, mutation.IdempotencyKey)
+			stored, err := w.Receipt(ctx, scope.Credential.ID, operation, mutation.IdempotencyKey)
 			if err == nil {
 				if stored.RequestHash != hash {
 					return hubapi.NativeConflict(0)
@@ -230,7 +231,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 		}
 		var err error
 		if previous.Action.ID != "" {
-			current, err := writer.ProjectAction(ctx, scope.project, previous.Action.ID)
+			current, err := writer.ProjectAction(ctx, scope.Project, previous.Action.ID)
 			if err != nil {
 				return err
 			}
@@ -244,9 +245,9 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 			}
 		}
 		if method == "DELETE" {
-			err = writer.DeleteProjectAction(ctx, scope.project, id)
+			err = writer.DeleteProjectAction(ctx, scope.Project, id)
 		} else {
-			rows, err := writer.ProjectActions(ctx, scope.project)
+			rows, err := writer.ProjectActions(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -266,11 +267,11 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 			if err != nil {
 				return err
 			}
-			object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: hubapi.NewID("att"), Reference: next.Command, CreatedAt: now})
+			object, err := w.RegisterArchiveObject(ctx, artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: hubapi.NewID("att"), Reference: next.Command, CreatedAt: now})
 			if err != nil {
 				return err
 			}
-			if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.organization, ArchiveID: object.ID, Kind: "project-action", ID: actionstore.ArchiveOwnerID(scope.project, next.Action.ID), CreatedAt: now}); err != nil {
+			if err := w.AddArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "project-action", ID: actionstore.ArchiveOwnerID(scope.Project, next.Action.ID), CreatedAt: now}); err != nil {
 				return err
 			}
 		}
@@ -282,7 +283,7 @@ func (s *Service) mutateActionRecord(ctx context.Context, scope nativeScope, met
 			if err != nil {
 				return err
 			}
-			if err := w.RemoveArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.organization, ArchiveID: object.ID, Kind: "project-action", ID: actionstore.ArchiveOwnerID(scope.project, previous.Action.ID), CreatedAt: now}); err != nil {
+			if err := w.RemoveArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "project-action", ID: actionstore.ArchiveOwnerID(scope.Project, previous.Action.ID), CreatedAt: now}); err != nil {
 				return err
 			}
 		}

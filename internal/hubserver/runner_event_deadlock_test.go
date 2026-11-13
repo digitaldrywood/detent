@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -67,13 +68,13 @@ func TestGenericRunnerEventCommandDoesNotDeadlockMachineHeartbeat(t *testing.T) 
 			}
 			data := fixture.data[0]
 			command := eventstore.RunCommand{Project: "prj_runner", WorkItem: fixture.leases[0].WorkItemID, LeaseID: string(data.LeaseID), Operation: "append-event"}
-			scope := nativeScope{organization: org, project: command.Project, credential: hubapi.APICredential{ID: "credential_1", Runner: runnerauth.Identity{Binding: binding}}}
+			scope := hubscope.NativeScope{Organization: org, Project: command.Project, Credential: hubapi.APICredential{ID: "credential_1", Runner: runnerauth.Identity{Binding: binding}}}
 			workers.Go(func() {
 				done <- service.writeNativeRunCommand(ctx, scope, command, func(ctx context.Context, w tenantstore.Writer) error {
-					if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+					if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 						return err
 					}
-					if _, err := w.LockWorkItem(ctx, scope.project, command.WorkItem); err != nil {
+					if _, err := w.LockWorkItem(ctx, scope.Project, command.WorkItem); err != nil {
 						return err
 					}
 					_, err := w.RunnerForLease(ctx, command.LeaseID)

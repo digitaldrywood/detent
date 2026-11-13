@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -31,7 +32,7 @@ import (
 
 func (s *Service) landChangeRecord(c echo.Context) error {
 	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	var request tracker.LandChangeVersion
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
@@ -68,7 +69,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Land through the Change Request's primary issue"))
 	}
 	var changeRow eventstore.Change
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		changeRow, err = r.Change(ctx, change.ID)
 		return err
@@ -76,10 +77,10 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
-	if changeRow.OrganizationID != scope.organization || changeRow.ProjectID != scope.project || changeRow.WorkItemID != change.WorkItemID || changeRow.Revision != int64(change.Revision) || changeRow.CurrentVersionID == nil || *changeRow.CurrentVersionID != change.CurrentVersion {
+	if changeRow.OrganizationID != scope.Organization || changeRow.ProjectID != scope.Project || changeRow.WorkItemID != change.WorkItemID || changeRow.Revision != int64(change.Revision) || changeRow.CurrentVersionID == nil || *changeRow.CurrentVersionID != change.CurrentVersion {
 		return s.nativeAPIError(c, hubapi.NativeConflict(change.Revision))
 	}
-	versionRow, err := s.readChangeVersionRecord(ctx, scope.organization, change.ID, c.Param("version"))
+	versionRow, err := s.readChangeVersionRecord(ctx, scope.Organization, change.ID, c.Param("version"))
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
@@ -101,7 +102,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	var reviewedPolicy currentChangePolicyRows
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		reviewedPolicy, err = readCurrentChangePolicyRows(ctx, r, scope)
 		return err
@@ -125,9 +126,9 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	var project projectstore.Record
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		project, err = r.ProjectRecord(ctx, scope.project)
+		project, err = r.ProjectRecord(ctx, scope.Project)
 		return err
 	})
 	if err != nil {
@@ -155,7 +156,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	change.Landed = &tracker.ChangeLanding{Quality: quality, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.actor(), LandedAt: payloadTimestamp(ctx, now), Rebased: request.Rebased}
+	change.Landed = &tracker.ChangeLanding{Quality: quality, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.Actor(), LandedAt: payloadTimestamp(ctx, now), Rebased: request.Rebased}
 	change.UpdatedAt = payloadTimestamp(ctx, now)
 	change.Revision++
 	content := eventstore.NewContent(s.runDetailStore())
@@ -163,7 +164,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	changeRecord, err := content.PrepareChange(ctx, scope.organization, changeRaw)
+	changeRecord, err := content.PrepareChange(ctx, scope.Organization, changeRaw)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -172,8 +173,8 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	var landingAttempt leasestore.Attempt
-	if scope.credential.Scope == hubapi.APIScopeWorker {
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if scope.Credential.Scope == hubapi.APIScopeWorker {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			landingAttempt, _, err = s.runnerSessionFence(ctx, r, scope, runnersession.Mutation{LeaseID: request.LeaseID, FencingToken: request.FencingToken}, string(change.WorkItemID), false)
 			return err
@@ -191,7 +192,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		if landingAttempt.ID != "" {
 			receiptAttemptID = landingAttempt.ID
 		}
-		record, err := content.PrepareLandingReceipt(ctx, eventstore.LandingReceipt{OrganizationID: scope.organization, AttemptID: receiptAttemptID, VersionID: version.ID, Repository: version.Repository, BaseRef: request.BaseRef}, *request.Receipt)
+		record, err := content.PrepareLandingReceipt(ctx, eventstore.LandingReceipt{OrganizationID: scope.Organization, AttemptID: receiptAttemptID, VersionID: version.ID, Repository: version.Repository, BaseRef: request.BaseRef}, *request.Receipt)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -201,7 +202,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	mutationReceipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
+	mutationReceipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, response)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -228,12 +229,12 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		updatedRow.WorkflowStateName = &target
 		updatedRow.LastActivityAt = updatedIssue.LastActivityAt
 		updatedRow.NativeUpdatedAt = updatedIssue.UpdatedAt
-		updated := tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: payloadTimestamp(ctx, now), Data: tracker.CollaborationData{Revision: tracker.Revision(itemRow.Revision), FromState: fromState, ToState: target, Reason: "worker_progress", Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}}
+		updated := tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: payloadTimestamp(ctx, now), Data: tracker.CollaborationData{Revision: tracker.Revision(itemRow.Revision), FromState: fromState, ToState: target, Reason: "worker_progress", Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}}
 		raw, err := json.Marshal(updated)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		event, err = content.PrepareEvent(ctx, scope.organization, raw)
+		event, err = content.PrepareEvent(ctx, scope.Organization, raw)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -241,11 +242,11 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		itemVersion, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: change.WorkItemID, RecordID: string(change.WorkItemID), Revision: int64(updatedIssue.Revision)}, issueRaw)
+		itemVersion, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: change.WorkItemID, RecordID: string(change.WorkItemID), Revision: int64(updatedIssue.Revision)}, issueRaw)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		document := searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: updatedIssue.WorkItemID, ID: "issue:" + string(updatedIssue.WorkItemID), SourceID: string(updatedIssue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(updatedIssue.Revision), UpdatedAt: updatedIssue.UpdatedAt}
+		document := searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: updatedIssue.WorkItemID, ID: "issue:" + string(updatedIssue.WorkItemID), SourceID: string(updatedIssue.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(updatedIssue.Revision), UpdatedAt: updatedIssue.UpdatedAt}
 		document, err = searchstore.NewContent(s.runDetailStoreFor(ctx)).Prepare(ctx, document, searchstore.Text{Title: updatedIssue.Title, Body: updatedIssue.Body, Labels: updatedIssue.Labels})
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -256,14 +257,14 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 
 	changeRecord.Revision = changeRow.Revision
 	for {
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 				return err
 			}
-			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
-			if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
+			if prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
 					return hubapi.NativeConflict(change.Revision - 1)
 				}
@@ -285,14 +286,14 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 			if !reflect.DeepEqual(currentVersion, versionRow) {
 				return corestore.ErrRevisionConflict
 			}
-			currentItem, err := w.WorkItem(ctx, scope.project, change.WorkItemID)
+			currentItem, err := w.WorkItem(ctx, scope.Project, change.WorkItemID)
 			if err != nil {
 				return err
 			}
 			if currentItem.Revision != itemRow.Revision {
 				return corestore.ErrRevisionConflict
 			}
-			currentProject, err := w.ProjectRecord(ctx, scope.project)
+			currentProject, err := w.ProjectRecord(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -306,7 +307,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 			if !reflect.DeepEqual(policyRows, reviewedPolicy) {
 				return hubapi.PolicyMismatch("Current approved policy changed; the reviewed version must be republished")
 			}
-			if scope.credential.Scope == hubapi.APIScopeWorker {
+			if scope.Credential.Scope == hubapi.APIScopeWorker {
 				locker, ok := w.(leasestore.FencedLeaseLocker)
 				if !ok {
 					return hubapi.NativeRunEventStorageUnavailable()
@@ -353,7 +354,7 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 						return err
 					}
 				}
-				if scope.credential.Scope == hubapi.APIScopeWorker {
+				if scope.Credential.Scope == hubapi.APIScopeWorker {
 					if err := w.AdvanceLeaseWorkItemRevision(ctx, leasestore.Fence{LeaseID: string(request.LeaseID), FencingToken: int64(request.FencingToken)}, itemRow.ID, itemRow.Revision, int64(nextIssue.Revision)); err != nil {
 						return err
 					}
@@ -388,20 +389,20 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	return c.JSONBlob(http.StatusOK, response)
 }
 
-func (s *Service) recordExistingLandingReceipt(c echo.Context, ctx context.Context, scope nativeScope, operation, hash string, request tracker.LandChangeVersion, change tracker.ChangeRequest) error {
+func (s *Service) recordExistingLandingReceipt(c echo.Context, ctx context.Context, scope hubscope.NativeScope, operation, hash string, request tracker.LandChangeVersion, change tracker.ChangeRequest) error {
 	response, err := json.Marshal(change)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: change.UpdatedAt}, response)
+	receipt, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: change.UpdatedAt}, response)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
 		current, err := w.Change(ctx, change.ID)
@@ -440,7 +441,7 @@ func (s *Service) verifyChangeLandingIncorporation(ctx context.Context, version 
 	return nil
 }
 
-func validateChangeLandingSecurityAudit(ctx context.Context, detail tracker.ChangeDetail, scope nativeScope, version tracker.ChangeVersion, request tracker.LandChangeVersion, associated bool, auditHead string) error {
+func validateChangeLandingSecurityAudit(ctx context.Context, detail tracker.ChangeDetail, scope hubscope.NativeScope, version tracker.ChangeVersion, request tracker.LandChangeVersion, associated bool, auditHead string) error {
 	if !version.Policy.Gates.SecurityAudit || version.Policy.Gates.GitHubPullRequest || associated {
 		return nil
 	}
@@ -449,7 +450,7 @@ func validateChangeLandingSecurityAudit(ctx context.Context, detail tracker.Chan
 	}
 	audit := *request.Receipt.SecurityAudit
 	securityaudit.NormalizeAttribution(&audit.Run)
-	evaluation := securityaudit.Evaluate(audit.Run, nil, securityaudit.Key{ProjectID: string(scope.project), Repository: version.Repository, PRNumber: audit.Run.PRNumber, BaseSHA: request.Receipt.BaseSHA, HeadSHA: auditHead}, "", []string{"none"})
+	evaluation := securityaudit.Evaluate(audit.Run, nil, securityaudit.Key{ProjectID: string(scope.Project), Repository: version.Repository, PRNumber: audit.Run.PRNumber, BaseSHA: request.Receipt.BaseSHA, HeadSHA: auditHead}, "", []string{"none"})
 	auditRaw, err := hubapi.MarshalNative(audit)
 	if err != nil {
 		return err

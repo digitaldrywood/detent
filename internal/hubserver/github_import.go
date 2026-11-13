@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -51,7 +52,7 @@ func (s *Service) startGitHubImport(c echo.Context) error {
 func (s *Service) getGitHubImport(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	result, err := s.readGitHubImportRecord(ctx, nativeRequestScope(c), c.Param("import"))
+	result, err := s.readGitHubImportRecord(ctx, hubscope.NativeRequestScope(c), c.Param("import"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -72,7 +73,7 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 		// Legacy callers do not supply a retry key; preserve their revision
 		// conflict semantics. Explicit keys use the shared durable receipt.
 		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-		current, err := s.readGitHubImportRecord(readCtx, nativeRequestScope(c), id)
+		current, err := s.readGitHubImportRecord(readCtx, hubscope.NativeRequestScope(c), id)
 		cancelRead()
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -82,12 +83,12 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 		}
 		key = fmt.Sprintf("advance:%s:%d", id, request.ExpectedRevision)
 	}
-	result, err := s.advanceGitHubImportCommand(c.Request().Context(), nativeRequestScope(c), id, request.ExpectedRevision, key)
+	result, err := s.advanceGitHubImportCommand(c.Request().Context(), hubscope.NativeRequestScope(c), id, request.ExpectedRevision, key)
 	if err != nil {
 		var failure *hubapi.NativeError
 		if errors.As(err, &failure) && failure.Status == http.StatusTooManyRequests {
 			// Read back the import state advanced by this request on the writer.
-			current, readErr := s.readGitHubImportRecord(c.Request().Context(), nativeRequestScope(c), id)
+			current, readErr := s.readGitHubImportRecord(c.Request().Context(), hubscope.NativeRequestScope(c), id)
 			if readErr != nil {
 				return s.nativeAPIError(c, readErr)
 			}
@@ -97,14 +98,14 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 	}
 	return c.JSONBlob(http.StatusOK, result)
 }
-func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeScope, id string, revision tracker.Revision, key string) (json.RawMessage, error) {
+func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope hubscope.NativeScope, id string, revision tracker.Revision, key string) (json.RawMessage, error) {
 	return s.advanceGitHubImportRecord(ctx, scope, id, revision, key)
 }
 
 func (s *Service) listGitHubImportRecords(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	id := c.Param("import")
 	if _, err := s.readGitHubImportRecord(ctx, scope, id); err != nil {
 		return s.nativeAPIError(c, err)

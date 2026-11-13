@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -134,7 +135,7 @@ func (s *Service) createNativeProject(c echo.Context) error {
 	if !ok {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential}
 	c.Set("native_scope", scope)
 	return s.nativeMutation(c, request.Mutation, request, nil)
 }

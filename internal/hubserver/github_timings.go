@@ -7,6 +7,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -20,8 +21,8 @@ func (s *Service) getNativeGitHubTimings(c echo.Context) error {
 	if !hubapi.ValidID(attempt, "attempt") || !hubapi.ValidID(runner, "runner") {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Select a native attempt and registered runner"))
 	}
-	scope := nativeRequestScope(c)
-	if scope.credential.Runner.RunnerID != "" && scope.credential.Runner.RunnerID != runner {
+	scope := hubscope.NativeRequestScope(c)
+	if scope.Credential.Runner.RunnerID != "" && scope.Credential.Runner.RunnerID != runner {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	evidence, err := s.readNativeRuntime(c.Request().Context(), scope, c.Param("item"), attempt)

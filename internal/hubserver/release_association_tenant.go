@@ -10,12 +10,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeScope, item, operation string, request tracker.AssociateReleasePick) (json.RawMessage, error) {
+func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope.NativeScope, item, operation string, request tracker.AssociateReleasePick) (json.RawMessage, error) {
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
@@ -42,7 +43,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 		return nil, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	delivery := tracker.ReleaseDelivery{ReleasePickInput: request.ReleasePickInput, Actor: scope.actor(), AssociatedAt: now}
+	delivery := tracker.ReleaseDelivery{ReleasePickInput: request.ReleasePickInput, Actor: scope.Actor(), AssociatedAt: now}
 	unchanged := check.found && check.existing.ReleasePickInput == request.ReleasePickInput
 	if unchanged {
 		delivery = check.existing
@@ -71,14 +72,14 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 			if err := approveReleaseDeliveryContract(&plan.issue, check.approval.Policy, now); err != nil {
 				return nil, err
 			}
-			change = tracker.ChangeRequest{ID: payloadNativeID(ctx, "change"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), LinkedIssues: []tracker.NativeWorkItemID{tracker.NativeWorkItemID(item)}, Title: plan.issue.Title, Revision: 1, CreatedAt: now, UpdatedAt: now}
+			change = tracker.ChangeRequest{ID: payloadNativeID(ctx, "change"), OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), LinkedIssues: []tracker.NativeWorkItemID{tracker.NativeWorkItemID(item)}, Title: plan.issue.Title, Revision: 1, CreatedAt: now, UpdatedAt: now}
 		}
 		delivery.ChangeID = change.ID
 		raw, err := json.Marshal(change)
 		if err != nil {
 			return nil, err
 		}
-		changeRow, err = content.PrepareChange(ctx, scope.organization, raw)
+		changeRow, err = content.PrepareChange(ctx, scope.Organization, raw)
 		if err != nil {
 			return nil, err
 		}
@@ -88,11 +89,11 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 		plan.issue.ReleaseDelivery = &delivery
 		plan.issue.Revision++
 		plan.issue.UpdatedAt, plan.issue.LastActivityAt = now, now
-		search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), ID: "issue:" + item, SourceID: item, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+		search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), ID: "issue:" + item, SourceID: item, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
 		if err != nil {
 			return nil, err
 		}
-		fields, err = s.prepareWorkItemFields(ctx, scope.organization, plan)
+		fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
 		if err != nil {
 			return nil, err
 		}
@@ -100,7 +101,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 		if err != nil {
 			return nil, err
 		}
-		version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), RecordID: item, Revision: int64(plan.issue.Revision)}, raw)
+		version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), RecordID: item, Revision: int64(plan.issue.Revision)}, raw)
 		if err != nil {
 			return nil, err
 		}
@@ -109,11 +110,11 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 			kinds = []string{"change.created", "issue.edited"}
 		}
 		for _, kind := range kinds {
-			raw, err = json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(item), Type: kind, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Change: &tracker.NativeChangeReference{ChangeID: delivery.ChangeID, HeadSHA: delivery.HeadSHA}}})
+			raw, err = json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(item), Type: kind, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Change: &tracker.NativeChangeReference{ChangeID: delivery.ChangeID, HeadSHA: delivery.HeadSHA}}})
 			if err != nil {
 				return nil, err
 			}
-			event, err := content.PrepareEvent(ctx, scope.organization, raw)
+			event, err := content.PrepareEvent(ctx, scope.Organization, raw)
 			if err != nil {
 				return nil, err
 			}
@@ -132,11 +133,11 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 				return nil, err
 			}
 			transition.search.Revision++
-			raw, err = json.Marshal(tracker.CollaborationEvent{ID: transition.event.ID, OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(item), Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: transition.plan.issue.Revision, FromState: plan.issue.State, ToState: transition.plan.issue.State, Reason: "user_requested"}})
+			raw, err = json.Marshal(tracker.CollaborationEvent{ID: transition.event.ID, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(item), Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: transition.plan.issue.Revision, FromState: plan.issue.State, ToState: transition.plan.issue.State, Reason: "user_requested"}})
 			if err != nil {
 				return nil, err
 			}
-			transition.event, err = content.PrepareEvent(ctx, scope.organization, raw)
+			transition.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
 			if err != nil {
 				return nil, err
 			}
@@ -147,18 +148,18 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, raw)
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now}, raw)
 	if err != nil {
 		return nil, err
 	}
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeReleaseScope(ctx, w, scope); err != nil {
 			return err
 		}
-		if prior, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
+		if prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey); err == nil {
 			if prior.RequestHash != hash {
 				return hubapi.NativeConflict(0)
 			}
@@ -169,10 +170,10 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 		if err := w.LockRelationshipGraph(ctx); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		if _, err := w.LockWorkItems(ctx, []corestore.WorkItemReference{{ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item)}, {ProjectID: scope.project, WorkItemID: request.SourceIssueID}}); err != nil {
+		if _, err := w.LockWorkItems(ctx, []corestore.WorkItemReference{{ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item)}, {ProjectID: scope.Project, WorkItemID: request.SourceIssueID}}); err != nil {
 			return err
 		}
 		if err := s.recheckReleaseDelivery(ctx, w, scope, check); err != nil {
@@ -209,11 +210,11 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope nativeSc
 				if _, err := w.CreateChange(ctx, changeRow); err != nil {
 					return err
 				}
-				if err := w.LinkIssue(ctx, eventstore.Link{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), ChangeID: change.ID}); err != nil {
+				if err := w.LinkIssue(ctx, eventstore.Link{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), ChangeID: change.ID}); err != nil {
 					return err
 				}
 			}
-			if err := writer.PutReleaseDelivery(ctx, eventstore.ReleaseDelivery{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), RepositoryID: check.deliveryRow.RepositoryID, ReleaseDelivery: delivery}); err != nil {
+			if err := writer.PutReleaseDelivery(ctx, eventstore.ReleaseDelivery{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), RepositoryID: check.deliveryRow.RepositoryID, ReleaseDelivery: delivery}); err != nil {
 				return err
 			}
 			if err := writeWorkItemRecord(ctx, w, plan, fields); err != nil {

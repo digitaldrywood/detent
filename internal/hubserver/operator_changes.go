@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -161,13 +162,13 @@ func (s *Service) hubChangeAuthority(ctx context.Context, name string, raw json.
 		if !ok {
 			return ctx, nil, operatortool.ErrServiceUnavailable
 		}
-		owner.scope.action = name
+		owner.scope.Action = name
 		if name == operatortool.ReviewChange {
-			if owner.scope.actor().Kind != "human" {
+			if owner.scope.Actor().Kind != "human" {
 				return ctx, nil, operatortool.ErrServiceUnavailable
 			}
-			if owner.scope.credential.Hosted != nil {
-				owner.scope.requireHostedAdmin = true
+			if owner.scope.Credential.Hosted != nil {
+				owner.scope.RequireHostedAdmin = true
 			}
 		}
 		resolved, err := owner.authorized(ctx, args, true)
@@ -183,7 +184,7 @@ func (s *Service) hubChangeAuthority(ctx context.Context, name string, raw json.
 				return ctx, nil, operatortool.ErrAccessDenied
 			}
 			if name == operatortool.ReviewChange {
-				if _, err := s.readChangeVersionRecord(ctx, resolved.organization, args.ChangeID, args.VersionID); err != nil {
+				if _, err := s.readChangeVersionRecord(ctx, resolved.Organization, args.ChangeID, args.VersionID); err != nil {
 					return ctx, nil, hubSafeChangeError(err)
 				}
 			}
@@ -262,10 +263,10 @@ func hubChangeResult(value any) (operatortool.Result, error) {
 	return operatortool.Result{Content: raw}, nil
 }
 func hubSafeChangeError(err error) error {
-	if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
+	if errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
 		return operatortool.ErrProviderUnavailable
 	}
-	if errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied) || errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) || errors.Is(err, sql.ErrNoRows) {
 		return operatortool.ErrAccessDenied
 	}
 	var failure *hubapi.NativeError

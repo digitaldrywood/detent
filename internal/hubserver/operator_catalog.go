@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -23,7 +24,7 @@ type operatorCatalogAuthority struct {
 func (s *Service) withOperatorCatalog(ctx context.Context, credential hubapi.APICredential, organization string) context.Context {
 	readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	catalog := operatorCatalogAuthority{identity: operatorIdentity(credential, organization), credential: credential}
+	catalog := operatorCatalogAuthority{identity: hubscope.OperatorIdentity(credential, organization), credential: credential}
 	if _, board := entryBoardCredential(ctx); board {
 		catalog.runnerAccess = operatortool.ErrAccessDenied
 	} else if credential.Hosted != nil && credential.HostedRole != "account" {
@@ -70,7 +71,7 @@ func (s *Service) authorizeCatalog(ctx context.Context, requirement operatortool
 		return ctx, operatortool.ErrAccessDenied
 	}
 	credential := catalog.credential
-	if credential.HostedRole == "reporter" && !hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) {
+	if credential.HostedRole == "reporter" && !hubscope.HostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) {
 		return ctx, operatortool.ErrAccessDenied
 	}
 	if credential.HostedRole == "account" {
@@ -85,7 +86,7 @@ func (s *Service) authorizeCatalog(ctx context.Context, requirement operatortool
 		}
 		return ctx, nil
 	}
-	if credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, requirement.Scope) || requirement.OrganizationWide && credential.Hosted == nil && credential.NativeOnly {
+	if credential.HostedKeyScope != "" && !hubscope.HostedKeyAllows(credential.HostedKeyScope, requirement.Scope) || requirement.OrganizationWide && credential.Hosted == nil && credential.NativeOnly {
 		return ctx, operatortool.ErrAccessDenied
 	}
 	if requirement.ResourceKind == "runners" {
@@ -104,7 +105,7 @@ func (s *Service) authorizeCatalog(ctx context.Context, requirement operatortool
 	}
 	if requirement.Scope != apikey.ScopeRead {
 		projectResource := requirement.ResourceKind == "work_item" || requirement.ResourceKind == "workspace" || requirement.ResourceKind == "project" || operatortool.IsThreadTool(requirement.Action)
-		if credential.Hosted != nil && (!hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) || !projectResource && credential.HostedRole != "owner" && credential.HostedRole != "admin") || credential.Hosted == nil && requirement.Scope == apikey.ScopeAdmin && credential.Scope != hubapi.APIScopeAdmin {
+		if credential.Hosted != nil && (!hubscope.HostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) || !projectResource && credential.HostedRole != "owner" && credential.HostedRole != "admin") || credential.Hosted == nil && requirement.Scope == apikey.ScopeAdmin && credential.Scope != hubapi.APIScopeAdmin {
 			return ctx, operatortool.ErrAccessDenied
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -55,7 +56,7 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 	if err != nil {
 		return operatortool.Result{}, fmt.Errorf("authorize board: %w", err)
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
 		return operatortool.Result{}, operatortool.ErrAccessDenied
 	}
@@ -65,7 +66,7 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 	}
 	projects := operatorProjectPage{Projects: []tracker.NativeProject{}}
 	if request.ProjectID != "" {
-		scope.project = tracker.ProjectID(request.ProjectID)
+		scope.Project = tracker.ProjectID(request.ProjectID)
 		record, err := s.readTenantProjectRecord(ctx, scope)
 		if err != nil {
 			return operatortool.Result{}, hubapi.SafeWorkReadError(fmt.Errorf("read project record: %w", err))
@@ -95,7 +96,7 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 		if err != nil {
 			return operatortool.Result{}, err
 		}
-		projectResolve, ok := projectCtx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+		projectResolve, ok := projectCtx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 		if !ok {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
 		}
@@ -103,7 +104,7 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 		if err != nil {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
 		}
-		projectScope.project = project.ID
+		projectScope.Project = project.ID
 		params := (operatortool.WorkReadRequest{Limit: remaining, State: request.State, Include: []string{"work"}}).NativeWorkQuery()
 		page, err := s.readIssueLanes(projectCtx, projectScope, params)
 		if err != nil {

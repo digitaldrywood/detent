@@ -34,7 +34,7 @@ func gitHubWebhookRecordFixture(t *testing.T) (*Service, *time.Time, map[tracker
 		if err != nil {
 			t.Fatal(err)
 		}
-		page, err := (gitHubLifecycleImporter{}).FetchImportPage(t.Context(), GitHubImportRequest{Repository: scope.integrationRepository, IssueNumber: 1, Stage: "issue"})
+		page, err := (gitHubLifecycleImporter{}).FetchImportPage(t.Context(), GitHubImportRequest{Repository: scope.IntegrationRepository, IssueNumber: 1, Stage: "issue"})
 		if err != nil {
 			t.Fatal(err)
 		}

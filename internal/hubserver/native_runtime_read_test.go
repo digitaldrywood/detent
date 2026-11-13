@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -142,7 +143,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	path := f.path + "/versions/" + version.ID
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve-current"}, Decision: "approved"}), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/checks", f.token, changeTestResult(version)), http.StatusOK)
@@ -162,8 +163,8 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	seedAttempt := func(status string, observation *tracker.NativeRuntimeObservation) string {
 		t.Helper()
 		id := hubapi.NewID("attempt")
-		if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			item, err := w.WorkItem(t.Context(), scope.project, f.issue.WorkItemID)
+		if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			item, err := w.WorkItem(t.Context(), scope.Project, f.issue.WorkItemID)
 			if err != nil {
 				return err
 			}
@@ -174,7 +175,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 			if now.Before(lease.RenewedAt) {
 				now = lease.RenewedAt.Add(time.Second)
 			}
-			if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: scope.organization, ProjectID: scope.project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: hubTestPolicy().ID, BoundAt: now}); err != nil {
+			if err := w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: scope.Organization, ProjectID: scope.Project, LeaseID: tracker.LeaseID(lease.LeaseID), PolicyID: hubTestPolicy().ID, BoundAt: now}); err != nil {
 				return err
 			}
 			run := tracker.NativeRunData{AttemptID: id, RunID: id, LeaseID: tracker.LeaseID(lease.LeaseID), FencingToken: tracker.FencingToken(lease.FencingToken), MachineID: registered.binding.MachineID, RunnerID: registered.binding.RunnerID, SessionID: id, PolicyID: hubTestPolicy().ID, Sequence: 1, Outcome: status, Runtime: observation}
@@ -186,15 +187,15 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 			if observation.Landing != nil {
 				data.FromState, data.ToState = observation.Landing.FromState, observation.Landing.TargetState
 			}
-			event, err := content.PrepareEvent(t.Context(), scope.organization, marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: string(registered.binding.MachineID)}, RecordedAt: now, Data: data}))
+			event, err := content.PrepareEvent(t.Context(), scope.Organization, marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "machine", PrincipalID: string(registered.binding.MachineID)}, RecordedAt: now, Data: data}))
 			if err != nil {
 				return err
 			}
-			payload, err := content.PreparePayload(t.Context(), scope.organization, marshal(run))
+			payload, err := content.PreparePayload(t.Context(), scope.Organization, marshal(run))
 			if err != nil {
 				return err
 			}
-			if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: scope.organization, ID: "archive_" + payload.SHA256, Reference: payload, CreatedAt: now}); err != nil {
+			if _, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: scope.Organization, ID: "archive_" + payload.SHA256, Reference: payload, CreatedAt: now}); err != nil {
 				return err
 			}
 			if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: id, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: id, Sequence: 1, Status: status, StartedAt: now.Add(-time.Minute), PayloadObjectKey: payload.Key}); err != nil {
@@ -220,16 +221,16 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	finding := "Unresolved review: integration actor overwrites the runner actor"
 	issue := f.issue
 	issue.State, issue.Revision, issue.UpdatedAt = "In Progress", issue.Revision+1, now
-	issueVersion, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision)}, marshal(issue))
+	issueVersion, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: int64(issue.Revision)}, marshal(issue))
 	if err != nil {
 		t.Fatal(err)
 	}
-	transition, err := content.PrepareEvent(t.Context(), scope.organization, marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "system", PrincipalID: "example-worker"}, RecordedAt: now, Data: tracker.CollaborationData{FromState: "Merging", ToState: issue.State, Reason: "worker_progress", ReasonDetail: finding, Change: &tracker.NativeChangeReference{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}}))
+	transition, err := content.PrepareEvent(t.Context(), scope.Organization, marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: tracker.Actor{Kind: "system", PrincipalID: "example-worker"}, RecordedAt: now, Data: tracker.CollaborationData{FromState: "Merging", ToState: issue.State, Reason: "worker_progress", ReasonDetail: finding, Change: &tracker.NativeChangeReference{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		row, err := w.WorkItem(t.Context(), scope.project, issue.WorkItemID)
+	if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		row, err := w.WorkItem(t.Context(), scope.Project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
@@ -268,13 +269,13 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	for _, history := range []int{1, 64, 256} {
 		t.Run(strconv.Itoa(history), func(t *testing.T) {
 			for i := previous; i < history; i++ {
-				decision, err := content.PrepareEvent(t.Context(), scope.organization, marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: tracker.Actor{Kind: "system", PrincipalID: "example-scheduler"}, RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "recorded refusal", At: now}}}))
+				decision, err := content.PrepareEvent(t.Context(), scope.Organization, marshal(tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: f.issue.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: tracker.Actor{Kind: "system", PrincipalID: "example-scheduler"}, RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "recorded refusal", At: now}}}))
 				if err != nil {
 					t.Fatal(err)
 				}
 				old := version
 				old.ID, old.Number = hubapi.NewID("version"), int64(i+1000)
-				oldVersion, err := content.PrepareVersion(t.Context(), scope.organization, marshal(old))
+				oldVersion, err := content.PrepareVersion(t.Context(), scope.Organization, marshal(old))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -284,13 +285,13 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 					"check":      tracker.ChangeCheck{VersionID: old.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: hubapi.NewID("check"), Conclusion: "failure"}, Actor: tracker.Actor{Kind: "system", PrincipalID: "old-check"}, ReceivedAt: version.CreatedAt},
 					"discussion": tracker.ChangeDiscussion{ID: hubapi.NewID("comment"), VersionID: old.ID, Body: strings.Repeat("historical discussion ", 512), Actor: tracker.Actor{Kind: "human", PrincipalID: "old-commenter"}, CreatedAt: version.CreatedAt},
 				} {
-					row, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: scope.organization, ChangeID: old.ChangeID, Kind: kind}, marshal(record))
+					row, err := content.PrepareEvidence(t.Context(), eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: old.ChangeID, Kind: kind}, marshal(record))
 					if err != nil {
 						t.Fatal(err)
 					}
 					historical = append(historical, row)
 				}
-				if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					if _, err := w.AppendEvent(t.Context(), decision); err != nil {
 						return err
 					}
@@ -340,7 +341,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 					t.Fatal(err)
 				}
 				var raw []byte
-				_, err = tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(scope.organization))
+				_, err = tx.Exec(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", string(scope.Organization))
 				if err == nil {
 					err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement.query, statement.args...).Scan(&raw)
 				}
@@ -633,7 +634,7 @@ func TestNativeExplanationIncompleteGateHistory(t *testing.T) {
 	}
 }
 
-func newRuntimeCapacityFixture(t *testing.T, name string, now *time.Time) (nativeFixture, *postgres.Repository, *pgxpool.Pool, *sql.DB, nativeScope) {
+func newRuntimeCapacityFixture(t *testing.T, name string, now *time.Time) (nativeFixture, *postgres.Repository, *pgxpool.Pool, *sql.DB, hubscope.NativeScope) {
 	t.Helper()
 	service := newPostgresNativeService(t, Config{Clock: func() time.Time { return *now }})
 	f := newNativeFixture(t, service, "", name)
@@ -678,7 +679,7 @@ func newRuntimeCapacityFixture(t *testing.T, name string, now *time.Time) (nativ
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	return f, repository, pool, admin, scope
 }
 
@@ -697,7 +698,7 @@ func runtimeCapacityStatements(statements []tracedStatement) ([]tracedStatement,
 	return capacity, data
 }
 
-func runtimeCapacityQueries(t *testing.T, service *Service, ctx context.Context, scope nativeScope, now time.Time) ([]runnerauth.Runner, bool, []tracedStatement, error) {
+func runtimeCapacityQueries(t *testing.T, service *Service, ctx context.Context, scope hubscope.NativeScope, now time.Time) ([]runnerauth.Runner, bool, []tracedStatement, error) {
 	t.Helper()
 	capture := &runtimeHistoryTraceCapture{}
 	readCtx := context.WithValue(ctx, runtimeHistoryTraceKey{}, capture)
@@ -706,13 +707,13 @@ func runtimeCapacityQueries(t *testing.T, service *Service, ctx context.Context,
 		t.Fatal("tenant snapshot owner unavailable")
 	}
 	var snapshot runnerstore.RuntimeCapacitySnapshot
-	err := repository.ReadTenantSnapshot(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(runnerstore.RuntimeCapacityReader)
 		if !ok {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		snapshot, err = owner.RuntimeCapacitySnapshot(readCtx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.project, RunnerID: scope.credential.Runner.RunnerID, At: now, Explanation: explanationRead(ctx)})
+		snapshot, err = owner.RuntimeCapacitySnapshot(readCtx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, RunnerID: scope.Credential.Runner.RunnerID, At: now, Explanation: explanationRead(ctx)})
 		return err
 	})
 	statements, _ := runtimeCapacityStatements(capture.statements)
@@ -722,7 +723,7 @@ func runtimeCapacityQueries(t *testing.T, service *Service, ctx context.Context,
 	return runtimeRunnersFromSnapshot(snapshot, scope, now), snapshot.Truncated, statements, err
 }
 
-func runtimeRouteCapacityQueries(t *testing.T, service *Service, ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, want int, total *int) (tracker.NativeRuntimeEvidence, []tracedStatement, error) {
+func runtimeRouteCapacityQueries(t *testing.T, service *Service, ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, want int, total *int) (tracker.NativeRuntimeEvidence, []tracedStatement, error) {
 	t.Helper()
 	capture := &runtimeHistoryTraceCapture{}
 	evidence, err := service.readNativeRuntime(context.WithValue(ctx, runtimeHistoryTraceKey{}, capture), scope, string(item), "")
@@ -745,7 +746,7 @@ func runtimeRouteCapacityQueries(t *testing.T, service *Service, ctx context.Con
 	return evidence, capacity, err
 }
 
-func assertRuntimeCapacityPlans(t *testing.T, pool *pgxpool.Pool, scope nativeScope, statements []tracedStatement, want int) {
+func assertRuntimeCapacityPlans(t *testing.T, pool *pgxpool.Pool, scope hubscope.NativeScope, statements []tracedStatement, want int) {
 	t.Helper()
 	found := false
 	for _, statement := range statements {
@@ -757,7 +758,7 @@ func assertRuntimeCapacityPlans(t *testing.T, pool *pgxpool.Pool, scope nativeSc
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = tx.Exec(t.Context(), "SELECT current_user, set_config('detent.organization_id', $1, true)", string(scope.organization))
+		_, err = tx.Exec(t.Context(), "SELECT current_user, set_config('detent.organization_id', $1, true)", string(scope.Organization))
 		var raw []byte
 		if err == nil {
 			err = tx.QueryRow(t.Context(), "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+statement.query, statement.args...).Scan(&raw)
@@ -837,7 +838,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 				all = append(all, sharedRunner(t, first))
 			}
 			previous = total
-			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				for _, runner := range all {
 					if err := w.ReplaceRunnerProviderReports(t.Context(), runner.binding.RunnerID, []providercapacity.Report{report}); err != nil {
 						return err
@@ -861,7 +862,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 				}
 				if i == 0 || i == len(runners)-1 || total <= 8 {
 					full, err := f.service.readRunnerRouting(t.Context(), scope, r.RunnerID)
-					if err != nil || r.Health != full.Health || !reflect.DeepEqual(r.ProviderCapacity, full.ProviderCapacity) || !reflect.DeepEqual(r.Exclusions(scope.project, policy.Requirements{}, false), full.Exclusions(scope.project, policy.Requirements{}, false)) {
+					if err != nil || r.Health != full.Health || !reflect.DeepEqual(r.ProviderCapacity, full.ProviderCapacity) || !reflect.DeepEqual(r.Exclusions(scope.Project, policy.Requirements{}, false), full.Exclusions(scope.Project, policy.Requirements{}, false)) {
 						t.Fatalf("projection differs from routing owner: %#v, %#v, %v", r, full, err)
 					}
 				}
@@ -876,22 +877,22 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 			for i, runner := range runners {
 				view := evidence.Capacity[i]
 				codes := []string{}
-				for _, exclusion := range runner.Exclusions(scope.project, policy.Requirements{}, false) {
+				for _, exclusion := range runner.Exclusions(scope.Project, policy.Requirements{}, false) {
 					codes = append(codes, exclusion.Code)
 				}
-				if view.RunnerID != runner.RunnerID || view.Health != runner.Health || view.Available != max(0, min(runner.HostCapacity-runner.HostUsed, runner.RemainingCapacity(scope.project))) || !reflect.DeepEqual(view.ProviderCapacity, runner.ProviderCapacity) || !reflect.DeepEqual(view.Exclusions, codes) {
+				if view.RunnerID != runner.RunnerID || view.Health != runner.Health || view.Available != max(0, min(runner.HostCapacity-runner.HostUsed, runner.RemainingCapacity(scope.Project))) || !reflect.DeepEqual(view.ProviderCapacity, runner.ProviderCapacity) || !reflect.DeepEqual(view.Exclusions, codes) {
 					t.Fatalf("live runtime lost capacity owner facts: %#v %#v", view, runner)
 				}
 			}
 			if total == 101 {
 				currentScope := scope
 				for _, runner := range all {
-					if runner.binding.RunnerID > currentScope.credential.Runner.RunnerID {
-						currentScope.credential.Runner.RunnerID = runner.binding.RunnerID
+					if runner.binding.RunnerID > currentScope.Credential.Runner.RunnerID {
+						currentScope.Credential.Runner.RunnerID = runner.binding.RunnerID
 					}
 				}
 				current, truncated, currentStatements, err := runtimeCapacityQueries(t, f.service, t.Context(), currentScope, now)
-				if err != nil || !truncated || len(current) != 100 || current[0].RunnerID != currentScope.credential.Runner.RunnerID || len(currentStatements) != 4 {
+				if err != nil || !truncated || len(current) != 100 || current[0].RunnerID != currentScope.Credential.Runner.RunnerID || len(currentStatements) != 4 {
 					t.Fatalf("bounded runtime projection dropped current registered runner: runners=%d truncated=%v queries=%d error=%v", len(current), truncated, len(currentStatements), err)
 				}
 			}
@@ -926,8 +927,8 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 						}
 					}
 					machineID := hubapi.NewID("machine")
-					if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-						return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: scope.organization, ID: machineID, Hostname: "Example outside host", Capacity: 8, Version: "test"})
+					if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: scope.Organization, ID: machineID, Hostname: "Example outside host", Capacity: 8, Version: "test"})
 					}); err != nil {
 						t.Fatal(err)
 					}
@@ -938,23 +939,23 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
 						defer cancel()
 						if hiddenLease.LeaseID != "" {
-							if err := repository.WriteTenant(cleanup, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+							if err := repository.WriteTenant(cleanup, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 								_, err := w.Release(cleanup, leasestore.Fence{LeaseID: hiddenLease.LeaseID, FencingToken: hiddenLease.FencingToken}, "completed")
 								return err
 							}); err != nil {
 								t.Error(err)
 							}
 						}
-						if _, err := admin.ExecContext(cleanup, `WITH enrollment AS (UPDATE runner_enrollments SET machine_id=$3 WHERE organization_id=$1 AND runner_id=$2 RETURNING id) UPDATE runner_identities SET machine_id=$3 WHERE organization_id=$1 AND runner_id=$2 AND enrollment_id IN(SELECT id FROM enrollment)`, scope.organization, outside.binding.RunnerID, outside.binding.MachineID); err != nil {
+						if _, err := admin.ExecContext(cleanup, `WITH enrollment AS (UPDATE runner_enrollments SET machine_id=$3 WHERE organization_id=$1 AND runner_id=$2 RETURNING id) UPDATE runner_identities SET machine_id=$3 WHERE organization_id=$1 AND runner_id=$2 AND enrollment_id IN(SELECT id FROM enrollment)`, scope.Organization, outside.binding.RunnerID, outside.binding.MachineID); err != nil {
 							t.Error(err)
 						}
 					})
-					if _, err := admin.ExecContext(t.Context(), `WITH enrollment AS (UPDATE runner_enrollments SET machine_id=$3 WHERE organization_id=$1 AND runner_id=$2 RETURNING id) UPDATE runner_identities SET machine_id=$3 WHERE organization_id=$1 AND runner_id=$2 AND enrollment_id IN(SELECT id FROM enrollment)`, scope.organization, outside.binding.RunnerID, machineID); err != nil {
+					if _, err := admin.ExecContext(t.Context(), `WITH enrollment AS (UPDATE runner_enrollments SET machine_id=$3 WHERE organization_id=$1 AND runner_id=$2 RETURNING id) UPDATE runner_identities SET machine_id=$3 WHERE organization_id=$1 AND runner_id=$2 AND enrollment_id IN(SELECT id FROM enrollment)`, scope.Organization, outside.binding.RunnerID, machineID); err != nil {
 						t.Fatal(err)
 					}
 					hiddenIssue := f.create(t, "Example outside landing lease")
-					if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-						item, err := w.WorkItem(t.Context(), scope.project, hiddenIssue.WorkItemID)
+					if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+						item, err := w.WorkItem(t.Context(), scope.Project, hiddenIssue.WorkItemID)
 						if err != nil {
 							return err
 						}
@@ -962,7 +963,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: scope.organization, ProjectID: scope.project, LeaseID: tracker.LeaseID(hiddenLease.LeaseID), PolicyID: hubTestPolicy().ID, BoundAt: hiddenLease.RenewedAt})
+						return w.BindLeasePolicy(t.Context(), policystore.LeasePolicy{OrganizationID: scope.Organization, ProjectID: scope.Project, LeaseID: tracker.LeaseID(hiddenLease.LeaseID), PolicyID: hubTestPolicy().ID, BoundAt: hiddenLease.RenewedAt})
 					}); err != nil {
 						t.Fatal(err)
 					}
@@ -999,25 +1000,25 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 		t.Run(sparse, func(t *testing.T) {
 			currentScope := scope
 			for _, runner := range all {
-				if runner.binding.RunnerID > currentScope.credential.Runner.RunnerID {
-					currentScope.credential.Runner.RunnerID = runner.binding.RunnerID
+				if runner.binding.RunnerID > currentScope.Credential.Runner.RunnerID {
+					currentScope.Credential.Runner.RunnerID = runner.binding.RunnerID
 				}
 			}
 			t.Cleanup(func() {
 				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
 				defer cancel()
-				if _, err := admin.ExecContext(cleanup, `UPDATE runner_identities SET removed_at=NULL WHERE organization_id=$1`, scope.organization); err != nil {
+				if _, err := admin.ExecContext(cleanup, `UPDATE runner_identities SET removed_at=NULL WHERE organization_id=$1`, scope.Organization); err != nil {
 					t.Error(err)
 				}
-				if _, err := admin.ExecContext(cleanup, `INSERT INTO token_grants(organization_id,token_id,project_id) SELECT organization_id,token_id,$2 FROM runner_identities WHERE organization_id=$1 ON CONFLICT DO NOTHING`, scope.organization, scope.project); err != nil {
+				if _, err := admin.ExecContext(cleanup, `INSERT INTO token_grants(organization_id,token_id,project_id) SELECT organization_id,token_id,$2 FROM runner_identities WHERE organization_id=$1 ON CONFLICT DO NOTHING`, scope.Organization, scope.Project); err != nil {
 					t.Error(err)
 				}
 			})
 			var err error
 			if sparse == "ungranted" {
-				_, err = admin.ExecContext(t.Context(), `DELETE FROM token_grants WHERE organization_id=$1 AND token_id IN(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id<>$2)`, scope.organization, currentScope.credential.Runner.RunnerID)
+				_, err = admin.ExecContext(t.Context(), `DELETE FROM token_grants WHERE organization_id=$1 AND token_id IN(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id<>$2)`, scope.Organization, currentScope.Credential.Runner.RunnerID)
 			} else {
-				_, err = admin.ExecContext(t.Context(), `UPDATE runner_identities SET removed_at=$3 WHERE organization_id=$1 AND runner_id<>$2`, scope.organization, currentScope.credential.Runner.RunnerID, now)
+				_, err = admin.ExecContext(t.Context(), `UPDATE runner_identities SET removed_at=$3 WHERE organization_id=$1 AND runner_id<>$2`, scope.Organization, currentScope.Credential.Runner.RunnerID, now)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -1028,10 +1029,10 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 				t.Fatalf("candidate search escaped sparse owner window: count=%d partial=%v err=%v", len(candidates), partial, err)
 			}
 			candidates, partial, _, err = runtimeCapacityQueries(t, f.service, ctx, currentScope, now)
-			if err != nil || !partial || len(candidates) != 1 || candidates[0].RunnerID != currentScope.credential.Runner.RunnerID {
+			if err != nil || !partial || len(candidates) != 1 || candidates[0].RunnerID != currentScope.Credential.Runner.RunnerID {
 				t.Fatalf("selected runner lost priority: count=%d partial=%v err=%v", len(candidates), partial, err)
 			}
-			if _, err := admin.ExecContext(t.Context(), `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2)`, scope.organization, currentScope.credential.Runner.RunnerID); err != nil {
+			if _, err := admin.ExecContext(t.Context(), `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2)`, scope.Organization, currentScope.Credential.Runner.RunnerID); err != nil {
 				t.Fatal(err)
 			}
 			candidates, partial, _, err = runtimeCapacityQueries(t, f.service, ctx, currentScope, now)
@@ -1046,12 +1047,12 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runners, _, _, err := runtimeCapacityQueries(t, f.service, t.Context(), nativeScope{organization: foreign.project.OrganizationID, project: foreign.project.ID, credential: foreignCredential}, now)
+	runners, _, _, err := runtimeCapacityQueries(t, f.service, t.Context(), hubscope.NativeScope{Organization: foreign.project.OrganizationID, Project: foreign.project.ID, Credential: foreignCredential}, now)
 	if err != nil || len(runners) != 0 {
 		t.Fatalf("cross-organization capacity leaked: %#v %v", runners, err)
 	}
-	other := newNativeFixture(t, f.service, scope.organization, "runtime-ungranted")
-	runners, _, _, err = runtimeCapacityQueries(t, f.service, t.Context(), nativeScope{organization: scope.organization, project: other.project.ID, credential: scope.credential}, now)
+	other := newNativeFixture(t, f.service, scope.Organization, "runtime-ungranted")
+	runners, _, _, err = runtimeCapacityQueries(t, f.service, t.Context(), hubscope.NativeScope{Organization: scope.Organization, Project: other.project.ID, Credential: scope.Credential}, now)
 	if err != nil || len(runners) != 0 {
 		t.Fatalf("ungranted project capacity leaked: %#v %v", runners, err)
 	}
@@ -1071,7 +1072,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 	if err != nil || evidence.Scheduling.Outcome != "unknown" || !slices.Contains(evidence.Unavailable, "capacity_projection_truncated") {
 		t.Fatalf("truncated exclusions became a complete scheduling decision: %#v %v", evidence.Scheduling, err)
 	}
-	if _, err := admin.ExecContext(t.Context(), `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2) AND project_id=$3`, scope.organization, first.binding.RunnerID, scope.project); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2) AND project_id=$3`, scope.Organization, first.binding.RunnerID, scope.Project); err != nil {
 		t.Fatal(err)
 	}
 	runners, truncated, _, err := runtimeCapacityQueries(t, f.service, t.Context(), scope, now)
@@ -1083,13 +1084,13 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 			t.Fatalf("occupancy outside the granted runner page was lost: %#v", r)
 		}
 	}
-	if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET scope='organization' WHERE organization_id=$1 AND runner_id=$2`, scope.organization, first.binding.RunnerID); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `UPDATE runner_identities SET scope='organization' WHERE organization_id=$1 AND runner_id=$2`, scope.Organization, first.binding.RunnerID); err != nil {
 		t.Fatal(err)
 	}
 	organizationScope := scope
-	organizationScope.credential.Runner.RunnerID = first.binding.RunnerID
+	organizationScope.Credential.Runner.RunnerID = first.binding.RunnerID
 	runners, truncated, _, err = runtimeCapacityQueries(t, f.service, t.Context(), organizationScope, now)
-	if err != nil || !truncated || len(runners) != 100 || runners[0].RunnerID != first.binding.RunnerID || !runners[0].AllowsProject(scope.project) {
+	if err != nil || !truncated || len(runners) != 100 || runners[0].RunnerID != first.binding.RunnerID || !runners[0].AllowsProject(scope.Project) {
 		t.Fatalf("organization-scoped runner required a project grant: %#v partial=%v error=%v", runners, truncated, err)
 	}
 	organizationEvidence, _, err := runtimeRouteCapacityQueries(t, f.service, t.Context(), organizationScope, issue.WorkItemID, 4, nil)
@@ -1113,7 +1114,7 @@ func TestExplanationProviderCapacityCandidateWindow(t *testing.T) {
 	decodeHubResponse(t, response, &lease)
 	now = lease.ServerTime
 	var reservation claimstore.ProviderReservation
-	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		reservation, err = r.ProviderReservation(t.Context(), lease.ID)
 		return err
@@ -1129,7 +1130,7 @@ SELECT $1,$2,'candidate_'||n,n+1,'Example candidate','Todo',$5,$5 FROM generate_
 ), owned AS (
 INSERT INTO leases(organization_id,project_id,runner_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at)
 SELECT organization_id,project_id,$7,'capacity_'||native_id,id,$6,native_id,1,$5,$5,$5::timestamptz+interval '2 minutes' FROM added RETURNING organization_id,lease_id,runner_id,acquired_at
-) INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at) SELECT organization_id,lease_id,runner_id,acquired_at FROM owned`, scope.organization, scope.project, previous, total-1, now, first.binding.MachineID, first.binding.RunnerID)
+) INSERT INTO runner_lease_assignments(organization_id,lease_id,runner_id,assigned_at) SELECT organization_id,lease_id,runner_id,acquired_at FROM owned`, scope.Organization, scope.Project, previous, total-1, now, first.binding.MachineID, first.binding.RunnerID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1140,13 +1141,13 @@ SELECT organization_id,project_id,$7,'capacity_'||native_id,id,$6,native_id,1,$5
 		for _, absent := range []bool{false, true} {
 			t.Run(fmt.Sprintf("leases=%d/absent=%v", total, absent), func(t *testing.T) {
 				if absent {
-					if _, err := admin.ExecContext(t.Context(), `DELETE FROM provider_reservations WHERE organization_id=$1`, scope.organization); err != nil {
+					if _, err := admin.ExecContext(t.Context(), `DELETE FROM provider_reservations WHERE organization_id=$1`, scope.Organization); err != nil {
 						t.Fatal(err)
 					}
 					t.Cleanup(func() {
 						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
 						defer cancel()
-						if err := repository.WriteTenant(cleanup, scope.organization, corestore.Serving, func(w tenantstore.Writer) error { return w.CreateProviderReservation(cleanup, reservation) }); err != nil {
+						if err := repository.WriteTenant(cleanup, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { return w.CreateProviderReservation(cleanup, reservation) }); err != nil {
 							t.Error(err)
 						}
 					})
@@ -1154,13 +1155,13 @@ SELECT organization_id,project_id,$7,'capacity_'||native_id,id,$6,native_id,1,$5
 				capture := &runtimeHistoryTraceCapture{}
 				readCtx := context.WithValue(ctx, runtimeHistoryTraceKey{}, capture)
 				var facts runnerstore.RuntimeCapacitySnapshot
-				err := repository.ReadTenantSnapshot(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				err := repository.ReadTenantSnapshot(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 					owner, ok := r.(runnerstore.RuntimeCapacityReader)
 					if !ok {
 						return hubapi.NativeRunEventStorageUnavailable()
 					}
 					var err error
-					facts, err = owner.RuntimeCapacitySnapshot(readCtx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.project, At: now, Explanation: true})
+					facts, err = owner.RuntimeCapacitySnapshot(readCtx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, At: now, Explanation: true})
 					return err
 				})
 				if err != nil {

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -19,9 +20,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name string, request operatortool.WorkArguments, command tracker.Mutation) (json.RawMessage, error) {
-	if request.Scope != string(scope.project) {
-		if scope.credential.EntryKey != nil && (scope.credential.EntryKey.Access != "all" || len(scope.credential.EntryKey.BlockedProjects) != 0) {
+func (s *Service) mutateQueueRecord(ctx context.Context, scope hubscope.NativeScope, name string, request operatortool.WorkArguments, command tracker.Mutation) (json.RawMessage, error) {
+	if request.Scope != string(scope.Project) {
+		if scope.Credential.EntryKey != nil && (scope.Credential.EntryKey.Access != "all" || len(scope.Credential.EntryKey.BlockedProjects) != 0) {
 			return nil, operatortool.ErrAccessDenied
 		}
 		var err error
@@ -52,11 +53,11 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 			return nil, err
 		}
 		if name == operatortool.OrderItem {
-			raw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: source.NativeID, ID: hubapi.NewID("evt"), Type: "queue.order_changed", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: s.config.now().UTC(), Data: tracker.CollaborationData{Revision: tracker.Revision(source.Revision), Operation: "order", Fields: []string{"queue_order"}}})
+			raw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "work_item", AggregateID: source.NativeID, ID: hubapi.NewID("evt"), Type: "queue.order_changed", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: s.config.now().UTC(), Data: tracker.CollaborationData{Revision: tracker.Revision(source.Revision), Operation: "order", Fields: []string{"queue_order"}}})
 			if err != nil {
 				return nil, err
 			}
-			event, err := eventstore.NewContent(s.runDetailStore()).PrepareEvent(ctx, scope.organization, raw)
+			event, err := eventstore.NewContent(s.runDetailStore()).PrepareEvent(ctx, scope.Organization, raw)
 			if err != nil {
 				return nil, err
 			}
@@ -83,15 +84,15 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 				if err != nil {
 					return nil, err
 				}
-				payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
+				payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, raw)
 				if err != nil {
 					return nil, err
 				}
-				key, err := hubapi.CommandHash(struct{ Operation, ActorID, CommandKey string }{operation, scope.credential.ID, command.IdempotencyKey})
+				key, err := hubapi.CommandHash(struct{ Operation, ActorID, CommandKey string }{operation, scope.Credential.ID, command.IdempotencyKey})
 				if err != nil {
 					return nil, err
 				}
-				outbound = &projectstore.GitHubOutbound{ProjectID: scope.project, WorkItemID: source.NativeID, Key: "queue-priority:" + key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkflowLabel), CreatedAt: s.config.now().UTC(), Payload: payload, CoalesceKey: "managed-label:" + repository + ":" + string(source.NativeID) + ":priority:"}
+				outbound = &projectstore.GitHubOutbound{ProjectID: scope.Project, WorkItemID: source.NativeID, Key: "queue-priority:" + key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkflowLabel), CreatedAt: s.config.now().UTC(), Payload: payload, CoalesceKey: "managed-label:" + repository + ":" + string(source.NativeID) + ":priority:"}
 			}
 		}
 	}
@@ -106,30 +107,30 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 		return nil, err
 	}
 	now := s.config.now().UTC()
-	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, err
 	}
 	var replay *eventstore.Receipt
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		project, err := w.ProjectRecord(ctx, scope.project)
+		project, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if project.Core.Profile != "github_compatible" {
 			return hubapi.NativePublicInvalid("Queue ordering and priority overrides require a GitHub-compatible project; native projects use issue priority")
 		}
-		row, err := w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(request.Identifier))
+		row, err := w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(request.Identifier))
 		if err != nil {
 			return err
 		}
-		previous, err := w.Receipt(ctx, scope.credential.ID, operation, command.IdempotencyKey)
+		previous, err := w.Receipt(ctx, scope.Credential.ID, operation, command.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
 				return hubapi.NativeConflict(0)
@@ -158,9 +159,9 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 		if !validState {
 			return hubapi.NativePublicInvalid("Queue state is not configured")
 		}
-		entry, err := w.QueueEntry(ctx, scope.project, row.NativeID, request.Scope)
+		entry, err := w.QueueEntry(ctx, scope.Project, row.NativeID, request.Scope)
 		if errors.Is(err, corestore.ErrNotFound) {
-			entry = claimstore.QueueEntry{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: row.NativeID, Scope: request.Scope, CreatedAt: now}
+			entry = claimstore.QueueEntry{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: row.NativeID, Scope: request.Scope, CreatedAt: now}
 		} else if err != nil {
 			return err
 		}
@@ -194,7 +195,7 @@ func (s *Service) mutateQueueRecord(ctx context.Context, scope nativeScope, name
 				return err
 			}
 		}
-		if err := s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK); err != nil {
+		if err := s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), http.StatusOK); err != nil {
 			return err
 		}
 		_, err = w.PutReceipt(ctx, receipt)

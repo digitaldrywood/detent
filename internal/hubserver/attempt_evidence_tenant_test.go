@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -252,7 +253,7 @@ func testPostgresAttemptEvidence(t *testing.T, service *Service, admin *sql.DB, 
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("credential status=%d error=%v", status, err)
 	}
-	if err := service.checkAttachmentEvidenceTenant(t.Context(), nativeScope{organization: organization.ID, project: project.ID, credential: credential}, input); err != nil {
+	if err := service.checkAttachmentEvidenceTenant(t.Context(), hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: credential}, input); err != nil {
 		t.Fatalf("typed accounting preflight: %v", err)
 	}
 	planRef := billingstore.PlanReference{ID: "example-attachments", Version: 1}

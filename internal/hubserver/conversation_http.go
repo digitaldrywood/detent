@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/skills"
@@ -83,7 +84,7 @@ func (s *Service) requireConversationScope(extra ...hubapi.APIScope) echo.Middle
 				return s.nativeAPIError(c, hubapi.NativeNotFound())
 			}
 			ctx := c.Request().Context()
-			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
+			scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Project: tracker.ProjectID(c.Param("project")), Credential: credential}
 
 			if err := s.authorizeProjectRecord(ctx, scope, false); err != nil {
 				if c.Param("conversation") != "" {
@@ -109,7 +110,7 @@ func (s *Service) requireConversationScope(extra ...hubapi.APIScope) echo.Middle
 			}
 			c.Response().Header().Set("Cache-Control", "no-store")
 			if credential.Hosted != nil {
-				if err := s.hostedAudit(ctx, credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
+				if err := s.hostedAudit(ctx, credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.Project), 0); err != nil {
 					return s.nativeAPIError(c, err)
 				}
 			}
@@ -136,7 +137,7 @@ func (s *Service) requireConversationOrganization() echo.MiddlewareFunc {
 				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", hubapi.APIErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
 			}
 			ctx := c.Request().Context()
-			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
+			scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential}
 			if err := s.authorizeConversationOrganization(ctx, scope); err != nil {
 				return s.nativeAPIError(c, err)
 			}
@@ -153,7 +154,7 @@ func (s *Service) requireConversationOrganization() echo.MiddlewareFunc {
 	}
 }
 
-func (s *Service) authorizeConversationOrganization(ctx context.Context, scope nativeScope) error {
+func (s *Service) authorizeConversationOrganization(ctx context.Context, scope hubscope.NativeScope) error {
 	return hubapi.FromFeatureError(s.requestAuth().AuthorizeOrganization(ctx, s.authInput(scope)))
 }
 
@@ -194,7 +195,7 @@ func (s *Service) createConversation(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	value, err := s.commandCreateConversation(c.Request().Context(), nativeRequestScope(c), request)
+	value, err := s.commandCreateConversation(c.Request().Context(), hubscope.NativeRequestScope(c), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -206,9 +207,9 @@ func (s *Service) listConversationsPage(c echo.Context, filter conversationListQ
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	scope := nativeRequestScope(c)
-	filter.Organization = scope.organization
-	filter.Principal = scope.credential.ID
+	scope := hubscope.NativeRequestScope(c)
+	filter.Organization = scope.Organization
+	filter.Principal = scope.Credential.ID
 	filter.Limit = int(limit)
 	filter.Cursor = strings.TrimSpace(c.QueryParam("cursor"))
 	settled, present, err := conversationQueryTristate(c, "settled")
@@ -229,14 +230,14 @@ func (s *Service) listConversationsPage(c echo.Context, filter conversationListQ
 
 // listProjectConversations implements GET /conversations for a project.
 func (s *Service) listProjectConversations(c echo.Context) error {
-	return s.listConversationsPage(c, conversationListQuery{Project: nativeRequestScope(c).project})
+	return s.listConversationsPage(c, conversationListQuery{Project: hubscope.NativeRequestScope(c).Project})
 }
 
 // listOrganizationConversations implements the organization-level listing:
 // the union of the projects the actor can read, most recent activity first.
 func (s *Service) listOrganizationConversations(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	if scope.credential.Hosted == nil && scope.credential.EntryKey == nil {
+	scope := hubscope.NativeRequestScope(c)
+	if scope.Credential.Hosted == nil && scope.Credential.EntryKey == nil {
 		return s.listConversationsPage(c, conversationListQuery{})
 	}
 
@@ -256,10 +257,10 @@ func (s *Service) listOrganizationConversations(c echo.Context) error {
 func (s *Service) getWorkItemConversation(c echo.Context) error {
 	if c.QueryParam("metadata") == "true" {
 
-		scope := nativeRequestScope(c)
+		scope := hubscope.NativeRequestScope(c)
 		var record conversationRecord
-		err := s.config.TenantRepository.ReadTenant(c.Request().Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			stored, err := reader.ConversationByWorkItem(c.Request().Context(), scope.project, c.Param("item"))
+		err := s.config.TenantRepository.ReadTenant(c.Request().Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			stored, err := reader.ConversationByWorkItem(c.Request().Context(), scope.Project, c.Param("item"))
 			if err != nil {
 				return err
 			}
@@ -275,7 +276,7 @@ func (s *Service) getWorkItemConversation(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, conversationSnapshot{Skills: []skills.ProviderSkill{}, Conversation: projectConversation(record), Messages: []conversationMessageResource{}, Questions: []conversation.Question{}, Cursor: record.EventSeq})
 	}
-	value, err := s.readWorkItemConversationSnapshot(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
+	value, err := s.readWorkItemConversationSnapshot(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -286,7 +287,7 @@ func (s *Service) getWorkItemConversation(c echo.Context) error {
 // the latest message page and the pending questions are read in one
 // transaction so that the returned cursor matches the messages exactly.
 func (s *Service) getConversation(c echo.Context) error {
-	value, err := s.readConversationSnapshot(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"))
+	value, err := s.readConversationSnapshot(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -306,7 +307,7 @@ func (s *Service) listConversationMessages(c echo.Context) error {
 	if limit == 0 {
 		limit = conversationMessagePage
 	}
-	value, err := s.readConversationMessages(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), before, int(limit))
+	value, err := s.readConversationMessages(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), before, int(limit))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -319,7 +320,7 @@ func (s *Service) postConversationCommand(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &command); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	value, err := s.commandPostConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), command)
+	value, err := s.commandPostConversation(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), command)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -331,7 +332,7 @@ func (s *Service) linkConversation(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	value, err := s.commandLinkConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
+	value, err := s.commandLinkConversation(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -346,7 +347,7 @@ func (s *Service) patchConversation(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	value, err := s.commandPatchConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
+	value, err := s.commandPatchConversation(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -358,7 +359,7 @@ func (s *Service) patchConversation(c echo.Context) error {
 // from their cursor, so a slow client never loses or reorders events. The
 // stream re-authorizes on every wake and on a timer and closes on loss.
 func (s *Service) streamConversationEvents(c echo.Context) error {
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	after, err := conversationQueryInt(c, "after")
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -374,7 +375,7 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 	}
 	stream := newConversationStream(c)
 	stream.Now = s.config.now
-	if scope.credential.EntryKey != nil {
+	if scope.Credential.EntryKey != nil {
 		stream.Authorize = func() error {
 			_, err := s.reauthorizeConversationStream(c, &scope, record.ID)
 			return err
@@ -434,11 +435,11 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 // revocation and grants for API tokens, then the conversation read rule.
 // It updates scope with the refreshed credential and returns the current
 // record.
-func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeScope, conversationID string) (conversationRecord, error) {
+func (s *Service) reauthorizeConversationStream(c echo.Context, scope *hubscope.NativeScope, conversationID string) (conversationRecord, error) {
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancelRead()
-	if scope.credential.EntryKey != nil {
+	if scope.Credential.EntryKey != nil {
 		claims, ok := hostedSharedClaims(c)
 		if !ok || claims.Key == nil {
 			return conversationRecord{}, auth.ErrHostedIdentity
@@ -451,13 +452,13 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 		if err != nil {
 			return conversationRecord{}, err
 		}
-		scope.credential = credential
-	} else if scope.credential.Hosted != nil {
+		scope.Credential = credential
+	} else if scope.Credential.Hosted != nil {
 		credential, _, err := s.authenticateAPIRequestContext(readCtx, c)
 		if err != nil {
 			return conversationRecord{}, err
 		}
-		scope.credential = credential
+		scope.Credential = credential
 	}
 
 	if err := s.authorizeProjectRecord(readCtx, *scope, false); err != nil {
@@ -583,7 +584,7 @@ func (s *Service) uploadConversationAttachment(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	value, err := s.commandUploadAttachment(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), upload)
+	value, err := s.commandUploadAttachment(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), upload)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -594,7 +595,7 @@ func (s *Service) uploadConversationAttachment(c echo.Context) error {
 // {nativeBase}/conversations/:conversation/attachments/:attachment. The
 // audience is the conversation's read rule.
 func (s *Service) getConversationAttachment(c echo.Context) error {
-	attachment, content, err := s.readAttachment(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), c.Param("attachment"))
+	attachment, content, err := s.readAttachment(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), c.Param("attachment"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -609,7 +610,7 @@ func (s *Service) getConversationAttachment(c echo.Context) error {
 // {nativeBase}/conversations/:conversation/attachments/:attachment. Only the
 // owner may delete, and only while the attachment is unsent.
 func (s *Service) deleteConversationAttachment(c echo.Context) error {
-	_, err := s.commandDeleteAttachment(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), c.Param("attachment"))
+	_, err := s.commandDeleteAttachment(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("conversation"), c.Param("attachment"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -617,15 +618,15 @@ func (s *Service) deleteConversationAttachment(c echo.Context) error {
 }
 
 func (s *Service) archiveConversation(c echo.Context) error {
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	id := c.Param("conversation")
-	original, err := s.conversations.ReadPublicationConversationForOrganization(ctx, scope.organization, id)
+	original, err := s.conversations.ReadPublicationConversationForOrganization(ctx, scope.Organization, id)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return s.authorizeConversationRemoval(ctx, r, scope, original)
 	}); err != nil {
 		return s.nativeAPIError(c, err)
@@ -643,13 +644,13 @@ func (s *Service) archiveConversation(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	ref, err := s.conversations.Store.PublishPayload(ctx, string(scope.organization), payload)
+	ref, err := s.conversations.Store.PublishPayload(ctx, string(scope.Organization), payload)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	contentID := contentArchiveID(string(scope.organization), ref)
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		stored, err := w.LockConversation(ctx, scope.project, id)
+	contentID := contentArchiveID(string(scope.Organization), ref)
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		stored, err := w.LockConversation(ctx, scope.Project, id)
 		if err != nil {
 			return err
 		}
@@ -667,10 +668,10 @@ func (s *Service) archiveConversation(c echo.Context) error {
 		if _, err := w.UpdateConversation(ctx, stored, stored.Revision); err != nil {
 			return err
 		}
-		if err := w.PutConversationContent(ctx, conversationstore.ContentObject{OrganizationID: scope.organization, ID: contentID, Reference: ref, CreatedAt: record.UpdatedAt}); err != nil {
+		if err := w.PutConversationContent(ctx, conversationstore.ContentObject{OrganizationID: scope.Organization, ID: contentID, Reference: ref, CreatedAt: record.UpdatedAt}); err != nil {
 			return err
 		}
-		event, err := w.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: scope.organization, ConversationID: id, ContentReference: contentID, Event: conversation.Event{Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{}`), CreatedAt: record.UpdatedAt}})
+		event, err := w.AppendConversationEvent(ctx, conversationstore.Event{OrganizationID: scope.Organization, ConversationID: id, ContentReference: contentID, Event: conversation.Event{Type: conversation.EventConversationUpdated, Data: json.RawMessage(`{}`), CreatedAt: record.UpdatedAt}})
 		record.EventSeq = event.Seq
 		return err
 	})
@@ -682,16 +683,16 @@ func (s *Service) archiveConversation(c echo.Context) error {
 }
 
 func (s *Service) deleteConversation(c echo.Context) error {
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	id := c.Param("conversation")
-	original, err := s.conversations.ReadPublicationConversationForOrganization(ctx, scope.organization, id)
+	original, err := s.conversations.ReadPublicationConversationForOrganization(ctx, scope.Organization, id)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		stored, err := w.LockConversation(ctx, scope.project, id)
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		stored, err := w.LockConversation(ctx, scope.Project, id)
 		if err != nil {
 			return err
 		}
@@ -712,7 +713,7 @@ func (s *Service) deleteConversation(c echo.Context) error {
 		if !ok {
 			return errors.New("conversation removal owner is required")
 		}
-		return owner.DeleteConversation(ctx, scope.project, id, s.config.now())
+		return owner.DeleteConversation(ctx, scope.Project, id, s.config.now())
 	})
 	if err != nil {
 		return s.nativeAPIError(c, translateConversationError(err))
@@ -726,7 +727,7 @@ func (s *Service) deleteConversation(c echo.Context) error {
 // issue read proves the issue exists in it, and the conversation read rule
 // drops entries from private chats the reader does not own.
 func (s *Service) listWorkItemReferences(c echo.Context) error {
-	value, err := s.readWorkItemReferences(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
+	value, err := s.readWorkItemReferences(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

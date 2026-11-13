@@ -7,11 +7,12 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope, name string, request workspaceToolRequest) (json.RawMessage, error) {
+func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope hubscope.NativeScope, name string, request workspaceToolRequest) (json.RawMessage, error) {
 	relative, err := workspacesession.NormalizePath(request.Path)
 	if err != nil || request.Path == "/" || name == "workspace_file_read" && relative == "" {
 		return nil, operatortool.ErrInvalidArguments
@@ -49,16 +50,16 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 	connection := &relayConnection{
 		ID: hubapi.NewID("relayperson"), WorkspaceID: record.ID,
 		PrincipalID: identity.PrincipalID, SessionID: identity.SessionID,
-		SessionHash: scope.credential.SessionHash, HostedRole: scope.credential.HostedRole,
+		SessionHash: scope.Credential.SessionHash, HostedRole: scope.Credential.HostedRole,
 		Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{}),
 	}
-	principal := relayPrincipal{credential: scope.credential, principalID: identity.PrincipalID, sessionID: identity.SessionID, subject: scope.credential.Name}
-	if scope.credential.Hosted != nil {
-		connection.Subject = scope.credential.Hosted.Subject
+	principal := relayPrincipal{credential: scope.Credential, principalID: identity.PrincipalID, sessionID: identity.SessionID, subject: scope.Credential.Name}
+	if scope.Credential.Hosted != nil {
+		connection.Subject = scope.Credential.Hosted.Subject
 		principal.subject = connection.Subject
-		principal.supportReason = scope.credential.Hosted.SupportReason
+		principal.supportReason = scope.Credential.Hosted.SupportReason
 	}
-	connection.Actor = s.relayActor(ctx, scope.organization, connection, principal)
+	connection.Actor = s.relayActor(ctx, scope.Organization, connection, principal)
 	if err := w.openRelayAudit(ctx, record, connection, principal); err != nil {
 		return nil, err
 	}

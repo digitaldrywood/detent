@@ -8,12 +8,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readAnalyticsSchedulerPopulationTenant(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, name string) (nativeAnalyticsSchedulerPopulation, error) {
+func (s *Service) readAnalyticsSchedulerPopulationTenant(ctx context.Context, scope hubscope.NativeScope, w operatortool.AnalyticsWindow, name string) (nativeAnalyticsSchedulerPopulation, error) {
 	out := nativeAnalyticsSchedulerPopulation{Events: []tracker.CollaborationEvent{}, Prior: map[string]tracker.CollaborationEvent{}}
 	after, cursor, key, err := s.analyticsSchedulerCursor(ctx, scope, w, name)
 	if err != nil {
@@ -29,7 +30,7 @@ func (s *Service) readAnalyticsSchedulerPopulationTenant(ctx context.Context, sc
 		return out, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	var page eventstore.AnalyticsSchedulerPage
-	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		principal, err := s.analyticsSnapshotPrincipal(ctx, r, scope)
 		if err != nil {
 			return err
@@ -38,7 +39,7 @@ func (s *Service) readAnalyticsSchedulerPopulationTenant(ctx context.Context, sc
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		page, err = owner.ReadAnalyticsSchedulerPage(ctx, eventstore.AnalyticsSchedulerQuery{ProjectID: scope.project, Principal: principal, From: w.From, To: w.To, Outcome: outcome, After: after, Limit: maxAnalyticsPopulation})
+		page, err = owner.ReadAnalyticsSchedulerPage(ctx, eventstore.AnalyticsSchedulerQuery{ProjectID: scope.Project, Principal: principal, From: w.From, To: w.To, Outcome: outcome, After: after, Limit: maxAnalyticsPopulation})
 		return err
 	})
 	if err != nil {
@@ -47,7 +48,7 @@ func (s *Service) readAnalyticsSchedulerPopulationTenant(ctx context.Context, sc
 	out.Partial = page.Partial
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	for _, row := range page.Events {
-		if row.OrganizationID != scope.organization || row.ProjectID != scope.project || row.Type != "scheduler.decision" || row.SchedulerOutcome != outcome {
+		if row.OrganizationID != scope.Organization || row.ProjectID != scope.Project || row.Type != "scheduler.decision" || row.SchedulerOutcome != outcome {
 			return out, artifact.ErrIntegrity
 		}
 		if !analyticsCohortAllows(ctx, row.WorkItemID) {
@@ -59,7 +60,7 @@ func (s *Service) readAnalyticsSchedulerPopulationTenant(ctx context.Context, sc
 		}
 		out.Events = append(out.Events, event)
 		if prior, ok := page.Prior[row.ID]; ok && prior.Type == "scheduler.decision" {
-			if prior.OrganizationID != scope.organization || prior.ProjectID != scope.project || prior.WorkItemID != row.WorkItemID || prior.Sequence >= row.Sequence {
+			if prior.OrganizationID != scope.Organization || prior.ProjectID != scope.Project || prior.WorkItemID != row.WorkItemID || prior.Sequence >= row.Sequence {
 				return out, artifact.ErrIntegrity
 			}
 			value, err := content.Event(ctx, prior)
@@ -86,7 +87,7 @@ func (s *Service) readAnalyticsSchedulerPopulationTenant(ctx context.Context, sc
 	return out, nil
 }
 
-func (s *Service) projectNativeAnalyticsSkipsTenant(ctx context.Context, scope nativeScope, out *nativeAnalyticsProject) error {
+func (s *Service) projectNativeAnalyticsSkipsTenant(ctx context.Context, scope hubscope.NativeScope, out *nativeAnalyticsProject) error {
 	population, err := s.readAnalyticsSchedulerPopulationTenant(ctx, scope, out.Window, "decisions")
 	if err != nil {
 		return err
@@ -125,7 +126,7 @@ func (s *Service) projectNativeAnalyticsSkipsTenant(ctx context.Context, scope n
 	return nil
 }
 
-func (s *Service) projectNativeAnalyticsCapacityWaitTenant(ctx context.Context, scope nativeScope, out *nativeAnalyticsProject) error {
+func (s *Service) projectNativeAnalyticsCapacityWaitTenant(ctx context.Context, scope hubscope.NativeScope, out *nativeAnalyticsProject) error {
 	population, err := s.readAnalyticsSchedulerPopulationTenant(ctx, scope, out.Window, "capacity")
 	if err != nil {
 		return err

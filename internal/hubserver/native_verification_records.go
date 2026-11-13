@@ -6,12 +6,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) planVerificationRecord(ctx context.Context, scope nativeScope, plan workItemRecordPlan, request tracker.VerifyFix) (workItemRecordPlan, error) {
+func (s *Service) planVerificationRecord(ctx context.Context, scope hubscope.NativeScope, plan workItemRecordPlan, request tracker.VerifyFix) (workItemRecordPlan, error) {
 	if !nativeVerificationAnswerer(scope, plan.issue) {
 		return plan, operatortool.ErrAccessDenied
 	}
@@ -35,10 +36,10 @@ func (s *Service) planVerificationRecord(ctx context.Context, scope nativeScope,
 		plan.verificationAttachments = attachments.current
 	}
 	if request.Result == tracker.VerifyResultVerified {
-		actor := scope.actor()
+		actor := scope.Actor()
 		plan.issue.Verification = &tracker.NativeVerification{State: tracker.VerificationVerified, VerifiedBy: &actor, VerifiedAt: &now}
 	} else {
-		if err := validateNativeWorkflowTransition(plan.project.States, plan.issue.State, nativeVerificationReopenState, scope.credential.Scope); err != nil {
+		if err := validateNativeWorkflowTransition(plan.project.States, plan.issue.State, nativeVerificationReopenState, scope.Credential.Scope); err != nil {
 			return plan, err
 		}
 		plan.issue.State = nativeVerificationReopenState
@@ -58,7 +59,7 @@ func (s *Service) planVerificationRecord(ctx context.Context, scope nativeScope,
 	return plan, nil
 }
 
-func (s *Service) writeVerificationComment(ctx context.Context, w tenantstore.Writer, scope nativeScope, comment *attachmentEvidencePublication, attachments []string) error {
+func (s *Service) writeVerificationComment(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, comment *attachmentEvidencePublication, attachments []string) error {
 	limit, err := s.attachmentQuotaLimit(ctx, w)
 	if err != nil {
 		return err
@@ -80,7 +81,7 @@ func (s *Service) writeVerificationComment(ctx context.Context, w tenantstore.Wr
 		return err
 	}
 	for _, id := range attachments {
-		if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.project, AttachmentID: id, WorkItemID: comment.plan.comment.WorkItemID, CommentID: comment.plan.comment.ID}); err != nil {
+		if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.Project, AttachmentID: id, WorkItemID: comment.plan.comment.WorkItemID, CommentID: comment.plan.comment.ID}); err != nil {
 			return err
 		}
 	}

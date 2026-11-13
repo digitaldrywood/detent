@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -32,7 +33,7 @@ func TestHotQueryPlans(t *testing.T) {
 	f := newChangeFixture(t, newPostgresNativeService(t, Config{}))
 	f.publish(t, "current", "")
 	other := f.create(t, "related")
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	for n := range 64 {
 		organization := tracker.OrganizationID(fmt.Sprintf("org_plan_%d", n))
 		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
@@ -43,18 +44,18 @@ func TestHotQueryPlans(t *testing.T) {
 	}
 	noise := make([]tracker.NativeIssue, 0, 254)
 	for n := 3; n <= 256; n++ {
-		noise = append(noise, seedAnalyticsTestWorkItem(t, f.service, scope.organization, scope.project, fmt.Sprintf("wi_plan_%d", n), 100000+n, "Example", "Todo", f.service.config.now()))
+		noise = append(noise, seedAnalyticsTestWorkItem(t, f.service, scope.Organization, scope.Project, fmt.Sprintf("wi_plan_%d", n), 100000+n, "Example", "Todo", f.service.config.now()))
 	}
 	for i := 1; i < len(noise); i++ {
-		edge := corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: noise[i-1].WorkItemID, RelatedProjectID: scope.project, RelatedWorkItemID: noise[i].WorkItemID, Type: "related"}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		edge := corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: noise[i-1].WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: noise[i].WorkItemID, Type: "related"}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.SetRelationship(t.Context(), edge, "add", f.service.config.now())
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	edge := corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: f.issue.WorkItemID, RelatedProjectID: scope.project, RelatedWorkItemID: other.WorkItemID, Type: "related"}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	edge := corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: f.issue.WorkItemID, RelatedProjectID: scope.Project, RelatedWorkItemID: other.WorkItemID, Type: "related"}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.SetRelationship(t.Context(), edge, "add", f.service.config.now())
 	}); err != nil {
 		t.Fatal(err)
@@ -69,10 +70,10 @@ func TestHotQueryPlans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		now := f.service.config.now()
 		for n := range 512 {
-			record := eventstore.Receipt{OrganizationID: scope.organization, ActorID: fmt.Sprintf("actor_plan_%d", n%16), Operation: "POST /example", CommandKey: fmt.Sprintf("plan-%d", n), RequestHash: receiptHash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}
+			record := eventstore.Receipt{OrganizationID: scope.Organization, ActorID: fmt.Sprintf("actor_plan_%d", n%16), Operation: "POST /example", CommandKey: fmt.Sprintf("plan-%d", n), RequestHash: receiptHash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}
 			record, err := receiptContent.PrepareReceipt(t.Context(), record, []byte(fmt.Sprintf(`{"plan":%d}`, n)))
 			if err != nil {
 				return err
@@ -108,7 +109,7 @@ func TestHotQueryPlans(t *testing.T) {
 	if !ok {
 		t.Fatal("authority plan requires the PostgreSQL owner")
 	}
-	authority, capacity, err := repository.ReadRunnerAuthority(ctx, tenantauth.RequestIdentity{Organization: scope.organization, CredentialHash: apikey.HashToken(r.redemption.Credential)}, f.service.config.now)
+	authority, capacity, err := repository.ReadRunnerAuthority(ctx, tenantauth.RequestIdentity{Organization: scope.Organization, CredentialHash: apikey.HashToken(r.redemption.Credential)}, f.service.config.now)
 	if err != nil || authority.RunnerID() != r.binding.RunnerID || capacity < 1 {
 		t.Fatalf("runner authority lost identity/capacity: runner=%s capacity=%d error=%v", authority.RunnerID(), capacity, err)
 	}
@@ -130,13 +131,13 @@ func TestHotQueryPlans(t *testing.T) {
 	if capacityReads != 1 {
 		t.Fatalf("runner authority capacity reads=%d want=1", capacityReads)
 	}
-	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), scope.organization, apikey.HashToken(r.redemption.Credential), "", "")
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), scope.Organization, apikey.HashToken(r.redemption.Credential), "", "")
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("runner auth status=%d error=%v", status, err)
 	}
 	setPath("relationships")
-	if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		page, err := reader.Relationships(ctx, scope.project, f.issue.WorkItemID, corestore.RelationshipCursor{}, corestore.MaxPageSize)
+	if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		page, err := reader.Relationships(ctx, scope.Project, f.issue.WorkItemID, corestore.RelationshipCursor{}, corestore.MaxPageSize)
 		if err != nil {
 			return err
 		}
@@ -167,7 +168,7 @@ func TestHotQueryPlans(t *testing.T) {
 			continue
 		}
 		paths[capture.path]++
-		plan, raw := reportsExplainPostgresPlan(t, admin, scope.organization, statement, "enable_seqscan=off")
+		plan, raw := reportsExplainPostgresPlan(t, admin, scope.Organization, statement, "enable_seqscan=off")
 		sources[capture.path] = sources[capture.path] || slices.Contains(hotQueryPlanRelations(plan), required[capture.path])
 		t.Logf("%s SQL %d: %s\nPLAN: %s", capture.path, i, statement.query, raw)
 		if violations := hotQueryPlanViolations(capture.path, statement.query, plan); len(violations) > 0 {
@@ -180,8 +181,8 @@ func TestHotQueryPlans(t *testing.T) {
 		}
 	}
 	t.Run("unknown query is rejected", func(t *testing.T) {
-		statement := tracedStatement{"SELECT id FROM conversations WHERE organization_id=$1 LIMIT 1", []any{scope.organization}}
-		plan, raw := reportsExplainPostgresPlan(t, admin, scope.organization, statement)
+		statement := tracedStatement{"SELECT id FROM conversations WHERE organization_id=$1 LIMIT 1", []any{scope.Organization}}
+		plan, raw := reportsExplainPostgresPlan(t, admin, scope.Organization, statement)
 		if violations := hotQueryPlanViolations("authority", statement.query, plan); len(violations) == 0 {
 			t.Fatalf("unrecognized query accepted: %s", raw)
 		}

@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 )
 
 const (
@@ -26,7 +27,7 @@ func (s *Service) authenticateAPIRequest(c echo.Context) (hubapi.APICredential, 
 }
 
 func (s *Service) authenticateAPIRequestContext(ctx context.Context, c echo.Context) (hubapi.APICredential, int, error) {
-	return nativeCredentialResult(s.requestAuth().AuthenticateRequest(ctx, c))
+	return hubscope.NativeCredentialResult(s.requestAuth().AuthenticateRequest(ctx, c))
 }
 
 // authenticateAPIToken is shared by HTTP authentication and operator execution.

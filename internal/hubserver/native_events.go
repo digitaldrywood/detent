@@ -9,6 +9,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -57,12 +58,12 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 	if err := validateNativeRunEvent(request); err != nil {
 		return s.nativeRunEventError(c, request, err)
 	}
-	result, err := s.appendNativeRunEventTenant(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	result, err := s.appendNativeRunEventTenant(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), request)
 	if err != nil {
 		return s.nativeRunEventError(c, request, err)
 	}
 	if request.Data.Handoff != nil && request.Data.Handoff.Publication != nil || request.Data.Finalization != nil && request.Data.Finalization.Publication != nil {
-		s.pullRequests.invalidate(pullRequestCacheKey(nativeRequestScope(c), c.Param("item")))
+		s.pullRequests.invalidate(pullRequestCacheKey(hubscope.NativeRequestScope(c), c.Param("item")))
 	}
 	return c.JSONBlob(http.StatusOK, result)
 }
@@ -97,13 +98,13 @@ func (s *Service) nativeRunEventError(c echo.Context, request tracker.NativeRunE
 		if !hubapi.ValidID(attempt, "attempt") {
 			attempt = ""
 		}
-		scope := nativeRequestScope(c)
+		scope := hubscope.NativeRequestScope(c)
 		item := c.Param("item")
 		if !hubapi.ValidID(item, "wi") {
 			item = ""
 		}
 		attributes = []any{"category", rejection.Category, "field", rejection.Field,
-			"organization", scope.organization, "project", scope.project, "work_item", item, "attempt", attempt}
+			"organization", scope.Organization, "project", scope.Project, "work_item", item, "attempt", attempt}
 	}
 	return s.nativeAPIError(c, err, attributes...)
 }

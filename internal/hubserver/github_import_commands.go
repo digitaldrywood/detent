@@ -10,13 +10,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope, operation string, request startGitHubImportRequest) (json.RawMessage, error) {
+func (s *Service) startGitHubImportRecord(ctx context.Context, scope hubscope.NativeScope, operation string, request startGitHubImportRequest) (json.RawMessage, error) {
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -38,13 +39,13 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 		return nil, hubapi.NativePublicInvalid("Enable manual intake on a repository-backed project and provide a positive issue number")
 	}
 	var current projectstore.GitHubImport
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(projectstore.GitHubImportReader)
 		if !ok {
 			return errors.New("GitHub import owner unavailable")
 		}
 		var err error
-		current, err = owner.GitHubImportForIssue(ctx, scope.project, int64(request.IssueNumber))
+		current, err = owner.GitHubImportForIssue(ctx, scope.Project, int64(request.IssueNumber))
 		return err
 	})
 	created := errors.Is(err, corestore.ErrNotFound)
@@ -53,11 +54,11 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 	}
 	next := current
 	if created {
-		identity, err := hubapi.CommandHash([]string{string(scope.organization), string(scope.project), scope.credential.ID, request.IdempotencyKey})
+		identity, err := hubapi.CommandHash([]string{string(scope.Organization), string(scope.Project), scope.Credential.ID, request.IdempotencyKey})
 		if err != nil {
 			return nil, err
 		}
-		next = projectstore.GitHubImport{OrganizationID: scope.organization, ProjectID: scope.project, ID: "imp_" + identity[:32], IssueNumber: int64(request.IssueNumber), Stage: "issue", Status: "pending", Revision: 1, Gaps: []string{}, ObservedAt: s.config.now()}
+		next = projectstore.GitHubImport{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: "imp_" + identity[:32], IssueNumber: int64(request.IssueNumber), Stage: "issue", Status: "pending", Revision: 1, Gaps: []string{}, ObservedAt: s.config.now()}
 	} else if request.Restart {
 		if current.Revision != int64(request.ExpectedRevision) {
 			return nil, hubapi.NativeConflict(tracker.Revision(current.Revision))
@@ -70,7 +71,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 		if err := s.database.requireHostedFeatureRecord(ctx, w, "github_integration", s.config.now()); err != nil {
 			return err
 		}
-		latest, err := w.ProjectRecord(ctx, scope.project)
+		latest, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -87,7 +88,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 			next.Revision = current.Revision
 			_, err = owner.UpdateGitHubImport(ctx, next)
 		} else {
-			actual, readErr := owner.GitHubImport(ctx, scope.project, current.ID)
+			actual, readErr := owner.GitHubImport(ctx, scope.Project, current.ID)
 			if readErr != nil {
 				return readErr
 			}
@@ -99,7 +100,7 @@ func (s *Service) startGitHubImportRecord(ctx context.Context, scope nativeScope
 	})
 }
 
-func (s *Service) tenantReceiptMutation(ctx context.Context, scope nativeScope, operation string, command tracker.Mutation, input, value any, apply func(tenantstore.Writer) error) (json.RawMessage, error) {
+func (s *Service) tenantReceiptMutation(ctx context.Context, scope hubscope.NativeScope, operation string, command tracker.Mutation, input, value any, apply func(tenantstore.Writer) error) (json.RawMessage, error) {
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -119,19 +120,19 @@ func (s *Service) tenantReceiptMutation(ctx context.Context, scope nativeScope, 
 	}
 	content := eventstore.NewContent(s.runDetailStore())
 	now := s.config.now()
-	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, err
 	}
 	var existing *eventstore.Receipt
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		previous, err := w.Receipt(ctx, scope.credential.ID, operation, command.IdempotencyKey)
+		previous, err := w.Receipt(ctx, scope.Credential.ID, operation, command.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
 				return hubapi.NativeConflict(0)
@@ -145,7 +146,7 @@ func (s *Service) tenantReceiptMutation(ctx context.Context, scope nativeScope, 
 		if err := apply(w); err != nil {
 			return err
 		}
-		if scope.credential.Hosted != nil {
+		if scope.Credential.Hosted != nil {
 			audit := projectRecordActor(scope).Audit
 			audit.Event, audit.Route, audit.Status = "action", operation, http.StatusOK
 			audit.RecordedAt = s.config.now()

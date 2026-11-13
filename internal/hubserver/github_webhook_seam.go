@@ -8,22 +8,23 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/githubwebhook"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) gitHubWebhookIntegration(scope nativeScope) githubwebhook.Integration {
-	return githubwebhook.Integration{Scope: s.featureScope(scope), Repository: scope.integrationRepository,
+func (s *Service) gitHubWebhookIntegration(scope hubscope.NativeScope) githubwebhook.Integration {
+	return githubwebhook.Integration{Scope: s.featureScope(scope), Repository: scope.IntegrationRepository,
 		Import: func(ctx context.Context, repository, key string, preview tracker.GitHubIssuePreview, snapshot tracker.GitHubIssueSnapshot) error {
 			scope := scope
-			scope.integrationRepository = repository
+			scope.IntegrationRepository = repository
 			_, err := s.importGitHubSnapshotRecord(ctx, scope, key, preview, snapshot, "Triage", nil)
 			return err
 		},
 		Apply: func(ctx context.Context, repository string, item tracker.NativeWorkItemID, key string, snapshot tracker.GitHubIssueSnapshot) error {
 			scope := scope
-			scope.integrationRepository = repository
-			scope.scheduledRepair = s.observeImportedScheduledRepair(ctx, scope, snapshot)
+			scope.IntegrationRepository = repository
+			scope.ScheduledRepair = s.observeImportedScheduledRepair(ctx, scope, snapshot)
 			_, err := s.applyLinkedIssueRecord(ctx, scope, item, "github.webhook", tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: key}, Snapshot: snapshot})
 			return err
 		},
@@ -60,7 +61,7 @@ func (s *Service) receiveGitHubWebhookRecord(c echo.Context, verified bool) erro
 func (s *Service) maintainGitHubWebhookRecords(ctx context.Context) error {
 	return s.githubWebhookService().Maintain(ctx)
 }
-func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope nativeScope, row projectstore.GitHubWebhook, payload githubWebhookPayload) error {
+func (s *Service) applyGitHubWebhookRecord(ctx context.Context, scope hubscope.NativeScope, row projectstore.GitHubWebhook, payload githubWebhookPayload) error {
 	return s.githubWebhookService().Apply(ctx, s.gitHubWebhookIntegration(scope), row, payload)
 }
 func splitRepositoryFullName(value string) (string, string, bool) {

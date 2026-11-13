@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -100,7 +101,7 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 	if err != nil {
 		return nil, err
 	}
-	if err := t.coordinator.authorizeRecord(ctx, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record, false); err != nil {
+	if err := t.coordinator.authorizeRecord(ctx, hubscope.NativeScope{Organization: record.OrganizationID, Project: record.ProjectID, Credential: credential}, record, false); err != nil {
 		return nil, fmt.Errorf("you don't have access to this conversation's stored answers: equal screen access is required: %w", operatortool.ErrAccessDenied)
 	}
 	var fields map[string]json.RawMessage
@@ -121,7 +122,7 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 	switch target {
 	case "get_slack_integration":
 		if err = decodeCoordinatorArguments(call.Arguments, &struct{}{}); err == nil {
-			if !canManageProjectSecrets(credential) {
+			if !hubscope.CanManageProjectSecrets(credential) {
 				err = operatortool.ErrAccessDenied
 			} else {
 				value, err = s.coordinatorSlackIntegration(ctx, record.OrganizationID)
@@ -129,7 +130,7 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 		}
 	case "get_project_budget":
 		if err = decodeCoordinatorArguments(call.Arguments, &struct{}{}); err == nil {
-			value, err = readBillingMonthlySettings(ctx, s.config.TenantRepository, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential})
+			value, err = readBillingMonthlySettings(ctx, s.config.TenantRepository, hubscope.NativeScope{Organization: record.OrganizationID, Project: record.ProjectID, Credential: credential})
 		}
 	case "get_project_runners", "get_project_fleet":
 		if err = decodeCoordinatorArguments(call.Arguments, &struct{}{}); err == nil && call.Name == "get_project_runners" {
@@ -255,7 +256,7 @@ func (s *Service) coordinatorRunnerAttached(ctx context.Context, record conversa
 	if err != nil {
 		return false, err
 	}
-	r, err := s.coordinatorRunner(ctx, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, id)
+	r, err := s.coordinatorRunner(ctx, hubscope.NativeScope{Organization: record.OrganizationID, Project: record.ProjectID, Credential: credential}, id)
 	if err != nil {
 		return false, err
 	}

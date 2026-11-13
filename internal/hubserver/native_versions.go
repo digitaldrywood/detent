@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -28,14 +29,14 @@ func (s *Service) getNativeVersion(c echo.Context) error {
 	if err != nil || revision <= 0 {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Revision must be a positive decimal integer"))
 	}
-	body, err := s.readVersion(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("comment"), revision)
+	body, err := s.readVersion(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), c.Param("comment"), revision)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return nativeArchiveJSON(c, http.StatusOK, body)
 }
 
-func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comment string, revision int64) (json.RawMessage, error) {
+func (s *Service) readVersion(ctx context.Context, scope hubscope.NativeScope, item, comment string, revision int64) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil {
@@ -48,22 +49,22 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 	var version eventstore.CollaborationVersion
 	var archived *attachmentstore.StorageArchiveSection
 	var path string
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		project, err := r.Project(ctx, scope.project)
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if project.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		row, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		row, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		version, err = r.CollaborationVersion(ctx, recordID, revision)
@@ -72,11 +73,11 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 			if !ok {
 				return err
 			}
-			section, err := owner.StorageArchiveSection(ctx, attachmentstore.StorageArchiveSectionQuery{ProjectID: scope.project, WorkItemID: row.NativeID, Kind: "revision", Subject: recordID, At: revision})
+			section, err := owner.StorageArchiveSection(ctx, attachmentstore.StorageArchiveSectionQuery{ProjectID: scope.Project, WorkItemID: row.NativeID, Kind: "revision", Subject: recordID, At: revision})
 			if err != nil {
 				return err
 			}
-			if section.OrganizationID != scope.organization || section.Stamp.ProjectID != scope.project || section.Stamp.WorkItemID != row.NativeID || section.Kind != "revision" || section.Subject != recordID || section.First > revision || section.Last < revision || section.Archive.Reference.SchemaVersion != 1 {
+			if section.OrganizationID != scope.Organization || section.Stamp.ProjectID != scope.Project || section.Stamp.WorkItemID != row.NativeID || section.Kind != "revision" || section.Subject != recordID || section.First > revision || section.Last < revision || section.Archive.Reference.SchemaVersion != 1 {
 				return corestore.ErrNotFound
 			}
 			archived = &section
@@ -84,7 +85,7 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 			if err != nil {
 				return err
 			}
-			if version.OrganizationID != scope.organization || version.ProjectID != scope.project || version.WorkItemID != row.NativeID || version.RecordID != recordID || version.Revision != revision {
+			if version.OrganizationID != scope.Organization || version.ProjectID != scope.Project || version.WorkItemID != row.NativeID || version.RecordID != recordID || version.Revision != revision {
 				return corestore.ErrNotFound
 			}
 		}
@@ -120,20 +121,20 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 	}
 	if comment != "" {
 		var value tracker.NativeComment
-		if json.Unmarshal(body, &value) != nil || value.OrganizationID != scope.organization || value.ProjectID != scope.project || string(value.WorkItemID) != item || value.ID != comment || int64(value.Revision) != revision {
+		if json.Unmarshal(body, &value) != nil || value.OrganizationID != scope.Organization || value.ProjectID != scope.Project || string(value.WorkItemID) != item || value.ID != comment || int64(value.Revision) != revision {
 			return nil, artifact.ErrIntegrity
 		}
 		return json.RawMessage(body), nil
 	}
 	var issue tracker.NativeIssue
-	if json.Unmarshal(body, &issue) != nil || issue.OrganizationID != scope.organization || issue.ProjectID != scope.project || string(issue.WorkItemID) != item || int64(issue.Revision) != revision {
+	if json.Unmarshal(body, &issue) != nil || issue.OrganizationID != scope.Organization || issue.ProjectID != scope.Project || string(issue.WorkItemID) != item || int64(issue.Revision) != revision {
 		return nil, artifact.ErrIntegrity
 	}
-	if !scope.reporterOwns(issue.Actor) {
+	if !scope.ReporterOwns(issue.Actor) {
 		return nil, hubapi.NativeNotFound()
 	}
-	if scope.credential.Scope != hubapi.APIScopeAdmin || scope.credential.NativeOnly {
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if scope.Credential.Scope != hubapi.APIScopeAdmin || scope.Credential.NativeOnly {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			for _, links := range []*[]tracker.NativeDependency{&issue.Blockers, &issue.Dependents, &issue.Related} {
 				kept := []tracker.NativeDependency{}
 				for _, link := range *links {
@@ -144,11 +145,11 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 					if err != nil {
 						return err
 					}
-					if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+					if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 						continue
 					}
 					relatedScope := scope
-					relatedScope.project = row.ProjectID
+					relatedScope.Project = row.ProjectID
 					if err := s.authorizeAccessScope(ctx, r, relatedScope, false); err != nil {
 						if errors.Is(err, accessstore.ErrDenied) || errors.Is(err, corestore.ErrNotFound) || errors.Is(err, auth.ErrHostedIdentity) || hubapi.IsNativeNotFound(err) {
 							continue
@@ -180,7 +181,7 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 	}
 	issue.BlockedReason.Text, issue.UnblocksReason.Text = "", ""
 	issue.WebURL = path
-	return json.Marshal(s.nativeIssueResponse(scope.reporterIssue(issue)))
+	return json.Marshal(s.nativeIssueResponse(scope.ReporterIssue(issue)))
 }
 
 func archivedVersionPayload(section attachment.ArchiveSection, recordID string, revision int64) (json.RawMessage, error) {

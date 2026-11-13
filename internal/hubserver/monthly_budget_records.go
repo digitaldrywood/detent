@@ -16,11 +16,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
-func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, request monthlyBudgetRequest) error {
+func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope hubscope.NativeScope, request monthlyBudgetRequest) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
@@ -37,7 +38,7 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, r
 	content := eventstore.NewContent(s.runDetailStore())
 	readReceipt := func() (eventstore.Receipt, error) {
 		var receipt eventstore.Receipt
-		err := s.database.billingRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Writer) error {
+		err := s.database.billingRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Writer) error {
 			if err := r.LockAccessOrganization(ctx); err != nil {
 				return err
 			}
@@ -45,7 +46,7 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, r
 				return err
 			}
 			var err error
-			receipt, err = r.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+			receipt, err = r.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
 			return err
 		})
 		return receipt, err
@@ -81,18 +82,18 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, r
 		return s.nativeAPIError(c, err)
 	}
 	now := s.config.now().UTC().Truncate(time.Microsecond)
-	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	err = s.database.billingRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.database.billingRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		if previous, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey); err == nil {
+		if previous, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey); err == nil {
 			if previous.ResponseExpired || previous.ResponseReplayUntilNs <= s.config.now().UnixNano() {
 				return receiptstore.ErrExpired
 			}
@@ -107,19 +108,19 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, r
 		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", now); err != nil {
 			return err
 		}
-		if scope.project != "" {
-			if _, err := w.Project(ctx, scope.project); err != nil {
+		if scope.Project != "" {
+			if _, err := w.Project(ctx, scope.Project); err != nil {
 				return err
 			}
 		}
-		current, err := w.BillingMonthlyPolicy(ctx, scope.project)
+		current, err := w.BillingMonthlyPolicy(ctx, scope.Project)
 		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
 		if current.Revision != request.ExpectedRevision {
 			return hubapi.NativeConflict(current.Revision)
 		}
-		if err := w.SetBillingMonthlyPolicy(ctx, billingstore.MonthlyPolicy{OrganizationID: scope.organization, ProjectID: scope.project, Revision: request.ExpectedRevision + 1, Policy: policy, Actor: scope.credential.ID, UpdatedAt: now}, request.ExpectedRevision); err != nil {
+		if err := w.SetBillingMonthlyPolicy(ctx, billingstore.MonthlyPolicy{OrganizationID: scope.Organization, ProjectID: scope.Project, Revision: request.ExpectedRevision + 1, Policy: policy, Actor: scope.Credential.ID, UpdatedAt: now}, request.ExpectedRevision); err != nil {
 			return err
 		}
 		before, err := w.ArchiveBytes(ctx)
@@ -154,8 +155,8 @@ func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope nativeScope, r
 		if limit, limited := entitlement.Allowances["api_mutations"]; limited {
 			plans := s.database.plans()
 			window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
-			usageID := artifact.Digest([]byte(scope.credential.ID + "\x00" + operation + "\x00" + request.IdempotencyKey))
-			usage, err := w.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: scope.organization, ID: "monthly-budget/" + usageID, WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
+			usageID := artifact.Digest([]byte(scope.Credential.ID + "\x00" + operation + "\x00" + request.IdempotencyKey))
+			usage, err := w.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: scope.Organization, ID: "monthly-budget/" + usageID, WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
 			if err != nil {
 				return err
 			}

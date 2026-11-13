@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -30,7 +31,7 @@ func preparePGWorkerEvent(ctx context.Context, plan *conversationPublicationPlan
 	return err
 }
 
-func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, scope nativeScope, plan *conversationPublicationPlan, events []conversationTurnEvent) ([]conversationMessageRecord, error) {
+func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, scope hubscope.NativeScope, plan *conversationPublicationPlan, events []conversationTurnEvent) ([]conversationMessageRecord, error) {
 	prepared := make([]conversationMessageRecord, len(events))
 	messages := map[string]conversationMessageRecord{}
 	providers := map[string]string{}
@@ -49,7 +50,7 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 			}
 			message, found := messages[id]
 			if !found {
-				if err := r.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+				if err := r.server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 					var row conversationstore.Message
 					if id != "" {
 						var err error
@@ -77,7 +78,7 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 			}
 			if found && message.ContentID != "" && plan.Messages[message.ID].ID == "" {
 				var err error
-				message, err = r.service.ReadPublicationMessage(ctx, scope.organization, plan.Record.ID, message.ID)
+				message, err = r.service.ReadPublicationMessage(ctx, scope.Organization, plan.Record.ID, message.ID)
 				if err != nil {
 					return nil, err
 				}
@@ -142,7 +143,7 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 			}
 		case "turn_completed":
 			turnID := strings.TrimSpace(event.TurnID)
-			if err := r.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			if err := r.server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 				page, err := reader.FilteredMessages(ctx, conversationstore.MessageFilter{ConversationID: plan.Record.ID, AttemptID: execution.Owner.AttemptID, TurnID: turnID, Role: conversation.RoleAssistant, Deliveries: []conversation.Delivery{conversation.DeliveryResponding}, Limit: conversationPGWorkerPageSize})
 				if err != nil {
 					return err
@@ -172,7 +173,7 @@ func (r *conversationWorkerRouter) preparePGTurnMessages(ctx context.Context, sc
 				}
 				if message.ContentID != "" && plan.Messages[id].ID == "" {
 					var err error
-					message, err = r.service.ReadPublicationMessage(ctx, scope.organization, plan.Record.ID, id)
+					message, err = r.service.ReadPublicationMessage(ctx, scope.Organization, plan.Record.ID, id)
 					if err != nil {
 						return nil, err
 					}

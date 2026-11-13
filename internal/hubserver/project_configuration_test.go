@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
@@ -76,7 +77,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.recordConfigurationPolicyObservation(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, policy.Observation{Descriptor: selected, Source: source}); err != nil {
+			if err := f.service.recordConfigurationPolicyObservation(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}, policy.Observation{Descriptor: selected, Source: source}); err != nil {
 				t.Fatal(err)
 			}
 			post()
@@ -113,7 +114,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				runner, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, r.binding.RunnerID)
+				runner, err := f.service.readRunnerRouting(t.Context(), hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}, r.binding.RunnerID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -304,11 +305,11 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				}
 				resolve := func(context.Context) (hubapi.APICredential, error) { return credential, nil }
 				ctx = context.WithValue(ctx, hubOperatorResolverKey{}, resolve)
-				ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) {
-					return nativeScope{organization: f.project.OrganizationID, credential: credential}, nil
+				ctx = context.WithValue(ctx, hubscope.NativeOperatorScopeKey{}, func(context.Context) (hubscope.NativeScope, error) {
+					return hubscope.NativeScope{Organization: f.project.OrganizationID, Credential: credential}, nil
 				})
 				connection := operatortool.CurrentConnection(ctx)
-				connection.Identity = operatorIdentity(credential, string(f.project.OrganizationID))
+				connection.Identity = hubscope.OperatorIdentity(credential, string(f.project.OrganizationID))
 				connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
 					return f.service.operatorCurrentAuthority(ctx, credential, string(f.project.OrganizationID))
 				}
@@ -320,7 +321,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				if scenario == "entry missing origin drain" {
 					origin = nil
 				}
-				ctx = context.WithValue(ctx, operatorEntryOriginKey{}, string(origin))
+				ctx = context.WithValue(ctx, hubscope.OperatorEntryOriginKey{}, string(origin))
 			}
 			if scenario == "resume denied" {
 				connection := operatortool.CurrentConnection(ctx)

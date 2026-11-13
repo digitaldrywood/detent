@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -122,7 +123,7 @@ func TestRestoredOrganizationHTTPRoutes(t *testing.T) {
 			service.config.SlackHTTPClient = &http.Client{Transport: spritesTestTransport(func(r *http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
 			})}
-			if err := service.scaleSpritePool(t.Context(), nativeScope{organization: service.accessOrganization()}, true); err != nil {
+			if err := service.scaleSpritePool(t.Context(), hubscope.NativeScope{Organization: service.accessOrganization()}, true); err != nil {
 				t.Fatalf("unconfigured controller authority: %v", err)
 			}
 			for _, test := range []struct{ method, path, body string }{

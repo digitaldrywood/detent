@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -24,24 +25,24 @@ func (s *Service) registerArtifactCatalogRoutes(e *echo.Echo) {
 	e.PUT(hubapi.NativeBase+"/artifact-services/:service/catalog-policy", s.setArtifactCatalogPolicy, s.requireOnboardingAdmin())
 }
 
-func (s *Service) catalogPublisherScope(ctx context.Context, r postgres.ArtifactCatalogReader, command artifact.CatalogCommand, credential hubapi.APICredential, write bool) (nativeScope, artifact.Binding, error) {
+func (s *Service) catalogPublisherScope(ctx context.Context, r postgres.ArtifactCatalogReader, command artifact.CatalogCommand, credential hubapi.APICredential, write bool) (hubscope.NativeScope, artifact.Binding, error) {
 	org := tracker.OrganizationID(command.OrganizationID)
 	if s.config.Hosted != nil && org != s.accessOrganization() {
-		return nativeScope{}, artifact.Binding{}, artifact.ErrDenied
+		return hubscope.NativeScope{}, artifact.Binding{}, artifact.ErrDenied
 	}
 	project := tracker.ProjectID(command.ProjectID)
 	if project == "" {
 		binding, err := r.CatalogServiceBinding(ctx, postgres.CatalogServiceBindingInput{OrganizationID: org, ID: command.ServiceID, PublisherTokenID: credential.ID})
 		if err != nil {
-			return nativeScope{}, artifact.Binding{}, artifact.ErrDenied
+			return hubscope.NativeScope{}, artifact.Binding{}, artifact.ErrDenied
 		}
 		project = binding.ProjectID
 	}
 	tenant, ok := r.(tenantstore.Reader)
 	if !ok {
-		return nativeScope{}, artifact.Binding{}, hubapi.NativeWorkItemStorageUnavailable()
+		return hubscope.NativeScope{}, artifact.Binding{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	scope := nativeScope{organization: org, project: project, credential: credential}
+	scope := hubscope.NativeScope{Organization: org, Project: project, Credential: credential}
 	if err := s.authorizeAccessScope(ctx, tenant, scope, write); err != nil {
 		return scope, artifact.Binding{}, artifact.ErrDenied
 	}
@@ -75,7 +76,7 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 		if err != nil {
 			return artifact.Config{}, err
 		}
-		row, err := r.CatalogPolicy(ctx, postgres.CatalogPolicyInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: binding.ServiceID})
+		row, err := r.CatalogPolicy(ctx, postgres.CatalogPolicyInput{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: binding.ServiceID})
 		if err != nil {
 			return artifact.Config{}, err
 		}
@@ -104,7 +105,7 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 			p.Limits.WindowSeconds = plans.WindowSeconds
 			p.Limits.TelemetrySeconds = plans.WindowSeconds * plans.RetentionWindows
 		}
-		cfg := artifact.Config{ServiceID: binding.ServiceID, OrganizationID: string(scope.organization), ProjectID: requested.ProjectID, PublisherID: credential.ID, Mode: binding.Mode, HostedOptIn: binding.HostedOptIn, Policy: p}
+		cfg := artifact.Config{ServiceID: binding.ServiceID, OrganizationID: string(scope.Organization), ProjectID: requested.ProjectID, PublisherID: credential.ID, Mode: binding.Mode, HostedOptIn: binding.HostedOptIn, Policy: p}
 		cfg.OrganizationRetainedLimit = orgRetained
 		cfg.OrganizationReservedLimit = orgReserved
 		if err := cfg.Validate(); err != nil {
@@ -132,12 +133,12 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 		case "reserve":
 			reservation = command.Upload.Reservation
 		case "put_object", "begin_object_write", "prepare_manifest", "begin_manifest_write", "commit":
-			row, err := r.CatalogUpload(ctx, postgres.CatalogUploadInput{OrganizationID: scope.organization, ProjectID: scope.project, ServiceID: command.ServiceID, ID: command.UploadID})
+			row, err := r.CatalogUpload(ctx, postgres.CatalogUploadInput{OrganizationID: scope.Organization, ProjectID: scope.Project, ServiceID: command.ServiceID, ID: command.UploadID})
 			if err != nil {
 				return artifact.ErrDenied
 			}
 			if command.Operation == "commit" {
-				_, err := r.CatalogManifest(ctx, postgres.CatalogManifestInput{OrganizationID: scope.organization, ProjectID: scope.project, ServiceID: command.ServiceID, UploadID: command.UploadID, Revision: command.Manifest.Revision})
+				_, err := r.CatalogManifest(ctx, postgres.CatalogManifestInput{OrganizationID: scope.Organization, ProjectID: scope.Project, ServiceID: command.ServiceID, UploadID: command.UploadID, Revision: command.Manifest.Revision})
 				if err == nil {
 					return nil
 				}
@@ -152,7 +153,7 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 				return nil
 			}
 			if command.Operation == "begin_manifest_write" {
-				intent, err := r.CatalogManifestIntent(ctx, postgres.CatalogManifestIntentInput{OrganizationID: scope.organization, ProjectID: scope.project, ServiceID: command.ServiceID, UploadID: command.UploadID, ID: command.Intent.ID})
+				intent, err := r.CatalogManifestIntent(ctx, postgres.CatalogManifestIntentInput{OrganizationID: scope.Organization, ProjectID: scope.Project, ServiceID: command.ServiceID, UploadID: command.UploadID, ID: command.Intent.ID})
 				if err != nil {
 					return artifact.ErrDenied
 				}
@@ -164,7 +165,7 @@ func (s *Service) artifactCatalog(c echo.Context) error {
 		default:
 			return nil
 		}
-		err = writer.CatalogExecutionAuthority(ctx, postgres.CatalogExecutionAuthorityInput{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(reservation.WorkItemID), AttemptID: reservation.AttemptID, RunID: reservation.RunID, LeaseID: reservation.LeaseID, FencingToken: reservation.FencingToken, ServiceID: command.ServiceID, IdempotencyKey: reservation.Key, Kind: reservation.Kind, Bytes: reservation.Bytes, Now: s.config.now()})
+		err = writer.CatalogExecutionAuthority(ctx, postgres.CatalogExecutionAuthorityInput{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(reservation.WorkItemID), AttemptID: reservation.AttemptID, RunID: reservation.RunID, LeaseID: reservation.LeaseID, FencingToken: reservation.FencingToken, ServiceID: command.ServiceID, IdempotencyKey: reservation.Key, Kind: reservation.Kind, Bytes: reservation.Bytes, Now: s.config.now()})
 		if err != nil {
 			return artifact.ErrDenied
 		}
@@ -186,8 +187,8 @@ func (s *Service) setArtifactCatalogPolicy(c echo.Context) error {
 	if s.database.postgres == nil {
 		return c.NoContent(http.StatusServiceUnavailable)
 	}
-	scope := nativeRequestScope(c)
-	scope.requireHostedAdmin = true
+	scope := hubscope.NativeRequestScope(c)
+	scope.RequireHostedAdmin = true
 	var policy artifact.Policy
 	if err := hubapi.DecodeAPIJSON(c, &policy); err != nil {
 		return s.invalidAPIRequest(c, err)
@@ -195,7 +196,7 @@ func (s *Service) setArtifactCatalogPolicy(c echo.Context) error {
 	if err := policy.Validate(); err != nil {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid artifact catalog policy"))
 	}
-	err := s.database.postgres.WriteArtifactCatalog(c.Request().Context(), scope.organization, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
+	err := s.database.postgres.WriteArtifactCatalog(c.Request().Context(), scope.Organization, corestore.Serving, func(w postgres.ArtifactCatalogWriter) error {
 		tenant, ok := w.(tenantstore.Reader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
@@ -203,13 +204,13 @@ func (s *Service) setArtifactCatalogPolicy(c echo.Context) error {
 		if err := s.authorizeAccessScope(c.Request().Context(), tenant, scope, true); err != nil {
 			return err
 		}
-		if scope.credential.Hosted == nil {
-			current, err := tenant.AccessCredential(c.Request().Context(), scope.credential.ID)
+		if scope.Credential.Hosted == nil {
+			current, err := tenant.AccessCredential(c.Request().Context(), scope.Credential.ID)
 			if err != nil || current.Scope != string(hubapi.APIScopeAdmin) {
 				return artifact.ErrDenied
 			}
 		}
-		_, err := w.SetCatalogPolicy(c.Request().Context(), scope.project, c.Param("service"), policy)
+		_, err := w.SetCatalogPolicy(c.Request().Context(), scope.Project, c.Param("service"), policy)
 		return err
 	})
 	if err != nil {

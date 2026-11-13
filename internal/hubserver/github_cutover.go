@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -81,20 +82,20 @@ func (s *Service) cutoverProject(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
-	scope.requireHostedAdmin = true
+	scope := hubscope.NativeRequestScope(c)
+	scope.RequireHostedAdmin = true
 	c.Set("native_scope", scope)
 	return s.nativeMutation(c, request.Mutation, request, nil)
 }
 
-func readCutoverSourceSnapshot(ctx context.Context, r tenantstore.Reader, scope nativeScope, now time.Time) (cutoverSourceSnapshot, error) {
+func readCutoverSourceSnapshot(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, now time.Time) (cutoverSourceSnapshot, error) {
 	var snapshot cutoverSourceSnapshot
 	var err error
-	snapshot.Project, err = r.ProjectRecord(ctx, scope.project)
+	snapshot.Project, err = r.ProjectRecord(ctx, scope.Project)
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot.Policy, err = r.ProjectPolicy(ctx, scope.project)
+	snapshot.Policy, err = r.ProjectPolicy(ctx, scope.Project)
 	if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 		return snapshot, err
 	}
@@ -108,7 +109,7 @@ func readCutoverSourceSnapshot(ctx context.Context, r tenantstore.Reader, scope 
 	}
 	after := int64(0)
 	for {
-		items, err := r.WorkItems(ctx, scope.project, after, corestore.MaxPageSize)
+		items, err := r.WorkItems(ctx, scope.Project, after, corestore.MaxPageSize)
 		if err != nil {
 			return snapshot, err
 		}
@@ -121,7 +122,7 @@ func readCutoverSourceSnapshot(ctx context.Context, r tenantstore.Reader, scope 
 			if err != nil {
 				return snapshot, err
 			}
-			source.Import, err = imports.GitHubImportForWorkItem(ctx, scope.project, item.NativeID)
+			source.Import, err = imports.GitHubImportForWorkItem(ctx, scope.Project, item.NativeID)
 			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
 				return snapshot, err
 			}
@@ -129,7 +130,7 @@ func readCutoverSourceSnapshot(ctx context.Context, r tenantstore.Reader, scope 
 			if source.ImportFound {
 				sequence := int64(0)
 				for {
-					page, err := records.GitHubImportRecords(ctx, scope.project, source.Import.ID, sequence, corestore.MaxPageSize)
+					page, err := records.GitHubImportRecords(ctx, scope.Project, source.Import.ID, sequence, corestore.MaxPageSize)
 					if err != nil {
 						return snapshot, err
 					}
@@ -144,7 +145,7 @@ func readCutoverSourceSnapshot(ctx context.Context, r tenantstore.Reader, scope 
 					sequence = page[count-1].Sequence
 				}
 			}
-			busy, err := r.WorkItemHasActiveLease(ctx, scope.project, item.NativeID, now)
+			busy, err := r.WorkItemHasActiveLease(ctx, scope.Project, item.NativeID, now)
 			if err != nil {
 				return snapshot, err
 			}
@@ -212,7 +213,7 @@ func (s *Service) cutoverRecordDependency(ctx context.Context, row projectstore.
 	return identity.NodeID, nil
 }
 
-func (s *Service) inspectCutoverRecords(ctx context.Context, scope nativeScope, source cutoverSourceSnapshot, request CutoverRequest) (CutoverReceipt, []tracker.NativeIssue, [][]tracker.NativeWorkItemID, error) {
+func (s *Service) inspectCutoverRecords(ctx context.Context, scope hubscope.NativeScope, source cutoverSourceSnapshot, request CutoverRequest) (CutoverReceipt, []tracker.NativeIssue, [][]tracker.NativeWorkItemID, error) {
 	receipt := CutoverReceipt{Blockers: []string{}, HistoryLimitations: []string{}, CloseSource: request.CloseSource, Integration: projectIntegrationRecord(source.Project), Issues: len(source.Sources)}
 	workflow, err := s.projectRecordWorkflow(ctx, source.Project)
 	if err != nil {
@@ -307,7 +308,7 @@ func (s *Service) inspectCutoverRecords(ctx context.Context, scope nativeScope, 
 	return receipt, issues, dependencies, err
 }
 
-func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope nativeScope, options hubapi.NativeCommandOptions, request CutoverRequest) (json.RawMessage, error) {
+func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions, request CutoverRequest) (json.RawMessage, error) {
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -343,7 +344,7 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope nativeS
 	}
 	now := s.config.now().UTC()
 	var snapshot cutoverSourceSnapshot
-	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return err
 		}
@@ -393,7 +394,7 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope nativeS
 		if err != nil {
 			return nil, err
 		}
-		stored, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, raw)
+		stored, err = eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, raw)
 		if err != nil {
 			return nil, err
 		}
@@ -405,7 +406,7 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope nativeS
 		if err := w.LockRelationshipGraph(ctx); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
 		current, err := readCutoverSourceSnapshot(ctx, w, scope, now)
@@ -434,10 +435,10 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope nativeS
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		if err := outbox.SupersedeGitHubCompatibilityWrites(ctx, scope.project, snapshot.Project.Settings.RepositoryEnabled, now); err != nil {
+		if err := outbox.SupersedeGitHubCompatibilityWrites(ctx, scope.Project, snapshot.Project.Settings.RepositoryEnabled, now); err != nil {
 			return err
 		}
-		_, err = owner.CommitProjectCutover(ctx, postgres.CutoverCommit{ExpectedContentRevision: snapshot.Project.Core.ContentSettingsRevision, States: nativeTriageStates(request.States), Queues: queues, Receipt: pgquery.StoreCutoverReceiptParams{OrganizationID: scope.organization, ProjectID: scope.project, Checkpoint: receipt.Checkpoint, SourceProfile: "github_compatible", ExpectedRevision: snapshot.Project.Settings.Revision, ReceiptObjectKey: stored.PayloadObjectKey, ReceiptSha256: stored.PayloadSHA256, ReceiptBytes: stored.PayloadBytes, ReceiptContentBytes: stored.PayloadContentBytes, ActorID: scope.credential.ID, CreatedAt: now}})
+		_, err = owner.CommitProjectCutover(ctx, postgres.CutoverCommit{ExpectedContentRevision: snapshot.Project.Core.ContentSettingsRevision, States: nativeTriageStates(request.States), Queues: queues, Receipt: pgquery.StoreCutoverReceiptParams{OrganizationID: scope.Organization, ProjectID: scope.Project, Checkpoint: receipt.Checkpoint, SourceProfile: "github_compatible", ExpectedRevision: snapshot.Project.Settings.Revision, ReceiptObjectKey: stored.PayloadObjectKey, ReceiptSha256: stored.PayloadSHA256, ReceiptBytes: stored.PayloadBytes, ReceiptContentBytes: stored.PayloadContentBytes, ActorID: scope.Credential.ID, CreatedAt: now}})
 		if errors.Is(err, postgres.ErrCutoverQueuePosition) {
 			return hubapi.NativePublicInvalid("Choose one queue position per work item before cutover; existing ranks have been retained")
 		}
@@ -464,14 +465,14 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope nativeS
 			}) {
 				waitSince = &now
 			}
-			if err := w.PutWorkItemFacts(ctx, claimstore.WorkItemFacts{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item.current.NativeID, Author: author, Repository: snapshot.Project.Settings.Repository, Assignees: item.issue.Assignees, DispatchWaitSince: waitSince}); err != nil {
+			if err := w.PutWorkItemFacts(ctx, claimstore.WorkItemFacts{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.current.NativeID, Author: author, Repository: snapshot.Project.Settings.Repository, Assignees: item.issue.Assignees, DispatchWaitSince: waitSince}); err != nil {
 				return err
 			}
 			if err := w.PutSearch(ctx, item.search, item.current.Revision); err != nil {
 				return err
 			}
 			for _, target := range item.dependencies {
-				relationship := corestore.Relationship{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item.current.NativeID, RelatedProjectID: scope.project, RelatedWorkItemID: target, Type: "dependency", CompatibilityEdge: true}
+				relationship := corestore.Relationship{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.current.NativeID, RelatedProjectID: scope.Project, RelatedWorkItemID: target, Type: "dependency", CompatibilityEdge: true}
 				if err := w.SetRelationship(ctx, relationship, "add", now); err != nil {
 					return err
 				}
@@ -492,7 +493,7 @@ func (s *Service) cutoverProjectRecordCommand(ctx context.Context, scope nativeS
 	})
 }
 
-func (s *Service) prepareCutoverItems(ctx context.Context, scope nativeScope, snapshot cutoverSourceSnapshot, issues []tracker.NativeIssue, dependencies [][]tracker.NativeWorkItemID, request CutoverRequest, now time.Time) ([]preparedCutoverItem, error) {
+func (s *Service) prepareCutoverItems(ctx context.Context, scope hubscope.NativeScope, snapshot cutoverSourceSnapshot, issues []tracker.NativeIssue, dependencies [][]tracker.NativeWorkItemID, request CutoverRequest, now time.Time) ([]preparedCutoverItem, error) {
 	result := make([]preparedCutoverItem, len(issues))
 	states := map[string]tracker.NativeState{}
 	for _, state := range request.States {
@@ -525,7 +526,7 @@ func (s *Service) prepareCutoverItems(ctx context.Context, scope nativeScope, sn
 					targetState = request.InitialState
 				}
 				terminal := states[targetState].Terminal
-				next.Blockers = append(next.Blockers, tracker.NativeDependency{ID: target, ProjectID: scope.project, Number: candidate.Number, Title: candidate.Title, State: targetState, Terminal: terminal, Dispatchable: states[targetState].Dispatchable, ClosedAt: candidate.ClosedAt})
+				next.Blockers = append(next.Blockers, tracker.NativeDependency{ID: target, ProjectID: scope.Project, Number: candidate.Number, Title: candidate.Title, State: targetState, Terminal: terminal, Dispatchable: states[targetState].Dispatchable, ClosedAt: candidate.ClosedAt})
 				if !terminal {
 					next.DependencyReady = false
 				}
@@ -538,20 +539,20 @@ func (s *Service) prepareCutoverItems(ctx context.Context, scope nativeScope, sn
 		if err != nil {
 			return nil, err
 		}
-		version, err := eventstore.NewContent(s.runDetailStore()).PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: next.WorkItemID, RecordID: string(next.WorkItemID), Revision: int64(next.Revision)}, raw)
+		version, err := eventstore.NewContent(s.runDetailStore()).PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: next.WorkItemID, RecordID: string(next.WorkItemID), Revision: int64(next.Revision)}, raw)
 		if err != nil {
 			return nil, err
 		}
 		eventID := "evt_cutover_" + artifact.Digest([]byte(request.Checkpoint+":"+string(next.WorkItemID)))
-		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: eventID, OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: next.WorkItemID, Type: "issue.cutover", SchemaVersion: 1, RecordedAt: now, Actor: scope.actor(), Data: tracker.CollaborationData{Revision: next.Revision}})
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: eventID, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: next.WorkItemID, Type: "issue.cutover", SchemaVersion: 1, RecordedAt: now, Actor: scope.Actor(), Data: tracker.CollaborationData{Revision: next.Revision}})
 		if err != nil {
 			return nil, err
 		}
-		event, err := eventstore.NewContent(s.runDetailStore()).PrepareEvent(ctx, scope.organization, eventRaw)
+		event, err := eventstore.NewContent(s.runDetailStore()).PrepareEvent(ctx, scope.Organization, eventRaw)
 		if err != nil {
 			return nil, err
 		}
-		search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: next.WorkItemID, ID: "issue:" + string(next.WorkItemID), SourceID: string(next.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(next.Revision), UpdatedAt: now}, searchstore.Text{Title: next.Title, Body: next.Body, Labels: next.Labels})
+		search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: next.WorkItemID, ID: "issue:" + string(next.WorkItemID), SourceID: string(next.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(next.Revision), UpdatedAt: now}, searchstore.Text{Title: next.Title, Body: next.Body, Labels: next.Labels})
 		if err != nil {
 			return nil, err
 		}
@@ -586,7 +587,7 @@ func (s *Service) projectNativeSummary(c echo.Context) error {
 	return s.nativeMutation(c, request.Mutation, request, nil)
 }
 
-func (s *Service) prepareNativeSourceSummary(ctx context.Context, scope nativeScope, item tracker.NativeWorkItemID, repository string, number int, key, body string, closeSource bool, stateReason string) (projectstore.GitHubOutbound, error) {
+func (s *Service) prepareNativeSourceSummary(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, repository string, number int, key, body string, closeSource bool, stateReason string) (projectstore.GitHubOutbound, error) {
 	if strings.TrimSpace(body) == "" || len(body) > 60<<10 {
 		return projectstore.GitHubOutbound{}, hubapi.NativePublicInvalid("Summary must contain 1 byte to 60 KiB")
 	}
@@ -601,7 +602,7 @@ func (s *Service) prepareNativeSourceSummary(ctx context.Context, scope nativeSc
 	if err != nil {
 		return projectstore.GitHubOutbound{}, err
 	}
-	payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization}, desired)
+	payload, err := eventstore.NewContent(s.runDetailStore()).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization}, desired)
 	if err != nil {
 		return projectstore.GitHubOutbound{}, err
 	}
@@ -609,10 +610,10 @@ func (s *Service) prepareNativeSourceSummary(ctx context.Context, scope nativeSc
 	if closeSource {
 		bucket = "cutover:" + string(item)
 	}
-	return projectstore.GitHubOutbound{ProjectID: scope.project, WorkItemID: item, Key: "native:" + string(item) + ":" + key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkpad), CreatedAt: s.config.now().UTC(), Payload: payload, CoalesceKey: bucket}, nil
+	return projectstore.GitHubOutbound{ProjectID: scope.Project, WorkItemID: item, Key: "native:" + string(item) + ":" + key, Repository: repository, IssueNumber: int64(number), Kind: string(MutationWorkpad), CreatedAt: s.config.now().UTC(), Payload: payload, CoalesceKey: bucket}, nil
 }
 
-func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope nativeScope, options hubapi.NativeCommandOptions, request projectNativeSummaryRequest) (json.RawMessage, error) {
+func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions, request projectNativeSummaryRequest) (json.RawMessage, error) {
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -637,8 +638,8 @@ func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope n
 	if err != nil {
 		return nil, err
 	}
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		_, err := r.LinkedSource(ctx, scope.project, item.NativeID)
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		_, err := r.LinkedSource(ctx, scope.Project, item.NativeID)
 		if err == nil {
 			return hubapi.NativePublicInvalid("Linked source comments are private to Cloud")
 		}
@@ -670,29 +671,29 @@ func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope n
 		if err := s.database.requireHostedFeatureRecord(ctx, w, options.Feature, s.config.now()); err != nil {
 			return err
 		}
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		latest, err := w.ProjectRecord(ctx, scope.project)
+		latest, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if latest.Core.Profile != "native" || latest.Settings.Projection != "summary" || latest.Settings.Revision != project.Settings.Revision {
 			return hubapi.NativeConflict(tracker.Revision(latest.Settings.Revision))
 		}
-		current, err := w.LockWorkItem(ctx, scope.project, item.NativeID)
+		current, err := w.LockWorkItem(ctx, scope.Project, item.NativeID)
 		if err != nil {
 			return err
 		}
 		if current.Revision != item.Revision || !reflect.DeepEqual(current.NativeSourceKey, item.NativeSourceKey) {
 			return hubapi.NativeConflict(tracker.Revision(current.Revision))
 		}
-		if scope.credential.Scope == hubapi.APIScopeWorker {
+		if scope.Credential.Scope == hubapi.APIScopeWorker {
 			if err := s.authorizeAttachmentCommentLease(ctx, w, scope, item, request.Mutation); err != nil {
 				return err
 			}
 		}
-		if _, err := w.LinkedSource(ctx, scope.project, item.NativeID); err == nil {
+		if _, err := w.LinkedSource(ctx, scope.Project, item.NativeID); err == nil {
 			return hubapi.NativePublicInvalid("Linked source comments are private to Cloud")
 		} else if !errors.Is(err, corestore.ErrNotFound) {
 			return err
@@ -701,7 +702,7 @@ func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope n
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		if err := owner.SupersedeGitHubSummaries(ctx, scope.project, outbound.CoalesceKey, s.config.now()); err != nil {
+		if err := owner.SupersedeGitHubSummaries(ctx, scope.Project, outbound.CoalesceKey, s.config.now()); err != nil {
 			return err
 		}
 		return owner.EnqueueGitHubOutbound(ctx, outbound)

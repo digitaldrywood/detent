@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/changerules"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -39,8 +40,8 @@ func (s *Service) landChange(c echo.Context) error { return s.landChangeRecord(c
 func validateChangeVersion(input tracker.ChangeVersionInput) error {
 	return hubapi.FromFeatureError(changerules.ValidateVersion(input))
 }
-func validateChangeVersionEvidence(scope nativeScope, item string, request tracker.PublishChangeVersion) error {
-	return hubapi.FromFeatureError(changerules.ValidateVersionEvidence(scope.organization, scope.project, item, request))
+func validateChangeVersionEvidence(scope hubscope.NativeScope, item string, request tracker.PublishChangeVersion) error {
+	return hubapi.FromFeatureError(changerules.ValidateVersionEvidence(scope.Organization, scope.Project, item, request))
 }
 func securityAuditRejection(message, field string) error {
 	return hubapi.FromFeatureError(changerules.SecurityAuditRejection(message, field))

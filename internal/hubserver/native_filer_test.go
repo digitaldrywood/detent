@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -32,10 +33,10 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	states := append(nativeTriageStates(nativeFixtureStates()), tracker.NativeState{Name: "Cancelled", Terminal: true})
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		project, err := w.ProjectRecord(t.Context(), scope.project)
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), scope.Project)
 		if err != nil {
 			return err
 		}
@@ -46,7 +47,7 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE api_tokens SET name=$1 WHERE organization_id=$2 AND id=$3", "operator-filer-list", scope.organization, credential.ID); err != nil {
+	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), "UPDATE api_tokens SET name=$1 WHERE organization_id=$2 AND id=$3", "operator-filer-list", scope.Organization, credential.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -88,21 +89,21 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 		ids[test.name] = issue.WorkItemID
 	}
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "filer-foreign")
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: scope.organization, TokenID: credential.ID, ProjectID: foreign.project.ID})
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.SetAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: scope.Organization, TokenID: credential.ID, ProjectID: foreign.project.ID})
 	}); err != nil {
 		t.Fatal(err)
 	}
 	foreign.token = f.token
 	hidden := foreign.create(t, "hidden filer")
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		return w.DeleteAccessTokenGrant(t.Context(), credential.ID, foreign.project.ID)
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	drainTestNativeBoard(t, f.service)
-	call := hostedContextProtocol(t, f.service, changeOperatorContext(t, f.service, f.token, string(scope.organization)), "http")
+	call := hostedContextProtocol(t, f.service, changeOperatorContext(t, f.service, f.token, string(scope.Organization)), "http")
 	for _, test := range []struct {
 		name, creator, state, archived, query, label string
 		want                                         []string
@@ -134,7 +135,7 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 				for {
 					var page tracker.NativeIssuePage
 					if projection == "mcp" {
-						args := map[string]any{"project_id": scope.project, "limit": 1}
+						args := map[string]any{"project_id": scope.Project, "limit": 1}
 						for key, value := range map[string]string{"created_by": test.creator, "state": test.state, "archived": test.archived, "query": test.query, "label": test.label, "cursor": params.Get("cursor")} {
 							if value != "" {
 								args[key] = value
@@ -185,7 +186,7 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 	if restDetail.Actor.Kind != "human" || restDetail.Actor.PrincipalID != credential.ID || restDetail.Actor.DisplayName != "operator-filer-list" {
 		t.Fatalf("REST detail filer=%+v", restDetail.Actor)
 	}
-	data := hostedContextData(t, call("tools/call", operatortool.WorkItem, map[string]any{"project_id": scope.project, "reference": ids["triaged"]}), false)
+	data := hostedContextData(t, call("tools/call", operatortool.WorkItem, map[string]any{"project_id": scope.Project, "reference": ids["triaged"]}), false)
 	var detail operatortool.WorkReadResult[tracker.NativeIssue]
 	if err := json.Unmarshal(data, &detail); err != nil || detail.Data.Actor.DisplayName != "operator-filer-list" {
 		t.Fatalf("detail=%s error=%v", data, err)
@@ -313,7 +314,7 @@ func TestNativeCreatedByIdentity(t *testing.T) {
 		{"worker", hubapi.APICredential{ID: "worker", Scope: hubapi.APIScopeWorker}, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			value, err := nativeCreatedBy(nativeScope{credential: test.credential}, url.Values{"created_by": {"me"}})
+			value, err := nativeCreatedBy(hubscope.NativeScope{Credential: test.credential}, url.Values{"created_by": {"me"}})
 			if test.want == "" {
 				var native *hubapi.NativeError
 				if !errors.As(err, &native) || native.Code != "invalid_request" {
@@ -339,13 +340,13 @@ func TestHostedPersonalKeyCreatedBy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: "org_security", project: f.project, credential: issuer}
+		scope := hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: issuer}
 		if index == 0 {
 			if issuer.HostedRole != "reporter" {
 				t.Fatalf("filer role=%q", issuer.HostedRole)
 			}
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-				project, err := w.ProjectRecord(t.Context(), scope.project)
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+				project, err := w.ProjectRecord(t.Context(), scope.Project)
 				if err != nil {
 					return err
 				}

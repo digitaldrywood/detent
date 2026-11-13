@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -20,7 +21,7 @@ type monthlyBudgetRequest struct {
 func (s *Service) getMonthlyBudget(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	var result monthlyBudgetSettings
 	var err error
 
@@ -38,11 +39,11 @@ func (s *Service) updateMonthlyBudget(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
-	if !canManageProjectSecrets(scope.credential) {
+	scope := hubscope.NativeRequestScope(c)
+	if !hubscope.CanManageProjectSecrets(scope.Credential) {
 		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "Monthly budgets require owner or admin access", hubapi.APIErrorResponse{Code: "forbidden", Message: "Monthly budgets require owner or admin access"})
 	}
-	scope.requireHostedAdmin = true
+	scope.RequireHostedAdmin = true
 	c.Set("native_scope", scope)
 	if s.database == nil || s.database.billingRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
@@ -67,7 +68,7 @@ func (s *Service) instanceMonthlyBudgetScope(c echo.Context) error {
 	if !ok {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
-	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential}
 	c.Set("native_scope", scope)
 	if c.Request().Method == http.MethodGet {
 		return s.getMonthlyBudget(c)

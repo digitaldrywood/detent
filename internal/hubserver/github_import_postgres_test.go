@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -47,7 +48,7 @@ func TestLinkedImportUsesPostgresProjectRepository(t *testing.T) {
 			{"foreign", "example-org/foreign", linkedIssueRepositoryMismatch},
 		} {
 			t.Run(string(project)+"/"+tt.name, func(t *testing.T) {
-				_, err := service.fetchLinkedSnapshot(t.Context(), nativeScope{organization: "org", project: project}, "https://github.com/"+tt.repository+"/issues/1")
+				_, err := service.fetchLinkedSnapshot(t.Context(), hubscope.NativeScope{Organization: "org", Project: project}, "https://github.com/"+tt.repository+"/issues/1")
 				if err == nil || !strings.Contains(err.Error(), tt.message) {
 					t.Fatalf("error=%v, want %q", err, tt.message)
 				}

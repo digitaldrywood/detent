@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -24,7 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) readCommentRecords(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
+func (s *Service) readCommentRecords(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
 	var page tracker.Page[tracker.NativeComment]
 	err := s.readWorkItemPageSnapshot(ctx, scope, func(ctx context.Context) error {
 		var err error
@@ -37,21 +38,21 @@ func (s *Service) readCommentRecords(ctx context.Context, scope nativeScope, ite
 	return page, err
 }
 
-func (s *Service) readWorkItemPageSnapshot(ctx context.Context, scope nativeScope, run func(context.Context) error) error {
+func (s *Service) readWorkItemPageSnapshot(ctx context.Context, scope hubscope.NativeScope, run func(context.Context) error) error {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
-		return repository.ReadRequest(ctx, scope.organization, run)
+		return repository.ReadRequest(ctx, scope.Organization, run)
 	}
 	return run(ctx)
 }
 
-func (s *Service) readCommentPageModel(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
+func (s *Service) readCommentPageModel(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
 	page := tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{}}
 	if err := hubapi.ValidateNativeQuery(params, "direction"); err != nil {
 		return page, err
 	}
-	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/comments"
+	path := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(item) + "/comments"
 	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
 	if err != nil {
 		return page, err
@@ -75,13 +76,13 @@ func (s *Service) readCommentPageModel(ctx context.Context, scope nativeScope, i
 	}
 
 	var records []viewstore.CommentPageRecord
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(viewstore.WorkItemPageReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		records, err = reader.CommentPageRecords(ctx, scope.project, tracker.NativeWorkItemID(item), after, newest, limit)
+		records, err = reader.CommentPageRecords(ctx, scope.Project, tracker.NativeWorkItemID(item), after, newest, limit)
 		return err
 	})
 	if err != nil {
@@ -113,20 +114,20 @@ func (s *Service) readCommentPageModel(ctx context.Context, scope nativeScope, i
 	return page, err
 }
 
-func (s *Service) authorizeCommentWorkItem(ctx context.Context, scope nativeScope, item string) error {
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		project, err := r.Project(ctx, scope.project)
+func (s *Service) authorizeCommentWorkItem(ctx context.Context, scope hubscope.NativeScope, item string) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		project, err := r.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if project.DeletedAt != nil {
 			return corestore.ErrNotFound
 		}
-		row, err := r.WorkItem(ctx, scope.project, tracker.NativeWorkItemID(item))
+		row, err := r.WorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		return nil
@@ -134,7 +135,7 @@ func (s *Service) authorizeCommentWorkItem(ctx context.Context, scope nativeScop
 	return hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id string, params url.Values) (tracker.NativeIssue, error) {
+func (s *Service) workItemResource(ctx context.Context, scope hubscope.NativeScope, id string, params url.Values) (tracker.NativeIssue, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
@@ -170,7 +171,7 @@ func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id st
 	if pageModelPending(err) {
 		issue, err = s.readWorkItemSourcePage(ctx, scope, id)
 	} else if err == nil {
-		err = s.hydrateWorkItemActorNames(ctx, scope.organization, []*tracker.NativeIssue{&issue})
+		err = s.hydrateWorkItemActorNames(ctx, scope.Organization, []*tracker.NativeIssue{&issue})
 	}
 	if err == nil {
 		issue.Queue, issue.Workpad = nil, nil
@@ -191,13 +192,13 @@ func (s *Service) workItemResource(ctx context.Context, scope nativeScope, id st
 	return issue, err
 }
 
-func (s *Service) readWorkItemPageModel(ctx context.Context, scope nativeScope, id string) (tracker.NativeIssue, error) {
+func (s *Service) readWorkItemPageModel(ctx context.Context, scope hubscope.NativeScope, id string) (tracker.NativeIssue, error) {
 
 	if err := s.authorizeCommentWorkItem(ctx, scope, id); err != nil {
 		return tracker.NativeIssue{}, err
 	}
 	var record viewstore.ItemPageRecord
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		reader, ok := r.(viewstore.WorkItemPageReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
@@ -206,14 +207,14 @@ func (s *Service) readWorkItemPageModel(ctx context.Context, scope nativeScope, 
 			return err
 		}
 		var err error
-		record, err = reader.WorkItemDetailPage(ctx, scope.project, tracker.NativeWorkItemID(id))
+		record, err = reader.WorkItemDetailPage(ctx, scope.Project, tracker.NativeWorkItemID(id))
 		if errors.Is(err, corestore.ErrNotFound) {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if err != nil {
 			return err
 		}
-		head, err := r.BoardSequence(ctx, scope.project)
+		head, err := r.BoardSequence(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -224,7 +225,7 @@ func (s *Service) readWorkItemPageModel(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return tracker.NativeIssue{}, hubapi.ProjectRecordError(err)
 	}
-	return scope.reporterIssue(record.Value), nil
+	return scope.ReporterIssue(record.Value), nil
 }
 
 func (s *Service) GetWorkItemReferences(c echo.Context) error {
@@ -235,13 +236,13 @@ func (s *Service) GetWorkItemReferences(c echo.Context) error {
 	if len(params) != 0 {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("References do not accept query parameters"))
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	var references []tracker.ExternalReference
 	err = s.readWorkItemPageSnapshot(c.Request().Context(), scope, func(ctx context.Context) error {
 		if err := s.authorizeCommentWorkItem(ctx, scope, c.Param("item")); err != nil {
 			return err
 		}
-		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			reader, ok := r.(viewstore.WorkItemReferenceReader)
 			if !ok {
 				return hubapi.NativeWorkItemStorageUnavailable()
@@ -250,7 +251,7 @@ func (s *Service) GetWorkItemReferences(c echo.Context) error {
 			if err := requireWorkItemPageReady(ctx, r, scope, c.Param("item"), "item"); err != nil {
 				return err
 			}
-			references, err = reader.WorkItemReferenceRecords(ctx, scope.project, tracker.NativeWorkItemID(c.Param("item")))
+			references, err = reader.WorkItemReferenceRecords(ctx, scope.Project, tracker.NativeWorkItemID(c.Param("item")))
 			return pageModelError(err)
 		})
 	})
@@ -260,12 +261,12 @@ func (s *Service) GetWorkItemReferences(c echo.Context) error {
 	return c.JSON(http.StatusOK, references)
 }
 
-func (s *Service) readCommentSourceRecords(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
+func (s *Service) readCommentSourceRecords(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
 	page := tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{}}
 	if err := hubapi.ValidateNativeQuery(params, "direction"); err != nil {
 		return page, err
 	}
-	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/comments"
+	path := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(item) + "/comments"
 	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
 	if err != nil {
 		return page, err
@@ -290,14 +291,14 @@ func (s *Service) readCommentSourceRecords(ctx context.Context, scope nativeScop
 	var rows []corestore.Comment
 	var versions []eventstore.CollaborationVersion
 	more := false
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		rows, err = r.SelectComments(ctx, scope.project, tracker.NativeWorkItemID(item), after, newest, limit)
+		rows, err = r.SelectComments(ctx, scope.Project, tracker.NativeWorkItemID(item), after, newest, limit)
 		if err != nil {
 			return err
 		}
 		if len(rows) == limit {
-			boundary, err := r.SelectComments(ctx, scope.project, tracker.NativeWorkItemID(item), rows[len(rows)-1].Sequence, newest, 1)
+			boundary, err := r.SelectComments(ctx, scope.Project, tracker.NativeWorkItemID(item), rows[len(rows)-1].Sequence, newest, 1)
 			if err != nil {
 				return err
 			}
@@ -369,12 +370,12 @@ func pageModelError(err error) error {
 	}
 	return hubapi.ProjectRecordError(err)
 }
-func requireWorkItemPageReady(ctx context.Context, r tenantstore.Reader, scope nativeScope, item, kind string) error {
+func requireWorkItemPageReady(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item, kind string) error {
 	reader, ok := r.(viewstore.WorkItemPageReadinessReader)
 	if !ok {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
-	ready, err := reader.WorkItemPageReady(ctx, scope.project, tracker.NativeWorkItemID(item), kind)
+	ready, err := reader.WorkItemPageReady(ctx, scope.Project, tracker.NativeWorkItemID(item), kind)
 	if err != nil {
 		return err
 	}
@@ -384,7 +385,7 @@ func requireWorkItemPageReady(ctx context.Context, r tenantstore.Reader, scope n
 	return nil
 }
 
-func (s *Service) readWorkItemSourcePage(ctx context.Context, scope nativeScope, id string) (tracker.NativeIssue, error) {
+func (s *Service) readWorkItemSourcePage(ctx context.Context, scope hubscope.NativeScope, id string) (tracker.NativeIssue, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.RequestReader)
 	if !ok {
 		return tracker.NativeIssue{}, hubapi.NativeWorkItemStorageUnavailable()
@@ -394,8 +395,8 @@ func (s *Service) readWorkItemSourcePage(ctx context.Context, scope nativeScope,
 	var row corestore.WorkItem
 	var version eventstore.CollaborationVersion
 	var source eventstore.LinkedSource
-	err := repository.ReadRequest(ctx, scope.organization, func(ctx context.Context) error {
-		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadRequest(ctx, scope.Organization, func(ctx context.Context) error {
+		return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				return err
 			}
@@ -404,7 +405,7 @@ func (s *Service) readWorkItemSourcePage(ctx context.Context, scope nativeScope,
 			if err != nil {
 				return err
 			}
-			source, err = r.LinkedSource(ctx, scope.project, row.NativeID)
+			source, err = r.LinkedSource(ctx, scope.Project, row.NativeID)
 			if errors.Is(err, corestore.ErrNotFound) {
 				source = eventstore.LinkedSource{}
 				return nil
@@ -420,29 +421,29 @@ func (s *Service) readWorkItemSourcePage(ctx context.Context, scope nativeScope,
 		return tracker.NativeIssue{}, err
 	}
 	if source.OrganizationID != "" {
-		linked, err := s.hydrateLinkedIssueSourceRecord(ctx, scope.organization, source)
+		linked, err := s.hydrateLinkedIssueSourceRecord(ctx, scope.Organization, source)
 		if err != nil {
 			return tracker.NativeIssue{}, err
 		}
 		issue.LinkedSource = &linked
 	}
-	err = repository.ReadRequest(ctx, scope.organization, func(ctx context.Context) error {
-		if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = repository.ReadRequest(ctx, scope.Organization, func(ctx context.Context) error {
+		if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				return err
 			}
-			project, err := r.Project(ctx, scope.project)
+			project, err := r.Project(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
 			if project.DeletedAt != nil {
 				return corestore.ErrNotFound
 			}
-			current, err := r.WorkItem(ctx, scope.project, row.NativeID)
+			current, err := r.WorkItem(ctx, scope.Project, row.NativeID)
 			if err != nil {
 				return err
 			}
-			if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
+			if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(current.ActorPrincipalID)}) {
 				return corestore.ErrNotFound
 			}
 			if current.Revision != row.Revision {
@@ -455,7 +456,7 @@ func (s *Service) readWorkItemSourcePage(ctx context.Context, scope nativeScope,
 			if currentVersion.RecordID != version.RecordID || currentVersion.PayloadObjectKey != version.PayloadObjectKey || currentVersion.PayloadSHA256 != version.PayloadSHA256 {
 				return hubapi.NativeConflict(tracker.Revision(current.Revision))
 			}
-			currentSource, err := r.LinkedSource(ctx, scope.project, row.NativeID)
+			currentSource, err := r.LinkedSource(ctx, scope.Project, row.NativeID)
 			if errors.Is(err, corestore.ErrNotFound) {
 				currentSource, err = eventstore.LinkedSource{}, nil
 			}
@@ -494,11 +495,11 @@ func (s *Service) readWorkItemSourcePage(ctx context.Context, scope nativeScope,
 		if err := s.hydrateWorkItemRelationshipFacts(ctx, scope, &issue); err != nil {
 			return err
 		}
-		if err := s.hydrateWorkItemActorNames(ctx, scope.organization, []*tracker.NativeIssue{&issue}); err != nil {
+		if err := s.hydrateWorkItemActorNames(ctx, scope.Organization, []*tracker.NativeIssue{&issue}); err != nil {
 			return err
 		}
-		return s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			head, err := r.BoardSequence(ctx, scope.project)
+		return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			head, err := r.BoardSequence(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -507,30 +508,30 @@ func (s *Service) readWorkItemSourcePage(ctx context.Context, scope nativeScope,
 			return nil
 		})
 	})
-	return scope.reporterIssue(issue), hubapi.ProjectRecordError(err)
+	return scope.ReporterIssue(issue), hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) hydrateWorkItemWorkpad(ctx context.Context, scope nativeScope, issue *tracker.NativeIssue) error {
+func (s *Service) hydrateWorkItemWorkpad(ctx context.Context, scope hubscope.NativeScope, issue *tracker.NativeIssue) error {
 	var outbound projectstore.GitHubOutbound
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+		item, err := r.WorkItem(ctx, scope.Project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
 		if item.Revision != int64(issue.Revision) {
 			return corestore.ErrRevisionConflict
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		owner, ok := r.(projectstore.GitHubWorkpadReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		outbound, err = owner.LatestGitHubWorkpad(ctx, scope.project, issue.WorkItemID)
+		outbound, err = owner.LatestGitHubWorkpad(ctx, scope.Project, issue.WorkItemID)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -550,15 +551,15 @@ func (s *Service) hydrateWorkItemWorkpad(ctx context.Context, scope nativeScope,
 	if err := json.Unmarshal(raw, &desired); err != nil {
 		return err
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		item, err := r.WorkItem(ctx, scope.project, issue.WorkItemID)
+		item, err := r.WorkItem(ctx, scope.Project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
-		if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
+		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(item.ActorPrincipalID)}) {
 			return corestore.ErrNotFound
 		}
 		if item.Revision != int64(issue.Revision) {

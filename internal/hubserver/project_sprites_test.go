@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -60,8 +61,8 @@ func TestWakeSpriteRunners(t *testing.T) {
 			})}
 			f, scope, runners := newSpriteWakeFixture(t, client, tt.storeToken, tt.heartbeatAgo, "customer-host")
 			if tt.organizationScope {
-				spriteFixtureExec(t, f, "UPDATE runner_identities SET scope='organization' WHERE organization_id=$1 AND runner_id=$2", scope.organization, runners[0].binding.RunnerID)
-				spriteFixtureExec(t, f, "DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2)", scope.organization, runners[0].binding.RunnerID)
+				spriteFixtureExec(t, f, "UPDATE runner_identities SET scope='organization' WHERE organization_id=$1 AND runner_id=$2", scope.Organization, runners[0].binding.RunnerID)
+				spriteFixtureExec(t, f, "DELETE FROM token_grants WHERE organization_id=$1 AND token_id=(SELECT token_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2)", scope.Organization, runners[0].binding.RunnerID)
 			}
 			if tt.organizationToken {
 				token := spritesSecretSentinel
@@ -101,7 +102,7 @@ func TestWakeSpriteRunners(t *testing.T) {
 				return err == nil && !at.Before(beforeWake) && !at.After(afterWake)
 			}
 			if tt.wantWakeCalls > 0 {
-				facts, err := f.service.readSpriteMachineFacts(t.Context(), scope.organization, runners[0].binding.MachineID)
+				facts, err := f.service.readSpriteMachineFacts(t.Context(), scope.Organization, runners[0].binding.MachineID)
 				if err != nil || spriteFactValue(facts.Name) != "customer-host" {
 					t.Fatalf("wake lost Sprite identity: %+v, %v", facts, err)
 				}
@@ -175,7 +176,7 @@ func TestSpriteWakeSecret(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			token, err := f.service.config.SecretKeys.Open(envelope, secretAAD(string(secretScope.organization), string(secretScope.project), flySpritesToken))
+			token, err := f.service.config.SecretKeys.Open(envelope, secretAAD(string(secretScope.Organization), string(secretScope.Project), flySpritesToken))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -186,7 +187,7 @@ func TestSpriteWakeSecret(t *testing.T) {
 	}
 }
 
-func newSpriteWakeFixture(t *testing.T, client *http.Client, storeToken bool, heartbeatAgo time.Duration, names ...string) (nativeFixture, nativeScope, []runnerFixture) {
+func newSpriteWakeFixture(t *testing.T, client *http.Client, storeToken bool, heartbeatAgo time.Duration, names ...string) (nativeFixture, hubscope.NativeScope, []runnerFixture) {
 	t.Helper()
 	f := newDefaultNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1"), SpritesHTTPClient: client})
 	startSpriteWakeWorkers(t, f.service)
@@ -202,9 +203,9 @@ func startSpriteWakeWorkers(t *testing.T, s *Service) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	s.workerCancel = cancel
-	s.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) { s.scheduleSpriteWake(ctx, scope, result) }
-	s.startSpriteLifecycle = func(scope nativeScope, state string) { s.scheduleSpriteLifecycle(ctx, scope, state) }
-	s.startSpritePoolForQueue = func(scope nativeScope) { s.scheduleSpritePoolForQueue(ctx, scope) }
+	s.wakeSpriteRunnersAfter = func(scope hubscope.NativeScope, result json.RawMessage) { s.scheduleSpriteWake(ctx, scope, result) }
+	s.startSpriteLifecycle = func(scope hubscope.NativeScope, state string) { s.scheduleSpriteLifecycle(ctx, scope, state) }
+	s.startSpritePoolForQueue = func(scope hubscope.NativeScope) { s.scheduleSpritePoolForQueue(ctx, scope) }
 	t.Cleanup(s.stopSpriteRunners)
 }
 
@@ -249,11 +250,11 @@ func waitSpriteWake(t *testing.T, done <-chan struct{}) {
 	}
 }
 
-func spriteWakeDone(t *testing.T, s *Service, scope nativeScope) <-chan struct{} {
+func spriteWakeDone(t *testing.T, s *Service, scope hubscope.NativeScope) <-chan struct{} {
 	t.Helper()
 	s.spriteWakeMu.Lock()
 	defer s.spriteWakeMu.Unlock()
-	done := s.spriteWakes[spriteWakeKey{organization: scope.organization}]
+	done := s.spriteWakes[spriteWakeKey{organization: scope.Organization}]
 	if done == nil {
 		t.Fatal("no active Sprite wake pass")
 	}
@@ -334,7 +335,7 @@ func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
 			if active != 0 || calls.Load() != wantCalls {
 				t.Fatalf("completed burst: active passes=%d provider calls=%d", active, calls.Load())
 			}
-			spriteFixtureExec(t, f, `UPDATE machines SET sprite_woken_at=NULL WHERE organization_id=$1`, scope.organization)
+			spriteFixtureExec(t, f, `UPDATE machines SET sprite_woken_at=NULL WHERE organization_id=$1`, scope.Organization)
 			f.create(t, "later-mutation")
 			waitSpriteWake(t, started)
 			f.service.spriteWakeWork.Wait()
@@ -518,7 +519,7 @@ func TestWakeSpriteRunnersProjectIsolation(t *testing.T) {
 	})}
 	first, firstScope, _ := newSpriteWakeFixture(t, client, true, time.Minute, "first-runner")
 	second := newNativeFixture(t, first.service, first.project.OrganizationID, "second")
-	secondScope := nativeScope{organization: second.project.OrganizationID, project: second.project.ID, credential: hubapi.APICredential{ID: "test"}}
+	secondScope := hubscope.NativeScope{Organization: second.project.OrganizationID, Project: second.project.ID, Credential: hubapi.APICredential{ID: "test"}}
 	enrollSpriteWakeRunners(t, second, time.Minute, "second-runner")
 	storeSpriteWakeSecret(t, second, spritesSecretSentinel+"-second")
 	plain := newNativeFixture(t, first.service, first.project.OrganizationID, "non-sprite")
@@ -593,12 +594,12 @@ func TestWakeManagedSpriteMembers(t *testing.T) {
 				setSpriteMemberChecks(t, f, spriteMemberReady)
 			}
 			if test.drain {
-				spriteFixtureExec(t, f, `UPDATE runner_sprite_memberships SET state='deleting' WHERE organization_id=$1 AND name=$2`, scope.organization, sprite.redemption.Hostname)
-				spriteFixtureExec(t, f, `UPDATE runner_identities SET state='draining' WHERE organization_id=$1 AND runner_id=$2`, scope.organization, sprite.binding.RunnerID)
+				spriteFixtureExec(t, f, `UPDATE runner_sprite_memberships SET state='deleting' WHERE organization_id=$1 AND name=$2`, scope.Organization, sprite.redemption.Hostname)
+				spriteFixtureExec(t, f, `UPDATE runner_identities SET state='draining' WHERE organization_id=$1 AND runner_id=$2`, scope.Organization, sprite.binding.RunnerID)
 			}
 			placementFixtureHeartbeat(t, f, sprite.binding.RunnerID, f.service.config.now().Add(-time.Minute))
 			f.service.config.SecretKeys = keys
-			woken, err := f.service.wakeOrganizationSpriteRunners(t.Context(), nativeScope{organization: scope.organization})
+			woken, err := f.service.wakeOrganizationSpriteRunners(t.Context(), hubscope.NativeScope{Organization: scope.Organization})
 			if err != nil || woken != test.want || int(calls.Load()) != test.want {
 				t.Fatalf("woken=%d calls=%d err=%v, want %d", woken, calls.Load(), err, test.want)
 			}

@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -109,7 +110,7 @@ type workspaceIssueClosePlan struct {
 	move    bool
 }
 
-func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope nativeScope, item string, now time.Time) (workspaceIssueClosePlan, error) {
+func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope hubscope.NativeScope, item string, now time.Time) (workspaceIssueClosePlan, error) {
 	var out workspaceIssueClosePlan
 	if item == "" {
 		return out, nil
@@ -129,7 +130,7 @@ func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope nativeSc
 	plan.issue.ClosedAt = &now
 	plan.fields = []string{"state"}
 	out.plan, out.move = plan, true
-	out.fields, err = s.prepareWorkItemFields(ctx, scope.organization, plan)
+	out.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
 	if err != nil {
 		return out, err
 	}
@@ -138,19 +139,19 @@ func (s *Service) prepareWorkspaceIssueClose(ctx context.Context, scope nativeSc
 		return out, err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	out.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, RecordID: item, Revision: int64(plan.issue.Revision)}, raw)
+	out.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, RecordID: item, Revision: int64(plan.issue.Revision)}, raw)
 	if err != nil {
 		return out, err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, FromState: from, ToState: terminal, Reason: "worker_progress"}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.issue.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, FromState: from, ToState: terminal, Reason: "worker_progress"}})
 	if err != nil {
 		return out, err
 	}
-	out.event, err = content.PrepareEvent(ctx, scope.organization, raw)
+	out.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
 	if err != nil {
 		return out, err
 	}
-	out.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + item, SourceID: item, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+	out.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + item, SourceID: item, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: now}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
 	return out, err
 }
 

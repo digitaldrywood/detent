@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -1872,7 +1873,7 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 			type fixture struct {
 				server     *Service
 				c          echo.Context
-				scope      nativeScope
+				scope      hubscope.NativeScope
 				record     workspaceRecord
 				connection *relayConnection
 				workspace  postgres.WorkspaceSession
@@ -1998,7 +1999,7 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 					}
 				}
 				value.connection = &relayConnection{ID: "connection_" + suffix, WorkspaceID: workspaceID, PrincipalID: principal.principalID, SessionID: principal.sessionID, SessionHash: principal.credential.SessionHash, Subject: subject}
-				value.scope = nativeScope{organization: organization, project: project, credential: principal.credential}
+				value.scope = hubscope.NativeScope{Organization: organization, Project: project, Credential: principal.credential}
 				value.record = workspaceRecord{ID: workspaceID, OrganizationID: organization, ProjectID: project, SubjectWorkItemID: value.workspace.SubjectWorkItemID, LeaseID: tracker.LeaseID(value.workspace.LeaseID), FencingToken: tracker.FencingToken(value.workspace.FencingToken)}
 				fixtures = append(fixtures, value)
 			}
@@ -2006,10 +2007,10 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 				value := &fixtures[index]
 				relay := &workspaceService{server: value.server}
 				if err := relay.revalidatePersonLocally(t.Context(), value.record, value.connection); err != nil {
-					t.Fatalf("%s current local authority=%v", value.scope.organization, err)
+					t.Fatalf("%s current local authority=%v", value.scope.Organization, err)
 				}
 				if err := relay.revalidatePerson(t.Context(), value.c, value.scope, value.record, value.connection); err != nil {
-					t.Fatalf("%s current full authority=%v", value.scope.organization, err)
+					t.Fatalf("%s current full authority=%v", value.scope.Organization, err)
 				}
 			}
 			for index := range fixtures {
@@ -2017,13 +2018,13 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 				value := &fixtures[index]
 				relay := &workspaceService{server: value.server}
 				if err := relay.revalidatePersonLocally(t.Context(), value.record, value.connection); err != nil {
-					t.Fatalf("%s unaffected local authority=%v", value.scope.organization, err)
+					t.Fatalf("%s unaffected local authority=%v", value.scope.Organization, err)
 				}
 				if err := relay.revalidatePerson(t.Context(), value.c, value.scope, value.record, value.connection); err != nil {
-					t.Fatalf("%s unaffected full authority=%v", value.scope.organization, err)
+					t.Fatalf("%s unaffected full authority=%v", value.scope.Organization, err)
 				}
 				update := func(state string, fencing int64) error {
-					return value.server.config.TenantRepository.WriteTenant(t.Context(), value.scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					return value.server.config.TenantRepository.WriteTenant(t.Context(), value.scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 						current := value.workspace
 						updated, err := w.(postgres.WorkspaceWriter).UpdateWorkspaceSession(t.Context(), postgres.WorkspaceUpdate{OrganizationID: current.OrganizationID, ProjectID: current.ProjectID, ID: current.ID, ExpectedRevision: current.Revision, ExpectedRunnerID: current.RunnerID, ExpectedLeaseID: current.LeaseID, ExpectedFencingToken: current.FencingToken, State: state, RunnerID: current.RunnerID, MachineID: current.MachineID, LeaseID: current.LeaseID, FencingToken: fencing, UpdatedAt: base})
 						if err == nil {
@@ -2035,7 +2036,7 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 				var err error
 				switch test.fault {
 				case "member", "session", "grant", "lease_released", "token_revoked", "reporter_legacy", "reporter_other":
-					err = value.server.config.TenantRepository.WriteTenant(t.Context(), value.scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+					err = value.server.config.TenantRepository.WriteTenant(t.Context(), value.scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 						switch test.fault {
 						case "member":
 							member, err := w.AccessMember(t.Context(), value.subject)
@@ -2047,14 +2048,14 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 						case "session":
 							return w.RevokeAccessSession(t.Context(), value.connection.SessionHash, base)
 						case "grant":
-							return w.DeleteAccessProjectGrant(t.Context(), value.subject, value.scope.project)
+							return w.DeleteAccessProjectGrant(t.Context(), value.subject, value.scope.Project)
 						case "lease_released":
 							_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: value.lease.LeaseID, FencingToken: value.lease.FencingToken}, "example")
 							return err
 						case "token_revoked":
 							return w.RevokeAccessCredential(t.Context(), value.connection.PrincipalID, base)
 						default:
-							item, err := w.WorkItem(t.Context(), value.scope.project, tracker.NativeWorkItemID(value.record.SubjectWorkItemID))
+							item, err := w.WorkItem(t.Context(), value.scope.Project, tracker.NativeWorkItemID(value.record.SubjectWorkItemID))
 							if err != nil {
 								return err
 							}
@@ -2110,25 +2111,25 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := relay.revalidatePersonLocally(t.Context(), value.record, value.connection); (err != nil) != test.localDenied {
-					t.Fatalf("%s local error=%v, want denied=%v", value.scope.organization, err, test.localDenied)
+					t.Fatalf("%s local error=%v, want denied=%v", value.scope.Organization, err, test.localDenied)
 				}
 				if err := relay.revalidatePerson(t.Context(), value.c, value.scope, value.record, value.connection); (err != nil) != test.fullDenied {
-					t.Fatalf("%s full error=%v, want denied=%v", value.scope.organization, err, test.fullDenied)
+					t.Fatalf("%s full error=%v, want denied=%v", value.scope.Organization, err, test.fullDenied)
 				}
 				if test.fault == "" || test.fault == "terminal" || test.fault == "lease_released" {
 					activity := &workspaceService{server: value.server, logger: value.server.config.Logger}
 					readWorkspace := func() (postgres.WorkspaceSession, error) {
 						var row postgres.WorkspaceSession
-						err := value.server.accessRead(t.Context(), value.scope.organization, func(r tenantstore.Reader) error {
+						err := value.server.accessRead(t.Context(), value.scope.Organization, func(r tenantstore.Reader) error {
 							var err error
-							row, err = r.(postgres.WorkspaceReader).WorkspaceSession(t.Context(), value.scope.project, value.record.ID)
+							row, err = r.(postgres.WorkspaceReader).WorkspaceSession(t.Context(), value.scope.Project, value.record.ID)
 							return err
 						})
 						return row, err
 					}
 					if test.fault == "" {
 						clock.Store(base.Add(2 * time.Second).UnixNano())
-						if err := value.server.accessWrite(t.Context(), value.scope.organization, func(w tenantstore.Writer) error {
+						if err := value.server.accessWrite(t.Context(), value.scope.Organization, func(w tenantstore.Writer) error {
 							current := value.workspace
 							_, err := w.(postgres.WorkspaceWriter).UpdateWorkspaceSession(t.Context(), postgres.WorkspaceUpdate{OrganizationID: current.OrganizationID, ProjectID: current.ProjectID, ID: current.ID, ExpectedRevision: current.Revision, ExpectedRunnerID: current.RunnerID, ExpectedLeaseID: current.LeaseID, ExpectedFencingToken: current.FencingToken, State: current.State, Reason: "example-bound", RunnerID: current.RunnerID, MachineID: current.MachineID, LeaseID: current.LeaseID, FencingToken: current.FencingToken, HeadSHA: strings.Repeat("a", 40), Capabilities: []string{"files", "diff"}, Isolation: workspacesession.IsolationContainer, Worktree: "retained", MachineHostname: "example-host", WorktreePath: "/workspace/example", ReadOnly: true, OpenedAt: &base, LastActivityAt: new(base.Add(time.Second)), LastHeartbeatAt: new(base.Add(2 * time.Second)), UpdatedAt: base.Add(2 * time.Second)})
 							return err
@@ -2152,7 +2153,7 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 						want.LastActivityAt = &touchedAt
 					}
 					if !reflect.DeepEqual(after, want) {
-						t.Fatalf("%s activity changed owner metadata or ignored terminal/lease fence: before=%+v after=%+v", value.scope.organization, before, after)
+						t.Fatalf("%s activity changed owner metadata or ignored terminal/lease fence: before=%+v after=%+v", value.scope.Organization, before, after)
 					}
 					if test.fault == "" {
 						principal, err := value.server.relayPrincipal(t.Context(), value.c)
@@ -2164,8 +2165,8 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 						}
 						readAudit := func() (postgres.RelaySession, error) {
 							var row postgres.RelaySession
-							err := value.server.accessRead(t.Context(), value.scope.organization, func(r tenantstore.Reader) error {
-								rows, err := r.(postgres.RelayActionReader).RelaySessions(t.Context(), postgres.RelaySessionsInput{OrganizationID: value.scope.organization, ProjectID: value.scope.project, WorkspaceID: value.record.ID, Limit: 2})
+							err := value.server.accessRead(t.Context(), value.scope.Organization, func(r tenantstore.Reader) error {
+								rows, err := r.(postgres.RelayActionReader).RelaySessions(t.Context(), postgres.RelaySessionsInput{OrganizationID: value.scope.Organization, ProjectID: value.scope.Project, WorkspaceID: value.record.ID, Limit: 2})
 								if err != nil {
 									return err
 								}
@@ -2178,7 +2179,7 @@ func TestWorkspaceRelayRevalidationFencesStoredAuthority(t *testing.T) {
 							return row, err
 						}
 						row, err := readAudit()
-						if err != nil || row.OrganizationID != value.scope.organization || row.ProjectID != value.scope.project || row.WorkspaceID != value.record.ID || row.ID != value.connection.AuditID || row.ConnectionID != value.connection.ID || row.PrincipalID != principal.principalID || row.Subject != principal.subject || row.SupportReason != principal.supportReason || len(row.Channels) != 0 || !row.OpenedAt.Equal(touchedAt) || row.ClosedAt != nil {
+						if err != nil || row.OrganizationID != value.scope.Organization || row.ProjectID != value.scope.Project || row.WorkspaceID != value.record.ID || row.ID != value.connection.AuditID || row.ConnectionID != value.connection.ID || row.PrincipalID != principal.principalID || row.Subject != principal.subject || row.SupportReason != principal.supportReason || len(row.Channels) != 0 || !row.OpenedAt.Equal(touchedAt) || row.ClosedAt != nil {
 							t.Fatalf("scoped opened audit=%+v error=%v", row, err)
 						}
 						value.connection.CountIn(13)
@@ -2335,7 +2336,7 @@ func TestWorkspaceRelayClosesAConnectionThatJoinedAfterTheWorkspaceEnded(t *test
 				f.updateWorkspace(t, func(arg *postgres.WorkspaceUpdate) { arg.State = test.state })
 			}
 			connection := &relayConnection{
-				ID: hubapi.NewID("relayconn"), WorkspaceID: f.workspace, Runner: test.runner, Scope: f.service.authInput(nativeScope{organization: f.project.OrganizationID, project: f.project.ID}),
+				ID: hubapi.NewID("relayconn"), WorkspaceID: f.workspace, Runner: test.runner, Scope: f.service.authInput(hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}),
 				Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{}),
 			}
 			relay := f.service.workspaces.relay
@@ -2562,7 +2563,7 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 					}
 				}
 				for number := range hubmaintenance.ItemLimit + 1 {
-					if _, err := owner.CreateRelayTicket(t.Context(), postgres.CreateRelayTicketInput{OrganizationID: value.record.OrganizationID, ProjectID: value.record.ProjectID, Digest: fmt.Sprintf("ticket_%03d", number), WorkspaceID: value.record.ID, SessionID: "session_example", PrincipalID: value.workerScope.credential.ID, Subject: "example-subject", CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(-30 * time.Second)}); err != nil {
+					if _, err := owner.CreateRelayTicket(t.Context(), postgres.CreateRelayTicketInput{OrganizationID: value.record.OrganizationID, ProjectID: value.record.ProjectID, Digest: fmt.Sprintf("ticket_%03d", number), WorkspaceID: value.record.ID, SessionID: "session_example", PrincipalID: value.workerScope.Credential.ID, Subject: "example-subject", CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(-30 * time.Second)}); err != nil {
 						return err
 					}
 				}
@@ -2660,7 +2661,7 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 
 type postgresRelayRuntimeTenant struct {
 	fixture     nativeFixture
-	workerScope nativeScope
+	workerScope hubscope.NativeScope
 	record      workspaceRecord
 	runner      *relayConnection
 	lease       leasestore.Lease
@@ -2783,7 +2784,7 @@ func newPostgresRelayRuntimeFixture(t *testing.T, hosted bool) postgresRelayRunt
 		if err != nil {
 			t.Fatal(err)
 		}
-		scope := nativeScope{organization: organization, project: f.project.ID, credential: credential}
+		scope := hubscope.NativeScope{Organization: organization, Project: f.project.ID, Credential: credential}
 		record := relayWorkspaceRecord(session)
 		connection := &relayConnection{ID: "relayrunner_" + string(organization), WorkspaceID: session.ID, Runner: true, Scope: server.authInput(scope), Owner: record.owner(), PrincipalID: worker, SessionID: lease.LeaseID, Out: make(chan relayOutbound, relayWriteQueue), Done: make(chan struct{})}
 		result.tenants = append(result.tenants, postgresRelayRuntimeTenant{fixture: f, workerScope: scope, record: record, runner: connection, lease: lease})

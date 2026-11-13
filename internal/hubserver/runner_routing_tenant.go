@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -21,8 +22,8 @@ func runnerLeaseMutationRoute(path string) bool {
 	return path == hubapi.NativeBase+"/leases/:lease/validate" || path == hubapi.NativeBase+"/leases/:lease/renew" || path == hubapi.NativeBase+"/leases/:lease/release"
 }
 
-func (s *Service) authorizeRunnerLeaseProject(ctx context.Context, scope nativeScope) error {
-	if s.config.TenantRepository == nil || scope.credential.Runner.RunnerID == "" || scope.credential.Runner.OrganizationID != scope.organization || scope.credential.EntryKey != nil {
+func (s *Service) authorizeRunnerLeaseProject(ctx context.Context, scope hubscope.NativeScope) error {
+	if s.config.TenantRepository == nil || scope.Credential.Runner.RunnerID == "" || scope.Credential.Runner.OrganizationID != scope.Organization || scope.Credential.EntryKey != nil {
 		return hubapi.NativeNotFound()
 	}
 	return s.authorizeProjectRecord(ctx, scope, true)
@@ -32,56 +33,56 @@ func runnerIdentityMatchesHeldLease(identity runnerstore.Identity, organization 
 	return identity.OrganizationID == organization && identity.RunnerID == runnerID && identity.TokenID == tokenID && identity.MachineID == machine && identity.RemovedAt == nil && identity.ExpiresAt.After(now)
 }
 
-func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope nativeScope, leaseID tracker.LeaseID, fencing tracker.FencingToken) (runnerauth.Runner, error) {
-	if s.config.TenantRepository == nil || scope.credential.Runner.RunnerID == "" || scope.credential.EntryKey != nil {
-		return runnerauth.Runner{}, runnerUnauthorized()
+func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID, fencing tracker.FencingToken) (runnerauth.Runner, error) {
+	if s.config.TenantRepository == nil || scope.Credential.Runner.RunnerID == "" || scope.Credential.EntryKey != nil {
+		return runnerauth.Runner{}, hubscope.RunnerUnauthorized()
 	}
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	now := s.config.now().UTC()
 	var runner runnerauth.Runner
 	var policyRevision policystore.Revision
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
-		credential, err := reader.AccessCredential(ctx, scope.credential.ID)
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		credential, err := reader.AccessCredential(ctx, scope.Credential.ID)
 		if err != nil {
 			if errors.Is(err, corestore.ErrNotFound) {
-				return runnerUnauthorized()
+				return hubscope.RunnerUnauthorized()
 			}
 			return err
 		}
-		if credential.OrganizationID != scope.organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.credential.Hash, now) {
-			return runnerUnauthorized()
+		if credential.OrganizationID != scope.Organization || credential.Scope != string(hubapi.APIScopeWorker) || credential.Kind != "service" || !credential.Valid(scope.Credential.Hash, now) {
+			return hubscope.RunnerUnauthorized()
 		}
 		lease, err := reader.Lease(ctx, string(leaseID))
 		if err != nil {
 			return err
 		}
-		if lease.OrganizationID != scope.organization || lease.FencingToken != int64(fencing) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
+		if lease.OrganizationID != scope.Organization || lease.FencingToken != int64(fencing) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
 			return fmt.Errorf("%w: lease %s", tracker.ErrStaleFencingToken, leaseID)
 		}
-		project, err := reader.Project(ctx, scope.project)
+		project, err := reader.Project(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
-		if project.OrganizationID != scope.organization {
+		if project.OrganizationID != scope.Organization {
 			return hubapi.NativeNotFoundAt("lease_runner_credential")
 		}
-		item, err := reader.WorkItemByID(ctx, scope.project, lease.IssueID)
+		item, err := reader.WorkItemByID(ctx, scope.Project, lease.IssueID)
 		if err != nil {
 			return err
 		}
-		if item.OrganizationID != scope.organization || item.ProjectID != scope.project || item.ID != lease.IssueID {
+		if item.OrganizationID != scope.Organization || item.ProjectID != scope.Project || item.ID != lease.IssueID {
 			return hubapi.NativeNotFoundAt("lease_runner_credential")
 		}
 		identity, err := reader.RunnerForLease(ctx, string(leaseID))
 		if err != nil {
 			return err
 		}
-		if !runnerIdentityMatchesHeldLease(identity, scope.organization, scope.credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) {
+		if !runnerIdentityMatchesHeldLease(identity, scope.Organization, scope.Credential.Runner.RunnerID, credential.ID, tracker.MachineID(lease.MachineID), now) {
 			return hubapi.NativeNotFoundAt("lease_runner_credential")
 		}
 		if identity.Scope != "organization" {
-			if _, err := reader.AccessTokenGrant(ctx, identity.TokenID, scope.project); err != nil {
+			if _, err := reader.AccessTokenGrant(ctx, identity.TokenID, scope.Project); err != nil {
 				if errors.Is(err, corestore.ErrNotFound) {
 					return hubapi.NativeNotFoundAt("lease_runner_credential")
 				}
@@ -98,22 +99,22 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		if pinned.OrganizationID != scope.organization || pinned.ProjectID != scope.project || pinned.LeaseID != leaseID || pinned.PolicyID == "" {
+		if pinned.OrganizationID != scope.Organization || pinned.ProjectID != scope.Project || pinned.LeaseID != leaseID || pinned.PolicyID == "" {
 			return hubapi.PolicyMismatch("Lease policy is missing or outside the authorized project")
 		}
-		policyRevision, err = reader.ProjectPolicyRevision(ctx, scope.project, pinned.PolicyID)
+		policyRevision, err = reader.ProjectPolicyRevision(ctx, scope.Project, pinned.PolicyID)
 		if err != nil {
 			return err
 		}
-		if policyRevision.OrganizationID != scope.organization || policyRevision.ProjectID != scope.project || policyRevision.PolicyID != pinned.PolicyID {
+		if policyRevision.OrganizationID != scope.Organization || policyRevision.ProjectID != scope.Project || policyRevision.PolicyID != pinned.PolicyID {
 			return hubapi.PolicyMismatch("Lease policy is missing or outside the authorized project")
 		}
 		projects, err := reader.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
 		if err != nil {
 			return err
 		}
-		if !slices.Contains(projects, scope.project) {
-			projects = append(projects, scope.project)
+		if !slices.Contains(projects, scope.Project) {
+			projects = append(projects, scope.Project)
 		}
 		runner = runnerauth.Runner{
 			Binding:          runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID},
@@ -158,7 +159,7 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope nativeSco
 	if err != nil {
 		return runnerauth.Runner{}, err
 	}
-	if err := runnerExcluded(runner.Exclusions(scope.project, descriptor.Requirements, true)); err != nil {
+	if err := runnerExcluded(runner.Exclusions(scope.Project, descriptor.Requirements, true)); err != nil {
 		return runnerauth.Runner{}, err
 	}
 	return runner, nil

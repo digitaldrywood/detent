@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -105,7 +106,7 @@ func (f actionFixture) requireRefusedAction(t *testing.T, method, actionID strin
 	response := httptest.NewRecorder()
 	c := echo.New().NewContext(httptest.NewRequest(method, "/actions", bytes.NewReader(raw)).WithContext(t.Context()), response)
 	c.SetPath(hubapi.NativeBase + "/actions")
-	c.Set("native_scope", nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential})
+	c.Set("native_scope", hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential})
 	handle := service.createProjectAction
 	if method == http.MethodPatch {
 		c.SetPath(hubapi.NativeBase + "/actions/:action")

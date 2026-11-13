@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -41,7 +42,7 @@ func TestPostgresEntryKeySelectedCatalogCostDoesNotGrowWithProjectCount(t *testi
 			seeded = size
 			t.Run(fmt.Sprintf("%s/%d_projects", org, size), func(t *testing.T) {
 				credential := hubapi.APICredential{ID: org + "_owner", Hash: org + "_owner", HostedPrincipal: org + "_owner", Scope: hubapi.APIScopeAdmin, HostedRole: "owner", HostedKeyScope: apikey.ScopeAdmin, HostedProjectAccess: hubapi.HostedProjectsAll, Hosted: &auth.HostedIdentity{Subject: org + "_owner", OrganizationID: "provider_" + org}}
-				identity := operatorIdentity(credential, org)
+				identity := hubscope.OperatorIdentity(credential, org)
 				ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity})
 				ctx = context.WithValue(ctx, operatorCatalogKey{}, operatorCatalogAuthority{identity: identity, credential: credential})
 				counter := &entryKeyReadCounter{}

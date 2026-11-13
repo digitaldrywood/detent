@@ -12,22 +12,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func projectRecordActor(scope nativeScope) tenantstore.ProjectActor {
-	actor := scope.actor()
-	result := tenantstore.ProjectActor{CredentialID: scope.credential.ID, PrincipalID: actor.PrincipalID}
-	if scope.credential.Hosted != nil {
-		identity := scope.credential.Hosted
+func projectRecordActor(scope hubscope.NativeScope) tenantstore.ProjectActor {
+	actor := scope.Actor()
+	result := tenantstore.ProjectActor{CredentialID: scope.Credential.ID, PrincipalID: actor.PrincipalID}
+	if scope.Credential.Hosted != nil {
+		identity := scope.Credential.Hosted
 		result.HostedSubject = identity.Subject
 		actual := identity.Subject
 		if identity.SupportActor != "" {
 			actual = identity.SupportActor
 		}
-		result.Audit = accessstore.Audit{OrganizationID: scope.organization, SessionID: identity.SessionID, ActualActor: actual, EffectiveUser: identity.Subject, Reason: identity.SupportReason, StartedAt: identity.CreatedAt, ExpiresAt: identity.ExpiresAt}
+		result.Audit = accessstore.Audit{OrganizationID: scope.Organization, SessionID: identity.SessionID, ActualActor: actual, EffectiveUser: identity.Subject, Reason: identity.SupportReason, StartedAt: identity.CreatedAt, ExpiresAt: identity.ExpiresAt}
 	}
 	return result
 }
@@ -142,7 +143,7 @@ func (s *Service) createHostedTenantProject(ctx context.Context, credential huba
 		return "", err
 	}
 	request := createNativeProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: key}, Name: name, States: states}
-	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), Credential: credential, RequireHostedAdmin: true}
 	raw, err := s.executeProjectRecordMutation(ctx, scope, hubapi.NativeCommandOptions{OperationID: "create_hosted_project", Feature: "collaboration"}, request.Mutation, request)
 	if err != nil {
 		return "", err

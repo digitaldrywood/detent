@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -422,7 +423,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if err != nil {
 			return nil, err
 		}
-		if !canManageProjectSecrets(scope.credential) {
+		if !hubscope.CanManageProjectSecrets(scope.Credential) {
 			return nil, operatortool.ErrAccessDenied
 		}
 		request := spriteUsageRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Observations: r.Input.Observations}
@@ -432,7 +433,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if mode == projectCommandPreview {
 			return nil, nil
 		}
-		scope.project, scope.requireHostedAdmin = tracker.ProjectID(r.ProjectID), true
+		scope.Project, scope.RequireHostedAdmin = tracker.ProjectID(r.ProjectID), true
 		if mode == projectCommandReplay {
 			raw, _, err := s.nativeCommandReplay(ctx, scope, "sprite_usage.import", r.RequestID, request)
 			return raw, err
@@ -443,20 +444,20 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if err != nil {
 			return nil, err
 		}
-		if !canManageProjectSecrets(scope.credential) {
+		if !hubscope.CanManageProjectSecrets(scope.Credential) {
 			return nil, operatortool.ErrAccessDenied
 		}
 		if mode == projectCommandPreview {
 			return nil, nil
 		}
-		scope.project = tracker.ProjectID(r.ProjectID)
+		scope.Project = tracker.ProjectID(r.ProjectID)
 		command := spritePoolCommand{
 			Mutation:           tracker.Mutation{IdempotencyKey: r.RequestID},
 			spritePoolSettings: spritePoolSettings{Placement: r.Input.Placement, MinRunners: r.Input.MinRunners, MaxRunners: r.Input.MaxRunners, IdleSeconds: r.Input.IdleSeconds, Revision: r.Input.Revision},
 			Bootstrap:          r.Input.Bootstrap, IsolationTier: r.Input.IsolationTier, ShareIdleCapacity: r.Input.ShareIdleCapacity,
 		}
 		if mode == projectCommandReplay {
-			scope.project, scope.requireHostedAdmin = "", true
+			scope.Project, scope.RequireHostedAdmin = "", true
 			raw, _, err := s.nativeCommandReplay(ctx, scope, "set_sprite_pool", r.RequestID, command)
 			return raw, err
 		}
@@ -470,13 +471,13 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if err != nil {
 			return nil, err
 		}
-		if !canManageProjectSecrets(scope.credential) {
+		if !hubscope.CanManageProjectSecrets(scope.Credential) {
 			return nil, operatortool.ErrAccessDenied
 		}
 		if mode == projectCommandPreview {
 			return nil, nil
 		}
-		scope.project, scope.requireHostedAdmin = tracker.ProjectID(r.ProjectID), true
+		scope.Project, scope.RequireHostedAdmin = tracker.ProjectID(r.ProjectID), true
 		request := projectSpriteAllocationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, DesiredCount: r.Input.DesiredCount}
 		options := hubapi.NativeCommandOptions{OperationID: projectOperationID(scope, "PUT", "/sprite-pool/allocation"), Feature: "collaboration"}
 		if mode == projectCommandReplay {
@@ -504,7 +505,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		request := createNativeProjectRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Name: r.Input.Name, States: r.Input.States, RequireDependencies: r.Input.RequireDependencies}
 		input = request
 	case "create_hosted_project":
-		if s.config.Hosted == nil || scope.credential.Hosted == nil {
+		if s.config.Hosted == nil || scope.Credential.Hosted == nil {
 			return nil, hubapi.ErrProjectServiceUnavailable
 		}
 		r, err := projectCommandInput[operatortool.HostedProjectCreateInput](call.Arguments)
@@ -529,8 +530,8 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if mode == projectCommandPreview {
 			return nil, nil
 		}
-		scope.project = tracker.ProjectID(r.ProjectID)
-		scope.requireHostedAdmin = projectToolScope(call.Name, false) == apikey.ScopeAdmin
+		scope.Project = tracker.ProjectID(r.ProjectID)
+		scope.RequireHostedAdmin = projectToolScope(call.Name, false) == apikey.ScopeAdmin
 		operationID := projectOperationID(scope, "PUT", "/onboarding")
 		if mode == projectCommandReplay {
 			raw, _, err := s.nativeCommandReplay(ctx, scope, operationID, r.RequestID, request)
@@ -553,10 +554,10 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if err != nil {
 			return nil, err
 		}
-		if r.ProjectID != "" || !canManageProjectSecrets(scope.credential) {
+		if r.ProjectID != "" || !hubscope.CanManageProjectSecrets(scope.Credential) {
 			return nil, operatortool.ErrAccessDenied
 		}
-		scope.project, scope.requireHostedAdmin = "", true
+		scope.Project, scope.RequireHostedAdmin = "", true
 		if mode == projectCommandPreview {
 			return nil, nil
 		}
@@ -575,8 +576,8 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if mode == projectCommandPreview {
 			return nil, nil
 		}
-		scope.project = tracker.ProjectID(r.ProjectID)
-		scope.requireHostedAdmin = true
+		scope.Project = tracker.ProjectID(r.ProjectID)
+		scope.RequireHostedAdmin = true
 		request := setProjectIconRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Icon: r.Input.Icon, Content: r.Input.Content, ExpectedRevision: r.Input.ExpectedRevision}
 		if mode == projectCommandReplay {
 			raw, _, err := s.nativeCommandReplay(ctx, scope, projectOperationID(scope, "PUT", "/icon"), r.RequestID, request)
@@ -637,7 +638,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if s.config.TenantRepository == nil {
 			return nil, hubapi.NativeWorkItemStorageUnavailable()
 		}
-		scope.project = tracker.ProjectID(r.ProjectID)
+		scope.Project = tracker.ProjectID(r.ProjectID)
 		if mode == projectCommandPreview {
 			return nil, nil
 		}
@@ -659,12 +660,12 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		if r.Input.RepositoryPolicy {
 			var record projectstore.Record
-			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 				if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 					return err
 				}
 				var err error
-				record, err = reader.ProjectRecord(ctx, scope.project)
+				record, err = reader.ProjectRecord(ctx, scope.Project)
 				return err
 			})
 			if err != nil {
@@ -674,7 +675,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 				return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Project has no linked repository policy; use repository_policy:false for its project policy"}
 			}
 		}
-		approval, err := s.approveTenantProjectPolicyWithReceipt(ctx, scope, scope.credential.ID, change, &tenantPolicyCommandReceipt{Operation: operation, Key: r.RequestID, Hash: hash})
+		approval, err := s.approveTenantProjectPolicyWithReceipt(ctx, scope, scope.Credential.ID, change, &tenantPolicyCommandReceipt{Operation: operation, Key: r.RequestID, Hash: hash})
 		if err != nil {
 			return nil, err
 		}
@@ -694,7 +695,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
 		input = r.Input
-		if !canManageProjectSecrets(scope.credential) {
+		if !hubscope.CanManageProjectSecrets(scope.Credential) {
 			return nil, operatortool.ErrAccessDenied
 		}
 
@@ -723,8 +724,8 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if mode == projectCommandPreview {
 			return nil, nil
 		}
-		scope.project = tracker.ProjectID(r.ProjectID)
-		scope.requireHostedAdmin = true
+		scope.Project = tracker.ProjectID(r.ProjectID)
+		scope.RequireHostedAdmin = true
 		request := bindNativeRepositoryRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, Repository: r.Input.Repository, Source: r.Input.Source}
 		suffix, feature := "/integration/repository", "github_integration"
 		if r.Input.Source == "runner_checkout" {
@@ -754,7 +755,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if mode == projectCommandPreview {
 			return nil, nil
 		}
-		scope.project = tracker.ProjectID(r.ProjectID)
+		scope.Project = tracker.ProjectID(r.ProjectID)
 		if mode == projectCommandReplay {
 			input := struct {
 				ExpectedRevision tracker.Revision `json:"expected_revision,string"`
@@ -769,8 +770,8 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 	if mode == projectCommandPreview {
 		return nil, nil
 	}
-	scope.project = tracker.ProjectID(projectID)
-	scope.requireHostedAdmin = projectToolScope(call.Name, false) == apikey.ScopeAdmin
+	scope.Project = tracker.ProjectID(projectID)
+	scope.RequireHostedAdmin = projectToolScope(call.Name, false) == apikey.ScopeAdmin
 	suffix := map[string]string{"command_git_hub_batch": "/onboarding/issue-intake", "create_native_project": "", "create_hosted_project": "", "save_onboarding": "/onboarding", "update_project_integration": "/integration", "start_git_hub_import": "/imports", "cutover_project": "/integration/cutover", "approve_project_policy": "/policy", "revoke_project_policy": "/policy", "remove_project_secret": "/secrets/" + flySpritesToken, "project_native_summary": "/work-items/" + resourceID + "/projection"}[call.Name]
 	method := "POST"
 	switch call.Name {
@@ -794,22 +795,22 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 	}
 	if call.Name == "remove_project_secret" {
 		return s.tenantReceiptMutation(ctx, scope, operation, tracker.Mutation{IdempotencyKey: requestID}, input, projectSecretStatus{Kind: flySpritesToken}, func(w tenantstore.Writer) error {
-			old, err := w.AccessSecret(ctx, scope.project, flySpritesToken)
+			old, err := w.AccessSecret(ctx, scope.Project, flySpritesToken)
 			if errors.Is(err, corestore.ErrNotFound) {
 				return nil
 			}
 			if err != nil {
 				return err
 			}
-			return w.DeleteAccessSecret(ctx, scope.project, flySpritesToken, s.accessSecretAudit(scope, "remove", old.Envelope.Version))
+			return w.DeleteAccessSecret(ctx, scope.Project, flySpritesToken, s.accessSecretAudit(scope, "remove", old.Envelope.Version))
 		})
 	}
 	return s.executeNativeMutation(ctx, scope, hubapi.NativeCommandOptions{OperationID: operation, Feature: feature, Item: resourceID, RequireLease: call.Name == "project_native_summary"}, tracker.Mutation{IdempotencyKey: requestID}, input, nil)
 }
-func projectOperationID(scope nativeScope, method, suffix string) string {
-	path := "/api/v2/organizations/" + string(scope.organization) + "/projects"
-	if scope.project != "" {
-		path += "/" + string(scope.project)
+func projectOperationID(scope hubscope.NativeScope, method, suffix string) string {
+	path := "/api/v2/organizations/" + string(scope.Organization) + "/projects"
+	if scope.Project != "" {
+		path += "/" + string(scope.Project)
 	}
 	return method + " " + path + suffix
 }
@@ -859,14 +860,14 @@ func (e hubProjectExecutor) authorizeCreatedProjectResult(ctx context.Context, n
 	return err
 }
 
-func (e hubProjectExecutor) projectScope(ctx context.Context) (nativeScope, error) {
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+func (e hubProjectExecutor) projectScope(ctx context.Context) (hubscope.NativeScope, error) {
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
-		return nativeScope{}, operatortool.ErrAccessDenied
+		return hubscope.NativeScope{}, operatortool.ErrAccessDenied
 	}
 	scope, err := resolve(ctx)
 	if err != nil {
-		return nativeScope{}, operatortool.ErrAccessDenied
+		return hubscope.NativeScope{}, operatortool.ErrAccessDenied
 	}
 	return scope, nil
 }

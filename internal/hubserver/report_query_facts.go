@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -36,7 +37,7 @@ func reportAttemptFailure(data tracker.NativeRunData, status, updated string) (s
 	return failed, nil
 }
 
-func readLegacyReportFact(ctx context.Context, q hubapi.NativeQueryer, scope nativeScope, family string) (_ nativePageFact, resultErr error) {
+func readLegacyReportFact(ctx context.Context, q hubapi.NativeQueryer, scope hubscope.NativeScope, family string) (_ nativePageFact, resultErr error) {
 	f := nativePageFact{name: family, override: true}
 	var query string
 	switch family {
@@ -49,15 +50,15 @@ func readLegacyReportFact(ctx context.Context, q hubapi.NativeQueryer, scope nat
 		f.known = "SELECT id,organization_id,project_id,work_item_id,sequence,type,recorded_at," + collaborationPayloadColumn("") + ",scheduler_outcome,scheduler_source,scheduler_reason,analytics_from_state,analytics_to_state,analytics_from_state,analytics_to_state,analytics_projection_version FROM main.collaboration_events WHERE analytics_projection_version=1"
 		query = "SELECT id,organization_id,project_id,work_item_id,sequence,type,recorded_at,data_json FROM main.collaboration_events WHERE analytics_projection_version IS NULL"
 	}
-	args := []any{scope.organization}
+	args := []any{scope.Organization}
 	query += " AND organization_id=?"
 	f.known += " AND organization_id=?"
-	f.knownArgs = append(f.knownArgs, scope.organization)
-	if scope.project != "" {
+	f.knownArgs = append(f.knownArgs, scope.Organization)
+	if scope.Project != "" {
 		query += " AND project_id=?"
-		args = append(args, scope.project)
+		args = append(args, scope.Project)
 		f.known += " AND project_id=?"
-		f.knownArgs = append(f.knownArgs, scope.project)
+		f.knownArgs = append(f.knownArgs, scope.Project)
 	}
 	order := "project_id,id"
 	if family == "report_attempts" {

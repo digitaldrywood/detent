@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 )
 
 func (s *Service) checkAttachmentEvidence(c echo.Context, input *attachment.EvidenceRequest) (resultErr error) {
@@ -20,7 +21,7 @@ func (s *Service) checkAttachmentEvidence(c echo.Context, input *attachment.Evid
 	if input == nil || input.AttemptID != c.Param("attempt") || strings.TrimSpace(input.Caption) == "" || len(input.Caption) > 1024 || !utf8.ValidString(input.Caption) || strings.ContainsAny(input.Caption, "\r\n\x00") || input.IdempotencyKey == "" || input.LeaseID == "" || input.FencingToken <= 0 {
 		return hubapi.NativePublicInvalid("Invalid attempt evidence")
 	}
-	return s.checkAttachmentEvidenceTenant(c.Request().Context(), nativeRequestScope(c), *input)
+	return s.checkAttachmentEvidenceTenant(c.Request().Context(), hubscope.NativeRequestScope(c), *input)
 }
 
 func escapeEvidenceCaption(caption string) string {

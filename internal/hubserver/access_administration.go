@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -149,15 +150,15 @@ func (s *Service) accessPendingInvitations(ctx context.Context) ([]hostedInvitat
 }
 
 func (s *Service) changeAccessGrant(ctx context.Context, credential hubapi.APICredential, user, project string, write, runner, revoke bool) error {
-	scope := nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}
+	scope := hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential, RequireHostedAdmin: true}
 	if _, _, err := s.hostedMutationIdentity(ctx, credential); err != nil {
 		return err
 	}
-	return s.accessWrite(ctx, scope.organization, func(w tenantstore.Writer) error {
+	return s.accessWrite(ctx, scope.Organization, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
-		scope.project = tracker.ProjectID(project)
+		scope.Project = tracker.ProjectID(project)
 		if err := s.authorizeAccessScope(ctx, w, scope, write || runner); err != nil {
 			return err
 		}
@@ -169,15 +170,15 @@ func (s *Service) changeAccessGrant(ctx context.Context, credential hubapi.APICr
 			return auth.ErrHostedIdentity
 		}
 		if revoke {
-			if err := w.DeleteAccessProjectGrant(ctx, user, scope.project); err != nil {
+			if err := w.DeleteAccessProjectGrant(ctx, user, scope.Project); err != nil {
 				return err
 			}
-			return w.DeleteAccessTokenGrant(ctx, member.PrincipalID, scope.project)
+			return w.DeleteAccessTokenGrant(ctx, member.PrincipalID, scope.Project)
 		}
-		if err := w.SetAccessProjectGrant(ctx, accessstore.ProjectGrant{OrganizationID: scope.organization, UserID: user, ProjectID: scope.project, CanWrite: write, ManageRunner: runner}); err != nil {
+		if err := w.SetAccessProjectGrant(ctx, accessstore.ProjectGrant{OrganizationID: scope.Organization, UserID: user, ProjectID: scope.Project, CanWrite: write, ManageRunner: runner}); err != nil {
 			return err
 		}
-		return w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: scope.organization, TokenID: member.PrincipalID, ProjectID: scope.project})
+		return w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: scope.Organization, TokenID: member.PrincipalID, ProjectID: scope.Project})
 	})
 }
 
@@ -191,14 +192,14 @@ func (s *Service) accessLocalMember(ctx context.Context, user string) (bool, str
 }
 
 func accessMemberMissing(err error) bool {
-	return errors.Is(err, corestore.ErrNotFound) && errors.Is(operatorAuthorizationError(err), operatortool.ErrAccessDenied)
+	return errors.Is(err, corestore.ErrNotFound) && errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied)
 }
 
 func (s *Service) changeAccessRole(ctx context.Context, credential hubapi.APICredential, membership auth.Membership, role string) (hostedMemberView, error) {
 	if s.config.AccessRepository == nil || credential.Hosted == nil {
 		return hostedMemberView{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	scope := nativeScope{organization: s.accessOrganization(), credential: credential, requireHostedAdmin: true}
+	scope := hubscope.NativeScope{Organization: s.accessOrganization(), Credential: credential, RequireHostedAdmin: true}
 	currentMember := func(ctx context.Context, r tenantstore.Reader) (accessstore.Member, bool, error) {
 		if err := s.authorizeAccessScope(ctx, r, scope, true); err != nil {
 			return accessstore.Member{}, false, err
@@ -214,7 +215,7 @@ func (s *Service) changeAccessRole(ctx context.Context, credential hubapi.APICre
 		if role == "owner" || target.Role == "owner" || membership.Role.Slug == "owner" {
 			actor, err := r.AccessMember(ctx, credential.Hosted.Subject)
 			if err != nil {
-				return target, false, operatorAuthorizationError(err)
+				return target, false, hubscope.OperatorAuthorizationError(err)
 			}
 			if !actor.Active || hubapi.LesserHostedRole(actor.Role, credential.HostedRole) != "owner" {
 				return target, false, auth.ErrHostedIdentity
@@ -222,7 +223,7 @@ func (s *Service) changeAccessRole(ctx context.Context, credential hubapi.APICre
 		}
 		return target, local, nil
 	}
-	if err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	if err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		_, _, err := currentMember(ctx, r)
 		return err
 	}); err != nil {
@@ -233,7 +234,7 @@ func (s *Service) changeAccessRole(ctx context.Context, credential hubapi.APICre
 	}
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
 	defer cancel()
-	if err := s.accessWrite(persist, scope.organization, func(w tenantstore.Writer) error {
+	if err := s.accessWrite(persist, scope.Organization, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(persist); err != nil {
 			return err
 		}

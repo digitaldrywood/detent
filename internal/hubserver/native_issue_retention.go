@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -87,7 +88,7 @@ func nativeRetentionItemFailure(err error) bool {
 }
 
 func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker.OrganizationID, candidate corestore.WorkItemRetentionCandidate, now time.Time) error {
-	scope := nativeScope{organization: organization, project: candidate.ProjectID}
+	scope := hubscope.NativeScope{Organization: organization, Project: candidate.ProjectID}
 	input := workItemArchive{archiveIssueRequest: archiveIssueRequest{ExpectedRevision: tracker.Revision(candidate.Revision)}, Archived: true}
 	plan, err := s.loadWorkItemPlan(ctx, scope, string(candidate.WorkItemID), "", input)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -127,11 +128,11 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 		return err
 	}
 	content := eventstore.NewContent(s.runDetailStore())
-	version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: scope.project, WorkItemID: candidate.WorkItemID, RecordID: string(candidate.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
+	version, err := content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: organization, ProjectID: scope.Project, WorkItemID: candidate.WorkItemID, RecordID: string(candidate.WorkItemID), Revision: int64(plan.issue.Revision)}, raw)
 	if err != nil {
 		return err
 	}
-	raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: organization, ProjectID: scope.project, AggregateID: candidate.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: tracker.Actor{Kind: "integration", PrincipalID: "auto_archive"}, RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields, Operation: "archive", ReasonDetail: fmt.Sprintf("Archived automatically after %d days", days)}})
+	raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: organization, ProjectID: scope.Project, AggregateID: candidate.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: tracker.Actor{Kind: "integration", PrincipalID: "auto_archive"}, RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields, Operation: "archive", ReasonDetail: fmt.Sprintf("Archived automatically after %d days", days)}})
 	if err != nil {
 		return err
 	}
@@ -139,22 +140,22 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 	if err != nil {
 		return err
 	}
-	search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: organization, ProjectID: scope.project, WorkItemID: candidate.WorkItemID, ID: "issue:" + string(candidate.WorkItemID), SourceID: string(candidate.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+	search, err := searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: organization, ProjectID: scope.Project, WorkItemID: candidate.WorkItemID, ID: "issue:" + string(candidate.WorkItemID), SourceID: string(candidate.WorkItemID), Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
 	if err != nil {
 		return err
 	}
 	return s.config.TenantRepository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-		if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}
-		project, err := w.ProjectRecord(ctx, scope.project)
+		project, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
 		if !sameWorkItemProjectPlan(plan.project, project) {
 			return nil
 		}
-		current, err := w.LockWorkItem(ctx, scope.project, candidate.WorkItemID)
+		current, err := w.LockWorkItem(ctx, scope.Project, candidate.WorkItemID)
 		if err != nil {
 			return err
 		}
@@ -175,7 +176,7 @@ func (s *Service) retainClosedWorkItem(ctx context.Context, organization tracker
 		if _, err := w.CreateCollaborationVersion(ctx, version); err != nil {
 			return err
 		}
-		if err := w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: organization, ProjectID: scope.project, WorkItemID: candidate.WorkItemID, Revision: version.Revision, VersionSHA256: version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(plan.issue.Body)}); err != nil {
+		if err := w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: organization, ProjectID: scope.Project, WorkItemID: candidate.WorkItemID, Revision: version.Revision, VersionSHA256: version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(plan.issue.Body)}); err != nil {
 			return err
 		}
 		if _, err := w.AppendEvent(ctx, event); err != nil {

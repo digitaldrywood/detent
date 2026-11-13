@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -350,7 +351,7 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 	if err := repository.MergeRequestMetrics(t.Context(), "org_first", now, []metricsstore.Metric{{At: now.Truncate(time.Minute).Add(-time.Minute), Route: "GET /example", CallerKind: "runner", CallerID: "runner_1", StatusClass: 2, Latency: latency}}); err != nil {
 		t.Fatal(err)
 	}
-	metricsContext := operatortool.WithConnection(context.WithValue(t.Context(), hubOperatorResolverKey{}, func(context.Context) (hubapi.APICredential, error) { return owner, nil }), operatortool.Connection{Identity: operatorIdentity(owner, "org_first"), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
+	metricsContext := operatortool.WithConnection(context.WithValue(t.Context(), hubOperatorResolverKey{}, func(context.Context) (hubapi.APICredential, error) { return owner, nil }), operatortool.Connection{Identity: hubscope.OperatorIdentity(owner, "org_first"), Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 		return service.operatorCurrentAuthority(ctx, owner, "org_first")
 	}})
 	requests, visible, err := service.adminRequestMetrics(metricsContext)

@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -167,7 +168,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				if outcome == "number resolution" {
-					seedArchiveIssues(t, f.service, nativeScope{organization: "org_security", project: f.project, credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}, 18, "Todo")
+					seedArchiveIssues(t, f.service, hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}, 18, "Todo")
 				}
 				response := createIndependentNativeIssue(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "luna-issue"}, Title: "Original issue", Body: nativeContractTestBody, State: "Todo", Labels: []string{"original"}}, func(draft tracker.CreateIssue) *httptest.ResponseRecorder {
 					return request(t, u, http.MethodPost, f.base+"/work-items", draft)
@@ -389,7 +390,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				archiveIDs := []string{string(id)}
 				if tool == string(chat.ActionArchiveItems) {
 					coordinatorActionState(t, f.service, "org_security", f.project, tracker.NativeState{Name: "Merging"}, false)
-					scope := nativeScope{organization: "org_security", project: f.project, credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
+					scope := hubscope.NativeScope{Organization: "org_security", Project: f.project, Credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
 					children := 4
 					if outcome == "number resolution" {
 						coordinatorActionState(t, f.service, "org_security", f.project, tracker.NativeState{Name: "Blocked"}, false)
@@ -437,7 +438,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 							ProjectID tracker.ProjectID `json:"project_id"`
 						}
 						decodeHubResponse(t, response, &created)
-						scope.project = created.ProjectID
+						scope.Project = created.ProjectID
 						foreign := seedArchiveIssues(t, f.service, scope, 1, "Todo")[0]
 						archiveIDs[4] = string(foreign.WorkItemID)
 					}
@@ -856,7 +857,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					requireNativeStatus(t, f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action), http.StatusOK)
 					assertCoordinatorArchiveEffect(t, f, true)
 					for _, archived := range []string{"", "true"} {
-						result, err := (operatorWorkReads{service: f.service, scope: nativeScope{organization: "org_security", project: f.project}}).ReadWork(ctx, operatortool.WorkList, operatortool.WorkReadRequest{ProjectID: string(f.project), Archived: archived, Limit: 100})
+						result, err := (operatorWorkReads{service: f.service, scope: hubscope.NativeScope{Organization: "org_security", Project: f.project}}).ReadWork(ctx, operatortool.WorkList, operatortool.WorkReadRequest{ProjectID: string(f.project), Archived: archived, Limit: 100})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -985,7 +986,7 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 	base := browserHostedOrganizationBase + "/projects/" + f.project
 	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", map[string]any{"idempotency_key": "luna-blocked", "title": "Landing blocked by branch rules", "body": "Enable GitHub pull-request mode and retry." + issueContractTestSections, "state": "Blocked"}, http.StatusOK), &issue)
 	f.workItem = string(issue.WorkItemID)
-	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
+	scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project), Credential: hubapi.APICredential{ID: bootstrapTokenID, Scope: hubapi.APIScopeAdmin}}
 	archiveIssues := seedArchiveIssues(t, f.service, scope, 5, "Todo")
 	blockedArchive := seedArchiveIssues(t, f.service, scope, 1, "Merging")[0]
 	coordinatorActionWriteIssue(t, f.service, "org_browser_preview", tracker.ProjectID(f.project), blockedArchive.WorkItemID, func(issue *tracker.NativeIssue) { issue.Title = "Running cleanup issue" })
@@ -1830,7 +1831,7 @@ func coordinatorActionComments(t *testing.T, s *Service, organization tracker.Or
 
 func coordinatorActionPool(t *testing.T, s *Service) spritePoolView {
 	t.Helper()
-	view, _, err := s.readSpritePoolSnapshot(t.Context(), nativeScope{organization: "org_security"}, false, func(tenantstore.Reader) error { return nil })
+	view, _, err := s.readSpritePoolSnapshot(t.Context(), hubscope.NativeScope{Organization: "org_security"}, false, func(tenantstore.Reader) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -42,13 +43,13 @@ func independentFailureFixture(t *testing.T) changeFixture {
 	return f
 }
 
-func independentFailureScope(t *testing.T, f nativeFixture) nativeScope {
+func independentFailureScope(t *testing.T, f nativeFixture) hubscope.NativeScope {
 	t.Helper()
 	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	return hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 }
 
 func independentIssue(t *testing.T, f nativeFixture, id tracker.NativeWorkItemID) tracker.NativeIssue {
@@ -108,7 +109,7 @@ func independentCreateOwner(t *testing.T, f nativeFixture, request tracker.Creat
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		return f.service.applyIndependentRecord(t.Context(), w, scope, record)
 	}); err != nil {
 		t.Fatal(err)
@@ -123,7 +124,7 @@ func independentReview(t *testing.T, f changeFixture, change tracker.ChangeReque
 	if err != nil {
 		return err
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -138,19 +139,19 @@ func independentReview(t *testing.T, f changeFixture, change tracker.ChangeReque
 		if plan != nil {
 			review.RepairDependencies, review.RepairRefusal = plan.dependencies, plan.refusal
 		}
-		review.Actor = scope.actor()
+		review.Actor = scope.Actor()
 		raw, err := json.Marshal(review)
 		if err != nil {
 			return err
 		}
 		var evidence eventstore.Evidence
 		if persist {
-			evidence, err = eventstore.NewContent(f.service.runDetailStore()).PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: scope.organization, ChangeID: change.ID, VersionID: new(review.VersionID), Kind: "review", CreatedAt: review.CreatedAt}, raw)
+			evidence, err = eventstore.NewContent(f.service.runDetailStore()).PrepareEvidence(ctx, eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: change.ID, VersionID: new(review.VersionID), Kind: "review", CreatedAt: review.CreatedAt}, raw)
 			if err != nil {
 				return err
 			}
 		}
-		err = f.service.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		err = f.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			refusal, err := f.service.checkIndependentRepairs(ctx, w, scope, plan)
 			if err != nil {
 				return err
@@ -314,8 +315,8 @@ func TestIndependentFailureRepairRouting(t *testing.T) {
 				t.Fatal("refused batch created a repair owner")
 			}
 			if test.cycle {
-				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-					comments, err := r.Comments(t.Context(), scope.project, owner.WorkItemID, 0, 10)
+				if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+					comments, err := r.Comments(t.Context(), scope.Project, owner.WorkItemID, 0, 10)
 					if err == nil && len(comments) != 0 {
 						t.Fatalf("refused batch left repair occurrence=%+v", comments)
 					}
@@ -337,9 +338,9 @@ func TestIndependentFailureRepairRouting(t *testing.T) {
 				candidates := func() []claimstore.Candidate {
 					t.Helper()
 					var page claimstore.CandidatePage
-					if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					if err := f.service.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 						var err error
-						page, err = r.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: scope.project, WorkItemID: issue.WorkItemID, AvailableAt: now, Limit: 10})
+						page, err = r.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: scope.Project, WorkItemID: issue.WorkItemID, AvailableAt: now, Limit: 10})
 						return err
 					}); err != nil {
 						t.Fatal(err)
@@ -437,7 +438,7 @@ func TestIndependentFailureGateAttemptReplay(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			attempt, err := f.service.readNativeAttemptTenant(ctx, scope, string(issue.WorkItemID), event.Data.AttemptID)
 			if err != nil {
 				t.Fatal(err)

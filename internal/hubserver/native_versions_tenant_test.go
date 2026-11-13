@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -112,7 +113,7 @@ func TestTenantVersionRoutesWithoutLegacyDatabase(t *testing.T) {
 				t.Fatal(err)
 			}
 			service.config.Hosted = &HostedConfig{OrganizationID: org, PublicURL: "https://example.test"}
-			raw, err := service.readVersion(t.Context(), nativeScope{organization: tracker.OrganizationID(org), project: "project", credential: credential}, "item_project", "", 1)
+			raw, err := service.readVersion(t.Context(), hubscope.NativeScope{Organization: tracker.OrganizationID(org), Project: "project", Credential: credential}, "item_project", "", 1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -126,7 +127,7 @@ func TestTenantVersionRoutesWithoutLegacyDatabase(t *testing.T) {
 			credential.HostedRole = "reporter"
 			for _, principal := range []string{"example-owner", "another-owner"} {
 				credential.HostedPrincipal = principal
-				scope := nativeScope{organization: tracker.OrganizationID(org), project: "project", credential: credential}
+				scope := hubscope.NativeScope{Organization: tracker.OrganizationID(org), Project: "project", Credential: credential}
 				for _, comment := range []string{"", "comment_project"} {
 					_, err := service.readVersion(t.Context(), scope, "item_project", comment, 1)
 					if principal == "example-owner" && err != nil || principal != "example-owner" && !hubapi.IsNativeNotFound(err) {

@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
@@ -68,7 +69,7 @@ func TestPostgresConversationArchiveAuthorization(t *testing.T) {
 			c := echo.New().NewContext(req, response)
 			c.SetParamNames("conversation")
 			c.SetParamValues(tc.id)
-			c.Set("native_scope", nativeScope{organization: organization.ID, project: "project_archive", credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}})
+			c.Set("native_scope", hubscope.NativeScope{Organization: organization.ID, Project: "project_archive", Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}})
 			defer func() {
 				if value := recover(); value != nil {
 					t.Fatalf("archive authorization panicked: %v", value)

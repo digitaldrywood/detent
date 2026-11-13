@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -112,13 +113,13 @@ func nativeAttemptListingPayload(t *testing.T, f nativeFixture, id string, raw [
 	}
 }
 
-func nativeAttemptListingScope(t *testing.T, f nativeFixture) nativeScope {
+func nativeAttemptListingScope(t *testing.T, f nativeFixture) hubscope.NativeScope {
 	t.Helper()
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("authenticate listing fixture: status=%d error=%v", status, err)
 	}
-	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	return hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 }
 
 func nativeAttemptFixtureLease(t *testing.T, runner runnerFixture, issue tracker.NativeIssue, session string, duration ...time.Duration) tracker.NativeLease {
@@ -136,7 +137,7 @@ func nativeAttemptFixtureLease(t *testing.T, runner runnerFixture, issue tracker
 	}); err != nil {
 		t.Fatalf("read attempt work item %s: %v", issue.WorkItemID, err)
 	}
-	cancellation, err := f.service.prepareExpiredNativeLeaseCancellation(t.Context(), nativeScope{organization: issue.OrganizationID, project: issue.ProjectID}, issueID, true)
+	cancellation, err := f.service.prepareExpiredNativeLeaseCancellation(t.Context(), hubscope.NativeScope{Organization: issue.OrganizationID, Project: issue.ProjectID}, issueID, true)
 	if err != nil {
 		t.Fatalf("prepare lost attempt cancellation: %v", err)
 	}
@@ -609,7 +610,7 @@ func copyNativeAttemptFixture(t *testing.T, f nativeFixture, worker string, issu
 		}
 		var history *eventstore.Event
 		if sequence == 3 {
-			actor := (nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}).actor()
+			actor := (hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}).Actor()
 			value := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: "run.finished", SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Run: &data}}
 			raw, err := json.Marshal(value)
 			if err != nil {
@@ -980,7 +981,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+				scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 				err = f.service.checkAttachmentEvidenceTenant(t.Context(), scope, attachment.EvidenceRequest{Mutation: mutation, WorkItemID: issue.WorkItemID, AttemptID: event.Data.AttemptID, Caption: "Expired evidence"})
 				want := "stale_execution"
 				if test.retained && mutation.LeaseID != "" && mutation.LeaseID != lease.ID {
@@ -1915,7 +1916,7 @@ func TestExpiredLeaseCancellationWithoutRunEvent(t *testing.T) {
 	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(t.Context(), `UPDATE leases SET acquired_at=acquired_at-interval '3 minutes',renewed_at=renewed_at-interval '2 minutes',expires_at=expires_at-interval '2 minutes' WHERE organization_id=$1 AND lease_id=$2`, organization, lease.LeaseID); err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := f.service.prepareExpiredNativeLeaseCancellation(t.Context(), nativeScope{organization: organization, project: project}, issueID, false)
+	prepared, err := f.service.prepareExpiredNativeLeaseCancellation(t.Context(), hubscope.NativeScope{Organization: organization, Project: project}, issueID, false)
 	if err != nil || prepared == nil {
 		t.Fatalf("expired attempt without run event: prepared=%v error=%v", prepared, err)
 	}

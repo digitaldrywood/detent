@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -40,7 +41,7 @@ import (
 type postgresStorageArchiveFixture struct {
 	nativeFixture
 	clock   *atomic.Int64
-	scope   nativeScope
+	scope   hubscope.NativeScope
 	objects map[string][]byte
 	mu      sync.Mutex
 	bodies  *conversationContentFixture
@@ -77,7 +78,7 @@ func newPostgresStorageArchiveFixture(t *testing.T) *postgresStorageArchiveFixtu
 	if err != nil {
 		t.Fatalf("archive credential status=%d error=%v", status, err)
 	}
-	f.scope = nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	f.scope = hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	f.bodies = &conversationContentFixture{onIO: func() error { f.checkIO(t); return nil }}
 	store := newConversationStore(nil)
 	store.Contents = f.bodies
@@ -126,7 +127,7 @@ func (f *postgresStorageArchiveFixture) closed(t *testing.T) tracker.NativeIssue
 func (f *postgresStorageArchiveFixture) messages(t *testing.T, item tracker.NativeWorkItemID, count int, visibility conversation.Visibility) conversationstore.Conversation {
 	t.Helper()
 	at := f.now()
-	record := conversationstore.Conversation{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: conversation.NewConversationID(), OwnerPrincipalID: f.scope.credential.ID, Origin: "user", Title: "Archive conversation", Visibility: visibility, Status: conversation.StatusSettled, CreatedAt: at, UpdatedAt: at, SettledAt: new(at), Execution: conversation.Execution{Status: conversation.ExecutionCompleted, Settled: true, Owner: conversation.Owner{LeaseID: "lease_settled_archive"}}}
+	record := conversationstore.Conversation{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ID: conversation.NewConversationID(), OwnerPrincipalID: f.scope.Credential.ID, Origin: "user", Title: "Archive conversation", Visibility: visibility, Status: conversation.StatusSettled, CreatedAt: at, UpdatedAt: at, SettledAt: new(at), Execution: conversation.Execution{Status: conversation.ExecutionCompleted, Settled: true, Owner: conversation.Owner{LeaseID: "lease_settled_archive"}}}
 	if visibility == conversation.VisibilityShared {
 		record.WorkItemID = string(item)
 		record.LinkedAt = new(at)
@@ -287,11 +288,11 @@ func TestNativeStorageArchivePublication(t *testing.T) {
 				attachmentID := conversation.NewAttachmentID()
 				f.write(t, func(w tenantstore.Writer) error {
 					owner := w.(conversationstore.AttachmentWriter)
-					attachment := conversationstore.Attachment{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ConversationID: record.ID, ID: attachmentID, PrincipalID: f.scope.credential.ID, Name: "example.txt", MIME: "text/plain", Size: int64(len(raw)), ArtifactRef: "example-attachment", ContentID: object.ID, CreatedAt: f.now(), ExpiresAt: new(f.now().Add(time.Hour))}
+					attachment := conversationstore.Attachment{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, ConversationID: record.ID, ID: attachmentID, PrincipalID: f.scope.Credential.ID, Name: "example.txt", MIME: "text/plain", Size: int64(len(raw)), ArtifactRef: "example-attachment", ContentID: object.ID, CreatedAt: f.now(), ExpiresAt: new(f.now().Add(time.Hour))}
 					if err := owner.CreateConversationAttachment(t.Context(), attachment, object); err != nil {
 						return err
 					}
-					return owner.BindConversationAttachment(t.Context(), f.project.ID, record.ID, attachmentID, f.scope.credential.ID, before[0].ID, f.now())
+					return owner.BindConversationAttachment(t.Context(), f.project.ID, record.ID, attachmentID, f.scope.Credential.ID, before[0].ID, f.now())
 				})
 				f.write(t, func(w tenantstore.Writer) error {
 					if err := w.ReplaceMessageReferences(t.Context(), record.ID, before[0].ID, []conversationstore.MessageReference{{OrganizationID: f.project.OrganizationID, ConversationID: record.ID, MessageID: before[0].ID, Kind: conversation.ReferenceIssue, TargetID: string(issue.WorkItemID), Position: 0, Label: "Example", CreatedAt: f.now()}}, f.now()); err != nil {
@@ -677,7 +678,7 @@ func TestNativeStorageArchivePrivacyAndOrganizations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second credential status=%d error=%v", status, err)
 	}
-	second.scope = nativeScope{organization: second.project.OrganizationID, project: second.project.ID, credential: credential}
+	second.scope = hubscope.NativeScope{Organization: second.project.OrganizationID, Project: second.project.ID, Credential: credential}
 	otherIssue := second.closed(t)
 	otherConversation := second.messages(t, otherIssue.WorkItemID, 2, conversation.VisibilityShared)
 	f.drain(t, shared.ID)

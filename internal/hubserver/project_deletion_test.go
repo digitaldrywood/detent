@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -63,7 +64,7 @@ func TestHostedProjectDeletion(t *testing.T) {
 				t.Fatal(err)
 			}
 			organization := tracker.OrganizationID("org_browser_preview")
-			scope := nativeScope{organization: organization, project: tracker.ProjectID(f.project)}
+			scope := hubscope.NativeScope{Organization: organization, Project: tracker.ProjectID(f.project)}
 			at := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 			seedAnalyticsTestAttempt(t, db, f.service, scope, tracker.NativeWorkItemID(item), "deletion-attempt", "succeeded", at, at.Add(time.Minute), tracker.NativeRunData{})
 			seedAnalyticsTestChange(t, f.service, scope, tracker.NativeWorkItemID(item), "deletion-change", at, nil)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 )
 
 func (s *Service) listWorkItemPullRequests(c echo.Context) error {
@@ -19,7 +20,7 @@ func (s *Service) listWorkItemPullRequests(c echo.Context) error {
 	if refresh != "" && refresh != "1" {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("refresh accepts only 1"))
 	}
-	views, err := s.readWorkItemPullRequests(c.Request().Context(), nativeRequestScope(c), c.Param("item"), refresh)
+	views, err := s.readWorkItemPullRequests(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), refresh)
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		return s.nativeAPIError(c, hubapi.NativeConflict(0))
 	}

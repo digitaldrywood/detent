@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -1501,9 +1502,9 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 		{Name: "Cancelled", Terminal: true},
 	}
 	for projectIndex, project := range []string{f.project, f.privateProject} {
-		scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: tracker.ProjectID(project)}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			project, err := w.ProjectRecord(t.Context(), scope.project)
+		scope := hubscope.NativeScope{Organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), Project: tracker.ProjectID(project)}
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			project, err := w.ProjectRecord(t.Context(), scope.Project)
 			if err != nil {
 				return err
 			}
@@ -1515,9 +1516,9 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 		}
 		backlog := seedArchiveIssues(t, f.service, scope, 130, "Backlog")
 		var number int64
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			number, err = r.NextWorkItemNumber(t.Context(), scope.project)
+			number, err = r.NextWorkItemNumber(t.Context(), scope.Project)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -1538,10 +1539,10 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 			issues = append(issues, issue)
 			histories = append(histories, []tracker.CollaborationEvent{{Type: "workflow.transitioned", RecordedAt: at, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: "Todo", ToState: seed.state}}})
 		}
-		importNativeWorkPageIssues(t, nativeFixture{service: f.service, project: tracker.NativeProject{OrganizationID: scope.organization, ID: scope.project}}, issues, histories, int64(2000+1000*projectIndex))
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		importNativeWorkPageIssues(t, nativeFixture{service: f.service, project: tracker.NativeProject{OrganizationID: scope.Organization, ID: scope.Project}}, issues, histories, int64(2000+1000*projectIndex))
+		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			for _, issue := range issues {
-				row, err := r.WorkItem(t.Context(), scope.project, issue.WorkItemID)
+				row, err := r.WorkItem(t.Context(), scope.Project, issue.WorkItemID)
 				if err != nil {
 					return err
 				}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -31,15 +32,15 @@ func (s *Service) boardProjectedRelationshipIssues(ctx context.Context, organiza
 		return issue, viewstore.BoardReporterRelations{}, err
 	}
 	broad := issue
-	s.projectBoardRelationships(nativeScope{organization: organization, project: project}, &broad, facts)
+	s.projectBoardRelationships(hubscope.NativeScope{Organization: organization, Project: project}, &broad, facts)
 	reporter := issue
-	scope := nativeScope{organization: organization, project: project, credential: hubapi.APICredential{HostedRole: "reporter", ID: issue.Actor.PrincipalID}, sourceActor: &issue.Actor}
+	scope := hubscope.NativeScope{Organization: organization, Project: project, Credential: hubapi.APICredential{HostedRole: "reporter", ID: issue.Actor.PrincipalID}, SourceActor: &issue.Actor}
 	s.projectBoardRelationships(scope, &reporter, facts)
-	result := viewstore.BoardReporterRelations{ReporterStatus: reporterStatus(issue.State), Dependencies: reporter.Dependencies, Blockers: reporter.Blockers, Dependents: reporter.Dependents, Related: reporter.Related, DependencyReady: reporter.DependencyReady, BlockedReason: reporter.BlockedReason, UnblocksReason: reporter.UnblocksReason}
+	result := viewstore.BoardReporterRelations{ReporterStatus: hubscope.ReporterStatus(issue.State), Dependencies: reporter.Dependencies, Blockers: reporter.Blockers, Dependents: reporter.Dependents, Related: reporter.Related, DependencyReady: reporter.DependencyReady, BlockedReason: reporter.BlockedReason, UnblocksReason: reporter.UnblocksReason}
 	return broad, result, nil
 }
 
-func (s *Service) projectBoardRelationships(scope nativeScope, issue *tracker.NativeIssue, facts []tenantstore.WorkItemRelationshipFact) {
+func (s *Service) projectBoardRelationships(scope hubscope.NativeScope, issue *tracker.NativeIssue, facts []tenantstore.WorkItemRelationshipFact) {
 	issue.Dependencies = []tracker.NativeWorkItemID{}
 	issue.Blockers = []tracker.NativeDependency{}
 	issue.Dependents = []tracker.NativeDependency{}
@@ -52,18 +53,18 @@ func (s *Service) projectBoardRelationships(scope nativeScope, issue *tracker.Na
 	edges := dependencyEdges{}
 	for _, fact := range facts {
 		relation := fact.Relationship
-		visible := relation.RelatedProjectID == scope.project || fact.RelatedProjectVisible
+		visible := relation.RelatedProjectID == scope.Project || fact.RelatedProjectVisible
 		if relation.Type == "dependency" {
 			switch relation.Direction {
 			case "blocked_by":
 				edges.blocked = append(edges.blocked, string(relation.RelatedWorkItemID))
-				edges.privateBlocked = edges.privateBlocked || relation.RelatedProjectID != scope.project
+				edges.privateBlocked = edges.privateBlocked || relation.RelatedProjectID != scope.Project
 			case "blocks":
 				edges.unblocks = append(edges.unblocks, string(relation.RelatedWorkItemID))
-				edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.project
+				edges.privateUnblocks = edges.privateUnblocks || relation.RelatedProjectID != scope.Project
 			}
 		}
-		visible = visible && scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
+		visible = visible && scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(relation.ActorPrincipalID)})
 		if !visible {
 			if relation.Type == "dependency" {
 				switch relation.Direction {

@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -46,9 +47,9 @@ func TestHostedAnalyticsReads(t *testing.T) {
 		cfg.RunDetails = &memoryRunDetails{}
 	})
 	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "In Progress", Dispatchable: true}, {Name: "Done", Terminal: true}}
-	scope := nativeScope{organization: "org_security", project: f.project}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		project, err := w.ProjectRecord(t.Context(), scope.project)
+	scope := hubscope.NativeScope{Organization: "org_security", Project: f.project}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), scope.Project)
 		if err != nil {
 			return err
 		}
@@ -56,14 +57,14 @@ func TestHostedAnalyticsReads(t *testing.T) {
 		if _, err := w.UpdateProjectRecord(t.Context(), project); err != nil {
 			return err
 		}
-		_, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.organization, ID: "prj_other", Name: "foreign-project-sentinel", Profile: "github_compatible"}, States: states})
+		_, err = w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: scope.Organization, ID: "prj_other", Name: "foreign-project-sentinel", Profile: "github_compatible"}, States: states})
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
 	other := f
 	other.project = "prj_other"
-	issue := seedAnalyticsTestWorkItem(t, f.service, scope.organization, scope.project, "analytics-residence", 1, "lane residence", "Todo", now.Add(-6*time.Minute))
+	issue := seedAnalyticsTestWorkItem(t, f.service, scope.Organization, scope.Project, "analytics-residence", 1, "lane residence", "Todo", now.Add(-6*time.Minute))
 	transitionAnalyticsTestWorkItem(t, f.service, scope, issue.WorkItemID, "In Progress", now.Add(-2*time.Minute))
 	call := func(user hostedSecurityUser, name string, args map[string]any) (*httptest.ResponseRecorder, json.RawMessage) {
 		t.Helper()
@@ -270,7 +271,7 @@ func TestHostedAnalyticsReads(t *testing.T) {
 				}
 			})
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			member, err := w.AccessMember(t.Context(), user.identity.Subject)
 			if err != nil {
 				return err
@@ -397,8 +398,8 @@ func TestHostedAnalyticsReads(t *testing.T) {
 		} {
 			t.Run(read.name, func(t *testing.T) {
 				if read.name == "analytics revoked grants" {
-					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-						return w.DeleteAccessProjectGrant(t.Context(), owner.identity.Subject, scope.project)
+					if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+						return w.DeleteAccessProjectGrant(t.Context(), owner.identity.Subject, scope.Project)
 					}); err != nil {
 						t.Fatal(err)
 					}
@@ -414,7 +415,7 @@ func TestHostedAnalyticsReads(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer writer.Rollback()
-				if _, err := writer.ExecContext(ctx, "UPDATE projects SET name=name WHERE organization_id=$1 AND id=$2", scope.organization, scope.project); err != nil {
+				if _, err := writer.ExecContext(ctx, "UPDATE projects SET name=name WHERE organization_id=$1 AND id=$2", scope.Organization, scope.Project); err != nil {
 					t.Fatal(err)
 				}
 				repository := f.service.config.TenantRepository.(*postgres.Repository)
@@ -475,13 +476,13 @@ func TestHostedAnalyticsReads(t *testing.T) {
 		now := f.service.config.now().UTC()
 		window := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}
 		owner := f.service.config.TenantRepository.(tenantstore.SnapshotRepository)
-		if err := owner.ReadTenantSnapshot(t.Context(), scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := owner.ReadTenantSnapshot(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			principal, err := f.service.analyticsSnapshotPrincipal(t.Context(), reader, scope)
 			if err != nil {
 				return err
 			}
 			read := func() (int, error) {
-				page, err := reader.(eventstore.AnalyticsResidenceReader).ReadAnalyticsResidencePage(t.Context(), eventstore.AnalyticsResidenceQuery{ProjectID: scope.project, Principal: principal, From: window.From, To: window.To, Limit: 10})
+				page, err := reader.(eventstore.AnalyticsResidenceReader).ReadAnalyticsResidencePage(t.Context(), eventstore.AnalyticsResidenceQuery{ProjectID: scope.Project, Principal: principal, From: window.From, To: window.To, Limit: 10})
 				return len(page.Issues), err
 			}
 			if got, err := read(); err != nil || got != 2 {
@@ -580,10 +581,10 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 		if err != nil || status != http.StatusOK {
 			t.Fatalf("analytics authority status=%d error=%v", status, err)
 		}
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+		scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 		repository := f.service.config.TenantRepository.(*postgres.Repository)
 		record := func(index int) reportstore.UsageRecord {
-			return reportstore.UsageRecord{OrganizationID: scope.organization, UpdatedAt: base, UsageFact: reportstore.UsageFact{ProjectID: scope.project, WorkItemID: issue.WorkItemID, AttemptID: event.Data.AttemptID, Period: base.Add(time.Duration(index) * time.Millisecond), Provider: "example", Model: "example-model", Currency: "USD", Input: 1}}
+			return reportstore.UsageRecord{OrganizationID: scope.Organization, UpdatedAt: base, UsageFact: reportstore.UsageFact{ProjectID: scope.Project, WorkItemID: issue.WorkItemID, AttemptID: event.Data.AttemptID, Period: base.Add(time.Duration(index) * time.Millisecond), Provider: "example", Model: "example-model", Currency: "USD", Input: 1}}
 		}
 		if err := repository.ImportReportUsageFact(t.Context(), record(0)); err != nil {
 			t.Fatal(err)
@@ -592,9 +593,9 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 		readUsage := func() []reportstore.UsageFact {
 			t.Helper()
 			var facts []reportstore.UsageFact
-			if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+			if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				facts, err = r.(reportstore.UsageReader).ReadReportUsage(t.Context(), reportstore.OverviewQuery{Projects: []tracker.ProjectID{scope.project}, From: window.From, To: window.To, Limit: 1001})
+				facts, err = r.(reportstore.UsageReader).ReadReportUsage(t.Context(), reportstore.OverviewQuery{Projects: []tracker.ProjectID{scope.Project}, From: window.From, To: window.To, Limit: 1001})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -661,9 +662,9 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 			changedScope, changedWindow := scope, window
 			switch change {
 			case "project":
-				changedScope.project = "different-project"
+				changedScope.Project = "different-project"
 			case "caller":
-				changedScope.credential.ID = "different-caller"
+				changedScope.Credential.ID = "different-caller"
 			case "window":
 				changedWindow.From = window.From.Add(time.Second)
 			}
@@ -686,10 +687,10 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 			t.Fatalf("oversized encrypted usage cursor length=%d error=%v", len(token), err)
 		}
 		clear(usageKey)
-		emptyFixture := newNativeFixture(t, f.service, scope.organization, "historical empty usage dimensions")
+		emptyFixture := newNativeFixture(t, f.service, scope.Organization, "historical empty usage dimensions")
 		emptyScope := analyticsTestScope(t, emptyFixture)
-		emptyItem := seedAnalyticsTestWorkItem(t, f.service, emptyScope.organization, emptyScope.project, "empty-dimensions", 1, "empty dimensions", "Todo", base.Add(-time.Hour))
-		emptyAttempt := "empty-" + string(emptyScope.project)
+		emptyItem := seedAnalyticsTestWorkItem(t, f.service, emptyScope.Organization, emptyScope.Project, "empty-dimensions", 1, "empty dimensions", "Todo", base.Add(-time.Hour))
+		emptyAttempt := "empty-" + string(emptyScope.Project)
 		emptyDB := hostedPostgresAdmin(t, f.service)
 		seedAnalyticsTestAttempt(t, emptyDB, f.service, emptyScope, emptyItem.WorkItemID, emptyAttempt, "succeeded", base.Add(-time.Minute), base, tracker.NativeRunData{Identity: &tracker.NativeExecutionIdentity{Role: "code"}})
 		var workedReads atomic.Int64
@@ -705,7 +706,7 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 		if err != nil || workedPartial || len(workedUnavailable) != 0 || len(worked) != 1 || worked[0].Item != string(emptyItem.WorkItemID) || worked[0].Kind != "worked" || !worked[0].At.Equal(base.Add(-time.Minute)) || workedReads.Load() == 0 {
 			t.Fatalf("declared-role worked population=%+v partial=%v unavailable=%v reads=%d error=%v", worked, workedPartial, workedUnavailable, workedReads.Load(), err)
 		}
-		if _, err := emptyDB.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT $1,$2,$3,$4::timestamptz+n*interval '1 millisecond','','',1,0,0,0,'',$4 FROM generate_series(0,1000)n`, emptyScope.organization, emptyScope.project, emptyAttempt, base); err != nil {
+		if _, err := emptyDB.ExecContext(t.Context(), `INSERT INTO attempt_usage(organization_id,project_id,attempt_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT $1,$2,$3,$4::timestamptz+n*interval '1 millisecond','','',1,0,0,0,'',$4 FROM generate_series(0,1000)n`, emptyScope.Organization, emptyScope.Project, emptyAttempt, base); err != nil {
 			t.Fatal(err)
 		}
 		emptyHead, emptyNext, err := f.service.readNativeAnalyticsUsagePopulationTenant(t.Context(), emptyScope, window)
@@ -738,15 +739,15 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 			id, source, outcome, reason string
 			at                          time.Time
 		}{{"analytics-capacity-skip", "native_provider_capacity", "skipped", "capacity", base.Add(time.Minute)}, {"analytics-capacity-claim", "native_claim", "claimed", "owned", base.Add(2 * time.Minute)}} {
-			raw, err := json.Marshal(tracker.CollaborationEvent{ID: source.id, OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "analytics-runner"}, RecordedAt: source.at, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: source.source, Outcome: source.outcome, Reason: source.reason, At: source.at, RunnerID: "analytics-runner", WorkItemRevision: 1}}})
+			raw, err := json.Marshal(tracker.CollaborationEvent{ID: source.id, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: issue.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "analytics-runner"}, RecordedAt: source.at, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: source.source, Outcome: source.outcome, Reason: source.reason, At: source.at, RunnerID: "analytics-runner", WorkItemRevision: 1}}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			event, err := content.PrepareEvent(t.Context(), scope.organization, raw)
+			event, err := content.PrepareEvent(t.Context(), scope.Organization, raw)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
+			if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -805,11 +806,11 @@ func TestNativeAnalyticsUnavailableServices(t *testing.T) {
 			changedScope, changedWindow, runner := scope, window, ""
 			switch change {
 			case "project":
-				changedScope.project = "different-project"
+				changedScope.Project = "different-project"
 			case "caller":
-				changedScope.credential.ID = "different-caller"
+				changedScope.Credential.ID = "different-caller"
 			case "role":
-				changedScope.credential.HostedRole = "reporter"
+				changedScope.Credential.HostedRole = "reporter"
 			case "window":
 				changedWindow.From = window.From.Add(time.Second)
 			case "runner":
@@ -894,7 +895,7 @@ func TestNativeAnalyticsCostPerOutcome(t *testing.T) {
 				w.To = w.To.Add(15 * time.Minute)
 			}
 			stamp := now.Add(-time.Hour)
-			scope := nativeScope{organization: "org_security", project: f.project}
+			scope := hubscope.NativeScope{Organization: "org_security", Project: f.project}
 			db := hostedPostgresAdmin(t, f.service)
 			attempts := map[string]bool{}
 			for i := range test.usageRows {
@@ -914,7 +915,7 @@ func TestNativeAnalyticsCostPerOutcome(t *testing.T) {
 					seedAnalyticsTestAttempt(t, db, f.service, scope, issue, attemptID, "succeeded", started, recorded, tracker.NativeRunData{})
 					attempts[attemptID] = true
 				}
-				if err := f.service.config.TenantRepository.(*postgres.Repository).ImportReportUsageFact(t.Context(), reportstore.UsageRecord{OrganizationID: scope.organization, UpdatedAt: stamp, UsageFact: reportstore.UsageFact{ProjectID: scope.project, WorkItemID: issue, AttemptID: attemptID, Period: period, Provider: "openai", Model: fmt.Sprintf("model-%04d", i), Input: 100, Output: 20, Cost: 4, Currency: "USD"}}); err != nil {
+				if err := f.service.config.TenantRepository.(*postgres.Repository).ImportReportUsageFact(t.Context(), reportstore.UsageRecord{OrganizationID: scope.Organization, UpdatedAt: stamp, UsageFact: reportstore.UsageFact{ProjectID: scope.Project, WorkItemID: issue, AttemptID: attemptID, Period: period, Provider: "openai", Model: fmt.Sprintf("model-%04d", i), Input: 100, Output: 20, Cost: 4, Currency: "USD"}}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1103,8 +1104,8 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 			runtime.Activity = test.profile
 			fixture := newNativeFixture(t, f.service, f.project.OrganizationID, "activity "+test.name)
 			caseScope := analyticsTestScope(t, fixture)
-			caseItem := seedAnalyticsTestWorkItem(t, f.service, caseScope.organization, caseScope.project, "activity-item", 1, test.name, "Todo", now.Add(-15*time.Minute))
-			seedAnalyticsTestAttempt(t, hostedPostgresAdmin(t, f.service), f.service, caseScope, caseItem.WorkItemID, "activity-"+string(caseScope.project), "succeeded", now.Add(-10*time.Minute), now, tracker.NativeRunData{Runtime: &runtime}, test.malformedPhases)
+			caseItem := seedAnalyticsTestWorkItem(t, f.service, caseScope.Organization, caseScope.Project, "activity-item", 1, test.name, "Todo", now.Add(-15*time.Minute))
+			seedAnalyticsTestAttempt(t, hostedPostgresAdmin(t, f.service), f.service, caseScope, caseItem.WorkItemID, "activity-"+string(caseScope.Project), "succeeded", now.Add(-10*time.Minute), now, tracker.NativeRunData{Runtime: &runtime}, test.malformedPhases)
 			bucket := test.bucket
 			if bucket == 0 {
 				bucket = time.Minute
@@ -1167,7 +1168,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newNativeFixture(t, f.service, f.project.OrganizationID, test.name)
 			caseScope := analyticsTestScope(t, fixture)
-			item := seedAnalyticsTestWorkItem(t, f.service, caseScope.organization, caseScope.project, "capacity-item", 1, test.name, "Todo", now.Add(-15*time.Minute))
+			item := seedAnalyticsTestWorkItem(t, f.service, caseScope.Organization, caseScope.Project, "capacity-item", 1, test.name, "Todo", now.Add(-15*time.Minute))
 			priorAt, claimedAt := now.Add(-4*time.Minute), now.Add(-time.Minute)
 			prior := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: test.source, Outcome: "skipped", RunnerID: test.runner, WorkItemRevision: test.revision, At: priorAt}}
 			claim := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", WorkItemRevision: 1, At: claimedAt}}
@@ -1187,7 +1188,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 		})
 	}
 	foreign := scope
-	foreign.project = "prj_foreign"
+	foreign.Project = "prj_foreign"
 	hidden, err := f.service.readNativeAnalyticsTenant(t.Context(), foreign, operatortool.AnalyticsRequest{Limit: 1}, w)
 	if !errors.Is(err, accessstore.ErrDenied) {
 		t.Fatalf("foreign project authorization error=%v", err)
@@ -1229,42 +1230,42 @@ func seedAnalyticsTestWorkItem(t *testing.T, service *Service, organization trac
 	return issue
 }
 
-func analyticsTestScope(t *testing.T, f nativeFixture) nativeScope {
+func analyticsTestScope(t *testing.T, f nativeFixture) hubscope.NativeScope {
 	t.Helper()
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("analytics scope status=%d error=%v", status, err)
 	}
-	return nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	return hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 }
 
-func seedAnalyticsTestChange(t *testing.T, service *Service, scope nativeScope, item tracker.NativeWorkItemID, id string, at time.Time, landing *tracker.ChangeLanding) (tracker.ChangeRequest, tracker.ChangeVersion) {
+func seedAnalyticsTestChange(t *testing.T, service *Service, scope hubscope.NativeScope, item tracker.NativeWorkItemID, id string, at time.Time, landing *tracker.ChangeLanding) (tracker.ChangeRequest, tracker.ChangeVersion) {
 	t.Helper()
 	actor := tracker.Actor{Kind: "human", PrincipalID: "example"}
 	version := tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("b", 40), PolicyID: "example-policy"}, ID: "version-" + id, ChangeID: id, Number: 1, Actor: actor, CreatedAt: at}
-	change := tracker.ChangeRequest{ID: id, OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, Revision: 1, Title: id, CurrentVersion: version.ID, CreatedAt: at, UpdatedAt: at}
+	change := tracker.ChangeRequest{ID: id, OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, Revision: 1, Title: id, CurrentVersion: version.ID, CreatedAt: at, UpdatedAt: at}
 	if landing != nil {
 		copy := *landing
 		copy.VersionID, copy.HeadSHA = version.ID, version.HeadSHA
 		change.Landed = &copy
 	}
 	content := eventstore.NewContent(service.runDetailStore())
-	changeRow, err := content.PrepareChange(t.Context(), scope.organization, historyTestJSON(t, change))
+	changeRow, err := content.PrepareChange(t.Context(), scope.Organization, historyTestJSON(t, change))
 	if err != nil {
 		t.Fatal(err)
 	}
-	versionRow, err := content.PrepareVersion(t.Context(), scope.organization, historyTestJSON(t, version))
+	versionRow, err := content.PrepareVersion(t.Context(), scope.Organization, historyTestJSON(t, version))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var frozen eventstore.VersionLanding
 	if change.Landed != nil {
-		frozen, err = content.PrepareVersionLanding(t.Context(), eventstore.VersionLanding{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, ChangeID: id, VersionID: version.ID}, *change.Landed)
+		frozen, err = content.PrepareVersionLanding(t.Context(), eventstore.VersionLanding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, ChangeID: id, VersionID: version.ID}, *change.Landed)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if _, err := w.CreateChange(t.Context(), changeRow); err != nil {
 			return err
 		}
@@ -1298,7 +1299,7 @@ func analyticsHostedTestAuthority(t *testing.T, f hostedSecurityFixture, user ho
 	return ctx, credential
 }
 
-func seedAnalyticsTestAttempt(t *testing.T, db *sql.DB, service *Service, scope nativeScope, item tracker.NativeWorkItemID, id, status string, started, recorded time.Time, data tracker.NativeRunData, malformedPhases ...bool) eventstore.Event {
+func seedAnalyticsTestAttempt(t *testing.T, db *sql.DB, service *Service, scope hubscope.NativeScope, item tracker.NativeWorkItemID, id, status string, started, recorded time.Time, data tracker.NativeRunData, malformedPhases ...bool) eventstore.Event {
 	t.Helper()
 	data.AttemptID, data.RunID, data.Sequence, data.Outcome = id, "run-"+id, 1, status
 	eventType := "run.finished"
@@ -1316,13 +1317,13 @@ func seedAnalyticsTestAttempt(t *testing.T, db *sql.DB, service *Service, scope 
 		data.Runtime = &runtime
 	}
 	content := eventstore.NewContent(service.runDetailStore())
-	event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: "event-" + id, OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, Type: eventType, SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "analytics-fixture"}, RecordedAt: recorded, Data: tracker.CollaborationData{Run: &data}}))
+	event, err := content.PrepareEvent(t.Context(), scope.Organization, historyTestJSON(t, tracker.CollaborationEvent{ID: "event-" + id, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item, Type: eventType, SchemaVersion: 1, Actor: tracker.Actor{Kind: "runner", PrincipalID: "analytics-fixture"}, RecordedAt: recorded, Data: tracker.CollaborationData{Run: &data}}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if historicalMalformed {
 		var envelope map[string]json.RawMessage
-		if err := json.Unmarshal(historyTestJSON(t, tracker.CollaborationEvent{ID: event.ID, OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, Type: event.Type, SchemaVersion: 1, Actor: tracker.Actor{Kind: event.ActorKind, PrincipalID: event.ActorPrincipalID}, RecordedAt: recorded, Data: tracker.CollaborationData{Run: &data}}), &envelope); err != nil {
+		if err := json.Unmarshal(historyTestJSON(t, tracker.CollaborationEvent{ID: event.ID, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item, Type: event.Type, SchemaVersion: 1, Actor: tracker.Actor{Kind: event.ActorKind, PrincipalID: event.ActorPrincipalID}, RecordedAt: recorded, Data: tracker.CollaborationData{Run: &data}}), &envelope); err != nil {
 			t.Fatal(err)
 		}
 		var fields, run, runtime map[string]json.RawMessage
@@ -1339,42 +1340,42 @@ func seedAnalyticsTestAttempt(t *testing.T, db *sql.DB, service *Service, scope 
 		run["runtime"] = historyTestJSON(t, runtime)
 		fields["run"] = historyTestJSON(t, run)
 		envelope["data"] = historyTestJSON(t, fields)
-		ref, err := content.PreparePayload(t.Context(), scope.organization, historyTestJSON(t, envelope))
+		ref, err := content.PreparePayload(t.Context(), scope.Organization, historyTestJSON(t, envelope))
 		if err != nil {
 			t.Fatal(err)
 		}
 		event.PayloadObjectKey, event.PayloadSHA256, event.PayloadBytes, event.PayloadContentBytes = ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize
 	}
 	var issueID int64
-	if err := db.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", scope.organization, scope.project, item).Scan(&issueID); err != nil {
+	if err := db.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3", scope.Organization, scope.Project, item).Scan(&issueID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO machines(organization_id,id,hostname,version,capacity,last_heartbeat_at,registered_at,updated_at) VALUES($1,'analytics-fixture','example','example',1,$2,$2,$2) ON CONFLICT(organization_id,id) DO NOTHING`, scope.organization, started); err != nil {
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO machines(organization_id,id,hostname,version,capacity,last_heartbeat_at,registered_at,updated_at) VALUES($1,'analytics-fixture','example','example',1,$2,$2,$2) ON CONFLICT(organization_id,id) DO NOTHING`, scope.Organization, started); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) VALUES($1,$2,$3)", scope.organization, data.RunID, issueID); err != nil {
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO native_attempt_runs(organization_id,run_id,issue_id) VALUES($1,$2,$3)", scope.Organization, data.RunID, issueID); err != nil {
 		t.Fatal(err)
 	}
 	var fence int64
-	if err := db.QueryRowContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,released_at) VALUES($1,$2,$3,'analytics-fixture',$4,1,$5,$5,$6,$7) RETURNING fencing_token`, scope.organization, "lease-"+id, issueID, "session-"+id, started, recorded.Add(time.Hour), releasedAt).Scan(&fence); err != nil {
+	if err := db.QueryRowContext(t.Context(), `INSERT INTO leases(organization_id,lease_id,issue_id,machine_id,session_id,work_item_revision,acquired_at,renewed_at,expires_at,released_at) VALUES($1,$2,$3,'analytics-fixture',$4,1,$5,$5,$6,$7) RETURNING fencing_token`, scope.Organization, "lease-"+id, issueID, "session-"+id, started, recorded.Add(time.Hour), releasedAt).Scan(&fence); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,started_at_submicro_ns,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,1,$8,1,1,$9,$10,$11,$12)`, scope.organization, scope.project, id, issueID, "lease-"+id, fence, data.RunID, status, event.PayloadObjectKey, started.Truncate(time.Microsecond), started.Nanosecond()%1000, recorded); err != nil {
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO native_attempts(organization_id,project_id,id,issue_id,lease_id,fencing_token,run_id,sequence,status,work_item_revision,dispatch_generation,payload_object_key,started_at,started_at_submicro_ns,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,1,$8,1,1,$9,$10,$11,$12)`, scope.Organization, scope.Project, id, issueID, "lease-"+id, fence, data.RunID, status, event.PayloadObjectKey, started.Truncate(time.Microsecond), started.Nanosecond()%1000, recorded); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error { _, err := w.AppendEvent(t.Context(), event); return err }); err != nil {
 		t.Fatal(err)
 	}
 	return event
 }
 
-func appendAnalyticsTestEvent(t *testing.T, service *Service, scope nativeScope, item tracker.NativeWorkItemID, kind string, data tracker.CollaborationData, at time.Time) eventstore.Event {
+func appendAnalyticsTestEvent(t *testing.T, service *Service, scope hubscope.NativeScope, item tracker.NativeWorkItemID, kind string, data tracker.CollaborationData, at time.Time) eventstore.Event {
 	t.Helper()
-	row, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: at, Data: data}))
+	row, err := eventstore.NewContent(service.runDetailStore()).PrepareEvent(t.Context(), scope.Organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item, Type: kind, SchemaVersion: 1, Actor: tracker.Actor{Kind: "human", PrincipalID: "example"}, RecordedAt: at, Data: data}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		var err error
 		row, err = w.AppendEvent(t.Context(), row)
 		return err
@@ -1384,13 +1385,13 @@ func appendAnalyticsTestEvent(t *testing.T, service *Service, scope nativeScope,
 	return row
 }
 
-func transitionAnalyticsTestWorkItem(t *testing.T, service *Service, scope nativeScope, item tracker.NativeWorkItemID, target string, at time.Time) {
+func transitionAnalyticsTestWorkItem(t *testing.T, service *Service, scope hubscope.NativeScope, item tracker.NativeWorkItemID, target string, at time.Time) {
 	t.Helper()
 	var row corestore.WorkItem
 	var version eventstore.CollaborationVersion
-	if err := service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		row, err = r.WorkItem(t.Context(), scope.project, item)
+		row, err = r.WorkItem(t.Context(), scope.Project, item)
 		if err != nil {
 			return err
 		}
@@ -1408,16 +1409,16 @@ func transitionAnalyticsTestWorkItem(t *testing.T, service *Service, scope nativ
 	issue.Revision++
 	issue.UpdatedAt = at
 	content := eventstore.NewContent(service.runDetailStore())
-	version, err = content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item, RecordID: string(item), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
+	version, err = content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, RecordID: string(item), Revision: int64(issue.Revision)}, historyTestJSON(t, issue))
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := content.PrepareEvent(t.Context(), scope.organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: at, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: from, ToState: target}}))
+	event, err := content.PrepareEvent(t.Context(), scope.Organization, historyTestJSON(t, tracker.CollaborationEvent{ID: hubapi.NewID("event"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item, Type: "workflow.transitioned", SchemaVersion: 1, Actor: issue.Actor, RecordedAt: at, Data: tracker.CollaborationData{Revision: issue.Revision, FromState: from, ToState: target}}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.LockWorkItemProject(t.Context(), scope.project); err != nil {
+	if err := service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.LockWorkItemProject(t.Context(), scope.Project); err != nil {
 			return err
 		}
 		row.WorkflowStateName = &target

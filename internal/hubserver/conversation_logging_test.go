@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -142,7 +143,7 @@ func newConversationLogFixture(t *testing.T, cfg *ConversationConfig) (conversat
 	if err != nil || status != http.StatusOK || credential.ID == "" {
 		t.Fatalf("authenticate logging operator: status=%d error=%v", status, err)
 	}
-	return conversationAPIFixture{nativeFixture: f, ownerID: (nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}).actor().PrincipalID}, sink
+	return conversationAPIFixture{nativeFixture: f, ownerID: (hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}).Actor().PrincipalID}, sink
 }
 
 // TestConversationLoggingCommandPath covers the diagnostics the operator API

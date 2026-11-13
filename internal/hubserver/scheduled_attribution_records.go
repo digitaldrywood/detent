@@ -10,12 +10,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Service) commitScheduledAttribution(ctx context.Context, scope nativeScope, operation, repository, item string, request tracker.CreateIssue) (json.RawMessage, error) {
+func (s *Service) commitScheduledAttribution(ctx context.Context, scope hubscope.NativeScope, operation, repository, item string, request tracker.CreateIssue) (json.RawMessage, error) {
 	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return nil, err
@@ -36,7 +37,7 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope nativeSc
 		} else {
 			plan := original
 			if plan.issue.State == "Done" {
-				if err := validateNativeWorkflowTransition(plan.project.States, "Done", "Rework", scope.credential.Scope); err != nil {
+				if err := validateNativeWorkflowTransition(plan.project.States, "Done", "Rework", scope.Credential.Scope); err != nil {
 					return nil, err
 				}
 				plan.issue.State = "Rework"
@@ -70,19 +71,19 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope nativeSc
 		return nil, err
 	}
 	now := s.config.now().UTC()
-	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
+	receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: request.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 	if err != nil {
 		return nil, err
 	}
 	var replay *eventstore.Receipt
-	err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(ctx); err != nil {
 			return err
 		}
 		if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
 			return err
 		}
-		previous, err := w.Receipt(ctx, scope.credential.ID, operation, request.IdempotencyKey)
+		previous, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey)
 		if err == nil {
 			if previous.RequestHash != hash {
 				return hubapi.NativeConflict(0)
@@ -93,7 +94,7 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope nativeSc
 		if !errors.Is(err, corestore.ErrNotFound) {
 			return err
 		}
-		project, err := w.ProjectRecord(ctx, scope.project)
+		project, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -116,7 +117,7 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope nativeSc
 			if !sameWorkItemProjectPlan(original.project, project) {
 				return corestore.ErrRevisionConflict
 			}
-			current, err := w.LockWorkItem(ctx, scope.project, original.current.NativeID)
+			current, err := w.LockWorkItem(ctx, scope.Project, original.current.NativeID)
 			if err != nil {
 				return err
 			}
@@ -147,7 +148,7 @@ func (s *Service) commitScheduledAttribution(ctx context.Context, scope nativeSc
 				return err
 			}
 		}
-		if scope.credential.Hosted != nil {
+		if scope.Credential.Hosted != nil {
 			audit := projectRecordActor(scope).Audit
 			audit.Event, audit.Route, audit.Status = "action", operation, http.StatusOK
 			audit.RecordedAt = now

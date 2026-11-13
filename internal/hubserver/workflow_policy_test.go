@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -122,8 +123,8 @@ func seedWorkflowPolicyNativeLanding(t *testing.T, f nativeFixture, commit, base
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("landing actor status%d: %v", status, err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
-	actor := scope.actor()
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
+	actor := scope.Actor()
 	now := f.service.config.now().UTC().Truncate(time.Microsecond)
 	change := tracker.ChangeRequest{ID: "change_landed", OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: source.WorkItemID, Title: "Landed source", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	content := eventstore.NewContent(f.service.runDetailStore())
@@ -136,7 +137,7 @@ func seedWorkflowPolicyNativeLanding(t *testing.T, f nativeFixture, commit, base
 	input.HeadSHA = strings.Repeat("b", 40)
 	input.PolicyID = approval.Policy.ID
 	input.RunID, input.AttemptID = event.Data.RunID, event.Data.AttemptID
-	version := tracker.ChangeVersion{ID: "version_landed", ChangeID: change.ID, Number: 1, ChangeVersionInput: input, Policy: approval.Policy, Actor: analyticsTestScope(t, f).actor(), CreatedAt: now}
+	version := tracker.ChangeVersion{ID: "version_landed", ChangeID: change.ID, Number: 1, ChangeVersionInput: input, Policy: approval.Policy, Actor: analyticsTestScope(t, f).Actor(), CreatedAt: now}
 	versionRow, err := content.PrepareVersion(t.Context(), f.project.OrganizationID, historyTestJSON(t, version))
 	if err != nil {
 		t.Fatal(err)
@@ -573,7 +574,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 						}
 						scope := analyticsTestScope(t, f)
 						content := eventstore.NewContent(f.service.runDetailStore())
-						versionRow, err := content.PrepareVersion(t.Context(), scope.organization, raw)
+						versionRow, err := content.PrepareVersion(t.Context(), scope.Organization, raw)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -584,12 +585,12 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 						revision := current.Revision
 						current.CurrentVersion = version.ID
 						current.Revision++
-						changeRow, err := content.PrepareChange(t.Context(), scope.organization, historyTestJSON(t, current))
+						changeRow, err := content.PrepareChange(t.Context(), scope.Organization, historyTestJSON(t, current))
 						if err != nil {
 							t.Fatal(err)
 						}
 						changeRow.Revision = int64(revision)
-						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+						if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 							if _, err := w.CreateVersion(t.Context(), versionRow); err != nil {
 								return err
 							}

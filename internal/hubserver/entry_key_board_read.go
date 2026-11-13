@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 
 	"github.com/labstack/echo/v4"
 
@@ -76,12 +77,12 @@ func (s *Service) entryKeyReadAuthority(next echo.HandlerFunc) echo.HandlerFunc 
 		err = read()
 		if errors.Is(err, corestore.ErrNotFound) && claims.Key.Kind == "service" {
 			if err := s.ensureEntryServicePrincipal(c.Request().Context(), claims); err != nil {
-				return s.nativeAPIError(c, operatorAuthorizationError(err))
+				return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 			}
 			err = read()
 		}
 		if err != nil && !c.Response().Committed {
-			return s.nativeAPIError(c, operatorAuthorizationError(err))
+			return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 		}
 		return err
 	}

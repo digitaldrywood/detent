@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -139,7 +140,7 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 	if !workspacesession.ValidIsolation(request.Isolation) {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("isolation must be sandbox, container or user"))
 	}
-	scope, ctx := nativeRequestScope(c), c.Request().Context()
+	scope, ctx := hubscope.NativeRequestScope(c), c.Request().Context()
 	var checkout workspaceCheckout
 	var actions []workspacesession.Action
 	var prepared []actionstore.Record
@@ -150,7 +151,7 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 			return hubapi.WorkspaceUnavailable()
 		}
 		var err error
-		prepared, err = owner.ProjectActions(ctx, scope.project)
+		prepared, err = owner.ProjectActions(ctx, scope.Project)
 		return err
 	}
 	hydrate := func(row postgres.WorkspaceSession) error {
@@ -159,7 +160,7 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 			if err != nil {
 				return err
 			}
-			if attempt.RunnerID == scope.credential.Runner.RunnerID && (attempt.Status == "running" || service.now().Before(attempt.UpdatedAt.Add(service.config.RetainAfterRun))) {
+			if attempt.RunnerID == scope.Credential.Runner.RunnerID && (attempt.Status == "running" || service.now().Before(attempt.UpdatedAt.Add(service.config.RetainAfterRun))) {
 				checkout.Worktree = workspacesession.WorktreeRetained
 			}
 		}
@@ -181,7 +182,7 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 		if row.State != workspacesession.StateRequested {
 			return row, "", "", hubapi.NativeStaleExecution("The workspace is not waiting for a runner")
 		}
-		if row.RebindDeadline != nil && (now.After(*row.RebindDeadline) || row.RunnerID != "" && row.RunnerID != scope.credential.Runner.RunnerID) {
+		if row.RebindDeadline != nil && (now.After(*row.RebindDeadline) || row.RunnerID != "" && row.RunnerID != scope.Credential.Runner.RunnerID) {
 			return row, "", "", hubapi.NativeStaleExecution("The workspace re-bind grace has passed or belongs to another runner")
 		}
 		if !request.Capabilities.Satisfies(row.Requires) {
@@ -194,7 +195,7 @@ func (s *Service) bindWorkspaceWorker(c echo.Context) error {
 		if row.RebindDeadline != nil {
 			target = workspacesession.StateReady
 		}
-		row.RunnerID, row.MachineID, row.LeaseID, row.FencingToken = scope.credential.Runner.RunnerID, string(scope.credential.Runner.MachineID), string(request.LeaseID), int64(request.FencingToken)
+		row.RunnerID, row.MachineID, row.LeaseID, row.FencingToken = scope.Credential.Runner.RunnerID, string(scope.Credential.Runner.MachineID), string(request.LeaseID), int64(request.FencingToken)
 		row.Capabilities = workspaceCapabilityNames(request.Capabilities)
 		row.Isolation = request.Isolation
 		row.LastHeartbeatAt = &now
@@ -242,7 +243,7 @@ func (s *Service) heartbeatWorkspaceWorker(c echo.Context) error {
 	if request.Reason != "" && !workspacesession.ValidReason(request.Reason) {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("reason names no workspace reason"))
 	}
-	scope, ctx := nativeRequestScope(c), c.Request().Context()
+	scope, ctx := hubscope.NativeRequestScope(c), c.Request().Context()
 	beat, err := service.mutateWorkspaceWorker(ctx, scope, c.Param("workspace"), request.workspaceWorkerIdentity, nil, nil, func(row postgres.WorkspaceSession, now time.Time) (postgres.WorkspaceSession, string, string, error) {
 		if workspacesession.Terminal(row.State) {
 			return row, "", "", hubapi.NativeStaleExecution("The workspace has ended")
@@ -303,7 +304,7 @@ func (s *Service) unbindWorkspaceWorker(c echo.Context) error {
 	if request.Reason != "" && !workspacesession.ValidReason(request.Reason) {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("reason names no workspace reason"))
 	}
-	scope, ctx := nativeRequestScope(c), c.Request().Context()
+	scope, ctx := hubscope.NativeRequestScope(c), c.Request().Context()
 	ended, err := service.mutateWorkspaceWorker(ctx, scope, c.Param("workspace"), request.workspaceWorkerIdentity, nil, nil, func(row postgres.WorkspaceSession, now time.Time) (postgres.WorkspaceSession, string, string, error) {
 		if workspacesession.Terminal(row.State) {
 			return row, row.State, row.Reason, nil
@@ -354,14 +355,14 @@ func (s *Service) workspaceForWorkItem(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	scope, ctx := nativeRequestScope(c), c.Request().Context()
+	scope, ctx := hubscope.NativeRequestScope(c), c.Request().Context()
 	var resource workspacesession.Session
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.WorkspaceReader)
 		if !ok {
 			return hubapi.WorkspaceUnavailable()
 		}
-		row, err := owner.WorkspaceByDispatchItem(ctx, scope.project, tracker.NativeWorkItemID(c.Param("item")))
+		row, err := owner.WorkspaceByDispatchItem(ctx, scope.Project, tracker.NativeWorkItemID(c.Param("item")))
 		if err != nil {
 			return err
 		}
@@ -421,7 +422,7 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 	if request.Reason != "" && !validActionRunReason(request.Reason) {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("reason names no run reason"))
 	}
-	scope := nativeRequestScope(c)
+	scope := hubscope.NativeRequestScope(c)
 	ctx := c.Request().Context()
 	exit, err := actionRunExitCode(request.ExitCode)
 	if err != nil {
@@ -429,7 +430,7 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 	}
 	var record workspaceRecord
 	var existing postgres.ActionRun
-	err = s.accessRead(ctx, scope.organization, func(reader tenantstore.Reader) error {
+	err = s.accessRead(ctx, scope.Organization, func(reader tenantstore.Reader) error {
 		var err error
 		record, err = service.readRelayWorker(ctx, reader, scope, c.Param("workspace"), request.WorkspaceIdentity)
 		if err != nil {
@@ -439,7 +440,7 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		action, err := owner.ProjectAction(ctx, scope.project, strings.TrimSpace(request.ActionID))
+		action, err := owner.ProjectAction(ctx, scope.Project, strings.TrimSpace(request.ActionID))
 		if err != nil {
 			return err
 		}
@@ -449,7 +450,7 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 			}
 			return nil
 		}
-		existing, err = owner.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: strings.TrimSpace(request.RunID)})
+		existing, err = owner.ActionRun(ctx, postgres.ActionRunInput{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: strings.TrimSpace(request.RunID)})
 		if err != nil {
 			return err
 		}
@@ -473,13 +474,13 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 		output = output[:workspacesession.MaxExecOutputBytes]
 		truncated = true
 	}
-	ref, err := service.prepareRelayOutput(ctx, scope.organization, output)
+	ref, err := service.prepareRelayOutput(ctx, scope.Organization, output)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	var previousOutput *attachment.ArchiveReference
 	if ref.Key != "" && existing.OutputObjectKey != nil && *existing.OutputObjectKey != ref.Key {
-		previous, err := s.relayArchiveReference(ctx, scope.organization, attachment.ArchiveReference{Key: *existing.OutputObjectKey, SHA256: existing.OutputSha256, CompressedSize: existing.OutputBytes, UncompressedSize: existing.OutputContentBytes})
+		previous, err := s.relayArchiveReference(ctx, scope.Organization, attachment.ArchiveReference{Key: *existing.OutputObjectKey, SHA256: existing.OutputSha256, CompressedSize: existing.OutputBytes, UncompressedSize: existing.OutputContentBytes})
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -495,7 +496,7 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 		id = hubapi.NewID("actionrun")
 	}
 	var reported postgres.ActionRun
-	err = s.accessWrite(ctx, scope.organization, func(writer tenantstore.Writer) error {
+	err = s.accessWrite(ctx, scope.Organization, func(writer tenantstore.Writer) error {
 		if _, err := service.readRelayWorker(ctx, writer, scope, record.ID, request.WorkspaceIdentity); err != nil {
 			return err
 		}
@@ -506,16 +507,16 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 		var err error
 		var command actionstore.Record
 		if existing.ID == "" {
-			if err := writer.LockWorkItemProject(ctx, scope.project); err != nil {
+			if err := writer.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
-			command, err = owner.ProjectAction(ctx, scope.project, strings.TrimSpace(request.ActionID))
+			command, err = owner.ProjectAction(ctx, scope.Project, strings.TrimSpace(request.ActionID))
 			if err != nil {
 				return err
 			}
-			reported, err = owner.CreateReportedActionRun(ctx, postgres.CreateReportedActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: id, ActionID: strings.TrimSpace(request.ActionID), WorkspaceID: record.ID, RunnerID: record.RunnerID, LeaseID: string(record.LeaseID), FencingToken: int64(record.FencingToken), Status: request.Status, ExitCode: exit, Reason: request.Reason, StartedAt: request.StartedAt, FinishedAt: request.FinishedAt, OutputObjectKey: key, OutputSha256: ref.SHA256, OutputBytes: ref.CompressedSize, OutputContentBytes: ref.UncompressedSize, Truncated: truncated, CreatedAt: now})
+			reported, err = owner.CreateReportedActionRun(ctx, postgres.CreateReportedActionRunInput{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: id, ActionID: strings.TrimSpace(request.ActionID), WorkspaceID: record.ID, RunnerID: record.RunnerID, LeaseID: string(record.LeaseID), FencingToken: int64(record.FencingToken), Status: request.Status, ExitCode: exit, Reason: request.Reason, StartedAt: request.StartedAt, FinishedAt: request.FinishedAt, OutputObjectKey: key, OutputSha256: ref.SHA256, OutputBytes: ref.CompressedSize, OutputContentBytes: ref.UncompressedSize, Truncated: truncated, CreatedAt: now})
 		} else {
-			reported, err = owner.ApplyReportedActionRun(ctx, postgres.ApplyReportedActionRunInput{OrganizationID: scope.organization, ProjectID: scope.project, ID: existing.ID, ActionID: existing.ActionID, WorkspaceID: record.ID, RunnerID: record.RunnerID, LeaseID: string(record.LeaseID), FencingToken: int64(record.FencingToken), ExpectedRevision: existing.Revision, Status: request.Status, ExitCode: exit, Reason: request.Reason, StartedAt: request.StartedAt, FinishedAt: request.FinishedAt, OutputPresent: len(output) != 0, OutputObjectKey: key, OutputSha256: ref.SHA256, OutputBytes: ref.CompressedSize, OutputContentBytes: ref.UncompressedSize, Truncated: truncated, UpdatedAt: now})
+			reported, err = owner.ApplyReportedActionRun(ctx, postgres.ApplyReportedActionRunInput{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: existing.ID, ActionID: existing.ActionID, WorkspaceID: record.ID, RunnerID: record.RunnerID, LeaseID: string(record.LeaseID), FencingToken: int64(record.FencingToken), ExpectedRevision: existing.Revision, Status: request.Status, ExitCode: exit, Reason: request.Reason, StartedAt: request.StartedAt, FinishedAt: request.FinishedAt, OutputPresent: len(output) != 0, OutputObjectKey: key, OutputSha256: ref.SHA256, OutputBytes: ref.CompressedSize, OutputContentBytes: ref.UncompressedSize, Truncated: truncated, UpdatedAt: now})
 		}
 		if err != nil {
 			return err
@@ -524,12 +525,12 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 			if command.Command.Key != reported.CommandObjectKey || command.Command.SHA256 != reported.CommandSha256 {
 				return artifact.ErrIntegrity
 			}
-			if err := s.retainRelayArchive(ctx, writer, scope.organization, scope.project, reported.ID, "project-action-run-command", command.Command, now); err != nil {
+			if err := s.retainRelayArchive(ctx, writer, scope.Organization, scope.Project, reported.ID, "project-action-run-command", command.Command, now); err != nil {
 				return err
 			}
 		}
 		if ref.Key != "" {
-			if err := s.retainRelayArchive(ctx, writer, scope.organization, scope.project, reported.ID, "project-action-run-output", ref, now); err != nil {
+			if err := s.retainRelayArchive(ctx, writer, scope.Organization, scope.Project, reported.ID, "project-action-run-output", ref, now); err != nil {
 				return err
 			}
 			if previousOutput != nil {
@@ -537,7 +538,7 @@ func (s *Service) reportWorkspaceActionRun(c echo.Context) error {
 				if err != nil {
 					return err
 				}
-				if err := writer.RemoveArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.organization, ArchiveID: object.ID, Kind: "project-action-run-output", ID: actionstore.ArchiveOwnerID(scope.project, reported.ID)}); err != nil {
+				if err := writer.RemoveArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: scope.Organization, ArchiveID: object.ID, Kind: "project-action-run-output", ID: actionstore.ArchiveOwnerID(scope.Project, reported.ID)}); err != nil {
 					return err
 				}
 			}
@@ -589,7 +590,7 @@ func workspaceCapabilityNames(value workspacesession.Capabilities) []string {
 	return names
 }
 
-func (w *workspaceService) workspaceWorkerRecord(ctx context.Context, r tenantstore.Reader, scope nativeScope, id string, identity workspaceWorkerIdentity, now time.Time, bound bool) (postgres.WorkspaceSession, leasestore.Lease, error) {
+func (w *workspaceService) workspaceWorkerRecord(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id string, identity workspaceWorkerIdentity, now time.Time, bound bool) (postgres.WorkspaceSession, leasestore.Lease, error) {
 	if workspacesession.ValidateID(id) != nil {
 		return postgres.WorkspaceSession{}, leasestore.Lease{}, hubapi.NativeNotFound()
 	}
@@ -603,7 +604,7 @@ func (w *workspaceService) workspaceWorkerRecord(ctx context.Context, r tenantst
 	if !ok {
 		return postgres.WorkspaceSession{}, leasestore.Lease{}, hubapi.WorkspaceUnavailable()
 	}
-	row, err := owner.WorkspaceSession(ctx, scope.project, id)
+	row, err := owner.WorkspaceSession(ctx, scope.Project, id)
 	if err != nil {
 		return row, leasestore.Lease{}, err
 	}
@@ -614,24 +615,24 @@ func (w *workspaceService) workspaceWorkerRecord(ctx context.Context, r tenantst
 	if lease.FencingToken != int64(identity.FencingToken) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) || lease.RenewedAt.After(now) {
 		return row, lease, hubapi.NativeStaleExecution("The workspace lease is no longer current")
 	}
-	link, err := owner.WorkspaceDispatchItem(ctx, scope.project, id)
+	link, err := owner.WorkspaceDispatchItem(ctx, scope.Project, id)
 	if err != nil {
 		return row, lease, err
 	}
-	item, err := r.WorkItem(ctx, scope.project, link.WorkItemID)
+	item, err := r.WorkItem(ctx, scope.Project, link.WorkItemID)
 	if err != nil {
 		return row, lease, err
 	}
-	if lease.OrganizationID != scope.organization || lease.IssueID != item.ID || lease.MachineID != string(scope.credential.Runner.MachineID) {
+	if lease.OrganizationID != scope.Organization || lease.IssueID != item.ID || lease.MachineID != string(scope.Credential.Runner.MachineID) {
 		return row, lease, hubapi.NativeStaleExecution("The lease does not hold this workspace's work item")
 	}
-	if bound && (row.RunnerID != scope.credential.Runner.RunnerID || row.MachineID != lease.MachineID || row.LeaseID != lease.LeaseID || row.FencingToken != lease.FencingToken) {
+	if bound && (row.RunnerID != scope.Credential.Runner.RunnerID || row.MachineID != lease.MachineID || row.LeaseID != lease.LeaseID || row.FencingToken != lease.FencingToken) {
 		return row, lease, hubapi.NativeStaleExecution("The workspace belongs to another execution")
 	}
 	return row, lease, nil
 }
 
-func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope nativeScope, id string, identity workspaceWorkerIdentity, prepare func(context.Context, tenantstore.Reader, postgres.WorkspaceSession) error, hydrate func(postgres.WorkspaceSession) error, change func(postgres.WorkspaceSession, time.Time) (postgres.WorkspaceSession, string, string, error), bound bool) (workspaceRecord, error) {
+func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope hubscope.NativeScope, id string, identity workspaceWorkerIdentity, prepare func(context.Context, tenantstore.Reader, postgres.WorkspaceSession) error, hydrate func(postgres.WorkspaceSession) error, change func(postgres.WorkspaceSession, time.Time) (postgres.WorkspaceSession, string, string, error), bound bool) (workspaceRecord, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return workspaceRecord{}, err
@@ -640,7 +641,7 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope nati
 		var before, planned postgres.WorkspaceSession
 		var target, reason string
 		var linkID tracker.NativeWorkItemID
-		err := w.server.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := w.server.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
 			before, _, err = w.workspaceWorkerRecord(ctx, r, scope, id, identity, now, bound)
 			if err != nil {
@@ -651,7 +652,7 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope nati
 				return err
 			}
 			if workspacesession.Terminal(target) {
-				link, err := r.(postgres.WorkspaceReader).WorkspaceDispatchItem(ctx, scope.project, id)
+				link, err := r.(postgres.WorkspaceReader).WorkspaceDispatchItem(ctx, scope.Project, id)
 				if err != nil {
 					return err
 				}
@@ -677,14 +678,14 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope nati
 			return workspaceRecord{}, err
 		}
 		var result postgres.WorkspaceSession
-		err = w.server.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(writer tenantstore.Writer) error {
+		err = w.server.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(writer tenantstore.Writer) error {
 			if _, err := readRelayRunnerAuthority(ctx, writer, scope, string(identity.LeaseID), w.now()); err != nil {
 				return err
 			}
 			if err := writer.LockAccessOrganization(ctx); err != nil {
 				return err
 			}
-			if err := writer.LockWorkItemProject(ctx, scope.project); err != nil {
+			if err := writer.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
 			locker, ok := writer.(interface {
@@ -708,7 +709,7 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope nati
 				if err := closure.write(ctx, writer); err != nil {
 					return err
 				}
-				if err := owner.CloseWorkspaceItem(ctx, scope.project, linkID, now); err != nil {
+				if err := owner.CloseWorkspaceItem(ctx, scope.Project, linkID, now); err != nil {
 					return err
 				}
 			}
@@ -726,14 +727,14 @@ func (w *workspaceService) mutateWorkspaceWorker(ctx context.Context, scope nati
 			}
 
 			if target == workspacesession.StateStarting && current.State != workspacesession.StateStarting {
-				if err := owner.CreateWorkspaceOccupancy(ctx, postgres.WorkspaceOccupancyStart{OrganizationID: scope.organization, ProjectID: scope.project, WorkspaceID: id, RunnerID: row.RunnerID, StartedAt: now}); err != nil {
+				if err := owner.CreateWorkspaceOccupancy(ctx, postgres.WorkspaceOccupancyStart{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkspaceID: id, RunnerID: row.RunnerID, StartedAt: now}); err != nil {
 					return err
 				}
 			}
 			fence := leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}
 			if workspacesession.Terminal(target) {
 				if row.RunnerID != "" {
-					if err := owner.EndWorkspaceOccupancy(ctx, postgres.WorkspaceOccupancyEnd{OrganizationID: scope.organization, ProjectID: scope.project, WorkspaceID: id, RunnerID: row.RunnerID, EndedAt: &now}); err != nil {
+					if err := owner.EndWorkspaceOccupancy(ctx, postgres.WorkspaceOccupancyEnd{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkspaceID: id, RunnerID: row.RunnerID, EndedAt: &now}); err != nil {
 						return err
 					}
 				}

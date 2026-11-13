@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerupdate"
@@ -231,7 +232,7 @@ func (s *Service) appUpdates(c echo.Context) error {
 	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status >= http.StatusInternalServerError {
-			return s.nativeAPIError(c, operatorAuthorizationError(err))
+			return s.nativeAPIError(c, hubscope.OperatorAuthorizationError(err))
 		}
 		if status == http.StatusForbidden {
 			return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", hubapi.APIErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
@@ -600,8 +601,8 @@ func (s *Service) hostedReadableProjectsPostgres(ctx context.Context, credential
 			project := appBootstrapProject{Icon: projectIntegrationRecord(record).Icon, ID: string(record.Core.ID), Name: record.Core.Name, Slug: record.Core.Slug, Profile: record.Core.Profile, States: record.States, CanWrite: rows[i].CanWrite, CanManageRunners: rows[i].ManageRunner}
 			viewer := credential.HostedRole == "viewer"
 			if credential.EntryKey != nil {
-				project.CanWrite = project.CanWrite && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite)
-				project.CanManageRunners = project.CanManageRunners && hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin)
+				project.CanWrite = project.CanWrite && hubscope.HostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite)
+				project.CanManageRunners = project.CanManageRunners && hubscope.HostedKeyAllows(credential.HostedKeyScope, apikey.ScopeAdmin)
 			}
 			project.CanWrite = project.CanWrite && !viewer
 			project.CanManageRunners = project.CanManageRunners && !viewer

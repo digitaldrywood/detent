@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 )
 
 func TestGitHubWorkersRequirePostgresOwner(t *testing.T) {
@@ -17,8 +18,10 @@ func TestGitHubWorkersRequirePostgresOwner(t *testing.T) {
 	}{
 		{"batch maintenance", func(s *Service) error { return s.maintainGitHubBatches(context.Background()) }, nil},
 		{"reconciliation", func(s *Service) error { return s.maintainGitHubReconciliationRecords(context.Background()) }, nil},
-		{"completion", func(s *Service) error { return s.completeRunnerGitHubBatch(context.Background(), nativeScope{}) }, hubapi.ErrPostgresFeatureUnavailable},
-		{"advance", func(s *Service) error { return s.advanceGitHubBatch(context.Background(), nativeScope{}) }, hubapi.ErrPostgresFeatureUnavailable},
+		{"completion", func(s *Service) error {
+			return s.completeRunnerGitHubBatch(context.Background(), hubscope.NativeScope{})
+		}, hubapi.ErrPostgresFeatureUnavailable},
+		{"advance", func(s *Service) error { return s.advanceGitHubBatch(context.Background(), hubscope.NativeScope{}) }, hubapi.ErrPostgresFeatureUnavailable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := test.call(configured); !errors.Is(err, hubapi.ErrPostgresFeatureUnavailable) {

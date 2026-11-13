@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -61,7 +62,7 @@ func TestOperatorAuthorizationFailures(t *testing.T) {
 			s := &Service{config: Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}}
 			response := httptest.NewRecorder()
 			c := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response)
-			err := operatorAuthorizationError(test.err)
+			err := hubscope.OperatorAuthorizationError(test.err)
 			if err == nil {
 				t.Fatal("authorization error became success")
 			}

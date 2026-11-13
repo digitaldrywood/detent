@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -324,7 +325,7 @@ func TestHostedImportTypedReads(t *testing.T) {
 			t.Fatal(err)
 		}
 		scope := f.scope(t)
-		credential := scope.credential
+		credential := scope.Credential
 		batch := &tracker.GitHubBatch{ID: "typed-identity"}
 		for index := range 2 {
 			snapshot := batchSnapshot(index + 100)
@@ -338,7 +339,7 @@ func TestHostedImportTypedReads(t *testing.T) {
 				t.Fatalf("typed duplicate=%s error=%v", id, err)
 			}
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.RevokeAccessCredential(t.Context(), credential.ID, f.service.config.now())
 		}); err != nil {
 			t.Fatal(err)
@@ -533,7 +534,7 @@ func TestHostedImportReplaySurvivesLegacyEvaluationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	issue := f.create(t, "before replay")
 	title := "recorded"
 	request := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "typed-replay"}, ExpectedRevision: issue.Revision, Title: &title}
@@ -569,8 +570,8 @@ func TestHostedImportReplaySurvivesLegacyEvaluationFailure(t *testing.T) {
 	if _, err := f.service.updateNativeIssueCommand(t.Context(), scope, string(issue.WorkItemID), request); !errors.Is(err, artifact.ErrMissing) {
 		t.Fatalf("unevaluated new mutation ran: error=%v", err)
 	}
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		current, err := r.WorkItem(t.Context(), scope.project, issue.WorkItemID)
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		current, err := r.WorkItem(t.Context(), scope.Project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}

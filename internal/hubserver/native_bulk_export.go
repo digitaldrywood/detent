@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -27,17 +28,17 @@ func (s *Service) exportNativeWorkItems(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	page, err := s.readBulkExport(c.Request().Context(), nativeRequestScope(c), params)
+	page, err := s.readBulkExport(c.Request().Context(), hubscope.NativeRequestScope(c), params)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, page)
 }
 
-func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params url.Values) (operatortool.WorkBulkExportPage, error) {
+func (s *Service) readBulkExport(ctx context.Context, scope hubscope.NativeScope, params url.Values) (operatortool.WorkBulkExportPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
-	page := operatortool.WorkBulkExportPage{ProjectID: string(scope.project), GeneratedAt: s.config.now(), Freshness: explain.SourceAvailable, Items: []operatortool.WorkBulkExportItem{}}
+	page := operatortool.WorkBulkExportPage{ProjectID: string(scope.Project), GeneratedAt: s.config.now(), Freshness: explain.SourceAvailable, Items: []operatortool.WorkBulkExportItem{}}
 	single := url.Values{}
 	for name, values := range params {
 		single[name] = values
@@ -50,7 +51,7 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 	if err := validateNativeIssueQuery(params); err != nil {
 		return page, err
 	}
-	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/export"
+	path := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/export"
 	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, operatortool.WorkBulkExportMaxItems, operatortool.WorkBulkExportMaxItems)
 	if err != nil {
 		return page, err
@@ -66,18 +67,18 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 			return page, hubapi.NativePublicInvalid("Cursor is invalid")
 		}
 	}
-	filter := corestore.WorkItemExportSelection{ProjectID: scope.project, States: selection.States, Labels: selection.Labels, Archived: selection.Archived, Terminal: selection.Terminal, Reporter: selection.Reporter, PrincipalID: scope.actor().PrincipalID}
+	filter := corestore.WorkItemExportSelection{ProjectID: scope.Project, States: selection.States, Labels: selection.Labels, Archived: selection.Archived, Terminal: selection.Terminal, Reporter: selection.Reporter, PrincipalID: scope.Actor().PrincipalID}
 	size := 8192
 	for len(page.Items) < limit {
 		filter.IncludeTotal = len(page.Items) == 0
 		batchSize := min(corestore.MaxPageSize-1, limit-len(page.Items))
 		batchLimit := batchSize + 1
 		var rows []corestore.WorkItem
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 				return err
 			}
-			project, err := r.Project(ctx, scope.project)
+			project, err := r.Project(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -140,7 +141,7 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 			break
 		}
 	}
-	if err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeBulkExportItem(ctx, r, scope, ""); err != nil {
 			return err
 		}
@@ -162,7 +163,7 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 	return page, nil
 }
 
-func (s *Service) readBulkExportItem(ctx context.Context, scope nativeScope, issue tracker.NativeIssue) (operatortool.WorkBulkExportItem, error) {
+func (s *Service) readBulkExportItem(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue) (operatortool.WorkBulkExportItem, error) {
 	exported := operatortool.WorkBulkExportItem{NativeIssue: s.nativeIssueResponse(issue), Comments: []tracker.NativeComment{}}
 	raw, err := json.Marshal(exported)
 	if err != nil {
@@ -172,12 +173,12 @@ func (s *Service) readBulkExportItem(ctx context.Context, scope nativeScope, iss
 	for {
 		var rows []corestore.Comment
 		var versions []eventstore.CollaborationVersion
-		err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := s.authorizeBulkExportItem(ctx, r, scope, issue.WorkItemID); err != nil {
 				return err
 			}
 			var err error
-			rows, err = r.Comments(ctx, scope.project, issue.WorkItemID, after, corestore.MaxPageSize)
+			rows, err = r.Comments(ctx, scope.Project, issue.WorkItemID, after, corestore.MaxPageSize)
 			if err != nil {
 				return err
 			}
@@ -210,25 +211,25 @@ func (s *Service) readBulkExportItem(ctx context.Context, scope nativeScope, iss
 			after = row.Sequence
 		}
 		if len(rows) < corestore.MaxPageSize {
-			err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error { return s.authorizeBulkExportItem(ctx, r, scope, issue.WorkItemID) })
+			err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error { return s.authorizeBulkExportItem(ctx, r, scope, issue.WorkItemID) })
 			return exported, err
 		}
 	}
 }
-func (s *Service) authorizeBulkExportItem(ctx context.Context, r tenantstore.Reader, scope nativeScope, item tracker.NativeWorkItemID) error {
+func (s *Service) authorizeBulkExportItem(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item tracker.NativeWorkItemID) error {
 	if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 		return err
 	}
-	if scope.credential.Hosted != nil {
+	if scope.Credential.Hosted != nil {
 		member, err := r.AuthorizeAccess(ctx, s.accessAuthority(scope, false), s.config.now())
 		if err != nil {
 			return err
 		}
-		if member.UserID != "" && hubapi.LesserHostedRole(member.Role, scope.credential.HostedRole) != scope.credential.HostedRole {
+		if member.UserID != "" && hubapi.LesserHostedRole(member.Role, scope.Credential.HostedRole) != scope.Credential.HostedRole {
 			return auth.ErrHostedIdentity
 		}
 	}
-	project, err := r.Project(ctx, scope.project)
+	project, err := r.Project(ctx, scope.Project)
 	if err != nil {
 		return err
 	}
@@ -238,11 +239,11 @@ func (s *Service) authorizeBulkExportItem(ctx context.Context, r tenantstore.Rea
 	if item == "" {
 		return nil
 	}
-	row, err := r.WorkItem(ctx, scope.project, item)
+	row, err := r.WorkItem(ctx, scope.Project, item)
 	if err != nil {
 		return err
 	}
-	if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+	if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 		return corestore.ErrNotFound
 	}
 	return nil

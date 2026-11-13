@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -19,13 +20,13 @@ func accessSecretStatus(secret accessstore.Secret) projectSecretStatus {
 	return projectSecretStatus{Kind: secret.Kind, Present: true, OrganizationSlug: secret.OrganizationSlug, KeyVersion: secret.Envelope.Version}
 }
 
-func (s *Service) readAccessSecretStatus(ctx context.Context, scope nativeScope) (projectSecretStatus, error) {
+func (s *Service) readAccessSecretStatus(ctx context.Context, scope hubscope.NativeScope) (projectSecretStatus, error) {
 	result := projectSecretStatus{Kind: flySpritesToken}
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
-		secret, err := r.AccessSecret(ctx, scope.project, flySpritesToken)
+		secret, err := r.AccessSecret(ctx, scope.Project, flySpritesToken)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
@@ -38,18 +39,18 @@ func (s *Service) readAccessSecretStatus(ctx context.Context, scope nativeScope)
 	return result, err
 }
 
-func (s *Service) accessSecretWrite(ctx context.Context, scope nativeScope, write func(tenantstore.Writer) error) error {
-	if scope.credential.Hosted != nil {
-		_, membership, err := s.hostedMutationIdentity(ctx, scope.credential)
+func (s *Service) accessSecretWrite(ctx context.Context, scope hubscope.NativeScope, write func(tenantstore.Writer) error) error {
+	if scope.Credential.Hosted != nil {
+		_, membership, err := s.hostedMutationIdentity(ctx, scope.Credential)
 		if err != nil {
 			return err
 		}
-		if membership.ID != scope.credential.HostedMembership {
+		if membership.ID != scope.Credential.HostedMembership {
 			return accessstore.ErrDenied
 		}
-		scope.credential.HostedRole = hubapi.LesserHostedRole(scope.credential.HostedRole, membership.Role.Slug)
+		scope.Credential.HostedRole = hubapi.LesserHostedRole(scope.Credential.HostedRole, membership.Role.Slug)
 	}
-	return s.accessWrite(ctx, scope.organization, func(w tenantstore.Writer) error {
+	return s.accessWrite(ctx, scope.Organization, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -57,11 +58,11 @@ func (s *Service) accessSecretWrite(ctx context.Context, scope nativeScope, writ
 	})
 }
 
-func (s *Service) accessSecretAudit(scope nativeScope, event string, version int) accessstore.SecretAudit {
-	return accessstore.SecretAudit{OrganizationID: scope.organization, ProjectID: scope.project, Actor: secretActor(scope), Kind: flySpritesToken, Event: event, KeyVersion: version, RecordedAt: s.config.now()}
+func (s *Service) accessSecretAudit(scope hubscope.NativeScope, event string, version int) accessstore.SecretAudit {
+	return accessstore.SecretAudit{OrganizationID: scope.Organization, ProjectID: scope.Project, Actor: secretActor(scope), Kind: flySpritesToken, Event: event, KeyVersion: version, RecordedAt: s.config.now()}
 }
 
-func (s *Service) setAccessProjectSecret(c echo.Context, scope nativeScope, token []byte) error {
+func (s *Service) setAccessProjectSecret(c echo.Context, scope hubscope.NativeScope, token []byte) error {
 	ctx := c.Request().Context()
 	if err := s.accessSecretWrite(ctx, scope, func(w tenantstore.Writer) error {
 		return w.RecordAccessSecretAudit(ctx, s.accessSecretAudit(scope, "use", s.config.SecretKeys.Version()))
@@ -72,17 +73,17 @@ func (s *Service) setAccessProjectSecret(c echo.Context, scope nativeScope, toke
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, err.Error())
 	}
-	envelope, err := s.config.SecretKeys.Seal(token, accessstore.SecretAAD(scope.organization, scope.project, flySpritesToken))
+	envelope, err := s.config.SecretKeys.Seal(token, accessstore.SecretAAD(scope.Organization, scope.Project, flySpritesToken))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	clear(token)
-	secret := accessstore.Secret{OrganizationID: scope.organization, ProjectID: scope.project, Kind: flySpritesToken, OrganizationSlug: slug, Envelope: envelope, UpdatedAt: s.config.now()}
+	secret := accessstore.Secret{OrganizationID: scope.Organization, ProjectID: scope.Project, Kind: flySpritesToken, OrganizationSlug: slug, Envelope: envelope, UpdatedAt: s.config.now()}
 	if err := accessstore.VerifySecret(s.config.SecretKeys, secret); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	err = s.accessSecretWrite(ctx, scope, func(w tenantstore.Writer) error {
-		old, err := w.AccessSecret(ctx, scope.project, flySpritesToken)
+		old, err := w.AccessSecret(ctx, scope.Project, flySpritesToken)
 		event := "set"
 		if err == nil {
 			event = "replace"
@@ -100,16 +101,16 @@ func (s *Service) setAccessProjectSecret(c echo.Context, scope nativeScope, toke
 	return c.JSON(http.StatusOK, accessSecretStatus(secret))
 }
 
-func (s *Service) removeAccessProjectSecret(ctx context.Context, scope nativeScope) error {
+func (s *Service) removeAccessProjectSecret(ctx context.Context, scope hubscope.NativeScope) error {
 	return s.accessSecretWrite(ctx, scope, func(w tenantstore.Writer) error {
-		old, err := w.AccessSecret(ctx, scope.project, flySpritesToken)
+		old, err := w.AccessSecret(ctx, scope.Project, flySpritesToken)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		return w.DeleteAccessSecret(ctx, scope.project, flySpritesToken, s.accessSecretAudit(scope, "remove", old.Envelope.Version))
+		return w.DeleteAccessSecret(ctx, scope.Project, flySpritesToken, s.accessSecretAudit(scope, "remove", old.Envelope.Version))
 	})
 }
 
@@ -168,15 +169,15 @@ func (s *Service) rewrapAccessSecrets(ctx context.Context) error {
 	}
 }
 
-func (s *Service) resolveSpritesSecret(ctx context.Context, db hubapi.NativeQueryer, scope nativeScope) (nativeScope, string, hubsecrets.Envelope, error) {
+func (s *Service) resolveSpritesSecret(ctx context.Context, db hubapi.NativeQueryer, scope hubscope.NativeScope) (hubscope.NativeScope, string, hubsecrets.Envelope, error) {
 	if s.config.AccessRepository == nil {
 		return resolveSpritesSecret(ctx, db, scope)
 	}
 	var secret accessstore.Secret
-	err := s.accessRead(ctx, scope.organization, func(r tenantstore.Reader) error {
+	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		var err error
-		secret, err = r.AccessSecret(ctx, scope.project, flySpritesToken)
-		if errors.Is(err, corestore.ErrNotFound) && scope.project != "" {
+		secret, err = r.AccessSecret(ctx, scope.Project, flySpritesToken)
+		if errors.Is(err, corestore.ErrNotFound) && scope.Project != "" {
 			secret, err = r.AccessSecret(ctx, "", flySpritesToken)
 		}
 		return err
@@ -187,6 +188,6 @@ func (s *Service) resolveSpritesSecret(ctx context.Context, db hubapi.NativeQuer
 	if err := accessstore.VerifySecret(s.config.SecretKeys, secret); err != nil {
 		return scope, "", hubsecrets.Envelope{}, err
 	}
-	scope.project = secret.ProjectID
+	scope.Project = secret.ProjectID
 	return scope, secret.OrganizationSlug, secret.Envelope, nil
 }

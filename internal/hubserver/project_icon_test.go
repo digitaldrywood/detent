@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projecticon"
@@ -114,7 +115,7 @@ func TestProjectIconLifecycle(t *testing.T) {
 			if !bytes.Equal(response.Body.Bytes(), replay.Body.Bytes()) {
 				t.Fatal("replay differs")
 			}
-			second, err := readProjectIconIntegration(t.Context(), f.service, nativeScope{organization: other.project.OrganizationID, project: other.project.ID})
+			second, err := readProjectIconIntegration(t.Context(), f.service, hubscope.NativeScope{Organization: other.project.OrganizationID, Project: other.project.ID})
 			if err != nil || second.Icon != nil || second.Revision != 1 {
 				t.Fatalf("other project=%+v, %v", second, err)
 			}
@@ -226,7 +227,7 @@ func TestSetProjectIconRefusals(t *testing.T) {
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPut, f.base+"/icon", token, body).WithContext(ctx))
 			requireNativeStatus(t, response, test.status)
-			current, err := readProjectIconIntegration(t.Context(), f.service, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			current, err := readProjectIconIntegration(t.Context(), f.service, hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -311,7 +312,7 @@ func TestProjectIconMCP(t *testing.T) {
 	if envelope.Result.IsError {
 		t.Fatal(response.Body.String())
 	}
-	saved, err := readProjectIconIntegration(t.Context(), f.service, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+	saved, err := readProjectIconIntegration(t.Context(), f.service, hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID})
 	if err != nil || saved.Icon == nil || saved.Icon.Emoji != "🚀" || saved.Revision != 2 {
 		t.Fatalf("MCP icon = %+v %v", saved, err)
 	}
@@ -373,7 +374,7 @@ func TestHostedProjectIcon(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newBrowserHostedFixture(t, true)
-			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+			scope := hubscope.NativeScope{Organization: "org_browser_preview", Project: tracker.ProjectID(f.project)}
 			before, err := readProjectIconIntegration(t.Context(), f.service, scope)
 			if err != nil {
 				t.Fatal(err)
@@ -382,7 +383,7 @@ func TestHostedProjectIcon(t *testing.T) {
 				if err := f.provider.SetMembershipRole(t.Context(), "membership_user_browser_owner", "member"); err != nil {
 					t.Fatal(err)
 				}
-				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					member, err := w.AccessMember(t.Context(), "user_browser_owner")
 					if err != nil {
 						return err
@@ -428,7 +429,7 @@ func TestHostedProjectIcon(t *testing.T) {
 	}
 }
 
-func readProjectIconIntegration(ctx context.Context, service *Service, scope nativeScope) (ProjectIntegration, error) {
+func readProjectIconIntegration(ctx context.Context, service *Service, scope hubscope.NativeScope) (ProjectIntegration, error) {
 	record, err := service.readProjectRecord(ctx, scope)
 	if err != nil {
 		return ProjectIntegration{}, err

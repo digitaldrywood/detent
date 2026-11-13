@@ -13,9 +13,9 @@ import (
 
 func (a hubChangeApplication) readChangeListRecords(ctx context.Context, args operatortool.ChangeArguments) (result operatortool.ChangeResult, resultErr error) {
 	scope := a.scope
-	scope.project = tracker.ProjectID(args.ProjectID)
+	scope.Project = tracker.ProjectID(args.ProjectID)
 	result = a.result(scope, args)
-	if scope.credential.Scope != hubapi.APIScopeOperator && scope.credential.Scope != hubapi.APIScopeAdmin || scope.credential.Runner.RunnerID != "" {
+	if scope.Credential.Scope != hubapi.APIScopeOperator && scope.Credential.Scope != hubapi.APIScopeAdmin || scope.Credential.Runner.RunnerID != "" {
 		return result, operatortool.ErrAccessDenied
 	}
 	s := a.service
@@ -29,10 +29,10 @@ func (a hubChangeApplication) readChangeListRecords(ctx context.Context, args op
 	defer func() { result.Archive = nativeArchiveDescriptor(ctx) }()
 	var records []eventstore.Change
 	limit := changeLimit(args)
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		after := ""
 		for remaining := args.Offset; remaining > 0; {
-			rows, err := r.Changes(ctx, scope.project, tracker.NativeWorkItemID(args.ItemID), after, min(remaining, corestore.MaxPageSize))
+			rows, err := r.Changes(ctx, scope.Project, tracker.NativeWorkItemID(args.ItemID), after, min(remaining, corestore.MaxPageSize))
 			if err != nil || len(rows) == 0 {
 				return err
 			}
@@ -40,11 +40,11 @@ func (a hubChangeApplication) readChangeListRecords(ctx context.Context, args op
 			after = rows[len(rows)-1].ID
 		}
 		var err error
-		records, err = r.Changes(ctx, scope.project, tracker.NativeWorkItemID(args.ItemID), after, limit)
+		records, err = r.Changes(ctx, scope.Project, tracker.NativeWorkItemID(args.ItemID), after, limit)
 		if err != nil || len(records) < limit {
 			return err
 		}
-		more, err := r.Changes(ctx, scope.project, tracker.NativeWorkItemID(args.ItemID), records[len(records)-1].ID, 1)
+		more, err := r.Changes(ctx, scope.Project, tracker.NativeWorkItemID(args.ItemID), records[len(records)-1].ID, 1)
 		if len(more) != 0 {
 			next := args.Offset + limit
 			result.NextOffset = &next

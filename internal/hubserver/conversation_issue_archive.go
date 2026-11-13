@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -60,7 +61,7 @@ func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record con
 	if err != nil {
 		return nil, err
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
 		return nil, operatortool.ErrAccessDenied
 	}
@@ -68,7 +69,7 @@ func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record con
 	if err != nil {
 		return nil, err
 	}
-	scope.project = record.ProjectID
+	scope.Project = record.ProjectID
 	for _, id := range args.WorkItemIDs {
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: string(record.ProjectID), ResourceKind: "work_item", ResourceID: id}); err != nil {
 			return nil, err
@@ -76,7 +77,7 @@ func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record con
 	}
 	s := t.coordinator.server
 	archive := chat.IssueArchive{Items: make([]chat.IssueArchiveItem, 0, len(args.WorkItemIDs))}
-	if scope.credential.Scope == hubapi.APIScopeWorker {
+	if scope.Credential.Scope == hubapi.APIScopeWorker {
 		return nil, hubapi.NativePublicInvalid("Archive and restore require an operator")
 	}
 	for _, id := range args.WorkItemIDs {
@@ -97,8 +98,8 @@ func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record con
 		if issue.State == "Merging" {
 			return nil, hubapi.NativeInvalid("A Merging issue cannot be archived: " + id)
 		}
-		err = s.config.TenantRepository.ReadTenant(readCtx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-			active, err := r.WorkItemHasActiveLease(readCtx, scope.project, row.NativeID, s.config.now())
+		err = s.config.TenantRepository.ReadTenant(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			active, err := r.WorkItemHasActiveLease(readCtx, scope.Project, row.NativeID, s.config.now())
 			if err != nil {
 				return err
 			}
@@ -135,7 +136,7 @@ func (s *Service) executeCoordinatorIssueArchive(ctx context.Context, action cha
 	if err := validateCoordinatorArchiveIDs(ids); err != nil {
 		return chat.ActionExecution{}, err
 	}
-	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+	resolve, ok := ctx.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 	if !ok {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
@@ -143,7 +144,7 @@ func (s *Service) executeCoordinatorIssueArchive(ctx context.Context, action cha
 	if err != nil {
 		return chat.ActionExecution{}, err
 	}
-	scope.project = tracker.ProjectID(action.ProjectID)
+	scope.Project = tracker.ProjectID(action.ProjectID)
 	for _, id := range ids {
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: action.ProjectID, ResourceKind: "work_item", ResourceID: id}); err != nil {
 			return chat.ActionExecution{}, err
@@ -160,11 +161,11 @@ func (s *Service) executeCoordinatorIssueArchive(ctx context.Context, action cha
 	return chat.ActionExecution{Message: "Archived " + strings.Join(names, ", ") + ". These issues can be restored.", Data: raw}, nil
 }
 
-func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope nativeScope, command tracker.Mutation, archive chat.IssueArchive) (json.RawMessage, error) {
+func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscope.NativeScope, command tracker.Mutation, archive chat.IssueArchive) (json.RawMessage, error) {
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	if scope.credential.Scope == hubapi.APIScopeWorker {
+	if scope.Credential.Scope == hubapi.APIScopeWorker {
 		return nil, hubapi.NativePublicInvalid("Archive and restore require an operator")
 	}
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
@@ -227,7 +228,7 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope nativeS
 				return nil, err
 			}
 			prepared := preparedItem{plan: plan}
-			prepared.fields, err = s.prepareWorkItemFields(ctx, scope.organization, plan)
+			prepared.fields, err = s.prepareWorkItemFields(ctx, scope.Organization, plan)
 			if err != nil {
 				return nil, err
 			}
@@ -235,31 +236,31 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope nativeS
 			if err != nil {
 				return nil, err
 			}
-			prepared.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, RecordID: item.WorkItemID, Revision: int64(plan.issue.Revision)}, raw)
+			prepared.version, err = content.PrepareCollaborationVersion(ctx, eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, RecordID: item.WorkItemID, Revision: int64(plan.issue.Revision)}, raw)
 			if err != nil {
 				return nil, err
 			}
-			raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: plan.issue.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields, Operation: "archive"}})
+			raw, err = json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: plan.issue.WorkItemID, ID: hubapi.NewID("evt"), Type: plan.eventType, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: plan.issue.UpdatedAt, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Fields: plan.fields, Operation: "archive"}})
 			if err != nil {
 				return nil, err
 			}
-			prepared.event, err = content.PrepareEvent(ctx, scope.organization, raw)
+			prepared.event, err = content.PrepareEvent(ctx, scope.Organization, raw)
 			if err != nil {
 				return nil, err
 			}
-			prepared.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + item.WorkItemID, SourceID: item.WorkItemID, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
+			prepared.search, err = searchstore.NewContent(s.runDetailStore()).Prepare(ctx, searchstore.Document{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: plan.issue.WorkItemID, ID: "issue:" + item.WorkItemID, SourceID: item.WorkItemID, Kind: "issue", Scope: "issue", Revision: int64(plan.issue.Revision), UpdatedAt: plan.issue.UpdatedAt}, searchstore.Text{Title: plan.issue.Title, Body: plan.issue.Body, Labels: plan.issue.Labels})
 			if err != nil {
 				return nil, err
 			}
 			items = append(items, prepared)
-			response = append(response, s.nativeIssueResponse(relationshipOmittedIssue(scope.reporterIssue(plan.issue))))
+			response = append(response, s.nativeIssueResponse(relationshipOmittedIssue(scope.ReporterIssue(plan.issue))))
 		}
 		raw, err := json.Marshal(response)
 		if err != nil {
 			return nil, err
 		}
 		now := s.config.now().UTC().Truncate(time.Microsecond)
-		receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.organization, ActorID: scope.credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
+		receipt, err := content.PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: scope.Organization, ActorID: scope.Credential.ID, Operation: operation, CommandKey: command.IdempotencyKey, RequestHash: hash, CreatedAt: now, ResponseReplayUntilNs: now.Add(receiptstore.ReplayRetention).UnixNano()}, raw)
 		if err != nil {
 			return nil, err
 		}
@@ -267,14 +268,14 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope nativeS
 		if err != nil {
 			return nil, err
 		}
-		err = s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := s.authorizeWorkItemRecordScope(ctx, w, scope); err != nil {
 				return err
 			}
-			if err := w.LockWorkItemProject(ctx, scope.project); err != nil {
+			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
-			project, err := w.ProjectRecord(ctx, scope.project)
+			project, err := w.ProjectRecord(ctx, scope.Project)
 			if err != nil {
 				return err
 			}
@@ -282,15 +283,15 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope nativeS
 				return corestore.ErrNotFound
 			}
 			for _, id := range lockOrder {
-				row, err := w.LockWorkItem(ctx, scope.project, tracker.NativeWorkItemID(id))
+				row, err := w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(id))
 				if err != nil {
 					return err
 				}
-				if !scope.reporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+				if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
 					return corestore.ErrNotFound
 				}
 			}
-			if _, err := w.Receipt(ctx, scope.credential.ID, operation, command.IdempotencyKey); err == nil {
+			if _, err := w.Receipt(ctx, scope.Credential.ID, operation, command.IdempotencyKey); err == nil {
 				return corestore.ErrSerializationFailure
 			} else if !errors.Is(err, corestore.ErrNotFound) {
 				return err
@@ -305,7 +306,7 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope nativeS
 				if _, err := w.CreateCollaborationVersion(ctx, item.version); err != nil {
 					return err
 				}
-				if err := w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: item.version.WorkItemID, Revision: item.version.Revision, VersionSHA256: item.version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(item.plan.issue.Body)}); err != nil {
+				if err := w.BindDoctorProposalIdentities(ctx, postgres.DoctorProposalIdentityBinding{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item.version.WorkItemID, Revision: item.version.Revision, VersionSHA256: item.version.PayloadSHA256, Identities: postgres.DeriveDoctorProposalIdentities(item.plan.issue.Body)}); err != nil {
 					return err
 				}
 				if _, err := w.AppendEvent(ctx, item.event); err != nil {
@@ -315,7 +316,7 @@ func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope nativeS
 					return err
 				}
 			}
-			if err := s.recordEntryAccessKeyAuditWith(ctx, w, entryKeyAuditFrom(ctx), http.StatusOK); err != nil {
+			if err := s.recordEntryAccessKeyAuditWith(ctx, w, hubscope.EntryKeyAuditFrom(ctx), http.StatusOK); err != nil {
 				return err
 			}
 			_, err = w.PutReceipt(ctx, receipt)

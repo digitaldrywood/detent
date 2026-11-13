@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -46,8 +47,8 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 			}
 			for _, size := range payloadSizes {
 				issue := f.create(t, fmt.Sprintf("object payload %s %d", kind, size))
-				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-				scope.credential = hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}
+				scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
+				scope.Credential = hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}
 				ctx := t.Context()
 				data := tracker.CollaborationData{Revision: issue.Revision}
 				if kind == "scheduler.decision" {
@@ -58,18 +59,18 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 					run := tracker.NativeRunData{AttemptID: hubapi.NewID("attempt"), RunID: hubapi.NewID("run"), LeaseID: "lease", PolicyID: "policy", FencingToken: 1, Sequence: 1, CompletionBody: strings.Repeat("x", size)}
 					data.Run = &run
 				}
-				actor := scope.actor()
+				actor := scope.Actor()
 				actor.ViaKey, actor.DisplayName, actor.Agent = "example_key", "Example operator", "Example assistant"
-				raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: data})
+				raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: issue.WorkItemID, Type: kind, SchemaVersion: 1, Actor: actor, RecordedAt: f.service.config.now(), Data: data})
 				if err != nil {
 					t.Fatal(err)
 				}
-				prepared, err := content.PrepareEvent(ctx, scope.organization, raw)
+				prepared, err := content.PrepareEvent(ctx, scope.Organization, raw)
 				if err != nil {
 					t.Fatal(err)
 				}
 				var event eventstore.Event
-				if err := repository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+				if err := repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					var err error
 					event, err = w.AppendEvent(ctx, prepared)
 					return err
@@ -77,7 +78,7 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 					t.Fatal(err)
 				}
 				var inline int
-				if err := admin.QueryRowContext(ctx, "SELECT pg_column_size(e) FROM collaboration_events e WHERE organization_id=$1 AND id=$2", scope.organization, event.ID).Scan(&inline); err != nil {
+				if err := admin.QueryRowContext(ctx, "SELECT pg_column_size(e) FROM collaboration_events e WHERE organization_id=$1 AND id=$2", scope.Organization, event.ID).Scan(&inline); err != nil {
 					t.Fatal(err)
 				}
 				sizes = append(sizes, inline)
@@ -157,13 +158,13 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 						if _, err := tx.ExecContext(t.Context(), "SET LOCAL session_replication_role=replica"); err != nil {
 							t.Fatal(err)
 						}
-						if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET actor_envelope_known=false,actor_via_key='',actor_display_name='',actor_agent='' WHERE organization_id=$1 AND id=$2", scope.organization, event.ID); err != nil {
+						if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET actor_envelope_known=false,actor_via_key='',actor_display_name='',actor_agent='' WHERE organization_id=$1 AND id=$2", scope.Organization, event.ID); err != nil {
 							t.Fatal(err)
 						}
 						if err := tx.Commit(); err != nil {
 							t.Fatal(err)
 						}
-						if err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+						if err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 							replayed, err := w.AppendEvent(t.Context(), prepared)
 							if err == nil && (replayed.ID != event.ID || replayed.Sequence != event.Sequence || replayed.ActorEnvelopeKnown) {
 								return errors.New("historical replay changed the event")
@@ -260,7 +261,7 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 					t.Fatal("object payload differs from input")
 				}
 				var queued int
-				if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM storage_conversion_progress WHERE organization_id=$1 AND family='runs' AND aggregate_id=$2`, scope.organization, issue.WorkItemID).Scan(&queued); err != nil || queued != 0 {
+				if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM storage_conversion_progress WHERE organization_id=$1 AND family='runs' AND aggregate_id=$2`, scope.Organization, issue.WorkItemID).Scan(&queued); err != nil || queued != 0 {
 					t.Fatalf("new event queued for conversion: %d, %v", queued, err)
 				}
 			}
@@ -274,23 +275,23 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 	details := &memoryRunDetails{}
 	f := newDefaultNativeFixture(t, Config{RunDetails: details})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 	content := eventstore.NewContent(f.service.runDetailStore())
 	unrelated := make([]eventstore.Event, 128)
 	for index := range unrelated {
 		item := tracker.NativeWorkItemID(fmt.Sprintf("wi_unrelated_%d", index))
-		raw, err := json.Marshal(tracker.CollaborationEvent{ID: fmt.Sprintf("evt_unrelated_%d", index), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: item, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready", Reason: "available"}}})
+		raw, err := json.Marshal(tracker.CollaborationEvent{ID: fmt.Sprintf("evt_unrelated_%d", index), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: item, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready", Reason: "available"}}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		unrelated[index], err = content.PrepareEvent(t.Context(), scope.organization, raw)
+		unrelated[index], err = content.PrepareEvent(t.Context(), scope.Organization, raw)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		for index, event := range unrelated {
-			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: scope.organization, ProjectID: scope.project, NativeID: event.WorkItemID, Number: int64(10000 + index), Title: "Example unrelated item"}); err != nil {
+			if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: scope.Organization, ProjectID: scope.Project, NativeID: event.WorkItemID, Number: int64(10000 + index), Title: "Example unrelated item"}); err != nil {
 				return err
 			}
 			if _, err := w.AppendEvent(t.Context(), event); err != nil {
@@ -310,11 +311,11 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 				decision.Outcome = "skipped"
 				decision.Reason = fmt.Sprintf("historical refusal %d", i)
 			}
-			raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Decision: &decision}})
+			raw, err := json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateID: issue.WorkItemID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: f.service.config.now(), Data: tracker.CollaborationData{Decision: &decision}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			record, err := content.PrepareEvent(t.Context(), scope.organization, raw)
+			record, err := content.PrepareEvent(t.Context(), scope.Organization, raw)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -323,7 +324,7 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 			}
 			records = append(records, record)
 		}
-		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 			for _, record := range records {
 				if _, err := w.AppendEvent(t.Context(), record); err != nil {
 					return err
@@ -351,14 +352,14 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
-				if _, err := tx.ExecContext(t.Context(), "DELETE FROM scheduler_event_heads WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND head_kind='unprojected'", scope.organization, scope.project, issue.WorkItemID); err != nil {
+				if _, err := tx.ExecContext(t.Context(), "DELETE FROM scheduler_event_heads WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND head_kind='unprojected'", scope.Organization, scope.Project, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := tx.ExecContext(t.Context(), "UPDATE scheduler_event_heads SET scheduler_outcome=$1 WHERE organization_id=$2 AND project_id=$3 AND work_item_id=$4 AND head_kind='latest'", tc.outcome, scope.organization, scope.project, issue.WorkItemID); err != nil {
+				if _, err := tx.ExecContext(t.Context(), "UPDATE scheduler_event_heads SET scheduler_outcome=$1 WHERE organization_id=$2 AND project_id=$3 AND work_item_id=$4 AND head_kind='latest'", tc.outcome, scope.Organization, scope.Project, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				if tc.incomplete {
-					if _, err := tx.ExecContext(t.Context(), "INSERT INTO scheduler_event_heads(head_kind, organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome) SELECT 'unprojected', organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM scheduler_event_heads WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND head_kind='latest'", scope.organization, scope.project, issue.WorkItemID); err != nil {
+					if _, err := tx.ExecContext(t.Context(), "INSERT INTO scheduler_event_heads(head_kind, organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome) SELECT 'unprojected', organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, scheduler_outcome FROM scheduler_event_heads WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND head_kind='latest'", scope.Organization, scope.Project, issue.WorkItemID); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -400,9 +401,9 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 			for _, kind := range []string{"latest", "excluded"} {
 				t.Run(kind, func(t *testing.T) {
 					var heads eventstore.SchedulerDecisionRows
-					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+					if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 						var err error
-						heads, err = r.(eventstore.SchedulerDecisionReader).SchedulerDecisions(t.Context(), scope.project, issue.WorkItemID)
+						heads, err = r.(eventstore.SchedulerDecisionReader).SchedulerDecisions(t.Context(), scope.Project, issue.WorkItemID)
 						return err
 					}); err != nil {
 						t.Fatal(err)
@@ -422,7 +423,7 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					target, err := details.StoreDetail(t.Context(), string(scope.organization), append(raw, '\n'))
+					target, err := details.StoreDetail(t.Context(), string(scope.Organization), append(raw, '\n'))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -431,7 +432,7 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 						t.Fatal("conversion did not replace the stored object")
 					}
 
-					candidate := storageconversion.Candidate{Scope: storageconversion.Scope{Organization: scope.organization, Project: scope.project, Family: storageconversion.Runs, AggregateID: string(issue.WorkItemID)}, Position: storageconversion.Position{ID: selected.ID, Sequence: selected.Sequence}, FormatVersion: 1, Source: source}
+					candidate := storageconversion.Candidate{Scope: storageconversion.Scope{Organization: scope.Organization, Project: scope.Project, Family: storageconversion.Runs, AggregateID: string(issue.WorkItemID)}, Position: storageconversion.Position{ID: selected.ID, Sequence: selected.Sequence}, FormatVersion: 1, Source: source}
 					converted, err := f.service.config.TenantRepository.(storageconversion.Repository).CommitConversion(t.Context(), candidate, target)
 					if err != nil || !converted {
 						t.Fatalf("convert selected scheduler event: committed=%t error=%v", converted, err)
@@ -439,7 +440,7 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 					details.mu.Lock()
 					delete(details.data, source.Key)
 					details.mu.Unlock()
-					if _, err := details.ReadDetail(t.Context(), string(scope.organization), source); !errors.Is(err, artifact.ErrMissing) {
+					if _, err := details.ReadDetail(t.Context(), string(scope.Organization), source); !errors.Is(err, artifact.ErrMissing) {
 						t.Fatalf("old scheduler object remains available: %v", err)
 					}
 					for _, lightweight := range []bool{false, true} {
@@ -469,7 +470,7 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", scope.organization); err != nil {
+			if _, err := tx.ExecContext(t.Context(), "SELECT set_config('detent.organization_id',$1,true)", scope.Organization); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := tx.ExecContext(t.Context(), "PREPARE scheduler_history_heads(text,text,text) AS "+headQuery); err != nil {
@@ -481,7 +482,7 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 				}
 			}()
 			literal := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
-			query := "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) EXECUTE scheduler_history_heads(" + literal(string(scope.organization)) + "," + literal(string(scope.project)) + "," + literal(string(issue.WorkItemID)) + ")"
+			query := "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) EXECUTE scheduler_history_heads(" + literal(string(scope.Organization)) + "," + literal(string(scope.Project)) + "," + literal(string(issue.WorkItemID)) + ")"
 			var raw []byte
 			if err := tx.QueryRowContext(t.Context(), query).Scan(&raw); err != nil {
 				t.Fatal(err)
@@ -535,33 +536,33 @@ func TestSchedulerPayloadRequiresArchive(t *testing.T) {
 	runner := prepareRunner(t, f, runnerauth.Claim, runnerauth.Heartbeat)
 	runner.enroll(t)
 	reportRunnerCapacity(t, f.service, f.base, runner.redemption.Credential, runner.binding.MachineID, runner.redemption.DisplayName, runner.redemption.BackendIsolation, runner.redemption.Capacity)
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), scope.organization, apikey.HashToken(runner.redemption.Credential), "", "")
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
+	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), scope.Organization, apikey.HashToken(runner.redemption.Credential), "", "")
 	if err != nil {
 		t.Fatalf("runner authentication status=%d error=%v", status, err)
 	}
-	scope.credential = credential
+	scope.Credential = credential
 	repository := f.service.config.TenantRepository
 	var before []eventstore.Event
 	var itemID int64
-	if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-		item, err := r.WorkItem(t.Context(), scope.project, issue.WorkItemID)
+	if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		item, err := r.WorkItem(t.Context(), scope.Project, issue.WorkItemID)
 		if err != nil {
 			return err
 		}
 		itemID = item.ID
-		before, err = r.Events(t.Context(), scope.project, issue.WorkItemID, 0, 100)
+		before, err = r.Events(t.Context(), scope.Project, issue.WorkItemID, 0, 100)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
 	unchanged := func(t *testing.T) {
 		t.Helper()
-		if err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := repository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if _, err := r.ActiveLeaseForIssue(t.Context(), itemID); !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("failed archive published a lease: %v", err)
 			}
-			events, err := r.Events(t.Context(), scope.project, issue.WorkItemID, 0, 100)
+			events, err := r.Events(t.Context(), scope.Project, issue.WorkItemID, 0, 100)
 			if err == nil && !reflect.DeepEqual(events, before) {
 				t.Fatal("failed archive changed event history")
 			}
@@ -571,8 +572,8 @@ func TestSchedulerPayloadRequiresArchive(t *testing.T) {
 		}
 	}
 	t.Run("write without prepared archive", func(t *testing.T) {
-		err := repository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.AppendEvent(t.Context(), eventstore.Event{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, ID: hubapi.NewID("evt"), Type: "scheduler.decision", SchemaVersion: 1, ActorKind: "machine", ActorPrincipalID: scope.credential.ID, SchedulerOutcome: "skipped"})
+		err := repository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			_, err := w.AppendEvent(t.Context(), eventstore.Event{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, ID: hubapi.NewID("evt"), Type: "scheduler.decision", SchemaVersion: 1, ActorKind: "machine", ActorPrincipalID: scope.Credential.ID, SchedulerOutcome: "skipped"})
 			return err
 		})
 		if !errors.Is(err, eventstore.ErrInvalidRecord) {

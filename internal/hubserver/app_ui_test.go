@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -743,14 +744,14 @@ func TestAppUpdatesPostgresProjectionAndFreshAuthorization(t *testing.T) {
 		}
 		return credential, nil
 	}
-	identity := operatorIdentity(credential, string(organization))
+	identity := hubscope.OperatorIdentity(credential, string(organization))
 	ctx := context.WithValue(t.Context(), hubOperatorResolverKey{}, resolve)
 	ctx = operatortool.WithConnection(ctx, operatortool.Connection{Identity: identity, Resolve: func(ctx context.Context) (operatortool.Authority, error) {
 		current, err := resolve(ctx)
 		if err != nil {
 			return operatortool.Authority{}, err
 		}
-		return operatortool.Authority{Identity: operatorIdentity(current, string(organization)), Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil
+		return operatortool.Authority{Identity: hubscope.OperatorIdentity(current, string(organization)), Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil
 	}})
 	executor := hostedContextExecutor{service: service}
 	if _, _, err := executor.credential(ctx, operatortool.AppUpdates, ""); err != nil {

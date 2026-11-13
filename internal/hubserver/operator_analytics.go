@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -154,7 +155,7 @@ func (s *Service) readAnalyticsReportFor(ctx context.Context, credential hubapi.
 		return report, operatortool.ErrInvalidArguments
 	}
 	for _, id := range selected {
-		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(id), credential: credential}
+		scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), Project: tracker.ProjectID(id), Credential: credential}
 		projectCtx, _, err := analyticsPagingContext(context.WithValue(ctx, analyticsPagingKey{}, nil), r.PopulationCursor)
 		if err != nil {
 			return report, err
@@ -168,7 +169,7 @@ func (s *Service) readAnalyticsReportFor(ctx context.Context, credential hubapi.
 	return report, nil
 }
 
-func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
+func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope hubscope.NativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
 	ctx, paging, err := analyticsPagingContext(ctx, r.PopulationCursor)
 	if err != nil {
 		return nativeAnalyticsProject{}, err
@@ -178,7 +179,7 @@ func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeSco
 		return nativeAnalyticsProject{}, err
 	}
 	ctx = s.runDetailContext(ctx)
-	out := nativeAnalyticsProject{ProjectID: string(scope.project), Source: "native_change_landing_and_recorded_runtime", Window: w, PopulationLimit: maxAnalyticsPopulation, Unavailable: []string{"private_instruction_causality", "receipt_efficiency_quantiles"}, Digest: []nativeAnalyticsBucket{}, Efficiency: []nativeAnalyticsPhase{}, SkipReasons: []nativeAnalyticsSkip{}}
+	out := nativeAnalyticsProject{ProjectID: string(scope.Project), Source: "native_change_landing_and_recorded_runtime", Window: w, PopulationLimit: maxAnalyticsPopulation, Unavailable: []string{"private_instruction_causality", "receipt_efficiency_quantiles"}, Digest: []nativeAnalyticsBucket{}, Efficiency: []nativeAnalyticsPhase{}, SkipReasons: []nativeAnalyticsSkip{}}
 	usageDone := timeSpan(ctx, "analytics_usage")
 	usagePage, _, err := s.readNativeAnalyticsUsagePopulationTenant(ctx, scope, w)
 	usageDone()
@@ -403,7 +404,7 @@ func (s *Service) readNativeAnalyticsTenant(ctx context.Context, scope nativeSco
 	return out, nil
 }
 
-func (s *Service) analyticsSnapshotPrincipal(ctx context.Context, r tenantstore.Reader, scope nativeScope) (string, error) {
+func (s *Service) analyticsSnapshotPrincipal(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) (string, error) {
 	if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 		return "", err
 	}
@@ -411,12 +412,12 @@ func (s *Service) analyticsSnapshotPrincipal(ctx context.Context, r tenantstore.
 	if err != nil {
 		return "", err
 	}
-	if scope.credential.HostedRole != "reporter" && member.Role != "reporter" {
+	if scope.Credential.HostedRole != "reporter" && member.Role != "reporter" {
 		return "", nil
 	}
 	principal := member.PrincipalID
 	if principal == "" {
-		principal = scope.actor().PrincipalID
+		principal = scope.Actor().PrincipalID
 	}
 	if principal == "" {
 		return "", hubapi.NativeNotFound()
@@ -424,7 +425,7 @@ func (s *Service) analyticsSnapshotPrincipal(ctx context.Context, r tenantstore.
 	return principal, nil
 }
 
-func (s *Service) analyticsCohortContext(ctx context.Context, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (context.Context, error) {
+func (s *Service) analyticsCohortContext(ctx context.Context, scope hubscope.NativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (context.Context, error) {
 	if len(r.Labels)+len(r.Priorities)+len(r.Types)+len(r.FiledBy)+len(r.Runners) == 0 {
 		return ctx, nil
 	}
@@ -452,7 +453,7 @@ func (s *Service) analyticsCohortContext(ctx context.Context, scope nativeScope,
 	if !ok {
 		return ctx, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	err = repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		principal, err := s.analyticsSnapshotPrincipal(ctx, reader, scope)
 		if err != nil {
 			return err
@@ -461,7 +462,7 @@ func (s *Service) analyticsCohortContext(ctx context.Context, scope nativeScope,
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		items, err := owner.ReadCohortWorkItems(ctx, reportstore.OverviewQuery{Projects: []tracker.ProjectID{scope.project}, Principal: principal, From: w.From, To: w.To, Filter: filter, Limit: 5000})
+		items, err := owner.ReadCohortWorkItems(ctx, reportstore.OverviewQuery{Projects: []tracker.ProjectID{scope.Project}, Principal: principal, From: w.From, To: w.To, Filter: filter, Limit: 5000})
 		if err != nil {
 			return err
 		}

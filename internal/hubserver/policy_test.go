@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -108,7 +109,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 			if err != nil {
 				return err
 			}
-			return service.authorizeAccessScope(t.Context(), reader, nativeScope{organization: organization.ID, project: project.ID, credential: hubapi.APICredential{ID: credential.ID, Hash: credential.Hash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, OrganizationID: identity.OrganizationID}}}, true)
+			return service.authorizeAccessScope(t.Context(), reader, hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: hubapi.APICredential{ID: credential.ID, Hash: credential.Hash, Scope: hubapi.APIScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, OrganizationID: identity.OrganizationID}}}, true)
 		}); err != nil {
 			t.Fatalf("authorize seeded runner %s: %v", runner.runnerID, err)
 		}
@@ -474,7 +475,7 @@ func TestPostgresPolicyObservationsKeepCurrentReportProvenanceAndApproveByID(t *
 func TestSelectedPostgresPolicyApprovalFailsClosedWithoutAccessRepository(t *testing.T) {
 	repository := projectRecordPostgres(t)
 	service := &Service{config: Config{TenantRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now, Logger: discardLogger()}}
-	scope := nativeScope{organization: "org_example", project: "prj_example", credential: hubapi.APICredential{ID: "credential_example", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
+	scope := hubscope.NativeScope{Organization: "org_example", Project: "prj_example", Credential: hubapi.APICredential{ID: "credential_example", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}
 	for name, operation := range map[string]func() error{
 		"route authorization": func() error { return service.authorizeProjectRecord(t.Context(), scope, true) },
 		"mutation authority": func() error {
@@ -483,7 +484,7 @@ func TestSelectedPostgresPolicyApprovalFailsClosedWithoutAccessRepository(t *tes
 		},
 		"mutation recheck": func() error { return service.recheckProjectRecordMutation(t.Context(), scope) },
 		"policy approval": func() error {
-			_, err := service.approveTenantProjectPolicy(t.Context(), scope, scope.credential.ID, policy.Change{Policy: hubTestPolicy()})
+			_, err := service.approveTenantProjectPolicy(t.Context(), scope, scope.Credential.ID, policy.Change{Policy: hubTestPolicy()})
 			return err
 		},
 	} {
@@ -532,7 +533,7 @@ func TestPostgresProjectPolicyApprovalRejectsDemotedHostedAdmin(t *testing.T) {
 	service.config.Hosted = &HostedConfig{OrganizationID: string(organization.ID)}
 	identity := &auth.HostedIdentity{Subject: userID, OrganizationID: "provider_example", SessionID: "session_example", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 	actor := hubapi.APICredential{ID: credentialID, Hash: credentialHash, Scope: hubapi.APIScopeOperator, NativeOnly: true, Hosted: identity, SessionHash: sessionHash, HostedRole: "owner", HostedMembership: memberID, HostedKeyScope: apikey.ScopeAdmin}
-	scope := nativeScope{organization: organization.ID, project: project.ID, credential: actor, requireHostedAdmin: true}
+	scope := hubscope.NativeScope{Organization: organization.ID, Project: project.ID, Credential: actor, RequireHostedAdmin: true}
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		return service.authorizeAccessScope(t.Context(), r, scope, true)
 	}); err != nil {
@@ -550,7 +551,7 @@ func TestPostgresProjectPolicyApprovalRejectsDemotedHostedAdmin(t *testing.T) {
 		t.Fatal(err)
 	}
 	memberScope := scope
-	memberScope.requireHostedAdmin = false
+	memberScope.RequireHostedAdmin = false
 	if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
 		return service.authorizeAccessScope(t.Context(), r, memberScope, true)
 	}); err != nil {
@@ -683,7 +684,7 @@ func assertPostgresPolicyApprovalLockOrdering(t *testing.T, service *Service, re
 	approvalCtx := context.WithValue(t.Context(), policyLockWriteKindKey{}, "approval")
 	approvalStarted = true
 	go func() {
-		_, err := service.approveTenantProjectPolicy(approvalCtx, nativeScope{organization: organization, project: project, credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}, "test_hub_admin", policy.Change{ExpectedID: expectedID, ObservedPolicyID: approved.ID})
+		_, err := service.approveTenantProjectPolicy(approvalCtx, hubscope.NativeScope{Organization: organization, Project: project, Credential: hubapi.APICredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: hubapi.APIScopeAdmin}}, "test_hub_admin", policy.Change{ExpectedID: expectedID, ObservedPolicyID: approved.ID})
 		approvalDone <- err
 	}()
 	select {
@@ -697,7 +698,7 @@ func assertPostgresPolicyApprovalLockOrdering(t *testing.T, service *Service, re
 	replacementCtx := context.WithValue(t.Context(), policyLockWriteKindKey{}, "replacement")
 	replacementStarted = true
 	go func() {
-		replacementDone <- service.observeTenantProjectPolicy(replacementCtx, nativeScope{organization: organization, project: project, credential: credential}, credential, runnerID, policy.Observation{Descriptor: replacement, Source: replacementSource})
+		replacementDone <- service.observeTenantProjectPolicy(replacementCtx, hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}, credential, runnerID, policy.Observation{Descriptor: replacement, Source: replacementSource})
 	}()
 	select {
 	case <-gate.replacementLock:
@@ -809,7 +810,7 @@ func assertPostgresPolicyObservationOrdering(t *testing.T, service *Service, rep
 	go func() {
 		olderSource := *source
 		olderSource.DefaultBranchHead = strings.Repeat("a", 40)
-		olderDone <- service.observeTenantProjectPolicy(olderContext, nativeScope{organization: organization, project: project, credential: credential}, credential, runnerID, policy.Observation{Descriptor: descriptor, Source: &olderSource})
+		olderDone <- service.observeTenantProjectPolicy(olderContext, hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}, credential, runnerID, policy.Observation{Descriptor: descriptor, Source: &olderSource})
 	}()
 	select {
 	case <-gate.reached:
@@ -820,7 +821,7 @@ func assertPostgresPolicyObservationOrdering(t *testing.T, service *Service, rep
 	service.config.now = func() time.Time { return newerAt }
 	newerSource := *source
 	newerSource.DefaultBranchHead = strings.Repeat("b", 40)
-	if err := service.observeTenantProjectPolicy(t.Context(), nativeScope{organization: organization, project: project, credential: credential}, credential, runnerID, policy.Observation{Descriptor: descriptor, Source: &newerSource}); err != nil {
+	if err := service.observeTenantProjectPolicy(t.Context(), hubscope.NativeScope{Organization: organization, Project: project, Credential: credential}, credential, runnerID, policy.Observation{Descriptor: descriptor, Source: &newerSource}); err != nil {
 		t.Fatalf("write newer observation: %v", err)
 	}
 	releaseOlder()
@@ -1126,7 +1127,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			var heldAttempts []tracker.NativeAttempt
 			for _, hold := range []struct {
 				name        string
@@ -1218,7 +1219,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			if succeeded && test.mutation == "" {
 				wantPolicy = next.ID
 			}
-			approval, _, err := readTestTenantProjectPolicy(f.service.runDetailContext(t.Context()), f.service, string(scope.organization)+"/"+string(scope.project))
+			approval, _, err := readTestTenantProjectPolicy(f.service.runDetailContext(t.Context()), f.service, string(scope.Organization)+"/"+string(scope.Project))
 			if err != nil || approval.Policy.ID != wantPolicy {
 				t.Fatalf("configuration = %+v, error = %v, want %s", approval, err, wantPolicy)
 			}
@@ -1624,19 +1625,19 @@ func TestApprovedPolicyClaimExposure(t *testing.T) {
 			}
 			descriptor.SourceRevision = strings.Repeat("b", 64)
 			descriptor = descriptor.WithID()
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			policyScope := string(scope.organization) + "/" + string(scope.project)
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
+			policyScope := string(scope.Organization) + "/" + string(scope.Project)
 			clearNativeFixturePolicy(t, f)
-			revision, err := eventstore.NewContent(f.service.runDetailStore()).PrepareProjectPolicy(t.Context(), scope.organization, descriptor)
+			revision, err := eventstore.NewContent(f.service.runDetailStore()).PrepareProjectPolicy(t.Context(), scope.Organization, descriptor)
 			if err != nil {
 				t.Fatal(err)
 			}
-			revision.ProjectID, revision.ApprovedBy, revision.ApprovedAt = scope.project, "fixture", f.service.config.now()
-			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+			revision.ProjectID, revision.ApprovedBy, revision.ApprovedAt = scope.Project, "fixture", f.service.config.now()
+			if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 				if err := w.ImportProjectPolicyRevision(t.Context(), revision, true); err != nil {
 					return err
 				}
-				return w.ImportProjectPolicyCurrent(t.Context(), scope.project, descriptor.ID)
+				return w.ImportProjectPolicyCurrent(t.Context(), scope.Project, descriptor.ID)
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -2184,7 +2185,7 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", worker, policy.Observation{Descriptor: candidate}), http.StatusNoContent)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": credential.Runner.MachineID, "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
-			readScope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			readScope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 			err = f.service.config.TenantRepository.ReadTenant(ctx, f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error { _, err := readCurrentChangePolicyRows(ctx, r, readScope); return err })
 			if approved && err != nil {
 				t.Fatal(err)
@@ -2477,7 +2478,7 @@ func (s *Service) approveTestTenantPolicy(ctx context.Context, path, actor strin
 	if err != nil {
 		return policy.Approval{}, err
 	}
-	scope := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project), credential: credential, requireHostedAdmin: true}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(organization), Project: tracker.ProjectID(project), Credential: credential, RequireHostedAdmin: true}
 	return s.approveTenantProjectPolicy(ctx, scope, actor, change)
 }
 

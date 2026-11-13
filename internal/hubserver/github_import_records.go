@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -22,29 +23,29 @@ func importJobResponse(row projectstore.GitHubImport) GitHubImport {
 	return result
 }
 
-func (s *Service) readGitHubImportRecord(ctx context.Context, scope nativeScope, id string) (GitHubImport, error) {
+func (s *Service) readGitHubImportRecord(ctx context.Context, scope hubscope.NativeScope, id string) (GitHubImport, error) {
 	var result projectstore.GitHubImport
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
 		owner, ok := r.(projectstore.GitHubImportReader)
 		if !ok {
 			return errors.New("GitHub import owner unavailable")
 		}
-		result, err = owner.GitHubImport(ctx, scope.project, id)
+		result, err = owner.GitHubImport(ctx, scope.Project, id)
 		return err
 	})
 	return importJobResponse(result), hubapi.ProjectRecordError(err)
 }
 
-func (s *Service) readGitHubImportRecords(ctx context.Context, scope nativeScope, id string, after int64, limit int) ([]projectstore.GitHubImportRecord, error) {
+func (s *Service) readGitHubImportRecords(ctx context.Context, scope hubscope.NativeScope, id string, after int64, limit int) ([]projectstore.GitHubImportRecord, error) {
 	var result []projectstore.GitHubImportRecord
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(projectstore.GitHubImportRecordReader)
 		if !ok {
 			return errors.New("GitHub import record owner unavailable")
 		}
 		var err error
-		result, err = owner.GitHubImportRecords(ctx, scope.project, id, after, limit)
+		result, err = owner.GitHubImportRecords(ctx, scope.Project, id, after, limit)
 		return err
 	})
 	return result, hubapi.ProjectRecordError(err)

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -34,14 +35,14 @@ func (s *Service) getHealthFindings(c echo.Context) error {
 		}
 		limit = value
 	}
-	page, err := s.readHealthFindings(c.Request().Context(), nativeRequestScope(c), c.QueryParam("state"), c.QueryParam("since"), c.QueryParam("cursor"), limit)
+	page, err := s.readHealthFindings(c.Request().Context(), hubscope.NativeRequestScope(c), c.QueryParam("state"), c.QueryParam("since"), c.QueryParam("cursor"), limit)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, page)
 }
 
-func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, state, since, cursor string, limit int) (healthFindingsPage, error) {
+func (s *Service) readHealthFindings(ctx context.Context, scope hubscope.NativeScope, state, since, cursor string, limit int) (healthFindingsPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	page := healthFindingsPage{Items: []healthFinding{}, BaselineUnavailable: []healthBaselineUnavailable{}}
@@ -77,8 +78,8 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		return page, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	reporter := ""
-	if scope.credential.HostedRole == "reporter" {
-		reporter = scope.actor().PrincipalID
+	if scope.Credential.HostedRole == "reporter" {
+		reporter = scope.Actor().PrincipalID
 		if reporter == "" {
 			return page, corestore.ErrNotFound
 		}
@@ -89,20 +90,20 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	if !ok {
 		return page, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	err := repository.ReadTenantSnapshot(ctx, scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(healthstore.Reader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		records, err = owner.HealthFindings(ctx, scope.project, state, sinceAt, after, reporter, limit+1)
+		records, err = owner.HealthFindings(ctx, scope.Project, state, sinceAt, after, reporter, limit+1)
 		if errors.Is(err, healthstore.ErrPagePending) {
 			fallback, ok := r.(healthstore.FallbackReader)
 			if !ok {
 				return hubapi.NativeWorkItemStorageUnavailable()
 			}
 			projected = false
-			records, err = fallback.LegacyHealthFindings(ctx, scope.project, state, sinceAt, after, reporter, limit+1)
+			records, err = fallback.LegacyHealthFindings(ctx, scope.Project, state, sinceAt, after, reporter, limit+1)
 		}
 		return err
 	})
@@ -121,7 +122,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		f := healthFinding{ID: row.ID, Fingerprint: row.Fingerprint, Signal: row.Signal, Class: row.Class, Subject: healthSubject{Kind: row.SubjectKind, ID: row.SubjectID}, OpenedAt: row.OpenedAt, LastSeenAt: row.LastSeenAt, ResolvedAt: row.ResolvedAt, Severity: row.Severity, Summary: row.Summary, NextAction: row.NextAction, EmailUnavailable: row.EmailUnavailable}
 		f.Evidence = row.DisplayEvidence
 		if !projected && row.Evidence.Key != "" {
-			raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.organization), row.Evidence)
+			raw, err := s.runDetailStore().ReadDetail(ctx, string(scope.Organization), row.Evidence)
 			if err != nil {
 				return page, err
 			}
@@ -129,7 +130,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 				return page, err
 			}
 		}
-		f.Evidence = scopeHealthEvidence(f.Evidence, scope.project)
+		f.Evidence = scopeHealthEvidence(f.Evidence, scope.Project)
 		for _, link := range row.Issues {
 			f.Issues = append(f.Issues, healthFindingIssue{ProjectID: link.ProjectID, WorkItemID: link.WorkItemID})
 		}

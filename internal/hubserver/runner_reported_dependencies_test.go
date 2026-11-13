@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -70,7 +71,7 @@ func (s *runnerDependencyPayloadBarrier) StoreDetail(ctx context.Context, organi
 	return s.DetailStore.StoreDetail(ctx, organization, raw)
 }
 
-func appendPreparedRunnerDependencyReports(t *testing.T, service *Service, scope nativeScope, item string, event tracker.NativeRunEvent, barrier *runnerDependencyPayloadBarrier, count int, interleave func(), wantErr error) {
+func appendPreparedRunnerDependencyReports(t *testing.T, service *Service, scope hubscope.NativeScope, item string, event tracker.NativeRunEvent, barrier *runnerDependencyPayloadBarrier, count int, interleave func(), wantErr error) {
 	t.Helper()
 	ready, released := make(chan struct{}, 2), make(chan struct{})
 	barrier.configure(event.Data.AttemptID, ready, released)
@@ -221,7 +222,7 @@ func TestRunnerCompletionRecordsDependencyEdgesAtomically(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scope := nativeScope{organization: "org_startup", project: "prj_runner", credential: credential}
+			scope := hubscope.NativeScope{Organization: "org_startup", Project: "prj_runner", Credential: credential}
 			rejected := errors.New("example dependency participant refusal")
 			original := f.service.config.NativeRunEvents
 			t.Cleanup(func() { f.service.config.NativeRunEvents = original })
@@ -258,7 +259,7 @@ func TestRunnerCompletionRecordsDependencyEdgesAtomically(t *testing.T) {
 					t.Fatal(err)
 				}
 				now := time.Now().UTC()
-				comment := tracker.NativeComment{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: lease.WorkItemID, ID: hubapi.NewID("cmt"), Revision: 1, Sequence: source.EventSequence + 1, Body: "Example feedback", Actor: scope.actor(), CreatedAt: now, UpdatedAt: now}
+				comment := tracker.NativeComment{OrganizationID: "org_startup", ProjectID: "prj_runner", WorkItemID: lease.WorkItemID, ID: hubapi.NewID("cmt"), Revision: 1, Sequence: source.EventSequence + 1, Body: "Example feedback", Actor: scope.Actor(), CreatedAt: now, UpdatedAt: now}
 				fields, err := f.service.prepareWorkItemFields(t.Context(), "org_startup", workItemRecordPlan{comment: comment})
 				if err != nil {
 					t.Fatal(err)
@@ -272,7 +273,7 @@ func TestRunnerCompletionRecordsDependencyEdgesAtomically(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: "org_startup", ProjectID: "prj_runner", AggregateID: lease.WorkItemID, Type: "comment.created", SchemaVersion: 1, Actor: scope.actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: 1, CommentID: comment.ID}})
+				raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: "org_startup", ProjectID: "prj_runner", AggregateID: lease.WorkItemID, Type: "comment.created", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: 1, CommentID: comment.ID}})
 				if err != nil {
 					t.Fatal(err)
 				}

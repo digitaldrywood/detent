@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -32,7 +33,7 @@ import (
 
 type archiveRevisionFixture struct {
 	nativeFixture
-	scope nativeScope
+	scope hubscope.NativeScope
 	issue tracker.NativeIssue
 	table attachment.ArchiveTable
 }
@@ -41,22 +42,22 @@ func newArchiveRevisionFixture(t *testing.T, f nativeFixture, title string, coun
 	t.Helper()
 	scope := analyticsTestScope(t, f)
 	var number int64
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		number, err = r.NextWorkItemNumber(t.Context(), scope.project)
+		number, err = r.NextWorkItemNumber(t.Context(), scope.Project)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
 	now := f.service.config.now().UTC().Truncate(time.Microsecond)
-	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: int(number), Revision: tracker.Revision(count + 1), Profile: "native"}, Title: title, State: "Todo", Actor: scope.actor(), CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
+	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(hubapi.NewID("wi")), Number: int(number), Revision: tracker.Revision(count + 1), Profile: "native"}, Title: title, State: "Todo", Actor: scope.Actor(), CreatedAt: now, UpdatedAt: now, LastActivityAt: now}
 	content := eventstore.NewContent(f.service.runDetailStore())
-	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: count + 1}, historyTestJSON(t, issue))
+	version, err := content.PrepareCollaborationVersion(t.Context(), eventstore.CollaborationVersion{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: issue.WorkItemID, RecordID: string(issue.WorkItemID), Revision: count + 1}, historyTestJSON(t, issue))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: scope.organization, ProjectID: scope.project, NativeID: issue.WorkItemID, Number: number, Revision: count + 1, Title: title, WorkflowStateName: &issue.State, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, CreatedAt: now, UpdatedAt: now, NativeCreatedAt: now, NativeUpdatedAt: now, LastActivityAt: now}); err != nil {
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: scope.Organization, ProjectID: scope.Project, NativeID: issue.WorkItemID, Number: number, Revision: count + 1, Title: title, WorkflowStateName: &issue.State, ActorKind: &issue.Actor.Kind, ActorPrincipalID: &issue.Actor.PrincipalID, CreatedAt: now, UpdatedAt: now, NativeCreatedAt: now, NativeUpdatedAt: now, LastActivityAt: now}); err != nil {
 			return err
 		}
 		_, err := w.CreateCollaborationVersion(t.Context(), version)
@@ -68,7 +69,7 @@ func newArchiveRevisionFixture(t *testing.T, f nativeFixture, title string, coun
 	for revision := int64(1); revision <= count; revision++ {
 		snapshot := issue
 		snapshot.Revision = tracker.Revision(revision)
-		table.Rows = append(table.Rows, archiveRevisionCells(t, revision, scope.organization, scope.project, issue.WorkItemID, string(issue.WorkItemID), revision, string(historyTestJSON(t, snapshot)), "snapshot"))
+		table.Rows = append(table.Rows, archiveRevisionCells(t, revision, scope.Organization, scope.Project, issue.WorkItemID, string(issue.WorkItemID), revision, string(historyTestJSON(t, snapshot)), "snapshot"))
 	}
 	return archiveRevisionFixture{nativeFixture: f, scope: scope, issue: issue, table: table}
 }
@@ -90,35 +91,35 @@ func (f archiveRevisionFixture) publish(t *testing.T) (attachment.ArchiveReferen
 	t.Helper()
 	item := string(f.issue.WorkItemID)
 	sectionID := "historical_" + item
-	section := attachment.ArchiveSection{SchemaVersion: 1, OrganizationID: string(f.scope.organization), ProjectID: string(f.scope.project), WorkItemID: item, SectionID: sectionID, Tables: []attachment.ArchiveTable{f.table}}
+	section := attachment.ArchiveSection{SchemaVersion: 1, OrganizationID: string(f.scope.Organization), ProjectID: string(f.scope.Project), WorkItemID: item, SectionID: sectionID, Tables: []attachment.ArchiveTable{f.table}}
 	raw, err := json.Marshal(section)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, data, err := attachment.PrepareArchive(string(f.scope.organization), 1, bytes.NewReader(raw))
+	ref, data, err := attachment.PrepareArchive(string(f.scope.Organization), 1, bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
 	attachmentID := "att_" + ref.SHA256[:32]
 	now := f.service.config.now()
-	record := attachmentstore.ArchiveRecord{OrganizationID: f.scope.organization, ProjectID: f.scope.project, ID: attachmentID, Uploader: f.scope.actor().PrincipalID, Reference: ref, CreatedAt: now}
-	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+	record := attachmentstore.ArchiveRecord{OrganizationID: f.scope.Organization, ProjectID: f.scope.Project, ID: attachmentID, Uploader: f.scope.Actor().PrincipalID, Reference: ref, CreatedAt: now}
+	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if _, err := w.PrepareAttachmentArchive(t.Context(), record); err != nil {
 			return err
 		}
 		if err := w.PublishAttachmentArchive(t.Context(), record, f.issue.WorkItemID); err != nil {
 			return err
 		}
-		object, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: f.scope.organization, ID: attachmentID, Reference: ref, CreatedAt: now})
+		object, err := w.RegisterArchiveObject(t.Context(), artifactstore.ArchiveObject{OrganizationID: f.scope.Organization, ID: attachmentID, Reference: ref, CreatedAt: now})
 		if err != nil {
 			return err
 		}
-		return w.AddArchiveOwner(t.Context(), artifactstore.ArchiveOwner{OrganizationID: f.scope.organization, ArchiveID: object.ID, Kind: "issue-storage-archive", ID: attachmentID, CreatedAt: now})
+		return w.AddArchiveOwner(t.Context(), artifactstore.ArchiveOwner{OrganizationID: f.scope.Organization, ArchiveID: object.ID, Kind: "issue-storage-archive", ID: attachmentID, CreatedAt: now})
 	}); err != nil {
 		t.Fatal(err)
 	}
 	admin := hostedPostgresAdmin(t, f.service)
-	if _, err := admin.ExecContext(t.Context(), `INSERT INTO issue_archive_sections (organization_id,project_id,work_item_id,archive_revision,section_id,attachment_id,kind,subject_id,first_sequence,last_sequence,retirement_complete) VALUES ($1,$2,$3,$4,$5,$6,'revision',$3,1,$7,true)`, f.scope.organization, f.scope.project, f.issue.WorkItemID, int64(f.issue.Revision), sectionID, attachmentID, int64(f.issue.Revision)-1); err != nil {
+	if _, err := admin.ExecContext(t.Context(), `INSERT INTO issue_archive_sections (organization_id,project_id,work_item_id,archive_revision,section_id,attachment_id,kind,subject_id,first_sequence,last_sequence,retirement_complete) VALUES ($1,$2,$3,$4,$5,$6,'revision',$3,1,$7,true)`, f.scope.Organization, f.scope.Project, f.issue.WorkItemID, int64(f.issue.Revision), sectionID, attachmentID, int64(f.issue.Revision)-1); err != nil {
 		t.Fatal(err)
 	}
 	return ref, data, sectionID
@@ -295,9 +296,9 @@ func TestArchiveQueryKeepsReusedRowIDs(t *testing.T) {
 	historical := newArchiveRevisionFixture(t, f, "Historical revision", 1)
 	current := f.create(t, "New revision")
 	var live corestore.WorkItem
-	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), historical.scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), historical.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		live, err = r.WorkItem(t.Context(), historical.scope.project, current.WorkItemID)
+		live, err = r.WorkItem(t.Context(), historical.scope.Project, current.WorkItemID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -403,7 +404,7 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 		if len(page.Messages) != 2 || page.Messages[0].ConversationID != read.conversation || page.Messages[1].ConversationID != read.conversation {
 			t.Fatalf("archive read crossed conversation scope: %+v", page.Messages)
 		}
-		if err := f.service.config.TenantRepository.ReadTenant(ctx, f.scope.organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		if err := f.service.config.TenantRepository.ReadTenant(ctx, f.scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			for _, lookup := range []struct {
 				name string
 				read func() error
@@ -411,8 +412,8 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 				{"run", func() error { _, err := reader.Attempt(ctx, "absent-subject"); return err }},
 				{"change", func() error { _, err := reader.Version(ctx, "absent-change", "absent-subject"); return err }},
 				{"revision", func() error { _, err := reader.CollaborationVersion(ctx, "absent-subject", 1); return err }},
-				{"conversation", func() error { _, err := reader.Conversation(ctx, f.scope.project, "absent-subject"); return err }},
-				{"history", func() error { _, err := reader.RunEvent(ctx, f.scope.project, read.item, "absent-subject"); return err }},
+				{"conversation", func() error { _, err := reader.Conversation(ctx, f.scope.Project, "absent-subject"); return err }},
+				{"history", func() error { _, err := reader.RunEvent(ctx, f.scope.Project, read.item, "absent-subject"); return err }},
 			} {
 				if err := lookup.read(); !errors.Is(err, corestore.ErrNotFound) {
 					t.Fatalf("unrelated live records entered %s lookup: %v", lookup.name, err)
@@ -432,7 +433,7 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 			if !reportsBudgetReadStatement(statement.query) {
 				continue
 			}
-			plan, raw := reportsExplainPostgresPlan(t, admin, f.scope.organization, statement)
+			plan, raw := reportsExplainPostgresPlan(t, admin, f.scope.Organization, statement)
 			var inspect func(reportsBudgetPlan)
 			inspect = func(node reportsBudgetPlan) {
 				keys := map[string]string{"native_attempts": "id =", "change_versions": "id =", "collaboration_versions": "record_id =", "conversations": "id =", "conversation_messages": "conversation_id =", "collaboration_events": "work_item_id ="}

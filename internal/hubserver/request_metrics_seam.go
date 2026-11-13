@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -45,14 +46,14 @@ func (s *Service) requestMetricsHTTP() *requestmetrics.HTTP {
 		return s.refusedAPIError(c, status, code, reason, body)
 	}, JSONError: s.hostedJSONError, Credential: func(c echo.Context) hubauth.Credential {
 		cred, _ := c.Get("hub_api_credential").(hubapi.APICredential)
-		return authCredential(cred)
+		return hubscope.AuthCredential(cred)
 	}, CurrentOperator: func(ctx context.Context) (hubauth.Credential, error) {
 		c, err := currentHubOperator(ctx)
-		return authCredential(c), err
+		return hubscope.AuthCredential(c), err
 	}, ExplanationRead: explanationRead, BillingOwner: s.database.metricsBillingOwner, BindingError: ErrHostedDatabaseBinding})
 }
 func (s *Service) admitRunnerRequest(c echo.Context, cred hubapi.APICredential) error {
-	return s.requestMetricsHTTP().AdmitRunnerRequest(c, authCredential(cred))
+	return s.requestMetricsHTTP().AdmitRunnerRequest(c, hubscope.AuthCredential(cred))
 }
 func (s *Service) measureRequests(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error { return s.requestMetricsHTTP().Measure(next)(c) }

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -34,8 +35,8 @@ func (s *Service) setProjectIcon(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
-	scope.requireHostedAdmin = true
+	scope := hubscope.NativeRequestScope(c)
+	scope.RequireHostedAdmin = true
 	raw, err := s.setProjectIconCommand(c.Request().Context(), scope, request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -43,9 +44,9 @@ func (s *Service) setProjectIcon(c echo.Context) error {
 	return c.JSONBlob(http.StatusOK, raw)
 }
 
-func (s *Service) setProjectIconCommand(ctx context.Context, scope nativeScope, request setProjectIconRequest) (json.RawMessage, error) {
-	scope.requireHostedAdmin = true
-	if scope.credential.Hosted == nil && scope.credential.Scope != hubapi.APIScopeAdmin {
+func (s *Service) setProjectIconCommand(ctx context.Context, scope hubscope.NativeScope, request setProjectIconRequest) (json.RawMessage, error) {
+	scope.RequireHostedAdmin = true
+	if scope.Credential.Hosted == nil && scope.Credential.Scope != hubapi.APIScopeAdmin {
 		return nil, &hubapi.NativeError{Code: "forbidden", Message: "Project administration is required", Status: http.StatusForbidden, PublicMessage: true}
 	}
 	if request.Icon.Kind == "image" {
@@ -93,7 +94,7 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope nativeScope, 
 		if err := s.accountProjectIcon(ctx, scope, *record); err != nil {
 			return nil, err
 		}
-		if err := store.PutIcon(ctx, string(scope.organization), icon.ImageKey, content); err != nil {
+		if err := store.PutIcon(ctx, string(scope.Organization), icon.ImageKey, content); err != nil {
 			return nil, s.cleanupProjectIcon(ctx, scope, record.ID, fmt.Errorf("upload project icon: %w", err))
 		}
 	}
@@ -105,7 +106,7 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope nativeScope, 
 		if err := s.database.requireHostedFeatureRecord(ctx, w, "collaboration", s.config.now()); err != nil {
 			return err
 		}
-		latest, err := w.ProjectRecord(ctx, scope.project)
+		latest, err := w.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
 		}
@@ -113,11 +114,11 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope nativeScope, 
 			return hubapi.NativeConflict(tracker.Revision(latest.Settings.Revision))
 		}
 		if latest.Settings.Icon.Kind == "image" {
-			if err := w.DeleteIconAttachment(ctx, scope.project, latest.Settings.Icon.ImageKey, s.config.now()); err != nil {
+			if err := w.DeleteIconAttachment(ctx, scope.Project, latest.Settings.Icon.ImageKey, s.config.now()); err != nil {
 				return err
 			}
 		}
-		if err := w.UpdateProjectIcon(ctx, scope.project, int64(request.ExpectedRevision), icon); err != nil {
+		if err := w.UpdateProjectIcon(ctx, scope.Project, int64(request.ExpectedRevision), icon); err != nil {
 			return err
 		}
 		applied = true
@@ -129,8 +130,8 @@ func (s *Service) setProjectIconCommand(ctx context.Context, scope nativeScope, 
 	return raw, err
 }
 
-func (s *Service) accountProjectIcon(ctx context.Context, scope nativeScope, record attachment.Metadata) error {
-	return s.config.TenantRepository.WriteTenant(ctx, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
+func (s *Service) accountProjectIcon(ctx context.Context, scope hubscope.NativeScope, record attachment.Metadata) error {
+	return s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.authorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -138,7 +139,7 @@ func (s *Service) accountProjectIcon(ctx context.Context, scope nativeScope, rec
 	})
 }
 
-func (s *Service) createIconAttachment(ctx context.Context, w tenantstore.Writer, scope nativeScope, record attachment.Metadata) error {
+func (s *Service) createIconAttachment(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, record attachment.Metadata) error {
 	limit, err := s.attachmentQuotaLimit(ctx, w)
 	if err != nil {
 		return err
@@ -153,15 +154,15 @@ func (s *Service) createIconAttachment(ctx context.Context, w tenantstore.Writer
 	if !usage.Allowed {
 		return &hostedLimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
 	}
-	record.ProjectID, record.Uploader, record.CreatedAt = string(scope.project), scope.credential.ID, s.config.now()
-	return w.CreateAttachment(ctx, attachmentstore.Record{OrganizationID: scope.organization, Metadata: record, Kind: "attachment", Retention: "organization"})
+	record.ProjectID, record.Uploader, record.CreatedAt = string(scope.Project), scope.Credential.ID, s.config.now()
+	return w.CreateAttachment(ctx, attachmentstore.Record{OrganizationID: scope.Organization, Metadata: record, Kind: "attachment", Retention: "organization"})
 }
 
-func (s *Service) cleanupProjectIcon(ctx context.Context, scope nativeScope, id string, err error) error {
+func (s *Service) cleanupProjectIcon(ctx context.Context, scope hubscope.NativeScope, id string, err error) error {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	deleteErr := s.config.TenantRepository.WriteTenant(cleanup, scope.organization, corestore.Serving, func(w tenantstore.Writer) error {
-		return w.DeleteIconAttachment(cleanup, scope.project, id, s.config.now())
+	deleteErr := s.config.TenantRepository.WriteTenant(cleanup, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		return w.DeleteIconAttachment(cleanup, scope.Project, id, s.config.now())
 	})
 	if deleteErr != nil {
 		return errors.Join(err, fmt.Errorf("tombstone uncommitted project icon: %w", deleteErr))

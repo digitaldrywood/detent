@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -251,7 +252,7 @@ func TestWorkspaceRequestCreatesSessionAndDispatchItem(t *testing.T) {
 			t.Fatalf("refused association leaked durable rows: before=%v after=%v", before, after)
 		}
 		if err := failed.service.config.TenantRepository.ReadTenant(t.Context(), failed.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-			_, err := r.Receipt(t.Context(), failed.ownerID, nativeOperation(nativeScope{organization: failed.project.OrganizationID, project: failed.project.ID}, "POST", "/workspaces"), "fail-link")
+			_, err := r.Receipt(t.Context(), failed.ownerID, nativeOperation(hubscope.NativeScope{Organization: failed.project.OrganizationID, Project: failed.project.ID}, "POST", "/workspaces"), "fail-link")
 			if !errors.Is(err, corestore.ErrNotFound) {
 				t.Fatalf("failed workspace retained a receipt: %v", err)
 			}
@@ -1652,9 +1653,9 @@ func TestWorkspaceClaimable(t *testing.T) {
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("authenticate claim runner status=%d error=%v", status, err)
 			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 			if !test.wantHealthy {
-				err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
+				err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 					_, err := f.service.nativeWorkspaceClaimAllowed(t.Context(), r, scope, tracker.NativeWorkItemID(badItem), f.service.config.now())
 					return err
 				})
@@ -1678,15 +1679,15 @@ func TestWorkspaceClaimable(t *testing.T) {
 			if claimed.WorkItemID != tracker.NativeWorkItemID(goodItem) {
 				t.Fatalf("workspace lane claimed=%s want=%s", claimed.WorkItemID, goodItem)
 			}
-			if err := original.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-				cursor, err := r.SelectionCursor(t.Context(), f.runner.binding.RunnerID, scope.project)
+			if err := original.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				cursor, err := r.SelectionCursor(t.Context(), f.runner.binding.RunnerID, scope.Project)
 				if err != nil {
 					return err
 				}
 				if cursor.Position.WorkItemID != tracker.NativeWorkItemID(badItem) {
 					t.Fatalf("skipped workspace did not advance selection: %+v", cursor)
 				}
-				row, err := r.WorkItem(t.Context(), scope.project, tracker.NativeWorkItemID(badItem))
+				row, err := r.WorkItem(t.Context(), scope.Project, tracker.NativeWorkItemID(badItem))
 				if err != nil {
 					return err
 				}
@@ -1731,7 +1732,7 @@ func TestWorkspaceClaimable(t *testing.T) {
 		}
 		request := tracker.NativeClaim{PolicyID: f.policy, MachineID: f.runner.binding.MachineID, SessionID: hubapi.NewID("uncrowded-workspace"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability}}
 		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
-			query := nativeTenantCandidateQuery(nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, request, "", f.service.config.now())
+			query := nativeTenantCandidateQuery(hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}, request, "", f.service.config.now())
 			query.WorkspaceLane, query.Limit = false, nativeClaimCandidatePageSize
 			page, err := r.CandidatePage(t.Context(), query)
 			if err != nil {
@@ -1994,7 +1995,7 @@ func TestWorkspaceCloseEndsItsDispatchItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID, Credential: credential}
 	for _, test := range []struct {
 		name  string
 		close func(t *testing.T, session workspacesession.Session)

@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/readableurl"
@@ -67,7 +68,7 @@ func (s *Service) slugSettings(c echo.Context) error {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	project := c.Param("project")
-	scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(project), credential: credential}
+	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID()), Project: tracker.ProjectID(project), Credential: credential}
 	if s.config.TenantRepository == nil {
 		return s.nativeAPIError(c, hubapi.NativeWorkItemStorageUnavailable())
 	}
@@ -77,7 +78,7 @@ func (s *Service) slugSettings(c echo.Context) error {
 	return s.organizationSlugRecordSettings(c, scope)
 }
 
-func (s *Service) readableReference(ctx context.Context, scope nativeScope, reference string) (string, error) {
+func (s *Service) readableReference(ctx context.Context, scope hubscope.NativeScope, reference string) (string, error) {
 	parsed, err := url.Parse(reference)
 	if err != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", hubapi.NativeNotFound()
@@ -193,7 +194,7 @@ func (s *Service) canonicalBrowserLink(ctx context.Context, link string) (string
 		if s.config.TenantRepository == nil {
 			return "", hubapi.NativeWorkItemStorageUnavailable()
 		}
-		id, err := s.readableRecordReference(ctx, nativeScope{organization: tracker.OrganizationID(s.appOrganizationID())}, parts, false)
+		id, err := s.readableRecordReference(ctx, hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID())}, parts, false)
 		if err == nil {
 			path, err = s.readIssueBrowserPath(ctx, tracker.OrganizationID(s.appOrganizationID()), id)
 			if err != nil {
@@ -318,7 +319,7 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 	}
 	credential, _, err := s.appCredential(c)
 	if err != nil {
-		if classified := operatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
+		if classified := hubscope.OperatorAuthorizationError(err); !errors.Is(classified, operatortool.ErrAccessDenied) {
 			return "", false, classified
 		}
 		return "", false, hubapi.NativeNotFound()
@@ -364,7 +365,7 @@ func (s *Service) normalizeToolReferences(ctx context.Context, call operatortool
 		if err != nil {
 			return call, err
 		}
-		resolver, ok := authorized.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+		resolver, ok := authorized.Value(hubscope.NativeOperatorScopeKey{}).(func(context.Context) (hubscope.NativeScope, error))
 		if !ok {
 			return call, operatortool.ErrAccessDenied
 		}
@@ -372,7 +373,7 @@ func (s *Service) normalizeToolReferences(ctx context.Context, call operatortool
 		if err != nil {
 			return call, err
 		}
-		scope.project = tracker.ProjectID(project)
+		scope.Project = tracker.ProjectID(project)
 		id, err := s.readableReference(authorized, scope, reference)
 		if err != nil {
 			return call, hubapi.SafeWorkReadError(err)
