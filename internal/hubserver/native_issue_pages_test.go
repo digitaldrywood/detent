@@ -164,10 +164,12 @@ func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 					tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "priority-" + string(issue.WorkItemID)}, ExpectedRevision: current.Revision, Priority: tracker.SetPriority(new(0))})
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &current)
-				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", f.token,
-					tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "done-" + string(issue.WorkItemID)}, ExpectedRevision: current.Revision, State: "Done", Reason: "user_requested"})
-				requireNativeStatus(t, response, http.StatusOK)
-				decodeHubResponse(t, response, &current)
+				if current.State != "Done" {
+					response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", f.token,
+						tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "done-" + string(issue.WorkItemID)}, ExpectedRevision: current.Revision, State: "Done", Reason: "user_requested"})
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &current)
+				}
 				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/archive", f.token,
 					archiveIssueRequest{Mutation: tracker.Mutation{IdempotencyKey: "archive-" + string(issue.WorkItemID)}, ExpectedRevision: current.Revision})
 				requireNativeStatus(t, response, http.StatusOK)
