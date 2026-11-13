@@ -22,6 +22,7 @@ import (
 )
 
 func TestAnalyticsQualityEvidencePopulationOrder(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{RunDetails: &memoryRunDetails{}})
 	scope := analyticsTestScope(t, f)
 	now := f.service.config.now().UTC().Truncate(time.Hour)
@@ -81,6 +82,7 @@ func TestAnalyticsQualityEvidencePopulationOrder(t *testing.T) {
 }
 
 func TestQualityEscapeApplicationAndRead(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	details := &memoryRunDetails{}
 	f := newChangeFixture(t, newPostgresNativeService(t, Config{now: func() time.Time { return now }, RunDetails: details}))
@@ -211,6 +213,7 @@ func replaceAnalyticsTestIssueBody(t *testing.T, service *Service, scope hubscop
 }
 
 func TestQualityCauseEvidence(t *testing.T) {
+	t.Parallel()
 	snapshot := &tracker.LandingQualitySnapshot{IssueBody: "Contract: inputs must be valid", Criteria: []string{"Reject invalid input"}, Evidence: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: gate.EvidenceTest, Reference: "TestInvalidInput", Behavior: "Asserts invalid input rejected"}}}
 	for _, tt := range []struct {
 		name, cause, criterion, quote string

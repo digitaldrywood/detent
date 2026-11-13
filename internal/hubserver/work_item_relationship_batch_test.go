@@ -44,6 +44,7 @@ func (r *relationshipBatchCountingReader) RelationshipProjects(ctx context.Conte
 }
 
 func TestHydrateWorkItemRelationshipFactsPagePreservesReporterRedaction(t *testing.T) {
+	t.Parallel()
 	repository, fixture, _, _ := newChangePolicyPostgresFixtureWithAdmin(t, 8)
 	if err := fixture.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)

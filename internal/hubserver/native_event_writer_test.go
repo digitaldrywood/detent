@@ -155,6 +155,7 @@ func newNativeEventWriterFixture(t *testing.T, store *memoryRunDetails, now time
 }
 
 func TestNativeEventWriterBudget(t *testing.T) {
+	t.Parallel()
 	for _, outcome := range []string{"succeeded", "failed", "cancelled"} {
 		t.Run(outcome, func(t *testing.T) {
 			now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
@@ -392,6 +393,7 @@ func TestNativeEventWriterBudget(t *testing.T) {
 }
 
 func TestNativeEventConcurrentWriterBudget(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 31, 18, 0, 0, 0, time.UTC)
 	store := &memoryRunDetails{}
 	f := newNativeEventWriterFixture(t, store, now)

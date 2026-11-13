@@ -35,6 +35,7 @@ import (
 )
 
 func TestPostgresNativeRetentionRepairsProjectionsWithoutLosingHistory(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	admin.SetMaxOpenConns(2)
 	now := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)

@@ -23,6 +23,7 @@ import (
 )
 
 func TestBoardModelRechecksCurrentRelationshipAuthority(t *testing.T) {
+	t.Parallel()
 	details := &memoryRunDetails{}
 	service := newPostgresNativeService(t, Config{RunDetails: details})
 	repository := service.config.TenantRepository

@@ -37,6 +37,7 @@ func modelSelectionCall(t *testing.T, name, project, key string, input operatort
 }
 
 func TestHostedModelSelectionTools(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"dedicated", "shared"} {
 		t.Run(deployment, func(t *testing.T) {
 			f, ctx := newOperatorKeyFixture(t, deployment, "owner")
@@ -189,6 +190,7 @@ func TestHostedModelSelectionTools(t *testing.T) {
 }
 
 func TestModelSelectionToolAuthority(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"dedicated", "shared"} {
 		for _, test := range []struct {
 			name, role                                                     string
@@ -272,6 +274,7 @@ func TestModelSelectionToolAuthority(t *testing.T) {
 }
 
 func TestNativeModelSelectionTools(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	contexts := make(chan context.Context, 1)
 	f.service.echo.GET("/api/v2/organizations/:organization/model-tool-test", func(c echo.Context) error {

@@ -22,6 +22,7 @@ import (
 )
 
 func TestPostgresImportStarts(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := &Service{localOrganization: "org", notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), database: &database{now: time.Now}, config: Config{ImportBackend: gitHubLifecycleImporter{}, TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: time.Now}}
 	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org", Name: "Example", Slug: "example"})

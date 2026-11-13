@@ -15,6 +15,7 @@ import (
 )
 
 func TestNativeCommandReplayUsesTenantReceipt(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 	service := &Service{config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }}}

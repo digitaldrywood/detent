@@ -115,6 +115,7 @@ func operatorBillingUsageService(source *Service, repository tenantstore.Reposit
 }
 
 func TestOperatorBillingUsagePostgres(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	first := newHostedSecurityFixture(t, func(cfg *Config) {
 		cfg.now = func() time.Time { return now }

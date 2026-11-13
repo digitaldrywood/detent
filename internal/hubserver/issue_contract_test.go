@@ -69,6 +69,7 @@ func nativeIssueContractEvaluationForTest(ctx context.Context, service *Service,
 }
 
 func TestNativeIssueContractPolicyDriftKeepsCurrentAuthority(t *testing.T) {
+	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
 	issue := f.nativeFixture.create(t, "policy recovery")
 	workflow := config.Workflow{Config: config.Default()}

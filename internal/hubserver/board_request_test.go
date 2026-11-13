@@ -33,6 +33,7 @@ import (
 )
 
 func TestBoardModelCardPreservesCollections(t *testing.T) {
+	t.Parallel()
 	for _, role := range []string{"operator", "reporter"} {
 		for _, populated := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/populated=%t", role, populated), func(t *testing.T) {
@@ -82,6 +83,7 @@ func TestBoardModelCardPreservesCollections(t *testing.T) {
 }
 
 func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
+	t.Parallel()
 	expectedCounts := map[string][2]int{}
 	for _, size := range []int{2, 50} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
@@ -216,6 +218,7 @@ func TestBoardSearchFallbackHasFixedSQLBudget(t *testing.T) {
 }
 
 func TestBoardRequestHasFixedSQLBudget(t *testing.T) {
+	t.Parallel()
 	details := &memoryRunDetails{}
 	service := newPostgresNativeService(t, Config{RunDetails: details})
 	original := service.database.postgres
@@ -548,6 +551,7 @@ func boardPartBudget(t *testing.T, service *Service, measured *postgres.Reposito
 }
 
 func TestNativeIssueChangePageHasFixedSQLBudget(t *testing.T) {
+	t.Parallel()
 	var expected [2]int
 	for _, size := range []int{2, 50} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {

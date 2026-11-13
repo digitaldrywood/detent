@@ -183,6 +183,7 @@ func independentRepairReview(version tracker.ChangeVersion, now time.Time) track
 }
 
 func TestIndependentFailureRepairDependency(t *testing.T) {
+	t.Parallel()
 	f := independentFailureFixture(t)
 	version := f.publish(t, "version", "")
 	change := f.detail(t).Change
@@ -207,6 +208,7 @@ func TestIndependentFailureRepairDependency(t *testing.T) {
 }
 
 func TestIndependentFailureRepairRouting(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, attribution, role                 string
 		existing, cycle, self, ambiguous, batch bool
@@ -360,6 +362,7 @@ func TestIndependentFailureRepairRouting(t *testing.T) {
 }
 
 func TestIndependentFailureConcurrentRepairOwner(t *testing.T) {
+	t.Parallel()
 	f := independentFailureFixture(t)
 	version := f.publish(t, "version", "")
 	first := f.detail(t).Change
@@ -398,6 +401,7 @@ func TestIndependentFailureConcurrentRepairOwner(t *testing.T) {
 }
 
 func TestIndependentFailureGateAttemptReplay(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, outcome string
 		pending       bool

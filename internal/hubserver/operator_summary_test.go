@@ -75,6 +75,7 @@ func appendOperatorSummaryFixtureTransition(t *testing.T, service *Service, scop
 }
 
 func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		field   string
 		include []string
@@ -215,6 +216,7 @@ func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
 }
 
 func TestOperatorWorkListSummary(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.October, 20, 12, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	short := tracker.ProjectID("p")

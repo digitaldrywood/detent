@@ -205,6 +205,7 @@ func nativeAttemptListingFixture(t *testing.T, count, bodyBytes int) (nativeFixt
 }
 
 func TestNativeAttemptNotFoundAcrossTenants(t *testing.T) {
+	t.Parallel()
 	service := newPostgresNativeService(t, Config{RunDetails: &verifiedAttemptDetails{}})
 	fixtures := []nativeFixture{
 		newNativeFixture(t, service, "org_first", "first"),
@@ -263,6 +264,7 @@ func TestNativeAttemptNotFoundAcrossTenants(t *testing.T) {
 }
 
 func TestNativeAttemptsSkipUnusedHydration(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		limit     int
@@ -335,6 +337,7 @@ func legacyNativeAttemptPage(attempts []tracker.NativeAttempt, limit, budget int
 }
 
 func TestNativeAttemptPageByteBoundaryEquivalence(t *testing.T) {
+	t.Parallel()
 	f, issue, records := nativeAttemptListingFixture(t, 5, 0)
 	scope := nativeAttemptListingScope(t, f)
 	path := f.base + "/work-items/" + string(issue.WorkItemID) + "/attempts"
@@ -431,6 +434,7 @@ func TestNativeAttemptPageByteBoundaryEquivalence(t *testing.T) {
 }
 
 func TestNativeAttemptPageEncodesEachReturnedRecordOnce(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		bodyBytes  int
@@ -1642,6 +1646,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 }
 
 func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"superseded", "superseded imported", "released", "expired repair", "released repair", "superseded repair", "revoked", "release rollback"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := t.Context()

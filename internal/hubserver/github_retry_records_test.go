@@ -25,6 +25,7 @@ func (b *gitHubDiscoveryFailure) FetchImportPage(context.Context, GitHubImportRe
 }
 
 func TestGitHubDiscoveryFailureBackoff(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		jitter float64
@@ -90,6 +91,7 @@ func TestGitHubDiscoveryFailureBackoff(t *testing.T) {
 }
 
 func TestGitHubBatchMissingTransportReturnsError(t *testing.T) {
+	t.Parallel()
 	service, _, _ := gitHubWebhookRecordFixture(t)
 	for _, project := range []tracker.ProjectID{"first", "second"} {
 		scope, err := service.gitHubIntegrationScope(t.Context(), "org", project)

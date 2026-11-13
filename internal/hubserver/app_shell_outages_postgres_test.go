@@ -14,6 +14,7 @@ import (
 )
 
 func TestPostgresAppShellAuthorityOutages(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		repository := service.config.AccessRepository
@@ -77,6 +78,7 @@ func TestPostgresAppRunnerGrantOutages(t *testing.T) {
 }
 
 func TestPostgresAppReservedRoutesReturnNotFound(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org := range f.services {
 		for _, path := range []string{"/api/v2/unknown", "/api", "/auth/unknown", "/webhooks/unknown", "/app/unknown", "/logout", "/metrics"} {
@@ -92,6 +94,7 @@ func TestPostgresAppReservedRoutesReturnNotFound(t *testing.T) {
 }
 
 func TestPostgresOrganizationPageUsesGrantedProjects(t *testing.T) {
+	t.Parallel()
 	f := newPostgresBrowserHostedFixture(t, true)
 	for _, test := range []struct {
 		account string

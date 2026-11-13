@@ -692,6 +692,7 @@ func TestProjectArchivePeriods(t *testing.T) {
 }
 
 func TestNativeStorageArchiveRetention(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, state string
 		age         time.Duration
@@ -770,6 +771,7 @@ func TestNativeStorageArchiveRetention(t *testing.T) {
 }
 
 func TestNativeRetentionCommitsEachIssue(t *testing.T) {
+	t.Parallel()
 	f := newPostgresStorageArchiveFixture(t)
 	for range 3 {
 		f.closed(t)

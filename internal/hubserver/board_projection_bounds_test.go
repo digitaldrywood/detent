@@ -20,6 +20,7 @@ import (
 )
 
 func TestBoardProjectionBoundsReporterRelationshipsAcrossTenants(t *testing.T) {
+	t.Parallel()
 	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
 	repository := service.config.TenantRepository
 	now := service.config.now().UTC().Truncate(time.Microsecond)
@@ -109,6 +110,7 @@ func TestBoardProjectionBoundsReporterRelationshipsAcrossTenants(t *testing.T) {
 }
 
 func TestBoardSummaryDiscardsEmptyHistoricalLanesAcrossTenants(t *testing.T) {
+	t.Parallel()
 	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
 	repository := service.config.TenantRepository
 	now := service.config.now().UTC().Truncate(time.Microsecond)

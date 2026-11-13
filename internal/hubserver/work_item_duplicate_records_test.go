@@ -13,6 +13,7 @@ import (
 )
 
 func TestValidateWorkItemReceiptIssue(t *testing.T) {
+	t.Parallel()
 	scope := hubscope.NativeScope{Organization: "org_example", Project: "prj_example"}
 	native := tracker.NativeWorkItemID(hubapi.NewID("wi"))
 	for _, test := range []struct {

@@ -65,6 +65,7 @@ func (c *entryAuthBudgetWireConn) Write(value []byte) (int, error) {
 }
 
 func TestPostgresEntryAuthBudgetIndependentOfTenantSize(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	f.requestContext = func(ctx context.Context) context.Context {
 		return context.WithValue(ctx, entryAuthBudgetContextKey{}, true)

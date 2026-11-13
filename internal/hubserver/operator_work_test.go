@@ -40,6 +40,7 @@ import (
 )
 
 func TestHubMCPWorkCommands(t *testing.T) {
+	t.Parallel()
 	f := linkedFixture(t)
 	scope := analyticsTestScope(t, f)
 	updateProject := func(ctx context.Context, mutate func(*projectstore.Record)) error {
@@ -952,6 +953,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 // GitHub-compatible relationships, ordering and priority use the same commands
 // as the hub dashboard, while lane mutations stay unavailable without their owner.
 func TestHubMCPCompatibilityCommands(t *testing.T) {
+	t.Parallel()
 	const nativeID = "wi_compatible_first"
 	const related = "wi_compatible_second"
 	newFixture := func(t *testing.T, sourceRepository, integrationRepository string, enabled bool) (nativeFixture, tracker.ProjectID) {
@@ -1130,6 +1132,7 @@ func performHubWorkCall(t *testing.T, service *Service, path, token, name string
 }
 
 func TestSafeNativeWorkError(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "public-filing-errors")
 	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	now := time.Now().UTC()

@@ -32,6 +32,7 @@ func (m missingExportDetail) ReadDetail(ctx context.Context, organization string
 }
 
 func TestPostgresBulkExport(t *testing.T) {
+	t.Parallel()
 	repository, f, owner, expected, _ := newPostgresExportLinkedFixture(t)
 	t.Run("export", func(t *testing.T) {
 		seen := map[tracker.NativeWorkItemID]bool{}

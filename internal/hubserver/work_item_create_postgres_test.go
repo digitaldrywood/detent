@@ -43,6 +43,7 @@ import (
 )
 
 func TestPostgresCookieIssueLifecycle(t *testing.T) {
+	t.Parallel()
 	repository, f, owner, _ := newChangePolicyPostgresFixtureWithAdmin(t, 3)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
@@ -133,6 +134,7 @@ func TestPostgresCookieIssueLifecycle(t *testing.T) {
 }
 
 func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 4)
 	if serving, _ := repository.WorkloadCapacities(); serving < 2 {
 		t.Fatal("concurrent confirmation fixture requires two serving transactions")

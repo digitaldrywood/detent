@@ -33,6 +33,7 @@ import (
 )
 
 func TestOperatorAuthorizationFailures(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		err    error
@@ -91,6 +92,7 @@ func TestOperatorAuthorizationFailures(t *testing.T) {
 }
 
 func TestOperatorAuthorizationPostgresCancellation(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

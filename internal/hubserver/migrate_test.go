@@ -143,6 +143,7 @@ REVOKE ALL ON migration_seed,migration_parent,migration_child FROM detent_migrat
 }
 
 func TestCurrentSchemaFingerprintUsesLatestMigrationState(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	config := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	before, err := openPostgresDatabase(t.Context(), *config.Postgres)

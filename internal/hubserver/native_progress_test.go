@@ -64,6 +64,7 @@ func (w *progressLeaseOrderWriter) LockLease(context.Context, string) (leasestor
 }
 
 func TestProgressLeaseValidationDoesNotDeadlockClaim(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		writer := &progressLeaseOrderWriter{issue: make(chan struct{}, 1), lease: make(chan struct{}, 1), issueWait: make(chan struct{})}
 		writer.lease <- struct{}{}
@@ -442,6 +443,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 }
 
 func TestNativeProgressRetrievedEvidenceIsScoped(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		source    string
@@ -569,6 +571,7 @@ func (w *progressBlockerProbeWriter) WorkItemBlockers(ctx context.Context, proje
 }
 
 func TestPostgresProgressLocksGraphBeforeScopedEndpoints(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	store, err := openDatabase(t.Context(), cfg)

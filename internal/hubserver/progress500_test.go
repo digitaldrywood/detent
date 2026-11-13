@@ -13,6 +13,7 @@ import (
 )
 
 func TestProgressPublicationKeepsNewestEvidenceDuringLiveAttempt(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{RunDetails: &verifiedAttemptDetails{}})
 	for _, name := range []string{"first", "second"} {
 		t.Run(name, func(t *testing.T) {
@@ -98,6 +99,7 @@ func TestProgressPublicationKeepsNewestEvidenceDuringLiveAttempt(t *testing.T) {
 }
 
 func TestProgressPublicationWithoutTerminalEvidenceIsClientError(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "Example without attempts")
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Events, runnerauth.Collaborate)

@@ -16,6 +16,7 @@ import (
 )
 
 func TestNativeOrganizationReadsUsePostgresWithoutLegacyHandles(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	serverIDs := map[tracker.OrganizationID]string{
 		"org_first":  "hub_00000000000000000000000000000001",

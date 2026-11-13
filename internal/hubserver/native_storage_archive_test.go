@@ -269,6 +269,7 @@ func storageArchiveJSONEqual(t *testing.T, a, b []byte) bool {
 }
 
 func TestNativeStorageArchivePublication(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"sections uploaded", "root uploaded", "pointer commit", "pointer committed", "chunk retired", "reopened at sections", "reopened at root", "reopened at retirement", "message children"} {
 		t.Run(phase, func(t *testing.T) {
 			f := newPostgresStorageArchiveFixture(t)
@@ -469,6 +470,7 @@ func TestNativeStorageArchivePublication(t *testing.T) {
 }
 
 func TestNativeStorageArchiveCommentRevisions(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	var clock atomic.Int64
 	clock.Store(at.Add(-73 * time.Hour).UnixNano())
@@ -657,6 +659,7 @@ SELECT entry FROM (
 }
 
 func TestNativeStorageArchivePrivacyAndOrganizations(t *testing.T) {
+	t.Parallel()
 	f := newPostgresStorageArchiveFixture(t)
 	issue := f.closed(t)
 	shared := f.messages(t, issue.WorkItemID, 2, conversation.VisibilityShared)
@@ -743,6 +746,7 @@ func TestNativeStorageArchivePrivacyAndOrganizations(t *testing.T) {
 }
 
 func TestNativeStorageArchiveRangesAndLateMessages(t *testing.T) {
+	t.Parallel()
 	f := newPostgresStorageArchiveFixture(t)
 	issue := f.closed(t)
 	record := f.messages(t, issue.WorkItemID, 501, conversation.VisibilityShared)
@@ -841,6 +845,7 @@ func TestNativeStorageArchiveRangesAndLateMessages(t *testing.T) {
 }
 
 func TestNativeStorageArchiveTerminalClock(t *testing.T) {
+	t.Parallel()
 	f := newPostgresStorageArchiveFixture(t)
 	at := f.now()
 	issue := f.create(t, "Terminal age")
@@ -909,6 +914,7 @@ func TestNativeStorageArchiveTerminalClock(t *testing.T) {
 }
 
 func TestNativeStorageArchiveSafety(t *testing.T) {
+	t.Parallel()
 	for _, test := range []string{"unknown terminal time", "active lease", "pending delivery", "pending question", "unknown execution", "unknown execution lease", "typed active execution"} {
 		t.Run(test, func(t *testing.T) {
 			f := newPostgresStorageArchiveFixture(t)
@@ -967,6 +973,7 @@ func (s *storageArchiveDetailObserver) StoreDetail(ctx context.Context, organiza
 }
 
 func TestNativeStorageArchiveRunTimeline(t *testing.T) {
+	t.Parallel()
 	a := newTerminalAttemptFixture(t)
 	if err := a.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
@@ -1106,6 +1113,7 @@ func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 }
 
 func TestNativeStorageArchiveScanResumesAcrossHubInstances(t *testing.T) {
+	t.Parallel()
 	for _, canceled := range []bool{true, false} {
 		t.Run(fmt.Sprintf("canceled=%v", canceled), func(t *testing.T) {
 			expectedError := errors.New("archive publication rejected")

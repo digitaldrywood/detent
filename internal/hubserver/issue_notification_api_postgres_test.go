@@ -15,6 +15,7 @@ import (
 )
 
 func TestPostgresIssueNotificationPreferenceReadWrite(t *testing.T) {
+	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	repository := f.service.database.postgres
 	now := time.Now().UTC()

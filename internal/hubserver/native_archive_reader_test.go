@@ -160,6 +160,7 @@ func assertArchiveGolden(t *testing.T, hot, archived []byte) {
 }
 
 func TestNativeArchiveSectionFailures(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, availability string
 		wantFetches        int
@@ -247,6 +248,7 @@ func TestNativeArchiveSectionFailures(t *testing.T) {
 }
 
 func TestArchiveSectionIsolation(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "archive-isolation")
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "archive-other")
 	hidden := other.create(t, "Hidden issue body")
@@ -292,6 +294,7 @@ func TestArchiveSectionIsolation(t *testing.T) {
 }
 
 func TestArchiveQueryKeepsReusedRowIDs(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "archive-rowid")
 	historical := newArchiveRevisionFixture(t, f, "Historical revision", 1)
 	current := f.create(t, "New revision")
@@ -330,6 +333,7 @@ func TestArchiveQueryKeepsReusedRowIDs(t *testing.T) {
 }
 
 func TestArchiveQueryScopesLiveFallback(t *testing.T) {
+	t.Parallel()
 	f := newPostgresStorageArchiveFixture(t)
 	installReportsBudgetTrace(t, f.service)
 	admin := hostedPostgresAdmin(t, f.service)
@@ -459,6 +463,7 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 }
 
 func TestArchiveSQLScalar(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		raw     string
 		want    any
@@ -496,6 +501,7 @@ func TestArchiveSQLScalar(t *testing.T) {
 }
 
 func TestArchiveQueryExceedsSQLiteParameterCount(t *testing.T) {
+	t.Parallel()
 	const count = 30000/8 + 1
 	f := newArchiveRevisionFixture(t, newNativeFixture(t, nil, "", "archive-large"), "archive with many scalar cells", count)
 	if len(f.table.Rows) != count || len(f.table.Rows)*len(f.table.Columns) <= 30000 {
@@ -531,6 +537,7 @@ func TestArchiveQueryExceedsSQLiteParameterCount(t *testing.T) {
 }
 
 func TestArchiveMigrationCompatibility(t *testing.T) {
+	t.Parallel()
 	for _, layout := range []string{"pre-reference", "scoped", "additional metadata"} {
 		t.Run(layout, func(t *testing.T) {
 			f := newArchiveRevisionFixture(t, newNativeFixture(t, nil, "", "archive-schema"), "Historical schema", 1)
@@ -563,6 +570,7 @@ func TestArchiveMigrationCompatibility(t *testing.T) {
 }
 
 func TestOlderArchiveViews(t *testing.T) {
+	t.Parallel()
 	t.Run("change recovery", func(t *testing.T) {
 		f := newChangeFixture(t, nil)
 		version := f.publish(t, "legacy-version", "")

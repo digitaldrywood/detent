@@ -15,6 +15,7 @@ import (
 )
 
 func TestNativeFailureSignatureReads(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}})
 	w := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}

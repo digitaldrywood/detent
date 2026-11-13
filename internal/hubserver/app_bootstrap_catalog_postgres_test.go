@@ -26,6 +26,7 @@ import (
 )
 
 func TestPostgresEntryKeyBootstrapRead(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	key := hostedSharedKey(38)

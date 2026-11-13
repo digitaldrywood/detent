@@ -20,6 +20,7 @@ import (
 )
 
 func TestEntryKeyCallReusesRequestAuthentication(t *testing.T) {
+	t.Parallel()
 	for _, authenticated := range []bool{true, false} {
 		t.Run(map[bool]string{true: "authenticated", false: "missing authority"}[authenticated], func(t *testing.T) {
 			body, err := json.Marshal(map[string]any{"name": operatortool.WorkList, "arguments": map[string]any{}, "connection_id": "example"})

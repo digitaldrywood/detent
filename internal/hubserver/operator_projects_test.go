@@ -58,6 +58,7 @@ func projectAction(t *testing.T, e hubProjectExecutor, ctx context.Context, call
 }
 
 func TestBoundedProjectPolicyHistory(t *testing.T) {
+	t.Parallel()
 	descriptor := hubTestPolicy()
 	full := projectPolicyRead{
 		Approval:         policy.Approval{Policy: descriptor, ApprovedBy: "administrator", ApprovedAt: "2026-10-06T21:12:49Z", HistoryNext: "10"},
@@ -115,6 +116,7 @@ func TestBoundedProjectPolicyHistory(t *testing.T) {
 }
 
 func TestHostedProjectCutoverReceiptReads(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"dedicated", "shared"} {
 		t.Run(deployment, func(t *testing.T) {
 			objects := &memoryRunDetails{}
@@ -267,6 +269,7 @@ func TestHostedProjectCutoverReceiptReads(t *testing.T) {
 }
 
 func TestHostedProjectTools(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"dedicated", "shared"} {
 		t.Run(deployment, func(t *testing.T) {
 			var f hostedSecurityFixture
@@ -798,6 +801,7 @@ func TestHostedProjectTools(t *testing.T) {
 
 // Import page retries must reuse the durable receipt and never expose transport errors.
 func TestProjectImportToolReceipts(t *testing.T) {
+	t.Parallel()
 	backend := &importFixtureBackend{}
 	f := newIntegrationFixture(t, backend)
 	captureds := make(chan context.Context, 1)

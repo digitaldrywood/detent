@@ -27,6 +27,7 @@ import (
 )
 
 func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(t *testing.T) {
+	t.Parallel()
 	repository, adminDB := projectRecordPostgresWithAdmin(t, 3)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{
@@ -377,6 +378,7 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 }
 
 func TestPostgresOperatorReadsRejectRoleChanges(t *testing.T) {
+	t.Parallel()
 	for _, tool := range []string{operatortool.WorkConfig, operatortool.ExplainItem} {
 		t.Run(tool, func(t *testing.T) {
 			var details *memoryRunDetails
@@ -433,6 +435,7 @@ func TestPostgresOperatorReadsRejectRoleChanges(t *testing.T) {
 }
 
 func TestPostgresRuntimeReportsMissingAttempt(t *testing.T) {
+	t.Parallel()
 	_, f, owner, _ := newExportPostgresFixture(t)
 	for _, key := range []string{"first", "second"} {
 		response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "missing-attempt-" + key}, Title: "Example " + key, Body: workItemRecordBody, State: "Todo"})
@@ -450,6 +453,7 @@ func TestPostgresRuntimeReportsMissingAttempt(t *testing.T) {
 }
 
 func TestNativeRuntimeHidesUnreadableProjectDependencies(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, newPostgresNativeService(t, Config{}), "", "runtime-visible")
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "runtime-foreign")
 	for _, key := range []string{"first", "second"} {

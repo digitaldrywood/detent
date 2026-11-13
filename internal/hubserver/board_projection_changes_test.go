@@ -86,6 +86,7 @@ func (r boardChangeMutationReader) BoardChangeRows(ctx context.Context, project 
 }
 
 func TestBoardProjectionDeletedChangeAndRealErrorsPostgres(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	mutating := &boardChangeMutationRepository{Repository: repository}
 	details := &memoryRunDetails{}

@@ -19,6 +19,7 @@ import (
 )
 
 func TestPostgresHealthEvaluationPublishesRecurrenceAndClear(t *testing.T) {
+	t.Parallel()
 	details := &memoryRunDetails{}
 	service := newPostgresNativeService(t, Config{RunDetails: details})
 	now := service.config.now().UTC().Truncate(time.Microsecond)

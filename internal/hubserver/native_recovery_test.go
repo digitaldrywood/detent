@@ -9,6 +9,7 @@ import (
 )
 
 func TestBoundedRecoveryReviewsKeepsCurrentResults(t *testing.T) {
+	t.Parallel()
 	source := func(id string) tracker.ChangeReview {
 		return tracker.ChangeReview{ID: id, Decision: "approved", ImplementationReview: &gate.ValidatorResult{Verdict: "pass"}}
 	}

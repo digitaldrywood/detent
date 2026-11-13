@@ -24,6 +24,7 @@ import (
 )
 
 func TestBoardReadinessBeforeAndDuringBackfill(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 6, 18, 0, 0, 0, time.UTC)
 	service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }})
 	repo := service.config.TenantRepository

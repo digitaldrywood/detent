@@ -8,6 +8,7 @@ import (
 )
 
 func TestPostgresCanonicalExportSelection(t *testing.T) {
+	t.Parallel()
 	repository, f, owner, expected, _ := newPostgresExportLinkedFixture(t)
 	var principal string
 	if err := repository.ReadTenant(t.Context(), "org_security", corestore.Serving, func(r tenantstore.Reader) error {

@@ -111,6 +111,7 @@ func pilotHostedGrants(t *testing.T, f *browserHostedFixture) {
 }
 
 func TestPilotHostedWorkloads(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		runners int

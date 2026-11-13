@@ -94,6 +94,7 @@ func requireEntryAuthResponse(t *testing.T, status int, body string, want int) {
 }
 
 func TestPostgresEntryMembershipOutages(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		repository := service.config.AccessRepository
@@ -157,6 +158,7 @@ func TestPostgresEntryMembershipOutages(t *testing.T) {
 }
 
 func TestPostgresOwnerBootstrapOutages(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		repository := service.config.AccessRepository

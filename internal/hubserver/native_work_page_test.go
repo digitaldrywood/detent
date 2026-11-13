@@ -34,6 +34,7 @@ import (
 )
 
 func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "example-library")

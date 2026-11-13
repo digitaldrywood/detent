@@ -12,6 +12,7 @@ import (
 )
 
 func TestOperatorEnvelopeDecoderContract(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, field string
 		target      reflect.Type

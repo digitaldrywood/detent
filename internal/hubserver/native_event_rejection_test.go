@@ -24,6 +24,7 @@ import (
 )
 
 func TestNativeRunEventRejectionsLogged(t *testing.T) {
+	t.Parallel()
 	var logs bytes.Buffer
 	f := newChangeFixture(t, newPostgresNativeService(t, Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))}))
 	runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
@@ -371,6 +372,7 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 }
 
 func TestNativeRuntimePhaseRejectionReason(t *testing.T) {
+	t.Parallel()
 	started := time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name   string
@@ -404,6 +406,7 @@ func TestNativeRuntimePhaseRejectionReason(t *testing.T) {
 }
 
 func TestHostedNativeRejectionMessages(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, category, field, message, want string
 	}{

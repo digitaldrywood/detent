@@ -18,6 +18,7 @@ import (
 )
 
 func TestPostgresNativeProjectAuthorizationRejectsDeletedProjectsAndRemovedRunners(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 	db := &database{postgres: repository, now: func() time.Time { return now }}

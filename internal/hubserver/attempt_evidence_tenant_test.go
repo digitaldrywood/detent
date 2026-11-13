@@ -28,6 +28,7 @@ import (
 )
 
 func TestPostgresAttemptEvidencePreflightChecksRunningFencedOwner(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	var operationLog bytes.Buffer
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}

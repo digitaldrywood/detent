@@ -78,6 +78,7 @@ func (trace entryKeyBoardTrace) TraceBatchQuery(ctx context.Context, _ *pgx.Conn
 func (entryKeyBoardTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 func TestPostgresEntryKeyMoveItem(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	key := hostedSharedKey(64)
@@ -1987,6 +1988,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 }
 
 func TestPostgresEntryKeyWorkCommandCatalog(t *testing.T) {
+	t.Parallel()
 	permissions := map[string]apikey.Scope{"owner": apikey.ScopeAdmin, "admin": apikey.ScopeAdmin, "member": apikey.ScopeWrite, "reporter": apikey.ScopeWrite, "reader": apikey.ScopeRead}
 	roles := map[string]string{"owner": "owner", "admin": "admin", "member": "member", "reporter": "reporter", "reader": "owner"}
 	authority := func(user, id, binding string) *apikey.KeyAuthority {
@@ -2065,6 +2067,7 @@ func moveItemSelectedProjects(access string) []string {
 }
 
 func TestWorkflowSafeError(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		input, want error
@@ -2140,6 +2143,7 @@ func (w changeCreateProbeWriter) CreateChange(ctx context.Context, value eventst
 }
 
 func TestPostgresMutationReferencesWithoutLegacyDatabase(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	key := hostedSharedKey(64)

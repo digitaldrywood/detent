@@ -28,6 +28,7 @@ import (
 )
 
 func TestNativeIssueTypes(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "issue-types")
 	contexts := make(chan context.Context, 1)
 	f.service.echo.POST("/api/v2/organizations/:organization/issue-types-test", func(c echo.Context) error {
@@ -192,6 +193,7 @@ func TestNativeIssueTypes(t *testing.T) {
 }
 
 func TestNativeIssueTypeMigration(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "issue-type-migration")
 	fixture := coreWorkItemNeutralFixture(t, f.project.OrganizationID, f.project.ID, false)
 	cases := []struct {
@@ -267,6 +269,7 @@ func TestNativeIssueTypeMigration(t *testing.T) {
 }
 
 func TestNativeIssueReportContext(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "report-context")
 	contexts := make(chan context.Context, 1)
 	f.service.echo.POST("/api/v2/organizations/:organization/report-context-test", func(c echo.Context) error {

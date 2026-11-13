@@ -527,6 +527,7 @@ func TestNativeAPIError(t *testing.T) {
 }
 
 func TestNativeWorkflowRefusalCode(t *testing.T) {
+	t.Parallel()
 	for _, hosted := range []bool{false, true} {
 		name := "local"
 		if hosted {
@@ -1285,6 +1286,7 @@ func TestNativeNewestIssuePages(t *testing.T) {
 }
 
 func TestNativeFixturePostgresCallers(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"nil", "default", "supplied"} {
 		t.Run(mode, func(t *testing.T) {
 			var service *Service

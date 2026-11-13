@@ -14,6 +14,7 @@ import (
 )
 
 func TestBoardRecordPreparationBoundsWorkersAndPreservesErrors(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		cancel  bool
@@ -87,6 +88,7 @@ func TestBoardRecordPreparationBoundsWorkersAndPreservesErrors(t *testing.T) {
 }
 
 func TestBoardPagePreparationDoesNotReadSharedCacheInWorkers(t *testing.T) {
+	t.Parallel()
 	for _, projected := range []bool{false, true} {
 		name := "hydrated"
 		if projected {

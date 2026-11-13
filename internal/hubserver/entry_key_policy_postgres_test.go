@@ -16,6 +16,7 @@ import (
 )
 
 func TestEntryKeyFilingPreservesPolicyMismatchPostgres(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		t.Run(org, func(t *testing.T) {

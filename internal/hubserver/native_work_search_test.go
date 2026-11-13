@@ -27,6 +27,7 @@ import (
 )
 
 func TestNativeSearchTermsBound(t *testing.T) {
+	t.Parallel()
 	terms := make([]string, 33)
 	want := make([]string, 32)
 	for index := range terms {
@@ -54,6 +55,7 @@ func TestNativeSearchTermsBound(t *testing.T) {
 }
 
 func TestNativeWorkSearch(t *testing.T) {
+	t.Parallel()
 	f := newPostgresWorkViewFixture(t)
 	user := f.user(t, "searcher", "member", "searcher@example.test", "read", "")
 	at := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
@@ -176,6 +178,7 @@ func TestNativeWorkSearch(t *testing.T) {
 }
 
 func TestNativeWorkDateFilters(t *testing.T) {
+	t.Parallel()
 	f := newPostgresWorkViewFixture(t)
 	user := f.user(t, "dates", "member", "dates@example.test", "read", "")
 	stamps := []string{"2026-10-11T23:59:59.999999Z", "2026-10-12T00:00:00Z", "2026-10-12T06:00:00+05:00", "2026-10-13T00:00:00Z", "2026-10-12T00:00:00.000001Z", "2026-10-12T00:00:00.001Z", "2026-10-12T00:00:00.0015Z"}
@@ -264,6 +267,7 @@ func seedPostgresSearchIssue(t *testing.T, f postgresWorkViewFixture, number int
 }
 
 func TestBoardSearchFallbackReturnsHTTPAndMCPMatches(t *testing.T) {
+	t.Parallel()
 	details := &memoryRunDetails{}
 	service := newPostgresNativeService(t, Config{RunDetails: details})
 	for _, org := range []tracker.OrganizationID{"org_first", "org_first_second"} {

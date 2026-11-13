@@ -18,6 +18,7 @@ import (
 )
 
 func TestHostedArtifactReadPermissions(t *testing.T) {
+	t.Parallel()
 
 	for _, test := range []struct {
 		name, role, projectGrant, email, support string
@@ -68,6 +69,7 @@ func TestHostedArtifactReadPermissions(t *testing.T) {
 }
 
 func TestHostedArtifactGrantRevocation(t *testing.T) {
+	t.Parallel()
 
 	for _, test := range []struct {
 		name        string
@@ -195,6 +197,7 @@ func TestHostedArtifactGrantRevocation(t *testing.T) {
 }
 
 func TestHostedArtifactPublisherBoundary(t *testing.T) {
+	t.Parallel()
 
 	f := newPostgresArtifactFixture(t)
 	ref, publisher, servicePath := seedPostgresHostedArtifact(t, f)

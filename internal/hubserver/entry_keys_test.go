@@ -24,6 +24,7 @@ import (
 )
 
 func TestEntryKeyCurrentAuthority(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"personal", "service"} {
 		for _, access := range []string{"all", "selected", "project"} {
 			for _, role := range []string{"owner", "admin", "member", "viewer"} {
@@ -122,6 +123,7 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 }
 
 func TestPostgresNativeSupportReadAudit(t *testing.T) {
+	t.Parallel()
 	f := newEntryKeyFixture(t, func(cfg *Config) {
 		cfg.runMaintenance = func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 			<-ctx.Done()
@@ -227,6 +229,7 @@ func TestPostgresNativeSupportReadAudit(t *testing.T) {
 }
 
 func TestEntryKeyCallReportsMoveItemRequestErrors(t *testing.T) {
+	t.Parallel()
 	f := newEntryKeyFixture(t)
 	user := f.user(t, "owner")
 	key := apikey.KeyAuthority{ID: "key_move", Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "all"}}
@@ -354,6 +357,7 @@ func (w *entryKeyAuditWriter) Write(body []byte) (int, error) {
 }
 
 func TestEntryKeyMutationAuditCommit(t *testing.T) {
+	t.Parallel()
 	for _, transport := range []string{"HTTP", "tool"} {
 		for _, failure := range []string{"cancel response", "reject audit insert", "reject audit update", "reject completed audit"} {
 			t.Run(transport+"/"+failure, func(t *testing.T) {
@@ -475,6 +479,7 @@ func TestEntryKeyMutationAuditCommit(t *testing.T) {
 }
 
 func TestEntryKeyAuditPreservesHandlerErrors(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		committed bool

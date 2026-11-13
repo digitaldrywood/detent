@@ -180,6 +180,7 @@ func (d *retentionInterleavingDetails) ReadDetail(ctx context.Context, organizat
 }
 
 func TestNativeIssueRetentionRechecksCurrentAuthorityBeforeCommit(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"source changed", "period disabled", "lease acquired", "cursor advanced"} {
 		t.Run(change, func(t *testing.T) {
 			f := newPostgresStorageArchiveFixture(t)

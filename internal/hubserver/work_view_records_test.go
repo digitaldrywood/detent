@@ -24,6 +24,7 @@ import (
 )
 
 func TestWorkViewRecordsUseCurrentPostgresAuthority(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	org := tracker.OrganizationID("org_security")
 	if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

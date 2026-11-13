@@ -29,6 +29,7 @@ import (
 )
 
 func TestNativeIssueCreatedBy(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "filer-list")
 	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(f.token), "", "")
 	if err != nil {
@@ -198,6 +199,7 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 }
 
 func TestNativeFilerPublicNames(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "filer-names")
 	organizations := []tracker.OrganizationID{f.project.OrganizationID, f.project.OrganizationID + "_second"}
 	for _, organization := range organizations {
@@ -302,6 +304,7 @@ func TestNativeFilerPublicNames(t *testing.T) {
 }
 
 func TestNativeCreatedByIdentity(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		credential hubapi.APICredential
@@ -329,6 +332,7 @@ func TestNativeCreatedByIdentity(t *testing.T) {
 }
 
 func TestHostedPersonalKeyCreatedBy(t *testing.T) {
+	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	users := []hostedSecurityUser{
 		f.user(t, "filer", "reporter", "filer@example.test", "write", ""),

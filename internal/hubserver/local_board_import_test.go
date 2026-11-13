@@ -728,6 +728,7 @@ func localBoardWorker(t *testing.T, f nativeFixture) string {
 }
 
 func TestLocalBoardImportRollsBackAtSourceMappingWrite(t *testing.T) {
+	t.Parallel()
 	f := localBoardTarget(t, nil, "rollback")
 	_, records := localBoardFixture(t, "local_sqlite")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/local-board-import", f.token, localboard.Request{Record: records[0]}), http.StatusOK)

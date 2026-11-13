@@ -39,6 +39,7 @@ import (
 )
 
 func TestHostedPolicyApprovalMCP(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct{ deployment, role string }{
 		{"dedicated", "owner"}, {"dedicated", "admin"}, {"shared", "owner"}, {"shared", "admin"},
 	} {
@@ -607,6 +608,7 @@ func assertPolicyInputSchema(t *testing.T, schema map[string]any, value any, pat
 }
 
 func TestWorkflowExecutionFailureProjection(t *testing.T) {
+	t.Parallel()
 	direction := &operatortool.RequestError{Code: "invalid_request", Message: "Use the linked issue conversation continuation owner"}
 	for _, test := range []struct {
 		name, message string
@@ -631,6 +633,7 @@ func TestWorkflowExecutionFailureProjection(t *testing.T) {
 }
 
 func TestMCPAuthorityExecutesDirectly(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, tool, target, reason     string
 		scope                          apikey.Scope

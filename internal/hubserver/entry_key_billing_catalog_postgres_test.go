@@ -31,6 +31,7 @@ func (p *entryKeyBillingProvider) Reconcile(_ context.Context, binding billing.B
 }
 
 func TestPostgresEntryKeyBillingCatalog(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t, sharedRouteBillingConfig, func(cfg *Config) {
 		org := cfg.Hosted.OrganizationID
 		provider := cfg.Hosted.Billing.Provider.(*hostedCreditProvider)

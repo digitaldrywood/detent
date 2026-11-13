@@ -23,6 +23,7 @@ import (
 )
 
 func TestNativeAnalyticsLaneResidence(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	at := func(hour int) time.Time { return base.Add(time.Duration(hour) * time.Hour) }
 	transition := func(hour int, from, to, detail string) analyticsResidenceEvent {
@@ -155,6 +156,7 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 }
 
 func TestNativeAnalyticsResidencePopulation(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	for _, kind := range []string{"issues", "events", "missing history", "archived live filter"} {
 		t.Run(kind, func(t *testing.T) {

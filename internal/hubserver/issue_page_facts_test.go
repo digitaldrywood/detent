@@ -31,6 +31,7 @@ import (
 )
 
 func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "example-library")
 	for _, fixture := range []nativeFixture{f, other} {
@@ -157,6 +158,7 @@ func TestIssuePageFactsUseTypedPostgresOwners(t *testing.T) {
 }
 
 func TestIssuePageFiltersPreservePopulationAndProjectScope(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "example-library")
 	want := map[tracker.ProjectID]map[tracker.NativeWorkItemID]string{}
@@ -262,6 +264,7 @@ func TestIssuePageFiltersPreservePopulationAndProjectScope(t *testing.T) {
 }
 
 func TestBlockerHistoryUsesTypedPostgresFacts(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	for index := range 2 {
 		issue := f.create(t, fmt.Sprintf("Blocker history %d", index))
@@ -331,6 +334,7 @@ func TestBlockerHistoryUsesTypedPostgresFacts(t *testing.T) {
 }
 
 func TestIssuePageHistoryReadsPastStorageConversionBudget(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	addedStates := 50 - len(f.project.States)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
@@ -620,6 +624,7 @@ func assertIssuePageNotificationParticipants(t *testing.T, f nativeFixture, issu
 }
 
 func TestBlockerHistoryUsesTypedPageFacts(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"unknown", "typed"} {
 		t.Run(stage, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -670,6 +675,7 @@ func TestBlockerHistoryUsesTypedPageFacts(t *testing.T) {
 }
 
 func TestIssuePagePullRequestBackfill(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{"insert", "update", "delete", "concurrent update"} {
 		for _, projection := range []string{"typed", "unknown", "typed URL differs"} {
 			t.Run(operation+"/"+projection, func(t *testing.T) {
@@ -942,6 +948,7 @@ func TestIssuePagePullRequestBackfill(t *testing.T) {
 	}
 }
 func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	source := coreWorkItemNeutralFixture(t, f.project.OrganizationID, f.project.ID, false)
 	linked := newCoreNeutralFixture(t, f.project.OrganizationID, "linked_issue_sources")

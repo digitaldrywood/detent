@@ -39,6 +39,7 @@ import (
 )
 
 func TestCoreExecutionImportPreservesHistoricalFenceAndRevisionZero(t *testing.T) {
+	t.Parallel()
 	var native *pgxpool.Config
 	repository, admin := coreImportPostgresWithAdmin(t, 3, func(config *pgxpool.Config) { native = config.Copy() })
 	objects := &memoryRunDetails{}
@@ -440,6 +441,7 @@ func coreExecutionStringPointer(value string) *string {
 }
 
 func TestCoreExecutionImportRefusesLegacyCopy(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "historical-source.db")
 	original := []byte("preserved verified historical source")
 	if err := os.WriteFile(path, original, 0400); err != nil {
@@ -458,6 +460,7 @@ func TestCoreExecutionImportRefusesLegacyCopy(t *testing.T) {
 }
 
 func TestCoreExecutionImportRejectsUnsupportedSchemaBeforePin(t *testing.T) {
+	t.Parallel()
 	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	for _, scenario := range []struct{ table, column, change string }{
 		{"native_attempts", "data_json", "extra"},
@@ -584,6 +587,7 @@ func historicalCoreAttemptReceipts(t *testing.T, source CoreExecutionImportSourc
 }
 
 func TestCoreWorkEventObjectPreservesImportReceipt(t *testing.T) {
+	t.Parallel()
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {
 			content := eventstore.NewContent(&memoryRunDetails{})
@@ -656,6 +660,7 @@ func seedCoreExecutionPayloadTarget(t *testing.T, repository *postgres.Repositor
 }
 
 func TestCoreExecutionDiffImportPreservesBodiesAndRejectsIncompleteCustody(t *testing.T) {
+	t.Parallel()
 	for _, shape := range []string{"inline", "manifest", "file_archive", "body", "expired", "missing_body", "corrupt_body", "wrong_producer"} {
 		t.Run(shape, func(t *testing.T) {
 			repository, admin := coreImportPostgresWithAdmin(t, 3)
@@ -842,6 +847,7 @@ func (s *coreExecutionDiffBodyStorage) Open(_ context.Context, key string) (io.R
 }
 
 func TestCoreExecutionImportRetainsArtifactsAfterTerminalPayloadClearsIDs(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		object   bool

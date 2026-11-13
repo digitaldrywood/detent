@@ -125,6 +125,7 @@ func equalBoardIssueWire(t *testing.T, got, want tracker.NativeIssue) bool {
 	return true
 }
 func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	counted := &boardChangeCountingRepository{Repository: repository}
@@ -481,6 +482,7 @@ func TestBoardChangePageBatchesTwoHundredArchivedAndCurrentCards(t *testing.T) {
 }
 
 func TestBoardSummaryReadsStaleReviewPolicyWithinTenant(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	details := &memoryRunDetails{}

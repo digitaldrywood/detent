@@ -43,6 +43,7 @@ func (a *catalogCountingApplication) Authorize(ctx context.Context, name string,
 }
 
 func TestHubCatalogProviderCalls(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"dedicated", "shared"} {
 		for _, test := range []struct {
 			name    string
@@ -222,6 +223,7 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 }
 
 func TestPostgresOperatorCatalogBootstrapAuthority(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		organization string
 		allocated    bool

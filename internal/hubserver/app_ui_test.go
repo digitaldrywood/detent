@@ -685,6 +685,7 @@ func TestAppUpdates(t *testing.T) {
 }
 
 func TestAppUpdatesPostgresProjectionAndFreshAuthorization(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 	expires := now.Add(time.Hour)
@@ -796,6 +797,7 @@ func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version
 }
 
 func TestAppBootstrapWorkspaceAvailability(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name                         string
 		service, terminal            bool

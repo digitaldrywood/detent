@@ -409,6 +409,7 @@ func TestNativeRunnerMinimumVersion(t *testing.T) {
 }
 
 func TestNativeRequestedClaimRefusalsAreTenantScopedAndDeduplicated(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	service := newClockedPostgresNativeService(t, Config{now: func() time.Time { return now }, Version: "v0.117.60"})
 	for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {

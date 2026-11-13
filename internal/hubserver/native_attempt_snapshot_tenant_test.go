@@ -282,6 +282,7 @@ func (r attemptSnapshotReader) LatestRunEvent(ctx context.Context, project track
 }
 
 func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 4)
 	serving, _ := repository.WorkloadCapacities()
 	if serving < 2 {
@@ -556,6 +557,7 @@ func TestNativeAttemptImportedUsageCorrection(t *testing.T) {
 }
 
 func TestNativeAttemptSnapshotConcurrentAppend(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 4)
 	serving, _ := repository.WorkloadCapacities()
 	if serving < 2 {

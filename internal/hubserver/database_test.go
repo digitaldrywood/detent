@@ -39,6 +39,7 @@ const (
 )
 
 func TestOpenTestServiceUsesPostgres(t *testing.T) {
+	t.Parallel()
 	for _, hosted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("hosted=%t", hosted), func(t *testing.T) {
 			cfg := Config{InitialAdminToken: []byte("example_fixture_admin_token")}

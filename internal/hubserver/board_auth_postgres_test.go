@@ -34,6 +34,7 @@ import (
 )
 
 func TestPostgresBrowserWorkListConcurrentRequests(t *testing.T) {
+	t.Parallel()
 	repository, _ := projectRecordPostgresWithAdmin(t, 7)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {

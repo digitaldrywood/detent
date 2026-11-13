@@ -130,6 +130,7 @@ func TestReadableIssueRoutesAndSlugEdits(t *testing.T) {
 }
 
 func TestMCPToolCatalogReadableIssueLinks(t *testing.T) {
+	t.Parallel()
 	f := newHostedSecurityFixture(t, func(config *Config) { config.Conversation = &ConversationConfig{Enabled: true} })
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "catalog-issue"}, Title: "Catalog issue", State: "Todo"})

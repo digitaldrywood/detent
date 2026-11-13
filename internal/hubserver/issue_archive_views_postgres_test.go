@@ -22,6 +22,7 @@ import (
 )
 
 func TestPostgresConversationArchiveAuthorization(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := &Service{database: &database{}, config: Config{TenantRepository: repository, AccessRepository: repository, now: time.Now, Logger: discardLogger()}}
 	service.conversations = &conversationService{Server: service.conversationServer(), Store: &conversationStore{}}

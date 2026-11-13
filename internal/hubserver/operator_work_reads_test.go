@@ -41,6 +41,7 @@ import (
 )
 
 func TestOperatorNativeWorkReadErrors(t *testing.T) {
+	t.Parallel()
 	var logs hostedLogBuffer
 	f := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
@@ -165,6 +166,7 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 }
 
 func TestOperatorNativeWorkListBytePages(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "bounded-list")
 	const needle = "body-only-list-match"
 	expected := make([]tracker.NativeIssue, 0, 61)
@@ -410,6 +412,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 }
 
 func TestOperatorNativeWorkReads(t *testing.T) {
+	t.Parallel()
 	// Real application writes populate the reads; catches bypassing native scope,
 	// losing cursor pages, dropping reads from the combined command dispatcher,
 	// and leaking hidden relationship IDs in saved versions.
@@ -1277,6 +1280,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 }
 
 func TestOperatorArchivedWorkReads(t *testing.T) {
+	t.Parallel()
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	details := &memoryRunDetails{}
 	var objectMu sync.Mutex

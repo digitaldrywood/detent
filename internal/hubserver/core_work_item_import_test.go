@@ -29,6 +29,7 @@ import (
 )
 
 func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testing.T) {
+	t.Parallel()
 	var native *pgxpool.Config
 	repository, _ := coreImportPostgresWithAdmin(t, 3, func(config *pgxpool.Config) { native = config.Copy() })
 	objects := &memoryRunDetails{}
@@ -425,6 +426,7 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 }
 
 func TestCoreWorkItemImportRejectsChangedCopyWhenAllIssuesWereDeleted(t *testing.T) {
+	t.Parallel()
 	repository := coreImportPostgres(t)
 	objects := &memoryRunDetails{}
 	org := tracker.OrganizationID("org_import_empty_changed")
@@ -461,6 +463,7 @@ func TestCoreWorkItemImportRejectsChangedCopyWhenAllIssuesWereDeleted(t *testing
 }
 
 func TestCoreIssueDependencyImportWaitsForCrossProjectIssuesAndReplays(t *testing.T) {
+	t.Parallel()
 	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	objects := &memoryRunDetails{}
 	for _, org := range []tracker.OrganizationID{"org_import_dependency", "org_import_dependency_other"} {
@@ -552,6 +555,7 @@ func TestCoreIssueDependencyImportWaitsForCrossProjectIssuesAndReplays(t *testin
 }
 
 func TestCoreWorkItemImportRollsBackMalformedQueue(t *testing.T) {
+	t.Parallel()
 	repository := coreImportPostgres(t)
 	objects := &memoryRunDetails{}
 	org := tracker.OrganizationID("org_import_malformed")
@@ -705,6 +709,7 @@ func parseTestTime(t *testing.T, raw string) time.Time {
 }
 
 func TestCoreWorkItemImportsRejectUnsupportedSchemaBeforePin(t *testing.T) {
+	t.Parallel()
 	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	for _, family := range []string{"work_items", "dependencies", "report_events", "linked_sources"} {
 		t.Run(family, func(t *testing.T) {
@@ -747,6 +752,7 @@ func TestCoreWorkItemImportsRejectUnsupportedSchemaBeforePin(t *testing.T) {
 }
 
 func TestCoreWorkItemImportsRefuseLegacyCopy(t *testing.T) {
+	t.Parallel()
 	for _, family := range []string{"work_items", "dependencies", "report_events"} {
 		for _, bundle := range []string{"", "unused-neutral-bundle"} {
 			var err error
@@ -766,6 +772,7 @@ func TestCoreWorkItemImportsRefuseLegacyCopy(t *testing.T) {
 }
 
 func TestCoreWorkItemImportPreservesVerifiedTerminalStreaks(t *testing.T) {
+	t.Parallel()
 	repository := coreImportPostgres(t)
 	for index, test := range []struct {
 		name, state string

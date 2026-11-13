@@ -66,6 +66,7 @@ func (r commentPageCountingReader) CollaborationVersions(ctx context.Context, ke
 }
 
 func TestOversizedCommentReportsBulkFallback(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "comment-fallback")
 	for _, title := range []string{"First comment owner", "Second comment owner"} {
 		t.Run(title, func(t *testing.T) {
@@ -83,6 +84,7 @@ func TestOversizedCommentReportsBulkFallback(t *testing.T) {
 }
 
 func TestCommentPageUsesSetBasedVersions(t *testing.T) {
+	t.Parallel()
 	var exchanges atomic.Int64
 	baselineCost := [2]int64{}
 	repository, _ := projectRecordPostgresWithAdmin(t, 3, func(config *pgxpool.Config) {

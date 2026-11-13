@@ -13,6 +13,7 @@ import (
 )
 
 func TestTenantRunReconnectPreservesWorkerCleanupIdentity(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t)
 	f.service.config.Version = "2.0.0"
 	for index, lease := range f.leases {

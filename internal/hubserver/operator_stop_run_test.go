@@ -27,6 +27,7 @@ import (
 )
 
 func TestHubMCPStopRun(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"execute", "stale revision", "stale fence", "replacement", "foreign project", "foreign item", "missing revision", "missing lease", "missing fence", "release rollback", "routing rollback"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newChangeFixture(t, nil)
@@ -307,6 +308,7 @@ func TestHubMCPStopRun(t *testing.T) {
 }
 
 func TestHostedStopRunAuthority(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"dedicated", "shared"} {
 		for _, scenario := range []struct {
 			name, role     string

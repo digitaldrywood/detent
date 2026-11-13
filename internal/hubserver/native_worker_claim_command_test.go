@@ -27,6 +27,7 @@ import (
 type claimRequestTraceKey struct{}
 
 func TestNativeClaimReleaseHTTPWireIncludesAuthentication(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t)
 	config, err := f.service.config.Postgres.Connection.PoolConfig()
 	if err != nil {

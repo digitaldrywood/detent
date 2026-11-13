@@ -160,6 +160,7 @@ func (w progressPublicationWorkspace) Create(context.Context, workspace.Issue) (
 }
 
 func TestNativeProgressExecutionPublication(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		attempts     int

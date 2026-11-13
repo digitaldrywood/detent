@@ -68,6 +68,7 @@ func changeToolCall(name string, args operatortool.ChangeArguments) operatortool
 }
 
 func TestOperatorChangeWithoutPostgresCannotUseLegacyStorage(t *testing.T) {
+	t.Parallel()
 	app := hubChangeApplication{service: &Service{}, scope: hubscope.NativeScope{Credential: hubapi.APICredential{Scope: hubapi.APIScopeAdmin}}}
 	args := operatortool.ChangeArguments{ProjectID: "example-project", ItemID: "wi_example", RequestID: "example-command"}
 	for _, name := range []string{operatortool.ListChanges, operatortool.GetChange, operatortool.GetChangeReviewPolicy, operatortool.ArtifactReferences} {
@@ -87,6 +88,7 @@ func TestOperatorChangeWithoutPostgresCannotUseLegacyStorage(t *testing.T) {
 }
 
 func TestOperatorChangePublication(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name           string
 		review, checks bool
@@ -287,6 +289,7 @@ func TestOperatorChangePublication(t *testing.T) {
 }
 
 func TestOperatorMutationRefusalPrecedence(t *testing.T) {
+	t.Parallel()
 	limit := &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: 10, Consumption: 11}
 	for _, projection := range []struct {
 		name    string
@@ -320,6 +323,7 @@ func TestOperatorMutationRefusalPrecedence(t *testing.T) {
 // Catches discovery bypass reaching foreign nested resources, stale review
 // identities, and replay repeating discussion effects after reconnect.
 func TestOperatorChangeCommands(t *testing.T) {
+	t.Parallel()
 	service := newPostgresNativeService(t, Config{})
 	organization := tracker.OrganizationID(artifact.NewID("org"))
 	seedPostgresHubAdmin(t, service.config.TenantRepository, service, nativeOrganization{ID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-")})
@@ -1230,6 +1234,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 // Catches forged artifact identity, token persistence/logging, permission loss
 // during replay, read grants incorrectly requiring write, and unusable URLs.
 func TestOperatorArtifactResults(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"valid replay", "historical revision", "viewer", "forged hash", "foreign item", "missing service", "expired", "lost grant", "revoked session"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newPostgresArtifactFixture(t)
@@ -1356,6 +1361,7 @@ func TestOperatorArtifactResults(t *testing.T) {
 }
 
 func TestOperatorArchivedChangeReads(t *testing.T) {
+	t.Parallel()
 	details := &memoryRunDetails{keyReads: map[string]int{}}
 	f := newChangeFixture(t, newPostgresNativeService(t, Config{RunDetails: details}))
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {

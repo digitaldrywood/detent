@@ -22,6 +22,7 @@ import (
 )
 
 func TestImportTenantCoreCopyCompletesAllStagesAndScopesTenants(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	config := postgres.Config{

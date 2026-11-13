@@ -41,6 +41,7 @@ import (
 const workItemRecordBody = "## Acceptance criteria\nThe issue is served.\n## Must not break\nOther tenants.\n## How we know it worked\nRead the issue."
 
 func TestRunnerUnsupportedMutationsAreInvalid(t *testing.T) {
+	t.Parallel()
 	service := &Service{config: Config{AccessRepository: struct{ tenantstore.Repository }{}}}
 	scope := hubscope.NativeScope{Credential: hubapi.APICredential{Scope: hubapi.APIScopeWorker}}
 	for _, test := range []struct {
@@ -75,6 +76,7 @@ func (s missingDetailReferenceStore) ReadDetail(ctx context.Context, organizatio
 }
 
 func TestWorkItemRecordBackendParity(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []string{"postgres"} {
 		t.Run(backend, func(t *testing.T) {
 			repository := projectRecordPostgres(t)
@@ -347,6 +349,7 @@ func TestWorkItemRecordBackendParity(t *testing.T) {
 }
 
 func TestPostgresWorkItemRelationshipsAndLabels(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 	if err := service.stopGitHubWebhookMaintenance(); err != nil {
@@ -1076,6 +1079,7 @@ func (r *projectUpdateBeforeWriteRepository) WriteTenant(ctx context.Context, or
 }
 
 func TestWorkItemCreationReplansAfterProjectWorkflowChanges(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
@@ -1139,6 +1143,7 @@ func TestWorkItemCreationReplansAfterProjectWorkflowChanges(t *testing.T) {
 }
 
 func TestWorkItemRecordReplayRechecksAccessInTenantWrite(t *testing.T) {
+	t.Parallel()
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
 		cfg.RunDetails = &memoryRunDetails{}
 	})
@@ -1187,6 +1192,7 @@ func TestWorkItemRecordReplayRechecksAccessInTenantWrite(t *testing.T) {
 }
 
 func TestWorkItemProvenanceDedupRespectsReporterVisibility(t *testing.T) {
+	t.Parallel()
 	scope := hubscope.NativeScope{Organization: tracker.OrganizationID("org_security"), Project: tracker.ProjectID("prj_security")}
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
 		cfg.RunDetails = &memoryRunDetails{}
@@ -1260,6 +1266,7 @@ func TestWorkItemProvenanceDedupRespectsReporterVisibility(t *testing.T) {
 }
 
 func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1")})
 	organization := nativeOrganization{ID: "org_example", Name: "Example organization", Slug: "example-organization"}
@@ -1357,6 +1364,7 @@ func TestWorkItemRecordBodyEditClearsReturnedIssueAction(t *testing.T) {
 }
 
 func TestWorkItemRecordCommentEditConflictAfterConcurrentWrite(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})
@@ -1487,6 +1495,7 @@ func TestWorkItemRecordCommentEditConflictAfterConcurrentWrite(t *testing.T) {
 }
 
 func TestWorkItemRecordMutationRequiresHostedFeature(t *testing.T) {
+	t.Parallel()
 	repository, f, owner, _ := newChangePolicyPostgresFixtureWithAdmin(t, 8)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
@@ -1578,6 +1587,7 @@ func (r rejectedWorkItemRepository) WriteTenant(ctx context.Context, org tracker
 }
 
 func TestWorkItemRecordRollback(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	service := openLocalPostgresHubTestService(t, repository, Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), TenantRepository: repository})

@@ -33,6 +33,7 @@ func (p *hostedSecurityProvider) AcceptInvitationByID(ctx context.Context, id, u
 }
 
 func TestNativeCredentialAdministration(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.November, 12, 12, 0, 0, 0, time.UTC)
 	var clock atomic.Int64
 	clock.Store(now.UnixNano())

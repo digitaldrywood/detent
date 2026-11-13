@@ -28,6 +28,7 @@ func (d *unreadableDetails) ReadDetail(ctx context.Context, organization string,
 }
 
 func TestIssueEmailKeepsNoticeWhenVerificationIsUnreadable(t *testing.T) {
+	t.Parallel()
 	v := newVerificationFixture(t)
 	requests := 0
 	issue := v.file(t, "reporter", "unreadable-verification", nil, "")
@@ -150,6 +151,7 @@ func TestRenderIssueEmail(t *testing.T) {
 }
 
 func TestIssueNoticeSelection(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, kind              string
 		data                    tracker.CollaborationData
@@ -173,6 +175,7 @@ func TestIssueNoticeSelection(t *testing.T) {
 }
 
 func TestIssueEmailPassesSubscriptionHeldByAnotherWorker(t *testing.T) {
+	t.Parallel()
 	v := newVerificationFixture(t)
 	requests := map[string]int{}
 	v.service.config.Hosted.EmailSender = healthEmailSenderFunc(func(_ context.Context, message auth.EmailMessage) error {
@@ -216,6 +219,7 @@ func TestIssueEmailPassesSubscriptionHeldByAnotherWorker(t *testing.T) {
 }
 
 func TestIssueEmailReachesDueNoticeBehindFutureNotices(t *testing.T) {
+	t.Parallel()
 	v := newVerificationFixture(t)
 	requests := map[string]int{}
 	v.service.config.Hosted.EmailSender = healthEmailSenderFunc(func(_ context.Context, message auth.EmailMessage) error {
@@ -257,6 +261,7 @@ func TestIssueEmailReachesDueNoticeBehindFutureNotices(t *testing.T) {
 }
 
 func TestIssueEmailReachesRecipientBehindFailingSubscriptions(t *testing.T) {
+	t.Parallel()
 	v := newVerificationFixture(t)
 	later := v.users["tester"].identity.Email
 	delivered := map[string]int{}

@@ -237,6 +237,7 @@ func (w dispatchWaitCapacityWriter) RunnerClaimState(ctx context.Context, runner
 }
 
 func TestNativeDispatchWaitLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{
 		"queue", "dependency", "capacity", "unchanged heartbeat", "routing", "revocation", "cancel", "shutdown", "reconnect",
 		"replayed queue", "rejected queue", "other tenant queue",
@@ -705,6 +706,7 @@ func newDispatchWaitFixture(t *testing.T, name string) (nativeFixture, *dispatch
 }
 
 func TestNativeDispatchWaitScale(t *testing.T) {
+	t.Parallel()
 	for _, runners := range []int{1, 16, 64, 256} {
 		for _, admissions := range []int{1, 8} {
 			if admissions > runners {
@@ -826,6 +828,7 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 }
 
 func TestNativeCandidateQueryBound(t *testing.T) {
+	t.Parallel()
 	var bindBytes int64
 	for _, test := range []struct {
 		size        int

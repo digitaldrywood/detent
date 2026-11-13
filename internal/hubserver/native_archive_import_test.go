@@ -25,6 +25,7 @@ import (
 )
 
 func TestNativeArchiveImportRecoversRetiredMessagesAndImmutableVersions(t *testing.T) {
+	t.Parallel()
 	for _, newer := range []bool{false, true} {
 		t.Run(fmt.Sprintf("newer pointer=%v", newer), func(t *testing.T) {
 			f := newPostgresStorageArchiveFixture(t)

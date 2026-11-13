@@ -19,6 +19,7 @@ import (
 )
 
 func TestLinkedIssueIntakeRequiresSelectedAccessAuthority(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	service := openLocalPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}})
 	path := "/api/v2/organizations/org_example/projects/prj_example/work-items/wi_example/source-intake"
@@ -28,6 +29,7 @@ func TestLinkedIssueIntakeRequiresSelectedAccessAuthority(t *testing.T) {
 }
 
 func TestLinkedIssueSourceRecordUsesSelectedOwnersWithoutSQLite(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	organization := tracker.OrganizationID("org_security")
 	projectID := tracker.ProjectID("prj_security")

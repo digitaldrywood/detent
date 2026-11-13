@@ -27,6 +27,7 @@ import (
 )
 
 func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	var clock atomic.Int64
 	clock.Store(start.Add(-31 * 24 * time.Hour).UnixNano())
@@ -224,6 +225,7 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 }
 
 func TestNativeRetentionCompletedBackfillsAvoidWriter(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	s := f.service
 	item := f.create(t, "historical checkpoint projection")
@@ -288,6 +290,7 @@ func frozenRetentionTimeout(ctx context.Context, _ time.Duration) (context.Conte
 }
 
 func TestNativeRetentionStageBudgets(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		expire   bool

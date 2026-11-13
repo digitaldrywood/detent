@@ -14,6 +14,7 @@ import (
 )
 
 func TestCoreWorkItemImportSupportsMutationsAndSearchAcrossTenants(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"native", "historical", "missing search"} {
 		t.Run(scenario, func(t *testing.T) {
 			repository, admin := coreImportPostgresWithAdmin(t, 4)

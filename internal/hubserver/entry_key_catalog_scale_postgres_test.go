@@ -20,6 +20,7 @@ import (
 )
 
 func TestPostgresEntryKeySelectedCatalogCostDoesNotGrowWithProjectCount(t *testing.T) {
+	t.Parallel()
 	f := newSharedRouteFixture(t)
 	for org, service := range f.services {
 		organization := tracker.OrganizationID(org)

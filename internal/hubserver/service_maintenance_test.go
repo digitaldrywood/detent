@@ -38,6 +38,7 @@ func (s *maintenanceBatchProbe) ReadDetails(ctx context.Context, org string, ref
 }
 
 func TestHostedMaintenancePreservesRequestBatchReads(t *testing.T) {
+	t.Parallel()
 	store := &maintenanceBatchProbe{memoryRunDetails: &memoryRunDetails{}}
 	ref, err := store.StoreDetail(t.Context(), "org_example", bytes.Repeat([]byte("example"), 10))
 	if err != nil {
@@ -69,6 +70,7 @@ func TestHostedMaintenancePreservesRequestBatchReads(t *testing.T) {
 }
 
 func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
@@ -364,6 +366,7 @@ func TestHostedMaintenanceCloseJoinsScheduler(t *testing.T) {
 }
 
 func TestBodyBackfillDrainsWithinBoundedTicks(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
 	store, err := openDatabase(t.Context(), cfg)

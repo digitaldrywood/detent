@@ -22,6 +22,7 @@ import (
 )
 
 func TestWorkItemContentChargesCollaborationBytesPerTenant(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC()
 	service := &Service{echo: echo.New(), notifications: newNotificationBroker(), boardRefresh: make(chan struct{}, 1), database: &database{postgres: repository, now: func() time.Time { return now }}, secretRewrapReady: make(chan struct{}), config: Config{Logger: discardLogger(), TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, now: func() time.Time { return now }}}

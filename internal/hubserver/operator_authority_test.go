@@ -18,6 +18,7 @@ import (
 // Both entry paths must resolve current membership/grants when executing an
 // action after discovery, and fail before the application action is reached.
 func TestHostedOperatorCurrentAuthority(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"dedicated", "shared"} {
 		t.Run(deployment, func(t *testing.T) {
 			for _, test := range []struct {
@@ -152,6 +153,7 @@ func operatorPostgresSQL(t *testing.T, f operatorSecurityFixture, query string, 
 }
 
 func TestHubMCPOperatorCredentialBoundary(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	worker := operatorNativeTokenFixture(t, f.service, f.project.OrganizationID, hubapi.APIScopeWorker, "mcp-worker")
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
@@ -175,6 +177,7 @@ func TestHubMCPOperatorCredentialBoundary(t *testing.T) {
 }
 
 func TestReporterOperatorAuthority(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"shared", "dedicated"} {
 		for _, role := range []string{"reporter", "member", "viewer"} {
 			t.Run(deployment+"/"+role, func(t *testing.T) {

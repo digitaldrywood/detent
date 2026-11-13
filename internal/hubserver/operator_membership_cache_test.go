@@ -33,6 +33,7 @@ type operatorMembershipTransport func(*http.Request) (*http.Response, error)
 func (f operatorMembershipTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestOperatorMembershipProviderAvailability(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		cached     bool

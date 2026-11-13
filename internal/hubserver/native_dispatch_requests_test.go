@@ -979,6 +979,7 @@ func TestNativeDerivedHoldDispatchEquivalence(t *testing.T) {
 }
 
 func TestNativeRecordedDependencyUsesCurrentEdges(t *testing.T) {
+	t.Parallel()
 	f := newDispatchGuardFixture(t)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.ProjectRecord(t.Context(), f.project.ID)

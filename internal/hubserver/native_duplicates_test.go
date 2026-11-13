@@ -40,6 +40,7 @@ func refreshNativeDuplicateSearchFixture(t *testing.T, service *Service, organiz
 }
 
 func TestNativeDuplicateFiling(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		enabled    bool
@@ -214,6 +215,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 }
 
 func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "token-binding")
 	first := f.create(t, "Runner checkout deadlocks")
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
@@ -287,6 +289,7 @@ func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
 }
 
 func TestNativeDuplicateChallengeLifetime(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		age  time.Duration
@@ -350,6 +353,7 @@ func TestNativeDuplicateChallengeLifetime(t *testing.T) {
 }
 
 func TestNativeDuplicateChallengeSettings(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "settings")
 	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/projects", testHubAdminToken, map[string]any{"idempotency_key": "default-setting", "name": "Default duplicate setting", "states": nativeFixtureStates()})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -548,6 +552,7 @@ func markNativeDuplicateSearchRebuildFixture(t *testing.T, f nativeFixture) {
 }
 
 func TestNativeDuplicateMCP(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, transport string
 		failBrowserPath bool
@@ -717,6 +722,7 @@ func TestNativeDuplicateMCP(t *testing.T) {
 }
 
 func TestNativeDuplicateCandidateRecheck(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"new issue", "edited candidate", "archived candidate", "challenge enabled", "challenge disabled"} {
 		t.Run(change, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -826,6 +832,7 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 }
 
 func TestNativeDuplicatesIncompleteIndex(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"rebuild", "dirty"} {
 		t.Run(state, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})

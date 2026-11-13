@@ -19,6 +19,7 @@ import (
 )
 
 func TestNativeWorkListOrder(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "list-order")
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 		record, err := w.ProjectRecord(t.Context(), f.project.ID)
@@ -85,6 +86,7 @@ func TestNativeWorkListOrder(t *testing.T) {
 }
 
 func TestNativeWorkListPagingDuringChanges(t *testing.T) {
+	t.Parallel()
 	f, guard := newWriterGuardNativeFixture(t)
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)

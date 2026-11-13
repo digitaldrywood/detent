@@ -48,6 +48,7 @@ func reporterTestBody(kind string) string {
 }
 
 func TestReporterNativeCommands(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, transport string
 		upgraded        bool
@@ -417,6 +418,7 @@ func TestReporterNativeCommands(t *testing.T) {
 }
 
 func TestReporterMCPFilesIntoTriage(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
 			f, ctx := newHostedKeyMCPFixture(t, deployment, "reporter")
@@ -571,6 +573,7 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 }
 
 func TestReporterPersonalKeyIntersection(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
 			f, ctx := newHostedKeyMCPFixture(t, deployment, "reporter")
@@ -625,6 +628,7 @@ func TestReporterPersonalKeyIntersection(t *testing.T) {
 }
 
 func TestReporterRoleAssignment(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
 			f, _ := newHostedKeyMCPFixture(t, deployment, "owner")
@@ -696,6 +700,7 @@ func TestReporterRoleAssignment(t *testing.T) {
 }
 
 func TestReporterCustomHostedProjectCreation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		states, want []tracker.NativeState
@@ -818,6 +823,7 @@ func TestReporterCustomHostedProjectCreation(t *testing.T) {
 }
 
 func TestNativeProjectCreationWorkflowBounds(t *testing.T) {
+	t.Parallel()
 	for _, hosted := range []bool{false, true} {
 		t.Run(strconv.FormatBool(hosted), func(t *testing.T) {
 			var request func(any) *httptest.ResponseRecorder
@@ -886,6 +892,7 @@ func TestNativeProjectCreationWorkflowBounds(t *testing.T) {
 }
 
 func TestReporterWorkflowTemplates(t *testing.T) {
+	t.Parallel()
 	const repairBody = "## Acceptance criteria\nRepair the verified failure.\n\n## Must not break\nPreserve authority.\n\n## How we know it worked\nRun make check-land.\n\n## Invariants touched\nPreserve INV-3.\n\n## Safety regression\nPreserve regression tables."
 	const repairDefinition = "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports from `.github/workflows/verify.yaml` on `release/v2.0` enter Todo with Urgent priority.\n"
 	for _, test := range []struct {

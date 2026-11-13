@@ -21,6 +21,7 @@ import (
 )
 
 func TestIssueFilterValues(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
 	type entry struct {

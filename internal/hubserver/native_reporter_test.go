@@ -29,6 +29,7 @@ import (
 )
 
 func TestReporterReadIsolation(t *testing.T) {
+	t.Parallel()
 	v := newVerificationFixture(t)
 	issues := map[string]tracker.NativeIssue{}
 	for _, user := range []string{"reporter", "tester"} {
@@ -149,6 +150,7 @@ func TestReporterReadIsolation(t *testing.T) {
 }
 
 func TestReporterTriageEdits(t *testing.T) {
+	t.Parallel()
 	v := newVerificationFixture(t)
 	for _, user := range []string{"reporter", "tester"} {
 		r := v.request(t, v.users[user], http.MethodPost, v.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: user}, Type: "bug", Title: "Editable report " + user, Body: reporterBugSections})
@@ -195,6 +197,7 @@ func TestReporterTriageEdits(t *testing.T) {
 }
 
 func TestReporterLinksAttachmentsAndBoardStream(t *testing.T) {
+	t.Parallel()
 	v := newVerificationFixture(t)
 	items := map[string]tracker.NativeIssue{}
 	records := map[string]attachment.Metadata{}
@@ -312,6 +315,7 @@ func TestReporterLinksAttachmentsAndBoardStream(t *testing.T) {
 }
 
 func TestReporterStatus(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ state, want string }{{"Triage", "submitted"}, {"Backlog", "planned"}, {"Todo", "planned"}, {"In Progress", "in_progress"}, {"In Review", "in_progress"}, {"Rework", "in_progress"}, {"Merging", "in_progress"}, {"Blocked", "in_progress"}, {"Done", "done"}, {"Cancelled", "cancelled"}} {
 		t.Run(test.state, func(t *testing.T) {
 			if got := hubscope.ReporterStatus(test.state); got != test.want {
@@ -322,6 +326,7 @@ func TestReporterStatus(t *testing.T) {
 }
 
 func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []string{"dedicated", "shared"} {
 		t.Run(deployment, func(t *testing.T) {
 			f, ctx := newHostedKeyMCPFixture(t, deployment, "reporter")
@@ -438,6 +443,7 @@ func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
 }
 
 func TestReporterAggregateReads(t *testing.T) {
+	t.Parallel()
 	v := newVerificationFixture(t)
 	own := v.file(t, "reporter", "own", nil, "")
 	other := v.file(t, "tester", "other", nil, "")

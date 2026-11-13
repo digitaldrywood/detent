@@ -37,6 +37,7 @@ import (
 )
 
 func TestNativeVersionRoundTrip(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"issue", "comment"} {
 		t.Run(kind, func(t *testing.T) {
 			const count = 2*nativeVersionSnapshotInterval + 7
@@ -266,6 +267,7 @@ func TestNativeVersionRoundTrip(t *testing.T) {
 }
 
 func TestNativeTransitionHistoryBytes(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "transition history")
 	scope := nativeBoardFixtureScope(t, f)
@@ -333,6 +335,7 @@ func TestNativeTransitionHistoryBytes(t *testing.T) {
 }
 
 func TestNativeNoOpRevisions(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "no-op edits")
 	scope := nativeBoardFixtureScope(t, f)
@@ -536,6 +539,7 @@ func TestNativeNoOpRevisions(t *testing.T) {
 }
 
 func TestCollaborationDeltaMigration(t *testing.T) {
+	t.Parallel()
 	for _, fail := range []bool{false, true} {
 		t.Run(fmt.Sprintf("verification_failure_%t", fail), func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})

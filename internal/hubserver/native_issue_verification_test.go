@@ -193,6 +193,7 @@ func (v verificationFixture) verify(t *testing.T, answerer string, issue tracker
 }
 
 func TestNativeIssueVerificationEntersPendingByFiler(t *testing.T) {
+	t.Parallel()
 	v := newVerificationFixture(t)
 	stamped := issueorigin.Stamp(reporterBugSections, issueorigin.Origin{Kind: "worker", Fingerprint: "verification-example"})
 	for _, test := range []struct {
@@ -235,6 +236,7 @@ func TestNativeIssueVerificationEntersPendingByFiler(t *testing.T) {
 }
 
 func TestNativeIssueVerificationAnswers(t *testing.T) {
+	t.Parallel()
 	v := newVerificationFixture(t)
 	for _, test := range []struct {
 		name, filer, answerer string
@@ -359,6 +361,7 @@ func readAnalyticsQualityEvents(t *testing.T, v verificationFixture, item tracke
 }
 
 func TestNativeIssueVerificationListAndEmail(t *testing.T) {
+	t.Parallel()
 	v := newVerificationFixture(t)
 	messages := []auth.EmailMessage{}
 	v.service.config.Hosted.EmailSender = healthEmailSenderFunc(func(_ context.Context, message auth.EmailMessage) error {
@@ -422,6 +425,7 @@ func TestNativeIssueVerificationListAndEmail(t *testing.T) {
 }
 
 func TestVerifyFixMCP(t *testing.T) {
+	t.Parallel()
 	f := newNativeFixture(t, nil, "", "verify-fix-mcp")
 	contexts := make(chan context.Context, 1)
 	f.service.echo.POST("/api/v2/organizations/:organization/verify-fix-test", func(c echo.Context) error {

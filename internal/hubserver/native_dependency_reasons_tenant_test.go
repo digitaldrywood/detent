@@ -30,6 +30,7 @@ import (
 )
 
 func TestTenantDependencyReasonMutationReplaysAndFencesWithoutSQLite(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &memoryRunDetails{}

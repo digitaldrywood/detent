@@ -20,6 +20,7 @@ import (
 )
 
 func TestCoreChangeImportsRefuseLegacyCopy(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "historical-source.db")
 	original := []byte("preserved verified historical source")
 	if err := os.WriteFile(path, original, 0400); err != nil {
@@ -52,6 +53,7 @@ func TestCoreChangeImportsRefuseLegacyCopy(t *testing.T) {
 }
 
 func TestCoreChangeImportsRejectUnsupportedSchemaBeforePin(t *testing.T) {
+	t.Parallel()
 	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	for _, family := range []string{"changes", "landings", "escapes", "usage"} {
 		t.Run(family, func(t *testing.T) {
@@ -96,6 +98,7 @@ func TestCoreChangeImportsRejectUnsupportedSchemaBeforePin(t *testing.T) {
 }
 
 func TestCoreNeutralObjectRecoversOnlyVerifiedPendingBytes(t *testing.T) {
+	t.Parallel()
 	payload := []byte{0, 1, 0xff, 'x'}
 	reference, _, err := attachment.PrepareArchive("org_pending", 1, bytes.NewReader(payload))
 	if err != nil {
@@ -155,6 +158,7 @@ func TestCoreNeutralObjectRecoversOnlyVerifiedPendingBytes(t *testing.T) {
 }
 
 func TestCoreNeutralUsageRefusesInvalidSourceBeforeWriting(t *testing.T) {
+	t.Parallel()
 	repository, admin := coreImportPostgresWithAdmin(t, 3)
 	for _, scenario := range []string{"digest", "attempt scope", "currency"} {
 		t.Run(scenario, func(t *testing.T) {

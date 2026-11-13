@@ -103,6 +103,7 @@ func sourceTransferPostgresFixture(t *testing.T) (*Service, *sql.DB) {
 }
 
 func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
+	t.Parallel()
 	service, admin := sourceTransferPostgresFixture(t)
 	for _, org := range []string{"org_first", "org_second"} {
 		service.config.Hosted.OrganizationID = org
@@ -546,6 +547,7 @@ func seedSourceTransferAttempt(t *testing.T, s *Service, org tracker.Organizatio
 }
 
 func TestPostgresSourceTransferCommitsAndReplays(t *testing.T) {
+	t.Parallel()
 	s, _ := sourceTransferPostgresFixture(t)
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		t.Run(string(org), func(t *testing.T) {

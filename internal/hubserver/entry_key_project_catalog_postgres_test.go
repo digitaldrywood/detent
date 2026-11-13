@@ -27,6 +27,7 @@ import (
 )
 
 func TestPostgresEntryKeyProjectCatalog(t *testing.T) {
+	t.Parallel()
 	authorities := map[string]apikey.KeyAuthority{}
 	roles := map[string]string{}
 	f := newSharedRouteFixture(t, func(cfg *Config) {

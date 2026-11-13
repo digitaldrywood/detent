@@ -16,6 +16,7 @@ import (
 )
 
 func TestPostgresLinkedAndCutoffReadsRecheckRole(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"linked", "export_cutoff"} {
 		t.Run(kind, func(t *testing.T) {
 			repository, f, owner, expected, changes := newPostgresExportLinkedFixture(t)
@@ -65,6 +66,7 @@ func TestPostgresLinkedAndCutoffReadsRecheckRole(t *testing.T) {
 }
 
 func TestPostgresLinkedCacheKeepsReporterVisibility(t *testing.T) {
+	t.Parallel()
 	repository, f, owner, expected, changes := newPostgresExportLinkedFixture(t)
 	var primary, secondary tracker.NativeWorkItemID
 	for id, name := range expected {

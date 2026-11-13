@@ -58,6 +58,7 @@ func (r *leaseTransactionCounter) WriteTenant(ctx context.Context, org tracker.O
 }
 
 func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t)
 	credential, status, err := f.service.authenticateAccessHash(t.Context(), apikey.HashToken(f.tokens[0]), "", "")
 	if err != nil || status != http.StatusOK {
@@ -261,6 +262,7 @@ func TestLeaseRenewalReturnsItsCommittedSnapshot(t *testing.T) {
 }
 
 func TestReviewTerminalLease(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name           string
 		landed         bool
@@ -432,6 +434,7 @@ func TestReviewTerminalLease(t *testing.T) {
 }
 
 func TestLeaseCommandLocksRunnerBeforeFence(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{"renew", "release"} {
 		t.Run(operation, func(t *testing.T) {
 			f := newRunnerPGFixture(t)

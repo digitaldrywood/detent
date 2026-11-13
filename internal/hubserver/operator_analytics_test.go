@@ -43,6 +43,7 @@ import (
 )
 
 func TestHostedAnalyticsReads(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
 		cfg.now = func() time.Time { return now }
@@ -507,6 +508,7 @@ func TestHostedAnalyticsReads(t *testing.T) {
 }
 
 func TestNativeAnalyticsUnavailableServices(t *testing.T) {
+	t.Parallel()
 	identity := operatortool.Identity{PrincipalID: "test", OrganizationID: "org_test", CredentialID: "test"}
 	ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
 		return operatortool.Authority{Identity: identity, Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil
@@ -983,6 +985,7 @@ func TestNativeAnalyticsCostPerOutcome(t *testing.T) {
 }
 
 func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 6, 3, 7, 0, 0, time.UTC)
 	clock := now.Add(-15 * time.Minute)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return clock }, RunDetails: &memoryRunDetails{}})

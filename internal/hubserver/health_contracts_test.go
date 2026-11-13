@@ -18,6 +18,7 @@ import (
 )
 
 func TestHealthContractsLiveInputs(t *testing.T) {
+	t.Parallel()
 	t.Run("linked intake", func(t *testing.T) {
 		service := newPostgresNativeService(t, Config{RunDetails: &memoryRunDetails{}})
 		for _, organization := range []tracker.OrganizationID{"org_first", "org_first_second"} {

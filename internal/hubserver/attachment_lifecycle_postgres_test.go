@@ -21,6 +21,7 @@ import (
 )
 
 func TestPostgresAttachmentDeletionReleasesQuotaOnce(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	service := &Service{echo: echo.New(), secretRewrapReady: make(chan struct{}), database: &database{postgres: repository}, config: Config{TenantRepository: repository, AccessRepository: repository, RunDetails: &memoryRunDetails{}, Logger: discardLogger(), now: func() time.Time { return now }}}

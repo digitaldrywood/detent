@@ -1101,6 +1101,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 }
 
 func TestExplanationProviderCapacityCandidateWindow(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	f, repository, pool, admin, scope := newRuntimeCapacityFixture(t, "capacity-window", &now)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())

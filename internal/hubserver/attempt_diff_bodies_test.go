@@ -12,6 +12,7 @@ import (
 )
 
 func TestDiffBodyRoutesRequireTypedOwnerAndServiceScope(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, endpoint, kind, audience string
 		status                         int

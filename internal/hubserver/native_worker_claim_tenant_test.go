@@ -114,6 +114,7 @@ func (r nativePreviewCountingReader) ClaimPreviewPlanRows(ctx context.Context, p
 }
 
 func TestNativeClaimRequiresReportedProviderSelection(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	for _, selected := range []bool{false, true} {
 		t.Run(fmt.Sprintf("selected_%t", selected), func(t *testing.T) {
@@ -167,6 +168,7 @@ func TestNativeClaimRequiresReportedProviderSelection(t *testing.T) {
 }
 
 func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
 	service := openPostgresHubTestService(t, repository, Config{
@@ -302,6 +304,7 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 }
 
 func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *testing.T) {
+	t.Parallel()
 	var logs bytes.Buffer
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -1068,6 +1071,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 }
 
 func TestNativeClaimPendingLandingRequiresLatestMatchingVersionReceipt(t *testing.T) {
+	t.Parallel()
 	base := hubrecords.NativeClaimPlan{
 		ChangeRecord:        eventstore.Change{ID: "change_example", CurrentVersionID: new("version_example")},
 		ChangeVersion:       eventstore.Version{ID: "version_example", HeadSHA: "head_example"},
@@ -1113,6 +1117,7 @@ func TestNativeClaimPendingLandingRequiresLatestMatchingVersionReceipt(t *testin
 }
 
 func TestNativeClaimLandingCapacityRequired(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		state     string
@@ -1141,6 +1146,7 @@ func TestNativeClaimLandingCapacityRequired(t *testing.T) {
 }
 
 func TestTenantClaimUsesConcurrencyNotSubscriptionQuotaState(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	organization := tracker.OrganizationID("org_provider_claim")
 	project := tracker.ProjectID("prj_provider_claim")
@@ -1259,6 +1265,7 @@ func TestTenantClaimUsesConcurrencyNotSubscriptionQuotaState(t *testing.T) {
 }
 
 func TestNativeClaimContractRefusalDoesNotFailCandidateScan(t *testing.T) {
+	t.Parallel()
 	t.Run("compatible claim keeps current source and runner authority", func(t *testing.T) {
 		f, runner, ids, descriptor := newRetainedWorkListFixture(t)
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(ids[2]), testHubAdminToken, nil)

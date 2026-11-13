@@ -35,6 +35,7 @@ import (
 )
 
 func TestAttemptDiffExpiredManifestDropsOnlyArchivedBodies(t *testing.T) {
+	t.Parallel()
 	files := []tracker.AttemptDiffFile{
 		{Path: "example.go", Status: tracker.DiffStatusModified, Patch: "+inline", PatchBody: &diffbody.Reference{Key: "example/archive", SHA256: strings.Repeat("a", 64), Bytes: 7}},
 		{Path: "expired.go", Status: tracker.DiffStatusModified, PatchExpired: true},
@@ -46,6 +47,7 @@ func TestAttemptDiffExpiredManifestDropsOnlyArchivedBodies(t *testing.T) {
 }
 
 func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
+	t.Parallel()
 	admin := postgresStartupTemplate.Database(t)
 	connection := startupConnection(t, admin, "detent_runtime_v2", "")
 	cfg := startupConfig(connection)
@@ -498,6 +500,7 @@ func TestAttemptDiffPostgresHTTPStoresAndReadsTwoFencedAttempts(t *testing.T) {
 }
 
 func TestAttemptDiffReadsRequireTypedOwner(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{"attempt", "work-item"} {
 		t.Run(operation, func(t *testing.T) {
 			defer func() {

@@ -32,6 +32,7 @@ import (
 const fleetProtocolMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"fleet-test","version":"1"}}`
 
 func TestHubOperatorConflictProjection(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, code, message string
 		err                 error
@@ -73,6 +74,7 @@ func TestHubOperatorRefusalProjection(t *testing.T) {
 }
 
 func TestRunnerUpdateMCP(t *testing.T) {
+	t.Parallel()
 	for _, fromRelease := range []bool{false, true} {
 		t.Run(fmt.Sprintf("from release %t", fromRelease), func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -215,6 +217,7 @@ func TestRunnerUpdateMCP(t *testing.T) {
 }
 
 func TestHubMCPFleetBoundary(t *testing.T) {
+	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{GitHubRequestCounts: func() []GitHubRequestCount { return []GitHubRequestCount{} }})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.redemption.Capacity = 8

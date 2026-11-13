@@ -24,6 +24,7 @@ import (
 )
 
 func TestBoardProjectionMaintenanceIsBoundedAndTenantScoped(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	now := time.Date(2026, 11, 1, 22, 0, 0, 0, time.UTC)
 	details := &memoryRunDetails{}
@@ -292,6 +293,7 @@ func (s *boardHistoricalDetailStore) ReadDetail(ctx context.Context, organizatio
 }
 
 func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	details := &boardHistoricalDetailStore{memoryRunDetails: &memoryRunDetails{}, historical: map[string]bool{}}

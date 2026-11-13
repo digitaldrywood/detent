@@ -87,6 +87,7 @@ func (*nativeRunEventParticipantFixture) NativeLeaseResponse(ctx context.Context
 }
 
 func TestNativeRunEventMutationValidation(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		sequence int64
@@ -119,6 +120,7 @@ func TestNativeRunEventMutationValidation(t *testing.T) {
 }
 
 func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *testing.T) {
+	t.Parallel()
 	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	participant := &nativeRunEventParticipantFixture{}
 	keys := secretTestKeys(t, "1", "1")
@@ -855,6 +857,7 @@ func TestNativeRunEventTenantMutationStoresAttemptEventAndReceiptAtomically(t *t
 }
 
 func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
+	t.Parallel()
 	repository := projectRecordPostgres(t)
 	var logs bytes.Buffer
 	service := openPostgresHubTestService(t, repository, Config{RunDetails: &memoryRunDetails{}, SecretKeys: secretTestKeys(t, "1", "1"), Logger: slog.New(slog.NewJSONHandler(&logs, nil))})
@@ -1027,6 +1030,7 @@ func TestNativeFirstRunEventAfterClaimRenewAndWorkflow(t *testing.T) {
 }
 
 func TestRuntimeRefreshPreservesAuditWithoutGrowingHistory(t *testing.T) {
+	t.Parallel()
 	f := newRunnerPGFixture(t)
 	f.service.config.SecretKeys = secretTestKeys(t, "1", "1")
 	envelope, err := f.service.config.SecretKeys.Seal(bytes.Repeat([]byte{0x35}, 32), accessstore.SecretAAD("org_startup", "", accessstore.NativeCursorKeyKind))
