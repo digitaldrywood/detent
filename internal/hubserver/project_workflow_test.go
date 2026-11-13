@@ -69,6 +69,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 	if !reflect.DeepEqual(original.States, HostedProjectStates()) {
 		t.Fatalf("reported initial workflow = %#v", original.States)
 	}
+	drainTestNativeBoard(t, f.service)
 	var items tracker.Page[tracker.NativeIssue]
 	browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/work-items", nil, http.StatusOK), &items)
 	if len(items.Items) != 1 || items.Items[0].State != "Todo" {
