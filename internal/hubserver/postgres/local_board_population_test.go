@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -676,6 +677,41 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 	bind := func(ctx context.Context, w tenantstore.Writer) error {
 		return w.BindArtifactService(ctx, "prj_first", artifact.Binding{ServiceID: "service_0123456789abcdef0123456789abcdef", Origin: "https://artifacts.example.test", Mode: "customer", PublisherTokenID: "owner"})
 	}
+	complete := func(item tracker.NativeWorkItemID) step {
+		return func(ctx context.Context, w tenantstore.Writer) error {
+			current, err := w.WorkItem(ctx, "prj_first", item)
+			if err != nil {
+				return err
+			}
+			current.WorkflowStateName = new("Done")
+			_, err = w.UpdateWorkItem(ctx, current)
+			return err
+		}
+	}
+	publish := func(item tracker.NativeWorkItemID) step {
+		return func(ctx context.Context, w tenantstore.Writer) error {
+			owner := w.(attachmentstore.StorageArchiveWriter)
+			before := time.Now().Add(time.Hour)
+			page, err := owner.StorageArchiveCandidates(ctx, before, attachmentstore.StorageArchiveCursor{}, 4)
+			if err != nil {
+				return err
+			}
+			for _, candidate := range page.Items {
+				if candidate.Stamp.WorkItemID != item {
+					continue
+				}
+				published, err := owner.PublishStorageArchive(ctx, attachmentstore.StorageArchivePublication{Stamp: candidate.Stamp, Root: attachmentstore.ArchiveRecord{ProjectID: candidate.Stamp.ProjectID}, PublishedAt: before}, before)
+				if errors.Is(err, corestore.ErrNotFound) {
+					return nil
+				}
+				if err == nil && published {
+					return errors.New("storage archive published while a live conversation references the issue")
+				}
+				return err
+			}
+			return fmt.Errorf("storage archive candidate %s is missing", item)
+		}
+	}
 	for _, test := range []struct {
 		name                                         string
 		prepare                                      step
@@ -694,6 +730,7 @@ func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
 		{"idle project check waits for work item writer", noop, lock("prj_first", "wi_first_1"), receipt, noop, idle, true, 4},
 		{"idle project check waits for foreign key insert before receipt", noop, bind, receipt, noop, idle, true, 4},
 		{"project key change waits for foreign key insert before receipt", noop, bind, receipt, noop, rename, true, 4},
+		{"storage archive publication while archive holder checks keys", complete("wi_first_2"), archive, converseOn("wi_first_2"), noop, publish("wi_first_2"), false, 3},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			admin := template.Database(t)

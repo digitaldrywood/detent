@@ -136,24 +136,26 @@ ORDER BY project_id,work_item_id,archive_revision,section_id LIMIT $2`, s.organi
 	return page, nil
 }
 
-func (s *session) storageArchiveCurrentSource(ctx context.Context, stamp attachmentstore.StorageArchiveStamp, before time.Time, lock bool) (attachmentstore.StorageArchiveStamp, error) {
+const (
+	storageArchiveRead      = ""
+	storageArchiveWriteLock = " FOR NO KEY UPDATE OF i"
+	storageArchiveKeyLock   = " FOR UPDATE OF i"
+)
+
+func (s *session) storageArchiveCurrentSource(ctx context.Context, stamp attachmentstore.StorageArchiveStamp, before time.Time, lock string) (attachmentstore.StorageArchiveStamp, error) {
 	now, err := s.leaseTime(ctx)
 	if err != nil {
 		return attachmentstore.StorageArchiveStamp{}, err
 	}
-	suffix := ""
-	if lock {
-		suffix = " FOR UPDATE OF i"
-	}
 	current := attachmentstore.StorageArchiveStamp{ProjectID: stamp.ProjectID, WorkItemID: stamp.WorkItemID}
-	err = s.db.QueryRow(ctx, `SELECT i.revision,i.event_sequence,`+storageArchiveConversationSequence+` FROM issues i WHERE i.organization_id=$1 AND `+storageArchiveSafe+` AND i.project_id=$4 AND i.native_id=$5`+suffix, s.organization, before, now, stamp.ProjectID, stamp.WorkItemID).Scan(&current.Revision, &current.EventSequence, &current.ConversationSequence)
+	err = s.db.QueryRow(ctx, `SELECT i.revision,i.event_sequence,`+storageArchiveConversationSequence+` FROM issues i WHERE i.organization_id=$1 AND `+storageArchiveSafe+` AND i.project_id=$4 AND i.native_id=$5`+lock, s.organization, before, now, stamp.ProjectID, stamp.WorkItemID).Scan(&current.Revision, &current.EventSequence, &current.ConversationSequence)
 	if err != nil {
 		return current, mapError(ctx, err)
 	}
 	return current, nil
 }
 
-func (s *session) storageArchiveSource(ctx context.Context, stamp attachmentstore.StorageArchiveStamp, before time.Time, lock bool) (attachmentstore.StorageArchiveStamp, error) {
+func (s *session) storageArchiveSource(ctx context.Context, stamp attachmentstore.StorageArchiveStamp, before time.Time, lock string) (attachmentstore.StorageArchiveStamp, error) {
 	current, err := s.storageArchiveCurrentSource(ctx, stamp, before, lock)
 	if err != nil {
 		return current, err
@@ -169,7 +171,7 @@ func (s *session) StorageArchiveSnapshot(ctx context.Context, stamp attachmentst
 	if before.IsZero() || limit < 1 || limit > 500 {
 		return result, corestore.ErrInvalidPage
 	}
-	if _, err := s.storageArchiveSource(ctx, stamp, before, false); err != nil {
+	if _, err := s.storageArchiveSource(ctx, stamp, before, storageArchiveRead); err != nil {
 		return result, err
 	}
 	var err error
@@ -318,16 +320,28 @@ func (s *session) PublishStorageArchive(ctx context.Context, publication attachm
 	if len(publication.MessageSources) > 500 || len(publication.MessagePayloads) > 500 || len(publication.Sections) > 4 || publication.PublishedAt.IsZero() || publication.Root.ProjectID != stamp.ProjectID || publication.LastMessageScanned < 0 || publication.ExpectedMessageCursor < 0 || publication.ThroughHistory < 0 || publication.ThroughHistory > stamp.EventSequence {
 		return false, corestore.ErrInvalidPage
 	}
-	if _, err := s.storageArchiveSource(ctx, stamp, before, true); err != nil {
+	if _, err := s.storageArchiveSource(ctx, stamp, before, storageArchiveWriteLock); err != nil {
 		return false, err
 	}
 	var conversationID string
-	err := s.db.QueryRow(ctx, `SELECT id FROM conversations WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND visibility='shared' AND deleted_at IS NULL FOR UPDATE`, s.organization, stamp.ProjectID, stamp.WorkItemID).Scan(&conversationID)
+	err := s.db.QueryRow(ctx, `SELECT id FROM conversations WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND visibility='shared' AND deleted_at IS NULL FOR NO KEY UPDATE`, s.organization, stamp.ProjectID, stamp.WorkItemID).Scan(&conversationID)
 	if err != nil && !errors.Is(mapError(ctx, err), corestore.ErrNotFound) {
 		return false, mapError(ctx, err)
 	}
-	if _, err := s.storageArchiveSource(ctx, stamp, before, false); err != nil {
+	if err := s.LockArchiveAccounting(ctx); err != nil {
 		return false, err
+	}
+	if _, err := s.storageArchiveSource(ctx, stamp, before, storageArchiveKeyLock); err != nil {
+		return false, err
+	}
+	if conversationID != "" {
+		var locked string
+		if err := s.db.QueryRow(ctx, `SELECT id FROM conversations WHERE organization_id=$1 AND id=$2 AND work_item_id=$3 AND visibility='shared' AND deleted_at IS NULL FOR UPDATE`, s.organization, conversationID, stamp.WorkItemID).Scan(&locked); err != nil {
+			if errors.Is(mapError(ctx, err), corestore.ErrNotFound) {
+				return false, corestore.ErrRevisionConflict
+			}
+			return false, mapError(ctx, err)
+		}
 	}
 	sources := make(map[string]attachmentstore.StorageArchiveMessageSource, len(publication.MessageSources))
 	ids := make([]string, 0, len(publication.MessageSources))
@@ -366,9 +380,6 @@ JOIN conversation_messages m ON m.organization_id=$1 AND m.conversation_id=$2 AN
 	}
 	if priorRoot != publication.ExpectedRootID || priorCursor != publication.ExpectedMessageCursor {
 		return false, corestore.ErrRevisionConflict
-	}
-	if err := s.LockArchiveAccounting(ctx); err != nil {
-		return false, err
 	}
 	if err := s.publishStorageArchiveObject(ctx, publication.Root, stamp.WorkItemID); err != nil {
 		return false, err
@@ -490,7 +501,7 @@ func (s *session) RetireStorageArchiveSection(ctx context.Context, section attac
 		return attachmentstore.StorageArchiveRetirementResult{}, corestore.ErrInvalidPage
 	}
 	stamp := section.Stamp
-	if _, err := s.storageArchiveCurrentSource(ctx, stamp, before, true); err != nil {
+	if _, err := s.storageArchiveCurrentSource(ctx, stamp, before, storageArchiveKeyLock); err != nil {
 		return attachmentstore.StorageArchiveRetirementResult{}, err
 	}
 	conversation, err := s.LockConversation(ctx, stamp.ProjectID, section.Subject)
@@ -500,7 +511,7 @@ func (s *session) RetireStorageArchiveSection(ctx context.Context, section attac
 	if string(conversation.Visibility) != "shared" || conversation.WorkItemID != string(stamp.WorkItemID) {
 		return attachmentstore.StorageArchiveRetirementResult{}, corestore.ErrRevisionConflict
 	}
-	if _, err := s.storageArchiveCurrentSource(ctx, stamp, before, false); err != nil {
+	if _, err := s.storageArchiveCurrentSource(ctx, stamp, before, storageArchiveRead); err != nil {
 		return attachmentstore.StorageArchiveRetirementResult{}, err
 	}
 	var last, through int64
