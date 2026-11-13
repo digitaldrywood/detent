@@ -869,8 +869,13 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if changed && tool == string(chat.ActionArchiveItems) {
 					requireNativeStatus(t, f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action), http.StatusOK)
 					assertCoordinatorArchiveEffect(t, f, true)
+					drainTestNativeBoard(t, f.service)
 					for _, archived := range []string{"", "true"} {
-						result, err := (operatorWorkReads{service: f.service, scope: hubscope.NativeScope{Organization: "org_security", Project: f.project}}).ReadWork(ctx, operatortool.WorkList, operatortool.WorkReadRequest{ProjectID: string(f.project), Archived: archived, Limit: 100})
+						readCtx, readScope, err := tools.workReadContext(t.Context(), record)
+						if err != nil {
+							t.Fatal(err)
+						}
+						result, err := (operatorWorkReads{service: f.service, scope: readScope}).ReadWork(readCtx, operatortool.WorkList, operatortool.WorkReadRequest{ProjectID: string(f.project), Archived: archived, Limit: 100})
 						if err != nil {
 							t.Fatal(err)
 						}
