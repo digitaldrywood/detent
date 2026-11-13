@@ -689,12 +689,7 @@ func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
 			}
 			return s.maintainGitHubBatches(ctx)
 		}},
-		{Name: "github-reconciliation", Bytes: 4 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
-			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
-				return err
-			}
-			return s.maintainGitHubReconciliationRecords(ctx)
-		}},
+		s.GitHubReconciliationMaintenanceFeature(),
 		{Name: "github-webhooks", Bytes: 4 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
 			if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
 				return err

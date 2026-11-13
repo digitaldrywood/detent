@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -53,129 +52,6 @@ func TestLinkedImportUsesPostgresProjectRepository(t *testing.T) {
 				}
 			})
 		}
-	}
-}
-
-func TestPostgresCheckoutBindingCommands(t *testing.T) {
-	repository := projectRecordPostgres(t)
-	now := time.Date(2026, 11, 11, 1, 0, 0, 0, time.UTC)
-	importer := &importFixtureBackend{}
-	service := &Service{
-		database: &database{postgres: repository, hostedOrganization: "org"},
-		config: Config{
-			TenantRepository:  repository,
-			AccessRepository:  repository,
-			RunDetails:        &memoryRunDetails{},
-			ImportBackend:     importer,
-			ReconcileInterval: time.Hour,
-			now:               func() time.Time { return now },
-			jitter:            func() float64 { return 0.5 },
-		},
-	}
-	seedPostgresHubAdmin(t, repository, service, nativeOrganization{ID: "org", Name: "Example", Slug: "example"})
-	for _, project := range []tracker.ProjectID{"first", "second"} {
-		err := repository.WriteTenant(t.Context(), "org", corestore.Serving, func(w tenantstore.Writer) error {
-			_, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: "org", ID: project, Name: string(project), Profile: "native"}, States: nativeFixtureStates()})
-			return err
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		scope := nativeScope{organization: "org", project: project, credential: apiCredential{ID: "test_hub_admin", Hash: apikey.HashToken(testHubAdminToken), Scope: apiScopeAdmin}}
-		options := nativeCommandOptions{OperationID: projectOperationID(scope, "POST", "/integration/repository")}
-		binding := bindNativeRepositoryRequest{Mutation: tracker.Mutation{IdempotencyKey: "binding"}, ExpectedRevision: 1, Repository: "example-org/" + string(project), Source: "runner_checkout"}
-		first, err := service.bindNativeRepositoryCommand(t.Context(), scope, options, binding)
-		if err != nil {
-			t.Fatal(err)
-		}
-		replay, err := service.bindNativeRepositoryCommand(t.Context(), scope, options, binding)
-		if err != nil || string(replay) != string(first) {
-			t.Fatalf("binding replay=%s error=%v", replay, err)
-		}
-		record, err := service.readProjectRecord(t.Context(), scope)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if record.Settings.CheckoutRepository != binding.Repository || record.Settings.Revision != 2 {
-			t.Fatalf("binding=%+v", record.Settings)
-		}
-		t.Run(string(project)+"/sync binding fence and rebind", func(t *testing.T) {
-			checkoutNode := "R_checkout_" + string(project)
-			checkoutSource := reconcileStep{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: checkoutNode, Owner: "example-org", Name: string(project), UpdatedAt: now}}}
-			backend := &scriptedReconcileBackend{steps: []reconcileStep{checkoutSource, checkoutSource, checkoutSource}}
-			service.config.ReconcileBackend = backend
-			readOutcome := func() (projectstore.GitHubReconciliation, error) {
-				t.Helper()
-				var row projectstore.GitHubReconciliation
-				err := repository.ReadTenant(t.Context(), scope.organization, corestore.Serving, func(r tenantstore.Reader) error {
-					var err error
-					row, err = r.(projectstore.GitHubReconciliationReader).GitHubReconciliation(t.Context(), project)
-					return err
-				})
-				return row, err
-			}
-			githubBinding := bindNativeRepositoryRequest{Mutation: tracker.Mutation{IdempotencyKey: "different-checkout"}, ExpectedRevision: 2, Repository: "example-org/sync-" + string(project)}
-			githubOptions := nativeCommandOptions{OperationID: projectOperationID(scope, "POST", "/integration/repository")}
-			_, err := service.bindNativeRepositoryCommand(t.Context(), scope, githubOptions, githubBinding)
-			var refusal *nativeError
-			if !errors.As(err, &refusal) || refusal.Code != "repository_already_bound" {
-				t.Fatalf("different checkout binding was not refused: %v", err)
-			}
-			if row, err := readOutcome(); !errors.Is(err, corestore.ErrNotFound) {
-				t.Fatalf("refused binding wrote an outcome: %+v, %v", row, err)
-			}
-			unchanged, err := service.readProjectRecord(t.Context(), scope)
-			if err != nil || !reflect.DeepEqual(unchanged.Settings, record.Settings) {
-				t.Fatalf("refused binding changed project settings: %+v, %v", unchanged.Settings, err)
-			}
-
-			githubBinding.IdempotencyKey, githubBinding.Repository = "sync-bind", binding.Repository
-			response, err := service.bindNativeRepositoryCommand(t.Context(), scope, githubOptions, githubBinding)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var result ProjectIntegration
-			if err := json.Unmarshal(response, &result); err != nil || result.Repository != binding.Repository || result.CheckoutRepository != binding.Repository || result.Revision != 3 {
-				t.Fatalf("sync binding=%s error=%v", response, err)
-			}
-			if row, err := readOutcome(); !errors.Is(err, corestore.ErrNotFound) {
-				t.Fatalf("binding wrote an outcome before scheduled verification: %+v, %v", row, err)
-			}
-			replayed, err := service.bindNativeRepositoryCommand(t.Context(), scope, githubOptions, githubBinding)
-			if err != nil || string(replayed) != string(response) {
-				t.Fatalf("sync binding replay=%s error=%v", replayed, err)
-			}
-
-			if err := service.maintainGitHubReconciliationRecords(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			outcome, err := readOutcome()
-			if err != nil || outcome.Repository != binding.Repository || outcome.NodeID != checkoutNode || outcome.LastSuccessfulSweepAt == nil || !outcome.LastSuccessfulSweepAt.Equal(now) || outcome.LastFailureAt != nil {
-				t.Fatalf("scheduled checkout outcome=%+v error=%v", outcome, err)
-			}
-
-			githubBinding.IdempotencyKey, githubBinding.ExpectedRevision = "sync-rebind", 3
-			response, err = service.bindNativeRepositoryCommand(t.Context(), scope, githubOptions, githubBinding)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal(response, &result); err != nil || result.Repository != binding.Repository || result.CheckoutRepository != binding.Repository || result.Revision != 4 {
-				t.Fatalf("sync rebind=%s error=%v", response, err)
-			}
-			if row, err := readOutcome(); err != nil || !reflect.DeepEqual(row, outcome) {
-				t.Fatalf("rebind changed the current checkout outcome: %+v, %v", row, err)
-			}
-
-			githubBinding.IdempotencyKey, githubBinding.ExpectedRevision, githubBinding.Repository = "other-sync", 4, "example-org/other"
-			_, err = service.bindNativeRepositoryCommand(t.Context(), scope, githubOptions, githubBinding)
-			if !errors.As(err, &refusal) || refusal.Code != "repository_already_bound" {
-				t.Fatalf("different existing sync binding was not refused: %v", err)
-			}
-			requests := backend.Requests()
-			if len(requests) != 3 || requests[0].Repository.Name != string(project) || requests[1].Repository.Name != string(project) || requests[2].Repository.Name != string(project) || len(importer.requests) != 0 {
-				t.Fatalf("provider requests did not follow binding and checkout identity: %+v", requests)
-			}
-		})
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -349,4 +351,13 @@ func (s *Service) completeGitHubPullRequestObservation(ctx context.Context, orga
 		return s.finishGitHubPullRequestFailure(ctx, organization, row, err)
 	}
 	return nil
+}
+
+func (s *Service) GitHubReconciliationMaintenanceFeature() hubmaintenance.Feature {
+	return hubmaintenance.Feature{Name: "github-reconciliation", Bytes: 4 << 20, Step: func(ctx context.Context, selected hubmaintenance.Tenant, _ hubmaintenance.Budget) error {
+		if err := hubmaintenance.RequireTenant(ctx, selected); err != nil {
+			return err
+		}
+		return s.maintainGitHubReconciliationRecords(ctx)
+	}}
 }
