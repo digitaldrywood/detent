@@ -52,6 +52,11 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.service.requestMetrics = metrics
+			t.Cleanup(func() {
+				if err := f.service.Close(); err != nil {
+					t.Error(err)
+				}
+			})
 			hostedTestPlans(t, f.service, nil)
 			now := f.service.config.now()
 			descriptor := hubTestPolicy()
@@ -70,6 +75,7 @@ func TestHeartbeatTransactionTiming(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Logf("configuration_bytes=%d records=%d admissions=%d", len(raw), len(view.Diagnostics.Records), len(view.Diagnostics.Admissions))
+			f.service.echo.Pre(f.service.timeWriterUse)
 			f.service.echo.Use(f.service.hostedBoundary)
 			build := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 			update := runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Running: build, ObservedAt: now}
