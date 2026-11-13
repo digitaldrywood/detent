@@ -571,7 +571,10 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 			}
 			if test.pending {
-				placementFixtureMember(t, f, sprite, sprite.redemption.Hostname, "bootstrapping")
+				placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
+					now := f.service.config.now()
+					return w.CreateRunnerSpriteMembership(t.Context(), runnerstore.SpriteMembership{OrganizationID: f.project.OrganizationID, Name: sprite.redemption.Hostname, ProviderOrganization: "example-org", EnrollmentID: sprite.enrollment.ID, State: "bootstrapping", IdleSince: now, CreatedAt: now})
+				})
 				placementFixtureHeartbeat(t, f, sprite.binding.RunnerID, f.service.config.now().Add(-time.Minute))
 				placementFixtureWrite(t, f, func(w tenantstore.Writer) error {
 					return w.UpdateMachineSpriteWake(t.Context(), leasestore.SpriteWake{MachineID: string(sprite.binding.MachineID), RunnerID: sprite.binding.RunnerID, Name: sprite.redemption.Hostname, WokenAt: new(f.service.config.now()), ObservedAt: f.service.config.now()})
