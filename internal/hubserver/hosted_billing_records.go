@@ -80,10 +80,12 @@ func (d *database) readBillingReason(ctx context.Context, ref billingstore.Audit
 	return detail.Reason, nil
 }
 
+var errHostedEntitlementsDisabled = errors.New("hosted entitlements are disabled")
+
 func (d *database) hostedEntitlementRecord(ctx context.Context, r billingstore.Reader, now time.Time) (HostedEntitlement, error) {
 	result := HostedEntitlement{OrganizationID: string(d.hostedOrganization), Source: "base", Grants: []HostedGrant{}}
 	if d.plans() == nil {
-		return result, errors.New("hosted entitlements are disabled")
+		return result, errHostedEntitlementsDisabled
 	}
 	assignment, err := r.BillingAssignment(ctx)
 	if err != nil {

@@ -26,7 +26,7 @@ type hostedConsumptionRecord struct {
 func (d *database) readHostedConsumptionRecord(ctx context.Context, reader tenantstore.Reader, now time.Time, metrics ...string) (hostedConsumptionRecord, error) {
 	result := hostedConsumptionRecord{usage: map[string]int64{}}
 	plans := d.plans()
-	if plans == nil || plans.WindowSeconds <= 0 {
+	if plans != nil && plans.WindowSeconds <= 0 {
 		return result, ErrBillingUsageUnavailable
 	}
 	if len(metrics) == 0 {
@@ -42,7 +42,7 @@ func (d *database) readHostedConsumptionRecord(ctx context.Context, reader tenan
 		windows = windows || selected[metric]
 	}
 	byMetric := map[string]int64{}
-	if windows {
+	if windows && plans != nil {
 		start := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 		names := map[string]bool{}
 		for _, metric := range windowMetrics {
@@ -81,7 +81,15 @@ func (d *database) readHostedConsumptionRecord(ctx context.Context, reader tenan
 		case "usage_windows":
 			continue
 		case "events_total", "history_records", "unarchived_issues", "members", "projects", "repositories", "registered_runners", "connected_runners", "concurrent_work":
-			used, known, err = populations.BillingPopulation(ctx, metric, now, time.Duration(plans.ConnectedSeconds)*time.Second)
+			if plans == nil && metric == "connected_runners" {
+				known = false
+				break
+			}
+			connected := time.Duration(0)
+			if plans != nil {
+				connected = time.Duration(plans.ConnectedSeconds) * time.Second
+			}
+			used, known, err = populations.BillingPopulation(ctx, metric, now, connected)
 		case "collaboration_bytes":
 			used, err = reader.CollaborationBytes(ctx)
 			if errors.Is(err, corestore.ErrNotFound) {
@@ -104,6 +112,10 @@ func (d *database) readHostedConsumptionRecord(ctx context.Context, reader tenan
 		default:
 			if !slices.Contains(windowMetrics, metric) {
 				return result, ErrBillingUsageUnavailable
+			}
+			if plans == nil {
+				known = false
+				break
 			}
 			used = byMetric[metric]
 		}
