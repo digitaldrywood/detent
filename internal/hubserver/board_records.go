@@ -110,6 +110,21 @@ func boardRecordCursor(row viewstore.BoardRecord, closed bool, sequence int64) *
 	return position
 }
 
+func nativeWorkCursorParams(params url.Values) url.Values {
+	cursorParams := url.Values{}
+	for name, values := range params {
+		cursorParams[name] = values
+	}
+	includes := slices.DeleteFunc(strings.Split(params.Get("include"), ","), func(name string) bool {
+		return slices.Contains([]string{"", "summary", "work"}, strings.TrimSpace(name))
+	})
+	cursorParams.Del("include")
+	if len(includes) > 0 {
+		cursorParams.Set("include", strings.Join(includes, ","))
+	}
+	return cursorParams
+}
+
 func (s *Service) readBoardRecords(ctx context.Context, scope hubscope.NativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	return s.readBoardRecordsFor(ctx, scope, params, false)
 }
@@ -220,15 +235,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	}
 	cursorParams := params
 	if !includeBoard {
-		cursorParams = url.Values{}
-		for name, values := range params {
-			cursorParams[name] = values
-		}
-		includes := slices.DeleteFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return slices.Contains([]string{"summary", "work"}, strings.TrimSpace(name)) })
-		cursorParams.Del("include")
-		if len(includes) > 0 {
-			cursorParams.Set("include", strings.Join(includes, ","))
-		}
+		cursorParams = nativeWorkCursorParams(params)
 	}
 	limit, cursor, key, err := s.readNativePageLimit(ctx, scope, path, cursorParams, maximum, hubapi.DefaultAPIPageLimit)
 	if err != nil {
@@ -305,7 +312,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		windows := []tracker.NativeShippedWindow{{Window: "1h"}, {Window: "24h"}, {Window: "7d"}}
 		filterCompletionStates := !includeBoard && len(selection.States) > 0
 		for _, summary := range snapshot.Summaries {
-			if summary.Kind == "lane" {
+			if summary.Kind == "lane" && (!lanes || len(selection.States) == 0 || slices.Contains(selection.States, summary.State)) {
 				page.Work.Lanes = append(page.Work.Lanes, tracker.NativeWorkLane{State: summary.State, Total: int(summary.Total), Running: int(summary.Running)})
 				if len(selection.States) > 0 && slices.Contains(selection.States, summary.State) {
 					page.Total += int(summary.Total)
