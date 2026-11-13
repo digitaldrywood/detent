@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -68,8 +69,8 @@ func (s *Service) MaintainProjectPage(ctx context.Context, org tracker.Organizat
 		return next, false, nil
 	}
 	ctx = detailbatch.Clear(ctx)
-	ctx = context.WithValue(ctx, changeContentKey{}, nil)
-	ctx = context.WithValue(ctx, runDetailContextKey{}, nil)
+	ctx = context.WithValue(ctx, hubcontent.ChangeContentKey{}, nil)
+	ctx = context.WithValue(ctx, hubcontent.RunDetailContextKey{}, nil)
 	page := projectstore.Page{}
 	page.Body, err = s.projectRecordWorkflow(ctx, candidate.Record)
 	if err != nil {

@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -31,7 +32,7 @@ import (
 )
 
 func (s *Service) landChangeRecord(c echo.Context) error {
-	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
+	ctx := hubcontent.IsolateContentContext(s.runDetailContext(c.Request().Context()))
 	scope := hubscope.NativeRequestScope(c)
 	var request tracker.LandChangeVersion
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
@@ -156,8 +157,8 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	change.Landed = &tracker.ChangeLanding{Quality: quality, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.Actor(), LandedAt: payloadTimestamp(ctx, now), Rebased: request.Rebased}
-	change.UpdatedAt = payloadTimestamp(ctx, now)
+	change.Landed = &tracker.ChangeLanding{Quality: quality, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.Actor(), LandedAt: hubcontent.PayloadTimestamp(ctx, now), Rebased: request.Rebased}
+	change.UpdatedAt = hubcontent.PayloadTimestamp(ctx, now)
 	change.Revision++
 	content := eventstore.NewContent(s.runDetailStore())
 	changeRaw, err := json.Marshal(change)
@@ -223,13 +224,13 @@ func (s *Service) landChangeRecord(c echo.Context) error {
 		updatedIssue.Terminal = tenantProjectStateTerminal(project, target)
 		updatedIssue.ClosedAt = &now
 		updatedIssue.Revision++
-		updatedIssue.UpdatedAt = payloadTimestamp(ctx, now)
+		updatedIssue.UpdatedAt = hubcontent.PayloadTimestamp(ctx, now)
 		updatedIssue.LastActivityAt = updatedIssue.UpdatedAt
 		updatedRow := itemRow
 		updatedRow.WorkflowStateName = &target
 		updatedRow.LastActivityAt = updatedIssue.LastActivityAt
 		updatedRow.NativeUpdatedAt = updatedIssue.UpdatedAt
-		updated := tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: payloadTimestamp(ctx, now), Data: tracker.CollaborationData{Revision: tracker.Revision(itemRow.Revision), FromState: fromState, ToState: target, Reason: "worker_progress", Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}}
+		updated := tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "workflow.transitioned", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: hubcontent.PayloadTimestamp(ctx, now), Data: tracker.CollaborationData{Revision: tracker.Revision(itemRow.Revision), FromState: fromState, ToState: target, Reason: "worker_progress", Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}}
 		raw, err := json.Marshal(updated)
 		if err != nil {
 			return s.nativeAPIError(c, err)

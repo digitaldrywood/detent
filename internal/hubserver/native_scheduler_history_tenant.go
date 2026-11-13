@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -27,7 +28,7 @@ func (s *Service) hydrateSchedulerDecisionRows(ctx context.Context, scope hubsco
 		if event.Type != "scheduler.decision" || event.Data.Decision == nil {
 			return nil, artifact.ErrIntegrity
 		}
-		if explanationRead(ctx) {
+		if hubcontent.ExplanationRead(ctx) {
 			event.Data.ReasonDetail = ""
 		}
 		hydrated[row.ID] = &event

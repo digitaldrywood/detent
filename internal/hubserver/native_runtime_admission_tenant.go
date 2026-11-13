@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -73,7 +74,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 		if shared != nil && shared.capacity != nil {
 			capacity = *shared.capacity
 		} else {
-			capacity, err = fleet.RuntimeCapacitySnapshot(ctx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, RunnerID: scope.Credential.Runner.RunnerID, At: now, Explanation: explanationRead(ctx)})
+			capacity, err = fleet.RuntimeCapacitySnapshot(ctx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, RunnerID: scope.Credential.Runner.RunnerID, At: now, Explanation: hubcontent.ExplanationRead(ctx)})
 			if err != nil {
 				return err
 			}
@@ -237,7 +238,7 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 		evidence.Scheduling.Outcome, evidence.Scheduling.Reason = "skipped", nonExecutable
 	}
 	landingReady, landingLimit := runtimeLandingCapacity(capacity.Providers, scope.Project)
-	if !explanationRead(ctx) && capacity.Truncated {
+	if !hubcontent.ExplanationRead(ctx) && capacity.Truncated {
 		landingReady, landingLimit = false, nativeLandingCapacityUnknown
 	}
 	landingRequired := hubapi.StringsEqualFold(issue.State, "Merging") || issue.ListChange != nil && issue.ListChange.LandingPending

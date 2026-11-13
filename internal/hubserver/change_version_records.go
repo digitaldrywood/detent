@@ -13,13 +13,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) publishChangeVersionRecord(c echo.Context) error {
-	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
+	ctx := hubcontent.IsolateContentContext(s.runDetailContext(c.Request().Context()))
 	var request tracker.PublishChangeVersion
 	if err := hubapi.DecodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
@@ -115,9 +116,9 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope h
 	}
 	checks := make([]tracker.ChangeCheckExpectation, 0, len(approval.ReviewPolicy.RequiredChecks))
 	for _, spec := range approval.ReviewPolicy.RequiredChecks {
-		checks = append(checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: spec, CheckRunID: payloadNativeID(ctx, "check")})
+		checks = append(checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: spec, CheckRunID: hubcontent.PayloadNativeID(ctx, "check")})
 	}
-	version := tracker.ChangeVersion{ChangeVersionInput: request.ChangeVersionInput, ID: payloadNativeID(ctx, "version"), ChangeID: change.ID, Number: int64(change.Revision), Policy: approval.Policy, ReviewPolicy: approval.ReviewPolicy, Checks: checks, Actor: scope.Actor(), CreatedAt: payloadTimestamp(ctx, now)}
+	version := tracker.ChangeVersion{ChangeVersionInput: request.ChangeVersionInput, ID: hubcontent.PayloadNativeID(ctx, "version"), ChangeID: change.ID, Number: int64(change.Revision), Policy: approval.Policy, ReviewPolicy: approval.ReviewPolicy, Checks: checks, Actor: scope.Actor(), CreatedAt: hubcontent.PayloadTimestamp(ctx, now)}
 	versionRaw, err := json.Marshal(version)
 	if err != nil {
 		return nil, err
@@ -146,7 +147,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope h
 	newChange := change
 	newChange.CurrentVersion = version.ID
 	newChange.Revision++
-	newChange.UpdatedAt = payloadTimestamp(ctx, now)
+	newChange.UpdatedAt = hubcontent.PayloadTimestamp(ctx, now)
 	changeRaw, err := json.Marshal(newChange)
 	if err != nil {
 		return nil, err
@@ -161,7 +162,7 @@ func (s *Service) publishChangeVersionRecordCommand(ctx context.Context, scope h
 	}
 	events := make([]eventstore.Event, 0, len(change.LinkedIssues))
 	for _, item := range change.LinkedIssues {
-		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: item, Type: "change.version_published", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: newChange.UpdatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}})
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: item, Type: "change.version_published", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: newChange.UpdatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}}})
 		if err != nil {
 			return nil, err
 		}

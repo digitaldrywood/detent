@@ -7,12 +7,13 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessreceipts"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) accessReceiptsService() *accessreceipts.Service {
 	return accessreceipts.New(accessreceipts.Deps{Repository: s.config.AccessRepository, TenantRepository: s.config.TenantRepository, Organization: tracker.OrganizationID(s.appOrganizationID()), Now: s.config.now, Details: s.runDetailStore(), ResolveJSON: func(ctx context.Context, raw []byte) ([]byte, error) {
-		return resolveStorageJSON(s.contentContext(ctx), raw)
+		return hubcontent.ResolveStorageJSON(s.contentContext(ctx), raw)
 	}})
 }
 func (s *Service) accessReceiptCommand(ctx context.Context, c hostedCommand) accessreceipts.Command {

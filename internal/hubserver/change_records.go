@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -169,7 +170,7 @@ func (s *Service) changeRecordEvidenceMutation(c echo.Context, kind, versionID, 
 }
 
 func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope hubscope.NativeScope, item, changeID, operation, kind, versionID, sourceKey string, value any) (json.RawMessage, error) {
-	ctx = isolateContentContext(s.runDetailContext(ctx))
+	ctx = hubcontent.IsolateContentContext(s.runDetailContext(ctx))
 	if scope.Credential.Scope == hubapi.APIScopeWorker {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -209,7 +210,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope hubscop
 	if err != nil {
 		return nil, err
 	}
-	evidence := eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: change.ID, Kind: kind, CreatedAt: payloadTimestamp(ctx, now)}
+	evidence := eventstore.Evidence{OrganizationID: scope.Organization, ChangeID: change.ID, Kind: kind, CreatedAt: hubcontent.PayloadTimestamp(ctx, now)}
 	var raw []byte
 	var quality *preparedTenantQualityEscape
 	var contentFields []cloudContentField
@@ -234,7 +235,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope hubscop
 			}
 			sourceKey = record.Provenance.Provider + ":" + record.Provenance.ExternalID
 		}
-		discussion := tracker.ChangeDiscussion{ID: payloadNativeID(ctx, "cmt"), VersionID: record.VersionID, Body: record.Body, Actor: scope.Actor(), Provenance: record.Provenance, CreatedAt: evidence.CreatedAt, Escape: record.Escape}
+		discussion := tracker.ChangeDiscussion{ID: hubcontent.PayloadNativeID(ctx, "cmt"), VersionID: record.VersionID, Body: record.Body, Actor: scope.Actor(), Provenance: record.Provenance, CreatedAt: evidence.CreatedAt, Escape: record.Escape}
 		raw, err = json.Marshal(discussion)
 	case tracker.ReviewChange:
 		if record.Decision != "commented" || record.ExpectedRevision != 0 && record.ExpectedRevision != change.Revision || record.ExpectedVersionID != "" && record.ExpectedVersionID != versionID || len(record.Body) > 64<<10 {
@@ -245,7 +246,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope hubscop
 		}
 		evidence.VersionID = new(versionID)
 		contentFields = changeReviewContentFields(record)
-		review := tracker.ChangeReview{ID: payloadNativeID(ctx, "review"), VersionID: versionID, Decision: record.Decision, Body: record.Body, Actor: scope.Actor(), CreatedAt: evidence.CreatedAt}
+		review := tracker.ChangeReview{ID: hubcontent.PayloadNativeID(ctx, "review"), VersionID: versionID, Decision: record.Decision, Body: record.Body, Actor: scope.Actor(), CreatedAt: evidence.CreatedAt}
 		raw, err = json.Marshal(review)
 	default:
 		return nil, hubapi.NativePublicInvalid("Unsupported change evidence")
@@ -292,7 +293,7 @@ func (s *Service) changeRecordEvidenceCommand(ctx context.Context, scope hubscop
 	}
 	var event eventstore.Event
 	if createdEvidence {
-		eventValue := tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "change." + kind, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: evidence.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: versionID}}}
+		eventValue := tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "change." + kind, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: evidence.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: versionID}}}
 		eventRaw, err := json.Marshal(eventValue)
 		if err != nil {
 			return nil, err
@@ -396,7 +397,7 @@ func (s *Service) readChangeVersionRecord(ctx context.Context, organization trac
 }
 
 func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.SubmitChangeCheck) error {
-	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
+	ctx := hubcontent.IsolateContentContext(s.runDetailContext(c.Request().Context()))
 	scope := hubscope.NativeRequestScope(c)
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required"))
@@ -478,7 +479,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 	if request.CompletedAt.After(now) {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("CI completion time cannot be in the future"))
 	}
-	check := tracker.ChangeCheck{ChangeCheckResult: request.ChangeCheckResult, VersionID: version.ID, Actor: scope.Actor(), ReceivedAt: payloadTimestamp(ctx, now)}
+	check := tracker.ChangeCheck{ChangeCheckResult: request.ChangeCheckResult, VersionID: version.ID, Actor: scope.Actor(), ReceivedAt: hubcontent.PayloadTimestamp(ctx, now)}
 	raw, err := json.Marshal(check)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -526,7 +527,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 	}
 	var historyEvent eventstore.Event
 	if createdEvidence {
-		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "change.check_submitted", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: check.ReceivedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID}}})
+		eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "change.check_submitted", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: check.ReceivedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID}}})
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -682,7 +683,7 @@ func (s *Service) changeCheckRecordMutation(c echo.Context, request tracker.Subm
 }
 
 func (s *Service) createChangeRecord(c echo.Context, request tracker.CreateChange) error {
-	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
+	ctx := hubcontent.IsolateContentContext(s.runDetailContext(c.Request().Context()))
 	scope := hubscope.NativeRequestScope(c)
 	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
 	raw, err := s.createChangeRecordCommand(ctx, scope, c.Param("item"), operation, request)
@@ -822,7 +823,7 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope hubscope.
 	if err != nil {
 		return nil, err
 	}
-	change := tracker.ChangeRequest{ID: payloadNativeID(ctx, "change"), OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, LinkedIssues: linked, Title: request.Title, Body: request.Body, Revision: 1, CreatedAt: payloadTimestamp(ctx, now), UpdatedAt: payloadTimestamp(ctx, now)}
+	change := tracker.ChangeRequest{ID: hubcontent.PayloadNativeID(ctx, "change"), OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: item, LinkedIssues: linked, Title: request.Title, Body: request.Body, Revision: 1, CreatedAt: hubcontent.PayloadTimestamp(ctx, now), UpdatedAt: hubcontent.PayloadTimestamp(ctx, now)}
 	raw, err := json.Marshal(change)
 	if err != nil {
 		return nil, err
@@ -841,7 +842,7 @@ func (s *Service) createChangeRecordCommand(ctx context.Context, scope hubscope.
 	}
 	events := make([]eventstore.Event, 0, len(linked))
 	for _, linkedID := range linked {
-		eventValue := tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: linkedID, Type: "change.created", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: change.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID}}}
+		eventValue := tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: linkedID, Type: "change.created", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: change.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID}}}
 		eventRaw, err := json.Marshal(eventValue)
 		if err != nil {
 			return nil, err
@@ -1204,7 +1205,7 @@ func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope
 			evidence, priorApproval, err = reader.RecoveryChangeEvidence(ctx, change.ID, version.ID, changeRecord.EvidenceSequence, checks)
 			return err
 		})
-	} else if explanationRead(ctx) {
+	} else if hubcontent.ExplanationRead(ctx) {
 		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, workload, func(r tenantstore.Reader) error {
 			reader, ok := r.(eventstore.ChangeGateEvidenceReader)
 			if !ok {
@@ -1296,7 +1297,7 @@ func (s *Service) hydrateCurrentChangeDetailSelection(ctx context.Context, scope
 	}
 	policyID, reviewPolicyID := changerequest.CurrentPolicyIdentities(&detail.Versions[0], currentApproval.Policy, currentApproval.ReviewPolicy)
 	detail.Summary, err = s.summarizeChangeWithAuditDispositionsFor(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval, workload, facts)
-	if err == nil && explanationRead(ctx) && facts == nil && !recovery && (len(detail.Checks) > 64 || len(detail.Reviews) > 64) {
+	if err == nil && hubcontent.ExplanationRead(ctx) && facts == nil && !recovery && (len(detail.Checks) > 64 || len(detail.Reviews) > 64) {
 		detail.Summary.Status = "evidence_incomplete"
 		if len(detail.Checks) > 64 {
 			detail.Summary.Checks = "unknown"

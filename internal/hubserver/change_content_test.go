@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -382,14 +383,14 @@ func TestChangeContentObjects(t *testing.T) {
 	if alpha.Key == beta.Key || alpha.SHA256 != beta.SHA256 {
 		t.Fatal("org object namespaces are not isolated")
 	}
-	if _, err := readChangeContent(ctx, "org_beta", alpha); err == nil {
+	if _, err := hubcontent.ReadChangeContent(ctx, "org_beta", alpha); err == nil {
 		t.Fatal("foreign organization read accepted")
 	}
 	for _, check := range []struct {
 		org string
 		ref attachment.ArchiveReference
 	}{{"org_alpha", alpha}, {"org_beta", beta}} {
-		data, err := readChangeContent(ctx, check.org, check.ref)
+		data, err := hubcontent.ReadChangeContent(ctx, check.org, check.ref)
 		if err != nil || string(data) != output {
 			t.Fatalf("org content unavailable: %v", err)
 		}
@@ -450,7 +451,7 @@ func TestAttachmentReceiptSharedContentBilling(t *testing.T) {
 						service.config.RunDetails = &memoryRunDetails{}
 					}
 					ctx := service.contentContext(t.Context())
-					ctx.Value(changeContentKey{}).(*changeContent).completion = test.completion
+					ctx.Value(hubcontent.ChangeContentKey{}).(*hubcontent.ChangeContent).Completion = test.completion
 					var charged bool
 					var previous attachment.ArchiveReference
 					for _, billable := range test.billable {
@@ -689,7 +690,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := readChangeContent(contentService.contentContext(t.Context()), "org_first", ref)
+		got, err := hubcontent.ReadChangeContent(contentService.contentContext(t.Context()), "org_first", ref)
 		if err != nil || !bytes.Equal(got, payload) {
 			t.Fatalf("immutable content = %q, %v", got, err)
 		}
@@ -754,11 +755,11 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 			t.Run(string(org), func(t *testing.T) {
 				service := &Service{config: Config{TenantRepository: repository, Hosted: &HostedConfig{OrganizationID: string(org)}, RunDetails: objects}}
 				metadataReads := 0
-				newContext := func() (context.Context, *changeContent) {
+				newContext := func() (context.Context, *hubcontent.ChangeContent) {
 					ctx := service.contentContext(t.Context())
-					owner := ctx.Value(changeContentKey{}).(*changeContent)
-					read := owner.readReference
-					owner.readReference = func(ctx context.Context, key string) (attachment.ArchiveReference, error) {
+					owner := ctx.Value(hubcontent.ChangeContentKey{}).(*hubcontent.ChangeContent)
+					read := owner.ReadReference
+					owner.ReadReference = func(ctx context.Context, key string) (attachment.ArchiveReference, error) {
 						metadataReads++
 						return read(ctx, key)
 					}
@@ -766,28 +767,28 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 				}
 				ctx, owner := newContext()
 				ref, raw := references[org], payloads[org]
-				got, err := readStoredPayload(ctx, ref.Key)
+				got, err := hubcontent.ReadStoredPayload(ctx, ref.Key)
 				if err != nil || !bytes.Equal(got, raw) || metadataReads != 1 {
 					t.Fatalf("typed payload read=%q metadata_reads=%d error=%v", got, metadataReads, err)
 				}
 				got[0] ^= 1
 				beforeReads := objects.reads
 				contentWriting(ctx, true)
-				got, err = readStoredPayload(ctx, ref.Key)
+				got, err = hubcontent.ReadStoredPayload(ctx, ref.Key)
 				contentWriting(ctx, false)
 				if err != nil || !bytes.Equal(got, raw) || metadataReads != 1 || objects.reads != beforeReads {
 					t.Fatalf("cached write-phase read changed bytes or read storage: error=%v", err)
 				}
 				foreign := organizations[1-index]
-				owner.mu.Lock()
-				owner.organization = string(foreign)
-				err = owner.rememberPayload(references[foreign], payloads[foreign])
-				owner.mu.Unlock()
+				owner.Mu.Lock()
+				owner.Organization = string(foreign)
+				err = owner.RememberPayload(references[foreign], payloads[foreign])
+				owner.Mu.Unlock()
 				if err != nil {
 					t.Fatal(err)
 				}
 				for _, key := range []string{references[foreign].Key, ref.Key + "/extra", strings.Replace(ref.Key, "/blobs/", "/other/", 1)} {
-					if _, err := readStoredPayload(ctx, key); !errors.Is(err, artifact.ErrIntegrity) || metadataReads != 1 || objects.reads != beforeReads {
+					if _, err := hubcontent.ReadStoredPayload(ctx, key); !errors.Is(err, artifact.ErrIntegrity) || metadataReads != 1 || objects.reads != beforeReads {
 						t.Fatalf("invalid/foreign key reached storage or cached foreign data: metadata_reads=%d error=%v", metadataReads, err)
 					}
 				}
@@ -803,21 +804,21 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 					t.Fatal("obsolete SQLite event token was accepted")
 				}
 				fresh, _ := newContext()
-				isolated := isolateContentContext(fresh)
-				got, err = readStoredPayload(isolated, ref.Key)
+				isolated := hubcontent.IsolateContentContext(fresh)
+				got, err = hubcontent.ReadStoredPayload(isolated, ref.Key)
 				if err != nil || !bytes.Equal(got, raw) {
 					t.Fatalf("isolated context lost typed reference capability: %v", err)
 				}
 				ctx, _ = newContext()
 				beforeMetadata, beforeReads := metadataReads, objects.reads
-				if _, err := readStoredPayload(ctx, unregistered[org].Key); !errors.Is(err, corestore.ErrNotFound) || !errors.Is(err, artifact.ErrIntegrity) || objects.reads != beforeReads || metadataReads != beforeMetadata+1 {
+				if _, err := hubcontent.ReadStoredPayload(ctx, unregistered[org].Key); !errors.Is(err, corestore.ErrNotFound) || !errors.Is(err, artifact.ErrIntegrity) || objects.reads != beforeReads || metadataReads != beforeMetadata+1 {
 					t.Fatalf("unregistered payload reached object storage: error=%v", err)
 				}
 				ctx, _ = newContext()
 				objects.mu.Lock()
 				delete(objects.data, ref.Key)
 				objects.mu.Unlock()
-				_, missingErr := readStoredPayload(ctx, ref.Key)
+				_, missingErr := hubcontent.ReadStoredPayload(ctx, ref.Key)
 				objects.mu.Lock()
 				objects.data[ref.Key] = bytes.Clone(raw)
 				objects.mu.Unlock()
@@ -828,7 +829,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 				objects.mu.Lock()
 				objects.data[ref.Key] = bytes.Clone(raw[:len(raw)-1])
 				objects.mu.Unlock()
-				_, corruptErr := readStoredPayload(ctx, ref.Key)
+				_, corruptErr := hubcontent.ReadStoredPayload(ctx, ref.Key)
 				objects.mu.Lock()
 				objects.data[ref.Key] = bytes.Clone(raw)
 				objects.mu.Unlock()
@@ -838,29 +839,29 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 				ctx, owner = newContext()
 				beforeMetadata, beforeReads = metadataReads, objects.reads
 				contentWriting(ctx, true)
-				_, err = readStoredPayload(ctx, ref.Key)
-				var hydration *claimHydration
+				_, err = hubcontent.ReadStoredPayload(ctx, ref.Key)
+				var hydration *hubcontent.ClaimHydration
 				if !errors.As(err, &hydration) || metadataReads != beforeMetadata || objects.reads != beforeReads {
 					t.Fatalf("uncached write-phase read bypassed preparation: %v", err)
 				}
 				contentWriting(ctx, false)
-				if err := hydration.run(ctx, nil); err != nil {
+				if err := hydration.Run(ctx, nil); err != nil {
 					t.Fatal(err)
 				}
-				got, err = readStoredPayload(ctx, ref.Key)
+				got, err = hubcontent.ReadStoredPayload(ctx, ref.Key)
 				if err != nil || !bytes.Equal(got, raw) || metadataReads != beforeMetadata+1 || objects.reads != beforeReads+1 {
 					t.Fatalf("prepared payload was not reused: error=%v", err)
 				}
-				owner.mu.Lock()
-				invalid := owner.references[ref.Key]
+				owner.Mu.Lock()
+				invalid := owner.References[ref.Key]
 				invalid.UncompressedSize = 0
-				owner.references[ref.Key] = invalid
-				owner.mu.Unlock()
-				if _, err := readStoredPayload(ctx, ref.Key); !errors.Is(err, artifact.ErrIntegrity) {
+				owner.References[ref.Key] = invalid
+				owner.Mu.Unlock()
+				if _, err := hubcontent.ReadStoredPayload(ctx, ref.Key); !errors.Is(err, artifact.ErrIntegrity) {
 					t.Fatalf("invalid cached reference was accepted: %v", err)
 				}
 				local := &Service{config: Config{TenantRepository: repository, RunDetails: objects}, localOrganization: string(org)}
-				got, err = readStoredPayload(local.contentContext(t.Context()), ref.Key)
+				got, err = hubcontent.ReadStoredPayload(local.contentContext(t.Context()), ref.Key)
 				if err != nil || !bytes.Equal(got, raw) {
 					t.Fatalf("canonical local tenant payload read: %v", err)
 				}
@@ -877,7 +878,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 					}
 					if !probing {
 						probing = true
-						value, err := readStoredPayload(ctx, ref.Key)
+						value, err := hubcontent.ReadStoredPayload(ctx, ref.Key)
 						probing = false
 						if err != nil || !bytes.Equal(value, raw) {
 							return nil, errors.Join(artifact.ErrIntegrity, err)
@@ -894,7 +895,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 					t.Fatalf("conversation context retargeted a bound tenant: %v", err)
 				}
 				unscoped := &Service{config: Config{TenantRepository: repository, RunDetails: objects}}
-				if _, err := readStoredPayload(unscoped.contentContext(t.Context()), ref.Key); !errors.Is(err, errContentStorageUnconfigured) {
+				if _, err := hubcontent.ReadStoredPayload(unscoped.contentContext(t.Context()), ref.Key); !errors.Is(err, hubcontent.ErrContentStorageUnconfigured) {
 					t.Fatalf("key selected an unbound tenant: %v", err)
 				}
 			})
@@ -927,7 +928,7 @@ func TestChangeContentWithoutLegacyDatabase(t *testing.T) {
 			}
 			probing = true
 			defer func() { probing = false }()
-			got, err := readStoredPayload(ctx, ref.Key)
+			got, err := hubcontent.ReadStoredPayload(ctx, ref.Key)
 			if err != nil {
 				return err
 			}

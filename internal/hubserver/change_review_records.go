@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
@@ -28,7 +29,7 @@ import (
 )
 
 func (s *Service) changeReviewRecordMutation(c echo.Context, request tracker.ReviewChange) error {
-	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
+	ctx := hubcontent.IsolateContentContext(s.runDetailContext(c.Request().Context()))
 	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
 	raw, err := s.reviewChangeRecordCommand(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("change"), c.Param("version"), operation, request)
 	if err != nil {
@@ -111,7 +112,7 @@ prepareReview:
 			return nil, err
 		}
 	}
-	review := tracker.ChangeReview{SessionMachineID: sessionMachine, ImplementationReview: request.ImplementationReview, Validator: request.Validator, SecurityAudit: request.SecurityAudit, ID: payloadNativeID(ctx, "review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.Actor(), CreatedAt: payloadTimestamp(ctx, now)}
+	review := tracker.ChangeReview{SessionMachineID: sessionMachine, ImplementationReview: request.ImplementationReview, Validator: request.Validator, SecurityAudit: request.SecurityAudit, ID: hubcontent.PayloadNativeID(ctx, "review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.Actor(), CreatedAt: hubcontent.PayloadTimestamp(ctx, now)}
 	var independent *preparedIndependentRepairs
 	if request.Decision == "changes_requested" && review.VersionID == change.CurrentVersion {
 		independent, err = s.prepareIndependentRepairs(ctx, scope, change.WorkItemID, review.IndependentFailures(), change.ID+"/"+review.ID, now)
@@ -169,7 +170,7 @@ prepareReview:
 	if err != nil {
 		return nil, err
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "change.review", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: review.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: versionID}}})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "change.review", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: review.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: versionID}}})
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +204,7 @@ prepareReview:
 			if err != nil {
 				return nil, err
 			}
-			comment := tracker.NativeComment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemRow.NativeID, ID: payloadNativeID(ctx, "cmt"), Revision: 1, Sequence: itemRow.EventSequence + 2, Body: body, Actor: scope.Actor(), CreatedAt: review.CreatedAt, UpdatedAt: review.CreatedAt}
+			comment := tracker.NativeComment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemRow.NativeID, ID: hubcontent.PayloadNativeID(ctx, "cmt"), Revision: 1, Sequence: itemRow.EventSequence + 2, Body: body, Actor: scope.Actor(), CreatedAt: review.CreatedAt, UpdatedAt: review.CreatedAt}
 			commentRaw, err := json.Marshal(comment)
 			if err != nil {
 				return nil, err
@@ -212,7 +213,7 @@ prepareReview:
 			if err != nil {
 				return nil, err
 			}
-			commentEventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: itemRow.NativeID, Type: "comment.created", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: review.CreatedAt, Data: tracker.CollaborationData{CommentID: comment.ID}})
+			commentEventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: itemRow.NativeID, Type: "comment.created", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: review.CreatedAt, Data: tracker.CollaborationData{CommentID: comment.ID}})
 			if err != nil {
 				return nil, err
 			}

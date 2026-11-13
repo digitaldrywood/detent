@@ -10,12 +10,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func decodeChangeColumnsJSON(ctx context.Context, raw []byte, result any) error {
 	if bytes.HasPrefix(raw, []byte("orgs/")) {
-		return decodeStorageJSON(ctx, raw, result)
+		return hubcontent.DecodeStorageJSON(ctx, raw, result)
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
@@ -34,7 +35,7 @@ func decodeChangeColumnsJSON(ctx context.Context, raw []byte, result any) error 
 	if err := json.Unmarshal(reference, &ref); err != nil {
 		return err
 	}
-	data, err := readChangeContent(ctx, ref.Organization, ref.Reference)
+	data, err := hubcontent.ReadChangeContent(ctx, ref.Organization, ref.Reference)
 	if err != nil {
 		return err
 	}

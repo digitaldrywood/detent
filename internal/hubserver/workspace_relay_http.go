@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -1530,11 +1531,11 @@ func (w *workspaceService) prepareRelayOutput(ctx context.Context, organization 
 	if len(data) == 0 {
 		return attachment.ArchiveReference{}, nil
 	}
-	outputCtx := isolateContentContext(w.server.contentContext(ctx))
-	if content, ok := outputCtx.Value(changeContentKey{}).(*changeContent); ok {
-		content.mu.Lock()
-		content.completion = true
-		content.mu.Unlock()
+	outputCtx := hubcontent.IsolateContentContext(w.server.contentContext(ctx))
+	if content, ok := outputCtx.Value(hubcontent.ChangeContentKey{}).(*hubcontent.ChangeContent); ok {
+		content.Mu.Lock()
+		content.Completion = true
+		content.Mu.Unlock()
 	}
 	return prepareMeteredContent(outputCtx, string(organization), data, false)
 }

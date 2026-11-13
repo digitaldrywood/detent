@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 )
 
 type runEventDetailStore struct{ attachment.DetailStore }
@@ -27,7 +28,7 @@ func (store runEventDetailStore) StoreDetail(ctx context.Context, organization s
 	}
 	published, readErr := store.DetailStore.ReadDetail(ctx, organization, expected)
 	if readErr != nil {
-		return attachment.ArchiveReference{}, immutableContentStorageError(fmt.Errorf("reconcile run content upload: %w", errors.Join(writeErr, readErr)))
+		return attachment.ArchiveReference{}, hubcontent.ImmutableContentStorageError(fmt.Errorf("reconcile run content upload: %w", errors.Join(writeErr, readErr)))
 	}
 	if !bytes.Equal(published, raw) {
 		return attachment.ArchiveReference{}, artifact.ErrIntegrity
@@ -38,7 +39,7 @@ func (store runEventDetailStore) StoreDetail(ctx context.Context, organization s
 func (store runEventDetailStore) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
 	raw, err := store.DetailStore.ReadDetail(ctx, organization, ref)
 	if err != nil {
-		return nil, immutableContentStorageError(err)
+		return nil, hubcontent.ImmutableContentStorageError(err)
 	}
 	return raw, nil
 }

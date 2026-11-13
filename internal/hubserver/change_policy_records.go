@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -55,7 +56,7 @@ func (s *Service) approveChangeReviewPolicyRecordCommand(ctx context.Context, sc
 	if request.Policy.PolicyID == "" {
 		return nil, hubapi.NativePublicInvalid("An approved repository policy identity is required")
 	}
-	ctx = isolateContentContext(s.runDetailContext(ctx))
+	ctx = hubcontent.IsolateContentContext(s.runDetailContext(ctx))
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}

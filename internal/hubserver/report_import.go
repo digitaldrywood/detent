@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -234,10 +235,10 @@ func restoreCoreReportLanding(ctx context.Context, tx *coreNeutralImport, source
 
 func decodeCoreReportData(ctx context.Context, tx *coreNeutralImport, source CoreWorkItemImportSource, raw []byte, data *tracker.CollaborationData) error {
 	objects := reportImportObjects{organization: source.OrganizationID, store: source.Objects}
-	content := &changeContent{store: objects, readOrganization: string(source.OrganizationID), payloads: map[string][]byte{}, references: map[string]attachment.ArchiveReference{}}
-	owner := &runDetailContext{store: objects, organization: string(source.OrganizationID), cache: map[string]map[string]tracker.NativeRunData{}}
-	ctx = context.WithValue(ctx, changeContentKey{}, content)
-	ctx = context.WithValue(ctx, runDetailContextKey{}, owner)
+	content := &hubcontent.ChangeContent{Store: objects, ReadOrganization: string(source.OrganizationID), Payloads: map[string][]byte{}, References: map[string]attachment.ArchiveReference{}}
+	owner := &hubcontent.RunDetailContext{Store: objects, Organization: string(source.OrganizationID), Cache: map[string]map[string]tracker.NativeRunData{}}
+	ctx = context.WithValue(ctx, hubcontent.ChangeContentKey{}, content)
+	ctx = context.WithValue(ctx, hubcontent.RunDetailContextKey{}, owner)
 	resolved, err := resolveCoreNeutralJSON(ctx, tx, source.OrganizationID, objects, raw)
 	if err != nil {
 		return err

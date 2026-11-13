@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -781,7 +782,7 @@ func (s *Service) readSpritePoolSnapshot(ctx context.Context, scope hubscope.Nat
 		view.IsolationTierUnavailableReason = spriteSandboxUnavailableReason
 	}
 	if bootstrap.Key != "" {
-		raw, err := readChangeContent(s.contentContext(ctx), string(scope.Organization), bootstrap)
+		raw, err := hubcontent.ReadChangeContent(s.contentContext(ctx), string(scope.Organization), bootstrap)
 		if err != nil {
 			return view, row, err
 		}

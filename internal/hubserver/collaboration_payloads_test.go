@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
@@ -222,7 +223,7 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 							}
 							return original(ctx, request)
 						}
-						ctx := context.WithValue(t.Context(), explanationReadKey{}, lightweight)
+						ctx := context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, lightweight)
 						runtime, err := f.service.readNativeRuntime(ctx, scope, string(issue.WorkItemID), "")
 						if err == nil {
 							_, err = f.service.readConversationSnapshotFor(f.service.runDetailContext(ctx), scope, conversation.Conversation.ID, "", true)
@@ -367,7 +368,7 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, lightweight := range []bool{false, true} {
-					ctx := postgres.WithTransactionTiming(context.WithValue(t.Context(), explanationReadKey{}, lightweight), nil, func(_ time.Time, query string) {
+					ctx := postgres.WithTransactionTiming(context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, lightweight), nil, func(_ time.Time, query string) {
 						if strings.Contains(query, "-- name: SchedulerEventHead") {
 							headQuery = query
 						}
@@ -444,7 +445,7 @@ func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
 						t.Fatalf("old scheduler object remains available: %v", err)
 					}
 					for _, lightweight := range []bool{false, true} {
-						ctx := context.WithValue(t.Context(), explanationReadKey{}, lightweight)
+						ctx := context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, lightweight)
 						evidence, err := f.service.readNativeRuntime(ctx, scope, string(issue.WorkItemID), "")
 						if err != nil {
 							t.Fatalf("converted scheduler evidence (explanation=%t): %v", lightweight, err)

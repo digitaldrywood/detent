@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -182,7 +183,7 @@ func hydrateCoreNeutralVersion(ctx context.Context, source *coreNeutralImport, i
 	if err := source.each(ctx, "change_command_outputs", map[string]string{"version_id": value.ID, "review_id": value.ID}, []string{"role", "position"}, func(row postgres.NeutralImportRow) error {
 		var role, organization string
 		var position int
-		ref := contentReference()
+		ref := hubcontent.ContentReference()
 		if err := row.Decode(map[string]any{"role": &role, "position": &position, "organization_id": &organization, "object_key": &ref.Key, "object_sha256": &ref.SHA256, "object_bytes": &ref.CompressedSize, "content_bytes": &ref.UncompressedSize}); err != nil {
 			return err
 		}

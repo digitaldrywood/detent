@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -60,7 +61,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.Na
 		if err := s.readRuntimeAdmissionTenant(ctx, scope, issue, &evidence, admission); err != nil {
 			return tracker.NativeRuntimeEvidence{}, err
 		}
-		if explanationRead(ctx) && evidence.Attempt == nil {
+		if hubcontent.ExplanationRead(ctx) && evidence.Attempt == nil {
 			if err := s.readRuntimeSourceRecoveryTenant(ctx, scope, item, &evidence); err != nil {
 				return evidence, err
 			}
@@ -352,7 +353,7 @@ func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.Na
 	if attempt.TerminalFailure == nil {
 		result.Unavailable = append(result.Unavailable, "terminal_failure")
 	}
-	if explanationRead(ctx) {
+	if hubcontent.ExplanationRead(ctx) {
 		if err := s.readRuntimeSourceRecoveryTenant(ctx, scope, item, &result); err != nil {
 			return result, err
 		}

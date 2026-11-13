@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
@@ -217,7 +218,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 	}
 	store := s.runDetailStore()
 	if store == nil {
-		return nil, errContentStorageUnconfigured
+		return nil, hubcontent.ErrContentStorageUnconfigured
 	}
 	store = runEventDetailStore{DetailStore: store}
 	requestHash, err := hubapi.CommandHash(request)

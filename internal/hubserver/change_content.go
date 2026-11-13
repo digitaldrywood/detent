@@ -2,13 +2,9 @@ package hubserver
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"math"
-	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -19,44 +15,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type changeContentKey struct{}
-
-func immutableContentStorageError(err error) error {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, artifact.ErrIntegrity) {
-		return err
-	}
-	return fmt.Errorf("immutable content storage: %w", errors.Join(artifact.ErrStorage, err))
-}
-
-type changeContent struct {
-	encoder          *attachment.ArchiveEncoder
-	mu               sync.Mutex
-	call             entryauthority.ContentHandler
-	store            attachment.DetailStore
-	register         func(context.Context, string, attachment.ArchiveReference, bool) error
-	readOrganization string
-	readReference    func(context.Context, string) (attachment.ArchiveReference, error)
-	prepared         map[string]attachment.ArchiveReference
-	query            hubapi.NativeQueryer
-	payloads         map[string][]byte
-	references       map[string]attachment.ArchiveReference
-	ids              map[string]string
-	idPositions      map[string]int
-	generatedAt      time.Time
-	organization     string
-	stableHistory    bool
-	completion       bool
-	mutationDepth    int
-	payloadBytes     int64
-	writing          bool
-}
-
 func (s *Service) contentContext(ctx context.Context) context.Context {
-	if ctx.Value(changeContentKey{}) != nil {
+	if ctx.Value(hubcontent.ChangeContentKey{}) != nil {
 		return ctx
 	}
 	call := s.storageArchiveContent()
@@ -67,13 +32,13 @@ func (s *Service) contentContext(ctx context.Context) context.Context {
 	organization := s.accessOrganization()
 	readReference := func(ctx context.Context, key string) (attachment.ArchiveReference, error) {
 		if organization == "" || s.config.TenantRepository == nil {
-			return attachment.ArchiveReference{}, errContentStorageUnconfigured
+			return attachment.ArchiveReference{}, hubcontent.ErrContentStorageUnconfigured
 		}
 		var ref attachment.ArchiveReference
 		err := s.config.TenantRepository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 			reader, ok := r.(attemptArchiveReader)
 			if !ok {
-				return errContentStorageUnconfigured
+				return hubcontent.ErrContentStorageUnconfigured
 			}
 			object, err := reader.ArchiveObjectByKey(ctx, key)
 			if err != nil {
@@ -87,7 +52,7 @@ func (s *Service) contentContext(ctx context.Context) context.Context {
 		})
 		return ref, err
 	}
-	return context.WithValue(ctx, changeContentKey{}, &changeContent{encoder: &s.archiveEncoder, call: call, store: store, register: s.registerChangeContent, readOrganization: string(organization), readReference: readReference})
+	return context.WithValue(ctx, hubcontent.ChangeContentKey{}, &hubcontent.ChangeContent{Encoder: &s.archiveEncoder, Call: call, Store: store, Register: s.registerChangeContent, ReadOrganization: string(organization), ReadReference: readReference})
 }
 
 func (s *Service) changeContentMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -110,148 +75,77 @@ func contentPreparationKey(organization string, data []byte, billable bool) stri
 }
 
 func prepareMeteredContent(ctx context.Context, organization string, data []byte, billable bool) (attachment.ArchiveReference, error) {
-	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
+	content, ok := ctx.Value(hubcontent.ChangeContentKey{}).(*hubcontent.ChangeContent)
 	if !ok {
-		return attachment.ArchiveReference{}, errContentStorageUnconfigured
+		return attachment.ArchiveReference{}, hubcontent.ErrContentStorageUnconfigured
 	}
-	content.mu.Lock()
+	content.Mu.Lock()
 	digest := contentPreparationKey(organization, data, billable)
-	cached, found := content.prepared[digest]
-	content.mu.Unlock()
+	cached, found := content.Prepared[digest]
+	content.Mu.Unlock()
 	if found {
 		return cached, nil
 	}
 	var ref attachment.ArchiveReference
-	if content.call == nil {
+	if content.Call == nil {
 		var err error
-		ref, err = content.store.StoreDetail(ctx, organization, data)
+		ref, err = content.Store.StoreDetail(ctx, organization, data)
 		if err != nil {
-			return ref, immutableContentStorageError(err)
+			return ref, hubcontent.ImmutableContentStorageError(err)
 		}
 		if ref.Validate(organization) != nil || ref.UncompressedSize != int64(len(data)) {
 			return ref, artifact.ErrIntegrity
 		}
-		verified, err := content.store.ReadDetail(ctx, organization, ref)
+		verified, err := content.Store.ReadDetail(ctx, organization, ref)
 		if err != nil {
-			return ref, immutableContentStorageError(err)
+			return ref, hubcontent.ImmutableContentStorageError(err)
 		}
 		if !bytes.Equal(data, verified) {
 			return ref, artifact.ErrIntegrity
 		}
-		if err := content.register(ctx, organization, ref, billable); err != nil {
+		if err := content.Register(ctx, organization, ref, billable); err != nil {
 			return ref, err
 		}
 	} else {
 		encode := attachment.PrepareArchive
-		if content.encoder != nil {
-			encode = content.encoder.Prepare
+		if content.Encoder != nil {
+			encode = content.Encoder.Prepare
 		}
 		prepared, compressed, err := encode(organization, 1, bytes.NewReader(data))
 		if err != nil {
 			return prepared, err
 		}
 		ref = prepared
-		if err := content.register(ctx, organization, ref, billable); err != nil {
+		if err := content.Register(ctx, organization, ref, billable); err != nil {
 			return ref, err
 		}
-		if _, err := content.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref, Data: compressed, Write: true}); err != nil {
-			return ref, immutableContentStorageError(err)
+		if _, err := content.Call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref, Data: compressed, Write: true}); err != nil {
+			return ref, hubcontent.ImmutableContentStorageError(err)
 		}
-		verified, err := content.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref})
+		verified, err := content.Call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref})
 		if err != nil {
-			return ref, immutableContentStorageError(err)
+			return ref, hubcontent.ImmutableContentStorageError(err)
 		}
 		if !bytes.Equal(compressed, verified) {
 			return ref, artifact.ErrIntegrity
 		}
 	}
-	content.mu.Lock()
-	defer content.mu.Unlock()
-	if content.prepared == nil {
-		content.prepared = make(map[string]attachment.ArchiveReference)
+	content.Mu.Lock()
+	defer content.Mu.Unlock()
+	if content.Prepared == nil {
+		content.Prepared = make(map[string]attachment.ArchiveReference)
 	}
-	if len(content.prepared) >= claimEvidenceLimit && content.mutationDepth == 0 {
-		clear(content.prepared)
+	if len(content.Prepared) >= hubcontent.ClaimEvidenceLimit && content.MutationDepth == 0 {
+		clear(content.Prepared)
 	}
-	if len(content.prepared) >= claimEvidenceLimit {
+	if len(content.Prepared) >= hubcontent.ClaimEvidenceLimit {
 		return ref, attachment.ErrTooLarge
 	}
-	content.prepared[digest] = ref
-	if err := content.rememberPayload(ref, data); err != nil {
+	content.Prepared[digest] = ref
+	if err := content.RememberPayload(ref, data); err != nil {
 		return ref, err
 	}
 	return ref, nil
-}
-
-func readChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	if ref.Validate(organization) != nil {
-		return nil, artifact.ErrIntegrity
-	}
-	return readRuntimeObject(ctx, nativeRuntimeObjectKey{kind: "content", organization: organization, reference: ref}, func() ([]byte, error) {
-		return readChangeContentObject(ctx, organization, ref)
-	})
-}
-
-func readChangeContentObject(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
-	if !ok {
-		return nil, errContentStorageUnconfigured
-	}
-	content.mu.Lock()
-	writing := content.writing
-	cached, found := content.payloads[ref.Key]
-	cachedRef := content.references[ref.Key]
-	content.mu.Unlock()
-	if writing {
-		if found && cachedRef == ref {
-			return bytes.Clone(cached), nil
-		}
-		return nil, &claimHydration{run: func(ctx context.Context, _ hubapi.NativeQueryer) error {
-			raw, err := readChangeContent(ctx, organization, ref)
-			if err != nil {
-				return err
-			}
-			content.mu.Lock()
-			defer content.mu.Unlock()
-			return content.rememberPayload(ref, raw)
-		}}
-	}
-	return readPublishedContent(ctx, content, organization, ref)
-}
-
-func readPublishedContent(ctx context.Context, content *changeContent, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	if content.call == nil {
-		raw, err := content.store.ReadDetail(ctx, organization, ref)
-		if err != nil {
-			return nil, immutableContentStorageError(err)
-		}
-		if int64(len(raw)) != ref.UncompressedSize {
-			return nil, artifact.ErrIntegrity
-		}
-		return raw, nil
-	}
-	compressed, err := content.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref})
-	if err != nil {
-		return nil, immutableContentStorageError(err)
-	}
-	if int64(len(compressed)) != ref.CompressedSize || artifact.Digest(compressed) != ref.SHA256 {
-		return nil, artifact.ErrIntegrity
-	}
-	input := bytes.NewReader(compressed)
-	reader, err := gzip.NewReader(input)
-	if err != nil {
-		return nil, artifact.ErrIntegrity
-	}
-	reader.Multistream(false)
-	data, err := io.ReadAll(io.LimitReader(reader, ref.UncompressedSize+1))
-	if err = errors.Join(err, reader.Close()); err != nil || input.Len() != 0 || int64(len(data)) != ref.UncompressedSize {
-		return nil, artifact.ErrIntegrity
-	}
-	return data, nil
-}
-
-func contentReference() attachment.ArchiveReference {
-	return attachment.ArchiveReference{Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
 }
 
 func (s *Service) registerChangeContent(ctx context.Context, organization string, ref attachment.ArchiveReference, billable bool) error {
@@ -267,10 +161,10 @@ func (s *Service) registerChangeContent(ctx context.Context, organization string
 }
 
 func changeContentCompletion(ctx context.Context) bool {
-	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-		content.mu.Lock()
-		defer content.mu.Unlock()
-		return content.completion
+	if content, ok := ctx.Value(hubcontent.ChangeContentKey{}).(*hubcontent.ChangeContent); ok {
+		content.Mu.Lock()
+		defer content.Mu.Unlock()
+		return content.Completion
 	}
 	return false
 }

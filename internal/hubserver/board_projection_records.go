@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
@@ -83,8 +84,8 @@ func (s *Service) MaintainBoardRecord(ctx context.Context, organization tracker.
 		return after, false, errors.New("maintenance requires byte-limited payload storage")
 	}
 	ctx = detailbatch.Clear(ctx)
-	ctx = context.WithValue(ctx, changeContentKey{}, nil)
-	ctx = context.WithValue(ctx, runDetailContextKey{}, nil)
+	ctx = context.WithValue(ctx, hubcontent.ChangeContentKey{}, nil)
+	ctx = context.WithValue(ctx, hubcontent.RunDetailContextKey{}, nil)
 	return s.maintainBoardRecord(ctx, organization, after, attempted...)
 }
 

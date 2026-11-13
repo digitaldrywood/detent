@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -460,7 +461,7 @@ func (s *Service) actionRunRecord(ctx context.Context, row postgres.ActionRun, o
 			if err != nil {
 				return actionRunRecord{}, err
 			}
-			raw, err := readChangeContent(s.contentContext(ctx), string(row.OrganizationID), ref)
+			raw, err := hubcontent.ReadChangeContent(s.contentContext(ctx), string(row.OrganizationID), ref)
 			if err != nil {
 				return actionRunRecord{}, err
 			}

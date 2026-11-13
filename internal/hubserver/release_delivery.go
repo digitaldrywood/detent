@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -113,7 +114,7 @@ func (s *Service) associateReleasePick(c echo.Context) error {
 	if err := s.prepareReleasePick(c.Request().Context(), hubscope.NativeRequestScope(c), c.Param("item"), r); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	ctx := isolateContentContext(s.runDetailContext(c.Request().Context()))
+	ctx := hubcontent.IsolateContentContext(s.runDetailContext(c.Request().Context()))
 	raw, err := s.associateReleasePickTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Request().Method+" "+c.Request().URL.EscapedPath(), r)
 	if err != nil {
 		return s.nativeAPIError(c, err)

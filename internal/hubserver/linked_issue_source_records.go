@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
@@ -162,7 +163,7 @@ func validateLinkedIssueSnapshot(snapshot tracker.GitHubIssueSnapshot) error {
 func (s *Service) prepareLinkedIssueComment(ctx context.Context, scope hubscope.NativeScope, itemID tracker.NativeWorkItemID, imported tracker.GitHubIssueComment, sequence int64, now time.Time) (linkedIssueCommentPlan, error) {
 	content := eventstore.NewContent(s.runDetailStore())
 	key := imported.Provenance.Provider + ":" + imported.Provenance.ExternalID
-	commentID := payloadNativeID(ctx, "cmt")
+	commentID := hubcontent.PayloadNativeID(ctx, "cmt")
 	comment := tracker.NativeComment{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: itemID, ID: commentID, Revision: 1, Body: imported.Body, Actor: *nativeIntegrationActor("github"), Provenance: &imported.Provenance, CreatedAt: imported.Provenance.CreatedAt, UpdatedAt: imported.Provenance.UpdatedAt}
 	if comment.CreatedAt.IsZero() {
 		comment.CreatedAt = now
@@ -170,7 +171,7 @@ func (s *Service) prepareLinkedIssueComment(ctx context.Context, scope hubscope.
 	if comment.UpdatedAt.IsZero() {
 		comment.UpdatedAt = comment.CreatedAt
 	}
-	comment.UpdatedAt = payloadTimestamp(ctx, comment.UpdatedAt)
+	comment.UpdatedAt = hubcontent.PayloadTimestamp(ctx, comment.UpdatedAt)
 	comment.Sequence = sequence
 	commentRaw, err := json.Marshal(comment)
 	if err != nil {
@@ -190,7 +191,7 @@ func (s *Service) prepareLinkedIssueComment(ctx context.Context, scope hubscope.
 	if err != nil {
 		return linkedIssueCommentPlan{}, err
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: itemID, ID: payloadNativeID(ctx, "evt"), Type: "comment.created", SchemaVersion: 1, Actor: comment.Actor, RecordedAt: comment.CreatedAt, Data: tracker.CollaborationData{CommentID: commentID}})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: itemID, ID: hubcontent.PayloadNativeID(ctx, "evt"), Type: "comment.created", SchemaVersion: 1, Actor: comment.Actor, RecordedAt: comment.CreatedAt, Data: tracker.CollaborationData{CommentID: commentID}})
 	if err != nil {
 		return linkedIssueCommentPlan{}, err
 	}
@@ -215,7 +216,7 @@ func (s *Service) intakeLinkedIssueRecord(c echo.Context, request tracker.GitHub
 }
 
 func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.NativeScope, itemID tracker.NativeWorkItemID, operation string, request tracker.GitHubIntake) (json.RawMessage, error) {
-	ctx = isolateContentContext(s.runDetailContext(ctx))
+	ctx = hubcontent.IsolateContentContext(s.runDetailContext(ctx))
 	if scope.Credential.Scope != hubapi.APIScopeWorker && scope.Credential.Scope != hubapi.APIScopeAdmin && scope.Credential.Scope != hubapi.APIScopeOperator {
 		return nil, hubapi.NativeNotFound()
 	}
@@ -307,7 +308,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 	if !stale {
 		issue.Provenance = &request.Snapshot.Provenance
 		issue.LastActivityAt = now
-		issue.UpdatedAt = payloadTimestamp(ctx, now)
+		issue.UpdatedAt = hubcontent.PayloadTimestamp(ctx, now)
 		issue.Revision++
 		issue.LinkedSource = &tracker.LinkedIssueSource{URL: canonical, Status: "complete"}
 		if err := s.applyScheduledRepairRecord(ctx, scope, &issue); err != nil {
@@ -367,7 +368,7 @@ func (s *Service) applyLinkedIssueRecord(ctx context.Context, scope hubscope.Nat
 		if verified := scope.ScheduledRepair; verified != nil && verified.ImportURL == canonical && verified.ImportReason != "" {
 			reason += ": " + verified.ImportReason
 		}
-		issueEventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: itemID, ID: payloadNativeID(ctx, "evt"), Type: "github.imported", SchemaVersion: 1, Actor: *nativeIntegrationActor("github"), RecordedAt: issue.UpdatedAt, Data: tracker.CollaborationData{Revision: issue.Revision, Operation: "source_intake", Reason: reason}})
+		issueEventRaw, err := json.Marshal(tracker.CollaborationEvent{OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: itemID, ID: hubcontent.PayloadNativeID(ctx, "evt"), Type: "github.imported", SchemaVersion: 1, Actor: *nativeIntegrationActor("github"), RecordedAt: issue.UpdatedAt, Data: tracker.CollaborationData{Revision: issue.Revision, Operation: "source_intake", Reason: reason}})
 		if err != nil {
 			return nil, err
 		}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -179,7 +180,7 @@ func readCoreNeutralObject(ctx context.Context, source *coreNeutralImport, organ
 
 func readCoreNeutralObjectWithReference(ctx context.Context, source *coreNeutralImport, organization tracker.OrganizationID, objects attachment.DetailStore, key string) (attachment.ArchiveReference, []byte, error) {
 	row, err := source.one(ctx, "change_content_objects", map[string]string{"organization_id": string(organization), "object_key": key}, []string{"object_key"})
-	ref := contentReference()
+	ref := hubcontent.ContentReference()
 	if errors.Is(err, sql.ErrNoRows) {
 		row, err = source.one(ctx, "attachments", map[string]string{"organization_id": string(organization), "object_key": key, "kind": "archive", "customer_owned": "0", "storage_binding_id": ""}, []string{"object_key"})
 		if err != nil {
@@ -246,7 +247,7 @@ func resolveCoreNeutralJSON(ctx context.Context, source *coreNeutralImport, orga
 	if strings.HasPrefix(string(raw), "orgs/") {
 		return readCoreNeutralObject(ctx, source, organization, objects, string(raw))
 	}
-	return resolveStorageJSONWith(ctx, raw, func(ctx context.Context, org string, ref attachment.ArchiveReference) ([]byte, error) {
+	return hubcontent.ResolveStorageJSONWith(ctx, raw, func(ctx context.Context, org string, ref attachment.ArchiveReference) ([]byte, error) {
 		if org != string(organization) || ref.Validate(org) != nil {
 			return nil, artifact.ErrIntegrity
 		}

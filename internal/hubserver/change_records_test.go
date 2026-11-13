@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	serverapi "github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -1722,7 +1723,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	originalRunDetails := service.config.RunDetails
 	raceStore := &changeArchiveMutationStore{DetailStore: originalRunDetails}
 	raceStore.afterLandingPayload = func(ctx context.Context) error {
-		lateReviewID = payloadNativeID(ctx, "review")
+		lateReviewID = hubcontent.PayloadNativeID(ctx, "review")
 		review := tracker.ChangeReview{ID: lateReviewID, VersionID: nextVersion.ID, Decision: lateReview.Decision, Body: lateReview.Body, Actor: scope.Actor(), CreatedAt: service.config.now()}
 		raw, err := json.Marshal(review)
 		if err != nil {
@@ -1780,7 +1781,7 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	concurrentReview := tracker.ChangeReview{ID: payloadNativeID(t.Context(), "review"), VersionID: nextVersion.ID, Decision: "approved", Body: "Concurrent approval evidence", Actor: scope.Actor(), CreatedAt: service.config.now()}
+	concurrentReview := tracker.ChangeReview{ID: hubcontent.PayloadNativeID(t.Context(), "review"), VersionID: nextVersion.ID, Decision: "approved", Body: "Concurrent approval evidence", Actor: scope.Actor(), CreatedAt: service.config.now()}
 	concurrentReviewRaw, err := json.Marshal(concurrentReview)
 	if err != nil {
 		t.Fatal(err)

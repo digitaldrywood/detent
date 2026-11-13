@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/changefiles"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -16,7 +17,9 @@ import (
 func (s *Service) changeFilesService(caller hubscope.NativeScope) *changefiles.Service {
 	return changefiles.New(changefiles.Deps{
 		Repository: s.config.TenantRepository, Details: s.runDetailStore, CurrentTime: s.database.currentTime,
-		Context: func(ctx context.Context) context.Context { return isolateContentContext(s.runDetailContext(ctx)) },
+		Context: func(ctx context.Context) context.Context {
+			return hubcontent.IsolateContentContext(s.runDetailContext(ctx))
+		},
 		ReadChange: func(ctx context.Context, scope hubapi.Scope, item, id string) (tracker.ChangeRequest, error) {
 			return s.readChangeRecord(ctx, caller, item, id)
 		},

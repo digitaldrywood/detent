@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -174,8 +175,8 @@ func changeLimit(args operatortool.ChangeArguments) int {
 
 func (a hubChangeApplication) MutateChange(ctx context.Context, name string, args operatortool.ChangeArguments) (operatortool.ChangeResult, error) {
 	ctx = a.service.contentContext(ctx)
-	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-		ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{encoder: content.encoder, call: content.call, store: content.store, register: content.register, readOrganization: content.readOrganization, readReference: content.readReference, query: content.query})
+	if content, ok := ctx.Value(hubcontent.ChangeContentKey{}).(*hubcontent.ChangeContent); ok {
+		ctx = context.WithValue(ctx, hubcontent.ChangeContentKey{}, &hubcontent.ChangeContent{Encoder: content.Encoder, Call: content.Call, Store: content.Store, Register: content.Register, ReadOrganization: content.ReadOrganization, ReadReference: content.ReadReference, Query: content.Query})
 	}
 	scope, err := a.authorized(ctx, args, name != operatortool.ArtifactAccess)
 	if err != nil {
@@ -185,7 +186,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	result := a.result(scope, args)
 	command := tracker.Mutation{IdempotencyKey: args.RequestID}
 	scope.Action = name
-	ctx = isolateContentContext(s.runDetailContext(ctx))
+	ctx = hubcontent.IsolateContentContext(s.runDetailContext(ctx))
 	switch name {
 	case operatortool.ViewChangeFile:
 		if args.Bundle == nil {

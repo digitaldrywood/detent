@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/workpad"
 
@@ -17,26 +15,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-type runDetailContextKey struct{}
-
-type runDetailContext struct {
-	mu           sync.Mutex
-	store        attachment.DetailStore
-	organization string
-	reference    *attachment.ArchiveReference
-	runs         map[string]tracker.NativeRunData
-	cache        map[string]map[string]tracker.NativeRunData
-	cancellation *nativeLeaseCancellation
-}
-
-type nativeLeaseCancellation struct {
-	source string
-	at     time.Time
-}
 
 type runDetailReference struct {
 	AttachmentID string `json:"attachment_id"`
@@ -70,7 +52,7 @@ func (s *Service) runDetailStore() attachment.DetailStore {
 
 func (s *Service) runDetailContext(ctx context.Context) context.Context {
 	ctx = s.contentContext(ctx)
-	if ctx.Value(runDetailContextKey{}) != nil {
+	if ctx.Value(hubcontent.RunDetailContextKey{}) != nil {
 		return ctx
 	}
 	owner := s.runDetailStore()
@@ -81,7 +63,7 @@ func (s *Service) runDetailContext(ctx context.Context) context.Context {
 	if s.config.Hosted != nil {
 		organization = s.config.Hosted.OrganizationID
 	}
-	return context.WithValue(ctx, runDetailContextKey{}, &runDetailContext{store: owner, organization: organization, cache: make(map[string]map[string]tracker.NativeRunData)})
+	return context.WithValue(ctx, hubcontent.RunDetailContextKey{}, &hubcontent.RunDetailContext{Store: owner, Organization: organization, Cache: make(map[string]map[string]tracker.NativeRunData)})
 }
 
 func (s *Service) runDetailMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -94,12 +76,12 @@ func (s *Service) runDetailMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 func decodeRunDetail(ctx context.Context, q hubapi.NativeQueryer, raw string, result *tracker.NativeRunData) error {
 	ctx = payloadQueryContext(ctx, q)
 	var stored storedRun
-	if err := decodeStorageJSON(ctx, []byte(raw), &stored); err != nil {
+	if err := hubcontent.DecodeStorageJSON(ctx, []byte(raw), &stored); err != nil {
 		return err
 	}
-	if stored.Detail == nil || explanationRead(ctx) {
+	if stored.Detail == nil || hubcontent.ExplanationRead(ctx) {
 		*result = stored.NativeRunData
-		if explanationRead(ctx) {
+		if hubcontent.ExplanationRead(ctx) {
 			*result = explanationRun(*result)
 		}
 		return nil
@@ -133,7 +115,7 @@ func decodeRunDetail(ctx context.Context, q hubapi.NativeQueryer, raw string, re
 		if err != nil {
 			return err
 		}
-		if err := expandStorageConversion(ctx, len(encoded)); err != nil {
+		if err := hubcontent.ExpandStorageConversion(ctx, len(encoded)); err != nil {
 			return err
 		}
 	}
@@ -143,7 +125,7 @@ func decodeRunDetail(ctx context.Context, q hubapi.NativeQueryer, raw string, re
 
 func decodeRunHistory(ctx context.Context, q hubapi.NativeQueryer, raw string, result *tracker.CollaborationData) error {
 	ctx = payloadQueryContext(ctx, q)
-	if err := decodeStorageJSON(ctx, []byte(raw), result); err != nil {
+	if err := hubcontent.DecodeStorageJSON(ctx, []byte(raw), result); err != nil {
 		return err
 	}
 	if result.Run == nil {
@@ -152,7 +134,7 @@ func decodeRunHistory(ctx context.Context, q hubapi.NativeQueryer, raw string, r
 	var envelope struct {
 		Run json.RawMessage `json:"run"`
 	}
-	if err := decodeStorageJSON(ctx, []byte(raw), &envelope); err != nil {
+	if err := hubcontent.DecodeStorageJSON(ctx, []byte(raw), &envelope); err != nil {
 		return err
 	}
 	return decodeRunDetail(ctx, q, string(envelope.Run), result.Run)
@@ -230,14 +212,14 @@ type checkpointPayload struct {
 	ArtifactIDs []string                  `json:"artifact_ids"`
 }
 
-var errRunDetailStoreUnavailable = fmt.Errorf("run detail store unavailable in this context: %w", errContentStorageUnconfigured)
+var errRunDetailStoreUnavailable = fmt.Errorf("run detail store unavailable in this context: %w", hubcontent.ErrContentStorageUnconfigured)
 
 func readRunDetailSegment(ctx context.Context, q hubapi.NativeQueryer, detail *runDetailReference) (map[string]tracker.NativeRunData, error) {
 	if detail.ObjectKey != "" {
 		if !strings.HasPrefix(detail.ObjectKey, "orgs/"+detail.Organization+"/") || detail.AttachmentID != "att_"+artifact.Digest([]byte(detail.Organization + "\n" + detail.ObjectKey))[:32] {
 			return nil, artifact.ErrIntegrity
 		}
-		raw, err := readStoredPayload(ctx, detail.ObjectKey)
+		raw, err := hubcontent.ReadStoredPayload(ctx, detail.ObjectKey)
 		if err != nil {
 			return nil, err
 		}
@@ -251,23 +233,23 @@ func readRunDetailSegment(ctx context.Context, q hubapi.NativeQueryer, detail *r
 		runs := map[string]tracker.NativeRunData{detail.Entry: run}
 		return runs, nil
 	}
-	owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext)
+	owner, ok := ctx.Value(hubcontent.RunDetailContextKey{}).(*hubcontent.RunDetailContext)
 	if !ok {
 		return nil, errRunDetailStoreUnavailable
 	}
-	owner.mu.Lock()
-	defer owner.mu.Unlock()
-	if owner.organization != "" && owner.organization != detail.Organization {
+	owner.Mu.Lock()
+	defer owner.Mu.Unlock()
+	if owner.Organization != "" && owner.Organization != detail.Organization {
 		return nil, fmt.Errorf("match run detail organization: %w", artifact.ErrIntegrity)
 	}
-	if owner.reference != nil && detail.AttachmentID == newRunDetailReference(*owner.reference, owner.organization, "").AttachmentID {
-		return owner.runs, nil
+	if owner.Reference != nil && detail.AttachmentID == newRunDetailReference(*owner.Reference, owner.Organization, "").AttachmentID {
+		return owner.Runs, nil
 	}
-	if runs := owner.cache[detail.AttachmentID]; runs != nil {
+	if runs := owner.Cache[detail.AttachmentID]; runs != nil {
 		return runs, nil
 	}
-	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && content.writing {
-		return nil, &claimHydration{run: func(ctx context.Context, q hubapi.NativeQueryer) error {
+	if content, ok := ctx.Value(hubcontent.ChangeContentKey{}).(*hubcontent.ChangeContent); ok && content.Writing {
+		return nil, &hubcontent.ClaimHydration{Run: func(ctx context.Context, q hubapi.NativeQueryer) error {
 			_, err := readRunDetailSegment(ctx, q, detail)
 			return err
 		}}
@@ -283,15 +265,15 @@ func readRunDetailSegment(ctx context.Context, q hubapi.NativeQueryer, detail *r
 	if err := ref.Validate(detail.Organization); err != nil {
 		return nil, fmt.Errorf("validate run detail attachment: %w", errors.Join(artifact.ErrIntegrity, err))
 	}
-	raw, err := readRuntimeObject(ctx, nativeRuntimeObjectKey{kind: "run_detail", organization: detail.Organization, reference: ref}, func() ([]byte, error) {
-		if owner.store != nil {
-			raw, err := owner.store.ReadDetail(ctx, detail.Organization, ref)
+	raw, err := hubcontent.ReadRuntimeObject(ctx, hubcontent.NativeRuntimeObjectKey{Kind: "run_detail", Organization: detail.Organization, Reference: ref}, func() ([]byte, error) {
+		if owner.Store != nil {
+			raw, err := owner.Store.ReadDetail(ctx, detail.Organization, ref)
 			if err != nil {
-				return nil, immutableContentStorageError(err)
+				return nil, hubcontent.ImmutableContentStorageError(err)
 			}
 			return raw, nil
 		}
-		return readChangeContent(ctx, detail.Organization, ref)
+		return hubcontent.ReadChangeContent(ctx, detail.Organization, ref)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read run detail archive: %w", err)
@@ -300,13 +282,13 @@ func readRunDetailSegment(ctx context.Context, q hubapi.NativeQueryer, detail *r
 	if err := json.Unmarshal(raw, &runs); err != nil {
 		return nil, fmt.Errorf("decode run detail: %w", err)
 	}
-	if len(owner.cache) >= 2 {
-		clear(owner.cache)
+	if len(owner.Cache) >= 2 {
+		clear(owner.Cache)
 	}
-	owner.cache[detail.AttachmentID] = runs
+	owner.Cache[detail.AttachmentID] = runs
 	return runs, nil
 }
 
 func (s *Service) freshRunDetailContext(ctx context.Context) context.Context {
-	return s.runDetailContext(context.WithValue(context.WithValue(ctx, runDetailContextKey{}, nil), changeContentKey{}, nil))
+	return s.runDetailContext(context.WithValue(context.WithValue(ctx, hubcontent.RunDetailContextKey{}, nil), hubcontent.ChangeContentKey{}, nil))
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -37,7 +38,7 @@ func TestNativeRetention(t *testing.T) {
 		second := f.publish(t, "second", first.ID, true)
 		content := eventstore.NewContent(f.service.runDetailStore())
 		var reviews []tracker.ChangeReview
-		for index := range claimEvidenceLimit + 1 {
+		for index := range hubcontent.ClaimEvidenceLimit + 1 {
 			decision := "commented"
 			if index == 0 {
 				decision = "changes_requested"

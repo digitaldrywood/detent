@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -254,7 +255,7 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 }
 
 func (s *Service) readRuntimeSourceRecoveryTenant(ctx context.Context, scope hubscope.NativeScope, item string, evidence *tracker.NativeRuntimeEvidence) error {
-	if !explanationRead(ctx) {
+	if !hubcontent.ExplanationRead(ctx) {
 		return nil
 	}
 	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, item, evidence.Issue)
@@ -358,7 +359,7 @@ func (s *Service) verifiedNativeSourceTenant(ctx context.Context, scope hubscope
 	if ctx.Err() != nil {
 		return false, ctx.Err()
 	}
-	if !explanationRead(ctx) && (errors.Is(err, artifact.ErrIntegrity) || errors.Is(err, artifact.ErrMissing)) {
+	if !hubcontent.ExplanationRead(ctx) && (errors.Is(err, artifact.ErrIntegrity) || errors.Is(err, artifact.ErrMissing)) {
 		return false, nil
 	}
 	return err == nil, err

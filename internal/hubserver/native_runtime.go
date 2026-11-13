@@ -14,9 +14,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -178,7 +178,7 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 }
 
 func (s *Service) getNativeExplanation(c echo.Context) error {
-	ctx := context.WithValue(c.Request().Context(), explanationReadKey{}, true)
+	ctx := context.WithValue(c.Request().Context(), hubcontent.ExplanationReadKey{}, true)
 	c.SetRequest(c.Request().WithContext(ctx))
 	if len(c.QueryParams()) != 0 {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Unsupported explanation selector"))
@@ -241,50 +241,6 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope hubscope.NativeSc
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	return s.readNativeRuntimeTenant(ctx, scope, item, attemptID, admission...)
-}
-
-type nativeRuntimePreparationKey struct{}
-
-type nativeRuntimeObjectKey struct {
-	kind, organization string
-	reference          attachment.ArchiveReference
-	presign            bool
-}
-
-type nativeRuntimePreparation struct {
-	collecting bool
-	objects    map[nativeRuntimeObjectKey]nativeRuntimeObjectResult
-}
-
-type nativeRuntimeObjectResult struct {
-	value any
-	err   error
-}
-
-type nativeRuntimeHydration struct {
-	read func()
-}
-
-func (*nativeRuntimeHydration) Error() string { return "runtime object requires hydration" }
-
-func readRuntimeObject[T any](ctx context.Context, key nativeRuntimeObjectKey, read func() (T, error)) (T, error) {
-	prepared, ok := ctx.Value(nativeRuntimePreparationKey{}).(*nativeRuntimePreparation)
-	if !ok || !prepared.collecting {
-		return read()
-	}
-	if value, found := prepared.objects[key]; found {
-		decoded, ok := value.value.(T)
-		if !ok {
-			var zero T
-			return zero, errors.New("runtime object cache type mismatch")
-		}
-		return decoded, value.err
-	}
-	var zero T
-	return zero, &nativeRuntimeHydration{read: func() {
-		value, err := read()
-		prepared.objects[key] = nativeRuntimeObjectResult{value: value, err: err}
-	}}
 }
 
 func validNativeRESTCredential(identity string) bool {

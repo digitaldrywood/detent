@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -2423,7 +2424,7 @@ func TestWorkspaceRelayBeginExecRunRequiresTheServingRunner(t *testing.T) {
 				t.Fatalf("real runtime receipt=%+v", row)
 			}
 			ref := attachment.ArchiveReference{Key: *row.OutputObjectKey, SHA256: row.OutputSha256, CompressedSize: row.OutputBytes, UncompressedSize: row.OutputContentBytes, Codec: "gzip", SchemaVersion: 1, Kind: "archive", Retention: attachment.ArchiveRetention}
-			stored, err := readChangeContent(fixture.server.contentContext(t.Context()), string(v.record.OrganizationID), ref)
+			stored, err := hubcontent.ReadChangeContent(fixture.server.contentContext(t.Context()), string(v.record.OrganizationID), ref)
 			if err != nil || string(stored) != "example output" {
 				t.Fatalf("stored runtime output=%q error=%v", stored, err)
 			}

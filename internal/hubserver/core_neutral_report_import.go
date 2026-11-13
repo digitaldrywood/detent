@@ -8,10 +8,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func prepareCoreNeutralRunDetail(ctx context.Context, source *coreNeutralImport, organization tracker.OrganizationID, objects attachment.DetailStore, raw []byte, content *changeContent, owner *runDetailContext) error {
+func prepareCoreNeutralRunDetail(ctx context.Context, source *coreNeutralImport, organization tracker.OrganizationID, objects attachment.DetailStore, raw []byte, content *hubcontent.ChangeContent, owner *hubcontent.RunDetailContext) error {
 	var envelope struct {
 		Detail *runDetailReference `json:"detail"`
 	}
@@ -30,9 +31,9 @@ func prepareCoreNeutralRunDetail(ctx context.Context, source *coreNeutralImport,
 		if err != nil {
 			return err
 		}
-		content.mu.Lock()
-		defer content.mu.Unlock()
-		return content.rememberPayload(ref, value)
+		content.Mu.Lock()
+		defer content.Mu.Unlock()
+		return content.RememberPayload(ref, value)
 	}
 	row, err := source.one(ctx, "attachments", map[string]string{"id": detail.AttachmentID, "organization_id": string(organization), "kind": "archive"}, []string{"id"})
 	if err != nil {
@@ -56,7 +57,7 @@ func prepareCoreNeutralRunDetail(ctx context.Context, source *coreNeutralImport,
 	if err := json.Unmarshal(value, &runs); err != nil {
 		return err
 	}
-	owner.cache[detail.AttachmentID] = runs
+	owner.Cache[detail.AttachmentID] = runs
 	return nil
 }
 

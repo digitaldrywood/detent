@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -1265,7 +1266,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			appendCheckpoint(strings.HasPrefix(test.name, "legacy "))
 			if strings.HasPrefix(test.name, "legacy overflow") {
 				run.Handoff = nil
-				for range claimEvidenceLimit + 1 {
+				for range hubcontent.ClaimEvidenceLimit + 1 {
 					appendCheckpoint(true)
 				}
 				if _, err := service.readBoundedChangePushes(t.Context(), localScope, string(local.issue.WorkItemID), []tracker.ChangeVersion{localVersion}); !errors.Is(err, corestore.ErrInvalidPage) {

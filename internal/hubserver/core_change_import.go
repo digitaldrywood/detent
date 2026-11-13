@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -504,7 +505,7 @@ func readCoreChangeBundle(ctx context.Context, tx *coreNeutralImport, source Cor
 		if err != nil {
 			return nil, err
 		}
-		ref := contentReference()
+		ref := hubcontent.ContentReference()
 		if err := metadata.Decode(map[string]any{"object_key": &ref.Key, "object_sha256": &ref.SHA256, "object_bytes": &ref.CompressedSize, "content_bytes": &ref.UncompressedSize}); err != nil {
 			return nil, err
 		}

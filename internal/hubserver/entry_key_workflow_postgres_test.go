@@ -34,6 +34,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -1014,7 +1015,7 @@ func TestPostgresEntryKeyMoveItem(t *testing.T) {
 					target.issue = issue
 					content := eventstore.NewContent(cfg.RunDetails)
 					for _, principal := range []string{"credential_admin", "credential_owner"} {
-						raw, err := json.Marshal(tracker.ChangeReview{ID: payloadNativeID(t.Context(), "review"), VersionID: published.Version.ID, Decision: "changes_requested", Body: "Example outstanding review", Actor: tracker.Actor{Kind: "human", PrincipalID: principal}, CreatedAt: clock})
+						raw, err := json.Marshal(tracker.ChangeReview{ID: hubcontent.PayloadNativeID(t.Context(), "review"), VersionID: published.Version.ID, Decision: "changes_requested", Body: "Example outstanding review", Actor: tracker.Actor{Kind: "human", PrincipalID: principal}, CreatedAt: clock})
 						if err != nil {
 							t.Fatal(err)
 						}

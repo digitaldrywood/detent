@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -123,7 +124,7 @@ func TestNativeRunDetailRetainsHostLandingTransition(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx := context.WithValue(t.Context(), runDetailContextKey{}, &runDetailContext{cache: map[string]map[string]tracker.NativeRunData{"attachment": {"attempt:0": archived}}})
+			ctx := context.WithValue(t.Context(), hubcontent.RunDetailContextKey{}, &hubcontent.RunDetailContext{Cache: map[string]map[string]tracker.NativeRunData{"attachment": {"attempt:0": archived}}})
 			var got tracker.NativeRunData
 			if err := decodeRunDetail(ctx, nil, string(raw), &got); err != nil {
 				t.Fatal(err)
@@ -1309,7 +1310,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 							if result.Sessions.Detent == nil || result.Sessions.Detent.ID != "17" || result.Sessions.Provider == nil || result.Sessions.Provider.ID != "thread-example" {
 								t.Errorf("session identities lost: %+v", result.Sessions)
 							}
-							_, failures, partial, err := service.readOperatorExplanation(context.WithValue(ctx, explanationReadKey{}, true), scope, issue)
+							_, failures, partial, err := service.readOperatorExplanation(context.WithValue(ctx, hubcontent.ExplanationReadKey{}, true), scope, issue)
 							signature := latestNativeFailureSignature(failures, partial)
 							if err != nil || signature == nil || signature.Signature != "example failure" || signature.Count != min(history, 64) || signature.Partial != (history > 64) {
 								t.Errorf("bounded failure signature: %+v error=%v", signature, err)
@@ -1353,8 +1354,8 @@ func TestRunDetailSegmentResolvesPreparedReferenceBeforeCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared := map[string]tracker.NativeRunData{"attempt_prepared:2": {AttemptID: "attempt_prepared", Sequence: 2}}
-	owner := &runDetailContext{store: store, organization: organization, cache: map[string]map[string]tracker.NativeRunData{}, reference: &ref, runs: prepared}
-	ctx := context.WithValue(t.Context(), runDetailContextKey{}, owner)
+	owner := &hubcontent.RunDetailContext{Store: store, Organization: organization, Cache: map[string]map[string]tracker.NativeRunData{}, Reference: &ref, Runs: prepared}
+	ctx := context.WithValue(t.Context(), hubcontent.RunDetailContextKey{}, owner)
 	runs, err := readRunDetailSegment(ctx, nil, newRunDetailReference(ref, organization, "attempt_prepared:2"))
 	if err != nil || runs["attempt_prepared:2"].Sequence != 2 {
 		t.Fatalf("prepared detail before commit = %v, %v", runs, err)
@@ -1365,8 +1366,8 @@ func TestRunDetailSegmentRejectsLegacyArchiveWithoutDatabaseReader(t *testing.T)
 	t.Parallel()
 	store := &memoryRunDetails{}
 	organization := "org_archive"
-	owner := &runDetailContext{store: store, organization: organization, cache: map[string]map[string]tracker.NativeRunData{}}
-	ctx := context.WithValue(t.Context(), runDetailContextKey{}, owner)
+	owner := &hubcontent.RunDetailContext{Store: store, Organization: organization, Cache: map[string]map[string]tracker.NativeRunData{}}
+	ctx := context.WithValue(t.Context(), hubcontent.RunDetailContextKey{}, owner)
 	detail := &runDetailReference{AttachmentID: "att_legacy", Organization: organization, Entry: "attempt_legacy:1"}
 	if _, err := readRunDetailSegment(ctx, nil, detail); !errors.Is(err, errRunDetailStoreUnavailable) {
 		t.Fatalf("legacy archive without typed owner error = %v", err)

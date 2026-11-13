@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -72,7 +73,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 			if err := approveReleaseDeliveryContract(&plan.issue, check.approval.Policy, now); err != nil {
 				return nil, err
 			}
-			change = tracker.ChangeRequest{ID: payloadNativeID(ctx, "change"), OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), LinkedIssues: []tracker.NativeWorkItemID{tracker.NativeWorkItemID(item)}, Title: plan.issue.Title, Revision: 1, CreatedAt: now, UpdatedAt: now}
+			change = tracker.ChangeRequest{ID: hubcontent.PayloadNativeID(ctx, "change"), OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: tracker.NativeWorkItemID(item), LinkedIssues: []tracker.NativeWorkItemID{tracker.NativeWorkItemID(item)}, Title: plan.issue.Title, Revision: 1, CreatedAt: now, UpdatedAt: now}
 		}
 		delivery.ChangeID = change.ID
 		raw, err := json.Marshal(change)
@@ -110,7 +111,7 @@ func (s *Service) associateReleasePickTenant(ctx context.Context, scope hubscope
 			kinds = []string{"change.created", "issue.edited"}
 		}
 		for _, kind := range kinds {
-			raw, err = json.Marshal(tracker.CollaborationEvent{ID: payloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(item), Type: kind, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Change: &tracker.NativeChangeReference{ChangeID: delivery.ChangeID, HeadSHA: delivery.HeadSHA}}})
+			raw, err = json.Marshal(tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: tracker.NativeWorkItemID(item), Type: kind, SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Revision: plan.issue.Revision, Change: &tracker.NativeChangeReference{ChangeID: delivery.ChangeID, HeadSHA: delivery.HeadSHA}}})
 			if err != nil {
 				return nil, err
 			}

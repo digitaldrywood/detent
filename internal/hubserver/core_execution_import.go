@@ -9,13 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/artifact"
-	"github.com/digitaldrywood/detent/internal/diffbody"
-	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"io"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/diffbody"
+	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
@@ -921,7 +923,7 @@ func importCoreExecutionDiffs(ctx context.Context, tx *coreNeutralImport, target
 	err := tx.each(ctx, "attempt_diffs", map[string]string{"organization_id": string(source.OrganizationID)}, []string{"id"}, func(raw postgres.NeutralImportRow) error {
 		var diff leasestore.AttemptDiff
 		var created string
-		ref := contentReference()
+		ref := hubcontent.ContentReference()
 		diff.OrganizationID = source.OrganizationID
 		if err := raw.Decode(map[string]any{"id": &diff.ID, "attempt_id": &diff.AttemptID, "project_id": &diff.ProjectID, "work_item_id": &diff.WorkItemID, "source": &diff.Generation.Source, "source_id": &diff.Generation.ID, "seq": &diff.Generation.Seq, "base_sha": &diff.BaseSHA, "head_sha": &diff.HeadSHA, "producer_kind": &diff.Producer.Kind, "producer_id": &diff.Producer.ID, "producer_runner_id": &diff.Producer.RunnerID, "producer_lease_id": &diff.Producer.LeaseID, "producer_fencing_token": &diff.Producer.FencingToken, "file_count": &diff.FileCount, "patch_bytes": &diff.PatchBytes, "posted_bytes": &diff.PostedBytes, "truncated": &diff.Truncated, "manifest_expired": &diff.ManifestExpired, "created_at": &created, "object_key": &ref.Key, "object_sha256": &ref.SHA256, "object_bytes": &ref.CompressedSize, "content_bytes": &ref.UncompressedSize}); err != nil {
 			return err
@@ -1041,7 +1043,7 @@ func readCoreExecutionDiffFiles(ctx context.Context, tx *coreNeutralImport, sour
 	}
 	err = tx.each(ctx, "attempt_diff_file_archives", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(diff.ProjectID), "diff_id": diff.ID}, []string{"position"}, func(raw postgres.NeutralImportRow) error {
 		position := 0
-		ref := contentReference()
+		ref := hubcontent.ContentReference()
 		if err := raw.Decode(map[string]any{"position": &position, "object_key": &ref.Key, "object_sha256": &ref.SHA256, "object_bytes": &ref.CompressedSize, "content_bytes": &ref.UncompressedSize}); err != nil {
 			return err
 		}

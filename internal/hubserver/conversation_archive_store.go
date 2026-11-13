@@ -7,6 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 )
 
 type conversationArchiveStore struct {
@@ -35,13 +36,13 @@ func (s conversationArchiveStore) PublishContent(ctx context.Context, organizati
 }
 
 func (s conversationArchiveStore) ReadContent(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	content := &changeContent{call: s.Call, readOrganization: organization}
-	if prior, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && prior.readOrganization != "" {
-		if prior.readOrganization != organization {
+	content := &hubcontent.ChangeContent{Call: s.Call, ReadOrganization: organization}
+	if prior, ok := ctx.Value(hubcontent.ChangeContentKey{}).(*hubcontent.ChangeContent); ok && prior.ReadOrganization != "" {
+		if prior.ReadOrganization != organization {
 			return nil, artifact.ErrIntegrity
 		}
-		content.readOrganization, content.readReference = prior.readOrganization, prior.readReference
+		content.ReadOrganization, content.ReadReference = prior.ReadOrganization, prior.ReadReference
 	}
-	ctx = context.WithValue(ctx, changeContentKey{}, content)
-	return readChangeContent(ctx, organization, ref)
+	ctx = context.WithValue(ctx, hubcontent.ChangeContentKey{}, content)
+	return hubcontent.ReadChangeContent(ctx, organization, ref)
 }

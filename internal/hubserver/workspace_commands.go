@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -333,7 +334,7 @@ func (s *Service) readRecording(ctx context.Context, scope hubscope.NativeScope,
 	if err != nil {
 		return terminalRecordingRecord{}, err
 	}
-	raw, err := readChangeContent(s.contentContext(ctx), string(scope.Organization), ref)
+	raw, err := hubcontent.ReadChangeContent(s.contentContext(ctx), string(scope.Organization), ref)
 	if err != nil {
 		return terminalRecordingRecord{}, err
 	}

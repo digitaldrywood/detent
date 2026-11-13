@@ -17,13 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type explanationReadKey struct{}
-
-func explanationRead(ctx context.Context) bool {
-	value, ok := ctx.Value(explanationReadKey{}).(bool)
-	return ok && value
-}
-
 func (s *Service) readExplanationCurrentChange(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, now time.Time) (*tracker.ChangeDetail, error) {
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {

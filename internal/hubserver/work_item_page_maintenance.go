@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/detailbatch"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -63,8 +64,8 @@ func (s *Service) maintainWorkItemPage(ctx context.Context, organization tracker
 	}
 
 	ctx = detailbatch.Clear(ctx)
-	ctx = context.WithValue(ctx, changeContentKey{}, nil)
-	ctx = context.WithValue(ctx, runDetailContextKey{}, nil)
+	ctx = context.WithValue(ctx, hubcontent.ChangeContentKey{}, nil)
+	ctx = context.WithValue(ctx, hubcontent.RunDetailContextKey{}, nil)
 	var candidate viewstore.PageCandidate
 	var item corestore.WorkItem
 	var comment corestore.Comment

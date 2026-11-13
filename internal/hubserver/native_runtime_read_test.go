@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
@@ -389,7 +390,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 			if checked == 0 || !selectedVersion || !selectedEvidence {
 				t.Fatalf("runtime plans did not read selected current evidence: queries=%d version=%t evidence=%t", checked, selectedVersion, selectedEvidence)
 			}
-			ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+			ctx := context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, true)
 			current, explanationStatements := readRuntime(t, ctx)
 			if explanationCount == 0 {
 				explanationCount = len(explanationStatements)
@@ -713,7 +714,7 @@ func runtimeCapacityQueries(t *testing.T, service *Service, ctx context.Context,
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		snapshot, err = owner.RuntimeCapacitySnapshot(readCtx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, RunnerID: scope.Credential.Runner.RunnerID, At: now, Explanation: explanationRead(ctx)})
+		snapshot, err = owner.RuntimeCapacitySnapshot(readCtx, runnerstore.RuntimeCapacityQuery{ProjectID: scope.Project, RunnerID: scope.Credential.Runner.RunnerID, At: now, Explanation: hubcontent.ExplanationRead(ctx)})
 		return err
 	})
 	statements, _ := runtimeCapacityStatements(capture.statements)
@@ -896,7 +897,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 					t.Fatalf("bounded runtime projection dropped current registered runner: runners=%d truncated=%v queries=%d error=%v", len(current), truncated, len(currentStatements), err)
 				}
 			}
-			explanationCtx := context.WithValue(t.Context(), explanationReadKey{}, true)
+			explanationCtx := context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, true)
 			explanationRunners, partial, explanationStatements, err := runtimeCapacityQueries(t, f.service, explanationCtx, scope, now)
 			if err != nil || len(explanationRunners) != min(total, 16) || partial != (total > 16) || len(explanationStatements) != 5 {
 				t.Fatalf("unbounded explanation capacity: runners=%d partial=%v queries=%d error=%v", len(explanationRunners), partial, len(explanationStatements), err)
@@ -1023,7 +1024,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+			ctx := context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, true)
 			candidates, partial, _, err := runtimeCapacityQueries(t, f.service, ctx, scope, now)
 			if err != nil || !partial || len(candidates) != 0 {
 				t.Fatalf("candidate search escaped sparse owner window: count=%d partial=%v err=%v", len(candidates), partial, err)
@@ -1121,7 +1122,7 @@ func TestExplanationProviderCapacityCandidateWindow(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+	ctx := context.WithValue(t.Context(), hubcontent.ExplanationReadKey{}, true)
 	previous := 1
 	for _, total := range []int{1024, 2048} {
 		_, err := admin.ExecContext(t.Context(), `WITH added AS (

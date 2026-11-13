@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
@@ -171,7 +172,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 	var failure *hubapi.NativeError
 	if errors.Is(err, artifact.ErrStorage) {
 		message := "Immutable content storage is unavailable; retry when storage is restored"
-		if errors.Is(err, errContentStorageUnconfigured) {
+		if errors.Is(err, hubcontent.ErrContentStorageUnconfigured) {
 			message = "Immutable content storage is not configured; configure object storage to persist payloads"
 		}
 		failure = &hubapi.NativeError{Code: "storage_unreachable", Message: message, Status: http.StatusServiceUnavailable, PublicMessage: true}

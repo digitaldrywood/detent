@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -109,10 +110,10 @@ func (r *nativeArchiveRead) load(ctx context.Context, item, kind, subject string
 	unrestricted := scope.Credential.Scope == hubapi.APIScopeAdmin && !scope.Credential.NativeOnly && scope.Credential.Hosted == nil
 	unrestricted = unrestricted || scope.Credential.Hosted != nil && scope.Credential.EntryKey == nil && scope.Credential.HostedKeyScope == "" && (scope.Credential.HostedRole == "owner" || scope.Credential.HostedRole == "admin")
 	presign := r.presign && unrestricted
-	response, err := readRuntimeObject(ctx, nativeRuntimeObjectKey{kind: "archive", organization: string(scope.Organization), reference: ref, presign: presign}, func() (entryauthority.ArchiveResponse, error) {
+	response, err := hubcontent.ReadRuntimeObject(ctx, hubcontent.NativeRuntimeObjectKey{Kind: "archive", Organization: string(scope.Organization), Reference: ref, Presign: presign}, func() (entryauthority.ArchiveResponse, error) {
 		return reader(ctx, ref, presign)
 	})
-	var hydration *nativeRuntimeHydration
+	var hydration *hubcontent.NativeRuntimeHydration
 	if errors.As(err, &hydration) {
 		r.descriptor = nil
 		return attachment.ArchiveSection{}, false, err
