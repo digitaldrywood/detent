@@ -54,11 +54,11 @@ func newNativeFixture(t *testing.T, service *Service, organization tracker.Organ
 			organization = "org_first"
 		}
 	}
-	project := tracker.NativeProject{OrganizationID: organization, ID: tracker.ProjectID(newNativeID("prj")), Name: name, States: nativeFixtureStates(), Profile: "native"}
+	project := tracker.NativeProject{OrganizationID: organization, ID: tracker.ProjectID(newNativeID("prj")), Name: name, States: nativeFixtureStates(), Profile: "native", RequireDependencies: true}
 	token := tokenResponse{ID: newNativeID("credential"), Token: newNativeID("token")}
 	now := service.config.now().UTC().Truncate(time.Microsecond)
 	if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project.ID, Name: name, Profile: "native"}, States: project.States})
+		record, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: project.ID, Name: name, Profile: "native", RequireDependencies: project.RequireDependencies}, States: project.States})
 		if err != nil {
 			return err
 		}
