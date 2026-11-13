@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -127,7 +128,8 @@ func (s *Service) recheckChangeVersionRun(ctx context.Context, w tenantstore.Wri
 	if !ok {
 		return nativeRunEventStorageUnavailable()
 	}
-	if _, err := w.RunnerForLease(ctx, prepared.lease.LeaseID); err != nil {
+	identity, err := w.RunnerForLease(ctx, prepared.lease.LeaseID)
+	if err != nil {
 		return err
 	}
 	lease, err := locker.LockLease(ctx, prepared.lease.LeaseID)
@@ -155,5 +157,8 @@ func (s *Service) recheckChangeVersionRun(ctx context.Context, w tenantstore.Wri
 	}
 	authority := prepared.authority
 	authority.WorkItem, authority.Lease = workItem, lease
+	if authority.Scope.credential.Scope != apiScopeWorker {
+		authority.Scope.credential = apiCredential{ID: identity.TokenID, Scope: apiScopeWorker, Runner: runnerauth.Identity{Binding: runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID}}}
+	}
 	return (tenantNativeRunEventParticipant{service: s}).validateNativeRunEventOwner(ctx, w, &authority)
 }
