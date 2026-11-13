@@ -271,6 +271,31 @@ func TestNativeClaimUsesHeartbeatTimeAtWriteValidation(t *testing.T) {
 	if runnerIdentityCanClaim(expired, scope, machineID, clock.Now()) {
 		t.Fatal("claim accepted an expired heartbeat")
 	}
+	disabled := identity
+	disabled.State = "disabled"
+	otherCredential := disabled
+	otherCredential.TokenID = "credential_other"
+	for _, test := range []struct {
+		name     string
+		identity runnerstore.Identity
+		code     string
+	}{
+		{"active", identity, ""},
+		{"disabled", disabled, "runner_disabled"},
+		{"disabled other credential", otherCredential, "machine_not_found"},
+		{"expired heartbeat", expired, "machine_not_found"},
+	} {
+		err := runnerIdentityClaimRefusal(test.identity, scope, machineID, clock.Now())
+		var refusal *nativeError
+		switch {
+		case test.code == "" && err != nil:
+			t.Fatalf("%s refusal = %v, want none", test.name, err)
+		case test.code == "machine_not_found" && !errors.Is(err, tracker.ErrMachineNotFound):
+			t.Fatalf("%s refusal = %v, want machine not found", test.name, err)
+		case test.code == "runner_disabled" && (!errors.As(err, &refusal) || refusal.Code != test.code || refusal.status != http.StatusConflict):
+			t.Fatalf("%s refusal = %v, want 409 %s", test.name, err, test.code)
+		}
+	}
 }
 
 func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *testing.T) {

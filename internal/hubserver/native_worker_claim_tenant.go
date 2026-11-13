@@ -189,8 +189,8 @@ func (s *Service) readRequestedClaimRefusal(ctx context.Context, r tenantstore.R
 	if err != nil {
 		return result, err
 	}
-	if !runnerIdentityCanClaim(identity, scope, request.MachineID, s.config.now().UTC()) {
-		return result, tracker.ErrMachineNotFound
+	if err := runnerIdentityClaimRefusal(identity, scope, request.MachineID, s.config.now().UTC()); err != nil {
+		return result, err
 	}
 	currentPolicy, err := r.ProjectPolicy(ctx, scope.project)
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -548,8 +548,8 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 			return err
 		}
 		authoritativeNow := s.config.now().UTC()
-		if !runnerIdentityCanClaim(identity, scope, request.MachineID, authoritativeNow) {
-			return tracker.ErrMachineNotFound
+		if err := runnerIdentityClaimRefusal(identity, scope, request.MachineID, authoritativeNow); err != nil {
+			return err
 		}
 		if err := plan.descriptor.Requirements.Match(identity.RunnerID, string(identity.MachineID), identity.Tags); err != nil {
 			return &nativeError{Code: "selector_no_match", Message: err.Error(), status: http.StatusConflict}
@@ -1543,6 +1543,16 @@ func nativeTenantCandidateQuery(scope nativeScope, request tracker.NativeClaim, 
 		StatePriority: request.DispatchPriorityByState, LabelPriority: request.DispatchPriorityByLabel,
 		AvailableAt: now, Limit: 1,
 	}
+}
+
+func runnerIdentityClaimRefusal(identity runnerstore.Identity, scope nativeScope, machine tracker.MachineID, now time.Time) error {
+	if runnerIdentityCanClaim(identity, scope, machine, now) {
+		return nil
+	}
+	if identity.State == "disabled" && identity.OrganizationID == scope.organization && identity.TokenID == scope.credential.ID && identity.RunnerID == scope.credential.Runner.RunnerID && identity.RemovedAt == nil {
+		return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_disabled", Message: "Runner is disabled"}})
+	}
+	return tracker.ErrMachineNotFound
 }
 
 func runnerIdentityCanClaim(identity runnerstore.Identity, scope nativeScope, machine tracker.MachineID, now time.Time) bool {
