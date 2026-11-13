@@ -547,17 +547,10 @@ func newEntryFixtureWithConfig(t *testing.T, logger *slog.Logger, configureEntry
 	return entryFixture{service: service, provider: provider, tenants: tenants, fixtures: map[string]tenantFixture{"org_alpha": alpha, "org_beta": beta}}
 }
 
-type handlerTransport struct {
-	handler http.Handler
-}
+type handlerTransport struct{ handler http.Handler }
 
 func (h handlerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	recorder := httptest.NewRecorder()
-	server := httptest.NewRequest(request.Method, request.URL.RequestURI(), request.Body)
-	server.Header = request.Header.Clone()
-	server = server.WithContext(request.Context())
-	h.handler.ServeHTTP(recorder, server)
-	return recorder.Result(), nil
+	return (entrytest.HandlerTransport{Handler: h.handler}).RoundTrip(request)
 }
 
 func csrfFrom(t *testing.T, body string) string {

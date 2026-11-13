@@ -1,12 +1,20 @@
-package cloudentry
+package notifications
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
+	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entrytest"
+	"github.com/digitaldrywood/detent/internal/cloudentry/origin"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
+	"github.com/labstack/echo/v4"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
@@ -26,13 +34,10 @@ func TestIssueUnsubscribeWithoutSession(t *testing.T) {
 				{"unknown organization", "org_missing", "unsub_" + strings.Repeat("a", 32), 204, 404, 0},
 			} {
 				t.Run(test.name, func(t *testing.T) {
-					f := newEntryFixture(t)
-					if err := f.service.closeAllocator(); err != nil {
-						t.Fatal(err)
-					}
+					key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 					calls := 0
-					f.service.config.transport = func(organization Organization) (http.RoundTripper, error) {
-						return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					transport := func(organization tenant.Organization) (http.RoundTripper, error) {
+						return entrytest.HandlerTransport{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 							calls++
 							if organization.ID != test.organization || r.URL.Path != "/internal/v1/"+notification+"/unsubscribe" || r.Method != http.MethodPost {
 								t.Errorf("incorrect route: %s %s", organization.ID, r.URL.Path)
@@ -47,7 +52,7 @@ func TestIssueUnsubscribeWithoutSession(t *testing.T) {
 							if err != nil {
 								t.Fatal(err)
 							}
-							verifier := cloudassert.Verifier{PublicKeys: []ed25519.PublicKey{f.service.config.SigningKey.Public().(ed25519.PublicKey)}, Issuer: "entry", Audience: organization.ID, Generation: organization.Generation}
+							verifier := cloudassert.Verifier{PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Issuer: "entry", Audience: organization.ID, Generation: organization.Generation}
 							claims, err := verifier.Verify(r.Header.Get(cloudassert.Header), r.Method, r.URL.RequestURI(), raw)
 							if err != nil || claims.Kind != cloudassert.KindService || request.Token != test.token {
 								t.Errorf("unsubscribe assertion/token: %+v %v", claims, err)
@@ -55,8 +60,20 @@ func TestIssueUnsubscribeWithoutSession(t *testing.T) {
 							w.WriteHeader(test.tenantStatus)
 						})}, nil
 					}
+					caller := tenantcall.New(tenantcall.Deps{Issuer: "entry", SigningKey: key, Now: time.Now, Transport: transport})
+					service := New(Deps{ReadyOrganization: func(_ context.Context, id string) (tenant.Organization, error) {
+						switch id {
+						case "org_alpha", "org_beta":
+							return tenant.Organization{ID: id, Generation: 1}, nil
+						default:
+							return tenant.Organization{}, errors.New("organization is not registered")
+						}
+					}, ServiceRequest: caller.ServiceRequest})
+					entry := echo.New()
+					entry.Pre(origin.New(origin.Deps{}).Boundary)
+					service.Register(entry)
 					recorder := httptest.NewRecorder()
-					f.service.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/organizations/"+test.organization+"/"+notification+"/unsubscribe?token="+test.token, nil))
+					entry.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/organizations/"+test.organization+"/"+notification+"/unsubscribe?token="+test.token, nil))
 					if recorder.Code != test.want || calls != test.calls {
 						t.Fatalf("status %d, calls %d: %s", recorder.Code, calls, recorder.Body.String())
 					}

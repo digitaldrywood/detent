@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/notifications"
 	"github.com/digitaldrywood/detent/internal/cloudentry/origin"
 	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
 	"github.com/digitaldrywood/detent/internal/connector/github"
@@ -403,8 +404,7 @@ func (s *Service) routes() {
 	e.PUT("/api/cloud/organizations/:organization/slug", s.organizationSlug)
 	e.Any("/*", s.readableProxy)
 	e.Any("/organizations/:organization", s.proxy)
-	e.GET("/organizations/:organization/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
-	e.GET("/organizations/:organization/daily-summary/unsubscribe", s.unsubscribeDailySummary)
+	notifications.New(notifications.Deps{ReadyOrganization: s.readyOrganization, ServiceRequest: s.serviceRequest}).Register(e)
 	e.Any("/organizations/:organization/*", s.proxy)
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)
 }
