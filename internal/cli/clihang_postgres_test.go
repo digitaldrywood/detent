@@ -115,10 +115,6 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 	}
 	defer repository.Close()
 	hosted := &hostedplans.HostedConfig{OrganizationID: "org_example", WorkOSOrganizationID: "provider_org_example", PublicURL: "https://hub.example.test"}
-	deployment, generation := "origin", int64(0)
-	if hosted.SharedEntry != nil {
-		deployment, generation = "shared", hosted.SharedEntry.Generation
-	}
 	checkoutRepository := ""
 	for _, option := range options {
 		if option.checkoutRepository != "" {
@@ -131,7 +127,7 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: organization, Name: string(organization), Slug: strings.ReplaceAll(string(organization), "_", "-"), CreatedAt: now}); err != nil {
 				return err
 			}
-			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization), BootstrapSubject: hosted.BootstrapSubject, Deployment: deployment, PublicURL: hosted.PublicURL, AllocationGeneration: generation}); err != nil {
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: organization, ProviderID: "provider_" + string(organization), BootstrapSubject: hosted.BootstrapSubject, Deployment: "origin", PublicURL: hosted.PublicURL}); err != nil {
 				return err
 			}
 			key := bytes.Repeat([]byte{0x5a}, 32)
