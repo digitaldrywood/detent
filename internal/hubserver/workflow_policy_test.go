@@ -735,8 +735,11 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					t.Fatalf("runner replaced administrator approval: %+v %v", approval, err)
 				}
 				fresh := f.create(t, "Second runner uses reported configuration")
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", token, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: runner.binding.MachineID, SessionID: "pending", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
+				pending := tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: runner.binding.MachineID, SessionID: "pending", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+				requireClaimRefusedWithoutLease(t, f, token, pending, http.StatusConflict, "policy_mismatch")
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, Policy: candidate}), http.StatusOK)
+				pending.SessionID = "approved"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", token, pending), http.StatusOK)
 			}
 			if test.forge != "" && !test.applied {
 				approval, _, err := f.service.readTenantProjectPolicyRevision(t.Context(), f.project.OrganizationID, f.project.ID)
@@ -789,7 +792,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			}
 			if test.fleet && !test.applied {
 				fresh := f.create(t, "Differing runner remains pending")
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", token, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: runner.binding.MachineID, SessionID: "pending", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
+				requireClaimRefusedWithoutLease(t, f, token, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: runner.binding.MachineID, SessionID: "pending", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}, http.StatusConflict, "policy_mismatch")
 			}
 			if test.occupied {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, Policy: candidate}), http.StatusUnprocessableEntity)
@@ -817,8 +820,16 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/validate", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken}), http.StatusOK)
 				if test.fleet && !test.humanApproval {
 					fresh := f.create(t, "First runner dispatch authority")
-					claimStatus := http.StatusOK
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: original.ID, MachineID: pinned.MachineID, SessionID: "continued", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), claimStatus)
+					current, _, err := f.service.readTenantProjectPolicyRevision(t.Context(), f.project.OrganizationID, f.project.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					continued := tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: original.ID, MachineID: pinned.MachineID, SessionID: "continued", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+					if current.Policy.ID != original.ID {
+						requireClaimRefusedWithoutLease(t, f, worker, continued, http.StatusConflict, "policy_mismatch")
+						continued.PolicyID, continued.SessionID = current.Policy.ID, "current"
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, continued), http.StatusOK)
 				}
 				var policyID string
 				err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
@@ -972,7 +983,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				second.reportCapacity(t)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", second.redemption.Credential, report), http.StatusNoContent)
 				fresh := f.create(t, "Claim retained legacy approval after upgrade")
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", second.redemption.Credential, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: second.binding.MachineID, SessionID: "unapproved", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
+				requireClaimRefusedWithoutLease(t, f, second.redemption.Credential, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: second.binding.MachineID, SessionID: "unapproved", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}, http.StatusConflict, "policy_mismatch")
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
 				current, err := native.ProjectPolicy(t.Context())
 				if err != nil || current.Policy.ID != original.ID || current.ApprovedBy != approval.ApprovedBy || current.ApprovedAt != approval.ApprovedAt || len(current.History) != 0 {

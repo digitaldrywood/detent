@@ -1009,12 +1009,14 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	claim.PolicyID = reported.ID
 	newIssue := f.create(t, "new policy work")
 	claim.WorkItemID, claim.SessionID = newIssue.WorkItemID, "new-policy-session"
+	requireClaimRefusedWithoutLease(t, f, worker, claim, http.StatusConflict, "policy_mismatch")
+	claim.PolicyID = changed.ID
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim)
 	requireNativeStatus(t, response, http.StatusOK)
 	var newLease tracker.NativeLease
 	decodeHubResponse(t, response, &newLease)
-	if newLease.PolicyID != reported.ID || newLease.ID == lease.ID {
-		t.Fatalf("new claim lost reported configuration: %+v", newLease)
+	if newLease.PolicyID != changed.ID || newLease.ID == lease.ID {
+		t.Fatalf("new claim lost the approved current configuration: %+v", newLease)
 	}
 	event.Type, event.Data.Sequence, event.Data.Handoff = "run.checkpointed", 2, nativeTestCheckpoint()
 	event.IdempotencyKey, event.Data.PolicyID = "forged", changed.ID
@@ -2564,4 +2566,13 @@ func claimPolicyTestAttempt(t *testing.T, f nativeFixture, worker, hostname, ses
 	var lease tracker.NativeLease
 	decodeHubResponse(t, response, &lease)
 	return lease
+}
+
+func requireClaimRefusedWithoutLease(t *testing.T, f nativeFixture, token string, claim tracker.NativeClaim, status int, code string) {
+	t.Helper()
+	requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", token, claim), status, code)
+	var leases int
+	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id WHERE l.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3 AND l.released_at IS NULL", f.project.OrganizationID, f.project.ID, claim.WorkItemID).Scan(&leases); err != nil || leases != 0 {
+		t.Fatalf("refused claim for policy %s left %d active leases: %v", claim.PolicyID, leases, err)
+	}
 }
