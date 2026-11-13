@@ -248,18 +248,11 @@ func (s *session) UpdateProjectRecord(ctx context.Context, record projectstore.R
 	if err := s.replaceProjectStates(ctx, record.Core.ID, record.States); err != nil {
 		return projectstore.Record{}, err
 	}
-	boardChanged := !reflect.DeepEqual(current.States, record.States) || current.Core.RequireDependencies != record.Core.RequireDependencies || current.Settings.Projection != record.Settings.Projection
-	if boardChanged {
-		rows, err := s.queries.UpdateProjectContent(ctx, pgquery.UpdateProjectContentParams{OrganizationID: s.organization, ID: record.Core.ID, ContentSettingsRevision: record.Core.ContentSettingsRevision})
-		if err := affected(ctx, rows, err); err != nil {
-			return projectstore.Record{}, err
-		}
-	}
 	updated, err := s.ProjectRecord(ctx, record.Core.ID)
 	if err != nil {
 		return projectstore.Record{}, err
 	}
-	if boardChanged {
+	if !reflect.DeepEqual(current.States, record.States) || current.Core.RequireDependencies != record.Core.RequireDependencies || current.Settings.Projection != record.Settings.Projection {
 		if err := s.recordBoardDelta(record.Core.ID, viewstore.BoardDelta{Topic: "lane", EntityID: string(record.Core.ID), EntityRevision: new(updated.Core.ContentSettingsRevision), Kind: "invalidate"}); err != nil {
 			return projectstore.Record{}, err
 		}
