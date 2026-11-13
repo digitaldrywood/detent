@@ -348,17 +348,28 @@ func TestNativeNoOpRevisions(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, reason := range []string{"worker_progress", "dependency_ready", "user_requested"} {
-		t.Run("same state command "+reason, func(t *testing.T) {
+	for _, test := range []struct {
+		reason string
+		status int
+	}{
+		{reason: "worker_progress", status: http.StatusServiceUnavailable},
+		{reason: "dependency_ready", status: http.StatusServiceUnavailable},
+		{reason: "user_requested", status: http.StatusOK},
+	} {
+		t.Run("same state command "+test.reason, func(t *testing.T) {
 			var beforeVersions, beforeEvents int
 			if err := admin.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM collaboration_versions WHERE organization_id=$1 AND work_item_id=$2),(SELECT count(*) FROM collaboration_events WHERE organization_id=$1 AND work_item_id=$2)", scope.organization, issue.WorkItemID).Scan(&beforeVersions, &beforeEvents); err != nil {
 				t.Fatal(err)
 			}
 			for index := range 2 {
-				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("same-state-%s-%d", reason, index)}, ExpectedRevision: issue.Revision, State: issue.State, Reason: reason})
-				requireNativeStatus(t, response, http.StatusOK)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("same-state-%s-%d", test.reason, index)}, ExpectedRevision: issue.Revision, State: issue.State, Reason: test.reason})
+				requireNativeStatus(t, response, test.status)
 				var result tracker.NativeIssue
-				decodeHubResponse(t, response, &result)
+				if test.status == http.StatusOK {
+					decodeHubResponse(t, response, &result)
+				} else {
+					result = readWorkItem(t, f, issue.WorkItemID, "")
+				}
 				if result.Revision != issue.Revision || !result.UpdatedAt.Equal(issue.UpdatedAt) {
 					t.Fatalf("same-state command changed revision or timestamp: %+v", result)
 				}
