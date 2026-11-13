@@ -152,8 +152,7 @@
         "event"
       ],
       "members": [
-        "internal/hubserver/conversation_store.go#conversationStore.createConversation",
-        "internal/hubserver/conversation_store.go#conversationStore.appendMessage",
+        "internal/hubserver/postgres/conversation_records.go#session.CreateMessage",
         "internal/hubserver/work_item_records.go#Service.executeWorkItemRecordMutationWithConversationLink",
         "internal/hubserver/postgres/conversation_records.go#session.CreateConversation"
       ],
@@ -1846,7 +1845,19 @@
       ],
       "inventory": {
         "operations": {
-          "Service.createAccessToken:SQL": 1
+          "Service.createAccessToken:SQL": 2
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/access_directory_seam.go": {
+      "disposition": "non-storage",
+      "families": [
+        "access"
+      ],
+      "inventory": {
+        "operations": {
+          "Service.hostedAccessPlatformUsers:Query": 2
         },
         "tables": []
       }
@@ -1860,6 +1871,57 @@
       "inventory": {
         "operations": {
           "Service.validateAccessInvitationGrants:SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/access_members_seam.go": {
+      "disposition": "non-storage",
+      "families": [
+        "access"
+      ],
+      "inventory": {
+        "operations": {
+          "Service.prepareAccessMember:Prepare": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/accessdirectory/directory.go": {
+      "disposition": "serving",
+      "families": [
+        "access"
+      ],
+      "inventory": {
+        "operations": {
+          "Service.Search:Query": 2,
+          "Service.ServeHTTP:Query": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/accessinvites/acceptance.go": {
+      "disposition": "serving",
+      "families": [
+        "access",
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "Service.Accept:Prepare": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/accessmembers/members.go": {
+      "disposition": "serving",
+      "families": [
+        "access",
+        "core"
+      ],
+      "inventory": {
+        "operations": {
+          "Service.Publish:Prepare": 1
         },
         "tables": []
       }
@@ -2287,57 +2349,6 @@
         ]
       }
     },
-    "internal/hubserver/conversation_attachments.go": {
-      "disposition": "serving",
-      "families": [
-        "collaboration",
-        "conversation",
-        "conversion",
-        "event",
-        "lease",
-        "source"
-      ],
-      "inventory": {
-        "operations": {
-          "conversationStore.bindAttachment:ExecContext": 1,
-          "conversationStore.bindAttachment:SQL": 1,
-          "conversationStore.deleteAttachment:ExecContext": 3,
-          "conversationStore.deleteAttachment:QueryRowContext": 1,
-          "conversationStore.deleteAttachment:SQL": 4,
-          "conversationStore.insertAttachment:ExecContext": 1,
-          "conversationStore.insertAttachment:SQL": 1,
-          "conversationStore.listExpiredAttachments:QueryContext": 1,
-          "conversationStore.listExpiredAttachments:SQL": 1,
-          "conversationStore.readAttachment:QueryRowContext": 1,
-          "conversationStore.readAttachment:SQL": 1,
-          "conversationStore.readAttachmentByRef:QueryRowContext": 1,
-          "conversationStore.readAttachmentByRef:SQL": 1,
-          "conversationStore.readAttachmentContent:QueryRowContext": 2,
-          "conversationStore.readAttachmentContent:SQL": 2,
-          "resolveMessageAttachments:SQL": 1,
-          "resolveMessageAttachments:querySQL": 1
-        },
-        "tables": [
-          "hub/attachment_archive_references",
-          "hub/attachment_references",
-          "hub/attachments",
-          "hub/collaboration_events",
-          "hub/conversation_attachment_blobs",
-          "hub/conversation_attachments",
-          "hub/conversation_commands",
-          "hub/conversation_events",
-          "hub/conversation_messages",
-          "hub/conversation_questions",
-          "hub/conversation_tool_revisions",
-          "hub/conversations",
-          "hub/issue_archive_sections",
-          "hub/issue_storage_archives",
-          "hub/native_archive_sections",
-          "hub/native_attempts",
-          "hub/release_audit_parts"
-        ]
-      }
-    },
     "internal/hubserver/conversation_content.go": {
       "disposition": "serving",
       "families": [
@@ -2346,24 +2357,11 @@
       ],
       "inventory": {
         "operations": {
-          "conversationReadBatch.capture:QueryRowContext": 1,
-          "conversationReadBatch.capture:SQL": 1,
-          "conversationStore.messageStorage:QueryRowContext": 1,
-          "conversationStore.messageStorage:SQL": 1,
           "conversationStore.readConversationArchive:QueryRowContext": 1,
-          "conversationStore.readConversationArchive:SQL": 1,
-          "conversationStore.recordContentArchive:ExecContext": 1,
-          "conversationStore.recordContentArchive:QueryRowContext": 1,
-          "conversationStore.recordContentArchive:SQL": 2,
-          "conversationStore.resolveMessageContents:QueryRowContext": 1,
-          "conversationStore.resolveMessageContents:SQL": 1,
-          "readConversationMessageDeltaSuffix:QueryContext": 1,
-          "readConversationMessageDeltaSuffix:SQL": 1
+          "conversationStore.readConversationArchive:SQL": 1
         },
         "tables": [
-          "hub/attachments",
-          "hub/conversation_events",
-          "hub/conversations"
+          "hub/attachments"
         ]
       }
     },
@@ -2377,26 +2375,6 @@
           "coordinatorToolset.findTools:Query": 1
         },
         "tables": []
-      }
-    },
-    "internal/hubserver/conversation_event_content.go": {
-      "disposition": "serving",
-      "families": [
-        "conversation"
-      ],
-      "inventory": {
-        "operations": {
-          "conversationStore.eventStorage:QueryRowContext": 1,
-          "conversationStore.eventStorage:SQL": 1,
-          "conversationStore.readEventStorage:QueryRowContext": 1,
-          "conversationStore.readEventStorage:SQL": 1,
-          "conversationStore.resolveEventContent:QueryRowContext": 3,
-          "conversationStore.resolveEventContent:SQL": 3
-        },
-        "tables": [
-          "hub/conversation_tool_revisions",
-          "hub/conversations"
-        ]
       }
     },
     "internal/hubserver/conversation_issue_archive.go": {
@@ -2434,18 +2412,6 @@
       "inventory": {
         "operations": {
           "Service.prepareConversationPreferenceIssue:Prepare": 1
-        },
-        "tables": []
-      }
-    },
-    "internal/hubserver/conversation_query_metadata.go": {
-      "disposition": "serving",
-      "families": [
-        "conversation"
-      ],
-      "inventory": {
-        "operations": {
-          "conversationQueryMetadata.write:ExecContext": 1
         },
         "tables": []
       }
@@ -2492,44 +2458,18 @@
       ],
       "inventory": {
         "operations": {
-          "conversationService.appendDeltaAt:QueryRowContext": 1,
-          "conversationService.appendDeltaAt:SQL": 1,
           "conversationService.resolveConversationReference:QueryRowContext": 1,
           "conversationService.resolveConversationReference:SQL": 1,
           "conversationService.resolveIssueReference:QueryRowContext": 1,
           "conversationService.resolveIssueReference:SQL": 2,
-          "conversationService.updateMessage:QueryRowContext": 1,
-          "conversationService.updateMessage:SQL": 1,
           "resolveConversationWorkItems:SQL": 1,
           "resolveConversationWorkItems:querySQL": 1
         },
         "tables": [
-          "hub/conversation_messages",
           "hub/conversations",
           "hub/issues",
           "hub/projects",
           "hub/workflow_states"
-        ]
-      }
-    },
-    "internal/hubserver/conversation_skills.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "fleet"
-      ],
-      "inventory": {
-        "operations": {
-          "readConversationSkills:QueryContext": 1,
-          "readConversationSkills:SQL": 1,
-          "storeEncodedRunnerSkills:ExecContext": 1,
-          "storeEncodedRunnerSkills:SQL": 1
-        },
-        "tables": [
-          "hub/api_tokens",
-          "hub/runner_identities",
-          "hub/runner_project_skills",
-          "hub/token_grants"
         ]
       }
     },
@@ -2548,122 +2488,13 @@
       ],
       "inventory": {
         "operations": {
-          "conversationStore.appendEvent:ExecContext": 1,
-          "conversationStore.appendEvent:QueryRowContext": 1,
-          "conversationStore.appendEvent:SQL": 2,
-          "conversationStore.appendMessage:ExecContext": 2,
-          "conversationStore.appendMessage:QueryRowContext": 1,
-          "conversationStore.appendMessage:SQL": 3,
-          "conversationStore.createConversation:ExecContext": 1,
-          "conversationStore.createConversation:SQL": 1,
-          "conversationStore.listConversations:SQL": 1,
-          "conversationStore.listConversations:querySQL": 1,
-          "conversationStore.listEvents:QueryContext": 1,
-          "conversationStore.listEvents:SQL": 1,
-          "conversationStore.listPendingQuestions:QueryContext": 1,
-          "conversationStore.listPendingQuestions:SQL": 1,
-          "conversationStore.listSnapshotQuestionRows:QueryContext": 1,
-          "conversationStore.listSnapshotQuestionRows:SQL": 1,
-          "conversationStore.readConversationByID:QueryRowContext": 1,
-          "conversationStore.readConversationByID:SQL": 1,
           "conversationStore.readConversationRow:QueryRowContext": 1,
           "conversationStore.readConversationRow:SQL": 1,
-          "conversationStore.readQuestion:QueryRowContext": 1,
-          "conversationStore.readQuestion:SQL": 1,
-          "conversationStore.recordAudience:ExecContext": 1,
-          "conversationStore.recordAudience:SQL": 1,
-          "conversationStore.recordStart:ExecContext": 1,
-          "conversationStore.recordStart:QueryRowContext": 1,
-          "conversationStore.recordStart:SQL": 2,
           "conversationStore.replaceMessageReferences:ExecContext": 2,
-          "conversationStore.replaceMessageReferences:SQL": 2,
-          "conversationStore.requireLinkAvailable:QueryRowContext": 2,
-          "conversationStore.requireLinkAvailable:SQL": 2,
-          "conversationStore.reserveCommand:ExecContext": 1,
-          "conversationStore.reserveCommand:QueryRowContext": 1,
-          "conversationStore.reserveCommand:SQL": 2,
-          "conversationStore.updateConversation:ExecContext": 1,
-          "conversationStore.updateConversation:QueryRowContext": 1,
-          "conversationStore.updateConversation:SQL": 2,
-          "conversationStore.updateMessage:ExecContext": 1,
-          "conversationStore.updateMessage:SQL": 1,
-          "conversationStore.updateReceipt:ExecContext": 1,
-          "conversationStore.updateReceipt:SQL": 1,
-          "conversationStore.upsertQuestion:ExecContext": 1,
-          "conversationStore.upsertQuestion:SQL": 1,
-          "resolveMessageReferences:SQL": 1,
-          "resolveMessageReferences:querySQL": 1
+          "conversationStore.replaceMessageReferences:SQL": 2
         },
         "tables": [
-          "hub/conversation_audience_events",
-          "hub/conversation_commands",
-          "hub/conversation_events",
-          "hub/conversation_messages",
-          "hub/conversation_questions",
-          "hub/conversation_starts",
-          "hub/conversations",
-          "hub/issues",
-          "hub/message_references",
-          "hub/native_archive_sections",
-          "hub/organizations",
-          "hub/projects"
-        ]
-      }
-    },
-    "internal/hubserver/conversation_stream.go": {
-      "disposition": "serving",
-      "families": [
-        "conversation",
-        "conversion"
-      ],
-      "inventory": {
-        "operations": {
-          "conversationStore.replayEvents:BeginTx": 1,
-          "conversationStore.replayEvents:QueryRowContext": 1,
-          "conversationStore.replayEvents:SQL": 1
-        },
-        "tables": [
-          "hub/conversations",
-          "hub/event_compactions"
-        ]
-      }
-    },
-    "internal/hubserver/conversation_worker.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "conversation",
-        "core",
-        "fleet",
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "conversationService.ensureWorkerConversation:QueryRowContext": 1,
-          "conversationService.ensureWorkerConversation:SQL": 1,
-          "conversationService.readReceipt:QueryRowContext": 1,
-          "conversationService.readReceipt:SQL": 1,
-          "conversationStore.readLinkedConversationRecord:QueryRowContext": 1,
-          "conversationStore.readLinkedConversationRecord:SQL": 1
-        },
-        "tables": [
-          "hub/api_tokens",
-          "hub/conversation_commands"
-        ]
-      }
-    },
-    "internal/hubserver/conversation_write_preparation.go": {
-      "disposition": "serving",
-      "families": [
-        "conversation"
-      ],
-      "inventory": {
-        "operations": {
-          "conversationPublicationPlan.validate:QueryRowContext": 1,
-          "conversationPublicationPlan.validate:SQL": 1
-        },
-        "tables": [
-          "hub/conversations"
+          "hub/message_references"
         ]
       }
     },
@@ -3119,8 +2950,8 @@
         "operations": {
           "ConnectionLimit:QueryRowContext": 1,
           "ConnectionLimit:SQL": 1,
-          "RepositoryOn:ExecContext": 4,
-          "RepositoryOn:SQL": 2,
+          "loginRole:ExecContext": 4,
+          "loginRole:SQL": 2,
           "migrate:ExecContext": 2,
           "migrate:SQL": 1,
           "reserveConnections:ExecContext": 1,
@@ -3522,6 +3353,19 @@
           "hub/queue_entries",
           "hub/workflow_states"
         ]
+      }
+    },
+    "internal/hubserver/native_issue_change_seam.go": {
+      "disposition": "non-storage",
+      "families": [
+        "core",
+        "source"
+      ],
+      "inventory": {
+        "operations": {
+          "Service.prepareNativeIssueChangeRecord:Prepare": 1
+        },
+        "tables": []
       }
     },
     "internal/hubserver/native_issue_pages.go": {
@@ -3949,19 +3793,6 @@
           "hub/attachments",
           "hub/change_content_objects"
         ]
-      }
-    },
-    "internal/hubserver/platform_users.go": {
-      "disposition": "serving",
-      "families": [
-        "access"
-      ],
-      "inventory": {
-        "operations": {
-          "Service.hostedAccessPlatformUsers:Query": 2,
-          "Service.hostedPlatformUsers:Query": 1
-        },
-        "tables": []
       }
     },
     "internal/hubserver/policy.go": {
@@ -5981,6 +5812,8 @@
           "session.PendingConversations:SQL": 1,
           "session.PendingUserMessages:QueryRow": 1,
           "session.PendingUserMessages:SQL": 1,
+          "session.PruneTerminalTurnBatches:Exec": 1,
+          "session.PruneTerminalTurnBatches:SQL": 1,
           "session.PutConversationContent:Exec": 1,
           "session.PutConversationContent:SQL": 1,
           "session.PutToolRevision:Exec": 1,
@@ -6026,7 +5859,9 @@
           "hub/conversation_tool_revisions",
           "hub/conversation_turn_batches",
           "hub/conversations",
-          "hub/message_references"
+          "hub/leases",
+          "hub/message_references",
+          "hub/native_attempts"
         ]
       }
     },
@@ -16262,9 +16097,12 @@
           "session.ProjectActions:Query": 1,
           "session.ProjectActions:SQL": 1,
           "session.UpdateProjectAction:Exec": 1,
-          "session.UpdateProjectAction:SQL": 1
+          "session.UpdateProjectAction:SQL": 1,
+          "session.deleteProjectActionRuns:Query": 2,
+          "session.deleteProjectActionRuns:SQL": 2
         },
         "tables": [
+          "hub/project_action_runs",
           "hub/project_actions"
         ]
       }
@@ -18665,6 +18503,8 @@
           "session.LockWorkItems:query-receiver": 1,
           "session.ProgressDependencies:Query": 1,
           "session.ProgressDependencies:SQL": 1,
+          "session.RelationshipExists:QueryRow": 1,
+          "session.RelationshipExists:SQL": 1,
           "session.Relationships:generated:RelationshipPage": 1,
           "session.Relationships:query-receiver": 1,
           "session.RemoveOwnedDependencies:Exec": 1,
@@ -18689,6 +18529,7 @@
         },
         "tables": [
           "hub/issue_dependencies",
+          "hub/issue_relationships",
           "hub/issues"
         ]
       }
@@ -21391,29 +21232,6 @@
         ]
       }
     },
-    "internal/hubserver/usage_cost_report.go": {
-      "disposition": "serving",
-      "families": [
-        "access",
-        "analytics",
-        "fleet",
-        "lease"
-      ],
-      "inventory": {
-        "operations": {
-          "readSpriteCostResources:SQL": 1,
-          "readSpriteCostResources:querySQL": 1
-        },
-        "tables": [
-          "hub/machines",
-          "hub/organization_secrets",
-          "hub/organization_sprite_members",
-          "hub/project_secrets",
-          "hub/runner_identities",
-          "hub/token_grants"
-        ]
-      }
-    },
     "internal/hubserver/usage_costs.go": {
       "disposition": "serving",
       "families": [
@@ -21421,12 +21239,8 @@
       ],
       "inventory": {
         "operations": {
-          "costOverlaps:QueryContext": 1,
           "readCostObservations:SQL": 1,
-          "readCostObservations:querySQL": 1,
-          "recordCostObservation:ExecContext": 1,
-          "recordCostObservation:QueryRowContext": 1,
-          "recordCostObservation:SQL": 3
+          "readCostObservations:querySQL": 1
         },
         "tables": [
           "hub/usage_cost_observations"
