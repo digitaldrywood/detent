@@ -7,10 +7,10 @@
       "test_lines": 42480
     },
     "internal/cloudentry": {
-      "source_files": 64,
-      "source_lines": 13737,
-      "test_files": 54,
-      "test_lines": 19606
+      "source_files": 62,
+      "source_lines": 12842,
+      "test_files": 41,
+      "test_lines": 15368
     },
     "internal/codex": {
       "source_files": 17,
@@ -43,16 +43,16 @@
       "test_lines": 72
     },
     "internal/hubserver": {
-      "source_files": 462,
-      "source_lines": 110409,
-      "test_files": 504,
+      "source_files": 459,
+      "source_lines": 106357,
+      "test_files": 495,
       "test_lines": 221920
     },
     "internal/hubserver/postgres": {
       "source_files": 260,
       "source_lines": 49566,
-      "test_files": 176,
-      "test_lines": 56962
+      "test_files": 53,
+      "test_lines": 16852
     },
     "internal/orchestrator": {
       "source_files": 112,
