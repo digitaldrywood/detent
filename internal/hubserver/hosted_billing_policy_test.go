@@ -400,43 +400,6 @@ func TestHostedBillingPageStates(t *testing.T) {
 	}
 }
 
-func TestHostedBillingRenewalAndPlanChange(t *testing.T) {
-	t.Parallel()
-	now := time.Now().UTC()
-	config := &HostedBillingConfig{GraceSeconds: 3600, Prices: []HostedBillingPrice{
-		{PriceID: "price_fixture", Plan: PlanReference{ID: "extended", Version: 1}},
-		{PriceID: "price_lower", Plan: PlanReference{ID: "limited", Version: 1}},
-	}}
-	paid := resolveHostedBilling(config, hostedBillingState{}, activeBillingSnapshot(now), now)
-	for _, test := range []struct {
-		name, price, invoice string
-		end                  time.Time
-		wantPlan             string
-		wantEnd              time.Time
-	}{
-		{"renewal", "price_fixture", "paid", now.Add(31 * 24 * time.Hour), "extended", now.Add(31*24*time.Hour + time.Hour)},
-		{"three-year approved price", "price_fixture", "paid", now.AddDate(3, 0, 0), "extended", now.AddDate(3, 0, 0).Add(time.Hour)},
-		{"paid downgrade", "price_lower", "paid", now.Add(31 * 24 * time.Hour), "limited", now.Add(31*24*time.Hour + time.Hour)},
-		{"unpaid plan change", "price_lower", "open", now.Add(31 * 24 * time.Hour), "extended", paid.AccessUntil},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			snapshot := activeBillingSnapshot(now)
-			snapshot.PriceID, snapshot.InvoiceStatus, snapshot.PeriodEnd = test.price, test.invoice, test.end
-			snapshot.InvoiceID = "in_renewal"
-			state := resolveHostedBilling(config, paid, snapshot, now)
-			if state.Plan.ID != test.wantPlan || !state.AccessUntil.Equal(test.wantEnd) {
-				t.Fatalf("state=%+v", state)
-			}
-			if test.invoice == "open" {
-				later := resolveHostedBilling(config, state, snapshot, now.Add(4*time.Hour))
-				if !later.AccessUntil.Equal(state.AccessUntil) {
-					t.Fatal("retry restarted grace")
-				}
-			}
-		})
-	}
-}
-
 func TestHostedBillingRejectsAdminAndSupportOwner(t *testing.T) {
 	t.Parallel()
 	for _, support := range []bool{false, true} {

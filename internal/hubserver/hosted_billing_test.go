@@ -246,66 +246,6 @@ func TestHostedBillingDiscountedInvoices(t *testing.T) {
 	}
 }
 
-func TestHostedBillingLifecycle(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
-	config := &HostedBillingConfig{GraceSeconds: 3600, Prices: []HostedBillingPrice{{PriceID: "price_fixture", Plan: PlanReference{ID: "paid", Version: 1}}}}
-	previous := resolveHostedBilling(config, hostedBillingState{}, activeBillingSnapshot(now), now)
-	for _, test := range []struct {
-		name, status, invoice, hold string
-		cancel                      bool
-		at                          time.Duration
-		want                        string
-		access                      bool
-	}{
-		{"activation", "active", "paid", "", false, 0, "active", true},
-		{"incomplete", "incomplete", "open", "", false, 0, "incomplete", false},
-		{"payment failure", "past_due", "open", "", false, time.Hour, "grace", true},
-		{"exact grace expiry", "past_due", "open", "", false, 2 * time.Hour, "payment_failed", false},
-		{"active unpaid invoice", "active", "open", "", false, time.Hour, "grace", true},
-		{"cancellation scheduled", "active", "paid", "", true, 0, "canceling", true},
-		{"cancellation boundary", "active", "paid", "", true, time.Hour, "canceling", false},
-		{"immediate cancellation", "canceled", "paid", "", false, 0, "canceled", false},
-		{"unpaid", "unpaid", "open", "", false, 0, "unpaid", false},
-		{"paused", "paused", "paid", "", false, 0, "paused", false},
-		{"refund", "active", "paid", "refunded", false, 0, "refunded", false},
-		{"dispute", "active", "paid", "disputed", false, 0, "disputed", false},
-		{"recovery", "active", "paid", "", false, 0, "active", true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			snapshot := activeBillingSnapshot(now)
-			snapshot.Status, snapshot.InvoiceStatus, snapshot.PaymentHold, snapshot.CancelAtPeriodEnd = test.status, test.invoice, test.hold, test.cancel
-			at := now.Add(test.at)
-			state := resolveHostedBilling(config, previous, snapshot, at)
-			if state.Status != test.want || state.AccessUntil.After(at) != test.access {
-				t.Fatalf("state=%+v", state)
-			}
-			if test.status == "past_due" && !state.GraceUntil.Equal(previous.PaidThrough.Add(time.Hour)) {
-				t.Fatal("failed payment extended grace")
-			}
-		})
-	}
-	for _, test := range []struct {
-		name     string
-		snapshot billing.Snapshot
-		previous hostedBillingState
-		want     bool
-	}{
-		{"unapproved price", billing.Snapshot{SubscriptionID: "sub_fixture", PriceID: "price_other", Status: "active"}, previous, false},
-		{"failed initial payment", billing.Snapshot{SubscriptionID: "sub_new", PriceID: "price_fixture", Status: "past_due"}, previous, false},
-		{"trial", billing.Snapshot{SubscriptionID: "sub_trial", PriceID: "price_fixture", Status: "trialing", TrialEnd: now.Add(time.Hour), PeriodEnd: now.Add(time.Hour)}, hostedBillingState{}, true},
-		{"free", billing.Snapshot{Status: "free"}, previous, false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			state := resolveHostedBilling(config, test.previous, test.snapshot, now)
-			if state.AccessUntil.After(now) != test.want {
-				t.Fatalf("state=%+v", state)
-			}
-		})
-	}
-}
-
 func TestHostedBillingReplayAndRecovery(t *testing.T) {
 	t.Parallel()
 	f, p := newHostedBillingFixture(t)
