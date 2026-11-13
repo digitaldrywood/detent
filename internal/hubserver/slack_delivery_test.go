@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 const slackTestWebhook = "https://hooks.slack.com/services/T123/B456/SLACK_SECRET_SENTINEL"
@@ -238,7 +239,17 @@ func TestSlackSettingsPrivacyAndAccess(t *testing.T) {
 					t.Fatal("test message body exposed webhook")
 				}
 				if test.changeSettings {
-					f.api(t, "owner", http.MethodPut, base, map[string]any{"channel_name": "changed"}, http.StatusOK)
+					ctx := testenv.WaitContext(t, t.Context())
+					if err := f.service.database.postgres.WriteSlack(ctx, org, corestore.Serving, func(w postgres.SlackWriter) error {
+						current, err := w.SlackIntegration(ctx)
+						if err != nil {
+							return err
+						}
+						_, err = w.UpdateSlackIntegration(ctx, postgres.UpdateSlackIntegrationInput{OrganizationID: org, ChannelName: "changed", Enabled: current.Enabled, UpdatedAt: f.service.config.now(), Revision: current.Revision})
+						return err
+					}); err != nil {
+						t.Fatalf("concurrent settings change: %v", err)
+					}
 				}
 				if test.transportError {
 					return nil, errors.New(slackTestWebhook)
