@@ -238,6 +238,7 @@ ORDER BY CASE WHEN r.runner_id=$4 THEN 0 ELSE 1 END,r.runner_id`, s.organization
 		if err := rows.Scan(&runner.OrganizationID, &runner.RunnerID, &runner.MachineID, &runner.Scope, &runner.State, &runner.Revision, &runner.Tags, &runner.Operations, &runner.CapacityLimit, &runner.ReportedCapacity, &runner.LastHeartbeatAt, &expires, &runner.Hostname, &runner.HostCapacity, &record.MachineVersion, &revoked, &created, &credentialExpires, &grants, &projects, &limits, &problems); err != nil {
 			return nil, mapError(ctx, err)
 		}
+		runner.ProjectIDs = make([]tracker.ProjectID, 0, len(grants))
 		for _, project := range grants {
 			runner.ProjectIDs = append(runner.ProjectIDs, tracker.ProjectID(project))
 		}

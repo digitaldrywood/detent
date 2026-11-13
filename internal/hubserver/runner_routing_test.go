@@ -528,6 +528,12 @@ func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture, 
 		t.Fatal(err)
 	}
 	runners := runtimeRunnersFromSnapshot(snapshot, scope, now)
+	if full.Scope != "organization" && !slices.Contains(full.ProjectIDs, scope.Project) {
+		if len(runners) != 0 {
+			t.Fatalf("admission snapshot exposed a runner without project access: %+v", runners)
+		}
+		return full
+	}
 	if len(runners) != 1 || runners[0].RunnerID != r.binding.RunnerID {
 		t.Fatalf("admission snapshot returned unexpected runners: %+v", runners)
 	}
