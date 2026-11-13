@@ -341,15 +341,6 @@ func (s *Service) commitOutbox(ctx context.Context, record outboxRecord, apply f
 	return OutboxItem{}, ErrOutboxDisabled
 }
 
-func (i OutboxItem) matches(record outboxRecord) bool {
-	return i.IdempotencyKey == record.idempotencyKey &&
-		i.RepositoryID == record.repositoryID &&
-		i.IssueID == record.issueID &&
-		i.Kind == record.kind &&
-		i.TargetNodeID == record.targetNodeID &&
-		jsonEqual(i.Desired, record.desired)
-}
-
 func jsonEqual(left, right json.RawMessage) bool {
 	var leftValue any
 	var rightValue any
