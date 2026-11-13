@@ -73,6 +73,8 @@ type nativeClaimCandidateScan struct {
 	cursor   claimstore.SelectionCursor
 }
 
+var errClaimHostSlotTaken = fmt.Errorf("runner host slot taken: %w", ErrNoClaimableWork)
+
 func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope, request tracker.NativeClaim, ttl time.Duration) (leasestore.Lease, error) {
 	if s.config.TenantRepository == nil || s.config.NativeRunEvents == nil || scope.credential.Runner.RunnerID == "" {
 		return leasestore.Lease{}, nativeRunEventStorageUnavailable()
@@ -134,6 +136,9 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope nativeScope,
 			candidateRequest.WorkItemID = candidate.WorkItemID
 			scan.cursor.Position = position
 			lease, err := s.claimNativeIssueTenantWithPlan(ctx, scope, candidateRequest, ttl, now, plan, &scan.cursor)
+			if errors.Is(err, errClaimHostSlotTaken) {
+				return leasestore.Lease{}, ErrNoClaimableWork
+			}
 			var refusal *nativeError
 			if errors.As(err, &refusal) && refusal.Code == "provider_capacity" {
 				if _, ok := refusal.Details["monthly_budget"].(budget.MonthlyDecision); ok {
@@ -788,7 +793,7 @@ func (s *Service) claimNativeIssueTenantWithPlan(ctx context.Context, scope nati
 				return providerWait("host_capacity", "Runner host has no available execution slots")
 			}
 			if usage.Host >= machine.Capacity {
-				return ErrNoClaimableWork
+				return errClaimHostSlotTaken
 			}
 			if usage.Runner >= int64(availableCapacity) || projectCapacityConfigured && usage.Project >= int64(projectCapacity) {
 				return providerWait("runner_capacity", "Runner has no available execution slots")
