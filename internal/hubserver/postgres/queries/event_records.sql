@@ -248,7 +248,7 @@ VALUES (sqlc.arg(organization_id), sqlc.arg(change_id), sqlc.arg(sequence), sqlc
 SELECT * FROM change_evidence WHERE organization_id=sqlc.arg(organization_id) AND change_id=sqlc.arg(change_id) AND sequence>sqlc.arg(after) ORDER BY sequence LIMIT sqlc.arg(page_limit);
 
 -- name: RecordLockIssue :one
-SELECT event_sequence FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE;
+SELECT event_sequence FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR NO KEY UPDATE;
 
 -- name: RecordAdvanceIssue :one
 UPDATE issues SET last_activity_at=greatest(last_activity_at,sqlc.arg(activity_at)::timestamptz), event_sequence=greatest(event_sequence, sqlc.arg(imported_sequence)::bigint) + CASE WHEN sqlc.arg(imported_sequence)::bigint = 0 THEN 1 ELSE 0 END

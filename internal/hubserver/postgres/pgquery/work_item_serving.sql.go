@@ -58,7 +58,7 @@ func (q *Queries) CommentBySource(ctx context.Context, arg CommentBySourceParams
 }
 
 const lockWorkItem = `-- name: LockWorkItem :one
-SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision, terminal_entered_at, archive_restored_at, archive_restore_known, source_revision, source_scheduled, source_observed_at FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE
+SELECT organization_id, id, native_id, project_id, number, revision, event_sequence, native_source_key, title, body_object_key, issue_contract_object_key, report_context_object_key, actor_kind, actor_principal_id, provenance_provider, provenance_external_id, archived, created_at, updated_at, native_created_at, native_updated_at, workflow_state_name, last_activity_at, issue_type, priority, dispatch_generation, dispatch_requested_at, recovery_runner_id, recovery_version_id, doctor_identity_revision, terminal_entered_at, archive_restored_at, archive_restore_known, source_revision, source_scheduled, source_observed_at FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR NO KEY UPDATE
 `
 
 type LockWorkItemParams struct {
@@ -112,7 +112,7 @@ func (q *Queries) LockWorkItem(ctx context.Context, arg LockWorkItemParams) (Iss
 }
 
 const lockWorkItemProject = `-- name: LockWorkItemProject :one
-SELECT id FROM projects WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL FOR UPDATE
+SELECT id FROM projects WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL FOR NO KEY UPDATE
 `
 
 type LockWorkItemProjectParams struct {

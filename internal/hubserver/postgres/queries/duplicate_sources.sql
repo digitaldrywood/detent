@@ -43,7 +43,7 @@ LEFT JOIN project_workflow_states w ON w.organization_id=i.organization_id AND w
 ORDER BY hit.fingerprint_hit DESC,hit.rank DESC,hit.number DESC,d.id COLLATE "C";
 
 -- name: DuplicateProjectLock :one
-SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR UPDATE;
+SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR NO KEY UPDATE;
 
 -- name: DuplicateDocumentIdentity :one
 SELECT project_id,kind FROM search_documents WHERE organization_id=$1 AND id=$2;

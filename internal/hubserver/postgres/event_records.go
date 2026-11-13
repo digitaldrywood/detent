@@ -602,7 +602,7 @@ func (s *session) AppendEvent(ctx context.Context, record eventstore.Event) (eve
 		return eventstore.Event{}, err
 	}
 	var issueID int64
-	if err := s.db.QueryRow(ctx, `SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE`, s.organization, record.ProjectID, record.WorkItemID).Scan(&issueID); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT id FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR NO KEY UPDATE`, s.organization, record.ProjectID, record.WorkItemID).Scan(&issueID); err != nil {
 		return eventstore.Event{}, mapError(ctx, err)
 	}
 	previous, err := s.queries.RecordGetEvent(ctx, pgquery.RecordGetEventParams{OrganizationID: s.organization, ProjectID: record.ProjectID, WorkItemID: record.WorkItemID, ID: record.ID})

@@ -117,7 +117,7 @@ previous AS MATERIALIZED (
     SELECT id,archived,workflow_state_name FROM issues
     WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
       AND native_id=sqlc.arg(native_id) AND revision=sqlc.arg(expected_revision)
-    FOR UPDATE
+    FOR NO KEY UPDATE
 ), invalidated_admission AS (
     DELETE FROM monthly_budget_admissions a USING previous i
     WHERE a.organization_id=sqlc.arg(organization_id) AND a.issue_id=i.id

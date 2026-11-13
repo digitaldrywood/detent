@@ -2,10 +2,10 @@
 SELECT (COALESCE((SELECT number FROM issues WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) ORDER BY number DESC LIMIT 1),0) + 1)::bigint AS number;
 
 -- name: LockWorkItemProject :one
-SELECT id FROM projects WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(project_id) AND deleted_at IS NULL FOR UPDATE;
+SELECT id FROM projects WHERE organization_id=sqlc.arg(organization_id) AND id=sqlc.arg(project_id) AND deleted_at IS NULL FOR NO KEY UPDATE;
 
 -- name: LockWorkItem :one
-SELECT * FROM issues WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND native_id=sqlc.arg(native_id) FOR UPDATE;
+SELECT * FROM issues WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND native_id=sqlc.arg(native_id) FOR NO KEY UPDATE;
 
 -- name: WorkItemBySource :one
 SELECT * FROM issues WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id) AND native_source_key=sqlc.arg(source_key);

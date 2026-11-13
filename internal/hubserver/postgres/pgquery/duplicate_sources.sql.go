@@ -112,7 +112,7 @@ func (q *Queries) DuplicateParentSource(ctx context.Context, arg DuplicateParent
 }
 
 const duplicateProjectLock = `-- name: DuplicateProjectLock :one
-SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR UPDATE
+SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR NO KEY UPDATE
 `
 
 type DuplicateProjectLockParams struct {

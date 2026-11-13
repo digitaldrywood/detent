@@ -203,7 +203,7 @@ func (q *Queries) DeleteProjectTransitions(ctx context.Context, arg DeleteProjec
 }
 
 const lockActiveProject = `-- name: LockActiveProject :one
-SELECT id FROM projects WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL FOR UPDATE
+SELECT id FROM projects WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL FOR NO KEY UPDATE
 `
 
 type LockActiveProjectParams struct {

@@ -9,14 +9,18 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pressly/goose/v3"
 
+	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -575,6 +579,145 @@ FROM projects p JOIN fixture_issue_project_updates u ON u.organization_id=p.orga
 					if projectActive != test.projectActive || nullState != test.nullState || todo != test.todo || done != test.done || delta != test.sourceDelta || sourceWrites != test.sourceWrites {
 						t.Errorf("%s/%s project=%d null=%d todo=%d done=%d source=%d/%d, want %d/%d/%d/%d/%d/%d", org, project, projectActive, nullState, todo, done, delta, sourceWrites, test.projectActive, test.nullState, test.todo, test.done, test.sourceDelta, test.sourceWrites)
 					}
+				}
+			}
+		})
+	}
+}
+
+func TestPopulationAndArchiveAccountingNeverDeadlock(t *testing.T) {
+	type step func(context.Context, tenantstore.Writer) error
+	archive := func(ctx context.Context, w tenantstore.Writer) error { return w.LockArchiveAccounting(ctx) }
+	receipt := func(ctx context.Context, w tenantstore.Writer) error {
+		_, err := w.ArchiveBytes(ctx)
+		return err
+	}
+	lock := func(project tracker.ProjectID, item tracker.NativeWorkItemID) step {
+		return func(ctx context.Context, w tenantstore.Writer) error {
+			_, err := w.LockWorkItem(ctx, project, item)
+			return err
+		}
+	}
+	archiveItem := func(project tracker.ProjectID, item tracker.NativeWorkItemID) step {
+		return func(ctx context.Context, w tenantstore.Writer) error {
+			current, err := w.WorkItem(ctx, project, item)
+			if err != nil {
+				return err
+			}
+			current.Archived = true
+			_, err = w.UpdateWorkItem(ctx, current)
+			return err
+		}
+	}
+	converse := func(ctx context.Context, w tenantstore.Writer) error {
+		item, err := w.WorkItem(ctx, "prj_first", "wi_first_1")
+		if err != nil {
+			return err
+		}
+		created := time.Date(2026, 11, 1, 18, 0, 0, 0, time.UTC)
+		_, err = w.CreateConversation(ctx, conversationstore.Conversation{
+			OrganizationID:        item.OrganizationID,
+			ProjectID:             "prj_first",
+			ID:                    "conv_0123456789abcdef0123456789abcdef",
+			CreationKey:           "create_example",
+			CreationHash:          "hash_example",
+			OwnerPrincipalID:      "owner",
+			Origin:                "user",
+			Title:                 "Example",
+			Visibility:            conversation.VisibilityPrivate,
+			Status:                conversation.StatusActive,
+			Revision:              1,
+			SubjectWorkItemID:     "wi_first_1",
+			ExecutionContinuation: true,
+			Execution:             conversation.Execution{Status: conversation.ExecutionIdle},
+			Preferences:           conversation.DefaultPreferences(),
+			CreatedAt:             created,
+			UpdatedAt:             created,
+		})
+		return err
+	}
+	for _, test := range []struct {
+		name                                         string
+		holdFirst, finishFirst, holdNext, finishNext step
+		active                                       int64
+	}{
+		{"population trigger while archive holder checks keys", lock("prj_first", "wi_first_1"), archiveItem("prj_first", "wi_first_1"), archive, converse, 3},
+		{"receipt while archive holder checks keys", lock("prj_first", "wi_first_1"), receipt, archive, converse, 4},
+		{"receipt after population write", archiveItem("prj_first", "wi_first_1"), receipt, archive, archiveItem("prj_second", "wi_second_1"), 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			admin := template.Database(t)
+			repository, _ := repositoryFor(t, admin, smallPool())
+			organizations := []tracker.OrganizationID{"org_first", "org_second"}
+			for _, organization := range organizations {
+				seedRepository(t, repository, organization)
+				if _, err := admin.ExecContext(t.Context(), `INSERT INTO api_tokens (organization_id,id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) VALUES ($1,'owner','owner','hash_'||$1,'fingerprint_'||$1,'operator',true,now(),now())`, organization); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, organization := range organizations {
+				firstHeld, nextHeld, proceed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				await := func(ctx context.Context, ready <-chan struct{}) error {
+					select {
+					case <-ready:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+				first := startRepositoryTask(t, func(ctx context.Context) error {
+					return repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
+						if err := test.holdFirst(ctx, w); err != nil {
+							return err
+						}
+						close(firstHeld)
+						if err := await(ctx, proceed); err != nil {
+							return err
+						}
+						return test.finishFirst(ctx, w)
+					})
+				})
+				next := startRepositoryTask(t, func(ctx context.Context) error {
+					if err := await(ctx, firstHeld); err != nil {
+						return err
+					}
+					return repository.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
+						if err := test.holdNext(ctx, w); err != nil {
+							return err
+						}
+						close(nextHeld)
+						return test.finishNext(ctx, w)
+					})
+				})
+				testenv.WaitUntil(t, t.Context(), func() error {
+					select {
+					case <-nextHeld:
+						return nil
+					default:
+					}
+					var waiting bool
+					if err := admin.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock')`).Scan(&waiting); err != nil {
+						return err
+					}
+					if !waiting {
+						return errors.New("second transaction has neither taken its first lock nor waited for one")
+					}
+					return nil
+				})
+				close(proceed)
+				for name, task := range map[string]*repositoryTask{"first": first, "next": next} {
+					if err := task.wait(t); err != nil {
+						t.Errorf("%s %s transaction: %v", organization, name, err)
+					}
+				}
+				var counted, actual int64
+				if err := admin.QueryRowContext(t.Context(), `SELECT
+(SELECT value FROM hosted_usage_counters WHERE organization_id=$1 AND name='unarchived_issues'),
+(SELECT count(*) FROM issues WHERE organization_id=$1 AND NOT archived)`, organization).Scan(&counted, &actual); err != nil {
+					t.Fatal(err)
+				}
+				if counted != test.active || actual != test.active {
+					t.Errorf("%s active population counter=%d actual=%d, want %d", organization, counted, actual, test.active)
 				}
 			}
 		})

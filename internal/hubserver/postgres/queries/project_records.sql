@@ -27,7 +27,7 @@ DELETE FROM project_workflow_states WHERE organization_id=$1 AND project_id=$2 A
 INSERT INTO project_workflow_states(organization_id,project_id,name,terminal,dispatchable,operator_only,board_rank) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(organization_id,project_id,name) DO UPDATE SET terminal=EXCLUDED.terminal,dispatchable=EXCLUDED.dispatchable,operator_only=EXCLUDED.operator_only,board_rank=EXCLUDED.board_rank;
 
 -- name: LockActiveProject :one
-SELECT id FROM projects WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL FOR UPDATE;
+SELECT id FROM projects WHERE organization_id=$1 AND id=$2 AND deleted_at IS NULL FOR NO KEY UPDATE;
 
 -- name: ProjectHasActiveWork :one
 SELECT EXISTS(SELECT 1 FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id WHERE i.organization_id=sqlc.arg(organization_id) AND i.project_id=sqlc.arg(project_id) AND l.released_at IS NULL AND l.expires_at>sqlc.arg(now)::timestamptz)

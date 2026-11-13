@@ -1011,7 +1011,7 @@ func (q *Queries) LockActiveLease(ctx context.Context, arg LockActiveLeaseParams
 }
 
 const lockAttemptIssue = `-- name: LockAttemptIssue :one
-SELECT id FROM issues WHERE organization_id=$1 AND id=$2 FOR UPDATE
+SELECT id FROM issues WHERE organization_id=$1 AND id=$2 FOR NO KEY UPDATE
 `
 
 type LockAttemptIssueParams struct {

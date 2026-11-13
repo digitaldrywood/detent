@@ -891,7 +891,7 @@ previous AS MATERIALIZED (
     SELECT id,archived,workflow_state_name FROM issues
     WHERE organization_id=$23 AND project_id=$24
       AND native_id=$25 AND revision=$2
-    FOR UPDATE
+    FOR NO KEY UPDATE
 ), invalidated_admission AS (
     DELETE FROM monthly_budget_admissions a USING previous i
     WHERE a.organization_id=$23 AND a.issue_id=i.id

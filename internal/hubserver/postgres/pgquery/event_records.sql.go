@@ -3336,7 +3336,7 @@ func (q *Queries) RecordLockChange(ctx context.Context, arg RecordLockChangePara
 }
 
 const recordLockIssue = `-- name: RecordLockIssue :one
-SELECT event_sequence FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR UPDATE
+SELECT event_sequence FROM issues WHERE organization_id=$1 AND project_id=$2 AND native_id=$3 FOR NO KEY UPDATE
 `
 
 type RecordLockIssueParams struct {
