@@ -318,7 +318,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		{name: "uncommitted definition pending", initial: true, local: true, reachable: true, status: http.StatusNoContent},
 		{name: "occupied lane stays pending", initial: true, reachable: true, occupied: true, status: http.StatusConflict},
 		{name: "different repository pending", initial: true, reachable: true, wrongRepository: true, status: http.StatusNoContent},
-		{name: "unenrolled reporter pending", initial: true, reachable: true, legacy: true, status: http.StatusNoContent},
+		{name: "unenrolled reporter refused", initial: true, reachable: true, legacy: true, status: http.StatusNotFound},
 		{name: "missing commit pending", initial: true, reachable: true, missingRevision: true, status: http.StatusNoContent},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -641,6 +641,17 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			} else {
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report)
 				requireNativeStatus(t, response, test.status)
+				if test.legacy {
+					requireNativeError(t, response, http.StatusNotFound, "not_found")
+					var observations int
+					if err := conversationTestAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT count(*) FROM project_policy_observations WHERE organization_id=$1 AND project_id=$2 AND policy_id=$3", f.project.OrganizationID, f.project.ID, candidate.ID).Scan(&observations); err != nil {
+						t.Fatal(err)
+					}
+					if observations != 0 {
+						t.Fatalf("unenrolled credential recorded %d policy observations", observations)
+					}
+					return
+				}
 				if test.occupied {
 					var refused hubapi.NativeError
 					decodeHubResponse(t, response, &refused)
@@ -819,7 +830,13 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					t.Fatalf("lease pin changed: %s, %v", policyID, err)
 				}
 			}
+			var replayedApprover string
 			if test.replay {
+				var before policy.Approval
+				beforeResponse := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy?limit=1", f.token, nil)
+				requireNativeStatus(t, beforeResponse, http.StatusOK)
+				decodeHubResponse(t, beforeResponse, &before)
+				replayedApprover = before.ApprovedBy
 				previousSource := *source
 				previousSource.Commit = original.Workflow.Revision
 				previousReport := policy.Observation{Descriptor: original, Source: &previousSource}
@@ -880,7 +897,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if test.initial && candidate.SameAuthoredInputs(original) && (test.local || test.wrongRepository) && !test.humanApproval {
 					repository, commit = "", ""
 				}
-				if entry.Repository != repository || entry.Commit != commit || entry.PreviousDefinitionDigest != previous || entry.DefinitionDigest != candidate.SourceDigest || entry.RunnerID != runner.binding.RunnerID || entry.AppliedBy != approval.ApprovedBy || strings.HasPrefix(entry.AppliedBy, "runner_") && test.landing == "" || entry.AppliedAt == "" {
+				if entry.Repository != repository || entry.Commit != commit || entry.PreviousDefinitionDigest != previous || entry.DefinitionDigest != candidate.SourceDigest || entry.RunnerID != runner.binding.RunnerID || !test.replay && entry.AppliedBy != approval.ApprovedBy || test.replay && (entry.AppliedBy != "test_hub_admin" || approval.ApprovedBy != replayedApprover) || strings.HasPrefix(entry.AppliedBy, "runner_") && test.landing == "" || entry.AppliedAt == "" {
 					t.Fatalf("incomplete apply history: %+v", entry)
 				}
 				if !reflect.DeepEqual(entry.Definition, &candidate) || test.initial && !reflect.DeepEqual(entry.PreviousDefinition, &original) || !test.initial && entry.PreviousDefinition != nil {
