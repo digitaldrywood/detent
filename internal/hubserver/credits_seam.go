@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/usagereport"
 	"github.com/digitaldrywood/detent/internal/mutation"
 
 	"encoding/csv"
@@ -105,17 +106,7 @@ type includedAICredits credits.Included
 type creditPageRequest credits.Page
 type preparedConversationUsage = credits.PreparedUsage
 
-type chatUsageSummary struct {
-	Range           usageWindow `json:"range"`
-	Input           int64       `json:"input"`
-	CachedInput     int64       `json:"cached_input"`
-	Output          int64       `json:"output"`
-	ReasoningOutput int64       `json:"reasoning_output"`
-	Tokens          int64       `json:"tokens"`
-	Turns           int64       `json:"turns"`
-	UnpricedTurns   int64       `json:"unpriced_turns"`
-	CostUSD         float64     `json:"cost_usd"`
-}
+type chatUsageSummary = usagereport.ChatSummary
 
 func (c includedAICredits) remaining() int64 { return credits.Included(c).Remaining() }
 func (p creditPageRequest) bounds() (int64, int64, error) {

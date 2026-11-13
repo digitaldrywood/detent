@@ -141,7 +141,7 @@ func applyPostgresReportUsage(out *hostedReportsReport, work []reportstore.Overv
 	for _, rows := range current {
 		for _, row := range rows {
 			out.Cost += row.Cost
-			out.Tokens += row.tokens()
+			out.Tokens += row.Tokens()
 			out.Input += row.Input
 			out.Cached += row.CachedInput
 			issueCost[string(byAttempt[row.AttemptID].WorkItemID)] += row.Cost

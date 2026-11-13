@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/usagereport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -34,9 +35,9 @@ const (
 	maxNativeUsageEntries = 32
 	// maxNativeUsageNameBytes bounds a provider or model identifier.
 	maxNativeUsageNameBytes = 128
-	usagePeriodLayout       = "2006-01-02T15:04:05Z"
+	usagePeriodLayout       = usagereport.PeriodLayout
 	// usageDayLayout is how a daily report bucket is written.
-	usageDayLayout = "2006-01-02"
+	usageDayLayout = usagereport.DayLayout
 )
 
 // validateNativeRunUsage checks the usage a run event carries. Usage belongs
