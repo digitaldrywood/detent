@@ -500,7 +500,8 @@ SELECT grouped.organization_id, grouped.project_id, grouped.runner_id, grouped.p
   grouped.revision_approved_by, grouped.payload_object_key, grouped.payload_sha256, grouped.payload_bytes,
   grouped.payload_content_bytes, grouped.gate_github_pull_request, grouped.previously_approved,
   grouped.runner_count, totals.distinct_policy_count, totals.policy_count,
-  EXISTS (SELECT 1 FROM policy_revision_approvals a WHERE a.organization_id=grouped.organization_id AND a.project_id=grouped.project_id AND a.policy_id=$1::text AND a.approved_by='repository-default-branch') AS repository_approved
+  EXISTS (SELECT 1 FROM policy_revision_approvals a WHERE a.organization_id=grouped.organization_id AND a.project_id=grouped.project_id AND a.policy_id=$1::text AND a.approved_by='repository-default-branch'
+    UNION ALL SELECT 1 FROM project_workflow_applies w WHERE w.organization_id=grouped.organization_id AND w.project_id=grouped.project_id AND w.policy_id=$1::text AND (w.change_id<>'' OR w.pull_request_url<>'')) AS repository_approved
 FROM grouped CROSS JOIN totals
 ORDER BY grouped.observed_at DESC, grouped.runner_id
 LIMIT $2
