@@ -65,9 +65,9 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 					f = newNativeFixture(t, service, organization, "Example second project")
 				}
 				fixture := coreWorkItemNeutralFixture(t, organization, f.project.ID, false)
-				fixture.records["native_comments"], fixture.records["collaboration_versions"], fixture.records["collaboration_events"] = nil, nil, nil
-				fixture.set("workflow_states", map[string]string{"id": "1"}, map[string]any{"detent_state": test.state})
-				fixture.set("queue_entries", nil, map[string]any{"state": test.state})
+				fixture.Records["native_comments"], fixture.Records["collaboration_versions"], fixture.Records["collaboration_events"] = nil, nil, nil
+				fixture.Set("workflow_states", map[string]string{"id": "1"}, map[string]any{"detent_state": test.state})
+				fixture.Set("queue_entries", nil, map[string]any{"state": test.state})
 				expectedVersions := make(map[string]map[string]any)
 				expectedHistory := make(map[tracker.NativeWorkItemID][]tracker.CollaborationEvent)
 				expectedEventPayloads := make(map[string]map[string]any)
@@ -75,11 +75,11 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 					item := tracker.NativeWorkItemID("wi_core_import" + suffix)
 					created, updated := parseTestTime(t, "2026-10-01T00:00:00Z"), parseTestTime(t, "2026-10-02T00:00:00Z")
 					issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: f.project.ID, WorkItemID: item, Number: 1 + index*2, Revision: 1, Profile: "native"}, Title: "Retained evidence", Body: coreImportBody(), State: test.state, Labels: []string{"needs-review"}, Assignees: []string{"example-assignee"}, Actor: actor, CreatedAt: created, UpdatedAt: updated, LastActivityAt: updated}
-					fixture.set("issues", map[string]string{"native_id": string(item)}, map[string]any{"title": issue.Title, "revision": 1, "event_sequence": 3, "actor_json": string(marshal(actor))})
+					fixture.Set("issues", map[string]string{"native_id": string(item)}, map[string]any{"title": issue.Title, "revision": 1, "event_sequence": 3, "actor_json": string(marshal(actor))})
 					comment := tracker.NativeComment{ID: "comment_core_import" + suffix, OrganizationID: organization, ProjectID: f.project.ID, WorkItemID: item, Revision: 1, Sequence: 1, Body: "Retained occurrence", Actor: actor, CreatedAt: created, UpdatedAt: created}
 					edited := comment
 					edited.Revision, edited.EditedBy, edited.UpdatedAt = 2, &editor, updated
-					fixture.add("native_comments", map[string]any{"id": edited.ID, "revision": 2, "sequence": 1, "body": edited.Body, "actor_json": string(marshal(actor)), "edited_by_json": string(marshal(editor)), "provenance_json": nil, "source_key": nil, "deleted": 0, "created_at": created.Format(time.RFC3339Nano), "updated_at": updated.Format(time.RFC3339Nano), "organization_id": organization, "project_id": f.project.ID, "work_item_id": item})
+					fixture.Add("native_comments", map[string]any{"id": edited.ID, "revision": 2, "sequence": 1, "body": edited.Body, "actor_json": string(marshal(actor)), "edited_by_json": string(marshal(editor)), "provenance_json": nil, "source_key": nil, "deleted": 0, "created_at": created.Format(time.RFC3339Nano), "updated_at": updated.Format(time.RFC3339Nano), "organization_id": organization, "project_id": f.project.ID, "work_item_id": item})
 					var previous []byte
 					for _, version := range []struct {
 						id       string
@@ -100,7 +100,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 								t.Fatal(err)
 							}
 						}
-						fixture.add("collaboration_versions", map[string]any{"organization_id": organization, "project_id": f.project.ID, "work_item_id": item, "record_id": version.id, "revision": version.revision, "encoding": encoding, "record_json": string(encoded)})
+						fixture.Add("collaboration_versions", map[string]any{"organization_id": organization, "project_id": f.project.ID, "work_item_id": item, "record_id": version.id, "revision": version.revision, "encoding": encoding, "record_json": string(encoded)})
 						if version.id == comment.ID {
 							previous = raw
 						}
@@ -133,7 +133,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 							t.Fatal(err)
 						}
 						sourceActor["retained_event_extension"] = map[string]any{"value": "historical event evidence", "actor": map[string]any{"kind": "system", "principal_id": "health_detector"}}
-						fixture.add("collaboration_events", map[string]any{"id": id, "sequence": i + 1, "type": eventType, "schema_version": 1, "actor_json": string(marshal(sourceActor)), "data_json": string(marshal(data)), "event_revision": int(data.Revision), "recorded_at": at.Format(time.RFC3339Nano), "organization_id": organization, "project_id": f.project.ID, "work_item_id": item})
+						fixture.Add("collaboration_events", map[string]any{"id": id, "sequence": i + 1, "type": eventType, "schema_version": 1, "actor_json": string(marshal(sourceActor)), "data_json": string(marshal(data)), "event_revision": int(data.Revision), "recorded_at": at.Format(time.RFC3339Nano), "organization_id": organization, "project_id": f.project.ID, "work_item_id": item})
 						expectedEvent := tracker.CollaborationEvent{ID: id, OrganizationID: organization, ProjectID: f.project.ID, AggregateType: "work_item", AggregateID: item, AggregateSequence: int64(i + 1), Type: eventType, SchemaVersion: 1, RecordedAt: at, Actor: wantEventActor, Data: data}
 						expectedHistory[item] = append(expectedHistory[item], expectedEvent)
 						var expectedPayload map[string]any
@@ -149,7 +149,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 						expectedEventPayloads[id] = expectedPayload
 					}
 				}
-				source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: organization, ProjectID: f.project.ID, Objects: objects}
+				source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: organization, ProjectID: f.project.ID, Objects: objects}
 				sourceBytes := func() map[string][]byte {
 					t.Helper()
 					entries, err := os.ReadDir(source.BundlePath)

@@ -24,6 +24,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -267,7 +269,7 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 	interrupted := &landingImportPauseDetails{DetailStore: objects, changeID: "historical_change_b", pause: pause}
 	sourceFixture := newCoreNeutralFixture(t, scope.Organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
 	descriptor := hubTestPolicy()
-	sourceFixture.add("policy_revisions", map[string]any{"scope": string(scope.Organization) + "/" + string(scope.Project), "policy_id": descriptor.ID, "metadata_json": string(historyTestJSON(t, descriptor))})
+	sourceFixture.Add("policy_revisions", map[string]any{"scope": string(scope.Organization) + "/" + string(scope.Project), "policy_id": descriptor.ID, "metadata_json": string(historyTestJSON(t, descriptor))})
 	expected := map[string]string{}
 	for i, suffix := range []string{"a", "b"} {
 		id := "historical_change_" + suffix
@@ -280,17 +282,17 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 		if i == 0 {
 			change.Landed = &landing
 		}
-		sourceFixture.add("change_requests", map[string]any{"id": id, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": items[i].WorkItemID, "record_json": string(historyTestJSON(t, change)), "created_at": nil, "landed_at": nil, "landed_version_id": nil, "landed_head_sha": nil, "landed_merge_sha": nil, "landed_base_ref": nil})
-		sourceFixture.add("change_issue_links", map[string]any{"change_id": id, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": items[i].WorkItemID})
-		sourceFixture.add("change_versions", map[string]any{"id": version.ID, "change_id": id, "number": int64(1), "policy_revision_id": descriptor.ID, "record_json": string(historyTestJSON(t, version)), "head_sha": nil, "repository": version.Repository})
+		sourceFixture.Add("change_requests", map[string]any{"id": id, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": items[i].WorkItemID, "record_json": string(historyTestJSON(t, change)), "created_at": nil, "landed_at": nil, "landed_version_id": nil, "landed_head_sha": nil, "landed_merge_sha": nil, "landed_base_ref": nil})
+		sourceFixture.Add("change_issue_links", map[string]any{"change_id": id, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": items[i].WorkItemID})
+		sourceFixture.Add("change_versions", map[string]any{"id": version.ID, "change_id": id, "number": int64(1), "policy_revision_id": descriptor.ID, "record_json": string(historyTestJSON(t, version)), "head_sha": nil, "repository": version.Repository})
 		receipt := tracker.NativeLandingReceipt{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Landed: true, ObservedAt: at}
-		sourceFixture.add("change_landing_receipts", map[string]any{"attempt_id": attempt, "version_id": version.ID, "record_json": string(historyTestJSON(t, receipt))})
+		sourceFixture.Add("change_landing_receipts", map[string]any{"attempt_id": attempt, "version_id": version.ID, "record_json": string(historyTestJSON(t, receipt))})
 		if i == 1 {
-			sourceFixture.add("quality_landings", map[string]any{"version_id": version.ID, "record_json": string(historyTestJSON(t, landing)), "landed_at": nil})
+			sourceFixture.Add("quality_landings", map[string]any{"version_id": version.ID, "record_json": string(historyTestJSON(t, landing)), "landed_at": nil})
 		}
 		expected[id] = version.ID
 	}
-	source := CoreChangeImportSource{BundlePath: sourceFixture.write(), OrganizationID: scope.Organization, SourceObjects: objects, Objects: interrupted}
+	source := CoreChangeImportSource{BundlePath: sourceFixture.Write(), OrganizationID: scope.Organization, SourceObjects: objects, Objects: interrupted}
 	repository := f.service.config.TenantRepository.(*postgres.Repository)
 	imported, err := ImportCoreChanges(t.Context(), repository, source)
 	if !errors.Is(err, pause) || imported != 1 {
@@ -336,21 +338,21 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 	unprovenLanding := tracker.ChangeLanding{VersionID: unprovenVersion.ID, HeadSHA: unprovenVersion.HeadSHA, MergeSHA: strings.Repeat("4", 40), BaseRef: "develop", LandedAt: at, Actor: unprovenVersion.Actor}
 	unprovenChange := tracker.ChangeRequest{ID: unprovenVersion.ChangeID, OrganizationID: unproven.Organization, ProjectID: unproven.Project, WorkItemID: unprovenItem.WorkItemID, LinkedIssues: []tracker.NativeWorkItemID{unprovenItem.WorkItemID}, Revision: 1, Title: "Unproven imported landing", CurrentVersion: unprovenVersion.ID, Landed: &unprovenLanding, CreatedAt: at.Add(-time.Hour), UpdatedAt: at}
 	unprovenSource := newCoreNeutralFixture(t, unproven.Organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
-	unprovenSource.add("change_requests", map[string]any{"id": unprovenChange.ID, "organization_id": unproven.Organization, "project_id": unproven.Project, "work_item_id": unprovenItem.WorkItemID, "created_at": nil, "record_json": string(historyTestJSON(t, unprovenChange))})
-	unprovenSource.add("change_issue_links", map[string]any{"change_id": unprovenChange.ID, "organization_id": unproven.Organization, "project_id": unproven.Project, "work_item_id": unprovenItem.WorkItemID})
-	unprovenSource.add("change_versions", map[string]any{"id": unprovenVersion.ID, "change_id": unprovenChange.ID, "number": 1, "policy_revision_id": descriptor.ID, "repository": "owner/repository", "record_json": string(historyTestJSON(t, unprovenVersion))})
-	unprovenSource.add("policy_revisions", map[string]any{"scope": string(unproven.Organization) + "/" + string(unproven.Project), "policy_id": descriptor.ID, "metadata_json": string(historyTestJSON(t, descriptor))})
+	unprovenSource.Add("change_requests", map[string]any{"id": unprovenChange.ID, "organization_id": unproven.Organization, "project_id": unproven.Project, "work_item_id": unprovenItem.WorkItemID, "created_at": nil, "record_json": string(historyTestJSON(t, unprovenChange))})
+	unprovenSource.Add("change_issue_links", map[string]any{"change_id": unprovenChange.ID, "organization_id": unproven.Organization, "project_id": unproven.Project, "work_item_id": unprovenItem.WorkItemID})
+	unprovenSource.Add("change_versions", map[string]any{"id": unprovenVersion.ID, "change_id": unprovenChange.ID, "number": 1, "policy_revision_id": descriptor.ID, "repository": "owner/repository", "record_json": string(historyTestJSON(t, unprovenVersion))})
+	unprovenSource.Add("policy_revisions", map[string]any{"scope": string(unproven.Organization) + "/" + string(unproven.Project), "policy_id": descriptor.ID, "metadata_json": string(historyTestJSON(t, descriptor))})
 	freezePause := errors.New("historical landing freeze pending")
 	paused := &historyRepairPauseDetails{DetailStore: objects, marker: []byte(`"merge_sha":"` + strings.Repeat("4", 40) + `"`), failure: freezePause}
-	unprovenImport := CoreChangeImportSource{BundlePath: unprovenSource.write(), OrganizationID: unproven.Organization, SourceObjects: objects, Objects: paused}
-	if err := postgres.ReadNeutralImportBundle(t.Context(), unprovenImport.BundlePath, unproven.Organization, func(bundle *postgres.VerifiedNeutralImport) error {
+	unprovenImport := CoreChangeImportSource{BundlePath: unprovenSource.Write(), OrganizationID: unproven.Organization, SourceObjects: objects, Objects: paused}
+	if err := neutralimport.Read(t.Context(), unprovenImport.BundlePath, unproven.Organization, func(bundle *neutralimport.Bundle) error {
 		if err := validateCoreNeutralChangeImport(bundle); err != nil {
 			return err
 		}
 		if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, objects); err != nil {
 			return err
 		}
-		tx := newCoreNeutralImport(bundle)
+		tx := neutralimport.NewQuery(bundle)
 		rows, err := readCoreChangePage(t.Context(), tx, unprovenImport, "")
 		if err != nil {
 			return err
@@ -533,11 +535,11 @@ func changeColumnSideDataFixture(t *testing.T, f changeFixture, old, current tra
 			}
 			target.change.Landed = &tracker.ChangeLanding{VersionID: landed.ID, HeadSHA: landed.HeadSHA, MergeSHA: "typed-merge", BaseRef: "typed-base", LandedAt: f.service.config.Clock()}
 		}
-		fixture.records["change_requests"] = nil
-		fixture.add("change_requests", map[string]any{"id": target.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "created_at": nil, "record_json": string(historyTestJSON(t, target.change))})
-		fixture.records["change_versions"] = nil
+		fixture.Records["change_requests"] = nil
+		fixture.Add("change_requests", map[string]any{"id": target.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "created_at": nil, "record_json": string(historyTestJSON(t, target.change))})
+		fixture.Records["change_versions"] = nil
 		for _, version := range versions {
-			fixture.add("change_versions", map[string]any{"id": version.ID, "change_id": target.change.ID, "number": version.Number, "policy_revision_id": version.PolicyID, "head_sha": nil, "record_json": string(historyTestJSON(t, version))})
+			fixture.Add("change_versions", map[string]any{"id": version.ID, "change_id": target.change.ID, "number": version.Number, "policy_revision_id": version.PolicyID, "head_sha": nil, "record_json": string(historyTestJSON(t, version))})
 		}
 		historyRepairImport(t, target, historyRepairImportSource(t, target, fixture), 1)
 		return target
@@ -599,9 +601,9 @@ func TestChangeColumnsSelectRecoveryComments(t *testing.T) {
 			var items []tracker.NativeIssue
 			if state == "unconverted" {
 				fixture := coreWorkItemNeutralFixture(t, f.project.OrganizationID, f.project.ID, false)
-				fixture.records["native_comments"] = nil
-				kept := fixture.records["collaboration_versions"][:0]
-				for _, row := range fixture.records["collaboration_versions"] {
+				fixture.Records["native_comments"] = nil
+				kept := fixture.Records["collaboration_versions"][:0]
+				for _, row := range fixture.Records["collaboration_versions"] {
 					var id string
 					if err := row.Decode(map[string]any{"record_id": &id}); err != nil {
 						t.Fatal(err)
@@ -611,7 +613,7 @@ func TestChangeColumnsSelectRecoveryComments(t *testing.T) {
 						kept = append(kept, row)
 					}
 				}
-				fixture.records["collaboration_versions"] = kept
+				fixture.Records["collaboration_versions"] = kept
 				at := parseTestTime(t, "2026-10-01T00:00:00Z")
 				for _, id := range []tracker.NativeWorkItemID{"wi_core_import", "wi_core_import_second"} {
 					for i, kinds := range [][2]string{{"runner", ""}, {"human", ""}, {"runner", "human"}, {"runner", ""}} {
@@ -620,11 +622,11 @@ func TestChangeColumnsSelectRecoveryComments(t *testing.T) {
 						if comment.EditedBy != nil {
 							editor = string(historyTestJSON(t, comment.EditedBy))
 						}
-						fixture.add("native_comments", map[string]any{"id": comment.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": id, "revision": 1, "sequence": i + 1, "body": comment.Body, "actor_json": string(historyTestJSON(t, comment.Actor)), "edited_by_json": editor, "change_actor_kind": nil, "change_edited_by_kind": nil, "created_at": hubapi.FormatHubTime(at), "updated_at": hubapi.FormatHubTime(at)})
-						fixture.add("collaboration_versions", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": id, "record_id": comment.ID, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, comment))})
+						fixture.Add("native_comments", map[string]any{"id": comment.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": id, "revision": 1, "sequence": i + 1, "body": comment.Body, "actor_json": string(historyTestJSON(t, comment.Actor)), "edited_by_json": editor, "change_actor_kind": nil, "change_edited_by_kind": nil, "created_at": hubapi.FormatHubTime(at), "updated_at": hubapi.FormatHubTime(at)})
+						fixture.Add("collaboration_versions", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": id, "record_id": comment.ID, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, comment))})
 					}
 				}
-				source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+				source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 				if n, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || n != 2 {
 					t.Fatalf("historical comment import=%d error=%v", n, err)
 				}
@@ -727,23 +729,23 @@ func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 		if pending {
 			descriptor := hubTestPolicy()
 			var bundlePath string
-			items, events, bundlePath = changeColumnHistoricalWorkflow(t, native, at, func(fixture *coreNeutralFixture, ids map[tracker.NativeWorkItemID][3]string) {
-				for name, table := range newCoreNeutralFixture(t, fixtureScope.Organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries").tables {
-					fixture.tables[name] = table
+			items, events, bundlePath = changeColumnHistoricalWorkflow(t, native, at, func(fixture *neutralimporttest.Fixture, ids map[tracker.NativeWorkItemID][3]string) {
+				for name, table := range newCoreNeutralFixture(t, fixtureScope.Organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries").Tables {
+					fixture.Tables[name] = table
 				}
-				fixture.add("policy_revisions", map[string]any{"scope": string(fixtureScope.Organization) + "/" + string(fixtureScope.Project), "policy_id": descriptor.ID, "metadata_json": string(historyTestJSON(t, descriptor))})
+				fixture.Add("policy_revisions", map[string]any{"scope": string(fixtureScope.Organization) + "/" + string(fixtureScope.Project), "policy_id": descriptor.ID, "metadata_json": string(historyTestJSON(t, descriptor))})
 				for _, item := range []tracker.NativeWorkItemID{"wi_core_import", "wi_core_import_second"} {
 					changeID := "historical_change_" + string(item)
 					var versions [2]tracker.ChangeVersion
 					for i, head := range []string{strings.Repeat("b", 40), strings.Repeat("c", 40)} {
 						versions[i] = tracker.ChangeVersion{ID: fmt.Sprintf("%s_version_%d", changeID, i+1), ChangeID: changeID, Number: int64(i + 1), ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: head, Repository: "owner/repository", PolicyID: descriptor.ID}, Policy: descriptor, Actor: fixtureScope.Actor(), CreatedAt: at}
-						fixture.add("change_versions", map[string]any{"id": versions[i].ID, "change_id": changeID, "number": versions[i].Number, "policy_revision_id": descriptor.ID, "repository": versions[i].Repository, "record_json": string(historyTestJSON(t, versions[i]))})
+						fixture.Add("change_versions", map[string]any{"id": versions[i].ID, "change_id": changeID, "number": versions[i].Number, "policy_revision_id": descriptor.ID, "repository": versions[i].Repository, "record_json": string(historyTestJSON(t, versions[i]))})
 					}
 					change := tracker.ChangeRequest{ID: changeID, OrganizationID: fixtureScope.Organization, ProjectID: fixtureScope.Project, WorkItemID: item, LinkedIssues: []tracker.NativeWorkItemID{item}, Title: "Historical change", CurrentVersion: versions[1].ID, Revision: 1, CreatedAt: at, UpdatedAt: at}
-					fixture.add("change_requests", map[string]any{"id": changeID, "organization_id": fixtureScope.Organization, "project_id": fixtureScope.Project, "work_item_id": item, "created_at": nil, "record_json": string(historyTestJSON(t, change))})
-					fixture.add("change_issue_links", map[string]any{"change_id": changeID, "organization_id": fixtureScope.Organization, "project_id": fixtureScope.Project, "work_item_id": item})
+					fixture.Add("change_requests", map[string]any{"id": changeID, "organization_id": fixtureScope.Organization, "project_id": fixtureScope.Project, "work_item_id": item, "created_at": nil, "record_json": string(historyTestJSON(t, change))})
+					fixture.Add("change_issue_links", map[string]any{"change_id": changeID, "organization_id": fixtureScope.Organization, "project_id": fixtureScope.Project, "work_item_id": item})
 					for i, discussion := range escapeDiscussions(versions[0], versions[1], ids[item]) {
-						fixture.add("change_evidence", map[string]any{"sequence": i + 2, "change_id": changeID, "version_id": discussion.VersionID, "kind": "discussion", "source_key": nil, "record_json": string(historyTestJSON(t, discussion)), "escape_occurrence_id": nil, "escape_observed_at": nil})
+						fixture.Add("change_evidence", map[string]any{"sequence": i + 2, "change_id": changeID, "version_id": discussion.VersionID, "kind": "discussion", "source_key": nil, "record_json": string(historyTestJSON(t, discussion)), "escape_occurrence_id": nil, "escape_observed_at": nil})
 					}
 					historical[item] = versions
 				}
@@ -751,14 +753,14 @@ func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 			objects := native.service.runDetailStore()
 			historicalSource = CoreChangeImportSource{BundlePath: bundlePath, OrganizationID: fixtureScope.Organization, SourceObjects: objects, Objects: objects}
 			repository := native.service.config.TenantRepository.(*postgres.Repository)
-			if err := postgres.ReadNeutralImportBundle(t.Context(), bundlePath, fixtureScope.Organization, func(bundle *postgres.VerifiedNeutralImport) error {
+			if err := neutralimport.Read(t.Context(), bundlePath, fixtureScope.Organization, func(bundle *neutralimport.Bundle) error {
 				if err := validateCoreNeutralChangeImport(bundle); err != nil {
 					return err
 				}
 				if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, objects); err != nil {
 					return err
 				}
-				tx := newCoreNeutralImport(bundle)
+				tx := neutralimport.NewQuery(bundle)
 				rows, err := readCoreChangePage(t.Context(), tx, historicalSource, "")
 				if err != nil {
 					return err
@@ -831,14 +833,14 @@ func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 				if pending {
 					source := historicalSource
 					repository := f.service.config.TenantRepository.(*postgres.Repository)
-					if err := postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, scope.Organization, func(bundle *postgres.VerifiedNeutralImport) error {
+					if err := neutralimport.Read(t.Context(), source.BundlePath, scope.Organization, func(bundle *neutralimport.Bundle) error {
 						if err := validateCoreNeutralChangeImport(bundle); err != nil {
 							return err
 						}
 						if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, source.Objects); err != nil {
 							return err
 						}
-						return importCoreChangeEvidence(t.Context(), newCoreNeutralImport(bundle), repository, content, source, bundle.Identity().SourceSHA256, f.change.ID)
+						return importCoreChangeEvidence(t.Context(), neutralimport.NewQuery(bundle), repository, content, source, bundle.Identity().SourceSHA256, f.change.ID)
 					}); err != nil {
 						t.Fatal(err)
 					}
@@ -920,22 +922,22 @@ func changeColumnWorkflow(t *testing.T, f nativeFixture, item tracker.NativeIssu
 	return ids
 }
 
-func changeColumnHistoricalWorkflow(t *testing.T, f nativeFixture, at time.Time, extend func(*coreNeutralFixture, map[tracker.NativeWorkItemID][3]string)) ([]tracker.NativeIssue, map[tracker.NativeWorkItemID][3]string, string) {
+func changeColumnHistoricalWorkflow(t *testing.T, f nativeFixture, at time.Time, extend func(*neutralimporttest.Fixture, map[tracker.NativeWorkItemID][3]string)) ([]tracker.NativeIssue, map[tracker.NativeWorkItemID][3]string, string) {
 	t.Helper()
 	body := nativeContractTestBody + "\n" + strings.Repeat("x", 8192)
 	fixture := coreWorkItemNeutralFixtureBody(t, f.project.OrganizationID, f.project.ID, false, body)
-	fixture.add("workflow_states", map[string]any{"id": 2, "project_id": f.project.ID, "detent_state": "In Progress"})
+	fixture.Add("workflow_states", map[string]any{"id": 2, "project_id": f.project.ID, "detent_state": "In Progress"})
 	actor := tracker.Actor{Kind: "human", PrincipalID: "example-owner"}
 	ids := make(map[tracker.NativeWorkItemID][3]string)
-	fixture.records["collaboration_versions"] = nil
-	fixture.records["native_comments"] = nil
+	fixture.Records["collaboration_versions"] = nil
+	fixture.Records["native_comments"] = nil
 	for index, suffix := range []string{"", "_second"} {
 		item := tracker.NativeWorkItemID("wi_core_import" + suffix)
 		var eventIDs [3]string
 		for i, data := range []tracker.CollaborationData{{FromState: "Done", ToState: "Todo"}, {FromState: "Merging", ToState: "Rework"}, {FromState: "Todo", ToState: "In Progress"}} {
 			data.Revision = 2
 			eventIDs[i] = fmt.Sprintf("%s_transition_%d", item, i)
-			fixture.add("collaboration_events", map[string]any{"id": eventIDs[i], "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": i + 3, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, data)), "event_revision": 2, "from_state": nil, "to_state": nil, "recorded_at": hubapi.FormatHubTime(at.Add(time.Duration(i) * time.Second))})
+			fixture.Add("collaboration_events", map[string]any{"id": eventIDs[i], "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": i + 3, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, data)), "event_revision": 2, "from_state": nil, "to_state": nil, "recorded_at": hubapi.FormatHubTime(at.Add(time.Duration(i) * time.Second))})
 		}
 		ids[item] = eventIDs
 		for revision := 1; revision <= 2; revision++ {
@@ -944,22 +946,22 @@ func changeColumnHistoricalWorkflow(t *testing.T, f nativeFixture, at time.Time,
 				issue.Title, issue.State = "Updated title", "In Progress"
 				issue.UpdatedAt, issue.LastActivityAt = at.Add(2*time.Second), at.Add(2*time.Second)
 			}
-			fixture.add("collaboration_versions", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "record_id": item, "revision": revision, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
+			fixture.Add("collaboration_versions", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "record_id": item, "revision": revision, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
 		}
 	}
-	for i, row := range fixture.records["issues"] {
+	for i, row := range fixture.Records["issues"] {
 		for key, value := range map[string]string{"workflow_state_id": "2", "event_sequence": "5", "updated_at": hubapi.FormatHubTime(at.Add(2 * time.Second)), "native_updated_at": hubapi.FormatHubTime(at.Add(2 * time.Second)), "last_activity_at": hubapi.FormatHubTime(at.Add(2 * time.Second))} {
 			row.Values[key] = storagecatalog.Cell{Encoding: "utf8", Data: []byte(value)}
 		}
-		fixture.records["issues"][i] = row
+		fixture.Records["issues"][i] = row
 	}
-	for i, row := range fixture.records["queue_entries"] {
+	for i, row := range fixture.Records["queue_entries"] {
 		row.Values["state"] = storagecatalog.Cell{Encoding: "utf8", Data: []byte("In Progress")}
 		row.Values["updated_at"] = storagecatalog.Cell{Encoding: "utf8", Data: []byte(hubapi.FormatHubTime(at.Add(2 * time.Second)))}
-		fixture.records["queue_entries"][i] = row
+		fixture.Records["queue_entries"][i] = row
 	}
 	extend(fixture, ids)
-	source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 	if n, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || n != 2 {
 		t.Fatalf("historical workflow import=%d error=%v", n, err)
 	}
@@ -1137,20 +1139,20 @@ func changeColumnImportLandingReceipts(t *testing.T, f changeFixture, versions [
 	t.Helper()
 	fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
 	for i, version := range versions {
-		fixture.add("change_versions", map[string]any{"id": version.ID, "change_id": f.change.ID, "number": version.Number, "policy_revision_id": version.PolicyID, "repository": version.Repository, "record_json": string(historyTestJSON(t, version))})
-		fixture.add("change_landing_receipts", map[string]any{"attempt_id": attempts[i].ID, "version_id": version.ID, "merge_sha": nil, "record_json": string(historyTestJSON(t, receipts[i]))})
+		fixture.Add("change_versions", map[string]any{"id": version.ID, "change_id": f.change.ID, "number": version.Number, "policy_revision_id": version.PolicyID, "repository": version.Repository, "record_json": string(historyTestJSON(t, version))})
+		fixture.Add("change_landing_receipts", map[string]any{"attempt_id": attempts[i].ID, "version_id": version.ID, "merge_sha": nil, "record_json": string(historyTestJSON(t, receipts[i]))})
 	}
 	source := historyRepairImportSource(t, f, fixture)
 	repository := f.service.config.TenantRepository.(*postgres.Repository)
 	for range 2 {
-		if err := postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, f.project.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		if err := neutralimport.Read(t.Context(), source.BundlePath, f.project.OrganizationID, func(bundle *neutralimport.Bundle) error {
 			if err := validateCoreNeutralChangeImport(bundle); err != nil {
 				return err
 			}
 			if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, source.Objects); err != nil {
 				return err
 			}
-			return importCoreChangeLandings(t.Context(), newCoreNeutralImport(bundle), repository, eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, f.change.ID)
+			return importCoreChangeLandings(t.Context(), neutralimport.NewQuery(bundle), repository, eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, f.change.ID)
 		}); err != nil {
 			t.Fatal(err)
 		}

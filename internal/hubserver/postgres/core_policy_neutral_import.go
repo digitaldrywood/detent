@@ -14,31 +14,32 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func neutralCorePolicyPage(ctx context.Context, source CorePolicyImportSource, table string, after []string) ([]NeutralImportRow, error) {
-	var expected []NeutralImportKey
+func neutralCorePolicyPage(ctx context.Context, source CorePolicyImportSource, table string, after []string) ([]neutralimport.Row, error) {
+	var expected []neutralimport.Key
 	switch table {
 	case "policy_revisions":
-		expected = []NeutralImportKey{{Column: "scope", Kind: "text"}, {Column: "policy_id", Kind: "text"}}
+		expected = []neutralimport.Key{{Column: "scope", Kind: "text"}, {Column: "policy_id", Kind: "text"}}
 	case "project_policies":
-		expected = []NeutralImportKey{{Column: "scope", Kind: "text"}}
+		expected = []neutralimport.Key{{Column: "scope", Kind: "text"}}
 	case "change_review_policies":
-		expected = []NeutralImportKey{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}}
+		expected = []neutralimport.Key{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}}
 	case "monthly_budget_policies":
-		expected = []NeutralImportKey{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}, {Column: "revision", Kind: "integer"}}
+		expected = []neutralimport.Key{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}, {Column: "revision", Kind: "integer"}}
 	case "monthly_budget_admissions":
-		expected = []NeutralImportKey{{Column: "issue_id", Kind: "integer"}}
+		expected = []neutralimport.Key{{Column: "issue_id", Kind: "integer"}}
 	case "monthly_budget_leases":
-		expected = []NeutralImportKey{{Column: "lease_id", Kind: "text"}}
+		expected = []neutralimport.Key{{Column: "lease_id", Kind: "text"}}
 	default:
-		return nil, ErrNeutralImport
+		return nil, neutralimport.ErrInvalid
 	}
 	actual, err := source.neutral.TableKey(table)
 	if err != nil || !slices.Equal(actual, expected) {
-		return nil, ErrNeutralImport
+		return nil, neutralimport.ErrInvalid
 	}
 	return source.neutral.Page(ctx, table, after, 100)
 }
@@ -105,8 +106,8 @@ func neutralCorePolicyRevisions(ctx context.Context, source CorePolicyImportSour
 }
 func neutralCoreCurrentPolicy(ctx context.Context, source CorePolicyImportSource, scope string) (string, error) {
 	keys, err := source.neutral.TableKey("project_policies")
-	if err != nil || !slices.Equal(keys, []NeutralImportKey{{Column: "scope", Kind: "text"}}) {
-		return "", ErrNeutralImport
+	if err != nil || !slices.Equal(keys, []neutralimport.Key{{Column: "scope", Kind: "text"}}) {
+		return "", neutralimport.ErrInvalid
 	}
 	row, err := source.neutral.Lookup(ctx, "project_policies", []string{scope})
 	if err != nil {
@@ -192,8 +193,8 @@ func neutralCoreMonthlyAdmissions(ctx context.Context, source CorePolicyImportSo
 }
 func neutralCoreBudgetIssue(ctx context.Context, source CorePolicyImportSource, id int64) error {
 	keys, err := source.neutral.TableKey("issues")
-	if err != nil || !slices.Equal(keys, []NeutralImportKey{{Column: "id", Kind: "integer"}}) {
-		return ErrNeutralImport
+	if err != nil || !slices.Equal(keys, []neutralimport.Key{{Column: "id", Kind: "integer"}}) {
+		return neutralimport.ErrInvalid
 	}
 	row, err := source.neutral.Lookup(ctx, "issues", []string{strconv.FormatInt(id, 10)})
 	if err != nil {
@@ -219,8 +220,8 @@ func neutralCoreMonthlyLeases(ctx context.Context, source CorePolicyImportSource
 	}
 	result := make([]billingstore.MonthlyLease, 0, len(rows))
 	keys, err := source.neutral.TableKey("leases")
-	if err != nil || !slices.Equal(keys, []NeutralImportKey{{Column: "lease_id", Kind: "text"}}) {
-		return nil, ErrNeutralImport
+	if err != nil || !slices.Equal(keys, []neutralimport.Key{{Column: "lease_id", Kind: "text"}}) {
+		return nil, neutralimport.ErrInvalid
 	}
 	for _, raw := range rows {
 		row := billingstore.MonthlyLease{OrganizationID: source.OrganizationID}

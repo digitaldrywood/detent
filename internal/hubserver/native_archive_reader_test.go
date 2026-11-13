@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -576,13 +577,13 @@ func TestOlderArchiveViews(t *testing.T) {
 		version := f.publish(t, "legacy-version", "")
 		review := tracker.ChangeReview{ID: "legacy-review", VersionID: version.ID, Decision: "commented", Body: "Historical review", CreatedAt: f.service.config.Clock()}
 		fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
-		fixture.add("change_evidence", map[string]any{"change_id": f.change.ID, "sequence": int64(1), "version_id": version.ID, "kind": "review", "source_key": review.ID, "record_json": string(historyTestJSON(t, review)), "payload_object_key": ""})
-		source := CoreChangeImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, SourceObjects: f.service.runDetailStore(), Objects: f.service.runDetailStore()}
-		if err := postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+		fixture.Add("change_evidence", map[string]any{"change_id": f.change.ID, "sequence": int64(1), "version_id": version.ID, "kind": "review", "source_key": review.ID, "record_json": string(historyTestJSON(t, review)), "payload_object_key": ""})
+		source := CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, SourceObjects: f.service.runDetailStore(), Objects: f.service.runDetailStore()}
+		if err := neutralimport.Read(t.Context(), source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
 			if err := validateCoreNeutralChangeImport(bundle); err != nil {
 				return err
 			}
-			return importCoreChangeEvidence(t.Context(), newCoreNeutralImport(bundle), f.service.config.TenantRepository.(*postgres.Repository), eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, f.change.ID)
+			return importCoreChangeEvidence(t.Context(), neutralimport.NewQuery(bundle), f.service.config.TenantRepository.(*postgres.Repository), eventstore.NewContent(source.Objects), source, bundle.Identity().SourceSHA256, f.change.ID)
 		}); err != nil {
 			t.Fatal(err)
 		}

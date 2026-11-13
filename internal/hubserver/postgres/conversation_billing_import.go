@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
@@ -21,7 +22,7 @@ import (
 
 type ConversationBillingImportSource struct {
 	BundlePath string
-	neutral    *VerifiedNeutralImport
+	neutral    *neutralimport.Bundle
 	CopyPath   string
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
@@ -37,7 +38,7 @@ type ConversationBillingImportResult struct {
 
 func (r *Repository) ImportConversationBilling(ctx context.Context, source ConversationBillingImportSource) (ConversationBillingImportResult, error) {
 	if source.CopyPath != "" {
-		return ConversationBillingImportResult{}, ErrNeutralImport
+		return ConversationBillingImportResult{}, neutralimport.ErrInvalid
 
 	}
 
@@ -54,7 +55,7 @@ func (r *Repository) ImportConversationBilling(ctx context.Context, source Conve
 	}
 	organization := tracker.OrganizationID(source.Source.OrganizationID)
 
-	err := ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+	err := neutralimport.Read(ctx, source.BundlePath, organization, func(bundle *neutralimport.Bundle) error {
 		for _, table := range []struct {
 			name string
 			keys []string

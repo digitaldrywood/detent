@@ -342,20 +342,20 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 				} else {
 					source := coreWorkItemNeutralFixture(t, f.project.OrganizationID, f.project.ID, false)
 					linked := newCoreNeutralFixture(t, f.project.OrganizationID, "linked_issue_sources")
-					source.tables["linked_issue_sources"] = linked.tables["linked_issue_sources"]
-					source.records["native_comments"] = nil
-					versions := source.records["collaboration_versions"][:0]
-					for _, row := range source.records["collaboration_versions"] {
+					source.Tables["linked_issue_sources"] = linked.Tables["linked_issue_sources"]
+					source.Records["native_comments"] = nil
+					versions := source.Records["collaboration_versions"][:0]
+					for _, row := range source.Records["collaboration_versions"] {
 						if strings.HasPrefix(string(row.Values["record_id"].Data), "wi_core_import") {
 							versions = append(versions, row)
 						}
 					}
-					source.records["collaboration_versions"] = versions
+					source.Records["collaboration_versions"] = versions
 					for itemIndex, suffix := range []string{"", "_second"} {
 						item := tracker.NativeWorkItemID("wi_core_import" + suffix)
 						url := fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", 12+itemIndex)
-						source.add("linked_issue_sources", map[string]any{"work_item_id": item, "source_url": url, "title_supplied": false, "body_supplied": false, "snapshot_json": nil})
-						source.set("queue_entries", map[string]string{"issue_id": strconv.Itoa(41 + itemIndex*2)}, map[string]any{"scope": string(f.project.ID)})
+						source.Add("linked_issue_sources", map[string]any{"work_item_id": item, "source_url": url, "title_supplied": false, "body_supplied": false, "snapshot_json": nil})
+						source.Set("queue_entries", map[string]string{"issue_id": strconv.Itoa(41 + itemIndex*2)}, map[string]any{"scope": string(f.project.ID)})
 						title, body := "Updated title", nativeContractTestBody
 						if titleOwned && mode != "edit back to placeholder" {
 							title = "Native title"
@@ -377,8 +377,8 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						source.set("collaboration_versions", map[string]string{"record_id": string(item), "revision": "2"}, map[string]any{"encoding": "snapshot", "record_json": string(raw)})
-						source.set("issues", map[string]string{"native_id": string(item)}, map[string]any{"title": title, "body": body})
+						source.Set("collaboration_versions", map[string]string{"record_id": string(item), "revision": "2"}, map[string]any{"encoding": "snapshot", "record_json": string(raw)})
+						source.Set("issues", map[string]string{"native_id": string(item)}, map[string]any{"title": title, "body": body})
 						fields := []string{"labels"}
 						if titleOwned {
 							fields = append(fields, "title")
@@ -395,9 +395,9 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 							}
 							updates["page_projection_ready"], updates["edited_title"], updates["edited_body"] = true, typedTitle, typedBody
 						}
-						source.set("collaboration_events", map[string]string{"work_item_id": string(item), "type": "issue.edited"}, updates)
+						source.Set("collaboration_events", map[string]string{"work_item_id": string(item), "type": "issue.edited"}, updates)
 					}
-					input := CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+					input := CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 					if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
 						t.Fatalf("historical ownership import count=%d error=%v", count, err)
 					}

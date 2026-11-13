@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
@@ -547,9 +548,9 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 			admin := conversationTestAdmin(t, f.service)
 			const revisions = 2*nativeVersionSnapshotInterval + 3
 			source := coreWorkItemNeutralFixture(t, org, project, false)
-			source.records["collaboration_versions"] = nil
-			var creation []postgres.NeutralImportRow
-			for _, row := range source.records["collaboration_events"] {
+			source.Records["collaboration_versions"] = nil
+			var creation []neutralimport.Row
+			for _, row := range source.Records["collaboration_events"] {
 				var kind string
 				if err := row.Decode(map[string]any{"type": &kind}); err != nil {
 					t.Fatal(err)
@@ -558,7 +559,7 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 					creation = append(creation, row)
 				}
 			}
-			source.records["collaboration_events"] = creation
+			source.Records["collaboration_events"] = creation
 			original := map[string]map[int64][]byte{}
 			owners, urls := map[string]string{}, map[string]string{}
 			var rawBytes, versionCount int64
@@ -600,15 +601,15 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 							t.Fatalf("source %s revision %d lost checkpoint/delta encoding: %s", record.id, revision, encoding)
 						}
 						previous[record.id], previousEncoding[record.id] = encoded, encoding
-						source.add("collaboration_versions", map[string]any{"organization_id": org, "project_id": project, "work_item_id": item, "record_id": record.id, "revision": revision, "encoding": encoding, "record_json": string(encoded)})
+						source.Add("collaboration_versions", map[string]any{"organization_id": org, "project_id": project, "work_item_id": item, "record_id": record.id, "revision": revision, "encoding": encoding, "record_json": string(encoded)})
 					}
 					if revision == revisions {
-						source.set("issues", map[string]string{"native_id": item}, map[string]any{"title": issue.Title, "body": issue.Body, "revision": revisions, "event_sequence": 1})
-						source.set("native_comments", map[string]string{"id": commentID}, map[string]any{"revision": revisions, "body": comment.Body, "updated_at": hubapi.FormatHubTime(comment.UpdatedAt)})
+						source.Set("issues", map[string]string{"native_id": item}, map[string]any{"title": issue.Title, "body": issue.Body, "revision": revisions, "event_sequence": 1})
+						source.Set("native_comments", map[string]string{"id": commentID}, map[string]any{"revision": revisions, "body": comment.Body, "updated_at": hubapi.FormatHubTime(comment.UpdatedAt)})
 					}
 				}
 			}
-			input := CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: org, ProjectID: project, Objects: f.service.runDetailStore()}
+			input := CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: org, ProjectID: project, Objects: f.service.runDetailStore()}
 			manifest, err := os.ReadFile(filepath.Join(input.BundlePath, "manifest.json"))
 			if err != nil {
 				t.Fatal(err)
@@ -641,12 +642,12 @@ func TestCollaborationDeltaMigration(t *testing.T) {
 				}
 			}
 			if fail {
-				corrupt := source.clone(t)
-				corrupt.set("collaboration_versions", map[string]string{"record_id": "wi_core_import", "revision": strconv.FormatInt(revisions, 10)}, map[string]any{"encoding": "snapshot", "record_json": "{}"})
+				corrupt := source.Clone(t)
+				corrupt.Set("collaboration_versions", map[string]string{"record_id": "wi_core_import", "revision": strconv.FormatInt(revisions, 10)}, map[string]any{"encoding": "snapshot", "record_json": "{}"})
 				invalid := input
-				invalid.BundlePath = corrupt.write()
-				err := postgres.ReadNeutralImportBundle(t.Context(), invalid.BundlePath, org, func(bundle *postgres.VerifiedNeutralImport) error {
-					reader := newCoreNeutralImport(bundle)
+				invalid.BundlePath = corrupt.Write()
+				err := neutralimport.Read(t.Context(), invalid.BundlePath, org, func(bundle *neutralimport.Bundle) error {
+					reader := neutralimport.NewQuery(bundle)
 					rows, err := readCoreWorkItemImportPage(t.Context(), reader, invalid, 0)
 					if err != nil {
 						return err

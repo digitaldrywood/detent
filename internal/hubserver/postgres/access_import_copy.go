@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -29,7 +30,7 @@ func (r *Repository) InitializeAccessCopyOrganization(ctx context.Context, sourc
 
 func (r *Repository) importAccessCopy(ctx context.Context, source AccessCopyImportSource, organizationOnly bool) (int64, error) {
 	if source.CopyPath != "" {
-		return 0, ErrNeutralImport
+		return 0, neutralimport.ErrInvalid
 
 	}
 
@@ -85,7 +86,7 @@ func (r *Repository) importAccessCopy(ctx context.Context, source AccessCopyImpo
 		}
 	}
 
-	err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
+	err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
 		return run(AccessImportSource{neutral: bundle, SnapshotID: bundle.Identity().SourceSHA256})
 	})
 	return processed, err

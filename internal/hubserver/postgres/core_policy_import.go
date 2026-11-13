@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -28,7 +29,7 @@ import (
 
 type CorePolicyImportSource struct {
 	BundlePath     string
-	neutral        *VerifiedNeutralImport
+	neutral        *neutralimport.Bundle
 	CopyPath       string
 	OrganizationID tracker.OrganizationID
 	Objects        attachment.DetailStore
@@ -65,7 +66,7 @@ var legacyReviewPolicyImportTime = time.Unix(0, 0).UTC()
 func (r *Repository) ImportCorePolicies(ctx context.Context, source CorePolicyImportSource) (CorePolicyImportResult, error) {
 	if source.CopyPath != "" {
 		return CorePolicyImportResult{},
-			ErrNeutralImport
+			neutralimport.ErrInvalid
 	}
 
 	if source.BundlePath == "" || source.OrganizationID == "" || source.Objects == nil {
@@ -73,8 +74,8 @@ func (r *Repository) ImportCorePolicies(ctx context.Context, source CorePolicyIm
 	}
 	var result CorePolicyImportResult
 
-	err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
-		if err := validateNeutralCoreSourceSchema(bundle, "policy_revisions", "project_policies", "change_review_policies", "monthly_budget_policies"); err != nil {
+	err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
+		if err := neutralimport.ValidateCoreTables(bundle, "policy_revisions", "project_policies", "change_review_policies", "monthly_budget_policies"); err != nil {
 			return err
 		}
 		source.neutral = bundle
@@ -195,7 +196,7 @@ func (r *Repository) importCurrentReviewPolicies(ctx context.Context, source Cor
 
 func (r *Repository) ImportCoreMonthlyBudgetFacts(ctx context.Context, source CorePolicyImportSource) (CoreMonthlyBudgetFactsResult, error) {
 	if source.CopyPath != "" {
-		return CoreMonthlyBudgetFactsResult{}, ErrNeutralImport
+		return CoreMonthlyBudgetFactsResult{}, neutralimport.ErrInvalid
 
 	}
 
@@ -204,8 +205,8 @@ func (r *Repository) ImportCoreMonthlyBudgetFacts(ctx context.Context, source Co
 	}
 	var result CoreMonthlyBudgetFactsResult
 
-	err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
-		if err := validateNeutralCoreSourceSchema(bundle, "issues", "leases", "monthly_budget_admissions", "monthly_budget_leases"); err != nil {
+	err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
+		if err := neutralimport.ValidateCoreTables(bundle, "issues", "leases", "monthly_budget_admissions", "monthly_budget_leases"); err != nil {
 			return err
 		}
 		source.neutral = bundle
@@ -402,12 +403,12 @@ func (r *Repository) importMonthlyBudgetLeases(ctx context.Context, source CoreP
 var _ policystore.Writer = (*session)(nil)
 
 func historicalCloudPolicyPointer(ctx context.Context, source CorePolicyImportSource, project tracker.ProjectID, id string) (policystore.Revision, bool, error) {
-	if _, err := source.neutral.table("projects"); err != nil {
+	if _, err := source.neutral.Table("projects"); err != nil {
 		return policystore.Revision{}, false, nil
 	}
 	keys, err := source.neutral.TableKey("projects")
-	if err != nil || len(keys) != 1 || keys[0] != (NeutralImportKey{Column: "id", Kind: "text"}) {
-		return policystore.Revision{}, false, ErrNeutralImport
+	if err != nil || len(keys) != 1 || keys[0] != (neutralimport.Key{Column: "id", Kind: "text"}) {
+		return policystore.Revision{}, false, neutralimport.ErrInvalid
 	}
 	rawProject, err := source.neutral.Lookup(ctx, "projects", []string{string(project)})
 	if err != nil {

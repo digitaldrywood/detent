@@ -1,4 +1,4 @@
-package postgres
+package neutralimport
 
 func neutralChangeSourceSchemasV1() map[string]neutralCoreSourceSchema {
 	return map[string]neutralCoreSourceSchema{

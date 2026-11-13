@@ -18,6 +18,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -49,7 +50,7 @@ type coreProjectImportRow struct {
 
 func (r *Repository) ImportCoreProjects(ctx context.Context, source CoreProjectImportSource) (int64, error) {
 	if source.CopyPath != "" {
-		return 0, ErrNeutralImport
+		return 0, neutralimport.ErrInvalid
 	}
 
 	if source.BundlePath == "" || source.OrganizationID == "" || source.Objects == nil {

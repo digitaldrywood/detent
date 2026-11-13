@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -30,7 +31,7 @@ func decodeAccountFields(event string) accountReceipt {
 }
 
 type coreGitHubOutboxImportValue struct {
-	Source  postgres.NeutralImportRow   `json:"source"`
+	Source  neutralimport.Row           `json:"source"`
 	Record  projectstore.GitHubOutbound `json:"record"`
 	Desired json.RawMessage             `json:"desired"`
 	Queued  bool                        `json:"queued"`
@@ -39,14 +40,14 @@ type coreGitHubOutboxImportValue struct {
 
 func ImportCoreGitHubOutbox(ctx context.Context, target *postgres.Repository, source TenantCoreImportSource) (int64, error) {
 	if source.CopyPath != "" || target == nil || source.BundlePath == "" || source.OrganizationID == "" || source.Objects == nil {
-		return 0, postgres.ErrNeutralImport
+		return 0, neutralimport.ErrInvalid
 	}
 	if err := source.Catalog.Validate(); err != nil {
 		return 0, err
 	}
 	var count int64
 	content := eventstore.NewContent(source.Objects)
-	err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+	err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
 		if _, exists := bundle.Schema()["github_outbox"]; !exists {
 			return nil
 		}
@@ -95,7 +96,7 @@ func ImportCoreGitHubOutbox(ctx context.Context, target *postgres.Repository, so
 	return count, err
 }
 
-func extractCoreGitHubOutbox(ctx context.Context, bundle *postgres.VerifiedNeutralImport, source TenantCoreImportSource, raw postgres.NeutralImportRow) (coreGitHubOutboxImportValue, error) {
+func extractCoreGitHubOutbox(ctx context.Context, bundle *neutralimport.Bundle, source TenantCoreImportSource, raw neutralimport.Row) (coreGitHubOutboxImportValue, error) {
 	value := coreGitHubOutboxImportValue{Source: raw}
 	row := &value.Record
 	var sourceID, repositoryID int64
@@ -108,7 +109,7 @@ func extractCoreGitHubOutbox(ctx context.Context, bundle *postgres.VerifiedNeutr
 		return value, err
 	}
 	if sourceID <= 0 || repositoryID <= 0 || !issueID.Valid || issueID.Int64 <= 0 || row.Key == "" || row.Kind != string(MutationWorkpad) || row.Attempts < 0 {
-		return value, postgres.ErrNeutralImport
+		return value, neutralimport.ErrInvalid
 	}
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(desired), &payload); err != nil {
@@ -130,7 +131,7 @@ func extractCoreGitHubOutbox(ctx context.Context, bundle *postgres.VerifiedNeutr
 		}
 	}
 	if row.IssueNumber < 0 {
-		return value, postgres.ErrNeutralImport
+		return value, neutralimport.ErrInvalid
 	}
 	var err error
 	payload["issue_number"], err = json.Marshal(row.IssueNumber)
@@ -167,7 +168,7 @@ func extractCoreGitHubOutbox(ctx context.Context, bundle *postgres.VerifiedNeutr
 	}
 	row.Repository = owner + "/" + name
 	if _, _, valid := splitRepositoryFullName(row.Repository); !valid {
-		return value, postgres.ErrNeutralImport
+		return value, neutralimport.ErrInvalid
 	}
 	project, err := bundle.Lookup(ctx, "projects", []string{string(row.ProjectID)})
 	if err != nil {
@@ -211,11 +212,11 @@ func extractCoreGitHubOutbox(ctx context.Context, bundle *postgres.VerifiedNeutr
 	case outboxCompleted:
 		row.Outcome = "committed"
 	default:
-		return value, postgres.ErrNeutralImport
+		return value, neutralimport.ErrInvalid
 	}
 	if row.IssueNumber == 0 {
 		if row.Outcome != "unattempted" || isSummary && projection != "disabled" {
-			return value, postgres.ErrNeutralImport
+			return value, neutralimport.ErrInvalid
 		}
 		row.Status = outboxSuperseded
 	} else {

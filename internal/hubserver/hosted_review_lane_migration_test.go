@@ -135,9 +135,9 @@ func hostedLaneMigrationTest(t *testing.T, migration hostedLaneMigration) {
 		}); !errors.Is(err, corestore.ErrNotFound) {
 			t.Fatalf("historical project%s already exists: %v", project.id, err)
 		}
-		source.add("projects", map[string]any{"id": project.id, "organization_id": organization, "name": project.id, "profile": "native", "states_json": project.states, "created_at": testTimestamp, "github_repository_enabled": 0, "integration_revision": 7})
+		source.Add("projects", map[string]any{"id": project.id, "organization_id": organization, "name": project.id, "profile": "native", "states_json": project.states, "created_at": testTimestamp, "github_repository_enabled": 0, "integration_revision": 7})
 	}
-	path := source.write()
+	path := source.Write()
 	for _, pass := range []string{"migrated", "applied again"} {
 		if err := importHistoricalWorkflowSource(t, service, organization, path); err != nil {
 			t.Fatal(err)

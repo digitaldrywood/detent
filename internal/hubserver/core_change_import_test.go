@@ -18,6 +18,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -76,11 +78,11 @@ func TestCoreChangeImportPreservesChangesVersionsAndEvidence(t *testing.T) {
 			copyPath := coreChangeSourceCopy(t, organization, project, createdAt, descriptor, policyJSON)
 			source := CoreChangeImportSource{BundlePath: copyPath, OrganizationID: organization, SourceObjects: objects, Objects: objects}
 			content := eventstore.NewContent(objects)
-			if err := postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+			if err := neutralimport.Read(t.Context(), source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
 				if err := validateCoreNeutralChangeImport(bundle); err != nil {
 					return err
 				}
-				tx := newCoreNeutralImport(bundle)
+				tx := neutralimport.NewQuery(bundle)
 				copyHash := bundle.Identity().SourceSHA256
 				if err := repository.PinVerifiedNeutralImport(t.Context(), bundle, objects); err != nil {
 					return err
@@ -320,12 +322,12 @@ VALUES ($1,$2,$3,$4,$5,$6,1,'succeeded',1,1,'example/payload',$7,$7,(SELECT proj
 
 func coreChangeSourceCopy(t *testing.T, organization tracker.OrganizationID, project tracker.ProjectID, createdAt time.Time, descriptor policy.Descriptor, policyJSON []byte) string {
 	t.Helper()
-	return coreChangeNeutralFixture(t, organization, project, createdAt, descriptor, policyJSON).write()
+	return coreChangeNeutralFixture(t, organization, project, createdAt, descriptor, policyJSON).Write()
 }
-func coreChangeNeutralFixture(t *testing.T, organization tracker.OrganizationID, project tracker.ProjectID, createdAt time.Time, descriptor policy.Descriptor, policyJSON []byte) *coreNeutralFixture {
+func coreChangeNeutralFixture(t *testing.T, organization tracker.OrganizationID, project tracker.ProjectID, createdAt time.Time, descriptor policy.Descriptor, policyJSON []byte) *neutralimporttest.Fixture {
 	t.Helper()
 	fixture := newCoreNeutralFixture(t, organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
-	fixture.add("policy_revisions", map[string]any{"scope": string(organization) + "/" + string(project), "policy_id": descriptor.ID, "metadata_json": string(policyJSON)})
+	fixture.Add("policy_revisions", map[string]any{"scope": string(organization) + "/" + string(project), "policy_id": descriptor.ID, "metadata_json": string(policyJSON)})
 	for index, suffix := range []string{"a", "b"} {
 		id := "change_import_" + suffix
 		item := "wi_change_import_" + suffix
@@ -334,8 +336,8 @@ func coreChangeNeutralFixture(t *testing.T, organization tracker.OrganizationID,
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.add("change_requests", map[string]any{"id": id, "organization_id": organization, "project_id": project, "work_item_id": item, "record_json": string(changeJSON)})
-		fixture.add("change_issue_links", map[string]any{"change_id": id, "organization_id": organization, "project_id": project, "work_item_id": item})
+		fixture.Add("change_requests", map[string]any{"id": id, "organization_id": organization, "project_id": project, "work_item_id": item, "record_json": string(changeJSON)})
+		fixture.Add("change_issue_links", map[string]any{"change_id": id, "organization_id": organization, "project_id": project, "work_item_id": item})
 		validation := &gate.CommandResult{HeadSHA: strings.Repeat("b", 40), ExitCode: 0, DurationNS: int64(time.Second), Command: "go test", TreeSHA: strings.Repeat("c", 40), Output: "validated output"}
 		baseSHA, headSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
 		bundle := coreChangeBundle(baseSHA, headSHA)
@@ -346,29 +348,29 @@ func coreChangeNeutralFixture(t *testing.T, organization tracker.OrganizationID,
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.add("change_versions", map[string]any{"id": version.ID, "change_id": id, "number": version.Number, "record_json": string(versionJSON), "policy_revision_id": descriptor.ID, "payload_object_key": "", "repository": version.Repository, "created_at": createdAt.Format(time.RFC3339Nano)})
-		fixture.add("change_sources", map[string]any{"version_id": version.ID, "bundle": bundle, "object_key": "", "object_sha256": "", "object_bytes": 0, "content_bytes": 0})
-		fixture.add("change_viewed_files", map[string]any{"version_id": version.ID, "principal_id": "example-owner", "manifest_sha256": strings.Repeat("d", 64), "file_sha256": strings.Repeat("f", 64), "viewed": 1})
-		fixture.add("native_pr_publications", map[string]any{"version_id": version.ID, "change_id": id, "repository": version.Repository, "base_ref": "develop", "branch": "change/" + version.ID, "head_sha": headSHA, "policy_id": descriptor.ID, "source_attempt_id": version.AttemptID, "recorder_attempt_id": "recorder_" + version.ID, "provider": "github", "external_id": externalID, "external_url": version.Repository + "/pull/" + externalID})
+		fixture.Add("change_versions", map[string]any{"id": version.ID, "change_id": id, "number": version.Number, "record_json": string(versionJSON), "policy_revision_id": descriptor.ID, "payload_object_key": "", "repository": version.Repository, "created_at": createdAt.Format(time.RFC3339Nano)})
+		fixture.Add("change_sources", map[string]any{"version_id": version.ID, "bundle": bundle, "object_key": "", "object_sha256": "", "object_bytes": 0, "content_bytes": 0})
+		fixture.Add("change_viewed_files", map[string]any{"version_id": version.ID, "principal_id": "example-owner", "manifest_sha256": strings.Repeat("d", 64), "file_sha256": strings.Repeat("f", 64), "viewed": 1})
+		fixture.Add("native_pr_publications", map[string]any{"version_id": version.ID, "change_id": id, "repository": version.Repository, "base_ref": "develop", "branch": "change/" + version.ID, "head_sha": headSHA, "policy_id": descriptor.ID, "source_attempt_id": version.AttemptID, "recorder_attempt_id": "recorder_" + version.ID, "provider": "github", "external_id": externalID, "external_url": version.Repository + "/pull/" + externalID})
 		frozen := tracker.ChangeLanding{VersionID: version.ID, HeadSHA: headSHA, MergeSHA: strings.Repeat("c", 40), BaseRef: "develop", Method: "merge", Actor: version.Actor, LandedAt: createdAt.Add(time.Minute + 123*time.Nanosecond), Quality: &tracker.LandingQualitySnapshot{IssueRevision: 1, IssueBody: "Frozen contract " + suffix, Criteria: []string{"Preserved criterion"}, Missing: []string{}, Evidence: []gate.CriterionEvidence{}}}
 		frozenJSON, err := json.Marshal(frozen)
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.add("quality_landings", map[string]any{"version_id": version.ID, "record_json": string(frozenJSON), "landed_at": hubapi.FormatHubTime(frozen.LandedAt)})
+		fixture.Add("quality_landings", map[string]any{"version_id": version.ID, "record_json": string(frozenJSON), "landed_at": hubapi.FormatHubTime(frozen.LandedAt)})
 		landing := tracker.NativeLandingReceipt{VersionID: version.ID, HeadSHA: headSHA, MergeSHA: strings.Repeat("c", 40), BaseRef: "develop", BaseSHA: baseSHA, Method: "merge", Landed: true, ObservedAt: createdAt.Add(time.Minute + 123*time.Nanosecond)}
 		landingJSON, err := json.Marshal(landing)
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.add("change_landing_receipts", map[string]any{"attempt_id": version.AttemptID, "version_id": version.ID, "record_json": string(landingJSON)})
-		fixture.add("release_deliveries", map[string]any{"work_item_id": item, "organization_id": organization, "project_id": project, "source_issue_id": item, "source_change_id": id, "source_merge_sha": strings.Repeat("c", 40), "repository_id": 47, "repository": version.Repository, "pr_number": 300 + index + 1, "head_ref": "release-pick/" + version.ID, "head_sha": headSHA, "base_ref": "release/v1.0", "base_sha": strings.Repeat("d", 40), "frozen_sha": strings.Repeat("e", 40), "change_id": id, "version_id": version.ID, "principal_id": "example-owner", "actor_kind": "human", "via_key": "example-release-key", "associated_at": createdAt.Add(2*time.Minute + 123*time.Nanosecond).Format(time.RFC3339Nano)})
+		fixture.Add("change_landing_receipts", map[string]any{"attempt_id": version.AttemptID, "version_id": version.ID, "record_json": string(landingJSON)})
+		fixture.Add("release_deliveries", map[string]any{"work_item_id": item, "organization_id": organization, "project_id": project, "source_issue_id": item, "source_change_id": id, "source_merge_sha": strings.Repeat("c", 40), "repository_id": 47, "repository": version.Repository, "pr_number": 300 + index + 1, "head_ref": "release-pick/" + version.ID, "head_sha": headSHA, "base_ref": "release/v1.0", "base_sha": strings.Repeat("d", 40), "frozen_sha": strings.Repeat("e", 40), "change_id": id, "version_id": version.ID, "principal_id": "example-owner", "actor_kind": "human", "via_key": "example-release-key", "associated_at": createdAt.Add(2*time.Minute + 123*time.Nanosecond).Format(time.RFC3339Nano)})
 		discussion := tracker.ChangeDiscussion{ID: "discussion_" + suffix, VersionID: version.ID, Body: "Preserved discussion", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: createdAt.Add(2 * time.Minute), Escape: &tracker.QualityEscape{OccurrenceID: "occurrence_" + suffix, Kind: "scheduled_failure", Cause: "validator_miss", ObservedAt: createdAt.Add(90 * time.Second), HumanOverride: true}}
 		discussionJSON, err := json.Marshal(discussion)
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.add("change_evidence", map[string]any{"sequence": 1, "change_id": id, "version_id": version.ID, "kind": "discussion", "source_key": nil, "record_json": string(discussionJSON), "payload_object_key": ""})
+		fixture.Add("change_evidence", map[string]any{"sequence": 1, "change_id": id, "version_id": version.ID, "kind": "discussion", "source_key": nil, "record_json": string(discussionJSON), "payload_object_key": ""})
 	}
 	return fixture
 }

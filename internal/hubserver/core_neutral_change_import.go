@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,16 +15,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
-	"github.com/digitaldrywood/detent/internal/storagecatalog"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func validateCoreNeutralChangeImport(bundle *postgres.VerifiedNeutralImport) error {
-	return postgres.ValidateNeutralCoreImportTables(bundle, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
+func validateCoreNeutralChangeImport(bundle *neutralimport.Bundle) error {
+	return neutralimport.ValidateCoreTables(bundle, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
 }
 
-func coreNeutralPayload(row postgres.NeutralImportRow) (string, error) {
+func coreNeutralPayload(row neutralimport.Row) (string, error) {
 	var key sql.NullString
 	if err := row.Decode(map[string]any{"payload_object_key": &key}); err != nil {
 		return "", err
@@ -41,70 +38,8 @@ func coreNeutralPayload(row postgres.NeutralImportRow) (string, error) {
 	return raw, nil
 }
 
-func coreNeutralBytes(row postgres.NeutralImportRow, column string) ([]byte, error) {
-	cell, ok := row.Values[column]
-	if !ok || cell.Null {
-		return nil, postgres.ErrNeutralImport
-	}
-	switch cell.Encoding {
-	case "binary", "utf8":
-		return bytes.Clone(cell.Data), nil
-	case "base64":
-		raw, err := base64.StdEncoding.DecodeString(string(cell.Data))
-		if err != nil {
-			return nil, postgres.ErrNeutralImport
-		}
-		return raw, nil
-	case "hex":
-		raw, err := hex.DecodeString(string(cell.Data))
-		if err != nil {
-			return nil, postgres.ErrNeutralImport
-		}
-		return raw, nil
-	default:
-		return nil, postgres.ErrNeutralImport
-	}
-}
-
-func (s *coreNeutralImport) changeFilterValue(ctx context.Context, table string, row postgres.NeutralImportRow, column string) (storagecatalog.Cell, error) {
-	if column != "change_id" || table != "change_landing_receipts" && table != "change_viewed_files" && table != "quality_landings" {
-		return storagecatalog.Cell{}, postgres.ErrNeutralImport
-	}
-	if s.versionChanges == nil {
-		owners := make(map[string]string)
-		var after []string
-		for {
-			rows, err := s.bundle.Page(ctx, "change_versions", after, 100)
-			if err != nil {
-				return storagecatalog.Cell{}, err
-			}
-			if len(rows) == 0 {
-				break
-			}
-			for _, version := range rows {
-				var id, change string
-				if err := version.Decode(map[string]any{"id": &id, "change_id": &change}); err != nil {
-					return storagecatalog.Cell{}, err
-				}
-				owners[id] = change
-			}
-			after = rows[len(rows)-1].Key
-		}
-		s.versionChanges = owners
-	}
-	var version string
-	if err := row.Decode(map[string]any{"version_id": &version}); err != nil {
-		return storagecatalog.Cell{}, err
-	}
-	owner, ok := s.versionChanges[version]
-	if !ok || owner == "" {
-		return storagecatalog.Cell{}, eventstore.ErrInvalidRecord
-	}
-	return storagecatalog.Cell{Encoding: "utf8", Data: []byte(owner)}, nil
-}
-
-func hydrateCoreNeutralVersion(ctx context.Context, source *coreNeutralImport, input CoreChangeImportSource, value *tracker.ChangeVersion) error {
-	change, err := source.one(ctx, "change_requests", map[string]string{"id": value.ChangeID, "organization_id": string(input.OrganizationID)}, []string{"id"})
+func hydrateCoreNeutralVersion(ctx context.Context, source *neutralimport.Query, input CoreChangeImportSource, value *tracker.ChangeVersion) error {
+	change, err := source.One(ctx, "change_requests", map[string]string{"id": value.ChangeID, "organization_id": string(input.OrganizationID)}, []string{"id"})
 	if err != nil {
 		return err
 	}
@@ -112,7 +47,7 @@ func hydrateCoreNeutralVersion(ctx context.Context, source *coreNeutralImport, i
 	if err := change.Decode(map[string]any{"project_id": &project}); err != nil {
 		return err
 	}
-	row, err := source.one(ctx, "policy_revisions", map[string]string{"scope": string(input.OrganizationID) + "/" + project, "policy_id": value.PolicyID}, []string{"scope", "policy_id"})
+	row, err := source.One(ctx, "policy_revisions", map[string]string{"scope": string(input.OrganizationID) + "/" + project, "policy_id": value.PolicyID}, []string{"scope", "policy_id"})
 	if err != nil {
 		return err
 	}
@@ -147,7 +82,7 @@ func hydrateCoreNeutralVersion(ctx context.Context, source *coreNeutralImport, i
 	}
 	slots := make(map[string][]attributionSlot)
 	commandAttributionSlots(slots, "validation", value.Validation)
-	if err := source.each(ctx, "change_finding_attributions", map[string]string{"version_id": value.ID, "record_id": value.ID}, []string{"role", "position"}, func(row postgres.NeutralImportRow) error {
+	if err := source.Each(ctx, "change_finding_attributions", map[string]string{"version_id": value.ID, "record_id": value.ID}, []string{"role", "position"}, func(row neutralimport.Row) error {
 		var role, attribution string
 		var position int
 		var evidence failureattribution.Evidence
@@ -180,7 +115,7 @@ func hydrateCoreNeutralVersion(ctx context.Context, source *coreNeutralImport, i
 		return fmt.Errorf("read finding attributions: %w", err)
 	}
 	commands := map[string][]gate.CommandResult{"validation": {*value.Validation}}
-	if err := source.each(ctx, "change_command_outputs", map[string]string{"version_id": value.ID, "review_id": value.ID}, []string{"role", "position"}, func(row postgres.NeutralImportRow) error {
+	if err := source.Each(ctx, "change_command_outputs", map[string]string{"version_id": value.ID, "review_id": value.ID}, []string{"role", "position"}, func(row neutralimport.Row) error {
 		var role, organization string
 		var position int
 		ref := hubcontent.ContentReference()
@@ -204,7 +139,7 @@ func hydrateCoreNeutralVersion(ctx context.Context, source *coreNeutralImport, i
 	return nil
 }
 
-func readCoreNeutralArchive(ctx context.Context, source *coreNeutralImport, organization tracker.OrganizationID, objects attachment.DetailStore, ref attachment.ArchiveReference) ([]byte, error) {
+func readCoreNeutralArchive(ctx context.Context, source *neutralimport.Query, organization tracker.OrganizationID, objects attachment.DetailStore, ref attachment.ArchiveReference) ([]byte, error) {
 	if ref.Validate(string(organization)) != nil {
 		return nil, artifact.ErrIntegrity
 	}
@@ -223,8 +158,8 @@ func readCoreNeutralArchive(ctx context.Context, source *coreNeutralImport, orga
 	return raw, nil
 }
 
-func readCoreQualityLanding(ctx context.Context, source *coreNeutralImport, input CoreChangeImportSource, changeID, versionID string) (*tracker.ChangeLanding, error) {
-	row, err := source.one(ctx, "quality_landings", map[string]string{"version_id": versionID, "change_id": changeID}, []string{"version_id"})
+func readCoreQualityLanding(ctx context.Context, source *neutralimport.Query, input CoreChangeImportSource, changeID, versionID string) (*tracker.ChangeLanding, error) {
+	row, err := source.One(ctx, "quality_landings", map[string]string{"version_id": versionID, "change_id": changeID}, []string{"version_id"})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -244,7 +179,7 @@ func readCoreQualityLanding(ctx context.Context, source *coreNeutralImport, inpu
 	if json.Unmarshal(raw, &landing) != nil || landing.VersionID != versionID || landing.HeadSHA == "" || landing.MergeSHA == "" || landing.BaseRef == "" || landing.LandedAt.IsZero() {
 		return nil, eventstore.ErrInvalidRecord
 	}
-	versionRow, err := source.one(ctx, "change_versions", map[string]string{"id": versionID, "change_id": changeID}, []string{"id"})
+	versionRow, err := source.One(ctx, "change_versions", map[string]string{"id": versionID, "change_id": changeID}, []string{"id"})
 	if err != nil {
 		return nil, err
 	}
@@ -269,10 +204,10 @@ func readCoreQualityLanding(ctx context.Context, source *coreNeutralImport, inpu
 	return &landing, nil
 }
 
-func validateCoreQualityLandings(ctx context.Context, source *coreNeutralImport, input CoreChangeImportSource) error {
+func validateCoreQualityLandings(ctx context.Context, source *neutralimport.Query, input CoreChangeImportSource) error {
 	var after []string
 	for {
-		rows, err := source.bundle.Page(ctx, "quality_landings", after, 100)
+		rows, err := source.Bundle().Page(ctx, "quality_landings", after, 100)
 		if err != nil {
 			return err
 		}
@@ -284,7 +219,7 @@ func validateCoreQualityLandings(ctx context.Context, source *coreNeutralImport,
 			if err := row.Decode(map[string]any{"version_id": &versionID}); err != nil {
 				return err
 			}
-			version, err := source.one(ctx, "change_versions", map[string]string{"id": versionID}, []string{"id"})
+			version, err := source.One(ctx, "change_versions", map[string]string{"id": versionID}, []string{"id"})
 			if err != nil {
 				return err
 			}
@@ -292,7 +227,7 @@ func validateCoreQualityLandings(ctx context.Context, source *coreNeutralImport,
 			if err := version.Decode(map[string]any{"change_id": &changeID}); err != nil {
 				return err
 			}
-			if _, err := source.one(ctx, "change_requests", map[string]string{"id": changeID, "organization_id": string(input.OrganizationID)}, []string{"id"}); err != nil {
+			if _, err := source.One(ctx, "change_requests", map[string]string{"id": changeID, "organization_id": string(input.OrganizationID)}, []string{"id"}); err != nil {
 				return err
 			}
 			landing, err := readCoreQualityLanding(ctx, source, input, changeID, versionID)

@@ -227,8 +227,8 @@ func newRetainedWorkListFixtureWith(t *testing.T, objects *memoryRunDetails) (na
 	f.base = "/api/v2/organizations/" + string(organization) + "/projects/" + string(project)
 	ids := []tracker.NativeWorkItemID{"wi_list_first", "wi_list_second", "wi_list_third", "wi_list_unranked"}
 	source := newCoreNeutralFixture(t, organization, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "issue_dependencies", "change_content_objects", "attachments")
-	source.add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "In Progress"})
-	source.add("repositories", map[string]any{"id": 1, "github_owner": "example-org", "github_name": "example-project"})
+	source.Add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "In Progress"})
+	source.Add("repositories", map[string]any{"id": 1, "github_owner": "example-org", "github_name": "example-project"})
 	stamp := now.Format(time.RFC3339Nano)
 	actor := tracker.Actor{Kind: "human", PrincipalID: "example-reporter"}
 	for index, id := range ids {
@@ -243,14 +243,14 @@ func newRetainedWorkListFixtureWith(t *testing.T, objects *memoryRunDetails) (na
 		if index == 2 {
 			sequence = 2
 		}
-		source.add("issues", map[string]any{"id": 41 + index, "native_id": id, "project_id": project, "number": index + 1, "revision": 1, "event_sequence": sequence, "title": issue.Title, "body": issue.Body, "issue_contract_json": nil, "actor_json": string(historyTestJSON(t, actor)), "archived": 0, "created_at": stamp, "updated_at": stamp, "native_created_at": stamp, "native_updated_at": stamp, "last_activity_at": stamp, "workflow_state_id": 1, "labels_json": string(historyTestJSON(t, issue.Labels)), "assignees_json": string(historyTestJSON(t, issue.Assignees)), "author_login": "example-reporter", "repository_id": 1})
-		source.add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
+		source.Add("issues", map[string]any{"id": 41 + index, "native_id": id, "project_id": project, "number": index + 1, "revision": 1, "event_sequence": sequence, "title": issue.Title, "body": issue.Body, "issue_contract_json": nil, "actor_json": string(historyTestJSON(t, actor)), "archived": 0, "created_at": stamp, "updated_at": stamp, "native_created_at": stamp, "native_updated_at": stamp, "last_activity_at": stamp, "workflow_state_id": 1, "labels_json": string(historyTestJSON(t, issue.Labels)), "assignees_json": string(historyTestJSON(t, issue.Assignees)), "author_login": "example-reporter", "repository_id": 1})
+		source.Add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
 		for event := 1; event <= sequence; event++ {
 			kind := "issue.created"
 			if index == 2 {
 				kind = fmt.Sprintf("event_%d", event)
 			}
-			source.add("collaboration_events", map[string]any{"id": fmt.Sprintf("evt_%s_%d", id, event), "project_id": project, "work_item_id": id, "sequence": event, "type": kind, "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
+			source.Add("collaboration_events", map[string]any{"id": fmt.Sprintf("evt_%s_%d", id, event), "project_id": project, "work_item_id": id, "sequence": event, "type": kind, "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
 		}
 		if index < 3 {
 			for scopeIndex, scope := range []string{"fleet", string(project)} {
@@ -258,11 +258,11 @@ func newRetainedWorkListFixtureWith(t *testing.T, objects *memoryRunDetails) (na
 				if index == 0 {
 					priority = tracker.QueuePriorityLow
 				}
-				source.add("queue_entries", map[string]any{"id": index*2 + scopeIndex + 1, "issue_id": 41 + index, "scope": scope, "state": "In Progress", "rank": []string{"m", "z", "a"}[index], "priority_override": priority, "created_at": stamp, "updated_at": stamp})
+				source.Add("queue_entries", map[string]any{"id": index*2 + scopeIndex + 1, "issue_id": 41 + index, "scope": scope, "state": "In Progress", "rank": []string{"m", "z", "a"}[index], "priority_override": priority, "created_at": stamp, "updated_at": stamp})
 			}
 		}
 	}
-	count, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: organization, ProjectID: project, Objects: f.service.runDetailStore()})
+	count, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: organization, ProjectID: project, Objects: f.service.runDetailStore()})
 	if err != nil || count != 4 {
 		t.Fatalf("retained work list import=%d error=%v", count, err)
 	}
@@ -612,16 +612,16 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := newCoreNeutralFixture(t, organization, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "issue_dependencies", "change_content_objects", "attachments")
-	source.add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
-	source.add("repositories", map[string]any{"id": 1, "github_owner": "example-org", "github_name": "example-project"})
+	source.Add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
+	source.Add("repositories", map[string]any{"id": 1, "github_owner": "example-org", "github_name": "example-project"})
 	const stamp = "2026-10-01T00:00:00Z"
 	actor := tracker.Actor{Kind: "human", PrincipalID: "example-owner"}
 	for index, id := range []tracker.NativeWorkItemID{"wi_operator_first", "wi_operator_second"} {
 		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: id, Number: index + 1, Revision: 1, Profile: "github_compatible"}, Title: "Retained source", Body: "Retained GitHub content", State: "Todo", Actor: actor, CreatedAt: parseTestTime(t, stamp), UpdatedAt: parseTestTime(t, stamp), LastActivityAt: parseTestTime(t, stamp)}
 		issue.ExternalReferences = []tracker.ExternalReference{tracker.GitHubIssueSourceReference(fmt.Sprintf("I_retained_%d", index+1), fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", index+1))}
-		source.add("issues", map[string]any{"id": 41 + index, "native_id": id, "project_id": project, "number": index + 1, "revision": 1, "event_sequence": 1, "title": issue.Title, "body": issue.Body, "actor_json": string(historyTestJSON(t, actor)), "archived": 0, "created_at": stamp, "updated_at": stamp, "native_created_at": stamp, "native_updated_at": stamp, "last_activity_at": stamp, "workflow_state_id": 1, "labels_json": "[]", "assignees_json": "[]", "author_login": "example-owner", "repository_id": 1})
-		source.add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
-		source.add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
+		source.Add("issues", map[string]any{"id": 41 + index, "native_id": id, "project_id": project, "number": index + 1, "revision": 1, "event_sequence": 1, "title": issue.Title, "body": issue.Body, "actor_json": string(historyTestJSON(t, actor)), "archived": 0, "created_at": stamp, "updated_at": stamp, "native_created_at": stamp, "native_updated_at": stamp, "last_activity_at": stamp, "workflow_state_id": 1, "labels_json": "[]", "assignees_json": "[]", "author_login": "example-owner", "repository_id": 1})
+		source.Add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
+		source.Add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
 	}
 	automated := []struct {
 		name, repository, target string
@@ -632,8 +632,8 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 		{"foreign source", "example-org/other-project", "Merging", false, true, false},
 		{"unmapped automated target", "example-org/example-project", "Merging", false, false, false},
 	}
-	source.add("workflow_states", map[string]any{"id": 2, "project_id": project, "detent_state": "Human Review"})
-	source.add("repositories", map[string]any{"id": 2, "github_owner": "example-org", "github_name": "other-project"})
+	source.Add("workflow_states", map[string]any{"id": 2, "project_id": project, "detent_state": "Human Review"})
+	source.Add("repositories", map[string]any{"id": 2, "github_owner": "example-org", "github_name": "other-project"})
 	for index, test := range automated {
 		id := tracker.NativeWorkItemID(fmt.Sprintf("wi_automated_%d", index))
 		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: id, Number: index + 3, Revision: 1, Profile: "github_compatible"}, Title: "Retained automated transition", Body: "Canonical local review content", State: "Human Review", Actor: actor, CreatedAt: parseTestTime(t, stamp), UpdatedAt: parseTestTime(t, stamp), LastActivityAt: parseTestTime(t, stamp)}
@@ -645,11 +645,11 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 			}
 			issue.ExternalReferences = []tracker.ExternalReference{tracker.GitHubIssueSourceReference("I_"+string(id), fmt.Sprintf("https://github.com/%s/issues/%d", test.repository, issue.Number))}
 		}
-		source.add("issues", row)
-		source.add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
-		source.add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
+		source.Add("issues", row)
+		source.Add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
+		source.Add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
 	}
-	bundle := source.write()
+	bundle := source.Write()
 	count, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()})
 	if err != nil || count != int64(2+len(automated)) {
 		t.Fatalf("retained compatible import=%d error=%v", count, err)
@@ -658,8 +658,8 @@ func TestOperatorMutationsAreTypedAuditedAndScoped(t *testing.T) {
 		t.Fatalf("same-source import retry=%d error=%v", count, err)
 	}
 	other := newCoreNeutralFixture(t, organization, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "issue_dependencies", "change_content_objects", "attachments")
-	other.add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
-	if _, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: other.write(), OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()}); !errors.Is(err, mutation.ErrConflict) {
+	other.Add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
+	if _, err := ImportCoreWorkItems(t.Context(), service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: other.Write(), OrganizationID: organization, ProjectID: project, Objects: service.runDetailStore()}); !errors.Is(err, mutation.ErrConflict) {
 		t.Fatalf("different core import source for the organization error=%v, want conflict", err)
 	}
 	seedHubAPIToken(t, service, "operator-token", "operator-secret-token", hubapi.APIScopeOperator)

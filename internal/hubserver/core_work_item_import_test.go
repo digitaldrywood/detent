@@ -21,6 +21,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -53,10 +55,10 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 			t.Fatal(err)
 		}
 		fixture := coreWorkItemNeutralFixture(t, org, project, false)
-		fixture.set("issues", map[string]string{"native_id": "wi_core_import_second"}, map[string]any{"issue_contract_json": "{}"})
-		fixture.set("repositories", map[string]string{"id": "1"}, map[string]any{"github_node_id": "R_original"})
-		fixture.set("issues", map[string]string{"id": "41"}, map[string]any{"github_node_id": "I_original"})
-		event := fixture.records["collaboration_events"][1]
+		fixture.Set("issues", map[string]string{"native_id": "wi_core_import_second"}, map[string]any{"issue_contract_json": "{}"})
+		fixture.Set("repositories", map[string]string{"id": "1"}, map[string]any{"github_node_id": "R_original"})
+		fixture.Set("issues", map[string]string{"id": "41"}, map[string]any{"github_node_id": "I_original"})
+		event := fixture.Records["collaboration_events"][1]
 		var actor, recorded string
 		if err := event.Decode(map[string]any{"actor_json": &actor, "recorded_at": &recorded}); err != nil {
 			t.Fatal(err)
@@ -65,9 +67,9 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.add("collaboration_events", map[string]any{"id": "event_report_import", "sequence": 3, "type": "run.finished", "schema_version": 1, "actor_json": actor, "data_json": string(runData), "event_revision": 2, "recorded_at": recorded, "project_id": project, "work_item_id": "wi_core_import"})
-		fixture.set("issues", map[string]string{"native_id": "wi_core_import"}, map[string]any{"event_sequence": 3})
-		path := fixture.write()
+		fixture.Add("collaboration_events", map[string]any{"id": "event_report_import", "sequence": 3, "type": "run.finished", "schema_version": 1, "actor_json": actor, "data_json": string(runData), "event_revision": 2, "recorded_at": recorded, "project_id": project, "work_item_id": "wi_core_import"})
+		fixture.Set("issues", map[string]string{"native_id": "wi_core_import"}, map[string]any{"event_sequence": 3})
+		path := fixture.Write()
 
 		source := CoreWorkItemImportSource{BundlePath: path, OrganizationID: org, ProjectID: project, Objects: objects}
 		for range 2 {
@@ -88,7 +90,7 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 			projectionDigest = parity.ProjectionSHA256
 		}
 		t.Run(string(org)+" direct-object report detail", func(t *testing.T) {
-			direct := fixture.clone(t)
+			direct := fixture.Clone(t)
 			var data tracker.CollaborationData
 			if err := json.Unmarshal(runData, &data); err != nil {
 				t.Fatal(err)
@@ -101,7 +103,7 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			direct.add("change_content_objects", map[string]any{"object_key": ref.Key, "object_sha256": ref.SHA256, "object_bytes": ref.CompressedSize, "content_bytes": ref.UncompressedSize})
+			direct.Add("change_content_objects", map[string]any{"object_key": ref.Key, "object_sha256": ref.SHA256, "object_bytes": ref.CompressedSize, "content_bytes": ref.UncompressedSize})
 			detail := hubrecords.NewRunDetailReference(ref, string(org), hubrecords.RunDetailEntry(*data.Run))
 			detail.ObjectKey = ref.Key
 			stored, err := json.Marshal(hubrecords.StoredRun{NativeRunData: hubrecords.CompactRun(*data.Run), Detail: detail})
@@ -117,9 +119,9 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			direct.set("collaboration_events", map[string]string{"id": "event_report_import"}, map[string]any{"data_json": string(body)})
+			direct.Set("collaboration_events", map[string]string{"id": "event_report_import"}, map[string]any{"data_json": string(body)})
 			directSource := source
-			directSource.BundlePath = direct.write()
+			directSource.BundlePath = direct.Write()
 			for range 2 {
 				parity, err := ImportCoreReportEvents(t.Context(), repository, directSource)
 				if err != nil || parity.Events != 1 || parity.AttemptObservations != 1 || parity.ProjectionSHA256 != projectionDigest {
@@ -129,10 +131,10 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 		})
 
 		t.Run(string(org)+" nullable report revision", func(t *testing.T) {
-			nullableFixture := fixture.clone(t)
-			nullableFixture.set("collaboration_events", map[string]string{"type": "run.finished"}, map[string]any{"event_revision": nil})
+			nullableFixture := fixture.Clone(t)
+			nullableFixture.Set("collaboration_events", map[string]string{"type": "run.finished"}, map[string]any{"event_revision": nil})
 			nullableSource := source
-			nullableSource.BundlePath = nullableFixture.write()
+			nullableSource.BundlePath = nullableFixture.Write()
 
 			parity, err := ImportCoreReportEvents(t.Context(), repository, nullableSource)
 			if err != nil || parity.Events != 1 || parity.ProjectionSHA256 != projectionDigest {
@@ -310,14 +312,14 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 		{edited: []string{"title"}, payloadRevision: 2, wantRevision: 7, name: "known absent run", fields: map[string]any{"page_projection_ready": true, "run_present": false, "run_attempt_id": "", "run_fencing_token": 0}, missingRun: true, from: "Todo", to: "Done", reason: "opaque reason"},
 		{edited: []string{"title"}, nullableRevision: true, payloadRevision: 0, wantRevision: 0, name: "ready nullable zero revision", fields: map[string]any{"page_projection_ready": true, "run_present": true}, from: "Todo", to: "Done", reason: "opaque reason", attempt: "opaque-attempt", fence: 3, run: true},
 		{edited: []string{"title"}, nullableRevision: true, payloadRevision: 2, wantRevision: 2, name: "unknown nullable nonzero revision", fields: map[string]any{"page_projection_ready": nil}, from: "Todo", to: "Done", reason: "opaque reason", attempt: "opaque-attempt", fence: 3, run: true},
-		{edited: []string{"title"}, payloadRevision: 2, wantRevision: 7, name: "invalid readiness", fields: map[string]any{"page_projection_ready": 2}, wantErr: postgres.ErrNeutralImport},
+		{edited: []string{"title"}, payloadRevision: 2, wantRevision: 7, name: "invalid readiness", fields: map[string]any{"page_projection_ready": 2}, wantErr: neutralimport.ErrInvalid},
 
 		{edited: []string{"body"}, payloadRevision: 2, wantRevision: 7, name: "known edit correction", fields: map[string]any{"page_projection_ready": true, "edited_title": false, "edited_body": true}, from: "Todo", to: "Done", reason: "opaque reason", attempt: "opaque-attempt", fence: 3, run: true},
 		{edited: []string{}, payloadRevision: 2, wantRevision: 7, name: "known empty edits", fields: map[string]any{"page_projection_ready": true, "edited_title": false, "edited_body": false}, from: "Todo", to: "Done", reason: "opaque reason", attempt: "opaque-attempt", fence: 3, run: true},
 		{edited: []string{"title"}, payloadRevision: 2, wantRevision: 7, name: "unknown edits", fields: map[string]any{"page_projection_ready": true, "edited_title": nil, "edited_body": nil}, from: "Todo", to: "Done", reason: "opaque reason", attempt: "opaque-attempt", fence: 3, run: true},
 		{edited: []string{"title"}, payloadRevision: 2, wantRevision: 7, name: "false readiness ignores edit correction", fields: map[string]any{"page_projection_ready": false, "edited_title": false, "edited_body": true}, from: "Todo", to: "Done", reason: "opaque reason", attempt: "opaque-attempt", fence: 3, run: true},
 		{edited: []string{"title"}, payloadRevision: 2, wantRevision: 7, name: "unknown readiness ignores edit correction", fields: map[string]any{"page_projection_ready": nil, "edited_title": false, "edited_body": true}, from: "Todo", to: "Done", reason: "opaque reason", attempt: "opaque-attempt", fence: 3, run: true},
-		{payloadRevision: 2, wantRevision: 7, name: "invalid edit correction", fields: map[string]any{"page_projection_ready": true, "edited_title": 2}, wantErr: postgres.ErrNeutralImport},
+		{payloadRevision: 2, wantRevision: 7, name: "invalid edit correction", fields: map[string]any{"page_projection_ready": true, "edited_title": 2}, wantErr: neutralimport.ErrInvalid},
 	} {
 		t.Run("historical page facts/"+test.name, func(t *testing.T) {
 			organization := tracker.OrganizationID(fmt.Sprintf("org_event_facts_%02d", index))
@@ -356,10 +358,10 @@ func TestCoreWorkItemImportPreservesTypedHistoryAcrossTenantsAndReplays(t *testi
 				for name, value := range test.fields {
 					fields[name] = value
 				}
-				fixture.add("collaboration_events", fields)
-				fixture.set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3})
+				fixture.Add("collaboration_events", fields)
+				fixture.Set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3})
 			}
-			source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: organization, ProjectID: project, Objects: objects}
+			source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: organization, ProjectID: project, Objects: objects}
 			count, err := ImportCoreWorkItems(t.Context(), repository, source)
 			if test.wantErr != nil {
 				if !errors.Is(err, test.wantErr) || count != 0 {
@@ -454,8 +456,8 @@ func TestCoreWorkItemImportRejectsChangedCopyWhenAllIssuesWereDeleted(t *testing
 	}
 
 	changedFixture := coreWorkItemNeutralFixture(t, org, project, false)
-	changedFixture.records["issues"] = nil
-	source.BundlePath = changedFixture.write()
+	changedFixture.Records["issues"] = nil
+	source.BundlePath = changedFixture.Write()
 
 	if _, err := ImportCoreWorkItems(t.Context(), repository, source); !errors.Is(err, mutation.ErrConflict) {
 		t.Fatalf("changed empty copy error=%v", err)
@@ -592,19 +594,19 @@ func TestCoreWorkItemImportRollsBackMalformedQueue(t *testing.T) {
 
 func coreWorkItemSourceCopy(t *testing.T, org tracker.OrganizationID, project tracker.ProjectID, malformedQueue bool) string {
 	t.Helper()
-	return coreWorkItemNeutralFixture(t, org, project, malformedQueue).write()
+	return coreWorkItemNeutralFixture(t, org, project, malformedQueue).Write()
 }
-func coreWorkItemNeutralFixture(t *testing.T, org tracker.OrganizationID, project tracker.ProjectID, malformedQueue bool) *coreNeutralFixture {
+func coreWorkItemNeutralFixture(t *testing.T, org tracker.OrganizationID, project tracker.ProjectID, malformedQueue bool) *neutralimporttest.Fixture {
 	t.Helper()
 	return coreWorkItemNeutralFixtureBody(t, org, project, malformedQueue, coreImportBody())
 }
-func coreWorkItemNeutralFixtureBody(t *testing.T, org tracker.OrganizationID, project tracker.ProjectID, malformedQueue bool, body string) *coreNeutralFixture {
+func coreWorkItemNeutralFixtureBody(t *testing.T, org tracker.OrganizationID, project tracker.ProjectID, malformedQueue bool, body string) *neutralimporttest.Fixture {
 	t.Helper()
 	fixture := newCoreNeutralFixture(t, org, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "issue_dependencies", "change_content_objects", "attachments")
 	const created = "2026-10-01T00:00:00Z"
 	const updated = "2026-10-02T00:00:00Z"
-	fixture.add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
-	fixture.add("repositories", map[string]any{"id": 1, "github_owner": "example-org", "github_name": "example-project"})
+	fixture.Add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
+	fixture.Add("repositories", map[string]any{"id": 1, "github_owner": "example-org", "github_name": "example-project"})
 	actor := tracker.Actor{Kind: "human", PrincipalID: "example-owner"}
 	actorJSON, err := json.Marshal(actor)
 	if err != nil {
@@ -650,7 +652,7 @@ func coreWorkItemNeutralFixtureBody(t *testing.T, org tracker.OrganizationID, pr
 			encoding string
 			raw      []byte
 		}{{1, "snapshot", baseRaw}, {2, encoding, patch}} {
-			fixture.add("collaboration_versions", map[string]any{"organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix, "record_id": "wi_core_import" + suffix, "revision": version.revision, "encoding": version.encoding, "record_json": string(version.raw)})
+			fixture.Add("collaboration_versions", map[string]any{"organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix, "record_id": "wi_core_import" + suffix, "revision": version.revision, "encoding": version.encoding, "record_json": string(version.raw)})
 		}
 		commentActor, _ := json.Marshal(tracker.Actor{Kind: "human", PrincipalID: "example-commenter"})
 		comment := tracker.NativeComment{ID: "comment_core_import" + suffix, OrganizationID: org, ProjectID: project, WorkItemID: tracker.NativeWorkItemID("wi_core_import" + suffix), Revision: 1, Sequence: 1, Body: "Example comment", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-commenter"}, CreatedAt: parseTestTime(t, created), UpdatedAt: parseTestTime(t, created)}
@@ -658,18 +660,18 @@ func coreWorkItemNeutralFixtureBody(t *testing.T, org tracker.OrganizationID, pr
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.add("native_comments", map[string]any{"id": comment.ID, "revision": 1, "sequence": 1, "body": "Example comment", "actor_json": string(commentActor), "edited_by_json": nil, "provenance_json": nil, "source_key": nil, "deleted": 0, "created_at": created, "updated_at": created, "organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix})
-		fixture.add("collaboration_versions", map[string]any{"organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix, "record_id": comment.ID, "revision": 1, "encoding": "snapshot", "record_json": string(commentRaw)})
+		fixture.Add("native_comments", map[string]any{"id": comment.ID, "revision": 1, "sequence": 1, "body": "Example comment", "actor_json": string(commentActor), "edited_by_json": nil, "provenance_json": nil, "source_key": nil, "deleted": 0, "created_at": created, "updated_at": created, "organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix})
+		fixture.Add("collaboration_versions", map[string]any{"organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix, "record_id": comment.ID, "revision": 1, "encoding": "snapshot", "record_json": string(commentRaw)})
 		queueState := "Todo"
 		if malformedQueue {
 			queueState = ""
 		}
-		fixture.add("queue_entries", map[string]any{"id": 41 + index*2, "issue_id": 41 + index*2, "scope": "native", "state": queueState, "rank": "010", "priority_override": 1, "created_at": created, "updated_at": updated})
+		fixture.Add("queue_entries", map[string]any{"id": 41 + index*2, "issue_id": 41 + index*2, "scope": "native", "state": queueState, "rank": "010", "priority_override": 1, "created_at": created, "updated_at": updated})
 		for sequence, name := range []string{"issue.created", "issue.edited"} {
 			data, _ := json.Marshal(tracker.CollaborationData{Revision: tracker.Revision(sequence + 1)})
-			fixture.add("collaboration_events", map[string]any{"id": "event_core_import_" + string(rune('1'+sequence)) + suffix, "sequence": sequence + 1, "type": name, "schema_version": 1, "actor_json": string(actorJSON), "data_json": string(data), "event_revision": sequence + 1, "recorded_at": []string{created, updated}[sequence], "organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix})
+			fixture.Add("collaboration_events", map[string]any{"id": "event_core_import_" + string(rune('1'+sequence)) + suffix, "sequence": sequence + 1, "type": name, "schema_version": 1, "actor_json": string(actorJSON), "data_json": string(data), "event_revision": sequence + 1, "recorded_at": []string{created, updated}[sequence], "organization_id": org, "project_id": project, "work_item_id": "wi_core_import" + suffix})
 		}
-		fixture.add("issues", map[string]any{"id": 41 + index*2, "native_id": "wi_core_import" + suffix, "project_id": project, "number": 1 + index*2, "revision": 2, "event_sequence": 2, "native_source_key": nil, "title": "Updated title", "body": body, "issue_contract_json": nil, "report_context_json": nil, "actor_json": string(actorJSON), "provenance_json": nil, "archived": 0, "created_at": created, "updated_at": updated, "native_created_at": created, "native_updated_at": updated, "last_activity_at": updated, "workflow_state_id": 1, "labels_json": "[\"needs-review\"]", "assignees_json": "[\"example-assignee\"]", "author_login": "example-author", "repository_id": 1, "dispatch_wait_since": nil, "organization_id": org})
+		fixture.Add("issues", map[string]any{"id": 41 + index*2, "native_id": "wi_core_import" + suffix, "project_id": project, "number": 1 + index*2, "revision": 2, "event_sequence": 2, "native_source_key": nil, "title": "Updated title", "body": body, "issue_contract_json": nil, "report_context_json": nil, "actor_json": string(actorJSON), "provenance_json": nil, "archived": 0, "created_at": created, "updated_at": updated, "native_created_at": created, "native_updated_at": updated, "last_activity_at": updated, "workflow_state_id": 1, "labels_json": "[\"needs-review\"]", "assignees_json": "[\"example-assignee\"]", "author_login": "example-author", "repository_id": 1, "dispatch_wait_since": nil, "organization_id": org})
 	}
 	return fixture
 }
@@ -684,15 +686,15 @@ func coreDependencySourceCopy(t *testing.T, org tracker.OrganizationID, dependen
 	}
 	const created = "2026-10-01T00:00:00Z"
 	const updated = "2026-10-02T00:00:00Z"
-	fixture.add("issues", map[string]any{"id": 42, "native_id": "wi_core_blocker", "project_id": blockerProject, "number": 2, "revision": 1, "event_sequence": 1, "native_source_key": nil, "title": "Blocker title", "body": "Blocker body", "issue_contract_json": nil, "report_context_json": nil, "actor_json": string(actorJSON), "provenance_json": nil, "archived": 0, "created_at": created, "updated_at": updated, "native_created_at": created, "native_updated_at": updated, "last_activity_at": updated, "workflow_state_id": 1, "labels_json": "[]", "assignees_json": "[]", "author_login": "example-author", "repository_id": 1, "dispatch_wait_since": nil, "organization_id": org})
+	fixture.Add("issues", map[string]any{"id": 42, "native_id": "wi_core_blocker", "project_id": blockerProject, "number": 2, "revision": 1, "event_sequence": 1, "native_source_key": nil, "title": "Blocker title", "body": "Blocker body", "issue_contract_json": nil, "report_context_json": nil, "actor_json": string(actorJSON), "provenance_json": nil, "archived": 0, "created_at": created, "updated_at": updated, "native_created_at": created, "native_updated_at": updated, "last_activity_at": updated, "workflow_state_id": 1, "labels_json": "[]", "assignees_json": "[]", "author_login": "example-author", "repository_id": 1, "dispatch_wait_since": nil, "organization_id": org})
 	blocker := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: org, ProjectID: blockerProject, WorkItemID: "wi_core_blocker", Number: 2, Revision: 1, Profile: "native"}, Title: "Blocker title", Body: "Blocker body", State: "Todo", Actor: actor, CreatedAt: parseTestTime(t, created), UpdatedAt: parseTestTime(t, updated), LastActivityAt: parseTestTime(t, updated)}
 	blockerRaw, err := json.Marshal(blocker)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.add("collaboration_versions", map[string]any{"organization_id": org, "project_id": blockerProject, "work_item_id": blocker.WorkItemID, "record_id": blocker.WorkItemID, "revision": blocker.Revision, "encoding": "snapshot", "record_json": string(blockerRaw)})
-	fixture.add("issue_dependencies", map[string]any{"blocker_issue_id": 42, "dependent_issue_id": 41, "provenance": "github", "source_version": "source-v17", "created_at": "2026-10-02T03:04:05.123456789Z", "updated_at": "2026-10-03T04:05:06.987654321Z"})
-	return fixture.write()
+	fixture.Add("collaboration_versions", map[string]any{"organization_id": org, "project_id": blockerProject, "work_item_id": blocker.WorkItemID, "record_id": blocker.WorkItemID, "revision": blocker.Revision, "encoding": "snapshot", "record_json": string(blockerRaw)})
+	fixture.Add("issue_dependencies", map[string]any{"blocker_issue_id": 42, "dependent_issue_id": 41, "provenance": "github", "source_version": "source-v17", "created_at": "2026-10-02T03:04:05.123456789Z", "updated_at": "2026-10-03T04:05:06.987654321Z"})
+	return fixture.Write()
 }
 
 func coreImportBody() string {
@@ -720,25 +722,25 @@ func TestCoreWorkItemImportsRejectUnsupportedSchemaBeforePin(t *testing.T) {
 			}
 			if family == "linked_sources" {
 				tableName = "linked_issue_sources"
-				linked := newCoreNeutralFixture(t, fixture.organization, tableName)
-				fixture.tables[tableName] = linked.tables[tableName]
+				linked := newCoreNeutralFixture(t, fixture.Organization, tableName)
+				fixture.Tables[tableName] = linked.Tables[tableName]
 			}
-			table := fixture.tables[tableName]
+			table := fixture.Tables[tableName]
 			table.Columns["unaccounted"] = fmt.Sprintf(`[%d,"unaccounted","TEXT",1,null,0,0]`, len(table.Columns))
-			for _, row := range fixture.records[table.Name] {
+			for _, row := range fixture.Records[table.Name] {
 				row.Values["unaccounted"] = storagecatalog.Cell{Encoding: "utf8", Data: []byte("must survive migration")}
 			}
-			fixture.tables[table.Name] = table
+			fixture.Tables[table.Name] = table
 			objects := &memoryRunDetails{}
-			path := fixture.write()
+			path := fixture.Write()
 			var err error
 			switch family {
 			case "work_items", "linked_sources":
-				_, err = ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{BundlePath: path, OrganizationID: fixture.organization, ProjectID: "prj_example", Objects: objects})
+				_, err = ImportCoreWorkItems(t.Context(), repository, CoreWorkItemImportSource{BundlePath: path, OrganizationID: fixture.Organization, ProjectID: "prj_example", Objects: objects})
 			case "dependencies":
-				_, err = ImportCoreIssueDependencies(t.Context(), repository, CoreDependencyImportSource{BundlePath: path, OrganizationID: fixture.organization, Objects: objects})
+				_, err = ImportCoreIssueDependencies(t.Context(), repository, CoreDependencyImportSource{BundlePath: path, OrganizationID: fixture.Organization, Objects: objects})
 			case "report_events":
-				_, err = ImportCoreReportEvents(t.Context(), repository, CoreWorkItemImportSource{BundlePath: path, OrganizationID: fixture.organization, ProjectID: "prj_example", Objects: objects})
+				_, err = ImportCoreReportEvents(t.Context(), repository, CoreWorkItemImportSource{BundlePath: path, OrganizationID: fixture.Organization, ProjectID: "prj_example", Objects: objects})
 			}
 			if !errors.Is(err, storagecatalog.ErrUnmapped) {
 				t.Fatalf("schema drift error=%v", err)
@@ -764,7 +766,7 @@ func TestCoreWorkItemImportsRefuseLegacyCopy(t *testing.T) {
 			case "report_events":
 				_, err = ImportCoreReportEvents(t.Context(), nil, CoreWorkItemImportSource{CopyPath: "preserved-copy", BundlePath: bundle})
 			}
-			if !errors.Is(err, postgres.ErrNeutralImport) {
+			if !errors.Is(err, neutralimport.ErrInvalid) {
 				t.Fatalf("%s legacy selector error=%v", family, err)
 			}
 		}
@@ -809,20 +811,20 @@ func TestCoreWorkItemImportPreservesVerifiedTerminalStreaks(t *testing.T) {
 				t.Fatal(err)
 			}
 			fixture := coreWorkItemNeutralFixture(t, org, project, false)
-			fixture.set("workflow_states", map[string]string{"id": "1"}, map[string]any{"detent_state": test.state, "terminal": test.terminal})
+			fixture.Set("workflow_states", map[string]string{"id": "1"}, map[string]any{"detent_state": test.state, "terminal": test.terminal})
 			for _, suffix := range []string{"", "_second"} {
 				id := "wi_core_import" + suffix
-				fixture.set("issues", map[string]string{"native_id": id}, map[string]any{"terminal_entered_at": test.clock})
+				fixture.Set("issues", map[string]string{"native_id": id}, map[string]any{"terminal_entered_at": test.clock})
 				if test.restore != "" {
-					fixture.set("collaboration_events", map[string]string{"work_item_id": id, "sequence": "2"}, map[string]any{"archive_operation": "restore", "recorded_at": test.restore})
+					fixture.Set("collaboration_events", map[string]string{"work_item_id": id, "sequence": "2"}, map[string]any{"archive_operation": "restore", "recorded_at": test.restore})
 				}
 				sourceIssueID := int64(41)
 				if suffix != "" {
 					sourceIssueID = 43
 				}
-				fixture.set("queue_entries", map[string]string{"issue_id": strconv.FormatInt(sourceIssueID, 10)}, map[string]any{"state": test.state})
+				fixture.Set("queue_entries", map[string]string{"issue_id": strconv.FormatInt(sourceIssueID, 10)}, map[string]any{"state": test.state})
 				var base tracker.NativeIssue
-				for _, row := range fixture.records["collaboration_versions"] {
+				for _, row := range fixture.Records["collaboration_versions"] {
 					var record, raw string
 					var revision int64
 					if err := row.Decode(map[string]any{"record_id": &record, "revision": &revision, "record_json": &raw}); err != nil {
@@ -847,9 +849,9 @@ func TestCoreWorkItemImportPreservesVerifiedTerminalStreaks(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				fixture.set("collaboration_versions", map[string]string{"record_id": id, "revision": "2"}, map[string]any{"encoding": "snapshot", "record_json": string(raw)})
+				fixture.Set("collaboration_versions", map[string]string{"record_id": id, "revision": "2"}, map[string]any{"encoding": "snapshot", "record_json": string(raw)})
 			}
-			path := fixture.write()
+			path := fixture.Write()
 			readCopy := func() map[string][]byte {
 				t.Helper()
 				files, err := os.ReadDir(path)
@@ -947,9 +949,9 @@ func TestCoreWorkItemImportPreservesVerifiedTerminalStreaks(t *testing.T) {
 	}
 }
 
-func coreHistoricalV7Fixture(t *testing.T, organization tracker.OrganizationID) *coreNeutralFixture {
+func coreHistoricalV7Fixture(t *testing.T, organization tracker.OrganizationID) *neutralimporttest.Fixture {
 	t.Helper()
-	fixture := &coreNeutralFixture{t: t, organization: organization, tables: map[string]postgres.NeutralImportTable{}, records: map[string][]postgres.NeutralImportRow{}}
+	fixture := neutralimporttest.Empty(t, organization)
 	columns := map[string]map[string]string{
 		"issues": {
 			"assignees_json":     "[11,\"assignees_json\",\"TEXT\",1,\"'[]'\",0,0]",
@@ -1082,7 +1084,7 @@ func coreHistoricalV7Fixture(t *testing.T, organization tracker.OrganizationID) 
 			"updated_at":         "[5,\"updated_at\",\"TEXT\",1,null,0,0]",
 		},
 	}
-	keys := map[string][]postgres.NeutralImportKey{
+	keys := map[string][]neutralimport.Key{
 		"issues":             {{Column: "id", Kind: "integer"}},
 		"repositories":       {{Column: "id", Kind: "integer"}},
 		"workflow_states":    {{Column: "id", Kind: "integer"}},
@@ -1094,33 +1096,33 @@ func coreHistoricalV7Fixture(t *testing.T, organization tracker.OrganizationID) 
 		"issue_dependencies": {{Column: "blocker_issue_id", Kind: "integer"}, {Column: "dependent_issue_id", Kind: "integer"}},
 	}
 	for name, values := range columns {
-		fixture.tables[name] = postgres.NeutralImportTable{Name: name, Columns: values, Key: keys[name]}
+		fixture.Tables[name] = neutralimport.Table{Name: name, Columns: values, Key: keys[name]}
 	}
 	const stamp = "2026-09-01T12:00:00Z"
-	fixture.add("repositories", map[string]any{"id": 1, "github_node_id": "R_original", "github_owner": "example-org", "github_name": "example-project", "created_at": stamp, "updated_at": stamp})
-	fixture.add("workflow_states", map[string]any{"id": 1, "repository_id": 1, "source_name": "Todo", "detent_state": "Todo", "created_at": stamp, "updated_at": stamp})
+	fixture.Add("repositories", map[string]any{"id": 1, "github_node_id": "R_original", "github_owner": "example-org", "github_name": "example-project", "created_at": stamp, "updated_at": stamp})
+	fixture.Add("workflow_states", map[string]any{"id": 1, "repository_id": 1, "source_name": "Todo", "detent_state": "Todo", "created_at": stamp, "updated_at": stamp})
 	for index, id := range []int64{41, 43} {
 		suffix := strconv.FormatInt(id, 10)
-		fixture.add("issues", map[string]any{"id": id, "repository_id": 1, "workflow_state_id": 1, "github_node_id": "I_original_" + suffix, "github_number": index + 1, "title": "Imported issue " + suffix, "body": "Original body\r\n" + suffix, "url": "https://github.com/example-org/example-project/issues/" + strconv.Itoa(index+1), "github_state": "open", "source_version": "source-v1", "source_updated_at": stamp, "synchronized_at": stamp, "created_at": stamp, "updated_at": stamp, "author_login": "example-author"})
+		fixture.Add("issues", map[string]any{"id": id, "repository_id": 1, "workflow_state_id": 1, "github_node_id": "I_original_" + suffix, "github_number": index + 1, "title": "Imported issue " + suffix, "body": "Original body\r\n" + suffix, "url": "https://github.com/example-org/example-project/issues/" + strconv.Itoa(index+1), "github_state": "open", "source_version": "source-v1", "source_updated_at": stamp, "synchronized_at": stamp, "created_at": stamp, "updated_at": stamp, "author_login": "example-author"})
 		machine := "legacy-machine-" + suffix
-		fixture.add("machines", map[string]any{"id": machine, "hostname": "example", "capacity": 1, "version": "example", "last_heartbeat_at": stamp, "registered_at": stamp, "updated_at": stamp})
-		fixture.add("leases", map[string]any{"fencing_token": index + 1, "lease_id": "legacy-lease-" + suffix, "issue_id": id, "machine_id": machine, "session_id": "legacy-session-" + suffix, "expires_at": "2026-09-01T13:00:00Z", "acquired_at": stamp, "renewed_at": stamp, "created_at": stamp, "updated_at": stamp})
-		fixture.add("work_events", map[string]any{"id": index + 7, "issue_id": id, "fencing_token": index + 1, "machine_id": machine, "kind": "legacy-event", "payload_json": `{"reference":"preserved"}`, "occurred_at": stamp, "recorded_at": stamp})
-		fixture.add("pull_requests", map[string]any{"id": index + 1, "repository_id": 1, "issue_id": id, "github_node_id": "PR_original_" + suffix, "github_number": index + 1, "title": "Original PR", "url": "https://github.com/example-org/example-project/pull/" + strconv.Itoa(index+1), "github_state": "open", "head_ref": "change/example", "head_sha": strings.Repeat("a", 40), "base_ref": "develop", "source_version": "source-v1", "source_updated_at": stamp, "synchronized_at": stamp, "created_at": stamp, "updated_at": stamp})
+		fixture.Add("machines", map[string]any{"id": machine, "hostname": "example", "capacity": 1, "version": "example", "last_heartbeat_at": stamp, "registered_at": stamp, "updated_at": stamp})
+		fixture.Add("leases", map[string]any{"fencing_token": index + 1, "lease_id": "legacy-lease-" + suffix, "issue_id": id, "machine_id": machine, "session_id": "legacy-session-" + suffix, "expires_at": "2026-09-01T13:00:00Z", "acquired_at": stamp, "renewed_at": stamp, "created_at": stamp, "updated_at": stamp})
+		fixture.Add("work_events", map[string]any{"id": index + 7, "issue_id": id, "fencing_token": index + 1, "machine_id": machine, "kind": "legacy-event", "payload_json": `{"reference":"preserved"}`, "occurred_at": stamp, "recorded_at": stamp})
+		fixture.Add("pull_requests", map[string]any{"id": index + 1, "repository_id": 1, "issue_id": id, "github_node_id": "PR_original_" + suffix, "github_number": index + 1, "title": "Original PR", "url": "https://github.com/example-org/example-project/pull/" + strconv.Itoa(index+1), "github_state": "open", "head_ref": "change/example", "head_sha": strings.Repeat("a", 40), "base_ref": "develop", "source_version": "source-v1", "source_updated_at": stamp, "synchronized_at": stamp, "created_at": stamp, "updated_at": stamp})
 	}
 	return fixture
 }
 
-func coreFixtureFromBundle(t *testing.T, path string, organization tracker.OrganizationID) *coreNeutralFixture {
+func coreFixtureFromBundle(t *testing.T, path string, organization tracker.OrganizationID) *neutralimporttest.Fixture {
 	t.Helper()
-	fixture := &coreNeutralFixture{t: t, organization: organization, tables: map[string]postgres.NeutralImportTable{}, records: map[string][]postgres.NeutralImportRow{}}
-	if err := postgres.ReadNeutralImportBundle(t.Context(), path, organization, func(bundle *postgres.VerifiedNeutralImport) error {
+	fixture := neutralimporttest.Empty(t, organization)
+	if err := neutralimport.Read(t.Context(), path, organization, func(bundle *neutralimport.Bundle) error {
 		for name, columns := range bundle.Schema() {
 			keys, err := bundle.TableKey(name)
 			if err != nil {
 				return err
 			}
-			fixture.tables[name] = postgres.NeutralImportTable{Name: name, Columns: columns, Key: keys}
+			fixture.Tables[name] = neutralimport.Table{Name: name, Columns: columns, Key: keys}
 			var after []string
 			for {
 				rows, err := bundle.Page(t.Context(), name, after, 100)
@@ -1130,7 +1132,7 @@ func coreFixtureFromBundle(t *testing.T, path string, organization tracker.Organ
 				if len(rows) == 0 {
 					break
 				}
-				fixture.records[name] = append(fixture.records[name], rows...)
+				fixture.Records[name] = append(fixture.Records[name], rows...)
 				after = rows[len(rows)-1].Key
 			}
 		}
@@ -1141,12 +1143,12 @@ func coreFixtureFromBundle(t *testing.T, path string, organization tracker.Organ
 	return fixture
 }
 
-func coreFixtureAddTables(t *testing.T, fixture *coreNeutralFixture, names ...string) {
+func coreFixtureAddTables(t *testing.T, fixture *neutralimporttest.Fixture, names ...string) {
 	t.Helper()
-	extra := newCoreNeutralFixture(t, fixture.organization, names...)
-	for name, table := range extra.tables {
-		if _, present := fixture.tables[name]; !present {
-			fixture.tables[name] = table
+	extra := newCoreNeutralFixture(t, fixture.Organization, names...)
+	for name, table := range extra.Tables {
+		if _, present := fixture.Tables[name]; !present {
+			fixture.Tables[name] = table
 		}
 	}
 }

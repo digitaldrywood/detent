@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -31,7 +32,7 @@ const AccessImportLimit = 100
 
 type AccessImportSource struct {
 	DB         *sql.DB
-	neutral    *VerifiedNeutralImport
+	neutral    *neutralimport.Bundle
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
 	Schema     storagecatalog.Schema
@@ -332,7 +333,7 @@ type pgqueryDBTX interface {
 func (i *AccessImporter) validateSource(ctx context.Context) error {
 	for _, name := range accessImportTableNames {
 		if name == "hosted_work_view_preferences" && i.source.neutral != nil {
-			if _, err := i.source.neutral.table(name); err != nil {
+			if _, err := i.source.neutral.Table(name); err != nil {
 				continue
 			}
 		}

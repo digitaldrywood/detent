@@ -12,20 +12,22 @@ import (
 	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 )
 
-const continuationIndexPageRows = neutralImportPageRows
+const continuationIndexPageRows = neutralimport.PageRows
 const continuationIndexFanIn = 4
 
 type conversationMessageIndex struct {
 	directory string
-	view      *VerifiedNeutralImport
+	root      *os.Root
+	view      *neutralimport.Bundle
 	rows      int64
 }
 
-func buildConversationMessageIndex(ctx context.Context, source *VerifiedNeutralImport) (index *conversationMessageIndex, result error) {
-	table, err := source.table("conversation_messages")
+func buildConversationMessageIndex(ctx context.Context, source *neutralimport.Bundle) (index *conversationMessageIndex, result error) {
+	table, err := source.Table("conversation_messages")
 	if err != nil {
 		return nil, err
 	}
@@ -37,14 +39,14 @@ func buildConversationMessageIndex(ctx context.Context, source *VerifiedNeutralI
 	if err != nil {
 		return nil, errors.Join(err, os.RemoveAll(directory))
 	}
-	index = &conversationMessageIndex{directory: directory, view: &VerifiedNeutralImport{root: root, pageOffsets: make(map[string]int64)}}
+	index = &conversationMessageIndex{directory: directory, root: root}
 	defer func() {
 		if result != nil {
 			result = errors.Join(result, index.close())
 			index = nil
 		}
 	}()
-	projection := NeutralImportTable{Name: "conversation_messages_index", Columns: make(map[string]string), Key: []NeutralImportKey{{Column: "conversation_id", Kind: "text"}, {Column: "seq", Kind: "integer"}, {Column: "id", Kind: "text"}}}
+	projection := neutralimport.Table{Name: "conversation_messages_index", Columns: make(map[string]string), Key: []neutralimport.Key{{Column: "conversation_id", Kind: "text"}, {Column: "seq", Kind: "integer"}, {Column: "id", Kind: "text"}}}
 	for _, name := range []string{"id", "conversation_id", "seq", "role", "kind", "command_key"} {
 		projection.Columns[name] = table.Columns[name]
 	}
@@ -67,7 +69,7 @@ func buildConversationMessageIndex(ctx context.Context, source *VerifiedNeutralI
 			}
 			sourceRows++
 		}
-		slices.SortFunc(page, func(a, b NeutralImportRow) int { return compareNeutralImportKeys(projection.Key, a.Key, b.Key) })
+		slices.SortFunc(page, func(a, b neutralimport.Row) int { return neutralimport.CompareKeys(projection.Key, a.Key, b.Key) })
 		if err := writeContinuationRun(root, continuationRunName(0, runs), page); err != nil {
 			return index, err
 		}
@@ -101,9 +103,9 @@ func buildConversationMessageIndex(ctx context.Context, source *VerifiedNeutralI
 			return index, err
 		}
 	}
-	index.view.manifest = NeutralImportManifest{Version: 1, Identity: source.Identity(), Tables: []NeutralImportTable{projection}}
+	index.view = neutralimport.View(root, neutralimport.Manifest{Version: 1, Identity: source.Identity(), Tables: []neutralimport.Table{projection}})
 	if index.rows != sourceRows {
-		return index, ErrNeutralImport
+		return index, neutralimport.ErrInvalid
 	}
 	after = nil
 	for {
@@ -127,7 +129,7 @@ func buildConversationMessageIndex(ctx context.Context, source *VerifiedNeutralI
 			for name, expected := range projected.Values {
 				value := actual.Values[name]
 				if value.Null != expected.Null || value.Encoding != expected.Encoding || !bytes.Equal(value.Data, expected.Data) {
-					return index, ErrNeutralImport
+					return index, neutralimport.ErrInvalid
 				}
 			}
 		}
@@ -135,27 +137,27 @@ func buildConversationMessageIndex(ctx context.Context, source *VerifiedNeutralI
 	return index, nil
 }
 
-func continuationMessageProjection(row NeutralImportRow) (NeutralImportRow, error) {
+func continuationMessageProjection(row neutralimport.Row) (neutralimport.Row, error) {
 	values := make(map[string]storagecatalog.Cell)
 	for _, name := range []string{"id", "conversation_id", "seq", "role", "kind", "command_key"} {
 		value, found := row.Values[name]
 		if !found {
-			return NeutralImportRow{}, ErrNeutralImport
+			return neutralimport.Row{}, neutralimport.ErrInvalid
 		}
 		values[name] = value
 	}
 	sequence, err := strconv.ParseInt(cellText(values["seq"]), 10, 64)
 	if err != nil || sequence <= 0 || cellText(values["id"]) == "" || cellText(values["conversation_id"]) == "" {
-		return NeutralImportRow{}, ErrNeutralImport
+		return neutralimport.Row{}, neutralimport.ErrInvalid
 	}
-	return NeutralImportRow{SourceRowID: row.SourceRowID, Key: []string{cellText(values["conversation_id"]), strconv.FormatInt(sequence, 10), cellText(values["id"])}, Values: values}, nil
+	return neutralimport.Row{SourceRowID: row.SourceRowID, Key: []string{cellText(values["conversation_id"]), strconv.FormatInt(sequence, 10), cellText(values["id"])}, Values: values}, nil
 }
 
 func continuationRunName(generation, index int) string {
 	return fmt.Sprintf("run_%d_%d.jsonl", generation, index)
 }
 
-func writeContinuationRun(root *os.Root, name string, rows []NeutralImportRow) (result error) {
+func writeContinuationRun(root *os.Root, name string, rows []neutralimport.Row) (result error) {
 	file, err := root.Create(name)
 	if err != nil {
 		return err
@@ -169,10 +171,10 @@ func writeContinuationRun(root *os.Root, name string, rows []NeutralImportRow) (
 	return nil
 }
 
-func mergeContinuationRuns(ctx context.Context, root *os.Root, keys []NeutralImportKey, inputs []string, output string) (result error) {
+func mergeContinuationRuns(ctx context.Context, root *os.Root, keys []neutralimport.Key, inputs []string, output string) (result error) {
 	type reader struct {
 		decoder *json.Decoder
-		row     *NeutralImportRow
+		row     *neutralimport.Row
 	}
 	var readers []reader
 	for _, name := range inputs {
@@ -189,15 +191,15 @@ func mergeContinuationRuns(ctx context.Context, root *os.Root, keys []NeutralImp
 	}
 	defer func() { result = errors.Join(result, file.Close()) }()
 	advance := func(position int) error {
-		var row NeutralImportRow
+		var row neutralimport.Row
 		err := readers[position].decoder.Decode(&row)
 		readers[position].row = nil
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err == nil {
-			if !validNeutralImportKey(keys, row.Key) {
-				return ErrNeutralImport
+			if !neutralimport.ValidKey(keys, row.Key) {
+				return neutralimport.ErrInvalid
 			}
 			readers[position].row = &row
 		}
@@ -215,7 +217,7 @@ func mergeContinuationRuns(ctx context.Context, root *os.Root, keys []NeutralImp
 		}
 		selected := -1
 		for position, r := range readers {
-			if r.row != nil && (selected < 0 || compareNeutralImportKeys(keys, r.row.Key, readers[selected].row.Key) < 0) {
+			if r.row != nil && (selected < 0 || neutralimport.CompareKeys(keys, r.row.Key, readers[selected].row.Key) < 0) {
 				selected = position
 			}
 		}
@@ -223,8 +225,8 @@ func mergeContinuationRuns(ctx context.Context, root *os.Root, keys []NeutralImp
 			return nil
 		}
 		row := readers[selected].row
-		if previous != nil && compareNeutralImportKeys(keys, previous, row.Key) >= 0 {
-			return ErrNeutralImport
+		if previous != nil && neutralimport.CompareKeys(keys, previous, row.Key) >= 0 {
+			return neutralimport.ErrInvalid
 		}
 		previous = row.Key
 		if err := json.NewEncoder(file).Encode(row); err != nil {
@@ -236,8 +238,8 @@ func mergeContinuationRuns(ctx context.Context, root *os.Root, keys []NeutralImp
 	}
 }
 
-func (index *conversationMessageIndex) publish(ctx context.Context, table *NeutralImportTable, run string) (result error) {
-	file, err := index.view.root.Open(run)
+func (index *conversationMessageIndex) publish(ctx context.Context, table *neutralimport.Table, run string) (result error) {
+	file, err := index.root.Open(run)
 	if err != nil {
 		return err
 	}
@@ -247,7 +249,7 @@ func (index *conversationMessageIndex) publish(ctx context.Context, table *Neutr
 		return err
 	}
 	metadataBytes := len(metadata) + 16
-	var rows []NeutralImportRow
+	var rows []neutralimport.Row
 	pageBytes := 2
 	flush := func() error {
 		if len(rows) == 0 {
@@ -257,23 +259,22 @@ func (index *conversationMessageIndex) publish(ctx context.Context, table *Neutr
 		if err != nil {
 			return err
 		}
-		if len(raw) > neutralImportPageBytes {
-			return ErrNeutralImport
+		if len(raw) > neutralimport.PageBytes {
+			return neutralimport.ErrInvalid
 		}
 		name := fmt.Sprintf("messages_%d.json", len(table.Pages))
-		if err := index.view.root.WriteFile(name, raw, 0400); err != nil {
+		if err := index.root.WriteFile(name, raw, 0400); err != nil {
 			return err
 		}
-		page := NeutralImportPage{File: name, SHA256: artifact.Digest(raw), Rows: len(rows), First: rows[0].Key, Last: rows[len(rows)-1].Key}
+		page := neutralimport.Page{File: name, SHA256: artifact.Digest(raw), Rows: len(rows), First: rows[0].Key, Last: rows[len(rows)-1].Key}
 		encoded, err := json.Marshal(page)
 		if err != nil {
 			return err
 		}
 		metadataBytes += len(encoded) + 1
-		if metadataBytes > neutralImportManifestBytes {
-			return ErrNeutralImport
+		if metadataBytes > neutralimport.ManifestBytes {
+			return neutralimport.ErrInvalid
 		}
-		index.view.pageOffsets[name] = index.rows
 		index.rows += int64(len(rows))
 		table.Pages = append(table.Pages, page)
 		rows = nil
@@ -286,24 +287,24 @@ func (index *conversationMessageIndex) publish(ctx context.Context, table *Neutr
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		var row NeutralImportRow
+		var row neutralimport.Row
 		if err := decoder.Decode(&row); errors.Is(err, io.EOF) {
 			return flush()
 		} else if err != nil {
 			return err
 		}
-		if previous != nil && compareNeutralImportKeys(table.Key, previous, row.Key) >= 0 {
-			return ErrNeutralImport
+		if previous != nil && neutralimport.CompareKeys(table.Key, previous, row.Key) >= 0 {
+			return neutralimport.ErrInvalid
 		}
 		previous = row.Key
 		encoded, err := json.Marshal(row)
 		if err != nil {
 			return err
 		}
-		if len(encoded)+2 > neutralImportPageBytes {
-			return ErrNeutralImport
+		if len(encoded)+2 > neutralimport.PageBytes {
+			return neutralimport.ErrInvalid
 		}
-		if pageBytes+len(encoded)+1 > neutralImportPageBytes {
+		if pageBytes+len(encoded)+1 > neutralimport.PageBytes {
 			if err := flush(); err != nil {
 				return err
 			}
@@ -318,7 +319,7 @@ func (index *conversationMessageIndex) publish(ctx context.Context, table *Neutr
 	}
 }
 
-func (index *conversationMessageIndex) page(ctx context.Context, conversation string, after []string) ([]NeutralImportRow, error) {
+func (index *conversationMessageIndex) page(ctx context.Context, conversation string, after []string) ([]neutralimport.Row, error) {
 	if len(after) == 0 {
 		after = []string{conversation, "0", ""}
 	}
@@ -335,5 +336,5 @@ func (index *conversationMessageIndex) page(ctx context.Context, conversation st
 }
 
 func (index *conversationMessageIndex) close() error {
-	return errors.Join(index.view.root.Close(), os.RemoveAll(index.directory))
+	return errors.Join(index.root.Close(), os.RemoveAll(index.directory))
 }

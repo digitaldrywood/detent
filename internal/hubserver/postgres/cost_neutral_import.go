@@ -4,11 +4,12 @@ import (
 	"context"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readNeutralCostImportPage(ctx context.Context, source *VerifiedNeutralImport, organization string, catalog storagecatalog.Catalog, binding *storagecatalog.Binding, after [7]string, hasAfter bool, limit int) ([]costImportPageRow, error) {
+func readNeutralCostImportPage(ctx context.Context, source *neutralimport.Bundle, organization string, catalog storagecatalog.Catalog, binding *storagecatalog.Binding, after [7]string, hasAfter bool, limit int) ([]costImportPageRow, error) {
 	if source == nil || source.Identity().OrganizationID != tracker.OrganizationID(organization) || binding == nil || limit < 1 || limit > costImportPageLimit {
 		return nil, ErrCostImport
 	}
@@ -61,7 +62,7 @@ func decodeCostImportPageRow(binding *storagecatalog.Binding, raw map[string]sto
 	}
 	r := &row.record
 	r.OrganizationID = tracker.OrganizationID(organization)
-	if err := (NeutralImportRow{Values: raw}).Decode(map[string]any{"project_id": &r.ProjectID, "provider": &r.Provider, "provider_account": &r.ProviderAccount, "source_id": &r.SourceID, "resource_id": &r.ResourceID, "bucket": &r.Bucket, "metric": &r.Metric, "revision": &r.Revision, "voided": &r.Voided}); err != nil {
+	if err := (neutralimport.Row{Values: raw}).Decode(map[string]any{"project_id": &r.ProjectID, "provider": &r.Provider, "provider_account": &r.ProviderAccount, "source_id": &r.SourceID, "resource_id": &r.ResourceID, "bucket": &r.Bucket, "metric": &r.Metric, "revision": &r.Revision, "voided": &r.Voided}); err != nil {
 		return row, err
 	}
 	for name, target := range map[string]*time.Time{"period_start": &r.From, "period_end": &r.To, "received_at": &r.ReceivedAt} {

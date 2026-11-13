@@ -205,9 +205,9 @@ func TestNativeIssueTypeMigration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.set("issues", map[string]string{"native_id": string(test.id)}, map[string]any{"issue_type": nil, "labels_json": string(labels)})
+		fixture.Set("issues", map[string]string{"native_id": string(test.id)}, map[string]any{"issue_type": nil, "labels_json": string(labels)})
 		var base, patch []byte
-		for _, row := range fixture.records["collaboration_versions"] {
+		for _, row := range fixture.Records["collaboration_versions"] {
 			var id, raw string
 			var revision int64
 			if err := row.Decode(map[string]any{"record_id": &id, "revision": &revision, "record_json": &raw}); err != nil {
@@ -237,14 +237,14 @@ func TestNativeIssueTypeMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		fixture.set("collaboration_versions", map[string]string{"record_id": string(test.id), "revision": "1"}, map[string]any{"encoding": "snapshot", "record_json": string(base)})
+		fixture.Set("collaboration_versions", map[string]string{"record_id": string(test.id), "revision": "1"}, map[string]any{"encoding": "snapshot", "record_json": string(base)})
 		patch, encoding, err := encodeNativeVersion(base, "snapshot", current, 2)
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.set("collaboration_versions", map[string]string{"record_id": string(test.id), "revision": "2"}, map[string]any{"encoding": encoding, "record_json": string(patch)})
+		fixture.Set("collaboration_versions", map[string]string{"record_id": string(test.id), "revision": "2"}, map[string]any{"encoding": encoding, "record_json": string(patch)})
 	}
-	source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 	if count, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source); err != nil || count != 2 {
 		t.Fatalf("historical issue import count=%d error=%v", count, err)
 	}

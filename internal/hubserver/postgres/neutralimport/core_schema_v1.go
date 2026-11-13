@@ -1,4 +1,4 @@
-package postgres
+package neutralimport
 
 import (
 	"encoding/json"
@@ -187,7 +187,7 @@ func neutralCoreSourceSchemasV1() map[string]neutralCoreSourceSchema {
 	}
 }
 
-func validateNeutralCoreSourceSchema(source *VerifiedNeutralImport, names ...string) error {
+func ValidateCoreTables(source *Bundle, names ...string) error {
 	if source == nil || source.Identity().SchemaVersion != 1 {
 		return storagecatalog.ErrUnmapped
 	}
@@ -204,7 +204,7 @@ func validateNeutralCoreSourceSchema(source *VerifiedNeutralImport, names ...str
 	return validateNeutralCoreDefinitions(source, definitions, names...)
 }
 
-func ValidateNeutralHistoricalWorkItemTables(source *VerifiedNeutralImport) error {
+func ValidateHistoricalWorkItemTables(source *Bundle) error {
 	if source == nil || source.Identity().SchemaVersion != 1 {
 		return storagecatalog.ErrUnmapped
 	}
@@ -218,18 +218,18 @@ func ValidateNeutralHistoricalWorkItemTables(source *VerifiedNeutralImport) erro
 	return validateNeutralCoreDefinitions(source, definitions, names...)
 }
 
-func validateNeutralCoreDefinitions(source *VerifiedNeutralImport, definitions map[string]neutralCoreSourceSchema, names ...string) error {
+func validateNeutralCoreDefinitions(source *Bundle, definitions map[string]neutralCoreSourceSchema, names ...string) error {
 	for _, name := range names {
 		definition, ok := definitions[name]
 		if !ok {
 			return storagecatalog.ErrUnmapped
 		}
-		table, err := source.table(name)
+		table, err := source.Table(name)
 		if err != nil || len(table.Columns) != len(definition.columns) || len(table.Key) != len(definition.seekKeys) {
 			return storagecatalog.ErrUnmapped
 		}
 		for column, signature := range definition.columns {
-			if !sameSourceSignature([]byte(table.Columns[column]), signature) {
+			if !SameSourceSignature([]byte(table.Columns[column]), signature) {
 				return storagecatalog.ErrUnmapped
 			}
 		}
@@ -246,7 +246,7 @@ func validateNeutralCoreDefinitions(source *VerifiedNeutralImport, definitions m
 			if strings.Contains(strings.ToUpper(sourceType), "INT") {
 				kind = "integer"
 			}
-			if table.Key[index] != (NeutralImportKey{Column: key, Kind: kind}) {
+			if table.Key[index] != (Key{Column: key, Kind: kind}) {
 				return storagecatalog.ErrUnmapped
 			}
 		}

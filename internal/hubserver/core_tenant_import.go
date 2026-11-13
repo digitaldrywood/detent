@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -61,7 +62,7 @@ type TenantCoreImportResult struct {
 
 func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source TenantCoreImportSource) (result TenantCoreImportResult, resultErr error) {
 	if source.CopyPath != "" {
-		return result, postgres.ErrNeutralImport
+		return result, neutralimport.ErrInvalid
 	}
 	if source.BundlePath == "" || source.OrganizationID == "" || source.Objects == nil {
 		return result, errors.New("tenant import requires a neutral bundle, organization and archive storage")
@@ -70,7 +71,7 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 		return result, err
 	}
 	var historical bool
-	if err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+	if err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
 		issueSchema, exists := bundle.Schema()["issues"]
 		_, native := issueSchema["native_id"]
 		historical = exists && !native
@@ -122,7 +123,7 @@ func ImportTenantCoreCopy(ctx context.Context, config postgres.Config, source Te
 	result.MonthlyPolicies = policies.MonthlyPolicies
 	var activity map[string]coreHistoricalActivity
 	var activityDigest string
-	if err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+	if err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
 		var err error
 		activity, err = readCoreHistoricalActivity(ctx, bundle, source.OrganizationID)
 		activityDigest = bundle.Digest()
@@ -249,8 +250,8 @@ func importHistoricalTenantCoreCopy(ctx context.Context, config postgres.Config,
 		return result, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, database.Close()) }()
-	err = postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
-		if err := postgres.ValidateNeutralHistoricalWorkItemTables(bundle); err != nil {
+	err = neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
+		if err := neutralimport.ValidateHistoricalWorkItemTables(bundle); err != nil {
 			return err
 		}
 		if _, exists := bundle.Schema()["issue_dependencies"]; exists {
@@ -272,7 +273,7 @@ func importHistoricalTenantCoreCopy(ctx context.Context, config postgres.Config,
 	return result, err
 }
 
-func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.Repository, bundle *postgres.VerifiedNeutralImport, source TenantCoreImportSource) ([]CoreWorkItemIdentityMapping, tracker.ProjectID, error) {
+func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.Repository, bundle *neutralimport.Bundle, source TenantCoreImportSource) ([]CoreWorkItemIdentityMapping, tracker.ProjectID, error) {
 	sourceNumbers := map[int64]int64{}
 	var sourceAfter []string
 	for {
@@ -294,8 +295,8 @@ func resolveHistoricalImportMappings(ctx context.Context, repository *postgres.R
 	}
 	candidates := map[int64]CoreWorkItemIdentityMapping{}
 	if source.MappingBundlePath != "" {
-		if err := postgres.ReadNeutralImportBundle(ctx, source.MappingBundlePath, source.OrganizationID, func(mapping *postgres.VerifiedNeutralImport) error {
-			if err := postgres.ValidateNeutralCoreImportTables(mapping, "projects", "issues", "repositories"); err != nil {
+		if err := neutralimport.Read(ctx, source.MappingBundlePath, source.OrganizationID, func(mapping *neutralimport.Bundle) error {
+			if err := neutralimport.ValidateCoreTables(mapping, "projects", "issues", "repositories"); err != nil {
 				return err
 			}
 			var after []string

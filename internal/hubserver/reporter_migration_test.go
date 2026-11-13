@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
@@ -71,17 +72,17 @@ func TestReporterAndTriageMigration(t *testing.T) {
 		if id == "prj_repository_default" {
 			workflowSource = "detent.yaml"
 		}
-		source.add("projects", map[string]any{"id": id, "organization_id": organization, "name": id, "profile": "native", "states_json": string(historyTestJSON(t, states)), "workflow_source": workflowSource, "created_at": "2026-10-12T00:00:00Z", "integration_revision": 7})
+		source.Add("projects", map[string]any{"id": id, "organization_id": organization, "name": id, "profile": "native", "states_json": string(historyTestJSON(t, states)), "workflow_source": workflowSource, "created_at": "2026-10-12T00:00:00Z", "integration_revision": 7})
 	}
 	for _, id := range []string{"first", "second"} {
-		source.add("api_tokens", map[string]any{"id": "token_" + id, "name": id, "token_hash": apikey.HashToken("token_" + id), "scope": "operator", "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:00:00Z", "hosted_user_id": id, "hosted_membership_id": "mem_" + id, "operator_key_scope": "write", "operator_project_access": "selected", "key_kind": "personal"})
-		source.add("hosted_members", map[string]any{"user_id": id, "email": id + "@example.test", "membership_id": "mem_" + id, "role": "member", "principal_id": "token_" + id, "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:00:00Z"})
-		source.add("hosted_project_grants", map[string]any{"user_id": id, "organization_id": organization, "project_id": "prj_without", "can_write": 1})
-		source.add("token_grants", map[string]any{"token_id": "token_" + id, "organization_id": organization, "project_id": "prj_without"})
-		source.add("hosted_work_view_preferences", map[string]any{"organization_id": organization, "user_id": id, "scope": "project:prj_without", "view_query": "state:Todo"})
-		source.add("hosted_invitations", map[string]any{"id": "inv_" + id, "email": id + "@example.test", "organization_id": organization, "role": "member", "created_at": "2026-10-12T00:00:00Z", "expires_at": "2026-11-12T00:00:00Z", "grants_json": `[{"project_id":"prj_without","write":true}]`})
+		source.Add("api_tokens", map[string]any{"id": "token_" + id, "name": id, "token_hash": apikey.HashToken("token_" + id), "scope": "operator", "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:00:00Z", "hosted_user_id": id, "hosted_membership_id": "mem_" + id, "operator_key_scope": "write", "operator_project_access": "selected", "key_kind": "personal"})
+		source.Add("hosted_members", map[string]any{"user_id": id, "email": id + "@example.test", "membership_id": "mem_" + id, "role": "member", "principal_id": "token_" + id, "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:00:00Z"})
+		source.Add("hosted_project_grants", map[string]any{"user_id": id, "organization_id": organization, "project_id": "prj_without", "can_write": 1})
+		source.Add("token_grants", map[string]any{"token_id": "token_" + id, "organization_id": organization, "project_id": "prj_without"})
+		source.Add("hosted_work_view_preferences", map[string]any{"organization_id": organization, "user_id": id, "scope": "project:prj_without", "view_query": "state:Todo"})
+		source.Add("hosted_invitations", map[string]any{"id": "inv_" + id, "email": id + "@example.test", "organization_id": organization, "role": "member", "created_at": "2026-10-12T00:00:00Z", "expires_at": "2026-11-12T00:00:00Z", "grants_json": `[{"project_id":"prj_without","write":true}]`})
 	}
-	path := source.write()
+	path := source.Write()
 	for replay := range 2 {
 		if err := importHistoricalWorkflowSource(t, service, organization, path); err != nil {
 			t.Fatal(err)
@@ -198,10 +199,10 @@ func TestReporterAndTriageMigration(t *testing.T) {
 	}
 }
 
-func historicalWorkflowSource(t *testing.T, organization tracker.OrganizationID) *coreNeutralFixture {
+func historicalWorkflowSource(t *testing.T, organization tracker.OrganizationID) *neutralimporttest.Fixture {
 	t.Helper()
 	source := newCoreNeutralFixture(t, organization, "organizations", "hosted_tenant", "api_tokens", "hosted_members", "hosted_release_preferences", "daily_summary_preferences", "daily_summary_receipts", "hosted_project_grants", "token_grants", "hosted_sessions", "hosted_transactions", "hosted_invitations", "hosted_member_reservations", "hosted_binding_migrations", "organization_secrets", "organization_secret_audit", "project_secrets", "project_secret_audit", "hosted_audit", "hosted_audit_times", "hosted_work_view_preferences", "projects", "repositories", "policy_revisions", "project_policies", "change_review_policies", "monthly_budget_policies")
-	source.add("organizations", map[string]any{"id": organization, "name": string(organization), "slug": string(organization), "created_at": testTimestamp})
+	source.Add("organizations", map[string]any{"id": organization, "name": string(organization), "slug": string(organization), "created_at": testTimestamp})
 	return source
 }
 

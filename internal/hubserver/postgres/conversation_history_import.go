@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -25,7 +26,7 @@ const conversationImportPageSize = 100
 
 type ConversationHistoryImportSource struct {
 	BundlePath string
-	neutral    *VerifiedNeutralImport
+	neutral    *neutralimport.Bundle
 	messages   *conversationMessageIndex
 	CopyPath   string
 	Catalog    storagecatalog.Catalog
@@ -77,7 +78,7 @@ var conversationImportTablesInOrder = []conversationImportTable{
 func (r *Repository) ImportConversationHistory(ctx context.Context, source ConversationHistoryImportSource) (ConversationHistoryImportResult, error) {
 	if source.CopyPath != "" {
 		return ConversationHistoryImportResult{},
-			ErrNeutralImport
+			neutralimport.ErrInvalid
 	}
 
 	var result ConversationHistoryImportResult
@@ -99,7 +100,7 @@ func (r *Repository) ImportConversationHistory(ctx context.Context, source Conve
 	completed := false
 	snapshotID := ""
 
-	err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) (resultErr error) {
+	err = neutralimport.Read(ctx, source.BundlePath, organization, func(bundle *neutralimport.Bundle) (resultErr error) {
 		source.neutral = bundle
 		snapshotID = bundle.Identity().SourceSHA256
 		if err := validateNeutralConversationHistory(ctx, source); err != nil {
@@ -457,7 +458,7 @@ func prepareConversationArchiveObject(ctx context.Context, source ConversationHi
 	var customerOwned bool
 	var err error
 
-	var row NeutralImportRow
+	var row neutralimport.Row
 	row, err = source.neutral.Lookup(ctx, "attachments", []string{sourceID})
 	if err == nil {
 		err = row.Decode(map[string]any{"id": &metadata.id, "project_id": &metadata.project, "uploader": &metadata.uploader, "object_key": &metadata.reference.Key, "sha256": &metadata.reference.SHA256, "size": &compressed, "uncompressed_size": &uncompressed, "codec": &metadata.reference.Codec, "schema_version": &schema, "kind": &kind, "retention_class": &retention, "storage_binding_id": &binding, "customer_owned": &customerOwned, "created_at": &createdAt})

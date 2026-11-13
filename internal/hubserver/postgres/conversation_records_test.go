@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/jackc/pgx/v5"
@@ -478,7 +479,7 @@ func TestConversationRecordsAreTenantScopedAndTransactional(t *testing.T) {
 			if !reflect.DeepEqual(storedReceipt, historical) || typedKey != historical.Key {
 				t.Fatalf("historical receipt values or typed identity changed: %+v / %s", storedReceipt, typedKey)
 			}
-			if err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(verified *postgres.VerifiedNeutralImport) error {
+			if err := neutralimport.Read(ctx, source.BundlePath, organization, func(verified *neutralimport.Bundle) error {
 				row, err := verified.Lookup(ctx, "conversation_commands", []string{importedID, "historical-command"})
 				if err != nil {
 					return err

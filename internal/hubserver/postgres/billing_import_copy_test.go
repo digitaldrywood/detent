@@ -5,22 +5,23 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type neutralBillingFixture struct {
 	organization tracker.OrganizationID
-	tables       []postgres.NeutralImportTable
-	records      map[string][]postgres.NeutralImportRow
+	tables       []neutralimport.Table
+	records      map[string][]neutralimport.Row
 }
 
 func newNeutralBillingFixture(t *testing.T, organization tracker.OrganizationID, names ...string) *neutralBillingFixture {
 	t.Helper()
-	fixture := &neutralBillingFixture{organization: organization, records: map[string][]postgres.NeutralImportRow{}}
+	fixture := &neutralBillingFixture{organization: organization, records: map[string][]neutralimport.Row{}}
 	for _, name := range names {
 		table := neutralFixtureTable(t, name, nil)
-		positions := map[int]postgres.NeutralImportKey{}
+		positions := map[int]neutralimport.Key{}
 		for column, signature := range table.Columns {
 			var fields []json.RawMessage
 			if err := json.Unmarshal([]byte(signature), &fields); err != nil {
@@ -41,7 +42,7 @@ func newNeutralBillingFixture(t *testing.T, organization tracker.OrganizationID,
 			if strings.Contains(strings.ToUpper(kind), "INT") {
 				keyKind = "integer"
 			}
-			positions[position] = postgres.NeutralImportKey{Column: column, Kind: keyKind}
+			positions[position] = neutralimport.Key{Column: column, Kind: keyKind}
 		}
 		for position := 1; position <= len(positions); position++ {
 			key, ok := positions[position]
@@ -61,7 +62,7 @@ func (f *neutralBillingFixture) add(t *testing.T, name string, values map[string
 	t.Helper()
 	for _, table := range f.tables {
 		if table.Name == name {
-			row := neutralFixtureRow(t, table, values)
+			row := neutralimporttest.Row(t, table, values)
 			if row.SourceRowID == 0 {
 				row.SourceRowID = int64(len(f.records[name])) + 1
 			}
@@ -73,6 +74,6 @@ func (f *neutralBillingFixture) add(t *testing.T, name string, values map[string
 }
 func (f *neutralBillingFixture) seal(t *testing.T, pageSizes ...int) string {
 	t.Helper()
-	directory, _ := writeNeutralFixture(t, f.organization, f.tables, f.records, pageSizes...)
+	directory, _ := neutralimporttest.Write(t, []byte("historical source"), f.organization, f.tables, f.records, pageSizes...)
 	return directory
 }

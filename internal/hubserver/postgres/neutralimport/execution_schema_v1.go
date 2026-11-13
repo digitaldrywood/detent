@@ -1,4 +1,4 @@
-package postgres
+package neutralimport
 
 func neutralExecutionSourceSchemasV1() map[string]neutralCoreSourceSchema {
 	return map[string]neutralCoreSourceSchema{
@@ -356,8 +356,4 @@ func neutralExecutionSourceSchemasV1() map[string]neutralCoreSourceSchema {
 			"project_id":      "[3,\"project_id\",\"TEXT\",1,null,0,0]",
 		}},
 	}
-}
-
-func ValidateNeutralCoreImportTables(source *VerifiedNeutralImport, names ...string) error {
-	return validateNeutralCoreSourceSchema(source, names...)
 }

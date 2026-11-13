@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -23,11 +25,11 @@ func driftNeutralCoreSchema(t *testing.T, path, tableName, column, change string
 	if err != nil {
 		t.Fatal(err)
 	}
-	var manifest postgres.NeutralImportManifest
+	var manifest neutralimport.Manifest
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	records := make(map[string][]postgres.NeutralImportRow)
+	records := make(map[string][]neutralimport.Row)
 	for index := range manifest.Tables {
 		table := &manifest.Tables[index]
 		for _, page := range table.Pages {
@@ -35,7 +37,7 @@ func driftNeutralCoreSchema(t *testing.T, path, tableName, column, change string
 			if err != nil {
 				t.Fatal(err)
 			}
-			var rows []postgres.NeutralImportRow
+			var rows []neutralimport.Row
 			if err := json.Unmarshal(raw, &rows); err != nil {
 				t.Fatal(err)
 			}
@@ -69,7 +71,7 @@ func driftNeutralCoreSchema(t *testing.T, path, tableName, column, change string
 		}
 		table.Columns[column] = string(raw)
 	}
-	directory, _ := writeNeutralFixture(t, manifest.Identity.OrganizationID, manifest.Tables, records)
+	directory, _ := neutralimporttest.Write(t, []byte("historical source"), manifest.Identity.OrganizationID, manifest.Tables, records)
 	return directory
 }
 

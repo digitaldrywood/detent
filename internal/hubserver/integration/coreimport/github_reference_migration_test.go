@@ -92,9 +92,9 @@ func TestImportedGitHubReferenceBackfill(t *testing.T) {
 	}
 	organization := f.Project.OrganizationID
 	source := newCoreNeutralFixture(t, organization, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "change_content_objects", "attachments", "github_imports", "github_import_records")
-	source.add("workflow_states", map[string]any{"id": 1, "project_id": f.Project.ID, "detent_state": "Todo"})
-	source.add("workflow_states", map[string]any{"id": 2, "project_id": other.Project.ID, "detent_state": "Todo"})
-	source.add("repositories", map[string]any{"id": 1, "github_owner": "digitaldrywood", "github_name": "detent", "github_node_id": "R_source"})
+	source.Add("workflow_states", map[string]any{"id": 1, "project_id": f.Project.ID, "detent_state": "Todo"})
+	source.Add("workflow_states", map[string]any{"id": 2, "project_id": other.Project.ID, "detent_state": "Todo"})
+	source.Add("repositories", map[string]any{"id": 1, "github_owner": "digitaldrywood", "github_name": "detent", "github_node_id": "R_source"})
 	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	type importedCase struct {
 		fixture  hubfixture.Native
@@ -129,14 +129,14 @@ func TestImportedGitHubReferenceBackfill(t *testing.T) {
 			row["provenance_provider"] = "other"
 			row["provenance_external_id"] = node
 		}
-		source.add("issues", row)
+		source.Add("issues", row)
 		original := issue
 		original.Revision, original.UpdatedAt, original.Body = 1, now, test.body
 		originalRaw := string(historyTestJSON(t, original))
-		source.add("collaboration_versions", map[string]any{"project_id": fixture.Project.ID, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": originalRaw})
-		source.add("collaboration_versions", map[string]any{"project_id": fixture.Project.ID, "work_item_id": id, "record_id": id, "revision": 2, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
+		source.Add("collaboration_versions", map[string]any{"project_id": fixture.Project.ID, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": originalRaw})
+		source.Add("collaboration_versions", map[string]any{"project_id": fixture.Project.ID, "work_item_id": id, "record_id": id, "revision": 2, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
 		for sequence, kind := range []string{"issue.created", "issue.updated"} {
-			source.add("collaboration_events", map[string]any{"id": fmt.Sprintf("evt_backfill_%d_%d", index, sequence+1), "project_id": fixture.Project.ID, "work_item_id": id, "sequence": sequence + 1, "type": kind, "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: tracker.Revision(sequence + 1)})), "event_revision": sequence + 1, "recorded_at": now.Add(time.Duration(sequence) * time.Hour).Format(time.RFC3339Nano)})
+			source.Add("collaboration_events", map[string]any{"id": fmt.Sprintf("evt_backfill_%d_%d", index, sequence+1), "project_id": fixture.Project.ID, "work_item_id": id, "sequence": sequence + 1, "type": kind, "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: tracker.Revision(sequence + 1)})), "event_revision": sequence + 1, "recorded_at": now.Add(time.Duration(sequence) * time.Hour).Format(time.RFC3339Nano)})
 		}
 		if test.recordURL != "" {
 			recordNode := node
@@ -144,23 +144,23 @@ func TestImportedGitHubReferenceBackfill(t *testing.T) {
 				recordNode = test.recordNode
 			}
 			record := hubserver.GitHubImportRecord{Kind: "issue", SourceKey: "issue:" + recordNode, Data: json.RawMessage(fmt.Sprintf(`{"node_id":%q,"html_url":%q}`, recordNode, test.recordURL)), Provenance: tracker.Provenance{Provider: "github", ExternalID: recordNode}}
-			source.add("github_imports", map[string]any{"id": node, "project_id": fixture.Project.ID, "issue_number": index + 1, "work_item_id": id, "observed_at": testTimestamp})
-			source.add("github_import_records", map[string]any{"sequence": index + 1, "import_id": node, "source_key": record.SourceKey, "kind": "issue", "record_json": string(historyTestJSON(t, record)), "observed_at": testTimestamp})
+			source.Add("github_imports", map[string]any{"id": node, "project_id": fixture.Project.ID, "issue_number": index + 1, "work_item_id": id, "observed_at": testTimestamp})
+			source.Add("github_import_records", map[string]any{"sequence": index + 1, "import_id": node, "source_key": record.SourceKey, "kind": "issue", "record_json": string(historyTestJSON(t, record)), "observed_at": testTimestamp})
 		}
 		if test.name == "unresolvable" {
 			foreign := hubserver.GitHubImportRecord{Kind: "issue", SourceKey: "issue:" + node, Data: json.RawMessage(fmt.Sprintf(`{"node_id":%q,"html_url":%q}`, node, sourceURL)), Provenance: tracker.Provenance{Provider: "github", ExternalID: node}}
-			source.add("github_imports", map[string]any{"id": "foreign_" + node, "project_id": other.Project.ID, "issue_number": index + 1, "work_item_id": id, "observed_at": testTimestamp})
-			source.add("github_import_records", map[string]any{"sequence": 100 + index, "import_id": "foreign_" + node, "source_key": foreign.SourceKey, "kind": "issue", "record_json": string(historyTestJSON(t, foreign)), "observed_at": testTimestamp})
+			source.Add("github_imports", map[string]any{"id": "foreign_" + node, "project_id": other.Project.ID, "issue_number": index + 1, "work_item_id": id, "observed_at": testTimestamp})
+			source.Add("github_import_records", map[string]any{"sequence": 100 + index, "import_id": "foreign_" + node, "source_key": foreign.SourceKey, "kind": "issue", "record_json": string(historyTestJSON(t, foreign)), "observed_at": testTimestamp})
 		}
 		if test.name == "resolved import record" {
 			foreign := hubserver.GitHubImportRecord{Kind: "issue", SourceKey: "issue:typed_other", Data: json.RawMessage(fmt.Sprintf(`{"node_id":%q,"html_url":%q}`, node, "https://github.com/digitaldrywood/detent/issues/2308")), Provenance: tracker.Provenance{Provider: "github", ExternalID: node}}
-			source.add("github_import_records", map[string]any{"sequence": 200 + index, "import_id": node, "source_key": foreign.SourceKey, "kind": "issue", "record_json": string(historyTestJSON(t, foreign)), "provenance_external_id": "I_other", "observed_at": testTimestamp})
+			source.Add("github_import_records", map[string]any{"sequence": 200 + index, "import_id": node, "source_key": foreign.SourceKey, "kind": "issue", "record_json": string(historyTestJSON(t, foreign)), "provenance_external_id": "I_other", "observed_at": testTimestamp})
 		}
 
 		cases[index] = importedCase{fixture: fixture, issue: issue, original: originalRaw, numeric: numeric}
 		hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodGet, fixture.Base+"/work-items/"+string(id), fixture.Token, nil), http.StatusNotFound)
 	}
-	path := source.write()
+	path := source.Write()
 	repository := f.Hub.Config.TenantRepository.(*postgres.Repository)
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))

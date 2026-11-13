@@ -85,8 +85,8 @@ func TestReporterNativeCommands(t *testing.T) {
 					t.Fatalf("historical import target already exists: %v", err)
 				}
 				source := newCoreNeutralFixture(t, "org_security", "projects", "repositories")
-				source.add("projects", map[string]any{"id": id, "organization_id": "org_security", "name": "Reporter imported project", "profile": "native", "states_json": string(previous), "created_at": testTimestamp, "workflow_source": "", "workflow_markdown": "", "content_settings_revision": 1, "integration_revision": 1, "model_selection_revision": 0, "duplicate_challenge": 1})
-				if count, err := f.service.config.TenantRepository.(*postgres.Repository).ImportCoreProjects(t.Context(), postgres.CoreProjectImportSource{BundlePath: source.write(), OrganizationID: "org_security", Objects: f.service.runDetailStore()}); err != nil || count != 1 {
+				source.Add("projects", map[string]any{"id": id, "organization_id": "org_security", "name": "Reporter imported project", "profile": "native", "states_json": string(previous), "created_at": testTimestamp, "workflow_source": "", "workflow_markdown": "", "content_settings_revision": 1, "integration_revision": 1, "model_selection_revision": 0, "duplicate_challenge": 1})
+				if count, err := f.service.config.TenantRepository.(*postgres.Repository).ImportCoreProjects(t.Context(), postgres.CoreProjectImportSource{BundlePath: source.Write(), OrganizationID: "org_security", Objects: f.service.runDetailStore()}); err != nil || count != 1 {
 					t.Fatalf("historical reporter project import=%d error=%v", count, err)
 				}
 				var record projectstore.Record

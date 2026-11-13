@@ -12,13 +12,15 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func accessNeutralBundle(t *testing.T, source postgres.AccessImportSource, includeSecond bool) string {
 	t.Helper()
-	var tables []postgres.NeutralImportTable
-	records := make(map[string][]postgres.NeutralImportRow)
+	var tables []neutralimport.Table
+	records := make(map[string][]neutralimport.Row)
 	for _, name := range accessFixtureTables {
 		table := neutralFixtureTable(t, name, nil)
 		var columns []string
@@ -46,13 +48,13 @@ func accessNeutralBundle(t *testing.T, source postgres.AccessImportSource, inclu
 			defaults[name] = required != 0 && fallback != nil
 			if primary > 0 {
 				for len(table.Key) < primary {
-					table.Key = append(table.Key, postgres.NeutralImportKey{})
+					table.Key = append(table.Key, neutralimport.Key{})
 				}
 				keyKind := "text"
 				if strings.Contains(kind, "INT") {
 					keyKind = "integer"
 				}
-				table.Key[primary-1] = postgres.NeutralImportKey{Column: name, Kind: keyKind}
+				table.Key[primary-1] = neutralimport.Key{Column: name, Kind: keyKind}
 			}
 			columns = append(columns, name)
 		}
@@ -88,7 +90,7 @@ func accessNeutralBundle(t *testing.T, source postgres.AccessImportSource, inclu
 				}
 				named[columns[index]] = value
 			}
-			records[name] = append(records[name], neutralFixtureRow(t, table, named))
+			records[name] = append(records[name], neutralimporttest.Row(t, table, named))
 			if includeSecond && name != "organizations" && name != "hosted_tenant" {
 				second := maps.Clone(named)
 				for column, value := range second {
@@ -121,7 +123,7 @@ func accessNeutralBundle(t *testing.T, source postgres.AccessImportSource, inclu
 				if name == "organization_secrets" {
 					second["kind"] = "slack"
 				}
-				records[name] = append(records[name], neutralFixtureRow(t, table, second))
+				records[name] = append(records[name], neutralimporttest.Row(t, table, second))
 			}
 		}
 		if err := rows.Err(); err != nil {
@@ -137,6 +139,6 @@ func accessNeutralBundle(t *testing.T, source postgres.AccessImportSource, inclu
 	if includeSecond {
 		pageSize = 1
 	}
-	path, _ := writeNeutralFixture(t, tracker.OrganizationID(source.Source.OrganizationID), tables, records, pageSize)
+	path, _ := neutralimporttest.Write(t, []byte("historical source"), tracker.OrganizationID(source.Source.OrganizationID), tables, records, pageSize)
 	return path
 }

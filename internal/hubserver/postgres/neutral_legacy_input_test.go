@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -72,7 +73,7 @@ func TestNeutralImportFamiliesRefuseLegacyCopySelector(t *testing.T) {
 			}},
 		} {
 			t.Run(tc.name+suffix, func(t *testing.T) {
-				if err := tc.run(); !errors.Is(err, postgres.ErrNeutralImport) {
+				if err := tc.run(); !errors.Is(err, neutralimport.ErrInvalid) {
 					t.Fatalf("legacy selector reached source decoding: %v", err)
 				}
 			})

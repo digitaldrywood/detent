@@ -38,6 +38,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -693,13 +694,13 @@ func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 	snapshot.URL = "https://github.com/digitaldrywood/detent/issues/12"
 	f.service.config.ImportBackend = linkedTestImporter{snapshot: snapshot}
 	fixture := coreWorkItemNeutralFixtureBody(t, f.project.OrganizationID, f.project.ID, false, issueContractTestSections+"\n"+strings.Repeat("x", 8192))
-	fixture.set("repositories", map[string]string{"id": "1"}, map[string]any{"github_owner": "digitaldrywood", "github_name": "detent", "github_node_id": "R_original"})
-	fixture.set("issues", map[string]string{"id": "41"}, map[string]any{"number": 100, "github_node_id": "I_original", "github_number": 3410, "url": "https://github.com/wrong/repo/issues/29", "source_updated_at": testTimestamp, "synchronized_at": testTimestamp})
-	fixture.set("issues", map[string]string{"id": "43"}, map[string]any{"number": 102})
-	original := fixture.write()
-	if err := postgres.ReadNeutralImportBundle(t.Context(), original, f.project.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+	fixture.Set("repositories", map[string]string{"id": "1"}, map[string]any{"github_owner": "digitaldrywood", "github_name": "detent", "github_node_id": "R_original"})
+	fixture.Set("issues", map[string]string{"id": "41"}, map[string]any{"number": 100, "github_node_id": "I_original", "github_number": 3410, "url": "https://github.com/wrong/repo/issues/29", "source_updated_at": testTimestamp, "synchronized_at": testTimestamp})
+	fixture.Set("issues", map[string]string{"id": "43"}, map[string]any{"number": 102})
+	original := fixture.Write()
+	if err := neutralimport.Read(t.Context(), original, f.project.OrganizationID, func(bundle *neutralimport.Bundle) error {
 		source := CoreWorkItemImportSource{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-		reader := newCoreNeutralImport(bundle)
+		reader := neutralimport.NewQuery(bundle)
 		for _, item := range []struct {
 			id     string
 			number int
@@ -718,14 +719,14 @@ func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				fixture.set("collaboration_versions", map[string]string{"record_id": item.id, "revision": fmt.Sprint(revision)}, map[string]any{"encoding": "snapshot", "record_json": string(raw)})
+				fixture.Set("collaboration_versions", map[string]string{"record_id": item.id, "revision": fmt.Sprint(revision)}, map[string]any{"encoding": "snapshot", "record_json": string(raw)})
 			}
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 	for range 2 {
 		if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, source); err != nil || count != 2 {
 			t.Fatalf("verified issue import = %d, error = %v", count, err)
@@ -1041,19 +1042,19 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			t.Fatal(err)
 		}
 		fixture := newCoreNeutralFixture(t, scope.Organization, "issues", "native_attempts", "leases", "lease_policies")
-		fixture.add("issues", map[string]any{"id": snapshot.Attempt.IssueID, "organization_id": scope.Organization, "project_id": scope.Project, "native_id": local.issue.WorkItemID})
-		fixture.add("native_attempts", map[string]any{"id": id, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": local.issue.WorkItemID, "lease_id": actual.LeaseID, "fencing_token": actual.FencingToken, "run_id": actual.RunID, "sequence": actual.Sequence, "status": snapshot.Attempt.Status, "work_item_revision": snapshot.Attempt.WorkItemRevision, "dispatch_generation": snapshot.Attempt.DispatchGeneration, "data_json": string(payload), "checkpoint_json": checkpoint, "artifact_ids_json": "[]", "started_at": hubapi.FormatHubTime(snapshot.Attempt.StartedAt), "updated_at": hubapi.FormatHubTime(snapshot.Attempt.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
+		fixture.Add("issues", map[string]any{"id": snapshot.Attempt.IssueID, "organization_id": scope.Organization, "project_id": scope.Project, "native_id": local.issue.WorkItemID})
+		fixture.Add("native_attempts", map[string]any{"id": id, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": local.issue.WorkItemID, "lease_id": actual.LeaseID, "fencing_token": actual.FencingToken, "run_id": actual.RunID, "sequence": actual.Sequence, "status": snapshot.Attempt.Status, "work_item_revision": snapshot.Attempt.WorkItemRevision, "dispatch_generation": snapshot.Attempt.DispatchGeneration, "data_json": string(payload), "checkpoint_json": checkpoint, "artifact_ids_json": "[]", "started_at": hubapi.FormatHubTime(snapshot.Attempt.StartedAt), "updated_at": hubapi.FormatHubTime(snapshot.Attempt.UpdatedAt), "payload_object_key": "", "checkpoint_object_key": ""})
 		lease := snapshot.Lease
 		var released any
 		if lease.ReleasedAt != nil {
 			released = hubapi.FormatHubTime(*lease.ReleasedAt)
 		}
-		fixture.add("leases", map[string]any{"fencing_token": lease.FencingToken, "lease_id": lease.LeaseID, "issue_id": lease.IssueID, "machine_id": lease.MachineID, "session_id": lease.SessionID, "work_item_revision": lease.WorkItemRevision, "landing_capacity": lease.LandingCapacity, "acquired_at": hubapi.FormatHubTime(lease.AcquiredAt), "renewed_at": hubapi.FormatHubTime(lease.RenewedAt), "expires_at": hubapi.FormatHubTime(lease.ExpiresAt), "released_at": released})
-		fixture.add("lease_policies", map[string]any{"lease_id": lease.LeaseID, "scope": string(scope.Organization) + "/" + string(scope.Project), "policy_id": pinned.PolicyID})
-		source := CoreExecutionImportSource{BundlePath: fixture.write(), OrganizationID: scope.Organization, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
+		fixture.Add("leases", map[string]any{"fencing_token": lease.FencingToken, "lease_id": lease.LeaseID, "issue_id": lease.IssueID, "machine_id": lease.MachineID, "session_id": lease.SessionID, "work_item_revision": lease.WorkItemRevision, "landing_capacity": lease.LandingCapacity, "acquired_at": hubapi.FormatHubTime(lease.AcquiredAt), "renewed_at": hubapi.FormatHubTime(lease.RenewedAt), "expires_at": hubapi.FormatHubTime(lease.ExpiresAt), "released_at": released})
+		fixture.Add("lease_policies", map[string]any{"lease_id": lease.LeaseID, "scope": string(scope.Organization) + "/" + string(scope.Project), "policy_id": pinned.PolicyID})
+		source := CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: scope.Organization, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
 		repository := service.config.TenantRepository.(*postgres.Repository)
-		err = postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, scope.Organization, func(bundle *postgres.VerifiedNeutralImport) error {
-			input := newCoreNeutralImport(bundle)
+		err = neutralimport.Read(t.Context(), source.BundlePath, scope.Organization, func(bundle *neutralimport.Bundle) error {
+			input := neutralimport.NewQuery(bundle)
 			rows, err := readCoreAttemptImportPage(t.Context(), input, scope.Organization, 0)
 			if err != nil {
 				return err
@@ -1849,8 +1850,8 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 					t.Fatal(err)
 				}
 				fixture := coreChangeNeutralFixture(t, f.project.OrganizationID, f.project.ID, now, hubTestPolicy(), policyRaw)
-				for table := range fixture.records {
-					fixture.records[table] = nil
+				for table := range fixture.Records {
+					fixture.Records[table] = nil
 				}
 				changeRaw, err := json.Marshal(f.change)
 				if err != nil {
@@ -1860,11 +1861,11 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				fixture.add("policy_revisions", map[string]any{"scope": string(f.project.OrganizationID) + "/" + string(f.project.ID), "policy_id": version.PolicyID, "metadata_json": string(policyRaw)})
-				fixture.add("change_requests", map[string]any{"id": f.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "record_json": string(changeRaw)})
-				fixture.add("change_issue_links", map[string]any{"change_id": f.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID})
-				fixture.add("change_versions", map[string]any{"id": version.ID, "change_id": f.change.ID, "number": 1, "record_json": string(versionRaw), "policy_revision_id": version.PolicyID, "payload_object_key": "", "repository": version.Repository, "created_at": hubapi.FormatHubTime(now), "head_sha": nil, "external_id": nil, "external_url": nil})
-				source := CoreChangeImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
+				fixture.Add("policy_revisions", map[string]any{"scope": string(f.project.OrganizationID) + "/" + string(f.project.ID), "policy_id": version.PolicyID, "metadata_json": string(policyRaw)})
+				fixture.Add("change_requests", map[string]any{"id": f.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "record_json": string(changeRaw)})
+				fixture.Add("change_issue_links", map[string]any{"change_id": f.change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID})
+				fixture.Add("change_versions", map[string]any{"id": version.ID, "change_id": f.change.ID, "number": 1, "record_json": string(versionRaw), "policy_revision_id": version.PolicyID, "payload_object_key": "", "repository": version.Repository, "created_at": hubapi.FormatHubTime(now), "head_sha": nil, "external_id": nil, "external_url": nil})
+				source := CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, SourceObjects: service.runDetailStore(), Objects: service.runDetailStore()}
 				for range 2 {
 					if count, err := ImportCoreChanges(t.Context(), service.database.postgres, source); err != nil || count != 1 {
 						t.Fatalf("pending historical version import = %d, error = %v", count, err)

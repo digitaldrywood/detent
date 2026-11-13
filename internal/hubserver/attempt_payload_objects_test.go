@@ -566,10 +566,10 @@ func TestRunHistoryWritesOnlyObjectReferences(t *testing.T) {
 						t.Fatal(err)
 					}
 					item := "wi_core_import" + suffix
-					source.add("collaboration_events", map[string]any{"id": "event_history_unordered" + suffix, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": 3, "type": "run.finished", "schema_version": 1, "actor_json": string(actor), "data_json": string(payload), "recorded_at": "2026-10-02T01:00:00Z"})
-					source.set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3})
+					source.Add("collaboration_events", map[string]any{"id": "event_history_unordered" + suffix, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": 3, "type": "run.finished", "schema_version": 1, "actor_json": string(actor), "data_json": string(payload), "recorded_at": "2026-10-02T01:00:00Z"})
+					source.Set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3})
 				}
-				count, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()})
+				count, err := ImportCoreWorkItems(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()})
 				if err != nil || count != 2 {
 					t.Fatalf("unordered historical run import count=%d error=%v", count, err)
 				}
@@ -893,18 +893,18 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 			var row eventstore.LandingReceipt
 			if test.legacy {
 				fixture := newCoreNeutralFixture(t, scope.Organization, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
-				fixture.add("policy_revisions", map[string]any{"scope": string(scope.Organization) + "/" + string(scope.Project), "policy_id": version.PolicyID, "metadata_json": string(historyTestJSON(t, version.Policy))})
-				fixture.add("change_requests", map[string]any{"id": change.ID, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": f.issue.WorkItemID, "record_json": string(historyTestJSON(t, change))})
+				fixture.Add("policy_revisions", map[string]any{"scope": string(scope.Organization) + "/" + string(scope.Project), "policy_id": version.PolicyID, "metadata_json": string(historyTestJSON(t, version.Policy))})
+				fixture.Add("change_requests", map[string]any{"id": change.ID, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": f.issue.WorkItemID, "record_json": string(historyTestJSON(t, change))})
 				for _, item := range change.LinkedIssues {
-					fixture.add("change_issue_links", map[string]any{"change_id": change.ID, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": item})
+					fixture.Add("change_issue_links", map[string]any{"change_id": change.ID, "organization_id": scope.Organization, "project_id": scope.Project, "work_item_id": item})
 				}
-				fixture.add("change_versions", map[string]any{"id": version.ID, "change_id": change.ID, "number": version.Number, "policy_revision_id": version.PolicyID, "record_json": string(historyTestJSON(t, version)), "repository": version.Repository})
+				fixture.Add("change_versions", map[string]any{"id": version.ID, "change_id": change.ID, "number": version.Number, "policy_revision_id": version.PolicyID, "record_json": string(historyTestJSON(t, version)), "repository": version.Repository})
 				if version.Source != nil {
-					fixture.add("change_sources", map[string]any{"version_id": version.ID, "bundle": bundle, "object_key": "", "object_sha256": "", "object_bytes": 0, "content_bytes": 0})
+					fixture.Add("change_sources", map[string]any{"version_id": version.ID, "bundle": bundle, "object_key": "", "object_sha256": "", "object_bytes": 0, "content_bytes": 0})
 				}
-				fixture.add("change_landing_receipts", map[string]any{"attempt_id": attempt.ID, "version_id": version.ID, "record_json": string(historyTestJSON(t, receipt))})
+				fixture.Add("change_landing_receipts", map[string]any{"attempt_id": attempt.ID, "version_id": version.ID, "record_json": string(historyTestJSON(t, receipt))})
 				objects := f.service.runDetailStore()
-				source := CoreChangeImportSource{BundlePath: fixture.write(), OrganizationID: scope.Organization, SourceObjects: objects, Objects: objects}
+				source := CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: scope.Organization, SourceObjects: objects, Objects: objects}
 				var first eventstore.LandingReceipt
 				for pass := range 2 {
 					count, err := ImportCoreChanges(t.Context(), f.service.config.TenantRepository.(*postgres.Repository), source)
@@ -1101,14 +1101,14 @@ func payloadAssertHistoricalAttemptReads(t *testing.T, data tracker.NativeRunDat
 			if err != nil {
 				t.Fatal(err)
 			}
-			fixture.set("native_attempts", map[string]string{"id": run.AttemptID}, map[string]any{"data_json": string(raw), "checkpoint_json": string(checkpoint), "artifact_ids_json": string(retained), "sequence": run.Sequence, "status": "succeeded"})
+			fixture.Set("native_attempts", map[string]string{"id": run.AttemptID}, map[string]any{"data_json": string(raw), "checkpoint_json": string(checkpoint), "artifact_ids_json": string(retained), "sequence": run.Sequence, "status": "succeeded"})
 			for sequence := int64(2); sequence <= run.Sequence; sequence++ {
-				fixture.add("native_attempt_events", map[string]any{"attempt_id": run.AttemptID, "sequence": sequence, "request_hash": strings.Repeat("0", 64)})
+				fixture.Add("native_attempt_events", map[string]any{"attempt_id": run.AttemptID, "sequence": sequence, "request_hash": strings.Repeat("0", 64)})
 			}
 			run.ArtifactIDs = append([]string(nil), artifacts...)
 			expected[run.AttemptID] = run
 		}
-		source := CoreExecutionImportSource{BundlePath: fixture.write(), OrganizationID: organization, SourceObjects: objects, Objects: objects}
+		source := CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: organization, SourceObjects: objects, Objects: objects}
 		previous := map[string]tracker.NativeAttempt{}
 		charged := map[string]attachment.ArchiveReference{}
 		for pass := range 2 {
@@ -1191,15 +1191,15 @@ func payloadAssertHistoricalVersion(t *testing.T, f changeFixture, version track
 	change := f.change
 	change.ID, change.CurrentVersion, change.Revision, change.Landed = legacy.ChangeID, legacy.ID, 1, nil
 	fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
-	fixture.add("policy_revisions", map[string]any{"scope": string(f.project.OrganizationID) + "/" + string(f.project.ID), "policy_id": legacy.PolicyID, "metadata_json": string(historyTestJSON(t, legacy.Policy))})
-	fixture.add("change_requests", map[string]any{"id": change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "record_json": string(historyTestJSON(t, change))})
+	fixture.Add("policy_revisions", map[string]any{"scope": string(f.project.OrganizationID) + "/" + string(f.project.ID), "policy_id": legacy.PolicyID, "metadata_json": string(historyTestJSON(t, legacy.Policy))})
+	fixture.Add("change_requests", map[string]any{"id": change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "record_json": string(historyTestJSON(t, change))})
 	for _, item := range change.LinkedIssues {
-		fixture.add("change_issue_links", map[string]any{"change_id": change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item})
+		fixture.Add("change_issue_links", map[string]any{"change_id": change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item})
 	}
-	fixture.add("change_versions", map[string]any{"id": legacy.ID, "change_id": change.ID, "number": legacy.Number, "record_json": string(historyTestJSON(t, legacy)), "policy_revision_id": legacy.PolicyID})
-	fixture.add("change_sources", map[string]any{"version_id": legacy.ID, "bundle": bundle, "object_key": "", "object_sha256": "", "object_bytes": 0, "content_bytes": 0})
+	fixture.Add("change_versions", map[string]any{"id": legacy.ID, "change_id": change.ID, "number": legacy.Number, "record_json": string(historyTestJSON(t, legacy)), "policy_revision_id": legacy.PolicyID})
+	fixture.Add("change_sources", map[string]any{"version_id": legacy.ID, "bundle": bundle, "object_key": "", "object_sha256": "", "object_bytes": 0, "content_bytes": 0})
 	objects := f.service.runDetailStore()
-	source := CoreChangeImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, SourceObjects: objects, Objects: objects}
+	source := CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, SourceObjects: objects, Objects: objects}
 	repository := f.service.config.TenantRepository.(*postgres.Repository)
 	var before tracker.ChangeVersion
 	for pass := range 2 {
@@ -1243,10 +1243,10 @@ func payloadAssertHistoricalDiff(t *testing.T, patch string) {
 		fixture := coreExecutionNeutralFixture(t, organization)
 		for index, suffix := range []string{"", "_second"} {
 			diffID := "diff_payload_import" + suffix
-			fixture.add("attempt_diffs", map[string]any{"id": diffID, "organization_id": organization, "project_id": "prj_execution_import", "work_item_id": "wi_execution_import" + suffix, "attempt_id": "attempt_execution_import" + suffix, "source": "attempt", "source_id": "", "seq": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "producer_kind": "attempt", "producer_id": "attempt_execution_import" + suffix, "producer_runner_id": "runner_execution_import" + suffix, "producer_lease_id": "lease_execution_import" + suffix, "producer_fencing_token": 40 + index, "file_count": 1, "patch_bytes": len(patch), "posted_bytes": len(patch), "created_at": "2026-10-02T00:00:00Z"})
-			fixture.add("attempt_diff_files", map[string]any{"diff_id": diffID, "position": 0, "path": "example.go", "old_path": "", "status": "modified", "additions": 0, "deletions": 0, "binary": false, "patch": patch, "truncated": false, "denied": false, "patch_expired": false})
+			fixture.Add("attempt_diffs", map[string]any{"id": diffID, "organization_id": organization, "project_id": "prj_execution_import", "work_item_id": "wi_execution_import" + suffix, "attempt_id": "attempt_execution_import" + suffix, "source": "attempt", "source_id": "", "seq": 1, "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "producer_kind": "attempt", "producer_id": "attempt_execution_import" + suffix, "producer_runner_id": "runner_execution_import" + suffix, "producer_lease_id": "lease_execution_import" + suffix, "producer_fencing_token": 40 + index, "file_count": 1, "patch_bytes": len(patch), "posted_bytes": len(patch), "created_at": "2026-10-02T00:00:00Z"})
+			fixture.Add("attempt_diff_files", map[string]any{"diff_id": diffID, "position": 0, "path": "example.go", "old_path": "", "status": "modified", "additions": 0, "deletions": 0, "binary": false, "patch": patch, "truncated": false, "denied": false, "patch_expired": false})
 		}
-		source := CoreExecutionImportSource{BundlePath: fixture.write(), OrganizationID: organization, SourceObjects: objects, Objects: objects}
+		source := CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: organization, SourceObjects: objects, Objects: objects}
 		previous := map[string]tracker.AttemptDiff{}
 		for pass := range 2 {
 			count, err := ImportCoreExecution(t.Context(), repository, source)

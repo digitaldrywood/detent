@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -1715,9 +1716,9 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 						t.Fatal(err)
 					}
 					fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "collaboration_events")
-					fixture.add("collaboration_events", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": issue.WorkItemID, "id": hubapi.NewID("event"), "sequence": 0, "type": event.Type, "schema_version": 1, "actor_json": string(actor), "data_json": string(data), "recorded_at": hubapi.FormatHubTime(time.Now().UTC())})
-					source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
-					if err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+					fixture.Add("collaboration_events", map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": issue.WorkItemID, "id": hubapi.NewID("event"), "sequence": 0, "type": event.Type, "schema_version": 1, "actor_json": string(actor), "data_json": string(data), "recorded_at": hubapi.FormatHubTime(time.Now().UTC())})
+					source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+					if err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
 						var row corestore.WorkItem
 						if err := repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 							var err error
@@ -1727,7 +1728,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 							return err
 						}
 						record := postgres.CoreWorkItemImport{Item: row}
-						if err := readCoreImportEvents(ctx, newCoreNeutralImport(bundle), eventstore.NewContent(source.Objects), source, row, &record, make(map[string][]byte)); err != nil {
+						if err := readCoreImportEvents(ctx, neutralimport.NewQuery(bundle), eventstore.NewContent(source.Objects), source, row, &record, make(map[string][]byte)); err != nil {
 							return err
 						}
 						if len(record.Events) != 1 {

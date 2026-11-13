@@ -1,9 +1,11 @@
-package postgres
+package neutralimport
 
 import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,69 +27,81 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-var ErrNeutralImport = errors.New("invalid neutral import bundle")
+var ErrInvalid = errors.New("invalid neutral import bundle")
 
-const neutralImportPageRows = 100
-const neutralImportPageBytes = 32 << 20
-const neutralImportManifestBytes = 16 << 20
+const PageRows = 100
+const PageBytes = 32 << 20
+const ManifestBytes = 16 << 20
 
-type NeutralImportIdentity struct {
+type Identity struct {
 	SourceID       string                 `json:"source_id"`
 	SourceSHA256   string                 `json:"source_sha256"`
 	OrganizationID tracker.OrganizationID `json:"organization_id"`
 	SchemaVersion  int                    `json:"schema_version"`
 }
-type NeutralImportManifest struct {
-	Version  int                   `json:"version"`
-	Identity NeutralImportIdentity `json:"identity"`
-	Tables   []NeutralImportTable  `json:"tables"`
+type Manifest struct {
+	Version  int      `json:"version"`
+	Identity Identity `json:"identity"`
+	Tables   []Table  `json:"tables"`
 }
-type NeutralImportKey struct {
+type Key struct {
 	Column string `json:"column"`
 	Kind   string `json:"kind"`
 }
-type NeutralImportTable struct {
-	Name    string              `json:"name"`
-	Columns map[string]string   `json:"columns"`
-	Key     []NeutralImportKey  `json:"key"`
-	Pages   []NeutralImportPage `json:"pages"`
+type Table struct {
+	Name    string            `json:"name"`
+	Columns map[string]string `json:"columns"`
+	Key     []Key             `json:"key"`
+	Pages   []Page            `json:"pages"`
 }
-type NeutralImportPage struct {
+type Page struct {
 	File   string   `json:"file"`
 	SHA256 string   `json:"sha256"`
 	Rows   int      `json:"rows"`
 	First  []string `json:"first"`
 	Last   []string `json:"last"`
 }
-type NeutralImportRow struct {
+type Row struct {
 	SourcePosition *int64                         `json:"source_position,omitempty"`
 	SourceRowID    int64                          `json:"source_row_id,omitempty"`
 	Ordinal        int64                          `json:"-"`
 	Key            []string                       `json:"key"`
 	Values         map[string]storagecatalog.Cell `json:"values"`
 }
-type VerifiedNeutralImport struct {
+type Bundle struct {
 	pageOffsets map[string]int64
 	root        *os.Root
-	manifest    NeutralImportManifest
+	manifest    Manifest
 	digest      string
 }
 
-func ReadNeutralImportBundle(ctx context.Context, directory string, organization tracker.OrganizationID, read func(*VerifiedNeutralImport) error) (resultErr error) {
+func View(root *os.Root, manifest Manifest) *Bundle {
+	offsets := make(map[string]int64)
+	for _, table := range manifest.Tables {
+		var ordinal int64
+		for _, page := range table.Pages {
+			offsets[page.File] = ordinal
+			ordinal += int64(page.Rows)
+		}
+	}
+	return &Bundle{root: root, manifest: manifest, pageOffsets: offsets}
+}
+
+func Read(ctx context.Context, directory string, organization tracker.OrganizationID, read func(*Bundle) error) (resultErr error) {
 	root, err := os.OpenRoot(directory)
 	if err != nil {
-		return ErrNeutralImport
+		return ErrInvalid
 	}
 	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
-	raw, err := readNeutralImportFile(ctx, root, "manifest.json", neutralImportManifestBytes)
+	raw, err := readNeutralImportFile(ctx, root, "manifest.json", ManifestBytes)
 	if err != nil {
 		return err
 	}
-	var manifest NeutralImportManifest
+	var manifest Manifest
 	if err := decodeNeutralImport(raw, &manifest); err != nil {
 		return err
 	}
-	source := &VerifiedNeutralImport{root: root, manifest: manifest, digest: artifact.Digest(raw)}
+	source := &Bundle{root: root, manifest: manifest, digest: artifact.Digest(raw)}
 	if err := source.verify(ctx, organization); err != nil {
 		return err
 	}
@@ -101,7 +115,7 @@ func ReadNeutralImportBundle(ctx context.Context, directory string, organization
 		return mutation.ErrConflict
 	}
 	defer func() { resultErr = errors.Join(resultErr, current.Close()) }()
-	final, err := readNeutralImportFile(ctx, current, "manifest.json", neutralImportManifestBytes)
+	final, err := readNeutralImportFile(ctx, current, "manifest.json", ManifestBytes)
 	if err != nil || artifact.Digest(final) != source.digest {
 		return mutation.ErrConflict
 	}
@@ -112,9 +126,13 @@ func ReadNeutralImportBundle(ctx context.Context, directory string, organization
 	return nil
 }
 
-func (s *VerifiedNeutralImport) Identity() NeutralImportIdentity { return s.manifest.Identity }
-func (s *VerifiedNeutralImport) Digest() string                  { return s.digest }
-func (s *VerifiedNeutralImport) Schema() storagecatalog.Schema {
+func (s *Bundle) Identity() Identity { return s.manifest.Identity }
+func (s *Bundle) Digest() string     { return s.digest }
+func (s *Bundle) Manifest() Manifest { return s.manifest }
+func (s *Bundle) PageFile(ctx context.Context, name string) ([]byte, error) {
+	return readNeutralImportFile(ctx, s.root, name, PageBytes)
+}
+func (s *Bundle) Schema() storagecatalog.Schema {
 	schema := storagecatalog.Schema{}
 	for _, table := range s.manifest.Tables {
 		columns := make(map[string]string, len(table.Columns))
@@ -125,58 +143,58 @@ func (s *VerifiedNeutralImport) Schema() storagecatalog.Schema {
 	}
 	return schema
 }
-func (s *VerifiedNeutralImport) TableKey(name string) ([]NeutralImportKey, error) {
-	table, err := s.table(name)
+func (s *Bundle) TableKey(name string) ([]Key, error) {
+	table, err := s.Table(name)
 	if err != nil {
 		return nil, err
 	}
 	return slices.Clone(table.Key), nil
 }
-func (s *VerifiedNeutralImport) table(name string) (NeutralImportTable, error) {
+func (s *Bundle) Table(name string) (Table, error) {
 	for _, table := range s.manifest.Tables {
 		if table.Name == name {
 			return table, nil
 		}
 	}
-	return NeutralImportTable{}, ErrNeutralImport
+	return Table{}, ErrInvalid
 }
-func (s *VerifiedNeutralImport) Page(ctx context.Context, name string, after []string, limit int) ([]NeutralImportRow, error) {
-	if limit < 1 || limit > neutralImportPageRows {
-		return nil, ErrNeutralImport
+func (s *Bundle) Page(ctx context.Context, name string, after []string, limit int) ([]Row, error) {
+	if limit < 1 || limit > PageRows {
+		return nil, ErrInvalid
 	}
-	table, err := s.table(name)
+	table, err := s.Table(name)
 	if err != nil {
 		return nil, err
 	}
-	if len(after) != 0 && !validNeutralImportKey(table.Key, after) {
-		return nil, ErrNeutralImport
+	if len(after) != 0 && !ValidKey(table.Key, after) {
+		return nil, ErrInvalid
 	}
 	start := sort.Search(len(table.Pages), func(i int) bool {
-		return len(after) == 0 || compareNeutralImportKeys(table.Key, table.Pages[i].Last, after) > 0
+		return len(after) == 0 || CompareKeys(table.Key, table.Pages[i].Last, after) > 0
 	})
 	if start == len(table.Pages) {
-		return []NeutralImportRow{}, nil
+		return []Row{}, nil
 	}
 	rows, err := s.page(ctx, table, table.Pages[start])
 	if err != nil {
 		return nil, err
 	}
 	first := sort.Search(len(rows), func(i int) bool {
-		return len(after) == 0 || compareNeutralImportKeys(table.Key, rows[i].Key, after) > 0
+		return len(after) == 0 || CompareKeys(table.Key, rows[i].Key, after) > 0
 	})
 	return rows[first:min(len(rows), first+limit)], nil
 }
-func (s *VerifiedNeutralImport) OrdinalPage(ctx context.Context, name string, after int64, limit int) ([]NeutralImportRow, error) {
-	if after < 0 || limit < 1 || limit > neutralImportPageRows {
-		return nil, ErrNeutralImport
+func (s *Bundle) OrdinalPage(ctx context.Context, name string, after int64, limit int) ([]Row, error) {
+	if after < 0 || limit < 1 || limit > PageRows {
+		return nil, ErrInvalid
 	}
-	table, err := s.table(name)
+	table, err := s.Table(name)
 	if err != nil {
 		return nil, err
 	}
 	page := sort.Search(len(table.Pages), func(i int) bool { return s.pageOffsets[table.Pages[i].File]+int64(table.Pages[i].Rows) > after })
 	if page == len(table.Pages) {
-		return []NeutralImportRow{}, nil
+		return []Row{}, nil
 	}
 	rows, err := s.page(ctx, table, table.Pages[page])
 	if err != nil {
@@ -186,57 +204,57 @@ func (s *VerifiedNeutralImport) OrdinalPage(ctx context.Context, name string, af
 	return rows[first:min(len(rows), first+limit)], nil
 }
 
-func (s *VerifiedNeutralImport) Lookup(ctx context.Context, name string, key []string) (NeutralImportRow, error) {
-	table, err := s.table(name)
-	if err != nil || !validNeutralImportKey(table.Key, key) {
-		return NeutralImportRow{}, ErrNeutralImport
+func (s *Bundle) Lookup(ctx context.Context, name string, key []string) (Row, error) {
+	table, err := s.Table(name)
+	if err != nil || !ValidKey(table.Key, key) {
+		return Row{}, ErrInvalid
 	}
-	page := sort.Search(len(table.Pages), func(i int) bool { return compareNeutralImportKeys(table.Key, table.Pages[i].Last, key) >= 0 })
+	page := sort.Search(len(table.Pages), func(i int) bool { return CompareKeys(table.Key, table.Pages[i].Last, key) >= 0 })
 	if page == len(table.Pages) {
-		return NeutralImportRow{}, corestore.ErrNotFound
+		return Row{}, corestore.ErrNotFound
 	}
 	rows, err := s.page(ctx, table, table.Pages[page])
 	if err != nil {
-		return NeutralImportRow{}, err
+		return Row{}, err
 	}
-	index := sort.Search(len(rows), func(i int) bool { return compareNeutralImportKeys(table.Key, rows[i].Key, key) >= 0 })
-	if index == len(rows) || compareNeutralImportKeys(table.Key, rows[index].Key, key) != 0 {
-		return NeutralImportRow{}, corestore.ErrNotFound
+	index := sort.Search(len(rows), func(i int) bool { return CompareKeys(table.Key, rows[i].Key, key) >= 0 })
+	if index == len(rows) || CompareKeys(table.Key, rows[index].Key, key) != 0 {
+		return Row{}, corestore.ErrNotFound
 	}
 	return rows[index], nil
 }
 
-func (s *VerifiedNeutralImport) verify(ctx context.Context, organization tracker.OrganizationID) error {
+func (s *Bundle) verify(ctx context.Context, organization tracker.OrganizationID) error {
 	identity := s.manifest.Identity
 	if s.manifest.Version != 1 || organization == "" || identity.OrganizationID != organization || identity.SourceID == "" || strings.TrimSpace(identity.SourceID) != identity.SourceID || len(identity.SourceID) > 200 || !artifact.ValidHash(identity.SourceSHA256, 64) || identity.SchemaVersion != 1 || len(s.manifest.Tables) == 0 {
-		return ErrNeutralImport
+		return ErrInvalid
 	}
 	s.pageOffsets = make(map[string]int64)
 	names := make(map[string]bool)
 	files := map[string]bool{"manifest.json": true}
 	for _, table := range s.manifest.Tables {
 		if !neutralImportIdentifier(table.Name) || names[table.Name] || len(table.Columns) == 0 || len(table.Key) == 0 {
-			return ErrNeutralImport
+			return ErrInvalid
 		}
 		names[table.Name] = true
 		keyNames := make(map[string]bool)
 		for _, key := range table.Key {
 			if !neutralImportIdentifier(key.Column) || table.Columns[key.Column] == "" || keyNames[key.Column] || key.Kind != "text" && key.Kind != "integer" {
-				return ErrNeutralImport
+				return ErrInvalid
 			}
 			keyNames[key.Column] = true
 		}
 		for name, signature := range table.Columns {
 			if !neutralImportIdentifier(name) || !validNeutralImportColumn(name, signature) {
-				return ErrNeutralImport
+				return ErrInvalid
 			}
 		}
 		var previous []string
 		var ordinal int64
 		sourceIDs := map[int64]bool{}
 		for _, page := range table.Pages {
-			if page.File == "" || filepath.Base(page.File) != page.File || page.File == "." || files[page.File] || !artifact.ValidHash(page.SHA256, 64) || page.Rows < 1 || page.Rows > neutralImportPageRows || !validNeutralImportKey(table.Key, page.First) || !validNeutralImportKey(table.Key, page.Last) || compareNeutralImportKeys(table.Key, page.First, page.Last) > 0 || previous != nil && compareNeutralImportKeys(table.Key, previous, page.First) >= 0 {
-				return ErrNeutralImport
+			if page.File == "" || filepath.Base(page.File) != page.File || page.File == "." || files[page.File] || !artifact.ValidHash(page.SHA256, 64) || page.Rows < 1 || page.Rows > PageRows || !ValidKey(table.Key, page.First) || !ValidKey(table.Key, page.Last) || CompareKeys(table.Key, page.First, page.Last) > 0 || previous != nil && CompareKeys(table.Key, previous, page.First) >= 0 {
+				return ErrInvalid
 			}
 			files[page.File] = true
 			s.pageOffsets[page.File] = ordinal
@@ -248,7 +266,7 @@ func (s *VerifiedNeutralImport) verify(ctx context.Context, organization tracker
 			for _, row := range rows {
 				if row.SourceRowID > 0 {
 					if sourceIDs[row.SourceRowID] {
-						return ErrNeutralImport
+						return ErrInvalid
 					}
 					sourceIDs[row.SourceRowID] = true
 				}
@@ -258,50 +276,50 @@ func (s *VerifiedNeutralImport) verify(ctx context.Context, organization tracker
 	}
 	return nil
 }
-func (s *VerifiedNeutralImport) page(ctx context.Context, table NeutralImportTable, page NeutralImportPage) ([]NeutralImportRow, error) {
-	raw, err := readNeutralImportFile(ctx, s.root, page.File, neutralImportPageBytes)
+func (s *Bundle) page(ctx context.Context, table Table, page Page) ([]Row, error) {
+	raw, err := readNeutralImportFile(ctx, s.root, page.File, PageBytes)
 	if err != nil {
 		return nil, err
 	}
 	if artifact.Digest(raw) != page.SHA256 {
 		return nil, mutation.ErrConflict
 	}
-	var rows []NeutralImportRow
+	var rows []Row
 	if err := decodeNeutralImport(raw, &rows); err != nil {
 		return nil, err
 	}
 	if len(rows) != page.Rows {
-		return nil, ErrNeutralImport
+		return nil, ErrInvalid
 	}
 	var previous []string
 	for _, row := range rows {
 		if row.SourceRowID < 0 || row.SourcePosition != nil && *row.SourcePosition < 0 {
-			return nil, ErrNeutralImport
+			return nil, ErrInvalid
 		}
 		if row.SourceRowID > 0 && len(table.Key) == 1 && table.Key[0].Column == "id" && table.Key[0].Kind == "integer" {
 			id, err := strconv.ParseInt(string(row.Values["id"].Data), 10, 64)
 			if err != nil || id != row.SourceRowID {
-				return nil, ErrNeutralImport
+				return nil, ErrInvalid
 			}
 		}
-		if !validNeutralImportKey(table.Key, row.Key) || len(row.Values) != len(table.Columns) || previous != nil && compareNeutralImportKeys(table.Key, previous, row.Key) >= 0 {
-			return nil, ErrNeutralImport
+		if !ValidKey(table.Key, row.Key) || len(row.Values) != len(table.Columns) || previous != nil && CompareKeys(table.Key, previous, row.Key) >= 0 {
+			return nil, ErrInvalid
 		}
 		for name, cell := range row.Values {
 			if _, ok := table.Columns[name]; !ok {
-				return nil, ErrNeutralImport
+				return nil, ErrInvalid
 			}
 			if cell.Encoding == "utf8" && !utf8.Valid(cell.Data) {
-				return nil, ErrNeutralImport
+				return nil, ErrInvalid
 			}
 			if cell.Null && (cell.Encoding != "" || len(cell.Data) != 0) || !cell.Null && cell.Encoding != "utf8" && cell.Encoding != "base64" && cell.Encoding != "hex" && cell.Encoding != "binary" {
-				return nil, ErrNeutralImport
+				return nil, ErrInvalid
 			}
 		}
 		for index, key := range table.Key {
 			value := row.Values[key.Column]
 			if value.Null || value.Encoding != "utf8" || string(value.Data) != row.Key[index] {
-				return nil, ErrNeutralImport
+				return nil, ErrInvalid
 			}
 		}
 		if organization, ok := row.Values["organization_id"]; ok {
@@ -315,7 +333,7 @@ func (s *VerifiedNeutralImport) page(ctx context.Context, table NeutralImportTab
 		rows[index].Ordinal = s.pageOffsets[page.File] + int64(index) + 1
 	}
 	if !slices.Equal(rows[0].Key, page.First) || !slices.Equal(rows[len(rows)-1].Key, page.Last) {
-		return nil, ErrNeutralImport
+		return nil, ErrInvalid
 	}
 	return rows, nil
 }
@@ -344,7 +362,7 @@ func neutralImportIdentifier(value string) bool {
 	}
 	return true
 }
-func validNeutralImportKey(columns []NeutralImportKey, values []string) bool {
+func ValidKey(columns []Key, values []string) bool {
 	if len(columns) != len(values) {
 		return false
 	}
@@ -358,7 +376,7 @@ func validNeutralImportKey(columns []NeutralImportKey, values []string) bool {
 	}
 	return true
 }
-func compareNeutralImportKeys(columns []NeutralImportKey, left, right []string) int {
+func CompareKeys(columns []Key, left, right []string) int {
 	for index, column := range columns {
 		if column.Kind == "integer" {
 			a, b := left[index], right[index]
@@ -396,19 +414,19 @@ func readNeutralImportFile(ctx context.Context, root *os.Root, name string, limi
 	}
 	file, err := root.Open(name)
 	if err != nil {
-		return nil, ErrNeutralImport
+		return nil, ErrInvalid
 	}
 	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
 	before, err := file.Stat()
 	if err != nil || !before.Mode().IsRegular() || before.Mode().Perm()&0222 != 0 || before.Size() > limit {
-		return nil, ErrNeutralImport
+		return nil, ErrInvalid
 	}
 	raw, err = io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err
 	}
 	if int64(len(raw)) > limit {
-		return nil, ErrNeutralImport
+		return nil, ErrInvalid
 	}
 	after, err := file.Stat()
 	if err != nil || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
@@ -418,24 +436,24 @@ func readNeutralImportFile(ctx context.Context, root *os.Root, name string, limi
 }
 func decodeNeutralImport(raw []byte, destination any) error {
 	if !utf8.Valid(raw) {
-		return ErrNeutralImport
+		return ErrInvalid
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
-		return ErrNeutralImport
+		return ErrInvalid
 	}
 	if err := decoder.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
-		return ErrNeutralImport
+		return ErrInvalid
 	}
 	return nil
 }
 
-func (r NeutralImportRow) Decode(fields map[string]any) error {
+func (r Row) Decode(fields map[string]any) error {
 	for name, destination := range fields {
 		cell, ok := r.Values[name]
 		if !ok || !cell.Null && cell.Encoding != "utf8" {
-			return fmt.Errorf("decode neutral field %s: %w", name, ErrNeutralImport)
+			return fmt.Errorf("decode neutral field %s: %w", name, ErrInvalid)
 		}
 		if scanner, ok := destination.(interface{ Scan(any) error }); ok {
 			var value any
@@ -443,21 +461,21 @@ func (r NeutralImportRow) Decode(fields map[string]any) error {
 				value = string(cell.Data)
 			}
 			if err := scanner.Scan(value); err != nil {
-				return fmt.Errorf("decode neutral field %s: %w", name, ErrNeutralImport)
+				return fmt.Errorf("decode neutral field %s: %w", name, ErrInvalid)
 			}
 			continue
 		}
 		if destination == nil {
-			return fmt.Errorf("decode neutral field %s: %w", name, ErrNeutralImport)
+			return fmt.Errorf("decode neutral field %s: %w", name, ErrInvalid)
 		}
 		value := reflect.ValueOf(destination)
 		if value.Kind() != reflect.Pointer || value.IsNil() {
-			return fmt.Errorf("decode neutral field %s: %w", name, ErrNeutralImport)
+			return fmt.Errorf("decode neutral field %s: %w", name, ErrInvalid)
 		}
 		value = value.Elem()
 		if cell.Null {
 			if value.Kind() != reflect.Pointer {
-				return fmt.Errorf("decode neutral field %s: %w", name, ErrNeutralImport)
+				return fmt.Errorf("decode neutral field %s: %w", name, ErrInvalid)
 			}
 			value.SetZero()
 			continue
@@ -472,24 +490,49 @@ func (r NeutralImportRow) Decode(fields map[string]any) error {
 			value.SetString(text)
 		case reflect.Bool:
 			if text != "0" && text != "1" {
-				return fmt.Errorf("decode neutral field %s: %w", name, ErrNeutralImport)
+				return fmt.Errorf("decode neutral field %s: %w", name, ErrInvalid)
 			}
 			value.SetBool(text == "1")
 		case reflect.Int, reflect.Int32, reflect.Int64:
 			number, err := strconv.ParseInt(text, 10, 64)
 			if err != nil || value.OverflowInt(number) {
-				return fmt.Errorf("decode neutral field %s: %w", name, ErrNeutralImport)
+				return fmt.Errorf("decode neutral field %s: %w", name, ErrInvalid)
 			}
 			value.SetInt(number)
 		case reflect.Float32, reflect.Float64:
 			number, err := strconv.ParseFloat(text, 64)
 			if err != nil || math.IsNaN(number) || math.IsInf(number, 0) || value.OverflowFloat(number) {
-				return fmt.Errorf("decode neutral field %s: %w", name, ErrNeutralImport)
+				return fmt.Errorf("decode neutral field %s: %w", name, ErrInvalid)
 			}
 			value.SetFloat(number)
 		default:
-			return fmt.Errorf("decode neutral field %s: %w", name, ErrNeutralImport)
+			return fmt.Errorf("decode neutral field %s: %w", name, ErrInvalid)
 		}
 	}
 	return nil
+}
+
+func (r Row) Bytes(column string) ([]byte, error) {
+	cell, ok := r.Values[column]
+	if !ok || cell.Null {
+		return nil, ErrInvalid
+	}
+	switch cell.Encoding {
+	case "binary", "utf8":
+		return bytes.Clone(cell.Data), nil
+	case "base64":
+		raw, err := base64.StdEncoding.DecodeString(string(cell.Data))
+		if err != nil {
+			return nil, ErrInvalid
+		}
+		return raw, nil
+	case "hex":
+		raw, err := hex.DecodeString(string(cell.Data))
+		if err != nil {
+			return nil, ErrInvalid
+		}
+		return raw, nil
+	default:
+		return nil, ErrInvalid
+	}
 }

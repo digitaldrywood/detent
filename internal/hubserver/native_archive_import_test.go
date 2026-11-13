@@ -19,6 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -61,12 +63,12 @@ func TestNativeArchiveImportRecoversRetiredMessagesAndImmutableVersions(t *testi
 				at := f.now().Format(time.RFC3339Nano)
 				messageID := fmt.Sprintf("historical_message_%d", index)
 				versionID := fmt.Sprintf("historical_comment_%d", index)
-				message := coreNeutralFixtureRow(t, fixture.tables["conversation_messages"], map[string]any{"id": messageID, "conversation_id": record.ID, "seq": 1, "role": "assistant", "kind": "text", "text": "retired message 🌍", "data_json": "{}", "delivery": "completed", "actor_json": "{}", "created_at": at, "updated_at": at, "revision": 1, "text_bytes": len("retired message 🌍"), "stored_text_bytes": len("retired message 🌍")})
-				oldVersion := coreNeutralFixtureRow(t, fixture.tables["collaboration_versions"], map[string]any{"organization_id": org, "project_id": f.project.ID, "work_item_id": issue.WorkItemID, "record_id": versionID, "revision": 1, "record_json": `{"body":"retired comment","unknown":{"preserved":true}}`, "encoding": "snapshot"})
+				message := neutralimporttest.Row(t, fixture.Tables["conversation_messages"], map[string]any{"id": messageID, "conversation_id": record.ID, "seq": 1, "role": "assistant", "kind": "text", "text": "retired message 🌍", "data_json": "{}", "delivery": "completed", "actor_json": "{}", "created_at": at, "updated_at": at, "revision": 1, "text_bytes": len("retired message 🌍"), "stored_text_bytes": len("retired message 🌍")})
+				oldVersion := neutralimporttest.Row(t, fixture.Tables["collaboration_versions"], map[string]any{"organization_id": org, "project_id": f.project.ID, "work_item_id": issue.WorkItemID, "record_id": versionID, "revision": 1, "record_json": `{"body":"retired comment","unknown":{"preserved":true}}`, "encoding": "snapshot"})
 				tables := []attachment.ArchiveTable{}
 				for _, source := range []struct {
 					name string
-					row  postgres.NeutralImportRow
+					row  neutralimport.Row
 				}{{"conversation_messages", message}, {"collaboration_versions", oldVersion}} {
 					columns := make([]string, 0, len(source.row.Values))
 					for column := range source.row.Values {
@@ -82,7 +84,7 @@ func TestNativeArchiveImportRecoversRetiredMessagesAndImmutableVersions(t *testi
 							raw = []byte("null")
 						} else {
 							var signature []json.RawMessage
-							if err := json.Unmarshal([]byte(fixture.tables[source.name].Columns[column]), &signature); err != nil {
+							if err := json.Unmarshal([]byte(fixture.Tables[source.name].Columns[column]), &signature); err != nil {
 								t.Fatal(err)
 							}
 							var kind string
@@ -119,9 +121,9 @@ func TestNativeArchiveImportRecoversRetiredMessagesAndImmutableVersions(t *testi
 						t.Fatal(err)
 					}
 					attachmentID := sectionID + "_attachment"
-					fixture.add("attachments", map[string]any{"id": attachmentID, "project_id": f.project.ID, "uploader": f.scope.Credential.ID, "name": "archive.gz", "content_type": "application/gzip", "size": ref.CompressedSize, "sha256": ref.SHA256, "created_at": at, "kind": ref.Kind, "retention_class": ref.Retention, "object_key": ref.Key, "uncompressed_size": ref.UncompressedSize, "codec": ref.Codec, "schema_version": ref.SchemaVersion, "storage_binding_id": "", "customer_owned": 0})
-					fixture.add("native_archive_sections", map[string]any{"project_id": f.project.ID, "work_item_id": issue.WorkItemID, "kind": kind, "subject_id": subject, "first_sequence": 1, "last_sequence": 1, "section_id": sectionID, "attachment_id": attachmentID, "retired_rows": 1, "retirement_complete": 1})
-					fixture.add("issue_archive_sections", map[string]any{"project_id": f.project.ID, "work_item_id": issue.WorkItemID, "archive_revision": issue.Revision, "section_id": sectionID, "attachment_id": attachmentID})
+					fixture.Add("attachments", map[string]any{"id": attachmentID, "project_id": f.project.ID, "uploader": f.scope.Credential.ID, "name": "archive.gz", "content_type": "application/gzip", "size": ref.CompressedSize, "sha256": ref.SHA256, "created_at": at, "kind": ref.Kind, "retention_class": ref.Retention, "object_key": ref.Key, "uncompressed_size": ref.UncompressedSize, "codec": ref.Codec, "schema_version": ref.SchemaVersion, "storage_binding_id": "", "customer_owned": 0})
+					fixture.Add("native_archive_sections", map[string]any{"project_id": f.project.ID, "work_item_id": issue.WorkItemID, "kind": kind, "subject_id": subject, "first_sequence": 1, "last_sequence": 1, "section_id": sectionID, "attachment_id": attachmentID, "retired_rows": 1, "retirement_complete": 1})
+					fixture.Add("issue_archive_sections", map[string]any{"project_id": f.project.ID, "work_item_id": issue.WorkItemID, "archive_revision": issue.Revision, "section_id": sectionID, "attachment_id": attachmentID})
 					expected = append(expected, expectedArchive{item: issue.WorkItemID, conversation: record.ID, message: messageID, version: versionID, section: sectionID, revision: int64(issue.Revision), reference: ref, raw: raw})
 					sections = append(sections, map[string]any{"kind": kind, "subject_id": subject, "first_sequence": 1, "last_sequence": 1, "section_id": sectionID, "reference": ref})
 				}
@@ -134,15 +136,15 @@ func TestNativeArchiveImportRecoversRetiredMessagesAndImmutableVersions(t *testi
 					t.Fatal(err)
 				}
 				id := fmt.Sprintf("historical_root_%d", index)
-				fixture.add("attachments", map[string]any{"id": id, "project_id": f.project.ID, "uploader": f.scope.Credential.ID, "name": "archive.gz", "content_type": "application/gzip", "size": ref.CompressedSize, "sha256": ref.SHA256, "created_at": at, "kind": ref.Kind, "retention_class": ref.Retention, "object_key": ref.Key, "uncompressed_size": ref.UncompressedSize, "codec": ref.Codec, "schema_version": ref.SchemaVersion, "storage_binding_id": "", "customer_owned": 0})
-				fixture.add("issue_storage_archives", map[string]any{"project_id": f.project.ID, "work_item_id": issue.WorkItemID, "issue_revision": issue.Revision, "event_sequence": current.EventSequence, "conversation_sequence": 0, "attachment_id": id, "published_at": at})
+				fixture.Add("attachments", map[string]any{"id": id, "project_id": f.project.ID, "uploader": f.scope.Credential.ID, "name": "archive.gz", "content_type": "application/gzip", "size": ref.CompressedSize, "sha256": ref.SHA256, "created_at": at, "kind": ref.Kind, "retention_class": ref.Retention, "object_key": ref.Key, "uncompressed_size": ref.UncompressedSize, "codec": ref.Codec, "schema_version": ref.SchemaVersion, "storage_binding_id": "", "customer_owned": 0})
+				fixture.Add("issue_storage_archives", map[string]any{"project_id": f.project.ID, "work_item_id": issue.WorkItemID, "issue_revision": issue.Revision, "event_sequence": current.EventSequence, "conversation_sequence": 0, "attachment_id": id, "published_at": at})
 				roots[issue.WorkItemID], rootBytes[issue.WorkItemID] = ref, raw
 			}
 			catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
 			if err != nil {
 				t.Fatal(err)
 			}
-			source := postgres.ConversationHistoryImportSource{BundlePath: fixture.write(), Catalog: catalog, Source: storagecatalog.Source{Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(org)}, Objects: objects}
+			source := postgres.ConversationHistoryImportSource{BundlePath: fixture.Write(), Catalog: catalog, Source: storagecatalog.Source{Store: "hub", CatalogVersion: catalog.Version, OrganizationID: string(org)}, Objects: objects}
 			if _, err := repository.ImportConversationHistory(t.Context(), source); err != nil {
 				t.Fatal(err)
 			}

@@ -5,17 +5,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"reflect"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type CostImportSource struct {
 	BundlePath string
-	neutral    *VerifiedNeutralImport
+	neutral    *neutralimport.Bundle
 	CopyPath   string
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
@@ -94,19 +94,9 @@ func schemaFromCatalog(catalog storagecatalog.Catalog) storagecatalog.Schema {
 	return schema
 }
 
-func sameSourceSignature(actual []byte, expected string) bool {
-	var left, right any
-	if json.Unmarshal(actual, &left) != nil || json.Unmarshal([]byte(expected), &right) != nil {
-		return false
-	}
-	actualFields, actualOK := left.([]any)
-	expectedFields, expectedOK := right.([]any)
-	return actualOK && expectedOK && len(actualFields) == 7 && len(expectedFields) == 7 && reflect.DeepEqual(actualFields[1:], expectedFields[1:])
-}
-
 func (r *Repository) ImportCostCopy(ctx context.Context, source CostImportSource) (CostImportProgress, error) {
 	if source.CopyPath != "" {
-		return CostImportProgress{}, ErrNeutralImport
+		return CostImportProgress{}, neutralimport.ErrInvalid
 	}
 
 	var progress CostImportProgress
@@ -122,7 +112,7 @@ func (r *Repository) ImportCostCopy(ctx context.Context, source CostImportSource
 	}
 	organization := tracker.OrganizationID(source.Source.OrganizationID)
 
-	err := ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+	err := neutralimport.Read(ctx, source.BundlePath, organization, func(bundle *neutralimport.Bundle) error {
 		source.neutral, source.snapshotID = bundle, bundle.Identity().SourceSHA256
 		importer, err := r.newCostImporter(ctx, source)
 		if err != nil {

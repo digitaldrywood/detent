@@ -74,13 +74,13 @@ func TestPolicyRevisionInputsMigrationPreservesHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			fixture.add("policy_revisions", map[string]any{"scope": string(organization) + "/" + string(project), "policy_id": descriptor.ID, "metadata_json": string(raw), "approved_by": "administrator", "approved_at": testTimestamp, "source_digest": "", "workflow_revision": "", "gate_github_pull_request": descriptor.Gates.GitHubPullRequest})
+			fixture.Add("policy_revisions", map[string]any{"scope": string(organization) + "/" + string(project), "policy_id": descriptor.ID, "metadata_json": string(raw), "approved_by": "administrator", "approved_at": testTimestamp, "source_digest": "", "workflow_revision": "", "gate_github_pull_request": descriptor.Gates.GitHubPullRequest})
 			revisions = append(revisions, revision{project, descriptor, string(raw)})
 		}
-		fixture.add("project_policies", map[string]any{"scope": string(organization) + "/" + string(project), "policy_id": revisions[len(revisions)-1].descriptor.ID})
+		fixture.Add("project_policies", map[string]any{"scope": string(organization) + "/" + string(project), "policy_id": revisions[len(revisions)-1].descriptor.ID})
 	}
 	objects := &memoryRunDetails{}
-	source := postgres.CorePolicyImportSource{BundlePath: fixture.write(), OrganizationID: organization, Objects: objects}
+	source := postgres.CorePolicyImportSource{BundlePath: fixture.Write(), OrganizationID: organization, Objects: objects}
 	for range 2 {
 		result, err := store.postgres.ImportCorePolicies(t.Context(), source)
 		if err != nil || result.PolicyRevisions != 6 || result.CurrentPolicies != 2 {

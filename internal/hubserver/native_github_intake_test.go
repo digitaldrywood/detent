@@ -318,12 +318,12 @@ func pendingLinkedIssue(t *testing.T, f nativeFixture) tracker.NativeIssue {
 	t.Helper()
 	source := coreWorkItemNeutralFixtureBody(t, f.project.OrganizationID, f.project.ID, false, "")
 	linked := newCoreNeutralFixture(t, f.project.OrganizationID, "linked_issue_sources")
-	source.tables["linked_issue_sources"] = linked.tables["linked_issue_sources"]
-	source.add("linked_issue_sources", map[string]any{"work_item_id": "wi_core_import", "source_url": linkedSnapshot().URL, "title_supplied": false, "body_supplied": false, "snapshot_json": nil})
-	source.set("issues", map[string]string{"native_id": "wi_core_import"}, map[string]any{"assignees_json": "[]"})
+	source.Tables["linked_issue_sources"] = linked.Tables["linked_issue_sources"]
+	source.Add("linked_issue_sources", map[string]any{"work_item_id": "wi_core_import", "source_url": linkedSnapshot().URL, "title_supplied": false, "body_supplied": false, "snapshot_json": nil})
+	source.Set("issues", map[string]string{"native_id": "wi_core_import"}, map[string]any{"assignees_json": "[]"})
 	var originalPrevious, canonicalPrevious []byte
 	versions := 0
-	for _, row := range source.records["collaboration_versions"] {
+	for _, row := range source.Records["collaboration_versions"] {
 		if string(row.Values["record_id"].Data) != "wi_core_import" {
 			continue
 		}
@@ -358,14 +358,14 @@ func pendingLinkedIssue(t *testing.T, f nativeFixture) tracker.NativeIssue {
 		if err != nil {
 			t.Fatalf("historical linked version encoding=%s error=%v", encoding, err)
 		}
-		source.set("collaboration_versions", map[string]string{"record_id": "wi_core_import", "revision": strconv.FormatInt(int64(historical.Revision), 10)}, map[string]any{"encoding": encoding, "record_json": string(encoded)})
+		source.Set("collaboration_versions", map[string]string{"record_id": "wi_core_import", "revision": strconv.FormatInt(int64(historical.Revision), 10)}, map[string]any{"encoding": encoding, "record_json": string(encoded)})
 		canonicalPrevious = raw
 		versions++
 	}
 	if versions != 2 {
 		t.Fatalf("historical linked versions = %d, want 2", versions)
 	}
-	input := CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	input := CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
 		t.Fatalf("historical pending source import = %d, %v", count, err)
 	}
@@ -403,11 +403,11 @@ func TestNativeGitHubTriageMigration(t *testing.T) {
 				values["checkout_repository"] = "acme/orders"
 			}
 			if binding == "repository" {
-				source.add("repositories", map[string]any{"id": 1, "github_node_id": "R_migration", "github_owner": "acme", "github_name": "orders", "created_at": testTimestamp, "updated_at": testTimestamp})
+				source.Add("repositories", map[string]any{"id": 1, "github_node_id": "R_migration", "github_owner": "acme", "github_name": "orders", "created_at": testTimestamp, "updated_at": testTimestamp})
 				values["repository_id"] = 1
 			}
-			source.add("projects", values)
-			input := postgres.CoreProjectImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, Objects: f.service.runDetailStore()}
+			source.Add("projects", values)
+			input := postgres.CoreProjectImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, Objects: f.service.runDetailStore()}
 			if count, err := f.service.database.postgres.ImportCoreProjects(t.Context(), input); err != nil || count != 1 {
 				t.Fatalf("historical project import = %d, %v", count, err)
 			}

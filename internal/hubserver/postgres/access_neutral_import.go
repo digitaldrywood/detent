@@ -19,7 +19,7 @@ func (i *AccessImporter) pinNeutralAccessSource(ctx context.Context) error {
 	if err := i.repository.PinCoreImportSource(ctx, i.organization, source.Identity().SourceSHA256, i.source.Objects); err != nil {
 		return err
 	}
-	manifest, err := json.Marshal(source.manifest)
+	manifest, err := json.Marshal(source.Manifest())
 	if err != nil {
 		return err
 	}
@@ -56,7 +56,7 @@ func (i *AccessImporter) pinNeutralAccessSource(ctx context.Context) error {
 }
 
 func (i *AccessImporter) validateNeutralAccessOrganization(ctx context.Context) error {
-	table, err := i.source.neutral.table("organizations")
+	table, err := i.source.neutral.Table("organizations")
 	if err != nil || len(table.Pages) != 1 || table.Pages[0].Rows != 1 {
 		return storagecatalog.ErrOrganization
 	}

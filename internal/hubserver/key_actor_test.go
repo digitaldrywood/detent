@@ -48,17 +48,17 @@ func TestHostedKeyActorImport(t *testing.T) {
 		t.Run(string(organization), func(t *testing.T) {
 			fixture := newCoreNeutralFixture(t, organization, "organizations", "hosted_tenant", "api_tokens", "hosted_members", "hosted_release_preferences", "daily_summary_preferences", "daily_summary_receipts", "hosted_project_grants", "token_grants", "hosted_sessions", "hosted_transactions", "hosted_invitations", "hosted_member_reservations", "hosted_binding_migrations", "organization_secrets", "organization_secret_audit", "project_secrets", "project_secret_audit", "hosted_audit", "hosted_audit_times")
 			stamp := "2026-10-31T12:00:00Z"
-			fixture.add("organizations", map[string]any{"id": string(organization), "name": "Example organization", "slug": string(organization), "local": "0", "created_at": stamp})
-			fixture.add("hosted_tenant", map[string]any{"singleton": "1", "provider_id": "provider_" + string(organization), "bootstrap_subject": "example_owner", "deployment": "example", "public_url": "https://example.test", "allocation_generation": "1"})
+			fixture.Add("organizations", map[string]any{"id": string(organization), "name": "Example organization", "slug": string(organization), "local": "0", "created_at": stamp})
+			fixture.Add("hosted_tenant", map[string]any{"singleton": "1", "provider_id": "provider_" + string(organization), "bootstrap_subject": "example_owner", "deployment": "example", "public_url": "https://example.test", "allocation_generation": "1"})
 			cases := []struct{ id, scope, kind string }{{"account_a", "operator", "personal"}, {"account_b", "admin", "personal"}, {"service", "operator", "service"}, {"worker", "worker", "service"}, {"runner", "operator", "service"}}
 			for _, test := range cases {
 				row := map[string]any{"id": test.id, "name": test.id, "token_hash": string(organization) + "_" + test.id, "scope": test.scope, "native_only": "1", "created_at": stamp, "updated_at": stamp, "operator_project_access": "selected", "key_kind": test.kind}
 				if test.id != "service" {
 					row["hosted_user_id"], row["hosted_membership_id"], row["operator_key_scope"] = "user_"+test.id, "member_"+test.id, "write"
 				}
-				fixture.add("api_tokens", row)
+				fixture.Add("api_tokens", row)
 			}
-			source := postgres.AccessCopyImportSource{BundlePath: fixture.write(), OrganizationID: organization, Catalog: catalog, Objects: &memoryRunDetails{}}
+			source := postgres.AccessCopyImportSource{BundlePath: fixture.Write(), OrganizationID: organization, Catalog: catalog, Objects: &memoryRunDetails{}}
 			if _, err := repository.ImportAccessCopy(t.Context(), source); err != nil {
 				t.Fatal(err)
 			}
@@ -76,14 +76,14 @@ func TestHostedKeyActorImport(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			missingKind := fixture.clone(t)
-			table := missingKind.tables["api_tokens"]
+			missingKind := fixture.Clone(t)
+			table := missingKind.Tables["api_tokens"]
 			delete(table.Columns, "key_kind")
-			missingKind.tables["api_tokens"] = table
-			for index := range missingKind.records["api_tokens"] {
-				delete(missingKind.records["api_tokens"][index].Values, "key_kind")
+			missingKind.Tables["api_tokens"] = table
+			for index := range missingKind.Records["api_tokens"] {
+				delete(missingKind.Records["api_tokens"][index].Values, "key_kind")
 			}
-			source.BundlePath = missingKind.write()
+			source.BundlePath = missingKind.Write()
 			if _, err := repository.ImportAccessCopy(t.Context(), source); !errors.Is(err, storagecatalog.ErrUnmapped) {
 				t.Fatalf("source without explicit key kind error=%v", err)
 			}

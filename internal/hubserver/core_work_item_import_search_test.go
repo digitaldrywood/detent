@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -28,7 +29,7 @@ func TestCoreWorkItemImportSupportsMutationsAndSearchAcrossTenants(t *testing.T)
 			for _, org := range []tracker.OrganizationID{"org_import_first", "org_import_second"} {
 				seedWorkItemRecordOrganization(t, repository, service, nativeOrganization{ID: org, Name: string(org), Slug: string(org)})
 				var f nativeFixture
-				var fixture *coreNeutralFixture
+				var fixture *neutralimporttest.Fixture
 				if scenario == "historical" {
 					project := tracker.ProjectID("prj_import")
 					if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -49,9 +50,9 @@ func TestCoreWorkItemImportSupportsMutationsAndSearchAcrossTenants(t *testing.T)
 					f = newNativeFixture(t, service, org, "Example project")
 					fixture = coreWorkItemNeutralFixture(t, org, f.project.ID, false)
 				}
-				source := CoreWorkItemImportSource{BundlePath: fixture.write(), OrganizationID: org, ProjectID: f.project.ID, Objects: objects}
+				source := CoreWorkItemImportSource{BundlePath: fixture.Write(), OrganizationID: org, ProjectID: f.project.ID, Objects: objects}
 				if scenario == "historical" {
-					if err := postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, org, func(bundle *postgres.VerifiedNeutralImport) error {
+					if err := neutralimport.Read(t.Context(), source.BundlePath, org, func(bundle *neutralimport.Bundle) error {
 						for _, id := range []int64{41, 43} {
 							suffix := strconv.FormatInt(id, 10)
 							source.IdentityMappings = append(source.IdentityMappings, CoreWorkItemIdentityMapping{SourceSHA256: bundle.Identity().SourceSHA256, OrganizationID: org, SourceIssueID: id, SourceRepositoryID: 1, SourceRepositoryNodeID: "R_original", SourceGitHubNodeID: "I_original_" + suffix, TargetProjectID: f.project.ID, TargetWorkItemID: tracker.NativeWorkItemID("wi_original_" + suffix)})

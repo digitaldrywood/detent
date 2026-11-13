@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 )
 
@@ -41,7 +42,7 @@ func TestCoreChangeImportsRefuseLegacyCopy(t *testing.T) {
 			case "tenant":
 				_, err = ImportTenantCoreCopy(t.Context(), postgres.Config{}, TenantCoreImportSource{CopyPath: path, BundlePath: bundle})
 			}
-			if !errors.Is(err, postgres.ErrNeutralImport) {
+			if !errors.Is(err, neutralimport.ErrInvalid) {
 				t.Fatalf("%s legacy selector error=%v", family, err)
 			}
 		}
@@ -68,23 +69,23 @@ func TestCoreChangeImportsRejectUnsupportedSchemaBeforePin(t *testing.T) {
 				fixture = coreExecutionNeutralFixture(t, "org_change_schema")
 				tableName = "native_attempts"
 			}
-			table := fixture.tables[tableName]
+			table := fixture.Tables[tableName]
 			table.Columns["unaccounted"] = fmt.Sprintf(`[%d,"unaccounted","TEXT",1,null,0,0]`, len(table.Columns))
-			for _, row := range fixture.records[tableName] {
+			for _, row := range fixture.Records[tableName] {
 				row.Values["unaccounted"] = storagecatalog.Cell{Encoding: "utf8", Data: []byte("must survive migration")}
 			}
-			fixture.tables[tableName] = table
+			fixture.Tables[tableName] = table
 			objects := &memoryRunDetails{}
-			path := fixture.write()
+			path := fixture.Write()
 			switch family {
 			case "changes":
-				_, err = ImportCoreChanges(t.Context(), repository, CoreChangeImportSource{BundlePath: path, OrganizationID: fixture.organization, SourceObjects: objects, Objects: objects})
+				_, err = ImportCoreChanges(t.Context(), repository, CoreChangeImportSource{BundlePath: path, OrganizationID: fixture.Organization, SourceObjects: objects, Objects: objects})
 			case "landings":
-				_, err = ImportCoreReportLandings(t.Context(), repository, CoreChangeImportSource{BundlePath: path, OrganizationID: fixture.organization, SourceObjects: objects, Objects: objects})
+				_, err = ImportCoreReportLandings(t.Context(), repository, CoreChangeImportSource{BundlePath: path, OrganizationID: fixture.Organization, SourceObjects: objects, Objects: objects})
 			case "escapes":
-				_, err = ImportCoreReportEscapes(t.Context(), repository, CoreChangeImportSource{BundlePath: path, OrganizationID: fixture.organization, SourceObjects: objects, Objects: objects})
+				_, err = ImportCoreReportEscapes(t.Context(), repository, CoreChangeImportSource{BundlePath: path, OrganizationID: fixture.Organization, SourceObjects: objects, Objects: objects})
 			case "usage":
-				_, err = ImportCoreReportUsage(t.Context(), repository, ReportUsageImportSource{BundlePath: path, OrganizationID: fixture.organization, ExpectedSHA256: strings.Repeat("0", 64)})
+				_, err = ImportCoreReportUsage(t.Context(), repository, ReportUsageImportSource{BundlePath: path, OrganizationID: fixture.Organization, ExpectedSHA256: strings.Repeat("0", 64)})
 			}
 			if !errors.Is(err, storagecatalog.ErrUnmapped) {
 				t.Fatalf("unsupported schema error=%v", err)
@@ -111,11 +112,11 @@ func TestCoreNeutralObjectRecoversOnlyVerifiedPendingBytes(t *testing.T) {
 			if scenario == "wrong reference" {
 				digest = strings.Repeat("0", 64)
 			}
-			fixture.add("change_content_objects", map[string]any{"object_key": reference.Key, "object_sha256": digest, "object_bytes": reference.CompressedSize, "content_bytes": reference.UncompressedSize, "pending_content": payload})
+			fixture.Add("change_content_objects", map[string]any{"object_key": reference.Key, "object_sha256": digest, "object_bytes": reference.CompressedSize, "content_bytes": reference.UncompressedSize, "pending_content": payload})
 			if scenario == "wrong size" {
-				fixture.set("change_content_objects", nil, map[string]any{"object_bytes": reference.CompressedSize + 1})
+				fixture.Set("change_content_objects", nil, map[string]any{"object_bytes": reference.CompressedSize + 1})
 			}
-			row := fixture.records["change_content_objects"][0]
+			row := fixture.Records["change_content_objects"][0]
 			switch scenario {
 			case "base64":
 				row.Values["pending_content"] = storagecatalog.Cell{Encoding: "base64", Data: []byte(base64.StdEncoding.EncodeToString(payload))}
@@ -128,8 +129,8 @@ func TestCoreNeutralObjectRecoversOnlyVerifiedPendingBytes(t *testing.T) {
 			case "invalid hex":
 				row.Values["pending_content"] = storagecatalog.Cell{Encoding: "hex", Data: []byte("zz")}
 			}
-			err := postgres.ReadNeutralImportBundle(t.Context(), fixture.write(), fixture.organization, func(bundle *postgres.VerifiedNeutralImport) error {
-				actual, err := readCoreNeutralObject(t.Context(), newCoreNeutralImport(bundle), fixture.organization, &memoryRunDetails{}, reference.Key)
+			err := neutralimport.Read(t.Context(), fixture.Write(), fixture.Organization, func(bundle *neutralimport.Bundle) error {
+				actual, err := readCoreNeutralObject(t.Context(), neutralimport.NewQuery(bundle), fixture.Organization, &memoryRunDetails{}, reference.Key)
 				switch scenario {
 				case "binary", "base64", "hex":
 					if err != nil || !bytes.Equal(actual, payload) {
@@ -140,7 +141,7 @@ func TestCoreNeutralObjectRecoversOnlyVerifiedPendingBytes(t *testing.T) {
 						t.Fatalf("missing pending bytes error=%v", err)
 					}
 				case "invalid hex":
-					if !errors.Is(err, postgres.ErrNeutralImport) {
+					if !errors.Is(err, neutralimport.ErrInvalid) {
 						t.Fatalf("invalid encoding error=%v", err)
 					}
 				default:
@@ -165,13 +166,13 @@ func TestCoreNeutralUsageRefusesInvalidSourceBeforeWriting(t *testing.T) {
 			fixture := coreExecutionNeutralFixture(t, "org_usage_refusal")
 			switch scenario {
 			case "attempt scope":
-				fixture.set("native_attempts", map[string]string{"id": "attempt_execution_import_second"}, map[string]any{"project_id": "prj_other"})
+				fixture.Set("native_attempts", map[string]string{"id": "attempt_execution_import_second"}, map[string]any{"project_id": "prj_other"})
 			case "currency":
-				fixture.set("attempt_usage", map[string]string{"attempt_id": "attempt_execution_import_second"}, map[string]any{"currency": "EURO"})
+				fixture.Set("attempt_usage", map[string]string{"attempt_id": "attempt_execution_import_second"}, map[string]any{"currency": "EURO"})
 			}
-			path := fixture.write()
-			var identity postgres.NeutralImportIdentity
-			if err := postgres.ReadNeutralImportBundle(t.Context(), path, fixture.organization, func(bundle *postgres.VerifiedNeutralImport) error { identity = bundle.Identity(); return nil }); err != nil {
+			path := fixture.Write()
+			var identity neutralimport.Identity
+			if err := neutralimport.Read(t.Context(), path, fixture.Organization, func(bundle *neutralimport.Bundle) error { identity = bundle.Identity(); return nil }); err != nil {
 				t.Fatal(err)
 			}
 			expected := identity.SourceSHA256
@@ -185,7 +186,7 @@ func TestCoreNeutralUsageRefusesInvalidSourceBeforeWriting(t *testing.T) {
 			case "currency":
 				phrase = "unsupported currency"
 			}
-			_, err := ImportCoreReportUsage(t.Context(), repository, ReportUsageImportSource{BundlePath: path, OrganizationID: fixture.organization, ExpectedSHA256: expected})
+			_, err := ImportCoreReportUsage(t.Context(), repository, ReportUsageImportSource{BundlePath: path, OrganizationID: fixture.Organization, ExpectedSHA256: expected})
 			if err == nil || !strings.Contains(err.Error(), phrase) {
 				t.Fatalf("source refusal error=%v", err)
 			}

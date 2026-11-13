@@ -32,6 +32,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -373,12 +375,12 @@ func coreExecutionSourceCopy(t *testing.T, organization tracker.OrganizationID, 
 			if err != nil {
 				t.Fatal(err)
 			}
-			fixture.add("change_content_objects", map[string]any{"object_key": ref.Key, "object_sha256": ref.SHA256, "object_bytes": ref.CompressedSize, "content_bytes": ref.UncompressedSize, "pending_content": raw})
+			fixture.Add("change_content_objects", map[string]any{"object_key": ref.Key, "object_sha256": ref.SHA256, "object_bytes": ref.CompressedSize, "content_bytes": ref.UncompressedSize, "pending_content": raw})
 			detail := hubrecords.NewRunDetailReference(ref, string(organization), hubrecords.RunDetailEntry(run))
 			if index == 0 {
 				detail.ObjectKey = ref.Key
 			} else {
-				fixture.add("attachments", map[string]any{"id": detail.AttachmentID, "project_id": "prj_execution_import", "kind": "archive", "object_key": ref.Key, "sha256": ref.SHA256, "size": ref.CompressedSize, "uncompressed_size": ref.UncompressedSize, "codec": ref.Codec, "schema_version": ref.SchemaVersion, "retention_class": ref.Retention, "storage_binding_id": "", "customer_owned": 0, "uploader": "runner_token_execution_import_second", "name": "archive.gz", "content_type": "application/gzip", "created_at": "2026-10-01T00:00:00Z"})
+				fixture.Add("attachments", map[string]any{"id": detail.AttachmentID, "project_id": "prj_execution_import", "kind": "archive", "object_key": ref.Key, "sha256": ref.SHA256, "size": ref.CompressedSize, "uncompressed_size": ref.UncompressedSize, "codec": ref.Codec, "schema_version": ref.SchemaVersion, "retention_class": ref.Retention, "storage_binding_id": "", "customer_owned": 0, "uploader": "runner_token_execution_import_second", "name": "archive.gz", "content_type": "application/gzip", "created_at": "2026-10-01T00:00:00Z"})
 			}
 			value = storedRunCheckpoint{Detail: detail}
 		}
@@ -386,12 +388,12 @@ func coreExecutionSourceCopy(t *testing.T, organization tracker.OrganizationID, 
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.set("native_attempts", map[string]string{"id": id}, map[string]any{"checkpoint_json": string(raw)})
+		fixture.Set("native_attempts", map[string]string{"id": id}, map[string]any{"checkpoint_json": string(raw)})
 	}
-	return fixture.write()
+	return fixture.Write()
 }
 
-func coreExecutionNeutralFixture(t *testing.T, organization tracker.OrganizationID) *coreNeutralFixture {
+func coreExecutionNeutralFixture(t *testing.T, organization tracker.OrganizationID) *neutralimporttest.Fixture {
 	t.Helper()
 	fixture := newCoreNeutralFixture(t, organization, "issues", "machines", "leases", "native_attempts", "native_attempt_events", "change_content_objects", "attachments", "api_tokens", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "work_events", "attempt_usage", "attempt_diffs", "attempt_diff_files", "attempt_diff_file_archives")
 	const acquired = "2026-10-01T00:00:00Z"
@@ -399,31 +401,31 @@ func coreExecutionNeutralFixture(t *testing.T, organization tracker.Organization
 	const expired = "2026-10-01T01:00:00Z"
 	for index, suffix := range []string{"", "_second"} {
 		id := func(value string) string { return value + suffix }
-		fixture.add("issues", map[string]any{"id": 41 + index, "organization_id": organization, "project_id": "prj_execution_import", "native_id": id("wi_execution_import")})
-		fixture.add("machines", map[string]any{"id": id("machine_execution_import"), "organization_id": organization, "hostname": "example-host", "display_name": "Example host", "capacity": 2, "version": "v0.173.4", "sprite_name": "", "last_heartbeat_at": acquired, "registered_at": acquired, "updated_at": updated})
+		fixture.Add("issues", map[string]any{"id": 41 + index, "organization_id": organization, "project_id": "prj_execution_import", "native_id": id("wi_execution_import")})
+		fixture.Add("machines", map[string]any{"id": id("machine_execution_import"), "organization_id": organization, "hostname": "example-host", "display_name": "Example host", "capacity": 2, "version": "v0.173.4", "sprite_name": "", "last_heartbeat_at": acquired, "registered_at": acquired, "updated_at": updated})
 		var expiry any = "2027-10-01T00:00:00Z"
 		if index == 1 {
 			expiry = nil
 		}
-		fixture.add("api_tokens", map[string]any{"id": id("runner_token_execution_import"), "expires_at": expiry})
-		fixture.add("runner_enrollments", map[string]any{"id": id("enrollment_execution_import"), "organization_id": organization, "runner_id": id("runner_execution_import"), "machine_id": id("machine_execution_import"), "token_hash": coreExecutionHash(byte('3' + index)), "scope": "projects", "shared_machine": 0, "operations_json": "[\"read\",\"claim\"]", "created_at": acquired, "expires_at": "2027-10-01T00:00:00Z", "created_by": "owner_token_execution_import", "redeemed_at": acquired, "revoked_at": nil})
-		fixture.add("runner_enrollment_projects", map[string]any{"enrollment_id": id("enrollment_execution_import"), "project_id": "prj_execution_import"})
-		fixture.add("runner_identities", map[string]any{"id": id("runner_execution_import"), "organization_id": organization, "machine_id": id("machine_execution_import"), "token_id": id("runner_token_execution_import"), "enrollment_id": id("enrollment_execution_import"), "scope": "projects", "state": "active", "revision": 1, "tags_json": "[]", "operations_json": "[\"read\",\"claim\"]", "display_name": "Example runner", "capacity_limit": 2, "reported_capacity": 2, "os": "darwin", "architecture": "arm64", "created_at": acquired, "last_heartbeat_at": updated, "removed_at": nil, "routing_settings_json": "{}", "capacity_configuration_json": "null"})
-		fixture.add("runner_identity_events", map[string]any{"id": 9 + index, "runner_id": id("runner_execution_import"), "actor_id": "owner_token_execution_import", "kind": "enrolled", "occurred_at": acquired})
-		fixture.add("leases", map[string]any{"fencing_token": 40 + index, "lease_id": id("lease_execution_import"), "issue_id": 41 + index, "machine_id": id("machine_execution_import"), "session_id": id("session_execution_import"), "work_item_revision": 0, "landing_capacity": 0, "acquired_at": acquired, "renewed_at": acquired, "expires_at": expired, "released_at": updated})
-		fixture.add("lease_runners", map[string]any{"lease_id": id("lease_execution_import"), "runner_id": id("runner_execution_import")})
-		fixture.add("lease_policies", map[string]any{"lease_id": id("lease_execution_import"), "scope": string(organization) + "/prj_execution_import", "policy_id": "policy_example"})
+		fixture.Add("api_tokens", map[string]any{"id": id("runner_token_execution_import"), "expires_at": expiry})
+		fixture.Add("runner_enrollments", map[string]any{"id": id("enrollment_execution_import"), "organization_id": organization, "runner_id": id("runner_execution_import"), "machine_id": id("machine_execution_import"), "token_hash": coreExecutionHash(byte('3' + index)), "scope": "projects", "shared_machine": 0, "operations_json": "[\"read\",\"claim\"]", "created_at": acquired, "expires_at": "2027-10-01T00:00:00Z", "created_by": "owner_token_execution_import", "redeemed_at": acquired, "revoked_at": nil})
+		fixture.Add("runner_enrollment_projects", map[string]any{"enrollment_id": id("enrollment_execution_import"), "project_id": "prj_execution_import"})
+		fixture.Add("runner_identities", map[string]any{"id": id("runner_execution_import"), "organization_id": organization, "machine_id": id("machine_execution_import"), "token_id": id("runner_token_execution_import"), "enrollment_id": id("enrollment_execution_import"), "scope": "projects", "state": "active", "revision": 1, "tags_json": "[]", "operations_json": "[\"read\",\"claim\"]", "display_name": "Example runner", "capacity_limit": 2, "reported_capacity": 2, "os": "darwin", "architecture": "arm64", "created_at": acquired, "last_heartbeat_at": updated, "removed_at": nil, "routing_settings_json": "{}", "capacity_configuration_json": "null"})
+		fixture.Add("runner_identity_events", map[string]any{"id": 9 + index, "runner_id": id("runner_execution_import"), "actor_id": "owner_token_execution_import", "kind": "enrolled", "occurred_at": acquired})
+		fixture.Add("leases", map[string]any{"fencing_token": 40 + index, "lease_id": id("lease_execution_import"), "issue_id": 41 + index, "machine_id": id("machine_execution_import"), "session_id": id("session_execution_import"), "work_item_revision": 0, "landing_capacity": 0, "acquired_at": acquired, "renewed_at": acquired, "expires_at": expired, "released_at": updated})
+		fixture.Add("lease_runners", map[string]any{"lease_id": id("lease_execution_import"), "runner_id": id("runner_execution_import")})
+		fixture.Add("lease_policies", map[string]any{"lease_id": id("lease_execution_import"), "scope": string(organization) + "/prj_execution_import", "policy_id": "policy_example"})
 		run := tracker.NativeRunData{AttemptID: id("attempt_execution_import"), LeaseID: tracker.LeaseID(id("lease_execution_import")), FencingToken: tracker.FencingToken(40 + index), RunID: id("run_execution_import"), Sequence: 1, PolicyID: "policy_example", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 42}}
 		runData, err := json.Marshal(run)
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.add("native_attempts", map[string]any{"id": id("attempt_execution_import"), "organization_id": organization, "project_id": "prj_execution_import", "work_item_id": id("wi_execution_import"), "lease_id": id("lease_execution_import"), "fencing_token": 40 + index, "run_id": id("run_execution_import"), "sequence": 1, "status": "failed", "work_item_revision": 0, "dispatch_generation": 0, "data_json": string(runData), "checkpoint_json": nil, "artifact_ids_json": "[]", "started_at": updated, "updated_at": updated, "payload_object_key": "", "checkpoint_object_key": ""})
+		fixture.Add("native_attempts", map[string]any{"id": id("attempt_execution_import"), "organization_id": organization, "project_id": "prj_execution_import", "work_item_id": id("wi_execution_import"), "lease_id": id("lease_execution_import"), "fencing_token": 40 + index, "run_id": id("run_execution_import"), "sequence": 1, "status": "failed", "work_item_revision": 0, "dispatch_generation": 0, "data_json": string(runData), "checkpoint_json": nil, "artifact_ids_json": "[]", "started_at": updated, "updated_at": updated, "payload_object_key": "", "checkpoint_object_key": ""})
 		requestHash := hex.EncodeToString(make([]byte, 32))
-		fixture.add("native_attempt_events", map[string]any{"attempt_id": id("attempt_execution_import"), "sequence": 1, "request_hash": requestHash})
-		fixture.add("attempt_usage", map[string]any{"attempt_id": id("attempt_execution_import"), "project_id": "prj_execution_import", "period": acquired, "provider": "codex", "model": "example-model", "input": 100, "cached_input": 20, "output": 30, "cost_estimate": 0.25, "currency": "USD", "updated_at": updated})
+		fixture.Add("native_attempt_events", map[string]any{"attempt_id": id("attempt_execution_import"), "sequence": 1, "request_hash": requestHash})
+		fixture.Add("attempt_usage", map[string]any{"attempt_id": id("attempt_execution_import"), "project_id": "prj_execution_import", "period": acquired, "provider": "codex", "model": "example-model", "input": 100, "cached_input": 20, "output": 30, "cost_estimate": 0.25, "currency": "USD", "updated_at": updated})
 
-		fixture.add("work_events", map[string]any{"id": 7 + index, "issue_id": 41 + index, "fencing_token": 40 + index, "machine_id": id("machine_execution_import"), "session_id": id("session_execution_import"), "run_id": id("run_execution_import"), "kind": "progress", "payload_json": "{\"step\":\"compile\"}", "occurred_at": updated, "recorded_at": updated})
+		fixture.Add("work_events", map[string]any{"id": 7 + index, "issue_id": 41 + index, "fencing_token": 40 + index, "machine_id": id("machine_execution_import"), "session_id": id("session_execution_import"), "run_id": id("run_execution_import"), "kind": "progress", "payload_json": "{\"step\":\"compile\"}", "occurred_at": updated, "recorded_at": updated})
 	}
 	return fixture
 }
@@ -449,7 +451,7 @@ func TestCoreExecutionImportRefusesLegacyCopy(t *testing.T) {
 	}
 	for _, bundle := range []string{"", "unused-neutral-bundle"} {
 		_, err := ImportCoreExecution(t.Context(), &postgres.Repository{}, CoreExecutionImportSource{CopyPath: path, BundlePath: bundle, OrganizationID: "org_example", SourceObjects: &memoryRunDetails{}, Objects: &memoryRunDetails{}})
-		if !errors.Is(err, postgres.ErrNeutralImport) {
+		if !errors.Is(err, neutralimport.ErrInvalid) {
 			t.Fatalf("legacy selector error=%v", err)
 		}
 	}
@@ -472,10 +474,10 @@ func TestCoreExecutionImportRejectsUnsupportedSchemaBeforePin(t *testing.T) {
 	} {
 		t.Run(scenario.table+"/"+scenario.change, func(t *testing.T) {
 			fixture := coreExecutionNeutralFixture(t, "org_execution_schema")
-			table := fixture.tables[scenario.table]
+			table := fixture.Tables[scenario.table]
 			if scenario.change == "extra" {
 				table.Columns["unaccounted"] = fmt.Sprintf(`[%d,"unaccounted","TEXT",1,null,0,0]`, len(table.Columns))
-				for _, row := range fixture.records[scenario.table] {
+				for _, row := range fixture.Records[scenario.table] {
 					row.Values["unaccounted"] = storagecatalog.Cell{Encoding: "utf8", Data: []byte("must survive migration")}
 				}
 			} else {
@@ -497,9 +499,9 @@ func TestCoreExecutionImportRejectsUnsupportedSchemaBeforePin(t *testing.T) {
 				}
 				table.Columns[scenario.column] = string(raw)
 			}
-			fixture.tables[scenario.table] = table
+			fixture.Tables[scenario.table] = table
 			objects := &memoryRunDetails{}
-			_, err := ImportCoreExecution(t.Context(), repository, CoreExecutionImportSource{BundlePath: fixture.write(), OrganizationID: fixture.organization, SourceObjects: objects, Objects: objects})
+			_, err := ImportCoreExecution(t.Context(), repository, CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: fixture.Organization, SourceObjects: objects, Objects: objects})
 			if !errors.Is(err, storagecatalog.ErrUnmapped) {
 				t.Fatalf("unsupported schema error=%v", err)
 			}
@@ -514,11 +516,11 @@ func TestCoreExecutionImportRejectsUnsupportedSchemaBeforePin(t *testing.T) {
 func historicalCoreAttemptReceipts(t *testing.T, source CoreExecutionImportSource, copyHash string) []eventstore.Receipt {
 	t.Helper()
 	var receipts []eventstore.Receipt
-	err := postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
+	err := neutralimport.Read(t.Context(), source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
 		if copyHash == "" {
 			copyHash = bundle.Identity().SourceSHA256
 		}
-		rows, err := readCoreAttemptImportPage(t.Context(), newCoreNeutralImport(bundle), source.OrganizationID, 0)
+		rows, err := readCoreAttemptImportPage(t.Context(), neutralimport.NewQuery(bundle), source.OrganizationID, 0)
 		if err != nil {
 			return err
 		}
@@ -712,18 +714,18 @@ func TestCoreExecutionDiffImportPreservesBodiesAndRejectsIncompleteCustody(t *te
 						if err != nil {
 							t.Fatal(err)
 						}
-						fixture.add("attempt_diff_file_archives", map[string]any{"organization_id": organization, "project_id": "prj_execution_import", "diff_id": diffID, "position": 0, "object_key": ref.Key, "object_sha256": ref.SHA256, "object_bytes": ref.CompressedSize, "content_bytes": ref.UncompressedSize})
+						fixture.Add("attempt_diff_file_archives", map[string]any{"organization_id": organization, "project_id": "prj_execution_import", "diff_id": diffID, "position": 0, "object_key": ref.Key, "object_sha256": ref.SHA256, "object_bytes": ref.CompressedSize, "content_bytes": ref.UncompressedSize})
 					default:
 						values := map[string]any{"diff_id": diffID, "position": 0, "path": file.Path, "old_path": file.OldPath, "status": file.Status, "additions": 0, "deletions": 0, "binary": false, "patch": file.Patch, "truncated": false, "denied": false, "patch_expired": file.PatchExpired}
 						if file.PatchBody != nil || shape == "expired" {
 							values["patch_object"], values["patch_sha256"], values["patch_size"] = body.Key, body.SHA256, body.Bytes
 						}
-						fixture.add("attempt_diff_files", values)
+						fixture.Add("attempt_diff_files", values)
 					}
-					fixture.add("attempt_diffs", parent)
+					fixture.Add("attempt_diffs", parent)
 					expected[diffID] = []tracker.AttemptDiffFile{file}
 				}
-				source := CoreExecutionImportSource{BundlePath: fixture.write(), OrganizationID: organization, SourceObjects: objects, Objects: objects, SourceDiffBodies: sourceBodies, DiffBodies: targetBodies}
+				source := CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: organization, SourceObjects: objects, Objects: objects, SourceDiffBodies: sourceBodies, DiffBodies: targetBodies}
 				failure := shape == "missing_body" || shape == "corrupt_body" || shape == "wrong_producer"
 				for pass := range 2 {
 					count, err := ImportCoreExecution(t.Context(), repository, source)
@@ -892,12 +894,12 @@ func TestCoreExecutionImportRetainsArtifactsAfterTerminalPayloadClearsIDs(t *tes
 						if err != nil {
 							t.Fatal(err)
 						}
-						fixture.add("change_content_objects", map[string]any{"object_key": ref.Key, "object_sha256": ref.SHA256, "object_bytes": ref.CompressedSize, "content_bytes": ref.UncompressedSize, "pending_content": raw})
+						fixture.Add("change_content_objects", map[string]any{"object_key": ref.Key, "object_sha256": ref.SHA256, "object_bytes": ref.CompressedSize, "content_bytes": ref.UncompressedSize, "pending_content": raw})
 						updates["payload_object_key"] = ref.Key
 						updates["data_json"] = "{}"
 						originals[ref.Key] = raw
 					}
-					fixture.set("native_attempts", map[string]string{"id": attemptID}, updates)
+					fixture.Set("native_attempts", map[string]string{"id": attemptID}, updates)
 					if !test.refused {
 						if len(test.latest) == 0 {
 							fields["artifact_ids"] = json.RawMessage(test.retained)
@@ -913,7 +915,7 @@ func TestCoreExecutionImportRetainsArtifactsAfterTerminalPayloadClearsIDs(t *tes
 						expected[attemptID] = ref
 					}
 				}
-				source := CoreExecutionImportSource{BundlePath: fixture.write(), OrganizationID: organization, SourceObjects: objects, Objects: objects}
+				source := CoreExecutionImportSource{BundlePath: fixture.Write(), OrganizationID: organization, SourceObjects: objects, Objects: objects}
 				for pass := range 2 {
 					count, err := ImportCoreExecution(t.Context(), repository, source)
 					if test.refused {

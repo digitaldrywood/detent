@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -27,11 +29,11 @@ import (
 
 func coreProjectCopy(t *testing.T, org tracker.OrganizationID, extra ...map[string]any) string {
 	t.Helper()
-	table := neutralFixtureTable(t, "projects", []postgres.NeutralImportKey{{Column: "id", Kind: "text"}})
+	table := neutralFixtureTable(t, "projects", []neutralimport.Key{{Column: "id", Kind: "text"}})
 	states := `[{"name":"Todo","dispatchable":true,"transitions":["Done"]},{"name":"Done","terminal":true,"transitions":["Todo"]}]`
-	var records []postgres.NeutralImportRow
+	var records []neutralimport.Row
 	for _, id := range []string{"prj_import_a", "prj_import_b"} {
-		record := neutralFixtureRow(t, table, map[string]any{"id": id, "organization_id": org, "name": "Example " + id, "slug": strings.ReplaceAll(id, "_", "-"), "profile": "native", "states_json": states, "created_at": "2026-11-01T00:00:00Z", "workflow_markdown": "example workflow", "content_settings_revision": 7, "integration_revision": 9, "model_selection_revision": 11})
+		record := neutralimporttest.Row(t, table, map[string]any{"id": id, "organization_id": org, "name": "Example " + id, "slug": strings.ReplaceAll(id, "_", "-"), "profile": "native", "states_json": states, "created_at": "2026-11-01T00:00:00Z", "workflow_markdown": "example workflow", "content_settings_revision": 7, "integration_revision": 9, "model_selection_revision": 11})
 		if id == "prj_import_b" {
 			record.Values["archive_completed_after_days"] = storagecatalog.Cell{Null: true}
 			record.Values["archive_cancelled_after_days"] = storagecatalog.Cell{Null: true}
@@ -43,10 +45,10 @@ func coreProjectCopy(t *testing.T, org tracker.OrganizationID, extra ...map[stri
 		for key, value := range values {
 			record[key] = value
 		}
-		records = append(records, neutralFixtureRow(t, table, record))
+		records = append(records, neutralimporttest.Row(t, table, record))
 	}
-	repositories := neutralFixtureTable(t, "repositories", []postgres.NeutralImportKey{{Column: "id", Kind: "integer"}})
-	directory, _ := writeNeutralFixture(t, org, []postgres.NeutralImportTable{table, repositories}, map[string][]postgres.NeutralImportRow{"projects": records})
+	repositories := neutralFixtureTable(t, "repositories", []neutralimport.Key{{Column: "id", Kind: "integer"}})
+	directory, _ := neutralimporttest.Write(t, []byte("historical source"), org, []neutralimport.Table{table, repositories}, map[string][]neutralimport.Row{"projects": records})
 	return directory
 }
 
@@ -106,7 +108,7 @@ func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) 
 				extra = append(extra, map[string]any{"id": test.id, "profile": test.profile, "states_json": string(raw), "workflow_markdown": test.workflow, "workflow_source": test.workflowSource})
 			}
 			source := postgres.CoreProjectImportSource{BundlePath: coreProjectCopy(t, org, extra...), OrganizationID: org, Objects: pgstoretest.NewHistoryObjects()}
-			if err := postgres.ReadNeutralImportBundle(t.Context(), source.BundlePath, org, nil); err != nil {
+			if err := neutralimport.Read(t.Context(), source.BundlePath, org, nil); err != nil {
 				t.Fatal(err)
 			}
 			var dryRunProjects int
@@ -153,7 +155,7 @@ func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) 
 				if err != nil {
 					return err
 				}
-				var saved postgres.NeutralImportManifest
+				var saved neutralimport.Manifest
 				if err := json.Unmarshal(raw, &saved); err != nil {
 					return err
 				}
@@ -251,7 +253,7 @@ func TestCoreProjectImportPreservesRevisionsAndRejectsChangedCopy(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			var manifest postgres.NeutralImportManifest
+			var manifest neutralimport.Manifest
 			if err := json.Unmarshal(raw, &manifest); err != nil {
 				t.Fatal(err)
 			}
@@ -307,7 +309,7 @@ func TestCoreProjectImportRejectsCopyChangedDuringImport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var manifest postgres.NeutralImportManifest
+	var manifest neutralimport.Manifest
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		t.Fatal(err)
 	}

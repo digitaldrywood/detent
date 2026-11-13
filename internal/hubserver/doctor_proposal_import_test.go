@@ -53,7 +53,7 @@ func TestDoctorProposalNeutralImportRepairsOnlyUnchangedHead(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		source := CoreWorkItemImportSource{BundlePath: coreWorkItemNeutralFixtureBody(t, org, project, false, body).write(), OrganizationID: org, ProjectID: project, Objects: objects}
+		source := CoreWorkItemImportSource{BundlePath: coreWorkItemNeutralFixtureBody(t, org, project, false, body).Write(), OrganizationID: org, ProjectID: project, Objects: objects}
 		if count, err := ImportCoreWorkItems(t.Context(), repository, source); err != nil || count != 2 {
 			t.Fatalf("initial import count=%d error=%v", count, err)
 		}

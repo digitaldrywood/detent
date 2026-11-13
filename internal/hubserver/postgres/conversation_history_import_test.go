@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -212,7 +213,7 @@ func TestConversationHistoryImportPreservesTenantHistoryAndAttachmentBytes(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	var manifest postgres.NeutralImportManifest
+	var manifest neutralimport.Manifest
 	if err := json.Unmarshal(changedBytes, &manifest); err != nil {
 		t.Fatal(err)
 	}

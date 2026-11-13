@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/artifactstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
@@ -86,18 +87,18 @@ type coreWorkEventImportRow struct {
 
 func ImportCoreExecution(ctx context.Context, target *postgres.Repository, source CoreExecutionImportSource) (int64, error) {
 	if source.CopyPath != "" {
-		return 0, postgres.ErrNeutralImport
+		return 0, neutralimport.ErrInvalid
 	}
 	if target == nil || source.BundlePath == "" || source.OrganizationID == "" || source.SourceObjects == nil || source.Objects == nil {
 		return 0, errors.New("invalid core execution import source")
 	}
 	content := eventstore.NewContent(source.Objects)
 	var imported int64
-	err := postgres.ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *postgres.VerifiedNeutralImport) error {
-		if err := postgres.ValidateNeutralCoreImportTables(bundle, "issues", "leases", "machines", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "api_tokens", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "native_attempts", "native_attempt_events", "work_events", "change_content_objects", "attachments", "attempt_diffs", "attempt_diff_files", "attempt_diff_file_archives"); err != nil {
+	err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
+		if err := neutralimport.ValidateCoreTables(bundle, "issues", "leases", "machines", "runner_enrollments", "runner_enrollment_projects", "runner_identities", "api_tokens", "runner_project_capacity_limits", "runner_project_ranks", "runner_identity_events", "lease_runners", "lease_policies", "native_attempts", "native_attempt_events", "work_events", "change_content_objects", "attachments", "attempt_diffs", "attempt_diff_files", "attempt_diff_file_archives"); err != nil {
 			return err
 		}
-		tx := newCoreNeutralImport(bundle)
+		tx := neutralimport.NewQuery(bundle)
 		copyHash := bundle.Identity().SourceSHA256
 		if err := target.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 			return err
@@ -275,8 +276,8 @@ func ImportCoreExecution(ctx context.Context, target *postgres.Repository, sourc
 	return imported, err
 }
 
-func readCoreMachineImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after string) ([]coreMachineImportRow, error) {
-	rows, err := tx.rows(ctx, "machines", map[string]string{"organization_id": string(organization)}, []string{"id"}, []string{after}, 100)
+func readCoreMachineImportPage(ctx context.Context, tx *neutralimport.Query, organization tracker.OrganizationID, after string) ([]coreMachineImportRow, error) {
+	rows, err := tx.Rows(ctx, "machines", map[string]string{"organization_id": string(organization)}, []string{"id"}, []string{after}, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -306,8 +307,8 @@ func readCoreMachineImportPage(ctx context.Context, tx *coreNeutralImport, organ
 	return result, nil
 }
 
-func readCoreRunnerEnrollmentImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after string) ([]coreRunnerEnrollmentImportRow, error) {
-	rows, err := tx.rows(ctx, "runner_enrollments", map[string]string{"organization_id": string(organization)}, []string{"id"}, []string{after}, 100)
+func readCoreRunnerEnrollmentImportPage(ctx context.Context, tx *neutralimport.Query, organization tracker.OrganizationID, after string) ([]coreRunnerEnrollmentImportRow, error) {
+	rows, err := tx.Rows(ctx, "runner_enrollments", map[string]string{"organization_id": string(organization)}, []string{"id"}, []string{after}, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -351,8 +352,8 @@ func readCoreRunnerEnrollmentImportPage(ctx context.Context, tx *coreNeutralImpo
 	return result, nil
 }
 
-func readCoreEnrollmentProjectIDs(ctx context.Context, tx *coreNeutralImport, enrollmentID string) ([]tracker.ProjectID, error) {
-	rows, err := tx.rows(ctx, "runner_enrollment_projects", map[string]string{"enrollment_id": enrollmentID}, []string{"project_id"}, nil, runnerstore.MaxRunnerProjectList+1)
+func readCoreEnrollmentProjectIDs(ctx context.Context, tx *neutralimport.Query, enrollmentID string) ([]tracker.ProjectID, error) {
+	rows, err := tx.Rows(ctx, "runner_enrollment_projects", map[string]string{"enrollment_id": enrollmentID}, []string{"project_id"}, nil, runnerstore.MaxRunnerProjectList+1)
 	if err != nil {
 		return nil, err
 	}
@@ -370,8 +371,8 @@ func readCoreEnrollmentProjectIDs(ctx context.Context, tx *coreNeutralImport, en
 	return result, nil
 }
 
-func readCoreRunnerIdentityImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after string) ([]coreRunnerIdentityImportRow, error) {
-	rows, err := tx.rows(ctx, "runner_identities", map[string]string{"organization_id": string(organization)}, []string{"id"}, []string{after}, 100)
+func readCoreRunnerIdentityImportPage(ctx context.Context, tx *neutralimport.Query, organization tracker.OrganizationID, after string) ([]coreRunnerIdentityImportRow, error) {
+	rows, err := tx.Rows(ctx, "runner_identities", map[string]string{"organization_id": string(organization)}, []string{"id"}, []string{after}, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -386,11 +387,11 @@ func readCoreRunnerIdentityImportPage(ctx context.Context, tx *coreNeutralImport
 		if err := raw.Decode(map[string]any{"id": &identity.RunnerID, "machine_id": &identity.MachineID, "token_id": &identity.TokenID, "enrollment_id": &identity.EnrollmentID, "scope": &identity.Scope, "state": &identity.State, "revision": &identity.Revision, "tags_json": &tags, "operations_json": &operations, "display_name": &identity.DisplayName, "capacity_limit": &identity.CapacityLimit, "reported_capacity": &identity.ReportedCapacity, "os": &identity.OS, "architecture": &identity.Architecture, "created_at": &created, "last_heartbeat_at": &heartbeat, "removed_at": &removed, "routing_settings_json": &routing, "capacity_configuration_json": &capacityConfig}); err != nil {
 			return nil, err
 		}
-		token, err := tx.one(ctx, "api_tokens", map[string]string{"id": identity.TokenID}, []string{"id"})
+		token, err := tx.One(ctx, "api_tokens", map[string]string{"id": identity.TokenID}, []string{"id"})
 		if err != nil {
 			return nil, err
 		}
-		enrollment, err := tx.one(ctx, "runner_enrollments", map[string]string{"id": identity.EnrollmentID, "organization_id": string(organization)}, []string{"id"})
+		enrollment, err := tx.One(ctx, "runner_enrollments", map[string]string{"id": identity.EnrollmentID, "organization_id": string(organization)}, []string{"id"})
 		if err != nil {
 			return nil, err
 		}
@@ -456,7 +457,7 @@ func readCoreRunnerIdentityImportPage(ctx context.Context, tx *coreNeutralImport
 	return result, nil
 }
 
-func readCoreRunnerProjectRows(ctx context.Context, tx *coreNeutralImport, identity *runnerstore.Identity) error {
+func readCoreRunnerProjectRows(ctx context.Context, tx *neutralimport.Query, identity *runnerstore.Identity) error {
 	for _, selection := range []struct {
 		table, column string
 		limit         int
@@ -470,7 +471,7 @@ func readCoreRunnerProjectRows(ctx context.Context, tx *coreNeutralImport, ident
 		if selection.scoped {
 			filters["organization_id"] = string(identity.OrganizationID)
 		}
-		rows, err := tx.rows(ctx, selection.table, filters, []string{"project_id"}, nil, selection.limit+1)
+		rows, err := tx.Rows(ctx, selection.table, filters, []string{"project_id"}, nil, selection.limit+1)
 		if err != nil {
 			return err
 		}
@@ -489,8 +490,8 @@ func readCoreRunnerProjectRows(ctx context.Context, tx *coreNeutralImport, ident
 	return nil
 }
 
-func readCoreRunnerIdentityEventPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after int64) ([]coreRunnerIdentityEventRow, error) {
-	rows, err := tx.rows(ctx, "runner_identity_events", nil, []string{"id"}, []string{strconv.FormatInt(after, 10)}, 100)
+func readCoreRunnerIdentityEventPage(ctx context.Context, tx *neutralimport.Query, organization tracker.OrganizationID, after int64) ([]coreRunnerIdentityEventRow, error) {
+	rows, err := tx.Rows(ctx, "runner_identity_events", nil, []string{"id"}, []string{strconv.FormatInt(after, 10)}, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -502,7 +503,7 @@ func readCoreRunnerIdentityEventPage(ctx context.Context, tx *coreNeutralImport,
 		if err := raw.Decode(map[string]any{"id": &event.SourceID, "runner_id": &event.RunnerID, "actor_id": &event.ActorID, "kind": &event.Kind, "occurred_at": &occurred}); err != nil {
 			return nil, err
 		}
-		if _, err := tx.one(ctx, "runner_identities", map[string]string{"id": event.RunnerID, "organization_id": string(organization)}, []string{"id"}); err != nil {
+		if _, err := tx.One(ctx, "runner_identities", map[string]string{"id": event.RunnerID, "organization_id": string(organization)}, []string{"id"}); err != nil {
 			return nil, err
 		}
 		event.OrganizationID = organization
@@ -515,7 +516,7 @@ func readCoreRunnerIdentityEventPage(ctx context.Context, tx *coreNeutralImport,
 	return result, nil
 }
 
-func importCoreRunnerIdentityEvents(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, organization tracker.OrganizationID, copyHash string) error {
+func importCoreRunnerIdentityEvents(ctx context.Context, tx *neutralimport.Query, target *postgres.Repository, content *eventstore.Content, organization tracker.OrganizationID, copyHash string) error {
 	var after int64
 	for {
 		events, err := readCoreRunnerIdentityEventPage(ctx, tx, organization, after)
@@ -538,8 +539,8 @@ func importCoreRunnerIdentityEvents(ctx context.Context, tx *coreNeutralImport, 
 	}
 }
 
-func readCoreRunnerLeaseAssignmentImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after string) ([]coreRunnerLeaseAssignmentImportRow, error) {
-	rows, err := tx.rows(ctx, "lease_runners", nil, []string{"lease_id"}, []string{after}, 100)
+func readCoreRunnerLeaseAssignmentImportPage(ctx context.Context, tx *neutralimport.Query, organization tracker.OrganizationID, after string) ([]coreRunnerLeaseAssignmentImportRow, error) {
+	rows, err := tx.Rows(ctx, "lease_runners", nil, []string{"lease_id"}, []string{after}, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -552,7 +553,7 @@ func readCoreRunnerLeaseAssignmentImportPage(ctx context.Context, tx *coreNeutra
 		if err := raw.Decode(map[string]any{"lease_id": &row.Assignment.LeaseID, "runner_id": &row.Assignment.RunnerID}); err != nil {
 			return nil, err
 		}
-		lease, err := tx.one(ctx, "leases", map[string]string{"lease_id": row.Assignment.LeaseID}, []string{"lease_id"})
+		lease, err := tx.One(ctx, "leases", map[string]string{"lease_id": row.Assignment.LeaseID}, []string{"lease_id"})
 		if err != nil {
 			return nil, err
 		}
@@ -560,7 +561,7 @@ func readCoreRunnerLeaseAssignmentImportPage(ctx context.Context, tx *coreNeutra
 		if err := lease.Decode(map[string]any{"acquired_at": &assigned, "issue_id": &issueID}); err != nil {
 			return nil, err
 		}
-		if _, err := tx.one(ctx, "issues", map[string]string{"id": strconv.FormatInt(issueID, 10), "organization_id": string(organization)}, []string{"id"}); err != nil {
+		if _, err := tx.One(ctx, "issues", map[string]string{"id": strconv.FormatInt(issueID, 10), "organization_id": string(organization)}, []string{"id"}); err != nil {
 			return nil, err
 		}
 		row.Assignment.AssignedAt, err = parseCoreExecutionTime(assigned)
@@ -572,8 +573,8 @@ func readCoreRunnerLeaseAssignmentImportPage(ctx context.Context, tx *coreNeutra
 	return result, nil
 }
 
-func readCoreWorkEventImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after int64) ([]coreWorkEventImportRow, error) {
-	rows, err := tx.rows(ctx, "work_events", nil, []string{"id"}, []string{strconv.FormatInt(after, 10)}, 100)
+func readCoreWorkEventImportPage(ctx context.Context, tx *neutralimport.Query, organization tracker.OrganizationID, after int64) ([]coreWorkEventImportRow, error) {
+	rows, err := tx.Rows(ctx, "work_events", nil, []string{"id"}, []string{strconv.FormatInt(after, 10)}, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -589,7 +590,7 @@ func readCoreWorkEventImportPage(ctx context.Context, tx *coreNeutralImport, org
 		if err := raw.Decode(map[string]any{"id": &event.ID, "issue_id": &event.IssueID, "fencing_token": &fencing, "machine_id": &machine, "session_id": &sessionID, "run_id": &runID, "kind": &event.Kind, "payload_json": &event.PayloadJSON, "occurred_at": &occurred, "recorded_at": &recorded}); err != nil {
 			return nil, err
 		}
-		if _, err := tx.one(ctx, "issues", map[string]string{"id": strconv.FormatInt(event.IssueID, 10), "organization_id": string(organization)}, []string{"id"}); err != nil {
+		if _, err := tx.One(ctx, "issues", map[string]string{"id": strconv.FormatInt(event.IssueID, 10), "organization_id": string(organization)}, []string{"id"}); err != nil {
 			return nil, err
 		}
 		if fencing.Valid {
@@ -617,8 +618,8 @@ func readCoreWorkEventImportPage(ctx context.Context, tx *coreNeutralImport, org
 	return result, nil
 }
 
-func readCoreLeaseImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after int64) ([]coreLeaseImportRow, error) {
-	rows, err := tx.rows(ctx, "leases", nil, []string{"fencing_token"}, []string{strconv.FormatInt(after, 10)}, 100)
+func readCoreLeaseImportPage(ctx context.Context, tx *neutralimport.Query, organization tracker.OrganizationID, after int64) ([]coreLeaseImportRow, error) {
+	rows, err := tx.Rows(ctx, "leases", nil, []string{"fencing_token"}, []string{strconv.FormatInt(after, 10)}, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -634,14 +635,14 @@ func readCoreLeaseImportPage(ctx context.Context, tx *coreNeutralImport, organiz
 		if err := raw.Decode(map[string]any{"fencing_token": &row.Lease.FencingToken, "lease_id": &row.Lease.LeaseID, "issue_id": &row.Lease.IssueID, "machine_id": &row.Lease.MachineID, "session_id": &row.Lease.SessionID, "work_item_revision": &row.Lease.WorkItemRevision, "landing_capacity": &row.Lease.LandingCapacity, "acquired_at": &acquired, "renewed_at": &renewed, "expires_at": &expires, "released_at": &released}); err != nil {
 			return nil, err
 		}
-		issue, err := tx.one(ctx, "issues", map[string]string{"id": strconv.FormatInt(row.Lease.IssueID, 10), "organization_id": string(organization)}, []string{"id"})
+		issue, err := tx.One(ctx, "issues", map[string]string{"id": strconv.FormatInt(row.Lease.IssueID, 10), "organization_id": string(organization)}, []string{"id"})
 		if err != nil {
 			return nil, err
 		}
 		if err := issue.Decode(map[string]any{"project_id": &projectID}); err != nil {
 			return nil, err
 		}
-		policy, err := tx.one(ctx, "lease_policies", map[string]string{"lease_id": row.Lease.LeaseID}, []string{"lease_id"})
+		policy, err := tx.One(ctx, "lease_policies", map[string]string{"lease_id": row.Lease.LeaseID}, []string{"lease_id"})
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
@@ -683,8 +684,8 @@ func readCoreLeaseImportPage(ctx context.Context, tx *coreNeutralImport, organiz
 	return result, nil
 }
 
-func readCoreAttemptImportPage(ctx context.Context, tx *coreNeutralImport, organization tracker.OrganizationID, after int64) ([]coreAttemptImportRow, error) {
-	rows, err := tx.rows(ctx, "native_attempts", map[string]string{"organization_id": string(organization)}, []string{"fencing_token"}, []string{strconv.FormatInt(after, 10)}, 100)
+func readCoreAttemptImportPage(ctx context.Context, tx *neutralimport.Query, organization tracker.OrganizationID, after int64) ([]coreAttemptImportRow, error) {
+	rows, err := tx.Rows(ctx, "native_attempts", map[string]string{"organization_id": string(organization)}, []string{"fencing_token"}, []string{strconv.FormatInt(after, 10)}, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -702,7 +703,7 @@ func readCoreAttemptImportPage(ctx context.Context, tx *coreNeutralImport, organ
 			return nil, err
 		}
 		row.Project = tracker.ProjectID(project)
-		issue, err := tx.one(ctx, "issues", map[string]string{"organization_id": string(organization), "project_id": project, "native_id": item}, []string{"id"})
+		issue, err := tx.One(ctx, "issues", map[string]string{"organization_id": string(organization), "project_id": project, "native_id": item}, []string{"id"})
 		if err != nil {
 			return nil, err
 		}
@@ -738,7 +739,7 @@ func prepareCoreExecutionReceipt[T any](ctx context.Context, content *eventstore
 	return content.PrepareReceipt(ctx, receipt, raw)
 }
 
-func prepareCoreExecutionAttempt(ctx context.Context, tx *coreNeutralImport, content *eventstore.Content, source CoreExecutionImportSource, copyHash string, row coreAttemptImportRow) (postgres.CoreAttemptImport, error) {
+func prepareCoreExecutionAttempt(ctx context.Context, tx *neutralimport.Query, content *eventstore.Content, source CoreExecutionImportSource, copyHash string, row coreAttemptImportRow) (postgres.CoreAttemptImport, error) {
 	attempt := row.Attempt
 	var checkpointDetails []attachmentstore.ArchiveRecord
 	var checkpointObjects []attachment.ArchiveReference
@@ -817,7 +818,7 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *coreNeutralImport, con
 			key := detail.ObjectKey
 			var uploader string
 			if key == "" {
-				metadata, err := tx.one(ctx, "attachments", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(row.Project), "id": detail.AttachmentID, "kind": "archive", "customer_owned": "0", "storage_binding_id": ""}, []string{"id"})
+				metadata, err := tx.One(ctx, "attachments", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(row.Project), "id": detail.AttachmentID, "kind": "archive", "customer_owned": "0", "storage_binding_id": ""}, []string{"id"})
 				if err != nil {
 					return nil, err
 				}
@@ -870,10 +871,10 @@ func prepareCoreExecutionAttempt(ctx context.Context, tx *coreNeutralImport, con
 	return postgres.CoreAttemptImport{CleanupRunnerID: run.RunnerID, CleanupMachineID: string(run.MachineID), Attempt: attempt, Receipt: receipt, CheckpointDetails: checkpointDetails, CheckpointObjects: checkpointObjects, CheckpointReference: checkpointReference, PayloadReference: payloadRef, ArtifactsReference: artifactsReference}, nil
 }
 
-func importCoreAttemptEvents(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, organization tracker.OrganizationID, attempt leasestore.Attempt) error {
+func importCoreAttemptEvents(ctx context.Context, tx *neutralimport.Query, target *postgres.Repository, organization tracker.OrganizationID, attempt leasestore.Attempt) error {
 	var after int64
 	for {
-		rows, err := tx.rows(ctx, "native_attempt_events", map[string]string{"attempt_id": attempt.ID}, []string{"sequence"}, []string{strconv.FormatInt(after, 10)}, 100)
+		rows, err := tx.Rows(ctx, "native_attempt_events", map[string]string{"attempt_id": attempt.ID}, []string{"sequence"}, []string{strconv.FormatInt(after, 10)}, 100)
 		if err != nil {
 			return err
 		}
@@ -895,7 +896,7 @@ func importCoreAttemptEvents(ctx context.Context, tx *coreNeutralImport, target 
 	}
 }
 
-func readCoreExecutionObject(ctx context.Context, tx *coreNeutralImport, source CoreExecutionImportSource, key string) ([]byte, error) {
+func readCoreExecutionObject(ctx context.Context, tx *neutralimport.Query, source CoreExecutionImportSource, key string) ([]byte, error) {
 	return readCoreNeutralObject(ctx, tx, source.OrganizationID, source.SourceObjects, key)
 }
 
@@ -919,9 +920,9 @@ func sameStringSlice(left, right []string) bool {
 	return true
 }
 
-func importCoreExecutionDiffs(ctx context.Context, tx *coreNeutralImport, target *postgres.Repository, content *eventstore.Content, source CoreExecutionImportSource, copyHash string) (int64, error) {
+func importCoreExecutionDiffs(ctx context.Context, tx *neutralimport.Query, target *postgres.Repository, content *eventstore.Content, source CoreExecutionImportSource, copyHash string) (int64, error) {
 	var imported int64
-	err := tx.each(ctx, "attempt_diffs", map[string]string{"organization_id": string(source.OrganizationID)}, []string{"id"}, func(raw postgres.NeutralImportRow) error {
+	err := tx.Each(ctx, "attempt_diffs", map[string]string{"organization_id": string(source.OrganizationID)}, []string{"id"}, func(raw neutralimport.Row) error {
 		var diff leasestore.AttemptDiff
 		var created string
 		ref := hubcontent.ContentReference()
@@ -934,7 +935,7 @@ func importCoreExecutionDiffs(ctx context.Context, tx *coreNeutralImport, target
 		if err != nil {
 			return err
 		}
-		item, err := tx.one(ctx, "issues", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(diff.ProjectID), "native_id": string(diff.WorkItemID)}, []string{"id"})
+		item, err := tx.One(ctx, "issues", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(diff.ProjectID), "native_id": string(diff.WorkItemID)}, []string{"id"})
 		if err != nil {
 			return err
 		}
@@ -1001,7 +1002,7 @@ func importCoreExecutionDiffs(ctx context.Context, tx *coreNeutralImport, target
 	return imported, err
 }
 
-func readCoreExecutionDiffFiles(ctx context.Context, tx *coreNeutralImport, source CoreExecutionImportSource, diff leasestore.AttemptDiff, manifest attachment.ArchiveReference) ([]tracker.AttemptDiffFile, error) {
+func readCoreExecutionDiffFiles(ctx context.Context, tx *neutralimport.Query, source CoreExecutionImportSource, diff leasestore.AttemptDiff, manifest attachment.ArchiveReference) ([]tracker.AttemptDiffFile, error) {
 	if manifest.Key != "" {
 		if manifest.Validate(string(source.OrganizationID)) != nil {
 			return nil, artifact.ErrIntegrity
@@ -1020,7 +1021,7 @@ func readCoreExecutionDiffFiles(ctx context.Context, tx *coreNeutralImport, sour
 		return files, nil
 	}
 	positions := map[int]tracker.AttemptDiffFile{}
-	err := tx.each(ctx, "attempt_diff_files", map[string]string{"diff_id": diff.ID}, []string{"position"}, func(raw postgres.NeutralImportRow) error {
+	err := tx.Each(ctx, "attempt_diff_files", map[string]string{"diff_id": diff.ID}, []string{"position"}, func(raw neutralimport.Row) error {
 		position := 0
 		var file tracker.AttemptDiffFile
 		var body diffbody.Reference
@@ -1042,7 +1043,7 @@ func readCoreExecutionDiffFiles(ctx context.Context, tx *coreNeutralImport, sour
 	if err != nil {
 		return nil, err
 	}
-	err = tx.each(ctx, "attempt_diff_file_archives", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(diff.ProjectID), "diff_id": diff.ID}, []string{"position"}, func(raw postgres.NeutralImportRow) error {
+	err = tx.Each(ctx, "attempt_diff_file_archives", map[string]string{"organization_id": string(source.OrganizationID), "project_id": string(diff.ProjectID), "diff_id": diff.ID}, []string{"position"}, func(raw neutralimport.Row) error {
 		position := 0
 		ref := hubcontent.ContentReference()
 		if err := raw.Decode(map[string]any{"position": &position, "object_key": &ref.Key, "object_sha256": &ref.SHA256, "object_bytes": &ref.CompressedSize, "content_bytes": &ref.UncompressedSize}); err != nil {

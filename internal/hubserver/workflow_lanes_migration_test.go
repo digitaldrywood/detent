@@ -27,11 +27,11 @@ func TestCloudWorkflowLanesUpgrade(t *testing.T) {
 	raw := historyTestJSON(t, original)
 	projects := []string{"prj_created_after_transition", "prj_edited_after_transition"}
 	for _, id := range projects {
-		source.add("projects", map[string]any{"id": id, "organization_id": organization, "name": id, "profile": "native", "states_json": states, "created_at": testTimestamp, "workflow_markdown": legacy, "integration_revision": 7})
-		source.add("policy_revisions", map[string]any{"scope": string(organization) + "/" + id, "policy_id": original.ID, "metadata_json": string(raw), "approved_by": "human", "approved_at": testTimestamp})
-		source.add("project_policies", map[string]any{"scope": string(organization) + "/" + id, "policy_id": original.ID})
+		source.Add("projects", map[string]any{"id": id, "organization_id": organization, "name": id, "profile": "native", "states_json": states, "created_at": testTimestamp, "workflow_markdown": legacy, "integration_revision": 7})
+		source.Add("policy_revisions", map[string]any{"scope": string(organization) + "/" + id, "policy_id": original.ID, "metadata_json": string(raw), "approved_by": "human", "approved_at": testTimestamp})
+		source.Add("project_policies", map[string]any{"scope": string(organization) + "/" + id, "policy_id": original.ID})
 	}
-	path := source.write()
+	path := source.Write()
 	for startup := range 2 {
 		if err := importHistoricalWorkflowSource(t, service, organization, path); err != nil {
 			t.Fatal(err)
@@ -97,13 +97,13 @@ func TestCloudWorkflowLanesMigration(t *testing.T) {
 			}
 			ids := []tracker.ProjectID{"project_first", "project_second"}
 			for _, id := range ids {
-				source.add("projects", map[string]any{"id": id, "organization_id": organization, "name": string(id), "profile": "native", "states_json": test.states, "workflow_source": test.source, "workflow_markdown": test.markdown, "created_at": testTimestamp, "integration_revision": 7})
+				source.Add("projects", map[string]any{"id": id, "organization_id": organization, "name": string(id), "profile": "native", "states_json": test.states, "workflow_source": test.source, "workflow_markdown": test.markdown, "created_at": testTimestamp, "integration_revision": 7})
 				if test.changed {
-					source.add("policy_revisions", map[string]any{"scope": string(organization) + "/" + string(id), "policy_id": original.ID, "metadata_json": string(historyTestJSON(t, original)), "approved_by": "human", "approved_at": "2026-10-05T22:00:00Z"})
-					source.add("project_policies", map[string]any{"scope": string(organization) + "/" + string(id), "policy_id": original.ID})
+					source.Add("policy_revisions", map[string]any{"scope": string(organization) + "/" + string(id), "policy_id": original.ID, "metadata_json": string(historyTestJSON(t, original)), "approved_by": "human", "approved_at": "2026-10-05T22:00:00Z"})
+					source.Add("project_policies", map[string]any{"scope": string(organization) + "/" + string(id), "policy_id": original.ID})
 				}
 			}
-			path := source.write()
+			path := source.Write()
 			err := importHistoricalWorkflowSource(t, service, organization, path)
 			if (err != nil) != test.fails {
 				t.Fatalf("migration error=%v", err)

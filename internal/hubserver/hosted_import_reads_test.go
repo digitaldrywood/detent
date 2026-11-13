@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
@@ -43,20 +44,20 @@ func TestHostedImportTypedReads(t *testing.T) {
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	stamp, expiry := now.Add(-time.Hour).Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339)
 	objects := &memoryRunDetails{}
-	newSource := func(organization tracker.OrganizationID) *coreNeutralFixture {
+	newSource := func(organization tracker.OrganizationID) *neutralimporttest.Fixture {
 		t.Helper()
 		fixture := newCoreNeutralFixture(t, organization, "organizations", "hosted_tenant", "api_tokens", "hosted_members", "hosted_release_preferences", "daily_summary_preferences", "daily_summary_receipts", "hosted_project_grants", "token_grants", "hosted_sessions", "hosted_transactions", "hosted_invitations", "hosted_member_reservations", "hosted_binding_migrations", "organization_secrets", "organization_secret_audit", "project_secrets", "project_secret_audit", "hosted_audit", "hosted_audit_times")
-		fixture.add("organizations", map[string]any{"id": organization, "name": "Example organization", "slug": organization, "local": false, "created_at": stamp})
-		fixture.add("hosted_tenant", map[string]any{"singleton": "1", "provider_id": "provider_" + string(organization), "bootstrap_subject": "target", "deployment": "example", "public_url": "https://example.test", "allocation_generation": "1"})
+		fixture.Add("organizations", map[string]any{"id": organization, "name": "Example organization", "slug": organization, "local": false, "created_at": stamp})
+		fixture.Add("hosted_tenant", map[string]any{"singleton": "1", "provider_id": "provider_" + string(organization), "bootstrap_subject": "target", "deployment": "example", "public_url": "https://example.test", "allocation_generation": "1"})
 		return fixture
 	}
-	addSession := func(fixture *coreNeutralFixture, key, payload string, subject any) {
+	addSession := func(fixture *neutralimporttest.Fixture, key, payload string, subject any) {
 		t.Helper()
-		raw, err := json.Marshal(auth.HostedIdentity{Subject: payload, OrganizationID: "provider_" + string(fixture.organization), SessionID: key, CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)})
+		raw, err := json.Marshal(auth.HostedIdentity{Subject: payload, OrganizationID: "provider_" + string(fixture.Organization), SessionID: key, CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.add("hosted_sessions", map[string]any{"token_hash": key, "email": "user@example.test", "identity_json": string(raw), "identity_subject": subject, "created_at": stamp, "expires_at": expiry})
+		fixture.Add("hosted_sessions", map[string]any{"token_hash": key, "email": "user@example.test", "identity_json": string(raw), "identity_subject": subject, "created_at": stamp, "expires_at": expiry})
 	}
 	t.Run("conflicting imported session identity is refused", func(t *testing.T) {
 		for _, entry := range []struct{ key, payload, subject string }{{"typed-target", "other", "target"}, {"typed-other", "target", "other"}} {
@@ -64,7 +65,7 @@ func TestHostedImportTypedReads(t *testing.T) {
 				organization := tracker.OrganizationID("org_conflict_" + entry.subject)
 				fixture := newSource(organization)
 				addSession(fixture, entry.key, entry.payload, entry.subject)
-				if _, err := repository.ImportAccessCopy(t.Context(), postgres.AccessCopyImportSource{BundlePath: fixture.write(), OrganizationID: organization, Catalog: catalog, Objects: objects}); !errors.Is(err, postgres.ErrAccessImport) {
+				if _, err := repository.ImportAccessCopy(t.Context(), postgres.AccessCopyImportSource{BundlePath: fixture.Write(), OrganizationID: organization, Catalog: catalog, Objects: objects}); !errors.Is(err, postgres.ErrAccessImport) {
 					t.Fatalf("conflicting session identity import: %v", err)
 				}
 				var count int
@@ -97,8 +98,8 @@ func TestHostedImportTypedReads(t *testing.T) {
 	for _, organization := range organizations {
 		fixture := newSource(organization)
 		for _, subject := range []string{"target", "other", "inactive"} {
-			fixture.add("api_tokens", map[string]any{"id": "hosted_" + apikey.HashToken(subject)[:32], "name": subject, "token_hash": apikey.HashToken(string(organization) + subject), "token_fingerprint": hubapi.TokenFingerprint(apikey.HashToken(string(organization) + subject)), "scope": "operator", "native_only": true, "created_at": stamp, "updated_at": stamp, "operator_project_access": "selected", "key_kind": "personal", "hosted_user_id": subject, "hosted_membership_id": "membership_" + subject, "operator_key_scope": "write"})
-			fixture.add("hosted_members", map[string]any{"user_id": subject, "email": subject + "@example.test", "membership_id": "membership_" + subject, "role": "member", "active": subject != "inactive", "principal_id": "hosted_" + apikey.HashToken(subject)[:32], "created_at": stamp, "updated_at": stamp})
+			fixture.Add("api_tokens", map[string]any{"id": "hosted_" + apikey.HashToken(subject)[:32], "name": subject, "token_hash": apikey.HashToken(string(organization) + subject), "token_fingerprint": hubapi.TokenFingerprint(apikey.HashToken(string(organization) + subject)), "scope": "operator", "native_only": true, "created_at": stamp, "updated_at": stamp, "operator_project_access": "selected", "key_kind": "personal", "hosted_user_id": subject, "hosted_membership_id": "membership_" + subject, "operator_key_scope": "write"})
+			fixture.Add("hosted_members", map[string]any{"user_id": subject, "email": subject + "@example.test", "membership_id": "membership_" + subject, "role": "member", "active": subject != "inactive", "principal_id": "hosted_" + apikey.HashToken(subject)[:32], "created_at": stamp, "updated_at": stamp})
 		}
 		for _, entry := range sessions {
 			addSession(fixture, entry.key, entry.payload, entry.subject)
@@ -109,9 +110,9 @@ func TestHostedImportTypedReads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			fixture.add("hosted_audit", map[string]any{"id": index + 1, "session_id": "session", "actual_actor": "actor", "effective_user": "actor", "reason": "", "event": string(raw), "route": "mcp/account", "project_id": "", "status": 0, "started_at": stamp, "expires_at": expiry, "recorded_at": stamp, "recorded_at_ns": now.Add(-time.Hour).UnixNano(), "account_kind": entry.kind, "account_retry": entry.identity, "mutation_json": `{}`})
+			fixture.Add("hosted_audit", map[string]any{"id": index + 1, "session_id": "session", "actual_actor": "actor", "effective_user": "actor", "reason": "", "event": string(raw), "route": "mcp/account", "project_id": "", "status": 0, "started_at": stamp, "expires_at": expiry, "recorded_at": stamp, "recorded_at_ns": now.Add(-time.Hour).UnixNano(), "account_kind": entry.kind, "account_retry": entry.identity, "mutation_json": `{}`})
 		}
-		if _, err := repository.ImportAccessCopy(t.Context(), postgres.AccessCopyImportSource{BundlePath: fixture.write(), OrganizationID: organization, Catalog: catalog, Objects: objects}); err != nil {
+		if _, err := repository.ImportAccessCopy(t.Context(), postgres.AccessCopyImportSource{BundlePath: fixture.Write(), OrganizationID: organization, Catalog: catalog, Objects: objects}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -378,13 +379,13 @@ func TestHostedImportOutboxFields(t *testing.T) {
 		{"partial refusal", `{"issue_number":99,"summary":true}`, 0, nil, "superseded", 0, false, outboxFields{0, true}},
 	}
 	source := newCoreNeutralFixture(t, f.project.OrganizationID, "repositories", "projects", "issues", "github_outbox")
-	source.add("repositories", map[string]any{"id": 1, "github_node_id": "outbox-repository", "github_owner": "example-org", "github_name": "example-project", "created_at": testTimestamp, "updated_at": testTimestamp})
-	source.add("projects", map[string]any{"id": f.project.ID, "name": "Example project", "slug": "example-project", "profile": "native", "github_projection": "disabled", "created_at": testTimestamp})
+	source.Add("repositories", map[string]any{"id": 1, "github_node_id": "outbox-repository", "github_owner": "example-org", "github_name": "example-project", "created_at": testTimestamp, "updated_at": testTimestamp})
+	source.Add("projects", map[string]any{"id": f.project.ID, "name": "Example project", "slug": "example-project", "profile": "native", "github_projection": "disabled", "created_at": testTimestamp})
 	for index, item := range items {
-		source.add("issues", map[string]any{"id": index + 1, "native_id": item.WorkItemID, "project_id": f.project.ID, "repository_id": 1})
+		source.Add("issues", map[string]any{"id": index + 1, "native_id": item.WorkItemID, "project_id": f.project.ID, "repository_id": 1})
 	}
 	for index, entry := range cases {
-		source.add("github_outbox", map[string]any{"id": index + 1, "idempotency_key": entry.name, "repository_id": 1, "issue_id": index%2 + 1, "mutation_kind": "workpad", "desired_json": entry.raw, "status": "pending", "created_at": testTimestamp, "updated_at": testTimestamp, "desired_issue_number": entry.number, "desired_summary": entry.summary})
+		source.Add("github_outbox", map[string]any{"id": index + 1, "idempotency_key": entry.name, "repository_id": 1, "issue_id": index%2 + 1, "mutation_kind": "workpad", "desired_json": entry.raw, "status": "pending", "created_at": testTimestamp, "updated_at": testTimestamp, "desired_issue_number": entry.number, "desired_summary": entry.summary})
 	}
 	lifecycles := []string{"pending", "processing", "retrying"}
 	for index, status := range lifecycles {
@@ -392,13 +393,13 @@ func TestHostedImportOutboxFields(t *testing.T) {
 		if status == "processing" {
 			values["processing_started_at"] = testTimestamp
 		}
-		source.add("github_outbox", values)
+		source.Add("github_outbox", values)
 	}
 	catalog, err := storagecatalog.Read(os.DirFS("../.."), "tools/storageinventory/mappings/v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := TenantCoreImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, Catalog: catalog, Objects: objects}
+	input := TenantCoreImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, Catalog: catalog, Objects: objects}
 	if count, err := ImportCoreGitHubOutbox(t.Context(), f.service.database.postgres, input); err != nil || count != 9 {
 		t.Fatalf("historical outbox import=%d error=%v", count, err)
 	}

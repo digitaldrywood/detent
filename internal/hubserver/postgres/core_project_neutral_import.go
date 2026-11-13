@@ -12,13 +12,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (r *Repository) PinVerifiedNeutralImport(ctx context.Context, source *VerifiedNeutralImport, objects attachment.DetailStore) error {
+func (r *Repository) PinVerifiedNeutralImport(ctx context.Context, source *neutralimport.Bundle, objects attachment.DetailStore) error {
 	if source == nil || objects == nil {
-		return ErrNeutralImport
+		return neutralimport.ErrInvalid
 	}
 	identity := source.Identity()
 	schema, err := json.Marshal(source.Schema())
@@ -49,9 +50,9 @@ func (r *Repository) PinVerifiedNeutralImport(ctx context.Context, source *Verif
 		return nil
 	}
 	content := eventstore.NewContent(objects)
-	for _, table := range source.manifest.Tables {
+	for _, table := range source.Manifest().Tables {
 		for _, page := range table.Pages {
-			raw, err := readNeutralImportFile(ctx, source.root, page.File, neutralImportPageBytes)
+			raw, err := source.PageFile(ctx, page.File)
 			if err != nil {
 				return err
 			}
@@ -71,7 +72,7 @@ func (r *Repository) PinVerifiedNeutralImport(ctx context.Context, source *Verif
 			}
 		}
 	}
-	manifest, err := json.Marshal(source.manifest)
+	manifest, err := json.Marshal(source.Manifest())
 	if err != nil {
 		return err
 	}
@@ -98,13 +99,13 @@ func (r *Repository) PinVerifiedNeutralImport(ctx context.Context, source *Verif
 }
 func (r *Repository) importNeutralCoreProjects(ctx context.Context, source CoreProjectImportSource) (int64, error) {
 	var count int64
-	err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
-		if err := validateNeutralCoreSourceSchema(bundle, "projects", "repositories"); err != nil {
+	err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
+		if err := neutralimport.ValidateCoreTables(bundle, "projects", "repositories"); err != nil {
 			return err
 		}
 		keys, err := bundle.TableKey("projects")
-		if err != nil || !slices.Equal(keys, []NeutralImportKey{{Column: "id", Kind: "text"}}) {
-			return ErrNeutralImport
+		if err != nil || !slices.Equal(keys, []neutralimport.Key{{Column: "id", Kind: "text"}}) {
+			return neutralimport.ErrInvalid
 		}
 		if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {
 			return err
@@ -132,7 +133,7 @@ func (r *Repository) importNeutralCoreProjects(ctx context.Context, source CoreP
 	})
 	return count, err
 }
-func neutralCoreProjectRow(ctx context.Context, bundle *VerifiedNeutralImport, organization tracker.OrganizationID, raw NeutralImportRow) (coreProjectImportRow, error) {
+func neutralCoreProjectRow(ctx context.Context, bundle *neutralimport.Bundle, organization tracker.OrganizationID, raw neutralimport.Row) (coreProjectImportRow, error) {
 	var row coreProjectImportRow
 	c, v := &row.Record.Core, &row.Record.Settings
 	c.OrganizationID = organization
@@ -143,7 +144,7 @@ func neutralCoreProjectRow(ctx context.Context, bundle *VerifiedNeutralImport, o
 		return row, err
 	}
 	if cell, ok := raw.Values["model_selection_json"]; !ok {
-		return row, ErrNeutralImport
+		return row, neutralimport.ErrInvalid
 	} else if !cell.Null {
 		if err := raw.Decode(map[string]any{"model_selection_json": &row.Models}); err != nil {
 			return row, err
@@ -152,8 +153,8 @@ func neutralCoreProjectRow(ctx context.Context, bundle *VerifiedNeutralImport, o
 	v.ProjectID = c.ID
 	if row.RepositoryID.Valid {
 		keys, err := bundle.TableKey("repositories")
-		if err != nil || !slices.Equal(keys, []NeutralImportKey{{Column: "id", Kind: "integer"}}) {
-			return row, ErrNeutralImport
+		if err != nil || !slices.Equal(keys, []neutralimport.Key{{Column: "id", Kind: "integer"}}) {
+			return row, neutralimport.ErrInvalid
 		}
 		repository, err := bundle.Lookup(ctx, "repositories", []string{strconv.FormatInt(row.RepositoryID.Int64, 10)})
 		if err != nil {

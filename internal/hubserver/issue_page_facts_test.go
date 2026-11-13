@@ -648,10 +648,10 @@ func TestBlockerHistoryUsesTypedPageFacts(t *testing.T) {
 						fields[name] = value
 					}
 				}
-				source.add("collaboration_events", fields)
-				source.set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3})
+				source.Add("collaboration_events", fields)
+				source.Set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3})
 			}
-			count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()})
+			count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()})
 			if err != nil || count != 2 {
 				t.Fatalf("historical blocker source import count=%d error=%v", count, err)
 			}
@@ -955,8 +955,8 @@ func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	source := coreWorkItemNeutralFixture(t, f.project.OrganizationID, f.project.ID, false)
 	linked := newCoreNeutralFixture(t, f.project.OrganizationID, "linked_issue_sources")
-	source.tables["linked_issue_sources"] = linked.tables["linked_issue_sources"]
-	source.add("workflow_states", map[string]any{"id": 2, "project_id": f.project.ID, "detent_state": "Done", "terminal": 1})
+	source.Tables["linked_issue_sources"] = linked.Tables["linked_issue_sources"]
+	source.Add("workflow_states", map[string]any{"id": 2, "project_id": f.project.ID, "detent_state": "Done", "terminal": 1})
 	actor := tracker.Actor{Kind: "human", PrincipalID: strings.Repeat("example-", 1500)}
 	actorJSON, err := json.Marshal(actor)
 	if err != nil {
@@ -976,7 +976,7 @@ func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
 			}
 			snapshotJSON = string(raw)
 		}
-		source.add("linked_issue_sources", map[string]any{"work_item_id": item, "source_url": url, "title_supplied": false, "body_supplied": false, "snapshot_json": snapshotJSON})
+		source.Add("linked_issue_sources", map[string]any{"work_item_id": item, "source_url": url, "title_supplied": false, "body_supplied": false, "snapshot_json": snapshotJSON})
 		current := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: tracker.NativeWorkItemID(item), Number: 1 + itemIndex*2, Revision: 2, Profile: "native"}, Title: "Updated title", Body: coreImportBody(), State: "Done", Terminal: true, ClosedAt: &closed, Labels: []string{"needs-review"}, Assignees: []string{"example-assignee"}, Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}, CreatedAt: parseTestTime(t, created), UpdatedAt: closed, LastActivityAt: closed, LinkedSource: &tracker.LinkedIssueSource{URL: url, Status: "pending"}}
 		currentRaw, err := json.Marshal(current)
 		if err != nil {
@@ -990,12 +990,12 @@ func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		source.set("collaboration_versions", map[string]string{"record_id": item, "revision": "2"}, map[string]any{"encoding": "snapshot", "record_json": string(currentRaw)})
+		source.Set("collaboration_versions", map[string]string{"record_id": item, "revision": "2"}, map[string]any{"encoding": "snapshot", "record_json": string(currentRaw)})
 		entry, err := json.Marshal(tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		source.add("collaboration_events", map[string]any{"id": "event_entered" + suffix, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": 3, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(actorJSON), "data_json": string(entry), "event_revision": 2, "recorded_at": updated})
+		source.Add("collaboration_events", map[string]any{"id": "event_entered" + suffix, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item, "sequence": 3, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(actorJSON), "data_json": string(entry), "event_revision": 2, "recorded_at": updated})
 		for index := range storageConversionRows + 3 {
 			for kindIndex, kind := range []string{"issue.edited", "comment.created", "workflow.transitioned"} {
 				data := tracker.CollaborationData{Revision: 2, Reason: strings.Repeat("x", 11000), FromState: "Todo", ToState: "Done"}
@@ -1010,12 +1010,12 @@ func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
 				if itemIndex == 1 && index == storageConversionRows+2 && kind == "issue.edited" {
 					fields["page_projection_ready"], fields["edited_title"], fields["edited_body"] = true, true, false
 				}
-				source.add("collaboration_events", fields)
+				source.Add("collaboration_events", fields)
 			}
 		}
-		source.set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3 + 3*(storageConversionRows+3), "workflow_state_id": 2})
+		source.Set("issues", map[string]string{"native_id": item}, map[string]any{"event_sequence": 3 + 3*(storageConversionRows+3), "workflow_state_id": 2})
 	}
-	input := CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	input := CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {
 		t.Fatalf("past-budget historical source import count=%d error=%v", count, err)
 	}

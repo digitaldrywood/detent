@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -42,14 +43,14 @@ type nativeArchiveImportSection struct {
 func (r *Repository) ImportNativeArchiveHistory(ctx context.Context, source NativeArchiveImportSource) (NativeArchiveImportResult, error) {
 	var result NativeArchiveImportResult
 	if source.CopyPath != "" || source.BundlePath == "" || source.Objects == nil || source.Source.Store != "hub" || source.Source.OrganizationID == "" || source.ValidateSection == nil {
-		return result, ErrNeutralImport
+		return result, neutralimport.ErrInvalid
 	}
 	organization := tracker.OrganizationID(source.Source.OrganizationID)
 	source.Source.Schema = "hub_copy"
 	if source.Schema == nil {
 		source.Schema = schemaFromCatalog(source.Catalog)
 	}
-	err := ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+	err := neutralimport.Read(ctx, source.BundlePath, organization, func(bundle *neutralimport.Bundle) error {
 		source.neutral = bundle
 		if _, exists := bundle.Schema()["native_archive_sections"]; !exists {
 			return nil
@@ -114,7 +115,7 @@ func (r *Repository) ImportNativeArchiveHistory(ctx context.Context, source Nati
 	return result, err
 }
 
-func readNativeArchiveImportSection(ctx context.Context, source NativeArchiveImportSource, row NeutralImportRow) (nativeArchiveImportSection, error) {
+func readNativeArchiveImportSection(ctx context.Context, source NativeArchiveImportSource, row neutralimport.Row) (nativeArchiveImportSection, error) {
 	var section nativeArchiveImportSection
 	if err := row.Decode(map[string]any{"organization_id": &section.organization, "project_id": &section.project, "work_item_id": &section.item, "kind": &section.kind, "subject_id": &section.subject, "first_sequence": &section.first, "last_sequence": &section.last, "section_id": &section.id, "attachment_id": &section.attachment}); err != nil {
 		return section, err
@@ -214,8 +215,8 @@ func readNativeArchiveImportAttachment(ctx context.Context, source NativeArchive
 	return record, nil
 }
 
-func archivedImportRow(table attachment.ArchiveTable, values []json.RawMessage) (NeutralImportRow, error) {
-	row := NeutralImportRow{Values: map[string]storagecatalog.Cell{}}
+func archivedImportRow(table attachment.ArchiveTable, values []json.RawMessage) (neutralimport.Row, error) {
+	row := neutralimport.Row{Values: map[string]storagecatalog.Cell{}}
 	if len(table.Columns) != len(values) || len(values) == 0 || table.Columns[0] != "rowid" || json.Unmarshal(values[0], &row.SourceRowID) != nil || row.SourceRowID < 1 {
 		return row, artifact.ErrIntegrity
 	}

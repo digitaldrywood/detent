@@ -1,15 +1,16 @@
-package postgres
+package neutralimport
 
 import (
 	"encoding/json"
+	"reflect"
 	"slices"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 )
 
-func (s *VerifiedNeutralImport) ValidateCatalogTable(catalog storagecatalog.Catalog, schema storagecatalog.Schema, name string, keys []string) error {
-	table, err := s.table(name)
+func (s *Bundle) ValidateCatalogTable(catalog storagecatalog.Catalog, schema storagecatalog.Schema, name string, keys []string) error {
+	table, err := s.Table(name)
 	if err != nil {
 		return err
 	}
@@ -18,7 +19,7 @@ func (s *VerifiedNeutralImport) ValidateCatalogTable(catalog storagecatalog.Cata
 		return storagecatalog.ErrUnmapped
 	}
 	for column, mapping := range definition.Columns {
-		if schema[name][column] != mapping.Source || !sameSourceSignature([]byte(table.Columns[column]), mapping.Source) {
+		if schema[name][column] != mapping.Source || !SameSourceSignature([]byte(table.Columns[column]), mapping.Source) {
 			return storagecatalog.ErrUnmapped
 		}
 	}
@@ -82,4 +83,14 @@ func (s *VerifiedNeutralImport) ValidateCatalogTable(catalog storagecatalog.Cata
 		}
 	}
 	return nil
+}
+
+func SameSourceSignature(actual []byte, expected string) bool {
+	var left, right any
+	if json.Unmarshal(actual, &left) != nil || json.Unmarshal([]byte(expected), &right) != nil {
+		return false
+	}
+	actualFields, actualOK := left.([]any)
+	expectedFields, expectedOK := right.([]any)
+	return actualOK && expectedOK && len(actualFields) == 7 && len(expectedFields) == 7 && reflect.DeepEqual(actualFields[1:], expectedFields[1:])
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -43,12 +44,12 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 				attempt := historyRepairAttempt(t, target, tracker.NativeRunData{})
 				for _, value := range versions {
 					value.AttemptID = attempt.ID
-					fixture.set("change_versions", map[string]string{"id": value.ID}, map[string]any{"record_json": string(historyTestJSON(t, value))})
+					fixture.Set("change_versions", map[string]string{"id": value.ID}, map[string]any{"record_json": string(historyTestJSON(t, value))})
 				}
 			}
 			if family == "reviews" {
 				review := tracker.ChangeReview{ID: "older-review", VersionID: version.ID, ImplementationReview: &gate.ValidatorResult{}}
-				fixture.add("change_evidence", map[string]any{"sequence": 1, "change_id": target.change.ID, "version_id": version.ID, "kind": "review", "source_key": "older-review", "record_json": string(historyTestJSON(t, review))})
+				fixture.Add("change_evidence", map[string]any{"sequence": 1, "change_id": target.change.ID, "version_id": version.ID, "kind": "review", "source_key": "older-review", "record_json": string(historyTestJSON(t, review))})
 			}
 			for index := range hubrecords.ChangeLegacyReadLimit + 1 {
 				id := fmt.Sprintf("legacy-%s-%03d", family, index)
@@ -56,16 +57,16 @@ func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 				case "policy":
 					change := target.change
 					change.ID, change.CurrentVersion = id, ""
-					fixture.add("change_requests", map[string]any{"id": id, "organization_id": target.project.OrganizationID, "project_id": target.project.ID, "work_item_id": target.issue.WorkItemID, "record_json": string(historyTestJSON(t, change))})
-					fixture.add("change_issue_links", map[string]any{"change_id": id, "organization_id": target.project.OrganizationID, "project_id": target.project.ID, "work_item_id": target.issue.WorkItemID})
+					fixture.Add("change_requests", map[string]any{"id": id, "organization_id": target.project.OrganizationID, "project_id": target.project.ID, "work_item_id": target.issue.WorkItemID, "record_json": string(historyTestJSON(t, change))})
+					fixture.Add("change_issue_links", map[string]any{"change_id": id, "organization_id": target.project.OrganizationID, "project_id": target.project.ID, "work_item_id": target.issue.WorkItemID})
 				case "escape":
 					discussion := tracker.ChangeDiscussion{ID: id, VersionID: version.ID, Body: "Historical discussion", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-author"}, CreatedAt: target.service.config.Clock()}
-					fixture.add("change_evidence", map[string]any{"sequence": index + 1, "change_id": target.change.ID, "version_id": version.ID, "kind": "discussion", "source_key": nil, "record_json": string(historyTestJSON(t, discussion))})
+					fixture.Add("change_evidence", map[string]any{"sequence": index + 1, "change_id": target.change.ID, "version_id": version.ID, "kind": "discussion", "source_key": nil, "record_json": string(historyTestJSON(t, discussion))})
 				case "comments":
 					historyRepairComment(t, target, id, int64(index+1))
 				case "reviews":
 					review := tracker.ChangeReview{ID: id, VersionID: version.ID, Decision: "commented"}
-					fixture.add("change_evidence", map[string]any{"sequence": index + 2, "change_id": target.change.ID, "version_id": version.ID, "kind": "review", "source_key": nil, "record_json": string(historyTestJSON(t, review))})
+					fixture.Add("change_evidence", map[string]any{"sequence": index + 2, "change_id": target.change.ID, "version_id": version.ID, "kind": "review", "source_key": nil, "record_json": string(historyTestJSON(t, review))})
 				case "landing attempt":
 					historyRepairAttempt(t, target, tracker.NativeRunData{})
 				}
@@ -204,7 +205,7 @@ func TestRecoveryUnknownHistoryBudgetPreservesOlderEvidence(t *testing.T) {
 						id, conclusion = "wanted", "failure"
 					}
 					check := tracker.ChangeCheck{VersionID: version.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: id, Conclusion: conclusion}}
-					fixture.add("change_evidence", map[string]any{"sequence": index + 1, "change_id": target.change.ID, "version_id": version.ID, "kind": "check", "source_key": id, "record_json": string(historyTestJSON(t, check))})
+					fixture.Add("change_evidence", map[string]any{"sequence": index + 1, "change_id": target.change.ID, "version_id": version.ID, "kind": "check", "source_key": id, "record_json": string(historyTestJSON(t, check))})
 				}
 				source := historyRepairImportSource(t, target, fixture)
 				interrupted := errors.New("historical evidence import interrupted")
@@ -327,7 +328,7 @@ func TestLegacyClaimReviewsRetainGateAuthority(t *testing.T) {
 	)
 	for index, review := range reviews {
 		review.VersionID = version.ID
-		fixture.add("change_evidence", map[string]any{"sequence": index + 1, "change_id": target.change.ID, "version_id": version.ID, "kind": "review", "source_key": nil, "record_json": string(historyTestJSON(t, review)), "payload_object_key": ""})
+		fixture.Add("change_evidence", map[string]any{"sequence": index + 1, "change_id": target.change.ID, "version_id": version.ID, "kind": "review", "source_key": nil, "record_json": string(historyTestJSON(t, review)), "payload_object_key": ""})
 	}
 	source := historyRepairImportSource(t, target, fixture)
 	for range 2 {
@@ -370,7 +371,7 @@ func TestLegacyClaimReviewsRetainGateAuthority(t *testing.T) {
 	}
 }
 
-func historyRepairSource(t *testing.T, f changeFixture, base tracker.ChangeVersion, count int) (*coreNeutralFixture, changeFixture, []tracker.ChangeVersion) {
+func historyRepairSource(t *testing.T, f changeFixture, base tracker.ChangeVersion, count int) (*neutralimporttest.Fixture, changeFixture, []tracker.ChangeVersion) {
 	t.Helper()
 	change := f.change
 	change.ID, change.Revision, change.Landed = hubapi.NewID("change"), 1, nil
@@ -381,10 +382,10 @@ func historyRepairSource(t *testing.T, f changeFixture, base tracker.ChangeVersi
 	}
 	change.CurrentVersion = versions[len(versions)-1].ID
 	fixture := newCoreNeutralFixture(t, f.project.OrganizationID, "change_requests", "change_issue_links", "change_versions", "change_evidence", "change_sources", "change_landing_receipts", "quality_landings", "change_viewed_files", "policy_revisions", "change_command_outputs", "change_finding_attributions", "change_content_objects", "attachments", "native_pr_publications", "release_deliveries")
-	fixture.add("policy_revisions", map[string]any{"scope": string(f.project.OrganizationID) + "/" + string(f.project.ID), "policy_id": base.PolicyID, "metadata_json": string(historyTestJSON(t, base.Policy))})
-	fixture.add("change_requests", map[string]any{"id": change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "record_json": string(historyTestJSON(t, change))})
+	fixture.Add("policy_revisions", map[string]any{"scope": string(f.project.OrganizationID) + "/" + string(f.project.ID), "policy_id": base.PolicyID, "metadata_json": string(historyTestJSON(t, base.Policy))})
+	fixture.Add("change_requests", map[string]any{"id": change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": f.issue.WorkItemID, "record_json": string(historyTestJSON(t, change))})
 	for _, item := range change.LinkedIssues {
-		fixture.add("change_issue_links", map[string]any{"change_id": change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item})
+		fixture.Add("change_issue_links", map[string]any{"change_id": change.ID, "organization_id": f.project.OrganizationID, "project_id": f.project.ID, "work_item_id": item})
 	}
 	var bundle []byte
 	if base.Source != nil {
@@ -398,19 +399,19 @@ func historyRepairSource(t *testing.T, f changeFixture, base tracker.ChangeVersi
 		}
 	}
 	for _, version := range versions {
-		fixture.add("change_versions", map[string]any{"id": version.ID, "change_id": change.ID, "number": version.Number, "record_json": string(historyTestJSON(t, version)), "policy_revision_id": version.PolicyID, "repository": version.Repository})
+		fixture.Add("change_versions", map[string]any{"id": version.ID, "change_id": change.ID, "number": version.Number, "record_json": string(historyTestJSON(t, version)), "policy_revision_id": version.PolicyID, "repository": version.Repository})
 		if version.Source != nil {
-			fixture.add("change_sources", map[string]any{"version_id": version.ID, "bundle": bundle, "object_key": "", "object_sha256": "", "object_bytes": 0, "content_bytes": 0})
+			fixture.Add("change_sources", map[string]any{"version_id": version.ID, "bundle": bundle, "object_key": "", "object_sha256": "", "object_bytes": 0, "content_bytes": 0})
 		}
 	}
 	f.change, f.path = change, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/changes/"+change.ID
 	return fixture, f, versions
 }
 
-func historyRepairImportSource(t *testing.T, target changeFixture, fixture *coreNeutralFixture) CoreChangeImportSource {
+func historyRepairImportSource(t *testing.T, target changeFixture, fixture *neutralimporttest.Fixture) CoreChangeImportSource {
 	t.Helper()
 	objects := target.service.runDetailStore()
-	return CoreChangeImportSource{BundlePath: fixture.write(), OrganizationID: target.project.OrganizationID, SourceObjects: objects, Objects: objects}
+	return CoreChangeImportSource{BundlePath: fixture.Write(), OrganizationID: target.project.OrganizationID, SourceObjects: objects, Objects: objects}
 }
 
 func historyRepairImport(t *testing.T, target changeFixture, source CoreChangeImportSource, count int64) {
@@ -492,7 +493,7 @@ func (s *historyRepairPauseDetails) StoreDetail(ctx context.Context, organizatio
 	return s.DetailStore.StoreDetail(ctx, organization, raw)
 }
 
-func historyRepairValidationSource(t *testing.T, f changeFixture, base tracker.ChangeVersion, head string) (*coreNeutralFixture, changeFixture, []tracker.ChangeVersion, []leasestore.Attempt) {
+func historyRepairValidationSource(t *testing.T, f changeFixture, base tracker.ChangeVersion, head string) (*neutralimporttest.Fixture, changeFixture, []tracker.ChangeVersion, []leasestore.Attempt) {
 	t.Helper()
 	fixture, target, versions := historyRepairSource(t, f, base, hubrecords.ChangeLegacyReadLimit+2)
 	attempts := make([]leasestore.Attempt, 0, hubrecords.ChangeLegacyReadLimit+1)
@@ -505,7 +506,7 @@ func historyRepairValidationSource(t *testing.T, f changeFixture, base tracker.C
 		receipt := tracker.NativeLandingReceipt{ChangeID: target.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: merge, BaseRef: "develop", Landed: true, ObservedAt: target.service.config.Clock()}
 		attempt := historyRepairAttempt(t, target, tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: int64(index + 1), Landing: &receipt}})
 		attempts = append(attempts, attempt)
-		fixture.add("change_landing_receipts", map[string]any{"attempt_id": attempt.ID, "version_id": version.ID, "record_json": string(historyTestJSON(t, receipt)), "merge_sha": nil})
+		fixture.Add("change_landing_receipts", map[string]any{"attempt_id": attempt.ID, "version_id": version.ID, "record_json": string(historyTestJSON(t, receipt)), "merge_sha": nil})
 	}
 	return fixture, target, versions, attempts
 }

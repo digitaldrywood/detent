@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/onboarding"
@@ -94,14 +95,14 @@ func (s *session) importOnboardingProgress(ctx context.Context, record Onboardin
 
 func (r *Repository) ImportCoreOnboardingProgress(ctx context.Context, source CoreProjectImportSource) (int64, error) {
 	if source.CopyPath != "" || source.BundlePath == "" || source.OrganizationID == "" || source.Objects == nil {
-		return 0, ErrNeutralImport
+		return 0, neutralimport.ErrInvalid
 	}
 	var count int64
-	err := ReadNeutralImportBundle(ctx, source.BundlePath, source.OrganizationID, func(bundle *VerifiedNeutralImport) error {
+	err := neutralimport.Read(ctx, source.BundlePath, source.OrganizationID, func(bundle *neutralimport.Bundle) error {
 		if _, present := bundle.Schema()["project_onboarding"]; !present {
 			return nil
 		}
-		if err := validateNeutralCoreSourceSchema(bundle, "project_onboarding"); err != nil {
+		if err := neutralimport.ValidateCoreTables(bundle, "project_onboarding"); err != nil {
 			return err
 		}
 		if err := r.PinVerifiedNeutralImport(ctx, bundle, source.Objects); err != nil {

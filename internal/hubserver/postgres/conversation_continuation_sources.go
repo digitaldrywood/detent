@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -45,7 +46,7 @@ func prepareContinuationSources(ctx context.Context, db *sql.DB, sources []Conve
 		}
 		var snapshot, sourceID, manifest string
 		var plans int64
-		err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) (callbackErr error) {
+		err = neutralimport.Read(ctx, source.BundlePath, organization, func(bundle *neutralimport.Bundle) (callbackErr error) {
 			source.neutral = bundle
 			if err := validateNeutralConversationHistory(ctx, source); err != nil {
 				return err

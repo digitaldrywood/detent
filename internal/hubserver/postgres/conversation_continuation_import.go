@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 )
 
 type continuationSourceEvidence struct {
@@ -55,7 +56,7 @@ func importConversationContinuation(ctx context.Context, source ConversationHist
 func readNeutralContinuation(ctx context.Context, source ConversationHistoryImportSource, id string, head int64) (continuationSourceEvidence, error) {
 	var result continuationSourceEvidence
 	if source.messages == nil || head < 0 {
-		return result, ErrNeutralImport
+		return result, neutralimport.ErrInvalid
 	}
 	var expected int64
 	var cursor []string
@@ -102,12 +103,12 @@ func readNeutralContinuation(ctx context.Context, source ConversationHistoryImpo
 			}
 			sequence, err := strconv.ParseInt(event.Key[1], 10, 64)
 			if err != nil || sequence <= 0 || sequence > head {
-				return result, ErrNeutralImport
+				return result, neutralimport.ErrInvalid
 			}
 			cursor = event.Key
 			version, err := strconv.ParseInt(cellText(event.Values["query_metadata_version"]), 10, 64)
 			if err != nil || version < 0 || version > 1 {
-				return result, ErrNeutralImport
+				return result, neutralimport.ErrInvalid
 			}
 			marker := struct {
 				Sequence        int64
@@ -129,7 +130,7 @@ func readNeutralContinuation(ctx context.Context, source ConversationHistoryImpo
 					return result, errors.New("imported continuation message evidence is unavailable")
 				}
 				if body.ID == "" || !body.Kind.Valid() {
-					return result, ErrNeutralImport
+					return result, neutralimport.ErrInvalid
 				}
 				if body.Kind != conversation.MessageContinue {
 					continue
@@ -140,14 +141,14 @@ func readNeutralContinuation(ctx context.Context, source ConversationHistoryImpo
 				}
 				key := cellText(message.Values["command_key"])
 				if cellText(message.Values["conversation_id"]) != id || cellText(message.Values["role"]) != "user" || cellText(message.Values["kind"]) != "continue" || key == "" {
-					return result, ErrNeutralImport
+					return result, neutralimport.ErrInvalid
 				}
 				command, err := source.neutral.Lookup(ctx, "conversation_commands", []string{id, key})
 				if err != nil {
 					return result, err
 				}
 				if cellText(command.Values["kind"]) != "continue" {
-					return result, ErrNeutralImport
+					return result, neutralimport.ErrInvalid
 				}
 				messageSequence, err := strconv.ParseInt(cellText(message.Values["seq"]), 10, 64)
 				if err != nil || messageSequence <= previousMessage {
@@ -169,7 +170,7 @@ func readNeutralContinuation(ctx context.Context, source ConversationHistoryImpo
 					status = body.Status
 				}
 				if !status.Valid() {
-					return result, ErrNeutralImport
+					return result, neutralimport.ErrInvalid
 				}
 				if status != conversation.ExecutionCompleted {
 					continue

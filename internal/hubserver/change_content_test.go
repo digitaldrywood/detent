@@ -286,15 +286,15 @@ func TestChangeContentObjects(t *testing.T) {
 	historical.change = detail.Change
 	historical.change.ID = importedVersions[0].ChangeID
 	historical.change.CurrentVersion = importedVersions[len(importedVersions)-1].ID
-	fixture.records["change_requests"] = nil
-	fixture.add("change_requests", map[string]any{"id": historical.change.ID, "organization_id": historical.project.OrganizationID, "project_id": historical.project.ID, "work_item_id": historical.issue.WorkItemID, "record_json": string(historyTestJSON(t, historical.change))})
-	fixture.records["change_versions"] = nil
+	fixture.Records["change_requests"] = nil
+	fixture.Add("change_requests", map[string]any{"id": historical.change.ID, "organization_id": historical.project.OrganizationID, "project_id": historical.project.ID, "work_item_id": historical.issue.WorkItemID, "record_json": string(historyTestJSON(t, historical.change))})
+	fixture.Records["change_versions"] = nil
 	mapping := []string{}
 	for i := range importedVersions {
 		id := importedVersions[i].ID
 		importedVersions[i] = versions[i]
 		importedVersions[i].ID, importedVersions[i].ChangeID = id, historical.change.ID
-		fixture.add("change_versions", map[string]any{"id": id, "change_id": historical.change.ID, "number": importedVersions[i].Number, "policy_revision_id": importedVersions[i].PolicyID, "record_json": string(historyTestJSON(t, importedVersions[i]))})
+		fixture.Add("change_versions", map[string]any{"id": id, "change_id": historical.change.ID, "number": importedVersions[i].Number, "policy_revision_id": importedVersions[i].PolicyID, "record_json": string(historyTestJSON(t, importedVersions[i]))})
 		mapping = append(mapping, id, versions[i].ID)
 	}
 	mapping = append(mapping, historical.change.ID, f.change.ID)
@@ -304,7 +304,7 @@ func TestChangeContentObjects(t *testing.T) {
 		validator := *review.Validator
 		validator.VersionID = review.VersionID
 		review.Validator = &validator
-		fixture.add("change_evidence", map[string]any{"sequence": i + 1, "change_id": historical.change.ID, "version_id": review.VersionID, "kind": "review", "record_json": string(historyTestJSON(t, review))})
+		fixture.Add("change_evidence", map[string]any{"sequence": i + 1, "change_id": historical.change.ID, "version_id": review.VersionID, "kind": "review", "record_json": string(historyTestJSON(t, review))})
 	}
 	source := historyRepairImportSource(t, historical, fixture)
 	for range 2 {

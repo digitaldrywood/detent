@@ -116,9 +116,9 @@ func TestPostgresOnboardingPreservesImportedProgressAndRetries(t *testing.T) {
 			t.Fatal(err)
 		}
 		original[record.ProjectID] = string(raw)
-		historical.add("project_onboarding", map[string]any{"organization_id": "org_startup", "project_id": record.ProjectID, "revision": int64(record.Progress.Revision), "progress_json": string(raw), "updated_at": record.Progress.UpdatedAt})
+		historical.Add("project_onboarding", map[string]any{"organization_id": "org_startup", "project_id": record.ProjectID, "revision": int64(record.Progress.Revision), "progress_json": string(raw), "updated_at": record.Progress.UpdatedAt})
 	}
-	source := postgres.CoreProjectImportSource{BundlePath: historical.write(), OrganizationID: "org_startup", Objects: objects}
+	source := postgres.CoreProjectImportSource{BundlePath: historical.Write(), OrganizationID: "org_startup", Objects: objects}
 	for range 2 {
 		if count, err := store.postgres.ImportCoreOnboardingProgress(t.Context(), source); err != nil || count != 2 {
 			t.Fatalf("historical onboarding rows=%d error=%v", count, err)

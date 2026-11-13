@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 
 	"github.com/digitaldrywood/detent/internal/budget"
@@ -241,23 +243,23 @@ func TestCorePolicyImportPreservesApprovalsPointersAndBudgetHistory(t *testing.T
 
 func corePolicyCopy(t *testing.T, organization tracker.OrganizationID, now time.Time) string {
 	t.Helper()
-	tables := []postgres.NeutralImportTable{
-		neutralFixtureTable(t, "policy_revisions", []postgres.NeutralImportKey{{Column: "scope", Kind: "text"}, {Column: "policy_id", Kind: "text"}}),
-		neutralFixtureTable(t, "project_policies", []postgres.NeutralImportKey{{Column: "scope", Kind: "text"}}),
-		neutralFixtureTable(t, "monthly_budget_policies", []postgres.NeutralImportKey{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}, {Column: "revision", Kind: "integer"}}),
-		neutralFixtureTable(t, "issues", []postgres.NeutralImportKey{{Column: "id", Kind: "integer"}}),
-		neutralFixtureTable(t, "leases", []postgres.NeutralImportKey{{Column: "lease_id", Kind: "text"}}),
-		neutralFixtureTable(t, "monthly_budget_admissions", []postgres.NeutralImportKey{{Column: "issue_id", Kind: "integer"}}),
-		neutralFixtureTable(t, "monthly_budget_leases", []postgres.NeutralImportKey{{Column: "lease_id", Kind: "text"}}),
-		neutralFixtureTable(t, "change_review_policies", []postgres.NeutralImportKey{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}}),
+	tables := []neutralimport.Table{
+		neutralFixtureTable(t, "policy_revisions", []neutralimport.Key{{Column: "scope", Kind: "text"}, {Column: "policy_id", Kind: "text"}}),
+		neutralFixtureTable(t, "project_policies", []neutralimport.Key{{Column: "scope", Kind: "text"}}),
+		neutralFixtureTable(t, "monthly_budget_policies", []neutralimport.Key{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}, {Column: "revision", Kind: "integer"}}),
+		neutralFixtureTable(t, "issues", []neutralimport.Key{{Column: "id", Kind: "integer"}}),
+		neutralFixtureTable(t, "leases", []neutralimport.Key{{Column: "lease_id", Kind: "text"}}),
+		neutralFixtureTable(t, "monthly_budget_admissions", []neutralimport.Key{{Column: "issue_id", Kind: "integer"}}),
+		neutralFixtureTable(t, "monthly_budget_leases", []neutralimport.Key{{Column: "lease_id", Kind: "text"}}),
+		neutralFixtureTable(t, "change_review_policies", []neutralimport.Key{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}}),
 	}
-	definitions := map[string]postgres.NeutralImportTable{}
+	definitions := map[string]neutralimport.Table{}
 	for _, table := range tables {
 		definitions[table.Name] = table
 	}
-	records := map[string][]postgres.NeutralImportRow{}
+	records := map[string][]neutralimport.Row{}
 	add := func(name string, values map[string]any) {
-		records[name] = append(records[name], neutralFixtureRow(t, definitions[name], values))
+		records[name] = append(records[name], neutralimporttest.Row(t, definitions[name], values))
 	}
 	old, current := importedReportedPolicyDescriptor(), importedCurrentPolicyDescriptor()
 	for id := int64(1); id <= 2; id++ {
@@ -300,7 +302,7 @@ func corePolicyCopy(t *testing.T, organization tracker.OrganizationID, now time.
 		}
 		add("monthly_budget_policies", map[string]any{"organization_id": organization, "project_id": "", "revision": row.revision, "policy_json": string(encoded), "actor_id": "admin", "updated_at": now.Add(time.Duration(row.revision) * time.Second).Format(time.RFC3339Nano)})
 	}
-	directory, _ := writeNeutralFixture(t, organization, tables, records)
+	directory, _ := neutralimporttest.Write(t, []byte("historical source"), organization, tables, records)
 	return directory
 }
 

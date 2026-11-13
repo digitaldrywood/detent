@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -12,20 +14,20 @@ func TestNeutralCoreCutoverRejectsUnimportedArtifactData(t *testing.T) {
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		for _, populated := range []string{"", "artifact_services", "artifact_grants", "artifact_references", "missing_table"} {
 			t.Run(string(org)+"_"+populated, func(t *testing.T) {
-				var tables []postgres.NeutralImportTable
-				records := make(map[string][]postgres.NeutralImportRow)
+				var tables []neutralimport.Table
+				records := make(map[string][]neutralimport.Row)
 				for _, name := range []string{"artifact_services", "artifact_grants", "artifact_references"} {
 					if populated == "missing_table" && name == "artifact_references" {
 						continue
 					}
-					keys := []postgres.NeutralImportKey{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}}
+					keys := []neutralimport.Key{{Column: "organization_id", Kind: "text"}, {Column: "project_id", Kind: "text"}}
 					switch name {
 					case "artifact_services":
-						keys = append(keys, postgres.NeutralImportKey{Column: "id", Kind: "text"})
+						keys = append(keys, neutralimport.Key{Column: "id", Kind: "text"})
 					case "artifact_grants":
-						keys = []postgres.NeutralImportKey{{Column: "token_hash", Kind: "text"}}
+						keys = []neutralimport.Key{{Column: "token_hash", Kind: "text"}}
 					case "artifact_references":
-						keys = append(keys, postgres.NeutralImportKey{Column: "artifact_id", Kind: "text"}, postgres.NeutralImportKey{Column: "revision", Kind: "integer"})
+						keys = append(keys, neutralimport.Key{Column: "artifact_id", Kind: "text"}, neutralimport.Key{Column: "revision", Kind: "integer"})
 					}
 					table := neutralFixtureTable(t, name, keys)
 					tables = append(tables, table)
@@ -46,10 +48,10 @@ func TestNeutralCoreCutoverRejectsUnimportedArtifactData(t *testing.T) {
 								values[key.Column] = id
 							}
 						}
-						records[name] = append(records[name], neutralFixtureRow(t, table, values))
+						records[name] = append(records[name], neutralimporttest.Row(t, table, values))
 					}
 				}
-				path, _ := writeNeutralFixture(t, org, tables, records)
+				path, _ := neutralimporttest.Write(t, []byte("historical source"), org, tables, records)
 				err := postgres.VerifyNeutralCoreCutover(t.Context(), path, org)
 				if (err != nil) != (populated != "") {
 					t.Fatalf("cutover source verification error=%v", err)

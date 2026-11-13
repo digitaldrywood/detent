@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -31,7 +32,7 @@ func TestIssueFilterValues(t *testing.T) {
 	}
 	var entries [2]entry
 	var sources []CoreWorkItemImportSource
-	var projectSources []*coreNeutralFixture
+	var projectSources []*neutralimporttest.Fixture
 	for index, fixture := range []nativeFixture{f, other} {
 		source := coreWorkItemNeutralFixture(t, fixture.project.OrganizationID, fixture.project.ID, false)
 		for _, suffix := range []string{"", "_second"} {
@@ -39,8 +40,8 @@ func TestIssueFilterValues(t *testing.T) {
 			if suffix == "" {
 				labels, assignees = []string{" Required ", "required"}, []string{" Chosen ", "chosen"}
 			}
-			source.set("issues", map[string]string{"native_id": "wi_core_import" + suffix}, map[string]any{"labels_json": string(historyTestJSON(t, labels)), "assignees_json": string(historyTestJSON(t, assignees))})
-			for rowIndex, row := range source.records["collaboration_versions"] {
+			source.Set("issues", map[string]string{"native_id": "wi_core_import" + suffix}, map[string]any{"labels_json": string(historyTestJSON(t, labels)), "assignees_json": string(historyTestJSON(t, assignees))})
+			for rowIndex, row := range source.Records["collaboration_versions"] {
 				var record, raw string
 				if err := row.Decode(map[string]any{"record_id": &record}); err != nil {
 					t.Fatal(err)
@@ -66,10 +67,10 @@ func TestIssueFilterValues(t *testing.T) {
 				row.Values["encoding"] = cell
 				cell.Data = []byte(raw)
 				row.Values["record_json"] = cell
-				source.records["collaboration_versions"][rowIndex] = row
+				source.Records["collaboration_versions"][rowIndex] = row
 			}
 		}
-		for table, rows := range source.records {
+		for table, rows := range source.Records {
 			for rowIndex, row := range rows {
 				for name, cell := range row.Values {
 					if index > 0 && ((table == "issues" && name == "id") || (table == "queue_entries" && (name == "id" || name == "issue_id"))) {
@@ -98,12 +99,12 @@ func TestIssueFilterValues(t *testing.T) {
 					}
 					row.Key[keyIndex] = key
 				}
-				source.records[table][rowIndex] = row
+				source.Records[table][rowIndex] = row
 			}
 		}
 		projectSources = append(projectSources, source)
 	}
-	bundle := mergeCoreNeutralProjectSources(t, projectSources...).write()
+	bundle := mergeCoreNeutralProjectSources(t, projectSources...).Write()
 	for index, fixture := range []nativeFixture{f, other} {
 		input := CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: fixture.project.OrganizationID, ProjectID: fixture.project.ID, Objects: f.service.runDetailStore()}
 		if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != 2 {

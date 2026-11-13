@@ -23,6 +23,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport/neutralimporttest"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
@@ -49,18 +51,18 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 	}
 	closed := map[tracker.NativeWorkItemID]time.Time{}
 	items := map[tracker.ProjectID][]tracker.NativeIssue{}
-	var projectSources []*coreNeutralFixture
+	var projectSources []*neutralimporttest.Fixture
 	for projectIndex, fixture := range []nativeFixture{f, other} {
 		source := coreWorkItemNeutralFixture(t, fixture.project.OrganizationID, fixture.project.ID, false)
-		source.records["native_comments"] = nil
-		versions := source.records["collaboration_versions"][:0]
-		for _, row := range source.records["collaboration_versions"] {
+		source.Records["native_comments"] = nil
+		versions := source.Records["collaboration_versions"][:0]
+		for _, row := range source.Records["collaboration_versions"] {
 			if strings.HasPrefix(string(row.Values["record_id"].Data), "wi_core_import") {
 				versions = append(versions, row)
 			}
 		}
-		source.records["collaboration_versions"] = versions
-		source.add("workflow_states", map[string]any{"id": 2, "project_id": fixture.project.ID, "detent_state": "Done", "terminal": 1})
+		source.Records["collaboration_versions"] = versions
+		source.Add("workflow_states", map[string]any{"id": 2, "project_id": fixture.project.ID, "detent_state": "Done", "terminal": 1})
 		for index, suffix := range []string{"", "_second"} {
 			item := tracker.NativeWorkItemID("wi_core_import" + suffix)
 			at := now.Add(-time.Duration(index+1) * time.Hour)
@@ -77,24 +79,24 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			source.set("collaboration_versions", map[string]string{"record_id": string(item), "revision": "2"}, map[string]any{"encoding": "snapshot", "record_json": string(raw)})
+			source.Set("collaboration_versions", map[string]string{"record_id": string(item), "revision": "2"}, map[string]any{"encoding": "snapshot", "record_json": string(raw)})
 			data, _ := json.Marshal(tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done"})
 			actor, _ := json.Marshal(issue.Actor)
-			source.set("collaboration_events", map[string]string{"work_item_id": string(item), "type": "issue.edited"}, map[string]any{"type": "workflow.transitioned", "data_json": string(data), "recorded_at": hubapi.FormatHubTime(at)})
+			source.Set("collaboration_events", map[string]string{"work_item_id": string(item), "type": "issue.edited"}, map[string]any{"type": "workflow.transitioned", "data_json": string(data), "recorded_at": hubapi.FormatHubTime(at)})
 			sequence := 2
 			if index == 0 {
 				for eventIndex := range 400 {
 					sequence++
 					data, _ := json.Marshal(tracker.CollaborationData{Revision: 2, FromState: "Done", ToState: "Done"})
-					source.add("collaboration_events", map[string]any{"id": fmt.Sprintf("event_same_%d", eventIndex), "organization_id": fixture.project.OrganizationID, "project_id": fixture.project.ID, "work_item_id": item, "sequence": sequence, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(actor), "data_json": string(data), "event_revision": 2, "recorded_at": hubapi.FormatHubTime(now)})
+					source.Add("collaboration_events", map[string]any{"id": fmt.Sprintf("event_same_%d", eventIndex), "organization_id": fixture.project.OrganizationID, "project_id": fixture.project.ID, "work_item_id": item, "sequence": sequence, "type": "workflow.transitioned", "schema_version": 1, "actor_json": string(actor), "data_json": string(data), "event_revision": 2, "recorded_at": hubapi.FormatHubTime(now)})
 				}
 			}
-			source.set("issues", map[string]string{"native_id": string(item)}, map[string]any{"event_sequence": sequence, "workflow_state_id": 2, "updated_at": hubapi.FormatHubTime(at), "native_updated_at": hubapi.FormatHubTime(at), "last_activity_at": hubapi.FormatHubTime(now)})
+			source.Set("issues", map[string]string{"native_id": string(item)}, map[string]any{"event_sequence": sequence, "workflow_state_id": 2, "updated_at": hubapi.FormatHubTime(at), "native_updated_at": hubapi.FormatHubTime(at), "last_activity_at": hubapi.FormatHubTime(now)})
 			issue.WorkItemID = tracker.NativeWorkItemID(fmt.Sprintf("wi_closure_%d%s", projectIndex, suffix))
 			closed[issue.WorkItemID] = at
 			items[fixture.project.ID] = append(items[fixture.project.ID], issue)
 		}
-		for table, rows := range source.records {
+		for table, rows := range source.Records {
 			for rowIndex, row := range rows {
 				if projectIndex > 0 && (table == "issues" || table == "queue_entries") {
 					oldID := string(row.Values["id"].Data)
@@ -136,12 +138,12 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 					key = strings.ReplaceAll(key, "event_", fmt.Sprintf("event_closure_%d_", projectIndex))
 					row.Key[keyIndex] = strings.ReplaceAll(key, "comment_core_import", fmt.Sprintf("comment_closure_%d", projectIndex))
 				}
-				source.records[table][rowIndex] = row
+				source.Records[table][rowIndex] = row
 			}
 		}
 		projectSources = append(projectSources, source)
 	}
-	bundle := mergeCoreNeutralProjectSources(t, projectSources...).write()
+	bundle := mergeCoreNeutralProjectSources(t, projectSources...).Write()
 	for _, fixture := range []nativeFixture{f, other} {
 		input := CoreWorkItemImportSource{BundlePath: bundle, OrganizationID: fixture.project.OrganizationID, ProjectID: fixture.project.ID, Objects: fixture.service.runDetailStore()}
 		if count, err := ImportCoreWorkItems(t.Context(), fixture.service.database.postgres, input); err != nil || count != 2 {
@@ -937,7 +939,7 @@ func importNativeWorkPageIssues(t *testing.T, f nativeFixture, issues []tracker.
 		if !exists {
 			stateID = len(states) + 1
 			states[issue.State] = stateID
-			source.add("workflow_states", map[string]any{"id": stateID, "project_id": f.project.ID, "detent_state": issue.State, "terminal": issue.Terminal})
+			source.Add("workflow_states", map[string]any{"id": stateID, "project_id": f.project.ID, "detent_state": issue.State, "terminal": issue.Terminal})
 		}
 		actor := string(historyTestJSON(t, issue.Actor))
 		id := int64(1000 + index)
@@ -948,23 +950,23 @@ func importNativeWorkPageIssues(t *testing.T, f nativeFixture, issues []tracker.
 		if issue.IssueContract != nil {
 			contract = string(historyTestJSON(t, issue.IssueContract))
 		}
-		source.add("issues", map[string]any{"id": id, "native_id": issue.WorkItemID, "organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "number": issue.Number, "revision": issue.Revision, "event_sequence": len(histories[index]) + 1, "native_source_key": nil, "title": issue.Title, "body": issue.Body, "issue_contract_json": contract, "report_context_json": nil, "actor_json": actor, "provenance_json": nil, "archived": issue.Archived, "created_at": hubapi.FormatHubTime(issue.CreatedAt), "updated_at": hubapi.FormatHubTime(issue.UpdatedAt), "native_created_at": hubapi.FormatHubTime(issue.CreatedAt), "native_updated_at": hubapi.FormatHubTime(issue.UpdatedAt), "last_activity_at": hubapi.FormatHubTime(issue.LastActivityAt), "workflow_state_id": stateID, "terminal_entered_at": nil, "labels_json": string(historyTestJSON(t, issue.Labels)), "assignees_json": string(historyTestJSON(t, issue.Assignees)), "author_login": issue.Actor.PrincipalID, "repository_id": nil, "dispatch_wait_since": nil})
-		source.add("collaboration_versions", map[string]any{"organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "work_item_id": issue.WorkItemID, "record_id": issue.WorkItemID, "revision": issue.Revision, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
-		source.add("queue_entries", map[string]any{"id": id, "issue_id": id, "scope": "native", "state": issue.State, "rank": fmt.Sprintf("%04d", index), "priority_override": nil, "created_at": hubapi.FormatHubTime(issue.CreatedAt), "updated_at": hubapi.FormatHubTime(issue.UpdatedAt)})
+		source.Add("issues", map[string]any{"id": id, "native_id": issue.WorkItemID, "organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "number": issue.Number, "revision": issue.Revision, "event_sequence": len(histories[index]) + 1, "native_source_key": nil, "title": issue.Title, "body": issue.Body, "issue_contract_json": contract, "report_context_json": nil, "actor_json": actor, "provenance_json": nil, "archived": issue.Archived, "created_at": hubapi.FormatHubTime(issue.CreatedAt), "updated_at": hubapi.FormatHubTime(issue.UpdatedAt), "native_created_at": hubapi.FormatHubTime(issue.CreatedAt), "native_updated_at": hubapi.FormatHubTime(issue.UpdatedAt), "last_activity_at": hubapi.FormatHubTime(issue.LastActivityAt), "workflow_state_id": stateID, "terminal_entered_at": nil, "labels_json": string(historyTestJSON(t, issue.Labels)), "assignees_json": string(historyTestJSON(t, issue.Assignees)), "author_login": issue.Actor.PrincipalID, "repository_id": nil, "dispatch_wait_since": nil})
+		source.Add("collaboration_versions", map[string]any{"organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "work_item_id": issue.WorkItemID, "record_id": issue.WorkItemID, "revision": issue.Revision, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
+		source.Add("queue_entries", map[string]any{"id": id, "issue_id": id, "scope": "native", "state": issue.State, "rank": fmt.Sprintf("%04d", index), "priority_override": nil, "created_at": hubapi.FormatHubTime(issue.CreatedAt), "updated_at": hubapi.FormatHubTime(issue.UpdatedAt)})
 		events := append([]tracker.CollaborationEvent{{Type: "issue.created", RecordedAt: issue.CreatedAt, Data: tracker.CollaborationData{Revision: issue.Revision}}}, histories[index]...)
 		for eventIndex, event := range events {
-			source.add("collaboration_events", map[string]any{"id": fmt.Sprintf("event_%s_%d", issue.WorkItemID, eventIndex), "organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "work_item_id": issue.WorkItemID, "sequence": eventIndex + 1, "type": event.Type, "schema_version": 1, "actor_json": actor, "data_json": string(historyTestJSON(t, event.Data)), "event_revision": event.Data.Revision, "recorded_at": hubapi.FormatHubTime(event.RecordedAt)})
+			source.Add("collaboration_events", map[string]any{"id": fmt.Sprintf("event_%s_%d", issue.WorkItemID, eventIndex), "organization_id": issue.OrganizationID, "project_id": issue.ProjectID, "work_item_id": issue.WorkItemID, "sequence": eventIndex + 1, "type": event.Type, "schema_version": 1, "actor_json": actor, "data_json": string(historyTestJSON(t, event.Data)), "event_revision": event.Data.Revision, "recorded_at": hubapi.FormatHubTime(event.RecordedAt)})
 		}
 	}
-	input := CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
+	input := CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, Objects: f.service.runDetailStore()}
 	if count, err := ImportCoreWorkItems(t.Context(), f.service.database.postgres, input); err != nil || count != int64(len(issues)) {
 		t.Fatalf("historical page import count=%d error=%v", count, err)
 	}
 }
 
-func mergeCoreNeutralProjectSources(t *testing.T, sources ...*coreNeutralFixture) *coreNeutralFixture {
+func mergeCoreNeutralProjectSources(t *testing.T, sources ...*neutralimporttest.Fixture) *neutralimporttest.Fixture {
 	t.Helper()
-	merged := sources[0].clone(t)
+	merged := sources[0].Clone(t)
 	shift := func(cell storagecatalog.Cell, offset int64) storagecatalog.Cell {
 		value, err := strconv.ParseInt(string(cell.Data), 10, 64)
 		if err != nil {
@@ -975,11 +977,11 @@ func mergeCoreNeutralProjectSources(t *testing.T, sources ...*coreNeutralFixture
 	}
 	for index, source := range sources[1:] {
 		offset := int64(1000 * (index + 1))
-		for table, rows := range source.clone(t).records {
+		for table, rows := range source.Clone(t).Records {
 			for _, row := range rows {
 				switch table {
 				case "repositories":
-					if slices.ContainsFunc(merged.records[table], func(current postgres.NeutralImportRow) bool { return slices.Equal(current.Key, row.Key) }) {
+					if slices.ContainsFunc(merged.Records[table], func(current neutralimport.Row) bool { return slices.Equal(current.Key, row.Key) }) {
 						continue
 					}
 				case "workflow_states":
@@ -991,12 +993,12 @@ func mergeCoreNeutralProjectSources(t *testing.T, sources ...*coreNeutralFixture
 						row.Values["workflow_state_id"] = shift(row.Values["workflow_state_id"], offset)
 					}
 				}
-				merged.records[table] = append(merged.records[table], row)
+				merged.Records[table] = append(merged.Records[table], row)
 			}
 		}
 	}
-	for table, rows := range merged.records {
-		key := merged.tables[table].Key
+	for table, rows := range merged.Records {
+		key := merged.Tables[table].Key
 		if len(key) == 1 && key[0].Column == "id" && key[0].Kind == "integer" {
 			continue
 		}

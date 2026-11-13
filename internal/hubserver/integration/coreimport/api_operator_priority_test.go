@@ -39,18 +39,18 @@ func TestChangeWorkItemPriorityClears(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := newCoreNeutralFixture(t, organization, "issues", "workflow_states", "repositories", "queue_entries", "native_comments", "collaboration_versions", "collaboration_events", "issue_dependencies", "change_content_objects", "attachments")
-	source.add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
-	source.add("repositories", map[string]any{"id": 1, "github_owner": "example-org", "github_name": "example-project"})
+	source.Add("workflow_states", map[string]any{"id": 1, "project_id": project, "detent_state": "Todo"})
+	source.Add("repositories", map[string]any{"id": 1, "github_owner": "example-org", "github_name": "example-project"})
 	const stamp = "2026-10-01T00:00:00Z"
 	actor := tracker.Actor{Kind: "human", PrincipalID: "example-owner"}
 	for index, id := range []tracker.NativeWorkItemID{"wi_priority_first", "wi_priority_second"} {
 		issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: organization, ProjectID: project, WorkItemID: id, Number: index + 1, Revision: 1, Profile: "github_compatible"}, Title: "Retained source", Body: "Retained GitHub content", State: "Todo", Actor: actor, CreatedAt: parseTestTime(t, stamp), UpdatedAt: parseTestTime(t, stamp), LastActivityAt: parseTestTime(t, stamp)}
 		issue.ExternalReferences = []tracker.ExternalReference{tracker.GitHubIssueSourceReference(fmt.Sprintf("I_retained_%d", index+1), fmt.Sprintf("https://github.com/example-org/example-project/issues/%d", index+1))}
-		source.add("issues", map[string]any{"id": 41 + index, "native_id": id, "project_id": project, "number": index + 1, "revision": 1, "event_sequence": 1, "title": issue.Title, "body": issue.Body, "issue_contract_json": nil, "actor_json": string(historyTestJSON(t, actor)), "archived": 0, "created_at": stamp, "updated_at": stamp, "native_created_at": stamp, "native_updated_at": stamp, "last_activity_at": stamp, "workflow_state_id": 1, "labels_json": "[]", "assignees_json": "[]", "author_login": "example-owner", "repository_id": 1})
-		source.add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
-		source.add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
+		source.Add("issues", map[string]any{"id": 41 + index, "native_id": id, "project_id": project, "number": index + 1, "revision": 1, "event_sequence": 1, "title": issue.Title, "body": issue.Body, "issue_contract_json": nil, "actor_json": string(historyTestJSON(t, actor)), "archived": 0, "created_at": stamp, "updated_at": stamp, "native_created_at": stamp, "native_updated_at": stamp, "last_activity_at": stamp, "workflow_state_id": 1, "labels_json": "[]", "assignees_json": "[]", "author_login": "example-owner", "repository_id": 1})
+		source.Add("collaboration_versions", map[string]any{"project_id": project, "work_item_id": id, "record_id": id, "revision": 1, "encoding": "snapshot", "record_json": string(historyTestJSON(t, issue))})
+		source.Add("collaboration_events", map[string]any{"id": "event_" + string(id), "project_id": project, "work_item_id": id, "sequence": 1, "type": "issue.created", "schema_version": 1, "actor_json": string(historyTestJSON(t, actor)), "data_json": string(historyTestJSON(t, tracker.CollaborationData{Revision: 1})), "event_revision": 1, "recorded_at": stamp})
 	}
-	count, err := hubserver.ImportCoreWorkItems(t.Context(), service.Config.TenantRepository.(*postgres.Repository), hubserver.CoreWorkItemImportSource{BundlePath: source.write(), OrganizationID: organization, ProjectID: project, Objects: service.Config.RunDetails})
+	count, err := hubserver.ImportCoreWorkItems(t.Context(), service.Config.TenantRepository.(*postgres.Repository), hubserver.CoreWorkItemImportSource{BundlePath: source.Write(), OrganizationID: organization, ProjectID: project, Objects: service.Config.RunDetails})
 	if err != nil || count != 2 {
 		t.Fatalf("retained compatible import=%d error=%v", count, err)
 	}

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"strconv"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 )
 
@@ -71,7 +72,7 @@ func readNeutralConversationHistoryPage(ctx context.Context, source Conversation
 	}
 	return result, nil
 }
-func neutralConversationParent(ctx context.Context, source ConversationHistoryImportSource, table string, row NeutralImportRow) (NeutralImportRow, error) {
+func neutralConversationParent(ctx context.Context, source ConversationHistoryImportSource, table string, row neutralimport.Row) (neutralimport.Row, error) {
 	var conversation string
 	switch table {
 	case "conversations":
@@ -79,30 +80,30 @@ func neutralConversationParent(ctx context.Context, source ConversationHistoryIm
 	case "conversation_turn_batches":
 		start, err := source.neutral.Lookup(ctx, "conversation_starts", []string{cellText(row.Values["attempt_id"])})
 		if err != nil {
-			return NeutralImportRow{}, err
+			return neutralimport.Row{}, err
 		}
 		conversation = cellText(start.Values["conversation_id"])
 	case "message_references":
 		message, err := source.neutral.Lookup(ctx, "conversation_messages", []string{cellText(row.Values["message_id"])})
 		if err != nil {
-			return NeutralImportRow{}, err
+			return neutralimport.Row{}, err
 		}
 		conversation = cellText(message.Values["conversation_id"])
 		if conversation != cellText(row.Values["conversation_id"]) {
-			return NeutralImportRow{}, storagecatalog.ErrOrganization
+			return neutralimport.Row{}, storagecatalog.ErrOrganization
 		}
 	default:
 		conversation = cellText(row.Values["conversation_id"])
 	}
 	if conversation == "" {
-		return NeutralImportRow{}, storagecatalog.ErrValue
+		return neutralimport.Row{}, storagecatalog.ErrValue
 	}
 	parent, err := source.neutral.Lookup(ctx, "conversations", []string{conversation})
 	if err != nil {
-		return NeutralImportRow{}, err
+		return neutralimport.Row{}, err
 	}
 	if cellText(parent.Values["organization_id"]) != source.Source.OrganizationID {
-		return NeutralImportRow{}, storagecatalog.ErrOrganization
+		return neutralimport.Row{}, storagecatalog.ErrOrganization
 	}
 	return parent, nil
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/neutralimport"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/storagecatalog"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -30,7 +31,7 @@ var errUnsupportedCreditHistory = errors.New("credit history contains unsupporte
 
 type CreditHistoryImportSource struct {
 	BundlePath string
-	neutral    *VerifiedNeutralImport
+	neutral    *neutralimport.Bundle
 	CopyPath   string
 	Catalog    storagecatalog.Catalog
 	Source     storagecatalog.Source
@@ -64,7 +65,7 @@ var creditHistoryImportTables = []creditHistoryImportTable{
 
 func (r *Repository) ImportCreditHistory(ctx context.Context, source CreditHistoryImportSource) (CreditHistoryImportResult, error) {
 	if source.CopyPath != "" {
-		return CreditHistoryImportResult{}, ErrNeutralImport
+		return CreditHistoryImportResult{}, neutralimport.ErrInvalid
 	}
 
 	var result CreditHistoryImportResult
@@ -86,7 +87,7 @@ func (r *Repository) ImportCreditHistory(ctx context.Context, source CreditHisto
 	completed := false
 	snapshotID := ""
 
-	err = ReadNeutralImportBundle(ctx, source.BundlePath, organization, func(bundle *VerifiedNeutralImport) error {
+	err = neutralimport.Read(ctx, source.BundlePath, organization, func(bundle *neutralimport.Bundle) error {
 		source.neutral = bundle
 		snapshotID = bundle.Identity().SourceSHA256
 		if err := validateNeutralCreditHistory(ctx, source); err != nil {
