@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -55,7 +57,10 @@ func TestReportObjectDownloadsReleaseReaders(t *testing.T) {
 				guard := &diagnosticsSnapshotGuard{Repository: fixture.repository}
 				fixture.hosted.service.config.TenantRepository = guard
 				t.Cleanup(func() { fixture.hosted.service.config.TenantRepository = fixture.repository })
-				credential := apiCredential{Hosted: fixture.owner.identity.Hosted}
+				credential, status, err := fixture.hosted.service.hostedSessionCredential(t.Context(), auth.Session{Identity: fixture.owner.identity.Hosted, Email: fixture.owner.identity.Email}, apikey.HashToken(fixture.owner.token))
+				if err != nil || status != http.StatusOK {
+					t.Fatalf("fixture owner authorization: status=%d error=%v", status, err)
+				}
 				w := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now, Bucket: time.Hour}
 				for _, name := range []string{"analytics", "cloud diagnostics", "project diagnostics"} {
 					t.Run(name, func(t *testing.T) {
