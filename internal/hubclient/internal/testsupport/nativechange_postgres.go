@@ -142,7 +142,7 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 			t.Fatal(err)
 		}
 		provider = nativeChangeIdentityProvider{HostedProvider: provider}
-		cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_11111111111111111111111111111111", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: provider}
+		cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_11111111111111111111111111111111", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: provider, Plans: ScenarioPlans()}
 	}
 	migrations, err := fs.Sub(nativeChangeSchema(), "migrations")
 	if err != nil {
@@ -233,4 +233,9 @@ func nativeChangeRepository(cfg hubserver.Config) (*postgres.Repository, error) 
 		return nil, errors.New("fixture repository has an invalid type")
 	}
 	return repository, nil
+}
+
+func ScenarioPlans() *hostedplans.HostedPlansConfig {
+	plan := hostedplans.HostedPlan{PlanReference: hostedplans.PlanReference{ID: "example_scenario", Version: 1}, Features: []string{"collaboration", "github_integration", "model_choice", "native_execution"}, Allowances: map[string]int64{"members": 100, "projects": 100, "repositories": 100, "registered_runners": 100, "connected_runners": 100, "concurrent_work": 100, "api_mutations": 1 << 40, "ingested_events": 1 << 40, "collaboration_bytes": 1 << 40, "history_records": 1 << 40}}
+	return &hostedplans.HostedPlansConfig{Base: plan.PlanReference, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400, Plans: []hostedplans.HostedPlan{plan}}
 }
