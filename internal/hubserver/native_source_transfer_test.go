@@ -119,6 +119,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 				decodeHubResponse(t, response, &lease)
 			}
 			event := nativeStartedEvent(lease)
+			event.Data.Identity.Role, event.Data.MachineID = "code", lease.MachineID
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
 			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 2
 			input := changeTestInput()
@@ -140,7 +141,9 @@ func TestNativeSourceTransfer(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
 			input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
-			response = performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source"}, ChangeVersionInput: input, SourceBundle: bundle})
+			diff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: event.Data.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+event.Data.AttemptID+"/diff", a.redemption.Credential, diff), http.StatusAccepted)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", a.redemption.Credential, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: bundle})
 			requireNativeStatus(t, response, http.StatusOK)
 			var version tracker.ChangeVersion
 			decodeHubResponse(t, response, &version)
@@ -452,6 +455,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 				t.Fatalf("duplicate audit events: %d", audited)
 			}
 			if test.advanced {
+				input.AttemptID, input.RunID = "", ""
 				input.Code.SHA256 = strings.Repeat("a", 64)
 				next := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "new-version"}, ExpectedVersionID: version.ID, ChangeVersionInput: input, SourceBundle: bundle})
 				requireNativeStatus(t, next, http.StatusOK)

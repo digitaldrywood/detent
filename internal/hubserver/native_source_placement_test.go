@@ -45,6 +45,7 @@ func TestNativeSourcePlacement(t *testing.T) {
 			worker := f.worker(t, "source-worker")
 			lease := claimNativeAttempt(t, f.nativeFixture, worker, "source-machine", "source-session", f.issue.WorkItemID)
 			event := nativeStartedEvent(lease)
+			event.Data.Identity.Role, event.Data.MachineID = "code", lease.MachineID
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "source-checkpoint", 2
@@ -93,7 +94,9 @@ func TestNativeSourcePlacement(t *testing.T) {
 			}
 			if test.source {
 				input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source-version"}, ChangeVersionInput: input, SourceBundle: bundle})
+				diff := tracker.AttemptDiffRequest{Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: event.Data.AttemptID, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 1}, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/attempts/"+event.Data.AttemptID+"/diff", worker, diff), http.StatusAccepted)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", worker, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source-version", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: bundle})
 				requireNativeStatus(t, response, http.StatusOK)
 				var version tracker.ChangeVersion
 				decodeHubResponse(t, response, &version)
@@ -134,6 +137,7 @@ func TestNativeSourcePlacement(t *testing.T) {
 					t.Fatal("clean startup did not receive a new fenced lease")
 				}
 				startup = nativeStartedEvent(nextLease)
+				startup.IdempotencyKey = "startup-start"
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, startup), http.StatusOK)
 				startup.Type, startup.IdempotencyKey, startup.Data.Sequence = "run.checkpointed", "clean-startup-checkpoint", 2
 				startup.Data.Handoff = &tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: input.HeadSHA, ExternalEffect: "none", EffectState: "none"}
