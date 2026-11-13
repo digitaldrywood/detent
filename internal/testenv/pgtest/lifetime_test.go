@@ -209,6 +209,13 @@ func TestBinaryLifetime(t *testing.T) {
 						t.Fatalf("fixture shutdown left %s: %v", path, err)
 					}
 				}
+				return
+			}
+			if !strings.HasPrefix(filepath.Base(fixture.Socket), "pgs-") {
+				t.Fatalf("fixture socket %s is not a disposable socket directory", fixture.Socket)
+			}
+			if err := errors.Join(os.RemoveAll(filepath.Dir(data)), os.RemoveAll(fixture.Socket)); err != nil {
+				t.Fatalf("remove abruptly stopped fixture files: %v", err)
 			}
 		})
 	}
