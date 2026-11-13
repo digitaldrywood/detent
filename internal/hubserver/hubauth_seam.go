@@ -102,9 +102,6 @@ func (s *Service) authInput(scope hubscope.NativeScope) hubauth.Input {
 	return input
 }
 
-func nativeAuthInput(input hubauth.Input) hubscope.NativeScope {
-	return hubscope.NativeScope{Organization: input.Organization, Project: input.Project, Credential: hubscope.NativeCredential(input.Credential), RequireHostedAdmin: input.Admin, Action: input.Action}
-}
 func (s *Service) operatorAuthOptions() hubauth.OperatorOptions {
 	options := hubauth.OperatorOptions{
 		Classify: hubscope.OperatorAuthorizationError,
@@ -154,7 +151,7 @@ func (s *Service) operatorCheckOptions() hubauth.AuthorityOptions {
 	return hubauth.AuthorityOptions{
 		Classify: hubscope.OperatorAuthorizationError,
 		Base: func(input hubauth.Input) operatortool.Authority {
-			scope := nativeAuthInput(input)
+			scope := hubscope.ScopeFromAuthInput(input)
 			credential := scope.Credential
 			return operatortool.Authority{Explainer: operatorWorkReads{service: s, scope: scope}, WorkReads: operatorWorkReads{service: s, scope: scope}, Changes: hubChangeApplication{service: s, scope: scope}, BindContext: func(ctx context.Context) context.Context {
 				ctx = context.WithValue(ctx, operatorScopeKey{}, scope)
@@ -171,10 +168,10 @@ func (s *Service) operatorCheckOptions() hubauth.AuthorityOptions {
 			return s.requireHostedRunnerAdministration(ctx, hubscope.NativeCredential(c))
 		},
 		RecheckMutation: func(ctx context.Context, input hubauth.Input) error {
-			return s.recheckProjectRecordMutation(ctx, nativeAuthInput(input))
+			return s.recheckProjectRecordMutation(ctx, hubscope.ScopeFromAuthInput(input))
 		},
 		Resource: func(ctx context.Context, input hubauth.Input, r operatortool.Requirement) error {
-			return s.checkOperatorResource(ctx, nil, nativeAuthInput(input), r)
+			return s.checkOperatorResource(ctx, nil, hubscope.ScopeFromAuthInput(input), r)
 		},
 	}
 }
@@ -187,29 +184,29 @@ func (s *Service) resolveHubauthNativeScope(ctx context.Context, c echo.Context)
 			return hubscope.AuthCredential(v), ok
 		},
 		EventScope: func(c echo.Context, input hubauth.Input) bool {
-			return s.runnerEventCommandScope(c, nativeAuthInput(input))
+			return s.runnerEventCommandScope(c, hubscope.ScopeFromAuthInput(input))
 		},
 		ArtifactRead: artifactReadGrantRequest, RelayTicket: relayTicketRequest, LeaseRoute: runnerLeaseMutationRoute, RepositoryRoute: runnerRepositoryReportRoute,
 		AuthorizeLease: func(ctx context.Context, input hubauth.Input) error {
-			return s.authorizeRunnerLeaseProject(ctx, nativeAuthInput(input))
+			return s.authorizeRunnerLeaseProject(ctx, hubscope.ScopeFromAuthInput(input))
 		},
 		AuthorizeRepository: func(ctx context.Context, input hubauth.Input) error {
-			return s.authorizeRunnerRepositoryProject(ctx, nativeAuthInput(input))
+			return s.authorizeRunnerRepositoryProject(ctx, hubscope.ScopeFromAuthInput(input))
 		},
 		ReadProject: func(ctx context.Context, input hubauth.Input, write, models bool) error {
-			record, err := s.readAuthorizedProjectRecord(ctx, nativeAuthInput(input), write, models)
+			record, err := s.readAuthorizedProjectRecord(ctx, hubscope.ScopeFromAuthInput(input), write, models)
 			if err == nil {
 				c.Set("native_project_record", record)
 			}
 			return err
 		},
 		ReadItem: func(ctx context.Context, input hubauth.Input, item string) error {
-			_, _, err := s.readWorkItemRecord(ctx, nativeAuthInput(input), item)
+			_, _, err := s.readWorkItemRecord(ctx, hubscope.ScopeFromAuthInput(input), item)
 			return err
 		},
 		RecordError: hubapi.ProjectRecordError,
 		Store: func(c echo.Context, input hubauth.Input) {
-			c.Set("native_scope", nativeAuthInput(input))
+			c.Set("native_scope", hubscope.ScopeFromAuthInput(input))
 			c.Set("hub_request_scope", a.Scope(input))
 		},
 	})

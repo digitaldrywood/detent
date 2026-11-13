@@ -77,7 +77,7 @@ func (s *Service) costService() *usagecosts.Service {
 	return usagecosts.New(deps)
 }
 func (s *Service) prepareRunnerCostRecords(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeRunEvent, facts runnerUsageFacts, now time.Time, historical ...billingstore.CostObservation) ([]billingstore.CostObservation, error) {
-	v, e := s.costService().PrepareRunnerRecords(ctx, s.featureScope(scope), request, facts, now, historical...)
+	v, e := s.costService().PrepareRunnerRecords(ctx, s.authorization().Scope(scope), request, facts, now, historical...)
 	return v, hubapi.FromFeatureError(e)
 }
 
@@ -105,7 +105,7 @@ func (s *Service) registerCostUsageRoutes(e *echo.Echo) {
 				scope.RequireHostedAdmin = true
 				c.Set("native_scope", scope)
 			}
-			return s.featureScope(scope)
+			return s.authorization().Scope(scope)
 		},
 		CanManage: func(c echo.Context) bool {
 			return hubscope.CanManageProjectSecrets(hubscope.NativeRequestScope(c).Credential)
@@ -117,7 +117,7 @@ func (s *Service) registerCostUsageRoutes(e *echo.Echo) {
 func (s *Service) importSpriteUsageCommand(ctx context.Context, scope hubscope.NativeScope, request spriteUsageRequest) ([]byte, error) {
 	manage := hubscope.CanManageProjectSecrets(scope.Credential)
 	scope.RequireHostedAdmin = true
-	raw, err := s.costService().Import(ctx, s.featureScope(scope), request, manage)
+	raw, err := s.costService().Import(ctx, s.authorization().Scope(scope), request, manage)
 	return raw, hubapi.FromFeatureError(err)
 }
 

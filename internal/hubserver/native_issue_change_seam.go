@@ -18,5 +18,5 @@ func (s *Service) prepareNativeIssueChangeRecord(ctx context.Context, snapshot b
 }
 
 func (s *Service) readNativeIssueChangePage(ctx context.Context, scope hubscope.NativeScope, issue *tracker.NativeIssue) error {
-	return hubapi.FromFeatureError(s.workItemChangeService().ReadPage(ctx, s.featureScope(scope), issue))
+	return hubapi.FromFeatureError(s.workItemChangeService().ReadPage(ctx, s.authorization().Scope(scope), issue))
 }

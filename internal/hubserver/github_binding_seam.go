@@ -37,7 +37,7 @@ func (s *Service) githubBindingService(scope hubscope.NativeScope) *githubbindin
 }
 
 func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions, request bindNativeRepositoryRequest) (json.RawMessage, error) {
-	raw, err := s.githubBindingService(scope).Bind(ctx, s.featureScope(scope), options.OperationID, request)
+	raw, err := s.githubBindingService(scope).Bind(ctx, s.authorization().Scope(scope), options.OperationID, request)
 	return raw, hubapi.FromFeatureError(err)
 }
 
@@ -59,7 +59,7 @@ func validCheckoutRepository(repository string) bool {
 	return runnerstore.ValidCheckoutRepository(repository)
 }
 func (s *Service) verifiedProjectCheckout(ctx context.Context, _ hubapi.NativeQueryer, scope hubscope.NativeScope, repository string, now time.Time) (bool, error) {
-	return s.githubBindingService(scope).VerifiedCheckout(ctx, s.featureScope(scope), repository, now)
+	return s.githubBindingService(scope).VerifiedCheckout(ctx, s.authorization().Scope(scope), repository, now)
 }
 func validateRunnerCheckoutReport(scope hubscope.NativeScope, report *string) error {
 	return hubapi.FromFeatureError(githubbinding.ValidateCheckoutReport(scope.Credential.Runner.RunnerID, report))

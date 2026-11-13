@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventbroker"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -61,8 +62,7 @@ type Deps struct {
 	NewControls                    func(*ConversationService) ConversationControlRouter
 	Ready                          func() bool
 	Organization                   func() string
-	Authorize                      func(context.Context, accessstore.Reader, hubauth.Input, bool) error
-	AuthorizeWorkItem              func(context.Context, accessstore.Reader, hubauth.Input) error
+	Authorization                  hubscope.Authorization
 	BrowserLink                    func(context.Context, string) (string, error)
 	ArchiveContext                 func(context.Context, hubauth.Input, bool) context.Context
 	WithArchive                    func(context.Context, []byte) ([]byte, error)
@@ -106,11 +106,11 @@ func (s *Server) appOrganizationID() string {
 }
 
 func (s *Server) authorizeAccessScope(ctx context.Context, reader accessstore.Reader, scope hubauth.Input, write bool) error {
-	return s.deps.Authorize(ctx, reader, scope, write)
+	return s.deps.Authorization.AuthorizeInput(ctx, reader, scope, write)
 }
 
 func (s *Server) authorizeWorkItemRecordScope(ctx context.Context, reader accessstore.Reader, scope hubauth.Input) error {
-	return s.deps.AuthorizeWorkItem(ctx, reader, scope)
+	return s.deps.Authorization.AuthorizeWorkItemInput(ctx, reader, scope)
 }
 
 func (s *Server) canonicalBrowserLink(ctx context.Context, link string) (string, error) {

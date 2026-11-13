@@ -117,18 +117,20 @@ func (s *Service) conversationDeps() conversations.Deps {
 		},
 		Ready:        s.ready.Load,
 		Organization: s.appOrganizationID,
-		Authorize: func(ctx context.Context, reader accessstore.Reader, scope hubauth.Input, write bool) error {
-			return toFeatureError(s.authorizeAccessScope(ctx, reader, nativeAuthInput(scope), write))
-		},
-		AuthorizeWorkItem: func(ctx context.Context, reader accessstore.Reader, scope hubauth.Input) error {
-			return toFeatureError(s.authorizeWorkItemRecordScope(ctx, reader, nativeAuthInput(scope)))
+		Authorization: hubscope.Authorization{
+			Access: func(ctx context.Context, reader accessstore.Reader, scope hubscope.NativeScope, write bool) error {
+				return toFeatureError(s.authorizeAccessScope(ctx, reader, scope, write))
+			},
+			WorkItem: func(ctx context.Context, reader accessstore.Reader, scope hubscope.NativeScope) error {
+				return toFeatureError(s.authorizeWorkItemRecordScope(ctx, reader, scope))
+			},
 		},
 		BrowserLink: func(ctx context.Context, link string) (string, error) {
 			value, err := s.canonicalBrowserLink(ctx, link)
 			return value, toFeatureError(err)
 		},
 		ArchiveContext: func(ctx context.Context, scope hubauth.Input, presign bool) context.Context {
-			return s.archiveContext(ctx, nativeAuthInput(scope), presign)
+			return s.archiveContext(ctx, hubscope.ScopeFromAuthInput(scope), presign)
 		},
 		WithArchive: func(ctx context.Context, raw []byte) ([]byte, error) {
 			return withNativeArchive(raw, nativeArchiveDescriptor(ctx))
@@ -145,7 +147,7 @@ func (s *Service) conversationDeps() conversations.Deps {
 			return &hostedplans.LimitError{Resource: resource, Allowance: allowance, Consumption: consumption}
 		},
 		ReadProject: func(ctx context.Context, scope hubauth.Input) (tracker.NativeProject, error) {
-			record, err := s.readProjectRecord(ctx, nativeAuthInput(scope))
+			record, err := s.readProjectRecord(ctx, hubscope.ScopeFromAuthInput(scope))
 			if err != nil {
 				return tracker.NativeProject{}, toFeatureError(err)
 			}
@@ -153,23 +155,23 @@ func (s *Service) conversationDeps() conversations.Deps {
 			return project, toFeatureError(err)
 		},
 		ReadWorkItem: func(ctx context.Context, scope hubauth.Input, id string) (tracker.NativeIssue, error) {
-			issue, err := s.readWorkItem(ctx, nativeAuthInput(scope), id)
+			issue, err := s.readWorkItem(ctx, hubscope.ScopeFromAuthInput(scope), id)
 			return issue, toFeatureError(err)
 		},
 		ReadNativeRuntime: func(ctx context.Context, scope hubauth.Input, item string) (tracker.NativeRuntimeEvidence, error) {
-			runtime, err := s.readNativeRuntime(ctx, nativeAuthInput(scope), item, "")
+			runtime, err := s.readNativeRuntime(ctx, hubscope.ScopeFromAuthInput(scope), item, "")
 			return runtime, toFeatureError(err)
 		},
 		WorkItemReceipt: func(ctx context.Context, scope hubauth.Input, operation, key, hash string) (bool, error) {
-			_, found, err := s.workItemRecordReceipt(ctx, nativeAuthInput(scope), operation, key, hash)
+			_, found, err := s.workItemRecordReceipt(ctx, hubscope.ScopeFromAuthInput(scope), operation, key, hash)
 			return found, toFeatureError(err)
 		},
 		LinkWorkItem: func(ctx context.Context, scope hubauth.Input, operation string, request tracker.CreateIssue, link *conversations.ConversationLinkMutation) error {
-			_, err := s.executeWorkItemRecordMutationWithConversationLink(ctx, nativeAuthInput(scope), hubapi.NativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, "", &conversationLinkMutation{inner: link})
+			_, err := s.executeWorkItemRecordMutationWithConversationLink(ctx, hubscope.ScopeFromAuthInput(scope), hubapi.NativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, "", &conversationLinkMutation{inner: link})
 			return toFeatureError(err)
 		},
 		PreferenceIssue: func(ctx context.Context, scope hubauth.Input, record conversationRecord, preferences conversation.Preferences) (conversations.PreferenceIssue, error) {
-			issue, err := s.prepareConversationPreferenceIssue(ctx, nativeAuthInput(scope), record, preferences)
+			issue, err := s.prepareConversationPreferenceIssue(ctx, hubscope.ScopeFromAuthInput(scope), record, preferences)
 			return issue, toFeatureError(err)
 		},
 		GrantedProjects: func(ctx context.Context, reader accessstore.Reader, organization tracker.OrganizationID, credential hubauth.Credential, projects []accessstore.ProjectAccess) ([]accessstore.ProjectAccess, error) {

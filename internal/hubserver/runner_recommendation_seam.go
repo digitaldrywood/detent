@@ -47,7 +47,7 @@ func (s *Service) runnerAdviceService() *runneradvice.Service {
 	return runneradvice.New(runneradvice.Deps{
 		Repository: s.config.TenantRepository, Now: s.config.now, Auth: s.requestAuth, RecordError: hubapi.ProjectRecordError,
 		ReadRouting: func(ctx context.Context, input hubauth.Input, resource string) (runnerauth.Runner, error) {
-			return s.readRunnerRouting(ctx, nativeAuthInput(input), resource)
+			return s.readRunnerRouting(ctx, hubscope.ScopeFromAuthInput(input), resource)
 		},
 		CapacityView: func(ctx context.Context, runner runnerauth.Runner, backend string, now time.Time) (runnerauth.CapacityView, error) {
 			return s.runnerCapacityView(ctx, nil, runner, backend, now)

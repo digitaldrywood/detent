@@ -79,7 +79,7 @@ func (s *Service) threadHTTPDeps() threads.HTTPDeps {
 			scope, err := resolve(ctx)
 			return s.authInput(scope), err
 		},
-		Caller: func(input hubauth.Input) threads.Caller { return s.threadCaller(nativeAuthInput(input)) },
+		Caller: func(input hubauth.Input) threads.Caller { return s.threadCaller(hubscope.ScopeFromAuthInput(input)) },
 		NotifyUnread: func() {
 			select {
 			case s.boardRefresh <- struct{}{}:

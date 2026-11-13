@@ -11,6 +11,6 @@ import (
 )
 
 func (s *Service) landingTransitionSource(ctx context.Context, scope hubscope.NativeScope, item corestore.WorkItem) (*tracker.NativeChangeReference, error) {
-	value, err := changelanding.New(changelanding.Deps{Repository: s.config.TenantRepository}).TransitionSource(ctx, s.featureScope(scope), item)
+	value, err := changelanding.New(changelanding.Deps{Repository: s.config.TenantRepository}).TransitionSource(ctx, s.authorization().Scope(scope), item)
 	return value, hubapi.FromFeatureError(err)
 }

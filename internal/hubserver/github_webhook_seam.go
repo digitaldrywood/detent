@@ -14,7 +14,7 @@ import (
 )
 
 func (s *Service) gitHubWebhookIntegration(scope hubscope.NativeScope) githubwebhook.Integration {
-	return githubwebhook.Integration{Scope: s.featureScope(scope), Repository: scope.IntegrationRepository,
+	return githubwebhook.Integration{Scope: s.authorization().Scope(scope), Repository: scope.IntegrationRepository,
 		Import: func(ctx context.Context, repository, key string, preview tracker.GitHubIssuePreview, snapshot tracker.GitHubIssueSnapshot) error {
 			scope := scope
 			scope.IntegrationRepository = repository

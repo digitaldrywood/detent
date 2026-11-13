@@ -59,10 +59,10 @@ func (s *Service) pullRequestService(scope hubscope.NativeScope) *pullrequests.S
 	})
 }
 func (s *Service) projectRepositoryBinding(ctx context.Context, _ hubapi.NativeQueryer, scope hubscope.NativeScope) (*pullRequestConnector, int64, bool, error) {
-	result, id, enabled, err := s.pullRequestService(scope).RepositoryBinding(ctx, s.featureScope(scope))
+	result, id, enabled, err := s.pullRequestService(scope).RepositoryBinding(ctx, s.authorization().Scope(scope))
 	return result, id, enabled, hubapi.FromFeatureError(err)
 }
 func (s *Service) readWorkItemPullRequests(ctx context.Context, scope hubscope.NativeScope, item, refresh string) ([]pullRequestView, error) {
-	result, err := s.pullRequestService(scope).Read(ctx, s.featureScope(scope), item, refresh)
+	result, err := s.pullRequestService(scope).Read(ctx, s.authorization().Scope(scope), item, refresh)
 	return result, hubapi.FromFeatureError(err)
 }

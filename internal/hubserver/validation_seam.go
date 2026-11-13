@@ -6,7 +6,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -31,11 +30,9 @@ func (s *Service) validationServiceForScope(caller hubscope.NativeScope) *valida
 			}
 			return tracker.OrganizationID(s.config.Hosted.OrganizationID)
 		},
-		Scope: func(c echo.Context) hubauth.Input { return s.authInput(hubscope.NativeRequestScope(c)) },
-		Authorize: func(ctx context.Context, reader accessstore.Reader, scope hubauth.Input, write bool) error {
-			return s.authorizeAccessScope(ctx, reader, nativeAuthInput(scope), write)
-		},
-		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
+		Scope:     func(c echo.Context) hubauth.Input { return s.authInput(hubscope.NativeRequestScope(c)) },
+		Authorize: s.authorization().AuthorizeInput,
+		Error:     func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 	})
 }
 
@@ -54,11 +51,11 @@ func (s *Service) expireGoTestReceipts(ctx context.Context, now time.Time, clock
 
 func (s *Service) readValidationAuditRecord(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeIssue, attempt *tracker.NativeAttempt) (*tracker.ValidationAudit, error) {
 	service := s.validationServiceForScope(scope)
-	value, err := service.AuditRecord(ctx, s.featureScope(scope), item, attempt)
+	value, err := service.AuditRecord(ctx, s.authorization().Scope(scope), item, attempt)
 	return value, hubapi.FromFeatureError(err)
 }
 func (s *Service) readValidationAuditTenant(ctx context.Context, scope hubscope.NativeScope, scheduledItem, localItem, changeID, attemptID string) (*tracker.ValidationAudit, error) {
-	value, err := s.validationServiceForScope(scope).AuditTenant(ctx, s.featureScope(scope), scheduledItem, localItem, changeID, attemptID)
+	value, err := s.validationServiceForScope(scope).AuditTenant(ctx, s.authorization().Scope(scope), scheduledItem, localItem, changeID, attemptID)
 	return value, hubapi.FromFeatureError(err)
 }
 

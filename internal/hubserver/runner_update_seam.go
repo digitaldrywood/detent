@@ -88,23 +88,23 @@ func (s *Service) storeRunnerUpdateObservationTenant(ctx context.Context, writer
 
 func (s *Service) readRunnerUpdate(ctx context.Context, scope hubscope.NativeScope, resource string) (any, error) {
 	scope.ManagedRunner = resource
-	value, err := s.runnerUpdateService().View(ctx, s.featureScope(scope), resource)
+	value, err := s.runnerUpdateService().View(ctx, s.authorization().Scope(scope), resource)
 	return value, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope hubscope.NativeScope, resource string, request runnerUpdateChange) (any, error) {
 	scope.ManagedRunner = resource
-	value, err := s.runnerUpdateService().Apply(ctx, s.featureScope(scope), resource, request)
+	value, err := s.runnerUpdateService().Apply(ctx, s.authorization().Scope(scope), resource, request)
 	return value, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) readUrgentRunnerUpdateCommand(ctx context.Context, scope hubscope.NativeScope) (any, error) {
-	value, err := s.runnerUpdateService().ReadUrgent(ctx, s.featureScope(scope))
+	value, err := s.runnerUpdateService().ReadUrgent(ctx, s.authorization().Scope(scope))
 	return value, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope hubscope.NativeScope, request urgentRunnerUpdateChange) (any, error) {
-	value, err := s.runnerUpdateService().MarkUrgent(ctx, s.featureScope(scope), request)
+	value, err := s.runnerUpdateService().MarkUrgent(ctx, s.authorization().Scope(scope), request)
 	return value, hubapi.FromFeatureError(err)
 }
 

@@ -16,7 +16,7 @@ import (
 func (s *Service) releaseAuditsService(caller hubscope.NativeScope) *releaseaudits.Service {
 	return releaseaudits.New(releaseaudits.Deps{
 		Repository: s.config.TenantRepository, Now: s.config.now, Details: s.runDetailStore,
-		Scope:  func(echo.Context) hubapi.Scope { return s.featureScope(caller) },
+		Scope:  func(echo.Context) hubapi.Scope { return s.authorization().Scope(caller) },
 		Decode: hubapi.DecodeAPIJSON, InvalidRequest: s.invalidAPIRequest,
 		Error:       func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 		RecordError: func(err error) error { return hubapi.ProjectRecordError(hubapi.FromFeatureError(err)) },

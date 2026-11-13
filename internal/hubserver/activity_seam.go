@@ -24,7 +24,7 @@ func (s *Service) activityHTTP() *activity.HTTPService {
 }
 func (s *Service) activityCaller(credential hubapi.APICredential) activity.Caller {
 	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(s.appOrganizationID()), Credential: credential}
-	return activity.Caller{Credential: hubscope.AuthCredential(credential), Scope: s.featureScope(scope), IsNotFound: hubapi.IsNativeNotFound}
+	return activity.Caller{Credential: hubscope.AuthCredential(credential), Scope: s.authorization().Scope(scope), IsNotFound: hubapi.IsNativeNotFound}
 }
 func (s *Service) executeActivityRead(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	return s.activityHTTP().Execute(ctx, call)

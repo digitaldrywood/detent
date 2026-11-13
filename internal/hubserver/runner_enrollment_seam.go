@@ -66,7 +66,7 @@ func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope hubsc
 	if err != nil {
 		return nil, err
 	}
-	value, err := s.runnerEnrollmentService().Create(ctx, s.featureScope(scope), request)
+	value, err := s.runnerEnrollmentService().Create(ctx, s.authorization().Scope(scope), request)
 	return value, hubapi.FromFeatureError(err)
 }
 
@@ -75,7 +75,7 @@ func (s *Service) revokeRunnerEnrollmentCommand(ctx context.Context, scope hubsc
 	if err != nil {
 		return nil, err
 	}
-	value, err := s.runnerEnrollmentService().Revoke(ctx, s.featureScope(scope), resource)
+	value, err := s.runnerEnrollmentService().Revoke(ctx, s.authorization().Scope(scope), resource)
 	return value, hubapi.FromFeatureError(err)
 }
 

@@ -71,7 +71,7 @@ func (s *Service) hostedOrganizationName(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	scope.RequireHostedAdmin = false
-	name, err := s.organizationSettingsService(scope).Name(ctx, s.featureScope(scope))
+	name, err := s.organizationSettingsService(scope).Name(ctx, s.authorization().Scope(scope))
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.FromFeatureError(err))
 	}
@@ -104,7 +104,7 @@ func (s *Service) renameHostedOrganization(c echo.Context) error {
 
 func (s *Service) renameOrganizationRecord(ctx context.Context, scope hubscope.NativeScope, request renameOrganizationRequest) (json.RawMessage, error) {
 	scope.RequireHostedAdmin = true
-	raw, err := s.organizationSettingsService(scope).Rename(ctx, s.featureScope(scope), request)
+	raw, err := s.organizationSettingsService(scope).Rename(ctx, s.authorization().Scope(scope), request)
 	return raw, hubapi.FromFeatureError(err)
 }
 
@@ -117,13 +117,13 @@ func organizationVisibleWriter(w tenantstore.Writer) (projectstore.OrganizationW
 }
 
 func (s *Service) readOrganizationRankRecord(ctx context.Context, scope hubscope.NativeScope) (organizationProjectRank, error) {
-	value, err := s.organizationSettingsService(scope).ReadRank(ctx, s.featureScope(scope))
+	value, err := s.organizationSettingsService(scope).ReadRank(ctx, s.authorization().Scope(scope))
 	return value, hubapi.FromFeatureError(err)
 }
 
 func (s *Service) updateOrganizationRankRecord(ctx context.Context, scope hubscope.NativeScope, change projectRankChange) (any, error) {
 	scope.RequireHostedAdmin = true
-	value, err := s.organizationSettingsService(scope).UpdateRank(ctx, s.featureScope(scope), change)
+	value, err := s.organizationSettingsService(scope).UpdateRank(ctx, s.authorization().Scope(scope), change)
 	return value, hubapi.FromFeatureError(err)
 }
 
@@ -138,7 +138,7 @@ func (s *Service) organizationModelsFromRecord(ctx context.Context, organization
 }
 
 func (s *Service) updateOrganizationModelRecord(ctx context.Context, scope hubscope.NativeScope, operation string, request cloudModelSelectionRequest) (json.RawMessage, error) {
-	raw, err := s.organizationSettingsService(scope).UpdateModels(ctx, s.featureScope(scope), operation, request)
+	raw, err := s.organizationSettingsService(scope).UpdateModels(ctx, s.authorization().Scope(scope), operation, request)
 	return raw, hubapi.FromFeatureError(err)
 }
 
@@ -183,7 +183,7 @@ func organizationLogoOperationID(scope hubscope.NativeScope) string {
 
 func (s *Service) setOrganizationLogoCommand(ctx context.Context, scope hubscope.NativeScope, request setOrganizationLogoRequest) (json.RawMessage, error) {
 	scope.Project, scope.RequireHostedAdmin = "", true
-	raw, err := s.organizationSettingsService(scope).SetLogo(ctx, s.featureScope(scope), request)
+	raw, err := s.organizationSettingsService(scope).SetLogo(ctx, s.authorization().Scope(scope), request)
 	return raw, hubapi.FromFeatureError(err)
 }
 
@@ -213,7 +213,7 @@ func (s *Service) getOrganizationLogoAttachment(c echo.Context) error {
 }
 
 func (s *Service) organizationLogoAttachment(c echo.Context, scope hubscope.NativeScope, id string) error {
-	metadata, err := s.organizationSettingsService(scope).LogoAttachment(c.Request().Context(), s.featureScope(scope), id)
+	metadata, err := s.organizationSettingsService(scope).LogoAttachment(c.Request().Context(), s.authorization().Scope(scope), id)
 	if err != nil {
 		return s.nativeAPIError(c, hubapi.FromFeatureError(err))
 	}

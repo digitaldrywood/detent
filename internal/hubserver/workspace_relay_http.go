@@ -1234,7 +1234,7 @@ func (w *workspaceService) finishExecRun(ctx context.Context, state *execRunStat
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		if reason == "" {
-			if _, err := readRelayRunnerAuthority(ctx, writer, nativeAuthInput(state.RunnerScope), state.LeaseID, w.now()); err != nil {
+			if _, err := readRelayRunnerAuthority(ctx, writer, hubscope.ScopeFromAuthInput(state.RunnerScope), state.LeaseID, w.now()); err != nil {
 				var refusal *hubapi.NativeError
 				if !errors.Is(err, corestore.ErrNotFound) && (!errors.As(err, &refusal) || refusal.Status >= 500) {
 					return err
@@ -1440,7 +1440,7 @@ func (w *workspaceService) claimRelayExecRun(ctx context.Context, record workspa
 	var workspace workspaceRecord
 	err := w.server.accessRead(ctx, record.OrganizationID, func(reader tenantstore.Reader) error {
 		var err error
-		workspace, err = w.readRelayWorker(ctx, reader, nativeAuthInput(runner.Scope), record.ID, workspaceWorkerIdentity{LeaseID: tracker.LeaseID(runner.SessionID), FencingToken: tracker.FencingToken(runner.Owner.FencingToken)})
+		workspace, err = w.readRelayWorker(ctx, reader, hubscope.ScopeFromAuthInput(runner.Scope), record.ID, workspaceWorkerIdentity{LeaseID: tracker.LeaseID(runner.SessionID), FencingToken: tracker.FencingToken(runner.Owner.FencingToken)})
 		if err != nil {
 			return err
 		}
@@ -1477,7 +1477,7 @@ func (w *workspaceService) claimRelayExecRun(ctx context.Context, record workspa
 		return nil, "", workspacesession.CodeAlreadyRunning
 	}
 	err = w.server.accessWrite(ctx, record.OrganizationID, func(writer tenantstore.Writer) error {
-		if _, err := readRelayRunnerAuthority(ctx, writer, nativeAuthInput(runner.Scope), string(workspace.LeaseID), w.now()); err != nil {
+		if _, err := readRelayRunnerAuthority(ctx, writer, hubscope.ScopeFromAuthInput(runner.Scope), string(workspace.LeaseID), w.now()); err != nil {
 			return err
 		}
 		owner, ok := writer.(postgres.RelayActionWriter)
