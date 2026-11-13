@@ -429,7 +429,14 @@ func (f hostedSecurityFixture) seedIssue(t *testing.T, number int) tracker.Nativ
 		if _, err := w.CreateWorkItem(t.Context(), corestore.WorkItem{OrganizationID: organization, ProjectID: f.project, NativeID: issue.WorkItemID, Number: int64(number), Revision: 1, Title: issue.Title, BodyObjectKey: &fields.Body, WorkflowStateName: &issue.State, CreatedAt: now, UpdatedAt: now, NativeCreatedAt: now, NativeUpdatedAt: now, LastActivityAt: now}); err != nil {
 			return err
 		}
-		_, err := w.CreateCollaborationVersion(t.Context(), version)
+		project, err := w.ProjectRecord(t.Context(), f.project)
+		if err != nil {
+			return err
+		}
+		if err := writeClaimFactsAndQueue(t.Context(), w, workItemRecordPlan{project: project, issue: issue, create: true}, nil); err != nil {
+			return err
+		}
+		_, err = w.CreateCollaborationVersion(t.Context(), version)
 		return err
 	}); err != nil {
 		t.Fatal(err)
