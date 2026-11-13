@@ -107,6 +107,13 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 			}
 			candidateRequest := request
 			candidateRequest.WorkItemID = candidate.WorkItemID
+			outranked, err := s.nativeClaimOutranked(ctx, scope, candidateRequest, plan, now)
+			if err != nil {
+				return leasestore.Lease{}, err
+			}
+			if outranked {
+				return leasestore.Lease{}, ErrNoClaimableWork
+			}
 			scan.cursor.Position = position
 			lease, err := s.claimNativeIssueTenantWithPlan(ctx, scope, candidateRequest, ttl, now, plan, &scan.cursor)
 			if errors.Is(err, errClaimHostSlotTaken) {
@@ -160,6 +167,13 @@ func (s *Service) claimNativeIssueTenant(ctx context.Context, scope hubscope.Nat
 		if contract.ReasonCode == "issue_contract_unsatisfied" {
 			return leasestore.Lease{}, &hubapi.NativeError{Code: contract.ReasonCode, Message: contract.Reason, Status: http.StatusConflict, PublicMessage: true}
 		}
+		return leasestore.Lease{}, ErrNoClaimableWork
+	}
+	outranked, err := s.nativeClaimOutranked(ctx, scope, request, plan, now)
+	if err != nil {
+		return leasestore.Lease{}, err
+	}
+	if outranked {
 		return leasestore.Lease{}, ErrNoClaimableWork
 	}
 	return s.claimNativeIssueTenantWithPlan(ctx, scope, request, ttl, now, plan, nil)

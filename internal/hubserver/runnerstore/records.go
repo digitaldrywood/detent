@@ -24,6 +24,11 @@ var (
 	ErrStaleObservation  = errors.New("runner project observation is stale")
 )
 
+type ProjectRank struct {
+	ProjectID tracker.ProjectID
+	Rank      int
+}
+
 const MaxRunnerProjectList = 2000
 const MaxRunnerProjectRanks = 100
 const MaxProjectDiagnosticAttempts = 256
