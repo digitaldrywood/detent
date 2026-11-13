@@ -50,6 +50,9 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 	var snapshot hubrecords.TenantAttemptSnapshot
 	var version *eventstore.Version
 	err := deps.Repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if workspace, err := r.IsWorkspaceWorkItem(ctx, project, item.NativeID); err != nil || workspace {
+			return err
+		}
 		owner := func(leaseID string) (string, string, error) {
 			lease, err := r.Lease(ctx, leaseID)
 			if err != nil {
