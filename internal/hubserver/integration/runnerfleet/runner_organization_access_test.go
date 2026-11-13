@@ -1,9 +1,10 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"net/http"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -60,7 +61,7 @@ func TestRunnerProjectRouteAccessByScope(t *testing.T) {
 					if want.claim == 0 {
 						continue
 					}
-					claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: f.create(t, "work").WorkItemID, MachineID: r.binding.MachineID, SessionID: newNativeID("session"), TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+					claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: f.create(t, "work").WorkItemID, MachineID: r.binding.MachineID, SessionID: hubapi.NewID("session"), TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 					if got := performHubAPIRequest(t, first.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim).Code; got != want.claim {
 						t.Errorf("claim on %s project status=%d, want %d", want.project, got, want.claim)
 					}

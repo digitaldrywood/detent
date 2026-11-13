@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"bytes"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -53,19 +52,15 @@ func TestRunnerCapacityApplication(t *testing.T) {
 	request := runnerCapacityChange{CapacityRequest: runnerauth.CapacityRequest{ExpectedConfigRevision: config.Revision, Capacity: 6, Backend: "codex"}, ExpectedRevision: before.Revision, IdempotencyKey: "six-workers"}
 	response := performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/capacity", testHubAdminToken, request)
 	requireNativeStatus(t, response, http.StatusOK)
-	credential, _, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
 	var receipt eventstore.Receipt
 	if err := f.service.config.TenantRepository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
 		var err error
-		receipt, err = reader.Receipt(t.Context(), credential.ID, "runner_capacity "+r.binding.RunnerID, request.IdempotencyKey)
+		receipt, err = reader.Receipt(t.Context(), testHubAdminCredential, "runner_capacity "+r.binding.RunnerID, request.IdempotencyKey)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	storedResponse, err := eventstore.NewContent(f.service.runDetailStore()).Receipt(t.Context(), receipt)
+	storedResponse, err := eventstore.NewContent(f.service.config.RunDetails).Receipt(t.Context(), receipt)
 	if err != nil || receipt.PayloadObjectKey == "" || !bytes.Equal(bytes.TrimSpace(storedResponse), bytes.TrimSpace(response.Body.Bytes())) {
 		t.Fatalf("capacity receipt=%+v error=%v", receipt, err)
 	}

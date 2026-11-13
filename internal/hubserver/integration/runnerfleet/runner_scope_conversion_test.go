@@ -1,11 +1,10 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"maps"
 	"net/http"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -44,15 +43,11 @@ func TestRunnerScopeConversion(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var after runnerauth.Runner
 			decodeHubResponse(t, response, &after)
-			credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
-			if err != nil {
-				t.Fatalf("scope reader status=%d error=%v", status, err)
-			}
-			stored, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, r.binding.RunnerID)
+			stored, err := readRunnerRanks(t, f.service, f.project.OrganizationID, r.binding.RunnerID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			after.ProjectRankOverrides = stored.ProjectRankOverrides
+			after.ProjectRankOverrides = stored
 			if after.Binding != before.Binding || !maps.Equal(after.ProjectRankOverrides, ranks) || after.Used != 1 || len(after.Leases) != 1 || after.Leases[0].ID != lease.ID {
 				t.Fatalf("conversion changed identity, rank overrides or active lease: %+v", after)
 			}

@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -21,7 +22,7 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 	for _, shared := range []bool{false, true} {
 		t.Run(fmt.Sprintf("shared host %t", shared), func(t *testing.T) {
 			now := time.Date(2026, 10, 16, 20, 0, 0, 0, time.UTC)
-			cfg := Config{now: func() time.Time { return now }}
+			cfg := Config{Clock: func() time.Time { return now }}
 			first := newNativeFixture(t, newClockedPostgresNativeService(t, cfg), "", "first-project")
 			other := newNativeFixture(t, first.service, first.project.OrganizationID, "other-project")
 			r := prepareRunner(t, first, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
@@ -53,7 +54,7 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 			change := func(runner runnerFixture, total int, limits map[tracker.ProjectID]int) {
 				t.Helper()
 				stored := read(runner)
-				request := map[string]any{"expected_revision": stored.Revision, "display_name": stored.DisplayName, "state": stored.State, "capacity_limit": total, "project_ids": []tracker.ProjectID{first.project.ID, other.project.ID}, "idempotency_key": newNativeID("routing")}
+				request := map[string]any{"expected_revision": stored.Revision, "display_name": stored.DisplayName, "state": stored.State, "capacity_limit": total, "project_ids": []tracker.ProjectID{first.project.ID, other.project.ID}, "idempotency_key": hubapi.NewID("routing")}
 				if limits != nil {
 					request["project_capacity_limits"] = limits
 				}
@@ -239,7 +240,7 @@ func TestRunnerProjectCapacityAdministration(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "project-capacity-admin")
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-capacity-admin")
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), "org_foreign_capacity", corestore.Serving, func(w tenantstore.Writer) error {
-		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_foreign_capacity", Name: "Foreign organization", Slug: "foreign-capacity", CreatedAt: f.service.config.now()})
+		return w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: "org_foreign_capacity", Name: "Foreign organization", Slug: "foreign-capacity", CreatedAt: f.service.config.Clock()})
 	}); err != nil {
 		t.Fatal(err)
 	}

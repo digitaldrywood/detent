@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"net/http"
@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
+	"github.com/digitaldrywood/detent/internal/hubserver/runneradvice"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -25,7 +25,7 @@ func testHostSummary(now time.Time) hostmetrics.Summary {
 
 func TestRunnerHostSummaries(t *testing.T) {
 	now := time.Now().UTC()
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
 	r.enroll(t)
 	r.reportCapacity(t)
@@ -64,18 +64,14 @@ func TestRunnerHostSummaries(t *testing.T) {
 	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), "SELECT expires_at FROM leases WHERE organization_id=$1 AND lease_id=$2 AND released_at IS NULL", f.project.OrganizationID, lease.ID).Scan(&expiresAfter); err != nil {
 		t.Fatal(err)
 	}
-	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
-	if err != nil {
-		t.Fatalf("host reader status=%d error=%v", status, err)
-	}
-	runner, err := f.service.readRunnerRouting(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, r.binding.RunnerID)
+	runner, err := readRunnerRouting(t, f.service, f.project.OrganizationID, r.binding.RunnerID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if expiresAfter != expiresBefore || runner.ReportedCapacity != 2 || !runner.LastHeartbeatAt.Equal(now) {
 		t.Fatalf("shutdown partial changed runner availability or lease: %+v expiry=%s", runner, expiresAfter)
 	}
-	history, err := f.service.readRunnerHostHistory(t.Context(), f.project.OrganizationID, r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
+	history, err := hostHistory(t, f, f.project.OrganizationID, r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +105,7 @@ func TestRunnerHostSummaries(t *testing.T) {
 			}
 		})
 	}
-	unchangedHistory, err := f.service.readRunnerHostHistory(t.Context(), f.project.OrganizationID, r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
+	unchangedHistory, err := hostHistory(t, f, f.project.OrganizationID, r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
 	if err != nil || len(unchangedHistory) != 1 {
 		t.Fatalf("host history after invalid summaries=%+v error=%v", unchangedHistory, err)
 	}
@@ -117,16 +113,16 @@ func TestRunnerHostSummaries(t *testing.T) {
 	if unchanged.SampleCount != 4 {
 		t.Fatalf("bad summaries changed count: %d", unchanged.SampleCount)
 	}
-	other, err := f.service.readRunnerHostHistory(t.Context(), tracker.OrganizationID("org_other"), r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
+	other, err := hostHistory(t, f, tracker.OrganizationID("org_other"), r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
 	if err != nil || len(other) != 0 {
 		t.Fatalf("cross-organization history: %v %v", other, err)
 	}
 	for _, bounds := range [][2]time.Time{{a.Hour, a.Hour}, {a.Hour, a.Hour.Add(721 * time.Hour)}} {
-		if _, err := f.service.readRunnerHostHistory(t.Context(), f.project.OrganizationID, r.binding.RunnerID, bounds[0], bounds[1]); err == nil {
+		if _, err := hostHistory(t, f, f.project.OrganizationID, r.binding.RunnerID, bounds[0], bounds[1]); err == nil {
 			t.Fatal("unbounded range accepted")
 		}
 	}
-	for index := range maxHostSegments + 1 {
+	for index := range runneradvice.MaxHostSegments + 1 {
 		segment := a
 		segment.SegmentID = now.Add(-time.Duration(index+2) * time.Second)
 		send([]hostmetrics.Summary{segment})
@@ -135,10 +131,10 @@ func TestRunnerHostSummaries(t *testing.T) {
 	if err := usagePostgresAdmin(t, f.service).QueryRowContext(t.Context(), `SELECT count(*) FROM runner_host_metric_segments WHERE organization_id=$1 AND runner_id=$2 AND hour=$3`, f.project.OrganizationID, r.binding.RunnerID, a.Hour).Scan(&segments); err != nil {
 		t.Fatal(err)
 	}
-	if segments != maxHostSegments {
+	if segments != runneradvice.MaxHostSegments {
 		t.Fatalf("segment IDs grew to %d", segments)
 	}
-	history, err = f.service.readRunnerHostHistory(t.Context(), f.project.OrganizationID, r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
+	history, err = hostHistory(t, f, f.project.OrganizationID, r.binding.RunnerID, a.Hour, a.Hour.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

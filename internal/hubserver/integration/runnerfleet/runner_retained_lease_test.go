@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"net/http"
@@ -27,7 +27,7 @@ func TestRunnerRetainedLeaseClaimEligibility(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 10, 8, 15, 7, 57, 0, time.UTC)
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }})
 			owner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			owner.enroll(t)
 			owner.reportCapacity(t)

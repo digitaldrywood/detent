@@ -1,4 +1,4 @@
-package hubserver
+package runnerfleet_test
 
 import (
 	"errors"
