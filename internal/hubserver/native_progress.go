@@ -331,18 +331,11 @@ func (o nativeProgressOwner) publishTenant(ctx context.Context, record progressc
 			}
 		}
 		if reference.AttemptID != "" {
-			var found bool
-			recovery, err := o.service.readNativeRecoveryTenant(ctx, o.scope, record.IssueID)
+			attempt, err := o.service.readNativeAttemptTenant(ctx, o.scope, record.IssueID, reference.AttemptID)
 			if err != nil {
 				return progresscheck.Record{}, err
 			}
-			for _, attempt := range recovery.Attempts {
-				if attempt.AttemptID == reference.AttemptID && slices.Contains(progresscheck.AttemptEvidence(attempt), reference) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.Contains(progresscheck.AttemptEvidence(attempt), reference) {
 				return progresscheck.Record{}, nativeInvalid("Retrieved progress receipt is unavailable for this attempt")
 			}
 		}
